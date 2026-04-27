@@ -13,6 +13,8 @@ class SecurityAgent(ActionableAgent):
     async def _do_execute(self, action, ha_client, entity_index, entity_matcher, *, agent_id, span_collector=None):
         ctx = getattr(self, "_current_task_context", None)
         area_id = ctx.area_id if ctx else None
+        current_task = getattr(self, "_current_task", None)
+        verbatim_terms = list(getattr(current_task, "verbatim_terms", []) or []) if current_task else []
         return await execute_security_action(
             action,
             ha_client,
@@ -22,6 +24,7 @@ class SecurityAgent(ActionableAgent):
             span_collector=span_collector,
             preferred_area_id=area_id,
             task_context=ctx,
+            verbatim_terms=verbatim_terms,
         )
 
     @property

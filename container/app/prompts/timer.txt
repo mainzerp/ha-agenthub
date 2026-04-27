@@ -19,7 +19,7 @@ Internal AgentHub timers:
 - Every non-native timer (notification, delayed_action, sleep, snooze, internal plain) is
   managed by AgentHub's own scheduler. AgentHub does NOT touch any Home Assistant
   timer.* helper entity. There is no helper-pool allocation. Logical timer
-  names (e.g. "pasta", "egg timer", "Wecker") are tracked internally.
+  names (e.g. "pasta", "egg timer", "alarm") are tracked internally.
 - Pause is implemented as a cancel; the user must restart for fine control.
 
 Native delegation policy:
@@ -49,7 +49,7 @@ Output format:
 - Never return prose-only success, extra JSON blocks, or partial/broken JSON fragments.
 - For every timer action except `list_timers` and `list_alarms`, emit a non-empty `entity`.
   When the user asks for a generic unnamed timer, emit a short label copied from the
-  user's language (e.g. "timer", "Timer", "Wecker"). For `delegate_native_plain_timer`
+  user's language (e.g. "timer", "Timer", "alarm"). For `delegate_native_plain_timer`
   the `entity` field must still be non-empty even though execution ignores it.
 
 ```json
@@ -79,9 +79,9 @@ Alarm/DateTime actions:
     - Daily: {"time": "07:00:00", "recurrence": {"freq": "daily"}}
     - Weekly weekdays: {"time": "07:00:00", "recurrence": {"freq": "weekly", "byweekday": ["MO", "TU", "WE"]}}
   - Weekday codes must be canonical: MO, TU, WE, TH, FR, SA, SU.
-  - German weekday mapping guidance: montag=MO, dienstag=TU, mittwoch=WE, donnerstag=TH, freitag=FR, samstag=SA, sonntag=SU.
-  - For recurring alarms and Wecker intents, Use set_datetime with recurrence.
-  - Do NOT use create_recurring_reminder for alarm/wecker phrasing.
+  - Weekday mapping guidance: Monday=MO, Tuesday=TU, Wednesday=WE, Thursday=TH, Friday=FR, Saturday=SA, Sunday=SU. Apply the same mapping for equivalent weekday names in other languages.
+  - For recurring alarm intents, use set_datetime with recurrence.
+  - Do NOT use create_recurring_reminder for alarm-style phrasing.
 - list_alarms: {} (no entity needed)
 - cancel_alarm: {} or {"id": "<alarm_id>"} or {"time": "14:35:00"} or {"datetime": "2026-04-26 14:35:00"} or {"time": "14:35:00", "date": "2026-04-26"} or {"name": "morning alarm"}
 
@@ -126,21 +126,21 @@ User: "Extend the current timer by 1 minute"
 (Execution context: native_plain_timer_eligible=false)
 -> {"action": "extend_timer", "entity": "current timer", "parameters": {"duration": "00:01:00"}}
 
-User: "Stelle einen Timer auf 3 Minuten."
+User: "Set a timer for 3 minutes."
 (Execution context: native_plain_timer_eligible=false)
--> {"action": "start_timer", "entity": "3-Minuten-Timer", "parameters": {"duration": "00:03:00"}}
+-> {"action": "start_timer", "entity": "3-minute timer", "parameters": {"duration": "00:03:00"}}
 
-User: "Stelle den Küchentimer auf 5 Minuten."
+User: "Set the kitchen timer for 5 minutes."
 (Execution context: native_plain_timer_eligible=false)
--> {"action": "start_timer", "entity": "Küchentimer", "parameters": {"duration": "00:05:00"}}
+-> {"action": "start_timer", "entity": "kitchen timer", "parameters": {"duration": "00:05:00"}}
 
 User: "Set a timer for 5 minutes."
 (Execution context: native_plain_timer_eligible=false)
 -> {"action": "start_timer", "entity": "5-minute timer", "parameters": {"duration": "00:05:00"}}
 
-User: "Stoppe den Timer."
+User: "Stop the timer."
 (Execution context: native_plain_timer_eligible=true)
--> {"action": "delegate_native_plain_timer", "entity": "Timer", "parameters": {"reason": "native_cancel"}}
+-> {"action": "delegate_native_plain_timer", "entity": "timer", "parameters": {"reason": "native_cancel"}}
 
 User: "Cancel the timer."
 (Execution context: native_plain_timer_eligible=true)
@@ -170,13 +170,13 @@ User: "Cancel my morning alarm"
 (Execution context: native_plain_timer_eligible=false)
 -> {"action": "cancel_alarm", "entity": "morning alarm", "parameters": {"name": "morning alarm"}}
 
-User: "Stelle jeden Tag um 7 Uhr einen Wecker"
+User: "Set an alarm every day at 7 AM"
 (Execution context: native_plain_timer_eligible=false)
--> {"action": "set_datetime", "entity": "Wecker", "parameters": {"time": "07:00:00", "recurrence": {"freq": "daily"}}}
+-> {"action": "set_datetime", "entity": "alarm", "parameters": {"time": "07:00:00", "recurrence": {"freq": "daily"}}}
 
-User: "Stelle montag dienstag und mittwoch um 6 Uhr einen Wecker"
+User: "Set an alarm for Monday, Tuesday, and Wednesday at 6 AM"
 (Execution context: native_plain_timer_eligible=false)
--> {"action": "set_datetime", "entity": "Wecker", "parameters": {"time": "06:00:00", "recurrence": {"freq": "weekly", "byweekday": ["MO", "TU", "WE"]}}}
+-> {"action": "set_datetime", "entity": "alarm", "parameters": {"time": "06:00:00", "recurrence": {"freq": "weekly", "byweekday": ["MO", "TU", "WE"]}}}
 
 User: "Set an alarm every day at 7 AM"
 (Execution context: native_plain_timer_eligible=false)
@@ -186,9 +186,9 @@ User: "Set a timer for 5 minutes on kitchen satellite"
 (Execution context: native_plain_timer_eligible=false)
 -> {"action": "start_timer", "entity": "timer", "parameters": {"duration": "00:05:00", "target_satellite": "kitchen satellite"}}
 
-User: "Stelle jeden Tag um 6 Uhr einen Wecker mit Schlafzimmer Satellit"
+User: "Set an alarm every day at 6 AM on bedroom satellite"
 (Execution context: native_plain_timer_eligible=false)
--> {"action": "set_datetime", "entity": "Wecker", "parameters": {"time": "06:00:00", "recurrence": {"freq": "daily"}, "target_satellite": "Schlafzimmer Satellit"}}
+-> {"action": "set_datetime", "entity": "alarm", "parameters": {"time": "06:00:00", "recurrence": {"freq": "daily"}, "target_satellite": "bedroom satellite"}}
 
 Negative examples (do NOT delegate even when eligible=true):
 
@@ -204,7 +204,7 @@ User: "Set a timer for 10 minutes and remind me to check the oven."
 (Execution context: native_plain_timer_eligible=true)
 -> {"action": "start_timer_with_notification", "entity": "oven check", "parameters": {"duration": "00:10:00", "notification_message": "Check the oven"}}
 
-User: "Stelle einen Timer auf 10 Minuten und stoppe die Musik."
+User: "Set a timer for 10 minutes and stop the music."
 (Execution context: native_plain_timer_eligible=true)
 -> {"action": "sleep_timer", "entity": "sleep timer", "parameters": {"duration": "00:10:00", "media_player": "media_player.bedroom"}}
 

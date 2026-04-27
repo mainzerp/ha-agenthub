@@ -15,6 +15,8 @@ class SceneAgent(ActionableAgent):
         # as a tie-breaker for same-name scenes in multiple rooms.
         ctx = getattr(self, "_current_task_context", None)
         area_id = ctx.area_id if ctx else None
+        current_task = getattr(self, "_current_task", None)
+        verbatim_terms = list(getattr(current_task, "verbatim_terms", []) or []) if current_task else []
         return await execute_scene_action(
             action,
             ha_client,
@@ -23,6 +25,7 @@ class SceneAgent(ActionableAgent):
             agent_id=agent_id,
             span_collector=span_collector,
             preferred_area_id=area_id,
+            verbatim_terms=verbatim_terms,
         )
 
     @property

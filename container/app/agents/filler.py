@@ -78,7 +78,7 @@ class FillerAgent(BaseAgent):
                 personality = ""
 
             language_name = _LANGUAGE_NAMES.get(language, language)
-            system_prompt = self._load_prompt("filler").format(
+            system_prompt = (await self._load_prompt_async("filler")).format(
                 personality=personality or "",
                 language=language_name,
             )

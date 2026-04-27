@@ -76,7 +76,7 @@ class ActionableAgent(BaseAgent):
     async def _handle_task_inner(self, task: AgentTask) -> TaskResult:
         agent_id = self.agent_card.agent_id
         span_collector = task.span_collector
-        system_prompt = self._load_prompt(self._prompt_name)
+        system_prompt = await self._load_prompt_async(self._prompt_name)
 
         # Inject language directive for non-English users (PREPEND so it sits
         # in front of the few-shot examples and is not overridden by them).

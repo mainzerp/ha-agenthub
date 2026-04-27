@@ -34,10 +34,12 @@ def _load_or_generate_key() -> bytes:
         if _key_bytes is not None:
             return _key_bytes
         if FERNET_KEY_PATH.exists():
+            # Accepted cold-path sync file I/O: first-use only, then cached in-process.
             key = FERNET_KEY_PATH.read_bytes().strip()
             logger.info("Fernet key loaded from file")
         else:
             key = Fernet.generate_key()
+            # Accepted cold-path sync file I/O: key creation happens once per deployment.
             FERNET_KEY_PATH.parent.mkdir(parents=True, exist_ok=True)
             FERNET_KEY_PATH.write_bytes(key)
             FERNET_KEY_PATH.chmod(0o600)

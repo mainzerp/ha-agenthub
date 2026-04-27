@@ -63,6 +63,14 @@ def _load_prompt_path(path: Path) -> str:
     return content
 
 
+async def _load_prompt_path_async(path: Path) -> str:
+    cache_key = str(path)
+    cached = _prompt_cache.get(cache_key)
+    if cached is not None:
+        return cached
+    return await asyncio.to_thread(_load_prompt_path, path)
+
+
 def preload_prompt_cache(prompt_names: Iterable[str] | None = None) -> None:
     """Warm the shipped prompt cache so request handlers stay in memory."""
     names = tuple(prompt_names) if prompt_names is not None else _KNOWN_PROMPT_NAMES
@@ -157,6 +165,10 @@ class BaseAgent(ABC):
             Prompt text content.
         """
         return _load_prompt_path(_prompt_path(name))
+
+    async def _load_prompt_async(self, name: str) -> str:
+        """Load a prompt file without blocking the event loop on cache miss."""
+        return await _load_prompt_path_async(_prompt_path(name))
 
     def _error_result(
         self,

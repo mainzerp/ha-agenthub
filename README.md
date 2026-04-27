@@ -15,7 +15,7 @@ A multi-agent AI assistant for Home Assistant with container-based A2A orchestra
 - **Cache backup and restore** -- Export and import the routing and action caches as a portable JSON envelope via `/api/admin/cache/export` and `/api/admin/cache/import` (added in 0.20.0)
 - **Hybrid entity matching** -- Five-signal weighted matcher (Levenshtein, Jaro-Winkler, phonetic, embedding similarity, alias lookup) with LLM disambiguation fallback
 - **MCP tool integration** -- Connect external tool servers via Model Context Protocol (stdio and SSE transports) and assign tools to agents
-- **Plugin system** -- Extend functionality with Python plugins that register agents, subscribe to events, add dashboard routes, and access settings
+- **Plugin system** -- Extend functionality with Python plugins that inspect registered agents, dispatch work back through the orchestrator, add routes, subscribe to events, and access settings/MCP integrations
 - **Admin dashboard** -- HTMX-powered admin dashboard for managing agents, entities, cache, MCP servers, analytics, traces, and plugins
 - **Custom agents** -- Create LLM-powered agents via the dashboard with custom system prompts, model selection, MCP tools, and intent patterns
 - **Rewrite agent** -- Optional response variation for cached responses (driven by the personality prompt) to avoid repetitive answers
@@ -26,7 +26,7 @@ A multi-agent AI assistant for Home Assistant with container-based A2A orchestra
 
 ## Architecture
 
-HA-AgentHub (repository: `ha-agenthub`) runs as a Docker container with a FastAPI backend. A thin Home Assistant custom integration (`custom_components/ha_agenthub/`) acts as the I/O bridge, forwarding user commands to the container and streaming responses back.
+HA-AgentHub (repository: `ha-agenthub`) runs as a Docker container with a FastAPI backend. A Home Assistant custom integration (`custom_components/ha_agenthub/`) bridges turns to the container, streams responses back, and honors a small set of container-directed bridge actions such as native plain-timer delegation.
 
 All configuration, secrets, and state are stored in SQLite. ChromaDB provides vector storage for entity embeddings and cache embeddings. No configuration files are used at runtime.
 
@@ -174,7 +174,7 @@ container/          Docker container (FastAPI backend)
   plugins/          User plugins directory
   tests/            Test suite (incl. real-pipeline scenarios)
 custom_components/  HA custom integration
-  ha_agenthub/      Thin I/O bridge
+  ha_agenthub/      HA bridge and native plain-timer delegation seam
 ```
 
 ## Plugin Development

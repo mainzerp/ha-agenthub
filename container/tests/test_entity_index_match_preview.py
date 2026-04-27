@@ -214,9 +214,9 @@ async def test_match_preview_climate_agent_allows_climate_entity(preview_client)
     }
     with (
         patch(
-            "app.agents.action_executor._resolve_light_entity",
+            "app.entity.deterministic_resolver.resolve_entity_deterministic_first",
             new=AsyncMock(return_value=resolver_output),
-        ),
+        ) as deterministic_resolve,
         patch(
             "app.db.repository.EntityVisibilityRepository.get_rules",
             new=AsyncMock(return_value=[]),
@@ -233,6 +233,10 @@ async def test_match_preview_climate_agent_allows_climate_entity(preview_client)
     assert "climate" in data["agent_allowed_domains"]
     # `:non_light_agent` suffix should be appended on the resolution path.
     assert data["deterministic"]["metadata"]["resolution_path"].endswith(":non_light_agent")
+    deterministic_resolve.assert_awaited_once()
+    call = deterministic_resolve.await_args
+    assert call.args == ("wohnzimmer", _ei, em, "climate-agent")
+    assert call.kwargs == {"allowed_domains": frozenset({"climate", "sensor", "weather"})}
 
 
 @pytest.mark.asyncio
@@ -255,7 +259,7 @@ async def test_match_preview_domain_hard_filter(preview_client):
     }
     with (
         patch(
-            "app.agents.action_executor._resolve_light_entity",
+            "app.entity.deterministic_resolver.resolve_entity_deterministic_first",
             new=AsyncMock(return_value=resolver_output),
         ),
         patch(
@@ -429,7 +433,7 @@ async def test_match_preview_diagnostics_no_allowed_entities(preview_client):
     }
     with (
         patch(
-            "app.agents.action_executor._resolve_light_entity",
+            "app.entity.deterministic_resolver.resolve_entity_deterministic_first",
             new=AsyncMock(return_value=resolver_output),
         ),
         patch(
@@ -473,7 +477,7 @@ async def test_match_preview_diagnostics_filtered_out(preview_client):
     }
     with (
         patch(
-            "app.agents.action_executor._resolve_light_entity",
+            "app.entity.deterministic_resolver.resolve_entity_deterministic_first",
             new=AsyncMock(return_value=resolver_output),
         ),
         patch(
@@ -505,7 +509,7 @@ async def test_match_preview_diagnostics_absent_when_hybrid_nonempty(preview_cli
     }
     with (
         patch(
-            "app.agents.action_executor._resolve_light_entity",
+            "app.entity.deterministic_resolver.resolve_entity_deterministic_first",
             new=AsyncMock(return_value=resolver_output),
         ),
         patch(
@@ -537,7 +541,7 @@ async def test_match_preview_diagnostics_explicit_domain(preview_client):
     }
     with (
         patch(
-            "app.agents.action_executor._resolve_light_entity",
+            "app.entity.deterministic_resolver.resolve_entity_deterministic_first",
             new=AsyncMock(return_value=resolver_output),
         ),
         patch(

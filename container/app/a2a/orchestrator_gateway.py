@@ -10,6 +10,8 @@ from app.a2a.protocol import JsonRpcRequest
 from app.a2a.registry import AgentRegistry
 from app.models.agent import AgentCard, AgentTask, BackgroundEvent, BackgroundEventType, TaskContext
 
+__all__ = ["AgentCatalog", "OrchestratorGateway"]
+
 
 class AgentCatalog:
     """Read-only agent discovery surface for plugins and internal producers."""

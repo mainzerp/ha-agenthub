@@ -57,7 +57,7 @@ ORCHESTRATOR: Confirm with user via ask_user tool UNTIL user confirms task compl
 
 ## Subagent Prompts
 
-If Orchestrator is in Auto-Model mode also use model parameter "Auto" for subagents to allow them to choose the best model for their task.
+If Orchestrator is in Auto-Model mode also use model parameter "Auto" for subagents to allow them to choose the best model for their task otherwise use the specified models in the templates below.
 
 ### Research Subagent Template
 Call `runSubagent` with `model: "GPT-5.4 (copilot)"`. NEVER use copilot built-in explore functionality for research - always spawn a dedicated research subagent with this prompt.

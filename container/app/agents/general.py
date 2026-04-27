@@ -37,7 +37,7 @@ class GeneralAgent(BaseAgent):
 
     async def handle_task(self, task: AgentTask) -> TaskResult:
         span_collector = task.span_collector
-        system_prompt = self._load_prompt("general")
+        system_prompt = await self._load_prompt_async("general")
 
         language = task.context.language if task.context else None
 

@@ -151,9 +151,11 @@ class CustomAgentLoader:
         name = row["name"]
         normalized_name = CustomAgentRepository.normalize_name(name)
         agent_id = CustomAgentRepository.agent_id_for_name(name)
+        if agent_id in self._loaded:
+            raise ValueError(f"Custom agent name conflict: '{name}' maps to already loaded agent ID '{agent_id}'")
         existing_card = await self._registry.discover(agent_id)
-        if isinstance(existing_card, AgentCard) and agent_id not in self._loaded:
-            raise ValueError(f"Agent ID already registered: {agent_id}")
+        if isinstance(existing_card, AgentCard):
+            raise ValueError(f"Custom agent name conflict: '{name}' maps to already registered agent ID '{agent_id}'")
         intent_patterns = row.get("intent_patterns") or []
         skills = intent_patterns if intent_patterns else [name]
         agent = DynamicAgent(

@@ -5,7 +5,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
+from contextvars import ContextVar
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 from urllib.parse import quote
@@ -19,6 +20,42 @@ if TYPE_CHECKING:
     from app.ha_client.websocket import HAWebSocketClient
 
 logger = logging.getLogger(__name__)
+
+_ha_service_call_context: ContextVar[str | None] = ContextVar("_ha_service_call_context", default=None)
+_direct_ha_write_warning_count = 0
+
+
+@contextmanager
+def allow_internal_ha_service_calls(source: str):
+    token = _ha_service_call_context.set(f"internal:{source}")
+    try:
+        yield
+    finally:
+        _ha_service_call_context.reset(token)
+
+
+@contextmanager
+def mark_verified_ha_service_call(source: str):
+    token = _ha_service_call_context.set(f"verified:{source}")
+    try:
+        yield
+    finally:
+        _ha_service_call_context.reset(token)
+
+
+def get_direct_ha_write_warning_count() -> int:
+    return _direct_ha_write_warning_count
+
+
+def reset_direct_ha_write_warning_count() -> None:
+    global _direct_ha_write_warning_count
+    _direct_ha_write_warning_count = 0
+
+
+def _record_direct_ha_write_warning() -> int:
+    global _direct_ha_write_warning_count
+    _direct_ha_write_warning_count += 1
+    return _direct_ha_write_warning_count
 
 
 class HARestClient:
@@ -164,6 +201,16 @@ class HARestClient:
         return_response: bool = False,
     ) -> dict[str, Any]:
         """POST /api/services/<domain>/<service>."""
+        context = _ha_service_call_context.get()
+        if context is None:
+            warning_count = _record_direct_ha_write_warning()
+            logger.warning(
+                "Direct HA service write without verified/internal context: %s/%s entity_id=%s warning_count=%d",
+                domain,
+                service,
+                entity_id,
+                warning_count,
+            )
         payload: dict[str, Any] = {}
         if entity_id:
             payload["entity_id"] = entity_id

@@ -6,6 +6,7 @@ import asyncio
 import logging
 from abc import ABC, abstractmethod
 from collections.abc import AsyncGenerator
+from contextlib import nullcontext
 
 from app.a2a.protocol import (
     INTERNAL_ERROR,
@@ -16,9 +17,17 @@ from app.a2a.protocol import (
     success_response,
 )
 from app.a2a.registry import AgentRegistry
+from app.ha_client.rest import allow_internal_ha_service_calls
 from app.models.agent import AgentTask
 
 logger = logging.getLogger(__name__)
+
+
+def _internal_ha_service_call_scope(handler) :
+    module_name = type(handler).__module__
+    if module_name.startswith("app.agents.") and module_name != "app.agents.custom_loader":
+        return allow_internal_ha_service_calls(module_name)
+    return nullcontext()
 
 
 class Transport(ABC):
@@ -42,14 +51,15 @@ class InProcessTransport(Transport):
         self._registry = registry
 
     async def send(self, agent_id: str, task: AgentTask, request_id: str) -> JsonRpcResponse:
-        handler = await self._registry.get_handler(agent_id)
+        handler = await self._registry._get_handler_for_transport(agent_id)
         if handler is None:
             return error_response(request_id, INTERNAL_ERROR, f"Agent not found: {agent_id}")
         try:
-            result = await asyncio.wait_for(
-                handler.handle_task(task),
-                timeout=self._DEFAULT_TIMEOUT,
-            )
+            with _internal_ha_service_call_scope(handler):
+                result = await asyncio.wait_for(
+                    handler.handle_task(task),
+                    timeout=self._DEFAULT_TIMEOUT,
+                )
             # Normalize TaskResult or raw dict to dict for JSON-RPC
             if hasattr(result, "model_dump"):
                 result = result.model_dump(exclude_none=True)
@@ -62,7 +72,7 @@ class InProcessTransport(Transport):
             return error_response(request_id, INTERNAL_ERROR, f"Agent error: {agent_id}")
 
     async def stream(self, agent_id: str, task: AgentTask, request_id: str) -> AsyncGenerator[JsonRpcStreamChunk, None]:
-        handler = await self._registry.get_handler(agent_id)
+        handler = await self._registry._get_handler_for_transport(agent_id)
         if handler is None:
             yield JsonRpcStreamChunk(
                 id=request_id,
@@ -71,12 +81,13 @@ class InProcessTransport(Transport):
             )
             return
         try:
-            async for token_dict in handler.handle_task_stream(task):
-                yield JsonRpcStreamChunk(
-                    id=request_id,
-                    result=token_dict,
-                    done=token_dict.get("done", False),
-                )
+            with _internal_ha_service_call_scope(handler):
+                async for token_dict in handler.handle_task_stream(task):
+                    yield JsonRpcStreamChunk(
+                        id=request_id,
+                        result=token_dict,
+                        done=token_dict.get("done", False),
+                    )
         except asyncio.CancelledError:
             raise
         except Exception as exc:

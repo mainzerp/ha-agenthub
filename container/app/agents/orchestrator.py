@@ -2487,7 +2487,7 @@ class OrchestratorAgent(BaseAgent):
         span_collector=None,
         language: str = "en",
     ) -> list[tuple[str, str, float | None]]:
-        system_prompt_template = self._load_prompt("orchestrator")
+        system_prompt_template = await self._load_prompt_async("orchestrator")
         agent_descriptions = await self._build_agent_descriptions()
         lang = (language or "").strip().lower()
         if lang and lang != "en":
@@ -2652,7 +2652,7 @@ class OrchestratorAgent(BaseAgent):
             except Exception:
                 logger.warning("Routing cache check failed, proceeding with LLM", exc_info=True)
 
-        system_prompt_template = self._load_prompt("orchestrator")
+        system_prompt_template = await self._load_prompt_async("orchestrator")
         agent_descriptions = await self._build_agent_descriptions()
         lang = (language or "").strip().lower()
         if lang and lang != "en":
@@ -2995,7 +2995,7 @@ class OrchestratorAgent(BaseAgent):
             with contextlib.suppress(Exception):
                 personality = await SettingsRepository.get_value("personality.prompt", "")
 
-            system_content = self._load_prompt("merge")
+            system_content = await self._load_prompt_async("merge")
             personality_text = personality.strip() if personality and personality.strip() else ""
             system_content = system_content.replace("{personality}", personality_text).strip()
 
@@ -3049,7 +3049,7 @@ class OrchestratorAgent(BaseAgent):
             return agent_speech
 
         try:
-            system_prompt = self._load_prompt("mediate")
+            system_prompt = await self._load_prompt_async("mediate")
             personality_text = personality.strip() if personality.strip() else ""
             system_prompt = system_prompt.replace("{personality}", personality_text)
             system_prompt = system_prompt.replace("{language}", language or "en").strip()

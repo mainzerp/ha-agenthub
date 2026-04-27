@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from app.cache.embedding import get_embedding_info
 from app.cache.vector_store import COLLECTION_ENTITY_INDEX
 from app.db.repository import EntityVisibilityRepository, SettingsRepository
+from app.entity import deterministic_resolver
 from app.entity.ingest import parse_ha_states
 from app.runtime_setup import ensure_setup_runtime_initialized
 from app.security.auth import require_admin_session
@@ -41,7 +42,7 @@ AGENT_ALLOWED_DOMAINS: dict[str, frozenset[str]] = {
     "music-agent": frozenset({"media_player"}),
     "scene-agent": frozenset({"scene"}),
     "security-agent": frozenset({"alarm_control_panel", "lock", "camera", "binary_sensor", "sensor"}),
-    "timer-agent": frozenset({"timer", "input_datetime"}),
+    "timer-agent": frozenset({"calendar", "input_datetime"}),
 }
 
 # Agents whose execute path runs `_resolve_light_entity` upstream; for
@@ -163,12 +164,14 @@ async def match_preview(
 
     Surfaces exactly what each agent type receives:
 
-    * ``deterministic`` -- the output of
-      :func:`app.agents.action_executor._resolve_light_entity`, which is
-      the path ``light-agent`` (and other light/switch/sensor executors)
-      walk before reaching the hybrid matcher. Includes the chosen
-      ``entity_id``, ``friendly_name``, ``resolution_path`` and whether
-      the resolved id passes the light-executor domain gate.
+        * ``deterministic`` -- the output of the same deterministic-first
+            resolver used by the selected executor family. ``light-agent``
+            stays on :func:`app.agents.action_executor._resolve_light_entity`
+            to preserve its light-only exact-match extras, while non-light
+            agents use :func:`app.entity.deterministic_resolver.resolve_entity_deterministic_first`.
+            Includes the chosen ``entity_id``, ``friendly_name``,
+            ``resolution_path`` and whether the resolved id passes the
+            executor-domain gate.
     * ``hybrid`` -- the top candidates from
       :meth:`app.entity.matcher.EntityMatcher.match`, which is what
       non-light executors (climate / media / security / …) use directly.
@@ -207,7 +210,8 @@ async def match_preview(
         preferred_domains = None
 
     # -----------------------------------------------------------------
-    # Deterministic light-agent resolver (same code path as execute_action)
+    # Deterministic resolver preview: light keeps its legacy light-only
+    # path; non-light agents use the shared helper introduced by Directive 4.
     # -----------------------------------------------------------------
     deterministic: dict[str, Any] = {
         "entity_id": None,
@@ -227,7 +231,15 @@ async def match_preview(
             _validate_domain,
         )
 
-        if entity_matcher is None:
+        if agent and agent not in _LIGHT_DETERMINISTIC_AGENTS:
+            resolution = await deterministic_resolver.resolve_entity_deterministic_first(
+                query,
+                entity_index,
+                entity_matcher,
+                agent,
+                allowed_domains=agent_allowed_domains or None,
+            )
+        elif entity_matcher is None:
             deterministic["error"] = "entity_matcher not initialized"
         else:
             resolution = await _resolve_light_entity(
@@ -236,6 +248,7 @@ async def match_preview(
                 entity_matcher,
                 agent,
             )
+        if deterministic["error"] is None:
             metadata = dict(resolution.get("metadata") or {})
             if agent and agent not in _LIGHT_DETERMINISTIC_AGENTS:
                 rp = metadata.get("resolution_path")

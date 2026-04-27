@@ -62,6 +62,25 @@ from app.entity.index import EntityIndex  # noqa: E402
 from app.entity.matcher import EntityMatcher, MatchResult  # noqa: E402
 from tests.helpers import make_entity_index_entry  # noqa: E402
 
+
+@pytest.fixture(autouse=True)
+def _no_visibility_rules(monkeypatch):
+    monkeypatch.setattr(
+        "app.entity.visibility.EntityVisibilityRepository.get_rules",
+        AsyncMock(return_value=[]),
+    )
+
+
+def _make_listable_entity_index(*entries):
+    entry_list = list(entries)
+    index = MagicMock(spec=EntityIndex)
+    index.list_entries_async = AsyncMock(return_value=entry_list)
+    index.list_entries = MagicMock(return_value=entry_list)
+    index.get_by_id = MagicMock(side_effect=lambda entity_id: next((e for e in entry_list if e.entity_id == entity_id), None))
+    index.search = MagicMock()
+    index.search_async = AsyncMock()
+    return index
+
 # ---------------------------------------------------------------------------
 # parse_action tests
 # ---------------------------------------------------------------------------
@@ -368,7 +387,10 @@ class TestExecuteAction:
         result = await execute_action(action, ha_client, entity_index, entity_matcher, agent_id="light-agent")
 
         assert result["success"] is True
-        entity_matcher.match.assert_awaited_once_with("kitchen light", agent_id="light-agent")
+        entity_matcher.match.assert_awaited_once()
+        call = entity_matcher.match.await_args
+        assert call.args == ("kitchen light",)
+        assert call.kwargs == {"agent_id": "light-agent", "preferred_domains": ("light", "switch")}
 
     @pytest.mark.asyncio
     async def test_domain_validation_rejects_wrong_domain(self, ha_client):
@@ -497,6 +519,8 @@ class TestExecuteAction:
         index.list_entries_async = AsyncMock(
             side_effect=[
                 [],
+                [],
+                [make_entity_index_entry("light.keller", "Deckenlicht", area="Keller")],
                 [make_entity_index_entry("light.keller", "Deckenlicht", area="Keller")],
             ]
         )
@@ -722,6 +746,169 @@ class TestMediaExecutorDomainValidation:
         assert "Could not find" in result["speech"]
 
 
+from app.agents.automation_executor import execute_automation_action  # noqa: E402
+from app.agents.scene_executor import execute_scene_action  # noqa: E402
+from app.agents.security_executor import execute_security_action  # noqa: E402
+from app.agents.timer_executor import execute_timer_action  # noqa: E402
+
+
+class TestSharedDeterministicResolution:
+    """Deterministic-first exact resolution should short-circuit hybrid fallback."""
+
+    @pytest.mark.asyncio
+    async def test_climate_exact_friendly_name_skips_hybrid_matcher(self):
+        ha_client = AsyncMock()
+        ha_client.get_state = AsyncMock(
+            return_value={
+                "state": "heat",
+                "attributes": {"friendly_name": "Living Room Climate", "current_temperature": 21.5},
+            }
+        )
+        matcher = AsyncMock(spec=EntityMatcher)
+        matcher.match = AsyncMock()
+        index = _make_listable_entity_index(make_entity_index_entry("climate.living_room", "Living Room Climate"))
+
+        result = await execute_climate_action(
+            {"action": "query_climate_state", "entity": "Living Room Climate", "parameters": {}},
+            ha_client,
+            index,
+            matcher,
+            agent_id="climate-agent",
+        )
+
+        assert result["success"] is True
+        matcher.match.assert_not_awaited()
+        index.search.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_media_exact_friendly_name_skips_hybrid_matcher(self):
+        ha_client = AsyncMock()
+        ha_client.get_state = AsyncMock(
+            return_value={
+                "state": "playing",
+                "attributes": {"friendly_name": "Kitchen Speaker", "media_title": "Blue in Green"},
+            }
+        )
+        matcher = AsyncMock(spec=EntityMatcher)
+        matcher.match = AsyncMock()
+        index = _make_listable_entity_index(make_entity_index_entry("media_player.kitchen", "Kitchen Speaker"))
+
+        result = await execute_media_action(
+            {"action": "query_media_state", "entity": "Kitchen Speaker", "parameters": {}},
+            ha_client,
+            index,
+            matcher,
+            agent_id="media-agent",
+        )
+
+        assert result["success"] is True
+        matcher.match.assert_not_awaited()
+        index.search.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_automation_exact_friendly_name_skips_hybrid_matcher(self):
+        ha_client = AsyncMock()
+        ha_client.get_state = AsyncMock(
+            return_value={
+                "state": "on",
+                "attributes": {"friendly_name": "Morning Routine", "last_triggered": "2024-01-15T10:30:00"},
+            }
+        )
+        matcher = AsyncMock(spec=EntityMatcher)
+        matcher.match = AsyncMock()
+        index = _make_listable_entity_index(
+            make_entity_index_entry("automation.morning_routine", "Morning Routine")
+        )
+
+        result = await execute_automation_action(
+            {"action": "query_automation_state", "entity": "Morning Routine", "parameters": {}},
+            ha_client,
+            index,
+            matcher,
+            agent_id="automation-agent",
+        )
+
+        assert result["success"] is True
+        matcher.match.assert_not_awaited()
+        index.search.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_scene_exact_friendly_name_skips_hybrid_matcher(self):
+        matcher = AsyncMock(spec=EntityMatcher)
+        matcher.match = AsyncMock()
+        index = _make_listable_entity_index(make_entity_index_entry("scene.movie_night", "Movie Night"))
+
+        result = await execute_scene_action(
+            {"action": "query_scene", "entity": "Movie Night", "parameters": {}},
+            AsyncMock(),
+            index,
+            matcher,
+            agent_id="scene-agent",
+        )
+
+        assert result["success"] is True
+        matcher.match.assert_not_awaited()
+        index.search.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_security_exact_friendly_name_skips_hybrid_matcher(self):
+        ha_client = AsyncMock()
+        ha_client.get_state = AsyncMock(
+            return_value={
+                "state": "locked",
+                "attributes": {"friendly_name": "Front Door Lock"},
+            }
+        )
+        matcher = AsyncMock(spec=EntityMatcher)
+        matcher.match = AsyncMock()
+        index = _make_listable_entity_index(make_entity_index_entry("lock.front_door", "Front Door Lock"))
+
+        result = await execute_security_action(
+            {"action": "query_security_state", "entity": "Front Door Lock", "parameters": {}},
+            ha_client,
+            index,
+            matcher,
+            agent_id="security-agent",
+        )
+
+        assert result["success"] is True
+        matcher.match.assert_not_awaited()
+        index.search.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_timer_hidden_calendar_does_not_fall_back_to_raw_search(self, monkeypatch):
+        monkeypatch.setattr(
+            "app.entity.visibility.EntityVisibilityRepository.get_rules",
+            AsyncMock(return_value=[{"rule_type": "domain_include", "rule_value": "input_datetime"}]),
+        )
+        ha_client = AsyncMock()
+        ha_client.call_service = AsyncMock(return_value={})
+        entry = make_entity_index_entry("calendar.family", "Family Calendar", area=None)
+        index = _make_listable_entity_index(entry)
+        index.search_async = AsyncMock(return_value=[(entry, 0.08)])
+
+        result = await execute_timer_action(
+            {
+                "action": "create_reminder",
+                "entity": "Family Calendar",
+                "parameters": {
+                    "summary": "Take medication",
+                    "start_date_time": "2026-04-27 08:00:00",
+                },
+            },
+            ha_client,
+            index,
+            None,
+            agent_id="timer-agent",
+        )
+
+        assert result["success"] is False
+        assert "Could not find" in result["speech"]
+        index.list_entries_async.assert_awaited_once_with(domains=frozenset({"calendar"}))
+        index.search_async.assert_not_awaited()
+        ha_client.call_service.assert_not_awaited()
+
+
 # ---------------------------------------------------------------------------
 # execute_music_action tests
 # ---------------------------------------------------------------------------
@@ -886,7 +1073,10 @@ class TestMusicExecutor:
         result = await execute_music_action(action, ha_client, entity_index, entity_matcher)
 
         assert result["success"] is True
-        entity_matcher.match.assert_awaited_once_with("kitchen speaker", agent_id=None)
+        entity_matcher.match.assert_awaited_once()
+        call = entity_matcher.match.await_args
+        assert call.args == ("kitchen speaker",)
+        assert call.kwargs == {"agent_id": None, "verbatim_terms": None, "preferred_domains": ("media_player",)}
         entity_index.search.assert_not_called()
 
     @pytest.mark.asyncio
@@ -896,7 +1086,10 @@ class TestMusicExecutor:
         result = await execute_music_action(action, ha_client, entity_index, entity_matcher, agent_id="music-agent")
 
         assert result["success"] is True
-        entity_matcher.match.assert_awaited_once_with("kitchen speaker", agent_id="music-agent")
+        entity_matcher.match.assert_awaited_once()
+        call = entity_matcher.match.await_args
+        assert call.args == ("kitchen speaker",)
+        assert call.kwargs == {"agent_id": "music-agent", "verbatim_terms": None, "preferred_domains": ("media_player",)}
 
 
 # ---------------------------------------------------------------------------

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
+
 from app.a2a.dispatcher import Dispatcher
 from app.a2a.protocol import (
     INTERNAL_ERROR,
@@ -160,25 +162,35 @@ class TestAgentRegistry:
         await reg.unregister("x")
         assert await reg.discover("x") is None
 
-    async def test_get_handler(self):
+    async def test_get_handler_for_transport(self):
         reg = AgentRegistry()
         agent = _make_mock_agent("h")
         await reg.register(agent)
-        handler = await reg.get_handler("h")
+        handler = await reg._get_handler_for_transport("h")
         assert handler is agent
 
-    async def test_get_handler_missing_returns_none(self):
+    async def test_get_handler_for_transport_missing_returns_none(self):
         reg = AgentRegistry()
-        handler = await reg.get_handler("nope")
+        handler = await reg._get_handler_for_transport("nope")
         assert handler is None
 
-    async def test_duplicate_registration_overwrites(self):
+    async def test_duplicate_registration_rejected(self):
         reg = AgentRegistry()
         agent1 = _make_mock_agent("dup")
         agent2 = _make_mock_agent("dup")
         await reg.register(agent1)
-        await reg.register(agent2)
-        handler = await reg.get_handler("dup")
+        with pytest.raises(ValueError, match="Agent ID already registered: dup"):
+            await reg.register(agent2)
+        handler = await reg._get_handler_for_transport("dup")
+        assert handler is agent1
+
+    async def test_duplicate_registration_replace_overrides(self):
+        reg = AgentRegistry()
+        agent1 = _make_mock_agent("dup")
+        agent2 = _make_mock_agent("dup")
+        await reg.register(agent1)
+        await reg.register(agent2, replace=True)
+        handler = await reg._get_handler_for_transport("dup")
         assert handler is agent2
 
 

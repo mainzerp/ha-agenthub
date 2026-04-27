@@ -143,6 +143,27 @@ class TestBaseAgent:
 
         assert mock_complete.await_count == 2
 
+    @patch("app.llm.client.complete", new_callable=AsyncMock, return_value="Turned on the kitchen light.")
+    async def test_prompt_cache_miss_uses_to_thread(self, mock_complete):
+        _prompt_cache.clear()
+        agent = LightAgent()
+        calls: list[tuple[object, tuple[object, ...], dict[str, object]]] = []
+
+        async def fake_to_thread(func, *args, **kwargs):
+            calls.append((func, args, kwargs))
+            return func(*args, **kwargs)
+
+        try:
+            with patch("app.agents.base.asyncio.to_thread", new=AsyncMock(side_effect=fake_to_thread)) as mock_to_thread:
+                await agent.handle_task(_make_task("turn on the kitchen light"))
+        finally:
+            _prompt_cache.clear()
+
+        assert mock_to_thread.await_count == 1
+        assert calls[0][0].__name__ == "_load_prompt_path"
+        assert calls[0][1][0].name == "light.txt"
+        mock_complete.assert_awaited_once()
+
 
 # ---------------------------------------------------------------------------
 # Agent card validation (all agents)
@@ -1419,7 +1440,7 @@ class TestTimerExecutor:
                     "entity": "Wecker",
                     "parameters": {
                         "summary": "Work alarm",
-                        "start_date_time": "2026-04-27 06:30:00",
+                        "start_date_time": "2099-04-27 06:30:00",
                         "rrule": "FREQ=WEEKLY;INTERVAL=2;BYDAY=MO,WE,FR",
                     },
                 },
@@ -1452,9 +1473,15 @@ class TestTimerExecutor:
         ha_client = MagicMock()
         ha_client.call_service = AsyncMock()
         entity_index = MagicMock()
-        entity_index.search_async = AsyncMock(return_value=[(self._Entry("calendar.family", "Family Calendar"), 0.92)])
+        entry = self._Entry("calendar.family", "Family Calendar")
+        entity_index.get_by_id = MagicMock(return_value=None)
+        entity_index.list_entries_async = AsyncMock(return_value=[entry])
+        entity_index.search_async = AsyncMock()
 
-        with patch("app.agents.timer_executor._get_scheduler", return_value=scheduler):
+        with (
+            patch("app.agents.timer_executor._get_scheduler", return_value=scheduler),
+            patch("app.entity.visibility.EntityVisibilityRepository.get_rules", new=AsyncMock(return_value=[])),
+        ):
             result = await execute_timer_action(
                 {
                     "action": "create_recurring_reminder",
@@ -1472,6 +1499,8 @@ class TestTimerExecutor:
             )
 
         assert result["success"] is True
+        entity_index.list_entries_async.assert_awaited_once_with(domains=frozenset({"calendar"}))
+        entity_index.search_async.assert_not_awaited()
         ha_client.call_service.assert_awaited_once_with(
             "calendar",
             "create_event",
@@ -1786,15 +1815,15 @@ class TestTimerPromptSnapshot:
     def test_prompt_contains_required_few_shots(self):
         prompt = self._read_prompt()
         for needle in (
-            "Stelle einen Timer auf 3 Minuten.",
+            "Set a timer for 3 minutes.",
             "Set a timer for 5 minutes.",
-            "Stoppe den Timer.",
+            "Stop the timer.",
             "Cancel the timer.",
-            "3-Minuten-Timer",
+            "3-minute timer",
             "5-minute timer",
             "and remind me to check the oven",
-            "und stoppe die Musik",
-            "Stelle den Küchentimer auf 5 Minuten.",
+            "and stop the music",
+            "Set the kitchen timer for 5 minutes.",
             "native_plain_timer_eligible=true",
             "native_plain_timer_eligible=false",
             "Cancel my alarm",
@@ -1802,12 +1831,11 @@ class TestTimerPromptSnapshot:
             "Cancel my morning alarm",
             "Cancel my alarm scheduled for 2026-04-26 14:35:00",
             "Set an alarm every day at 7 AM",
-            "Stelle jeden Tag um 7 Uhr einen Wecker",
             '"recurrence": {"freq": "daily"}',
             '"recurrence": {"freq": "weekly", "byweekday": ["MO", "TU", "WE"]}',
             '"action": "cancel_alarm"',
-            "recurring alarms and Wecker intents",
-            "Use set_datetime with recurrence",
+            "recurring alarm intents",
+            "use set_datetime with recurrence",
         ):
             assert needle in prompt, f"missing required few-shot substring: {needle}"
         assert prompt.count("delegate_native_plain_timer") >= 3
@@ -1815,7 +1843,7 @@ class TestTimerPromptSnapshot:
     def test_prompt_contains_native_policy_block(self):
         prompt = self._read_prompt()
         assert "PLAIN, UNNAMED, RELATIVE" in prompt
-        assert "German weekday mapping guidance" in prompt
+        assert "Weekday mapping guidance" in prompt
 
     async def test_non_timer_prompt_does_not_inject_eligibility(self):
         from app.models.agent import TaskContext
@@ -4273,7 +4301,7 @@ class TestCustomAgentLoader:
         assert cfg is not None
         assert cfg["model"] == "ollama/weather-model"
 
-        handler = await registry.get_handler("custom-weather-bot")
+        handler = await registry._get_handler_for_transport("custom-weather-bot")
         assert handler is not None
         result = await handler.handle_task(_make_task("forecast"))
 

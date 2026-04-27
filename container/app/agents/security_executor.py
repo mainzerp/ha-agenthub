@@ -8,10 +8,9 @@ from typing import Any
 from app.agents.action_executor import (
     build_verified_speech,
     call_service_with_verification,
-    filter_matches_by_domain,
-    rerank_matches_by_area,
 )
 from app.analytics.tracer import _optional_span
+from app.entity.deterministic_resolver import resolve_entity_deterministic_first
 from app.ha_client.history_query import execute_recorder_history_query
 from app.models.agent import TaskContext
 
@@ -105,6 +104,7 @@ async def execute_security_action(
     *,
     preferred_area_id: str | None = None,
     task_context: TaskContext | None = None,
+    verbatim_terms: list[str] | None = None,
 ) -> dict:
     """Resolve an entity, call a security HA service, and verify the result.
 
@@ -134,6 +134,7 @@ async def execute_security_action(
             parameters=action.get("parameters") or {},
             preferred_area_id=preferred_area_id,
             task_context=task_context,
+            verbatim_terms=verbatim_terms,
         )
 
     # Validate action name
@@ -148,31 +149,31 @@ async def execute_security_action(
 
     domain, service = mapping
 
-    # Resolve entity via matcher first, then entity_index fallback
-    entity_id = None
-    friendly_name = entity_query
+    resolution = {
+        "entity_id": None,
+        "friendly_name": entity_query,
+        "speech": None,
+        "metadata": {"query": entity_query, "match_count": 0, "resolution_path": "not_attempted"},
+    }
     required_domains = _ACTION_DOMAINS.get(action_name, _READ_DOMAINS)
     try:
-        if entity_matcher:
+        if entity_index or entity_matcher:
             async with _optional_span(span_collector, "entity_match", agent_id=agent_id) as em_span:
-                matches = await entity_matcher.match(entity_query, agent_id=agent_id)
-                em_span["metadata"] = {"query": entity_query, "match_count": len(matches)}
-                # FLOW-DOMAIN-1 (0.19.2): drop wrong-domain candidates so a
-                # camera_turn_on cannot land on lock.front_door.
-                filtered = filter_matches_by_domain(matches, required_domains)
-                if len(filtered) != len(matches):
-                    em_span["metadata"]["domain_filter_dropped"] = len(matches) - len(filtered)
-                    em_span["metadata"]["domain_filter_allowed"] = sorted(required_domains)
-                if filtered:
-                    entity_id = filtered[0].entity_id
-                    friendly_name = filtered[0].friendly_name or entity_id
-                    em_span["metadata"]["top_entity_id"] = entity_id
-                    em_span["metadata"]["top_friendly_name"] = friendly_name
-                    em_span["metadata"]["top_score"] = filtered[0].score
-                    em_span["metadata"]["signal_scores"] = getattr(filtered[0], "signal_scores", {})
+                resolution = await resolve_entity_deterministic_first(
+                    entity_query,
+                    entity_index,
+                    entity_matcher,
+                    agent_id,
+                    allowed_domains=required_domains,
+                    preferred_area_id=preferred_area_id,
+                    verbatim_terms=verbatim_terms,
+                )
+                em_span["metadata"] = resolution["metadata"]
     except Exception:
         logger.warning("Entity resolution failed for '%s'", entity_query, exc_info=True)
 
+    entity_id = resolution["entity_id"]
+    friendly_name = resolution["friendly_name"]
     if entity_id and not _validate_domain(entity_id):
         logger.warning("Resolved entity %s not in allowed domains %s", entity_id, _ALLOWED_DOMAINS)
         entity_id = None
@@ -182,7 +183,7 @@ async def execute_security_action(
             "success": False,
             "entity_id": None,
             "new_state": None,
-            "speech": f"Could not find an entity matching '{entity_query}'.",
+            "speech": resolution["speech"] or f"Could not find an entity matching '{entity_query}'.",
         }
 
     # Build service data
@@ -278,31 +279,32 @@ async def _query_security_state(
     span_collector=None,
     *,
     preferred_area_id: str | None = None,
+    verbatim_terms: list[str] | None = None,
 ) -> dict:
-    entity_id = None
-    friendly_name = entity_query
+    resolution = {
+        "entity_id": None,
+        "friendly_name": entity_query,
+        "speech": None,
+        "metadata": {"query": entity_query, "match_count": 0, "resolution_path": "not_attempted"},
+    }
     try:
-        if entity_matcher:
+        if entity_index or entity_matcher:
             async with _optional_span(span_collector, "entity_match", agent_id=agent_id) as em_span:
-                matches = await entity_matcher.match(entity_query, agent_id=agent_id)
-                em_span["metadata"] = {"query": entity_query, "match_count": len(matches)}
-                # FLOW-DOMAIN-1: read path spans every security domain.
-                filtered = filter_matches_by_domain(matches, _READ_DOMAINS)
-                if len(filtered) != len(matches):
-                    em_span["metadata"]["domain_filter_dropped"] = len(matches) - len(filtered)
-                    em_span["metadata"]["domain_filter_allowed"] = sorted(_READ_DOMAINS)
-                if filtered:
-                    reranked = rerank_matches_by_area(filtered, preferred_area_id)
-                    chosen = reranked[0]
-                    entity_id = chosen.entity_id
-                    friendly_name = chosen.friendly_name or entity_id
-                    em_span["metadata"]["top_entity_id"] = entity_id
-                    em_span["metadata"]["top_friendly_name"] = friendly_name
-                    em_span["metadata"]["top_score"] = chosen.score
-                    em_span["metadata"]["signal_scores"] = getattr(chosen, "signal_scores", {})
+                resolution = await resolve_entity_deterministic_first(
+                    entity_query,
+                    entity_index,
+                    entity_matcher,
+                    agent_id,
+                    allowed_domains=_READ_DOMAINS,
+                    preferred_area_id=preferred_area_id,
+                    verbatim_terms=verbatim_terms,
+                )
+                em_span["metadata"] = resolution["metadata"]
     except Exception:
         logger.warning("Entity resolution failed for '%s'", entity_query, exc_info=True)
 
+    entity_id = resolution["entity_id"]
+    friendly_name = resolution["friendly_name"]
     if entity_id and not _validate_domain(entity_id):
         logger.warning("Resolved entity %s not in allowed domains %s", entity_id, _ALLOWED_DOMAINS)
         entity_id = None
@@ -312,7 +314,7 @@ async def _query_security_state(
             "success": False,
             "entity_id": None,
             "new_state": None,
-            "speech": f"Could not find an entity matching '{entity_query}'.",
+            "speech": resolution["speech"] or f"Could not find an entity matching '{entity_query}'.",
             "cacheable": False,
         }
 
@@ -349,32 +351,40 @@ async def _query_security_entity_history(
     entity_query: str,
     parameters: dict[str, Any],
     ha_client: Any,
+    entity_index: Any,
     entity_matcher: Any,
     agent_id: str | None,
     span_collector=None,
     *,
     preferred_area_id: str | None = None,
     task_context: TaskContext | None = None,
+    verbatim_terms: list[str] | None = None,
 ) -> dict:
     """Recorder history for a single lock, alarm, camera, or security sensor entity."""
-    entity_id = None
-    friendly_name = entity_query
+    resolution = {
+        "entity_id": None,
+        "friendly_name": entity_query,
+        "speech": None,
+        "metadata": {"query": entity_query, "match_count": 0, "resolution_path": "not_attempted"},
+    }
     try:
-        if entity_matcher:
+        if entity_index or entity_matcher:
             async with _optional_span(span_collector, "entity_match", agent_id=agent_id) as em_span:
-                matches = await entity_matcher.match(entity_query, agent_id=agent_id)
-                em_span["metadata"] = {"query": entity_query, "match_count": len(matches)}
-                # FLOW-DOMAIN-1: history read spans every security domain.
-                filtered = filter_matches_by_domain(matches, _READ_DOMAINS)
-                if filtered:
-                    reranked = rerank_matches_by_area(filtered, preferred_area_id)
-                    chosen = reranked[0]
-                    entity_id = chosen.entity_id
-                    friendly_name = chosen.friendly_name or entity_id
-                    em_span["metadata"]["top_entity_id"] = entity_id
+                resolution = await resolve_entity_deterministic_first(
+                    entity_query,
+                    entity_index,
+                    entity_matcher,
+                    agent_id,
+                    allowed_domains=_READ_DOMAINS,
+                    preferred_area_id=preferred_area_id,
+                    verbatim_terms=verbatim_terms,
+                )
+                em_span["metadata"] = resolution["metadata"]
     except Exception:
         logger.warning("Entity resolution failed for '%s'", entity_query, exc_info=True)
 
+    entity_id = resolution["entity_id"]
+    friendly_name = resolution["friendly_name"]
     if entity_id and not _validate_domain(entity_id):
         entity_id = None
 
@@ -383,7 +393,7 @@ async def _query_security_entity_history(
             "success": False,
             "entity_id": None,
             "new_state": None,
-            "speech": f"Could not find a visible entity matching '{entity_query}'.",
+            "speech": resolution["speech"] or f"Could not find a visible entity matching '{entity_query}'.",
             "cacheable": False,
         }
 
@@ -455,6 +465,7 @@ async def _handle_security_read_action(
     parameters: dict[str, Any] | None = None,
     preferred_area_id: str | None = None,
     task_context: TaskContext | None = None,
+    verbatim_terms: list[str] | None = None,
 ) -> dict:
     if action_name == "query_security_state":
         return await _query_security_state(
@@ -465,6 +476,7 @@ async def _handle_security_read_action(
             agent_id,
             span_collector=span_collector,
             preferred_area_id=preferred_area_id,
+            verbatim_terms=verbatim_terms,
         )
     if action_name == "list_security":
         return await _list_security(ha_client)
@@ -473,10 +485,12 @@ async def _handle_security_read_action(
             entity_query,
             parameters or {},
             ha_client,
+            entity_index,
             entity_matcher,
             agent_id,
             span_collector=span_collector,
             preferred_area_id=preferred_area_id,
             task_context=task_context,
+            verbatim_terms=verbatim_terms,
         )
     return {"success": False, "entity_id": "", "new_state": None, "speech": f"Unknown read action: {action_name}"}

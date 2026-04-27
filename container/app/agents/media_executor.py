@@ -8,9 +8,9 @@ from typing import Any
 from app.agents.action_executor import (
     build_verified_speech,
     call_service_with_verification,
-    filter_matches_by_domain,
 )
 from app.analytics.tracer import _optional_span
+from app.entity.deterministic_resolver import resolve_entity_deterministic_first
 
 logger = logging.getLogger(__name__)
 
@@ -91,6 +91,9 @@ async def execute_media_action(
     entity_matcher: Any,
     agent_id: str | None = None,
     span_collector=None,
+    *,
+    preferred_area_id: str | None = None,
+    verbatim_terms: list[str] | None = None,
 ) -> dict:
     """Resolve an entity, call a media_player HA service, and verify the result.
 
@@ -117,6 +120,8 @@ async def execute_media_action(
             entity_matcher,
             agent_id,
             span_collector=span_collector,
+            preferred_area_id=preferred_area_id,
+            verbatim_terms=verbatim_terms,
         )
 
     mapping = _MEDIA_ACTION_MAP.get(action_name)
@@ -130,28 +135,30 @@ async def execute_media_action(
 
     domain, service = mapping
 
-    entity_id = None
-    friendly_name = entity_query
+    resolution = {
+        "entity_id": None,
+        "friendly_name": entity_query,
+        "speech": None,
+        "metadata": {"query": entity_query, "match_count": 0, "resolution_path": "not_attempted"},
+    }
     try:
-        if entity_matcher:
+        if entity_index or entity_matcher:
             async with _optional_span(span_collector, "entity_match", agent_id=agent_id) as em_span:
-                matches = await entity_matcher.match(entity_query, agent_id=agent_id)
-                em_span["metadata"] = {"query": entity_query, "match_count": len(matches)}
-                # FLOW-DOMAIN-1 (0.19.2): drop wrong-domain candidates.
-                filtered = filter_matches_by_domain(matches, _ACTION_DOMAINS)
-                if len(filtered) != len(matches):
-                    em_span["metadata"]["domain_filter_dropped"] = len(matches) - len(filtered)
-                    em_span["metadata"]["domain_filter_allowed"] = sorted(_ACTION_DOMAINS)
-                if filtered:
-                    entity_id = filtered[0].entity_id
-                    friendly_name = filtered[0].friendly_name or entity_id
-                    em_span["metadata"]["top_entity_id"] = entity_id
-                    em_span["metadata"]["top_friendly_name"] = friendly_name
-                    em_span["metadata"]["top_score"] = filtered[0].score
-                    em_span["metadata"]["signal_scores"] = getattr(filtered[0], "signal_scores", {})
+                resolution = await resolve_entity_deterministic_first(
+                    entity_query,
+                    entity_index,
+                    entity_matcher,
+                    agent_id,
+                    allowed_domains=_ACTION_DOMAINS,
+                    preferred_area_id=preferred_area_id,
+                    verbatim_terms=verbatim_terms,
+                )
+                em_span["metadata"] = resolution["metadata"]
     except Exception:
         logger.warning("Entity resolution failed for '%s'", entity_query, exc_info=True)
 
+    entity_id = resolution["entity_id"]
+    friendly_name = resolution["friendly_name"]
     if entity_id and not _validate_domain(entity_id):
         logger.warning("Resolved entity %s not in allowed domains %s", entity_id, _ALLOWED_DOMAINS)
         entity_id = None
@@ -161,7 +168,7 @@ async def execute_media_action(
             "success": False,
             "entity_id": None,
             "new_state": None,
-            "speech": f"Could not find an entity matching '{entity_query}'.",
+            "speech": resolution["speech"] or f"Could not find an entity matching '{entity_query}'.",
         }
 
     service_data = _build_media_service_data(action)
@@ -239,25 +246,34 @@ async def _query_media_state(
     entity_matcher: Any,
     agent_id: str | None,
     span_collector=None,
+    *,
+    preferred_area_id: str | None = None,
+    verbatim_terms: list[str] | None = None,
 ) -> dict:
-    entity_id = None
-    friendly_name = entity_query
+    resolution = {
+        "entity_id": None,
+        "friendly_name": entity_query,
+        "speech": None,
+        "metadata": {"query": entity_query, "match_count": 0, "resolution_path": "not_attempted"},
+    }
     try:
-        if entity_matcher:
+        if entity_index or entity_matcher:
             async with _optional_span(span_collector, "entity_match", agent_id=agent_id) as em_span:
-                matches = await entity_matcher.match(entity_query, agent_id=agent_id)
-                em_span["metadata"] = {"query": entity_query, "match_count": len(matches)}
-                filtered = filter_matches_by_domain(matches, _ACTION_DOMAINS)
-                if filtered:
-                    entity_id = filtered[0].entity_id
-                    friendly_name = filtered[0].friendly_name or entity_id
-                    em_span["metadata"]["top_entity_id"] = entity_id
-                    em_span["metadata"]["top_friendly_name"] = friendly_name
-                    em_span["metadata"]["top_score"] = filtered[0].score
-                    em_span["metadata"]["signal_scores"] = getattr(filtered[0], "signal_scores", {})
+                resolution = await resolve_entity_deterministic_first(
+                    entity_query,
+                    entity_index,
+                    entity_matcher,
+                    agent_id,
+                    allowed_domains=_ACTION_DOMAINS,
+                    preferred_area_id=preferred_area_id,
+                    verbatim_terms=verbatim_terms,
+                )
+                em_span["metadata"] = resolution["metadata"]
     except Exception:
         logger.warning("Entity resolution failed for '%s'", entity_query, exc_info=True)
 
+    entity_id = resolution["entity_id"]
+    friendly_name = resolution["friendly_name"]
     if entity_id and not _validate_domain(entity_id):
         logger.warning("Resolved entity %s not in allowed domains %s", entity_id, _ALLOWED_DOMAINS)
         entity_id = None
@@ -267,7 +283,7 @@ async def _query_media_state(
             "success": False,
             "entity_id": None,
             "new_state": None,
-            "speech": f"Could not find an entity matching '{entity_query}'.",
+            "speech": resolution["speech"] or f"Could not find an entity matching '{entity_query}'.",
             "cacheable": False,
         }
 
@@ -339,10 +355,20 @@ async def _handle_media_read_action(
     entity_matcher: Any,
     agent_id: str | None,
     span_collector=None,
+    *,
+    preferred_area_id: str | None = None,
+    verbatim_terms: list[str] | None = None,
 ) -> dict:
     if action_name == "query_media_state":
         return await _query_media_state(
-            entity_query, ha_client, entity_index, entity_matcher, agent_id, span_collector=span_collector
+            entity_query,
+            ha_client,
+            entity_index,
+            entity_matcher,
+            agent_id,
+            span_collector=span_collector,
+            preferred_area_id=preferred_area_id,
+            verbatim_terms=verbatim_terms,
         )
     if action_name == "list_media_players":
         return await _list_media_players(ha_client)

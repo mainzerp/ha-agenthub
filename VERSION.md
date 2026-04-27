@@ -1,12 +1,45 @@
 # Version
 
-**Current Version:** 0.29.1
+**Current Version:** 0.31.0
 
-## Recent Changes (since 0.29.1)
+## Recent Changes (since 0.31.0)
 
 (none yet)
 
 ## Version History
+
+### 0.31.0 (MINOR) -- D8/D9/D10/D13 prime-directive remediation
+
+- D8: hardened runtime boundaries by rejecting duplicate agent IDs, removing the retained raw app reference from `PluginContext`, making transport handler lookup private, adding load-time custom-agent conflict checks, and logging/counting direct HA service writes outside verified or internal contexts; Directive 8 wording now matches the enforced contract.
+- D9: moved remaining request-time prompt and query-expansion template cache misses behind `asyncio.to_thread(...)` while preserving eager startup prewarm and documenting the intentionally deferred cold-path file reads.
+- D10: corrected README, architecture, configuration, and API-reference wording to match the deterministic-first resolver, current timer delegation flow, current matcher/cache terminology, and added an idempotent schema migration for the persisted `cache.response.*` setting descriptions.
+- D13: translated the static timer prompt few-shots and instructional text to English-only content, while preserving runtime verbatim-name handling and updating the prompt-lock tests accordingly.
+
+### 0.30.0 (MINOR) -- Deterministic-first entity resolution across domain executors
+
+- Rewrote Directive 4 in `.github/instructions/prime-directives.md`
+  to require verbatim-preserving deterministic-first resolution,
+  exact `entity_id` / `friendly_name` / alias matching before hybrid
+  fallback, visibility checks at every stage, and a shared helper for
+  executor implementations.
+- Added shared deterministic resolution in
+  `container/app/entity/deterministic_resolver.py` and migrated the
+  climate, media, music, automation, scene, security, and timer
+  executor paths to use it, while preserving the light executor's
+  light-specific exact-match behavior.
+- Removed timer reminder fallback dependence on raw
+  `entity_index.search_async(..., n_results=1)` so calendar reminder
+  resolution now respects visibility filtering and deterministic-first
+  matching.
+- Updated the admin entity-index match preview route in
+  `container/app/api/routes/entity_index_api.py` so non-light agents use
+  the same shared deterministic resolver contract as runtime executor
+  paths.
+- Added focused regression coverage in
+  `container/tests/test_action_executor.py`,
+  `container/tests/test_entity_index_match_preview.py`, and
+  `container/tests/test_agents.py` for deterministic-first resolution,
+  non-light preview behavior, and timer calendar visibility.
 
 ### 0.29.1 (PATCH) -- Structured explicit satellite override for timer actions
 

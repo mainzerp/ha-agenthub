@@ -6,7 +6,15 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from app.a2a.registry import AgentRegistry
 from app.a2a.orchestrator_gateway import AgentCatalog, OrchestratorGateway
+from app.agents.custom_loader import CustomAgentLoader
+from app.ha_client.rest import (
+    HARestClient,
+    allow_internal_ha_service_calls,
+    get_direct_ha_write_warning_count,
+    reset_direct_ha_write_warning_count,
+)
 from app.plugins.base import BasePlugin, PluginContext
 from app.plugins.hooks import EventBus, LifecyclePhase
 from app.plugins.loader import PluginLoader
@@ -136,6 +144,7 @@ class TestPluginContext:
         assert ctx.orchestrator_gateway is gateway
         assert ctx.mcp_registry is mcp_reg
         assert ctx.settings is settings
+        assert not hasattr(ctx, "_app")
 
     def test_ctx_agent_registry_raises_attribute_error(self):
         app = MagicMock()
@@ -188,6 +197,67 @@ class TestPluginContext:
         )
         ctx.include_router(router)
         app.include_router.assert_called_once_with(router)
+
+    def test_gateway_surfaces_do_not_expose_raw_handler_access(self):
+        catalog = AgentCatalog(MagicMock())
+        gateway = OrchestratorGateway(MagicMock())
+        assert not hasattr(catalog, "get_handler")
+        assert not hasattr(catalog, "_get_handler_for_transport")
+        assert not hasattr(gateway, "get_handler")
+
+
+class TestD8Hardening:
+    async def test_registry_rejects_duplicate_agent_registration(self):
+        registry = AgentRegistry()
+        first = MagicMock()
+        first.agent_card.agent_id = "dup-agent"
+        second = MagicMock()
+        second.agent_card.agent_id = "dup-agent"
+
+        await registry.register(first)
+
+        with pytest.raises(ValueError, match="Agent ID already registered: dup-agent"):
+            await registry.register(second)
+
+    async def test_custom_agent_loader_rejects_name_conflicts(self):
+        registry = AgentRegistry()
+        loader = CustomAgentLoader(registry=registry)
+
+        row = {
+            "name": "Weather Bot",
+            "description": "Weather helper",
+            "system_prompt": "You are a weather assistant.",
+            "intent_patterns": ["weather"],
+        }
+
+        await loader._load_one(row)
+
+        with pytest.raises(ValueError, match="Custom agent name conflict"):
+            await loader._load_one(dict(row))
+
+    async def test_direct_ha_write_detector_warns_only_without_internal_context(self, caplog):
+        client = HARestClient()
+        response = MagicMock()
+        response.raise_for_status = MagicMock()
+        response.json.return_value = {"ok": True}
+        client._client = MagicMock(post=AsyncMock(return_value=response))
+
+        reset_direct_ha_write_warning_count()
+        caplog.set_level("WARNING")
+
+        await client.call_service("light", "turn_on", entity_id="light.kitchen")
+
+        assert "Direct HA service write without verified/internal context" in caplog.text
+        assert get_direct_ha_write_warning_count() == 1
+
+        caplog.clear()
+        reset_direct_ha_write_warning_count()
+
+        with allow_internal_ha_service_calls("test"):
+            await client.call_service("light", "turn_on", entity_id="light.kitchen")
+
+        assert "Direct HA service write without verified/internal context" not in caplog.text
+        assert get_direct_ha_write_warning_count() == 0
 
 
 # ---------------------------------------------------------------------------

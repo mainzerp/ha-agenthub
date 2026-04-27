@@ -33,7 +33,7 @@ class RewriteAgent(BaseAgent):
         Falls back to returning cached_text verbatim on any failure.
         The input is already personality-mediated, so no personality injection needed.
         """
-        system_prompt = self._load_prompt("rewrite")
+        system_prompt = await self._load_prompt_async("rewrite")
         messages = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": self._wrap_user_input(cached_text)},

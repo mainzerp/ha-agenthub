@@ -5,7 +5,7 @@
 HA-AgentHub is a two-component system for natural language smart home control:
 
 1. **Docker Container** -- The AI backend running FastAPI with multi-agent orchestration, a two-tier vector cache, hybrid entity matching, MCP tool integration, and a plugin system.
-2. **HA Custom Integration** -- A thin I/O bridge (`custom_components/ha_agenthub/`) that forwards user input to the container and streams responses back to Home Assistant's conversation system.
+2. **HA Custom Integration** -- A Home Assistant bridge (`custom_components/ha_agenthub/`) that forwards most turns to the container, streams responses back to Home Assistant's conversation system, and can honor container-directed native plain-timer delegation.
 
 All configuration, secrets, and state are stored in SQLite. ChromaDB provides vector storage for entity embeddings and cache embeddings. No configuration files are used at runtime -- everything is managed through the setup wizard and admin dashboard.
 
@@ -16,7 +16,8 @@ All configuration, secrets, and state are stored in SQLite. ChromaDB provides ve
 |  Home Assistant                                   |
 |  +--------------------------------------------+  |
 |  |  ha_agenthub custom integration            |  |
-|  |  (conversation agent -- thin I/O bridge)   |  |
+|  |  (conversation agent -- HA bridge + native |
+|  |   timer delegate seam)                     |  |
 |  +---------------------+----------------------+  |
 +-------------------------|-------------------------+
                           | REST / SSE / WebSocket
@@ -40,7 +41,7 @@ All configuration, secrets, and state are stored in SQLite. ChromaDB provides ve
 |  +---v-----------+   +----------+                 |
 |  | Two-Tier Cache|   | Entity   |                 |
 |  | (routing +    |   | Matcher  |                 |
-|  |  response)    |   | (5 sig.) |                 |
+|  |  action)      |   | (5 sig.) |                 |
 |  +---------------+   +----------+                 |
 |                                                   |
 |  +---------------+   +----------+  +----------+  |
@@ -75,8 +76,9 @@ phones, satellites, and notify targets; added in 0.12.0).
 
 Internal helper agents participate in the pipeline but are not
 user-routable: `filler`, `rewrite`, `mediation`, `language_detect`,
-`sanitize`, `cancel_speech`, `delayed_tasks`, `alarm_monitor`,
-`notification_dispatcher`, and the plugin-loader stub `custom_loader`.
+`sanitize`, `cancel_speech`, `delayed_tasks`, and
+`notification_dispatcher`. Runtime services include `custom_loader`,
+`timer_scheduler`, and `alarm_monitor`.
 
 Custom agents created through the admin API are also registered as A2A
 agents with IDs shaped as `custom-{name}`. Their prompt, model config,
@@ -100,6 +102,8 @@ route to them through the same dispatcher boundary as built-in agents.
    c. Returns a response with speech text and action details.
 6. The orchestrator checks the **action cache** for reuse opportunities and stores the new result.
 7. The response flows back through the API layer to the HA integration, which speaks it to the user.
+
+For eligible plain timer start/cancel turns, the timer-agent may instead return a delegation directive, which the HA integration honors by calling Home Assistant's built-in conversation agent once.
 
 ### Send Agent and Sequential Dispatch
 

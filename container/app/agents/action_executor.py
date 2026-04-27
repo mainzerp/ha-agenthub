@@ -5,13 +5,25 @@ from __future__ import annotations
 import json
 import logging
 import re
-import unicodedata
 from typing import Any
 
 from pydantic import BaseModel, Field, ValidationError
 
 from app.analytics.tracer import _optional_span
+from app.entity.deterministic_resolver import (
+    _ENTITY_ID_RE,
+    _build_resolution_result,
+    _filter_visible_entries,
+    _list_index_entries,
+    _normalize_lookup_text,
+    _select_deterministic_candidate as _select_generic_deterministic_candidate,
+    _supports_method,
+    filter_matches_by_domain,
+    rerank_matches_by_area,
+    resolve_entity_deterministic_first,
+)
 from app.ha_client.history_query import execute_recorder_history_query
+from app.ha_client.rest import allow_internal_ha_service_calls, mark_verified_ha_service_call
 from app.models.agent import TaskContext
 
 logger = logging.getLogger(__name__)
@@ -23,9 +35,6 @@ _JSON_FENCE_RE = re.compile(r"```json\s*\n?(.*?)\n?\s*```", re.DOTALL)
 # do not fall through to the looser raw-decode scanner, which is
 # noticeably more permissive and can misparse surrounding prose.
 _PLAIN_FENCE_RE = re.compile(r"```\s*\n?(.*?)\n?\s*```", re.DOTALL)
-_ENTITY_ID_RE = re.compile(r"^[a-z0-9_]+\.[a-z0-9_]+$")
-_NON_WORD_LOOKUP_RE = re.compile(r"[^\w\s\.]")
-_WHITESPACE_RE = re.compile(r"\s+")
 _TRAILING_DEVICE_NOUNS: frozenset[str] = frozenset(
     {
         "bulb",
@@ -296,14 +305,19 @@ async def call_service_with_verification(
     call_result: Any = None
     observer: dict[str, Any] = {}
     expect_state_fn = getattr(ha_client, "expect_state", None)
-    try:
-        if expect_state_fn is None:
-            call_result = await ha_client.call_service(
+
+    async def _call_service() -> Any:
+        with mark_verified_ha_service_call("action-executor"):
+            return await ha_client.call_service(
                 domain,
                 service,
                 entity_id,
                 service_data or None,
             )
+
+    try:
+        if expect_state_fn is None:
+            call_result = await _call_service()
         else:
             try:
                 cm = expect_state_fn(
@@ -321,22 +335,12 @@ async def call_service_with_verification(
             if callable(aenter) and callable(aexit):
                 async with cm as obs:
                     observer = obs if isinstance(obs, dict) else {}
-                    call_result = await ha_client.call_service(
-                        domain,
-                        service,
-                        entity_id,
-                        service_data or None,
-                    )
+                    call_result = await _call_service()
             else:
                 # ``expect_state`` is mocked with a non-CM return (legacy
                 # tests) -- fall back to the simple call path; the caller
                 # still gets the REST response, just without WS verification.
-                call_result = await ha_client.call_service(
-                    domain,
-                    service,
-                    entity_id,
-                    service_data or None,
-                )
+                call_result = await _call_service()
     except Exception as exc:
         logger.error(
             "Service call failed: %s/%s on %s",
@@ -448,16 +452,6 @@ def _build_service_data(action: dict) -> dict[str, Any]:
         data["transition"] = float(params["transition"])
 
     return data
-
-
-def _normalize_lookup_text(text: str) -> str:
-    """Normalize an entity lookup query for deterministic comparisons."""
-    normalized = unicodedata.normalize("NFKD", text.lower().strip())
-    normalized = "".join(ch for ch in normalized if unicodedata.category(ch) != "Mn")
-    normalized = _NON_WORD_LOOKUP_RE.sub(" ", normalized)
-    return _WHITESPACE_RE.sub(" ", normalized).strip()
-
-
 def _strip_trailing_device_noun(query: str) -> str | None:
     """Strip a trailing light/switch noun from a query like 'Keller light'."""
     normalized_query = _normalize_lookup_text(query)
@@ -468,145 +462,6 @@ def _strip_trailing_device_noun(query: str) -> str | None:
         return None
     stripped = " ".join(parts[:-1]).strip()
     return stripped or None
-
-
-def _supports_method(obj: Any, method_name: str) -> bool:
-    """Return True when an object or its mock spec exposes a callable method."""
-    spec_class = getattr(obj, "_spec_class", None)
-    if spec_class and hasattr(spec_class, method_name):
-        return callable(getattr(obj, method_name, None))
-    return hasattr(type(obj), method_name) and callable(getattr(obj, method_name, None))
-
-
-async def _list_index_entries(
-    entity_index: Any,
-    domains: set[str] | frozenset[str] | None = None,
-) -> list[Any]:
-    """Return indexed entities when the index supports deterministic listing."""
-    if not entity_index:
-        return []
-    if _supports_method(entity_index, "list_entries_async"):
-        return await entity_index.list_entries_async(domains=domains)
-    if _supports_method(entity_index, "list_entries"):
-        return entity_index.list_entries(domains=domains)
-    return []
-
-
-async def _filter_visible_entries(
-    entries: list[Any],
-    entity_matcher: Any,
-    agent_id: str | None,
-) -> list[Any]:
-    """Apply agent visibility rules to deterministic candidates."""
-    if not entries:
-        return []
-    if not agent_id:
-        return entries
-    if not entity_matcher or not _supports_method(entity_matcher, "filter_visible_results"):
-        return []
-
-    from app.entity.matcher import MatchResult
-
-    visible = await entity_matcher.filter_visible_results(
-        agent_id,
-        [MatchResult(entity_id=entry.entity_id, friendly_name=entry.friendly_name, score=1.0) for entry in entries],
-    )
-    visible_ids = {result.entity_id for result in visible}
-    return [entry for entry in entries if entry.entity_id in visible_ids]
-
-
-def rerank_matches_by_area(matches: list[Any], preferred_area_id: str | None) -> list[Any]:
-    """Reorder hybrid matcher results to prefer the originating area.
-
-    FLOW-CTX-1 (0.18.6): shared helper used by every domain executor
-    that currently picks ``matches[0]`` unconditionally. When
-    ``preferred_area_id`` is set and the top result is not in that
-    area, we swap in the best same-area candidate provided it scores
-    within 5% of the top -- far enough below to guard against
-    reranking weak matches, close enough that a same-area tie wins.
-    The input list is copied; the original order is preserved
-    otherwise so existing metadata reporting stays accurate.
-    """
-    if not matches or not preferred_area_id or len(matches) < 2:
-        return matches
-    top = matches[0]
-    if (getattr(top, "area", None) or None) == preferred_area_id:
-        return matches
-    top_score = getattr(top, "score", 0.0) or 0.0
-    for idx in range(1, len(matches)):
-        candidate = matches[idx]
-        if (getattr(candidate, "area", None) or None) != preferred_area_id:
-            continue
-        cand_score = getattr(candidate, "score", 0.0) or 0.0
-        if cand_score >= top_score - 0.05:
-            reordered = list(matches)
-            reordered[0], reordered[idx] = reordered[idx], reordered[0]
-            return reordered
-        break
-    return matches
-
-
-def filter_matches_by_domain(
-    matches: list[Any],
-    allowed_domains: frozenset[str] | set[str],
-    *,
-    fallback_to_unfiltered: bool = False,
-) -> list[Any]:
-    """Drop matcher candidates whose entity_id domain is not in the per-action allow set.
-
-    FLOW-DOMAIN-1 (0.19.2): security/climate/media/music/timer
-    executors all take ``matches[0]`` from a domain-blind hybrid
-    matcher. When two same-named entities span the agent's
-    ``_ALLOWED_DOMAINS`` (e.g. ``lock.front_door`` and
-    ``camera.front_door``), the wrong domain can be actuated by a
-    camera_turn_on action. This helper restricts the candidate pool
-    to the *action verb's* implied HA domain(s) before the executor
-    picks the top candidate.
-
-    Composition order at every call site is:
-    ``filter (domain) -> rerank (area) -> pick [0]``.
-
-    Args:
-        matches: Hybrid matcher result list (preserved order). Not mutated.
-        allowed_domains: HA domains the action verb implies. Single
-            element for unambiguous actions (camera_turn_on -> {"camera"});
-            multiple for read paths that legitimately span domains
-            (query_security_state -> {"lock","alarm_control_panel",
-            "camera","binary_sensor","sensor"}).
-        fallback_to_unfiltered: If True and the in-domain pool is empty,
-            return a copy of the original list (degrade gracefully). Default
-            False: return ``[]`` so the caller surfaces a clean "entity not
-            found" via its existing not-found branch instead of actuating
-            a wrong-domain top hit.
-
-    Returns:
-        New list (never mutates input). Original ordering preserved.
-    """
-    if not matches:
-        return []
-    filtered: list[Any] = []
-    for m in matches:
-        eid = getattr(m, "entity_id", "") or ""
-        if "." not in eid:
-            continue
-        if eid.split(".", 1)[0] in allowed_domains:
-            filtered.append(m)
-    if not filtered:
-        if fallback_to_unfiltered:
-            return list(matches)
-        return []
-    if len(filtered) != len(matches):
-        kept_top = getattr(filtered[0], "entity_id", "")
-        logger.debug(
-            "filter_matches_by_domain dropped %d/%d candidates for allowed=%s; kept top=%s",
-            len(matches) - len(filtered),
-            len(matches),
-            sorted(allowed_domains),
-            kept_top,
-        )
-    return filtered
-
-
 def _select_deterministic_candidate(
     entries: list[Any],
     entity_query: str,
@@ -621,42 +476,21 @@ def _select_deterministic_candidate(
     narrows the field to a single candidate, so the outcome is
     strictly more decisive, never accidentally *less* correct.
     """
-    if not entries:
-        return None, None
-
     if preferred_area_id and len(entries) > 1:
         area_filtered = [entry for entry in entries if (entry.area or None) == preferred_area_id]
         if len(area_filtered) == 1:
             return area_filtered[0], None
         if len(area_filtered) > 1:
-            # Same-area still ambiguous: keep narrowing with the light-domain
-            # preference below instead of returning raw area_filtered.
             entries = area_filtered
 
     light_entries = [entry for entry in entries if entry.domain == "light"]
     if len(light_entries) == 1:
         return light_entries[0], None
-    if len(entries) == 1:
-        return entries[0], None
-
-    return None, f"Multiple entities match '{entity_query}'. Please be more specific."
-
-
-def _build_resolution_result(
-    *,
-    entity_query: str,
-    metadata: dict[str, Any],
-    entity_id: str | None = None,
-    friendly_name: str | None = None,
-    speech: str | None = None,
-) -> dict[str, Any]:
-    """Build a normalized entity-resolution result payload."""
-    return {
-        "entity_id": entity_id,
-        "friendly_name": friendly_name or entity_query,
-        "speech": speech,
-        "metadata": metadata,
-    }
+    return _select_generic_deterministic_candidate(
+        entries,
+        entity_query,
+        preferred_area_id=None,
+    )
 
 
 async def _resolve_light_entity(
@@ -675,77 +509,26 @@ async def _resolve_light_entity(
     matches and reranks the hybrid matcher's top candidate when
     there is a viable same-area match near the top.
     """
-    metadata: dict[str, Any] = {
-        "query": entity_query,
-        "normalized_query": _normalize_lookup_text(entity_query),
-        "match_count": 0,
-        "resolution_path": "unresolved",
-    }
+    resolution = await resolve_entity_deterministic_first(
+        entity_query,
+        entity_index,
+        None,
+        agent_id,
+        allowed_domains=allowed_domains,
+        preferred_area_id=preferred_area_id,
+    )
+    if resolution.get("entity_id") or resolution.get("speech"):
+        return resolution
+
+    metadata = dict(resolution["metadata"])
     normalized_query = metadata["normalized_query"]
     stripped_query = _strip_trailing_device_noun(entity_query)
 
-    if entity_index and entity_matcher:
-        entity_id_query = entity_query.strip().lower()
-        if _ENTITY_ID_RE.fullmatch(entity_id_query) and _supports_method(entity_index, "get_by_id"):
-            exact_entry = entity_index.get_by_id(entity_id_query)
-            if exact_entry:
-                visible_entry = await _filter_visible_entries([exact_entry], entity_matcher, agent_id)
-                if visible_entry:
-                    metadata.update(
-                        {
-                            "match_count": 1,
-                            "resolution_path": "exact_entity_id",
-                            "top_entity_id": visible_entry[0].entity_id,
-                            "top_friendly_name": visible_entry[0].friendly_name or visible_entry[0].entity_id,
-                        }
-                    )
-                    return _build_resolution_result(
-                        entity_query=entity_query,
-                        metadata=metadata,
-                        entity_id=visible_entry[0].entity_id,
-                        friendly_name=visible_entry[0].friendly_name or visible_entry[0].entity_id,
-                    )
-
+    if entity_index:
         indexed_entries = await _list_index_entries(entity_index, domains=allowed_domains)
-        visible_entries = await _filter_visible_entries(indexed_entries, entity_matcher, agent_id)
+        visible_entries = await _filter_visible_entries(indexed_entries, entity_index, agent_id)
 
         if visible_entries:
-            exact_name_matches = [
-                entry for entry in visible_entries if _normalize_lookup_text(entry.friendly_name) == normalized_query
-            ]
-            candidate, ambiguity = _select_deterministic_candidate(
-                exact_name_matches,
-                entity_query,
-                preferred_area_id=preferred_area_id,
-            )
-            if candidate:
-                metadata.update(
-                    {
-                        "match_count": 1,
-                        "resolution_path": "exact_friendly_name",
-                        "top_entity_id": candidate.entity_id,
-                        "top_friendly_name": candidate.friendly_name or candidate.entity_id,
-                    }
-                )
-                return _build_resolution_result(
-                    entity_query=entity_query,
-                    metadata=metadata,
-                    entity_id=candidate.entity_id,
-                    friendly_name=candidate.friendly_name or candidate.entity_id,
-                )
-            if ambiguity:
-                metadata.update(
-                    {
-                        "match_count": len(exact_name_matches),
-                        "resolution_path": "exact_friendly_name_ambiguous",
-                    }
-                )
-                return _build_resolution_result(
-                    entity_query=entity_query,
-                    metadata=metadata,
-                    speech=ambiguity,
-                )
-
             if stripped_query and stripped_query != normalized_query:
                 stripped_matches = [
                     entry for entry in visible_entries if _normalize_lookup_text(entry.friendly_name) == stripped_query
@@ -827,7 +610,11 @@ async def _resolve_light_entity(
                 )
 
     if entity_matcher:
-        matches = await entity_matcher.match(entity_query, agent_id=agent_id)
+        matches = await entity_matcher.match(
+            entity_query,
+            agent_id=agent_id,
+            preferred_domains=tuple(sorted(allowed_domains)),
+        )
         # FLOW-DOMAIN-1 (0.19.2): drop wrong-domain candidates before
         # area rerank so a same-area wrong-domain entity cannot win.
         filtered_matches = filter_matches_by_domain(matches, allowed_domains)
@@ -1018,14 +805,15 @@ async def execute_action(
     # FLOW-VERIFY-1 / FLOW-VERIFY-SHARED (0.18.5): delegate the
     # call_service + WS-waiter dance to the shared helper.
     expected_state = _EXPECTED_STATE_BY_ACTION.get(action_name)
-    verify = await call_service_with_verification(
-        ha_client,
-        domain,
-        service,
-        entity_id,
-        service_data=service_data,
-        expected_state=expected_state,
-    )
+    with allow_internal_ha_service_calls(f"action-executor:{agent_id or 'unknown'}"):
+        verify = await call_service_with_verification(
+            ha_client,
+            domain,
+            service,
+            entity_id,
+            service_data=service_data,
+            expected_state=expected_state,
+        )
 
     if not verify["success"]:
         return {

@@ -595,6 +595,60 @@ class TestQueryExpansionService:
         assert len(llm_prompts) == 2
         assert read_count == 1
 
+    async def test_prompt_template_cache_miss_uses_to_thread_once(self, tmp_path):
+        class FakeCache:
+            async def get(self, token: str, language: str):
+                return None
+
+            async def put(self, token: str, language: str, expansions: list[str]) -> None:
+                return None
+
+            async def purge_expired(self, ttl_seconds: int) -> None:
+                return None
+
+            async def evict_lru(self, cap: int) -> None:
+                return None
+
+        async def fake_get_value(key: str, default=None):
+            values = {
+                "entity_matching.expansion.enabled": "true",
+                "entity_matching.expansion.ttl_seconds": "0",
+                "entity_matching.expansion.max_cache_rows": "0",
+            }
+            return values.get(key, default)
+
+        prompt_path = tmp_path / "query_expansion.txt"
+        prompt_path.write_text(
+            "Token: {token}\nSource: {source_language}\nIndex: {index_language}",
+            encoding="utf-8",
+        )
+
+        async def fake_llm(_prompt: str) -> str:
+            return '{"expansions": ["lamp"]}'
+
+        calls: list[tuple[object, tuple[object, ...], dict[str, object]]] = []
+
+        async def fake_to_thread(func, *args, **kwargs):
+            calls.append((func, args, kwargs))
+            return func(*args, **kwargs)
+
+        service = QueryExpansionService(
+            cache_repo=FakeCache(),
+            llm_call=fake_llm,
+            prompt_path=prompt_path,
+        )
+
+        with patch("app.entity.expansion.SettingsRepository.get_value", new=AsyncMock(side_effect=fake_get_value)):
+            with patch("app.entity.expansion.asyncio.to_thread", new=AsyncMock(side_effect=fake_to_thread)) as mock_to_thread:
+                first = await service.expand("Kitchen", source_language="EN", index_language="DE")
+                second = await service.expand("Bedroom", source_language="EN", index_language="DE")
+
+        assert first == ["lamp"]
+        assert second == ["lamp"]
+        assert mock_to_thread.await_count == 1
+        assert calls[0][0].__name__ == "load_query_expansion_prompt_template"
+        assert calls[0][1][0] == prompt_path
+
     async def test_missing_prompt_template_fails_soft_without_llm_call(self, tmp_path, caplog):
         class FakeCache:
             async def get(self, token: str, language: str):

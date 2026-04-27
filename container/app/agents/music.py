@@ -17,8 +17,16 @@ class MusicAgent(ActionableAgent):
     _prompt_name = "music"
 
     async def _do_execute(self, action, ha_client, entity_index, entity_matcher, *, agent_id, span_collector=None):
+        current_task = getattr(self, "_current_task", None)
+        verbatim_terms = list(getattr(current_task, "verbatim_terms", []) or []) if current_task else []
         return await execute_music_action(
-            action, ha_client, entity_index, entity_matcher, agent_id=agent_id, span_collector=span_collector
+            action,
+            ha_client,
+            entity_index,
+            entity_matcher,
+            agent_id=agent_id,
+            span_collector=span_collector,
+            verbatim_terms=verbatim_terms,
         )
 
     @property

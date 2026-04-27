@@ -370,10 +370,34 @@ async def _seed_defaults(db: aiosqlite.Connection) -> None:
         # Cache settings
         ("cache.routing.threshold", "0.92", "float", "cache", "Routing cache hit threshold"),
         ("cache.routing.max_entries", "50000", "int", "cache", "Routing cache max entries (LRU eviction)"),
-        ("cache.response.threshold", "0.95", "float", "cache", "Response cache hit threshold"),
-        ("cache.response.partial_threshold", "0.80", "float", "cache", "Response cache partial match threshold"),
-        ("cache.response.max_entries", "20000", "int", "cache", "Response cache max entries (LRU eviction)"),
-        ("cache.response.enabled", "true", "bool", "cache", "Enable response cache storage"),
+        (
+            "cache.response.threshold",
+            "0.95",
+            "float",
+            "cache",
+            "Action cache hit threshold (legacy key name: cache.response.threshold)",
+        ),
+        (
+            "cache.response.partial_threshold",
+            "0.80",
+            "float",
+            "cache",
+            "Action cache partial match threshold (legacy key name: cache.response.partial_threshold)",
+        ),
+        (
+            "cache.response.max_entries",
+            "20000",
+            "int",
+            "cache",
+            "Action cache max entries (LRU eviction; legacy key name: cache.response.max_entries)",
+        ),
+        (
+            "cache.response.enabled",
+            "true",
+            "bool",
+            "cache",
+            "Enable action cache storage (legacy key name: cache.response.enabled)",
+        ),
         # Embedding settings
         (
             "embedding.provider",
@@ -940,3 +964,38 @@ async def _run_migrations(db: aiosqlite.Connection) -> None:
             "WHERE agent_id = 'timer-agent' AND rule_type = 'domain_include' AND rule_value = 'timer'"
         )
         await db.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (19)")
+
+    if current_version < 20:
+        # Migration 20 (0.31.0): align the persisted cache setting
+        # descriptions with the current routing-cache/action-cache model
+        # without renaming the legacy cache.response.* keys.
+        await db.executemany(
+            """
+            UPDATE settings
+            SET description = ?
+            WHERE key = ? AND description = ?
+            """,
+            [
+                (
+                    "Action cache hit threshold (legacy key name: cache.response.threshold)",
+                    "cache.response.threshold",
+                    "Response cache hit threshold",
+                ),
+                (
+                    "Action cache partial match threshold (legacy key name: cache.response.partial_threshold)",
+                    "cache.response.partial_threshold",
+                    "Response cache partial match threshold",
+                ),
+                (
+                    "Action cache max entries (LRU eviction; legacy key name: cache.response.max_entries)",
+                    "cache.response.max_entries",
+                    "Response cache max entries (LRU eviction)",
+                ),
+                (
+                    "Enable action cache storage (legacy key name: cache.response.enabled)",
+                    "cache.response.enabled",
+                    "Enable response cache storage",
+                ),
+            ],
+        )
+        await db.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (20)")

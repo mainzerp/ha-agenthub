@@ -129,7 +129,7 @@ class SendAgent(BaseAgent):
     ) -> str:
         """Optionally format content via LLM for the delivery channel."""
         try:
-            prompt_template = self._load_prompt("send")
+            prompt_template = await self._load_prompt_async("send")
             wrapped_content = self._wrap_user_input(content)
             prompt = prompt_template.format(
                 delivery_type=delivery_type,

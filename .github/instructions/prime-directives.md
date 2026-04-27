@@ -20,9 +20,18 @@ An action-cache hit must never replay a cached Home Assistant action without fir
 
 Domain agents (light-agent, climate-agent, etc.) are responsible for resolving the target entity, calling the relevant Home Assistant service from the container, and returning a verified execution result. Returning a speculative tool plan or a placeholder response without executing the action is not acceptable.
 
-## 4. Entity Resolution Uses the Deterministic Pipeline First
+## 4. Entity Resolution: Deterministic-First, Verbatim-Preserving, Visibility-Always
 
-Entity resolution must always attempt exact `entity_id` lookup and exact friendly-name lookup before falling back to hybrid scoring. Hybrid matching (fuzzy, embedding, phonetic) is a fallback, not the default path. Verbatim user terms must be tried before translated or condensed text.
+Entity resolution for any executor that targets a Home Assistant entity for a write action must follow this ordered pipeline. Read and history paths should follow the same order whenever the necessary parameters are available.
+
+1. **Verbatim terms first.** The user's literal terms (`entity_id` strings, friendly names, and any explicitly preserved verbatim spans) must be tried before any translated, condensed, summarized, or paraphrased text. Hybrid scoring may not override a verbatim match for the same query.
+2. **Exact `entity_id` lookup.** If the query, or any verbatim term, matches an `entity_id` exactly, that entity is selected.
+3. **Exact `friendly_name` lookup.** Otherwise, the resolver lists visible candidates within the executor's allowed domains and selects the entity whose normalized `friendly_name` equals the normalized query, or any verbatim term.
+4. **Exact normalized alias lookup.** Otherwise, the resolver matches against `aliases` using the same normalization.
+5. **Hybrid matcher fallback.** Only if no exact deterministic candidate is found may the executor fall back to the hybrid matcher (fuzzy, embedding, phonetic, area-aware scoring). The fallback must pass `verbatim_terms` and `preferred_domains` derived from the executor's allowed domains.
+6. **Visibility on every stage.** The shared visibility filter (see Directive 5) must be applied during exact `entity_id` lookup, exact `friendly_name` and alias sweeps, hybrid scoring, and cached-action replay. Hybrid matching, raw index searches, and any deterministic stage may never surface entities the agent is not allowed to see.
+7. **Shared helper required.** Executors must use the shared deterministic-first resolver (`app/entity/deterministic_resolver.py`) rather than calling the hybrid matcher directly. Domain-specific extras, for example light's trailing-device-noun strip and exact-area fallback, may be layered as thin wrappers around the shared helper.
+8. **No raw index shortcuts.** Direct `entity_index.search_async(...)` calls in executor code must route through the shared helper or, if a raw index call is unavoidable, must apply the same visibility and allowed-domain filters before selecting a candidate.
 
 ## 5. Visibility Rules Are Applied on Every Resolution Path
 
@@ -38,7 +47,7 @@ The routing cache stores query-to-agent routing decisions. A routing-cache hit m
 
 ## 8. Plugins and Custom Agents Are Trusted but Scoped
 
-Plugins run in-process and are treated as trusted code. They must not bypass the A2A dispatch layer, must not call Home Assistant services directly without going through the container's action execution path, and must not register conflicting agent IDs. Custom agents loaded from the database follow the same agent contract as built-in agents.
+Plugins run in-process as trusted code. The supported plugin API is scoped to agent discovery, orchestrator-bound dispatch, settings, MCP registry access, events, and route helpers. This is not a security sandbox: plugins can still reach Python internals unless additional enforcement is added. Runtime must reject conflicting agent IDs, and supported plugin integrations must re-enter work through the orchestrator/A2A path rather than calling peer agents or Home Assistant directly. Custom agents loaded from the database register as `custom-{name}` A2A agents and remain limited to their LLM prompt plus assigned MCP tools.
 
 ## 9. Async All the Way Down
 

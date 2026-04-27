@@ -544,10 +544,10 @@ class TestLLMDelegationContract:
         system = messages[0]["content"]
         assert messages[0]["role"] == "system"
         for needle in (
-            "Stelle einen Timer auf 3 Minuten.",
+            "Set a timer for 3 minutes.",
             "Set a timer for 5 minutes.",
             "delegate_native_plain_timer",
-            "Küchentimer",
+            "kitchen timer",
         ):
             assert needle in system
 

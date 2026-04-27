@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Callable
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
@@ -32,7 +32,8 @@ class PluginContext:
         self.orchestrator_gateway = orchestrator_gateway
         self.mcp_registry = mcp_registry
         self.settings = settings_repo
-        self._app = app
+        self._add_api_route: Callable[..., Any] = app.add_api_route
+        self._include_router: Callable[..., Any] = app.include_router
         self.event_bus = None  # Set by PluginLoader after construction
 
     @property
@@ -41,11 +42,11 @@ class PluginContext:
 
     def add_api_route(self, path: str, endpoint, **kwargs):
         """Add an API route to the application (restricted interface)."""
-        self._app.add_api_route(path, endpoint, **kwargs)
+        self._add_api_route(path, endpoint, **kwargs)
 
     def include_router(self, router, **kwargs):
         """Include an APIRouter in the application (restricted interface)."""
-        self._app.include_router(router, **kwargs)
+        self._include_router(router, **kwargs)
 
     @property
     def app(self):

@@ -40,6 +40,7 @@ async def load_user_aliases(path: str = "/data/entity_aliases.yaml") -> int:
     if not p.exists():
         return 0
     try:
+        # Accepted cold-path sync file I/O: aliases load during setup, not per-turn handling.
         text = p.read_text(encoding="utf-8")
     except Exception:
         logger.warning("Failed to read user alias file at %s", path, exc_info=True)

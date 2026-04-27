@@ -23,15 +23,30 @@ logger = logging.getLogger(__name__)
 
 _PROMPT_PATH = Path(__file__).resolve().parent.parent / "prompts" / "query_expansion.txt"
 _TOKEN_NORMALIZE_RE = re.compile(r"[^\w\s-]", re.UNICODE)
+_prompt_template_cache: dict[str, str | None] = {}
 
 
 def load_query_expansion_prompt_template(prompt_path: Path | None = None) -> str | None:
     path = prompt_path or _PROMPT_PATH
+    cache_key = str(path)
+    if cache_key in _prompt_template_cache:
+        return _prompt_template_cache[cache_key]
     try:
-        return path.read_text(encoding="utf-8")
+        content = path.read_text(encoding="utf-8")
     except Exception:
         logger.warning("Failed to read query_expansion prompt", exc_info=True)
+        _prompt_template_cache[cache_key] = None
         return None
+    _prompt_template_cache[cache_key] = content
+    return content
+
+
+async def load_query_expansion_prompt_template_async(prompt_path: Path | None = None) -> str | None:
+    path = prompt_path or _PROMPT_PATH
+    cache_key = str(path)
+    if cache_key in _prompt_template_cache:
+        return _prompt_template_cache[cache_key]
+    return await asyncio.to_thread(load_query_expansion_prompt_template, path)
 
 
 def _normalize_token(token: str) -> str:
@@ -77,9 +92,7 @@ class QueryExpansionService:
         self._cache = cache_repo
         self._llm_call = llm_call
         self._prompt_path = prompt_path or _PROMPT_PATH
-        self._prompt_template = (
-            prompt_template if prompt_template is not None else load_query_expansion_prompt_template(self._prompt_path)
-        )
+        self._prompt_template = prompt_template
         self._inflight: dict[tuple[str, str], asyncio.Lock] = {}
         self._lock_guard = asyncio.Lock()
 
@@ -143,10 +156,16 @@ class QueryExpansionService:
                 pass
             return expansions
 
+    async def _get_prompt_template(self) -> str | None:
+        if self._prompt_template is not None:
+            return self._prompt_template
+        self._prompt_template = await load_query_expansion_prompt_template_async(self._prompt_path)
+        return self._prompt_template
+
     async def _call_llm(self, token: str, source_language: str, index_language: str) -> list[str]:
         if self._llm_call is None:
             return []
-        template = self._prompt_template
+        template = await self._get_prompt_template()
         if template is None:
             return []
         prompt_token = wrap_user_input(token)

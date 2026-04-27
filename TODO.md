@@ -4,8 +4,6 @@
 
 - [ ] **HA Entities auf Exposed Entities beschraenken**: Entity-Zugriff auf die in Home Assistant als "exposed" markierten Entities einschraenken, damit nur freigegebene Geraete gesteuert/abgefragt werden koennen.
 
-- [x] **Entity-Historie / Recorder**: Zugriff auf Home-Assistant-Recorder-Zeitreihen (z. B. "Wie warm war es gestern?"), analog zu einem dedizierten History-Tool
-
 - [ ] **Nutzer- und Agent-Memory**: Persistente Profile, Memory-Tool (speichern/abrufen/aktualisieren), Limits/Eviction, optional UI im Dashboard; Mehrschichtige Nutzerzuordnung wo sinnvoll.
 
 - [x] **Cancel-Intent / Dismiss**: Orchestrator-LLM routet zu virtuellem Agent **cancel-interaction**; der Container liefert einen kurzen ACK **ohne** Domain-Dispatch (Manifest **0.5.5**). HA-Integration leitet den User-Text immer an den Container weiter (kein lokales Keyword-Shortcut).
@@ -14,9 +12,14 @@
 
 - [ ] **Kalender: lesen, proaktive Reminder, Zuordnungen**: Kalenderereignisse lesen, gestufte/proaktive Erinnerungen, optional Nutzer-zu-Kalender-Mappings (wie im Smart-Assist-Prompt-Pattern); Dashboard/Traces wo passend.
 
-- [x] **Einheitliches Control-Tool und parallele Ausfuehrung**: **Umgesetzt (Parallelitaet):** (1) Orchestrator dispatcht mehrere unabhaengige Intents parallel an Domain-Agenten (`asyncio.gather`). (2) `complete_with_tools` fuehrt mehrere `tool_calls` einer LLM-Runde parallel (`asyncio.gather`, **0.18.18**); Tool-Messages bleiben in ``tool_calls``-Reihenfolge. **Bewusst nicht:** ein einziges generisches HA-**Batch**-Tool (eine Function-Invocation mit vielen HA-Aktionen); stattdessen Mehrfach-Steuerung ueber Orchestrator-Mehrzeilen bzw. kuenftig optional gebundelte JSON-Actions im Domain-Agent.
+climate-agent:
+wetterdaten aus HA
 
-wecker:
+security agent:
+sentinel mode, wenn ein/oder mehrere explizit dem security agent zugewisener sensor z.b. ein bewegungsmelder getriggert wird, wird automatisch ein security agent run getriggert, der eine definierte analyse durchführt (z.b. kameras prüfen usw). erfordert wahrscheinlich eine separate ui page.
+
+timer-agent:
+wecker erweitern
 wecken mit infos anreichern, wetter, news usw. (bereistellung der daten durch div. agents) dann rewite-agent um einen gelungenen text zu bilden.
 
 beisp.

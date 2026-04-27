@@ -487,7 +487,7 @@ Auth: admin session. See also `/api/admin/agents` (above) and
 | Method | Path | Purpose |
 |--------|------|---------|
 | GET | `/api/admin/timers` | List active and scheduled timers. |
-| GET | `/api/admin/timers/recently-expired` | Recently-fired timers for dashboard surfacing. |
+| GET | `/api/admin/timers/recently-expired` | Compatibility endpoint. Recently expired timers are no longer tracked separately; this route returns an empty list. |
 
 Auth: admin session.
 
