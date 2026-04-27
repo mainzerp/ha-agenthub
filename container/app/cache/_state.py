@@ -113,6 +113,13 @@ class _CacheState:
             self._pending_updates.clear()
             self._hit_since_flush = 0
 
+    def discard_pending(self, entry_id: str) -> None:
+        """Drop a queued metadata update for one entry, if present."""
+        with self._lock:
+            removed = self._pending_updates.pop(entry_id, None)
+            if removed is not None and self._hit_since_flush > 0:
+                self._hit_since_flush -= 1
+
     # --- introspection used by tests ---------------------------------------
 
     def snapshot_pending(self) -> dict[str, tuple[str, dict]]:

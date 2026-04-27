@@ -27,6 +27,18 @@ CSRF_MAX_AGE = 86400
 _session_serializer: URLSafeTimedSerializer | None = None
 
 
+def _rooted_url(request: Request, path: str) -> str:
+    root_path = (request.scope.get("root_path") or "").rstrip("/")
+    normalized_path = path if path.startswith("/") else f"/{path}"
+    if not root_path:
+        return normalized_path
+    return f"{root_path}{normalized_path}"
+
+
+def _login_url(request: Request) -> str:
+    return _rooted_url(request, "/dashboard/login")
+
+
 def _get_session_serializer() -> URLSafeTimedSerializer:
     global _session_serializer
     if _session_serializer is None:
@@ -98,30 +110,30 @@ async def require_admin_session_redirect(request: Request) -> dict:
     is_htmx = request.headers.get("HX-Request") == "true"
     if not cookie:
         if is_htmx:
-            return _htmx_redirect_response()
+            return _htmx_redirect_response(request)
         raise HTTPException(
             status_code=303,
-            headers={"Location": "/dashboard/login"},
+            headers={"Location": _login_url(request)},
             detail="Session expired",
         )
     try:
         data = _get_session_serializer().loads(cookie, max_age=SESSION_MAX_AGE)
     except (BadSignature, SignatureExpired):
         if is_htmx:
-            return _htmx_redirect_response()
+            return _htmx_redirect_response(request)
         raise HTTPException(
             status_code=303,
-            headers={"Location": "/dashboard/login"},
+            headers={"Location": _login_url(request)},
             detail="Session expired",
         ) from None
     return data
 
 
-def _htmx_redirect_response():
+def _htmx_redirect_response(request: Request):
     """Return a 401 with HX-Redirect header so HTMX does a full page redirect."""
     raise HTTPException(
         status_code=401,
-        headers={"HX-Redirect": "/dashboard/login"},
+        headers={"HX-Redirect": _login_url(request)},
         detail="Session expired",
     )
 
@@ -172,9 +184,16 @@ def set_csrf_cookie(response: Response, token: str) -> None:
         max_age=CSRF_MAX_AGE,
         httponly=False,
         samesite="strict",
-        secure=bool(_app_settings.cookie_secure),
+        secure=_app_settings.cookie_secure is True,
         path="/",
     )
+
+
+def attach_csrf(request: Request, response: Response, token: str | None = None) -> str:
+    """Ensure a response carries the current CSRF token cookie."""
+    csrf_token = token or ensure_csrf_token(request)
+    set_csrf_cookie(response, csrf_token)
+    return csrf_token
 
 
 async def verify_csrf(request: Request) -> None:

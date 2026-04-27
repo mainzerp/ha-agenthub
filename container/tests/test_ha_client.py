@@ -691,11 +691,14 @@ class TestHAConversationWSCloseError:
             "homeassistant.helpers.entity_registry",
             "homeassistant.helpers.intent",
             "homeassistant.helpers.entity_platform",
+            "homeassistant.helpers.event",
         ]
         for mod in ha_modules:
             if mod not in sys.modules:
                 mocks[mod] = MagicMock()
                 sys.modules[mod] = mocks[mod]
+
+        sys.modules["homeassistant.helpers.event"].async_track_state_change_event = MagicMock()
 
         # Provide required constants/classes used at import time
         sys.modules["homeassistant.const"].CONF_URL = "url"
@@ -966,11 +969,14 @@ class TestHAConversationRestFallbackMessages:
             "homeassistant.helpers.entity_registry",
             "homeassistant.helpers.intent",
             "homeassistant.helpers.entity_platform",
+            "homeassistant.helpers.event",
         ]
         for mod in ha_modules:
             if mod not in sys.modules:
                 mocks[mod] = MagicMock()
                 sys.modules[mod] = mocks[mod]
+
+        sys.modules["homeassistant.helpers.event"].async_track_state_change_event = MagicMock()
 
         sys.modules["homeassistant.const"].CONF_URL = "url"
         sys.modules["homeassistant.const"].CONF_API_KEY = "api_key"
@@ -1118,11 +1124,13 @@ class TestHAConversationCoalesceWindow:
             "homeassistant.helpers.intent",
             "homeassistant.helpers.entity_platform",
             "homeassistant.helpers.area_registry",
+            "homeassistant.helpers.event",
         ]
         for mod in ha_modules:
             if mod not in sys.modules:
                 mocks[mod] = MagicMock()
                 sys.modules[mod] = mocks[mod]
+        sys.modules["homeassistant.helpers.event"].async_track_state_change_event = MagicMock()
         sys.modules["homeassistant.const"].CONF_URL = "url"
         sys.modules["homeassistant.const"].CONF_API_KEY = "api_key"
         sys.modules["homeassistant.const"].MATCH_ALL = "*"

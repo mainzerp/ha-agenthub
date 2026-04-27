@@ -45,6 +45,7 @@ function healthPage() {
     return {
         health: null,
         error: '',
+        refreshInterval: null,
         components: [
             { key: "ha_connection", label: "Home Assistant" },
             { key: "entity_index", label: "Entity Index" },
@@ -67,7 +68,15 @@ function healthPage() {
                 }
             }
             await doFetch();
-            setInterval(doFetch, 15000);
+            if (!this.refreshInterval) {
+                this.refreshInterval = setInterval(doFetch, 15000);
+            }
+        },
+        destroy() {
+            if (this.refreshInterval) {
+                clearInterval(this.refreshInterval);
+                this.refreshInterval = null;
+            }
         },
         getStatusClass(comp) {
             if (!comp) return "status-unknown";

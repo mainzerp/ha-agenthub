@@ -30,7 +30,7 @@ User Request
     ↓
 ORCHESTRATOR: Receive request, spawn subagent
     ↓
-SUBAGENT #1: Research & Analysis (NEVER use copilot built-in explore functionality for research - always spawn a dedicated research subagent with the Research prompt)
+SUBAGENT #1: Research & Analysis (NEVER use copilot built-in explore agent for research - always spawn a dedicated research subagent with the Research prompt)
     - Reads files, analyzes codebase
     - Creates analysis doc in docs/SubAgent/[NAME_ANALYSIS].md
     - Returns summary and analysis file path (Never uses ask_user)
@@ -59,9 +59,10 @@ ORCHESTRATOR: Confirm with user via ask_user tool UNTIL user confirms task compl
 
 If Orchestrator is in Auto-Model mode also use model parameter "Auto" for subagents to allow them to choose the best model for their task otherwise use the specified models in the templates below.
 
+**NEVER** use copilot built-in explore agent for research - always spawn a dedicated research subagent with the Research prompt.
+
 ### Research Subagent Template
-**NEVER** use copilot built-in explore functionality for research
-**INSTEAD** Call `runSubagent` with `model: "GPT-5.4 (copilot)"`. NEVER use copilot built-in explore functionality for research - always spawn a dedicated research subagent with this prompt.
+Call `runSubagent` with `model: "GPT-5.4 (copilot)"`. NEVER use copilot built-in explore agent for research - always spawn a dedicated research subagent with this prompt.
 ```
 **NEVER** call plan_review or ask_user tools from this subagent. This is for research and analysis only.
 You are an expert code analysis agent.

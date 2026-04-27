@@ -11,7 +11,7 @@ import pytest
 from app.cache.cache_manager import CacheManager, CacheResult
 from app.cache.embedding import ChromaEmbeddingFunction, EmbeddingEngine
 from app.cache.response_cache import ResponseCache
-from app.cache.routing_cache import RoutingCache
+from app.cache.routing_cache import RoutingCache, make_routing_entry_id
 from app.cache.vector_store import (
     COLLECTION_ENTITY_INDEX,
     COLLECTION_RESPONSE_CACHE,
@@ -169,6 +169,69 @@ class TestRoutingCache:
         id1 = store.upsert.call_args_list[0][1]["ids"][0]
         id2 = store.upsert.call_args_list[1][1]["ids"][0]
         assert id1 == id2  # same deterministic hash
+
+    def test_routing_cache_invalidate_removes_entry(self):
+        class _RoutingStore:
+            def __init__(self):
+                self._entries: dict[str, tuple[str, dict]] = {}
+
+            def query(self, _collection, query_texts, n_results, where, include):
+                query_text = query_texts[0]
+                language = (where or {}).get("language")
+                for entry_id, (document, metadata) in self._entries.items():
+                    if document == query_text and metadata.get("language") == language:
+                        return {
+                            "ids": [[entry_id]],
+                            "distances": [[0.0]],
+                            "documents": [[document]],
+                            "metadatas": [[metadata]],
+                        }
+                return {"ids": [[]], "distances": [[]], "documents": [[]], "metadatas": [[]]}
+
+            def upsert(self, _collection, ids, documents, metadatas):
+                for entry_id, document, metadata in zip(ids, documents, metadatas, strict=False):
+                    self._entries[entry_id] = (document, metadata)
+
+            def delete(self, _collection, ids):
+                for entry_id in ids:
+                    self._entries.pop(entry_id, None)
+
+            def count(self, _collection):
+                return len(self._entries)
+
+            def update_metadata(self, _collection, ids, metadatas):
+                for entry_id, metadata in zip(ids, metadatas, strict=False):
+                    document, existing = self._entries[entry_id]
+                    self._entries[entry_id] = (document, {**existing, **metadata})
+
+            def get(self, _collection, include, limit=None, offset=None):
+                items = list(self._entries.items())
+                if offset:
+                    items = items[offset:]
+                if limit is not None:
+                    items = items[:limit]
+                return {
+                    "ids": [entry_id for entry_id, _ in items],
+                    "metadatas": [metadata for _, (_, metadata) in items],
+                }
+
+        store = _RoutingStore()
+        manager = CacheManager(store)
+        manager._routing_cache._threshold = 0.92
+        manager._routing_cache._max_entries = 100
+
+        query_text = "turn on kitchen light"
+        language = "en"
+        manager.store_routing(query_text, "light-agent", 0.95, "Turn on kitchen light", language=language)
+
+        result = manager._process_inner(query_text, language=language)
+        assert result.hit_type == "routing_hit"
+
+        entry_id = make_routing_entry_id(query_text, language=language)
+        manager.invalidate_routing(entry_id)
+
+        result = manager._process_inner(query_text, language=language)
+        assert result.hit_type != "routing_hit"
 
     def test_store_flushes_pending_updates(self):
         """store() should flush pending hit-count updates via update_metadata."""

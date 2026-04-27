@@ -151,9 +151,11 @@ function customAgents() {
         init() { this.loadAgents(); },
         async loadAgents() {
             try {
-                const resp = await fetch('/api/admin/custom-agents');
-                if (resp.ok) this.agents = await resp.json();
-            } catch (e) { console.error('Failed to load agents', e); }
+                this.agents = await window.dashboardApi.json('/api/admin/custom-agents');
+            } catch (e) {
+                if (e.code === 'auth_expired') return;
+                console.error('Failed to load agents', e);
+            }
         },
         async createAgent() {
             let mcp_tools = null;
@@ -163,7 +165,7 @@ function customAgents() {
             }
             const patterns = this.newAgent.intent_patterns_text.split('\n').map(s => s.trim()).filter(Boolean);
             try {
-                const resp = await fetch('/api/admin/custom-agents', {
+                await window.dashboardApi.request('/api/admin/custom-agents', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
                     body: JSON.stringify({
@@ -175,18 +177,16 @@ function customAgents() {
                         intent_patterns: patterns.length > 0 ? patterns : null,
                     }),
                 });
-                if (resp.ok) {
-                    this.message = 'Agent created and hot-reloaded';
-                    this.messageType = 'success';
-                    this.showCreateForm = false;
-                    this.newAgent = {name:'', description:'', system_prompt:'', model_override:'', intent_patterns_text:'', mcp_tools_json:''};
-                    await this.loadAgents();
-                } else {
-                    const err = await resp.json();
-                    this.message = err.detail || 'Failed to create agent';
-                    this.messageType = 'error';
-                }
-            } catch (e) { this.message = 'Network error'; this.messageType = 'error'; }
+                this.message = 'Agent created and hot-reloaded';
+                this.messageType = 'success';
+                this.showCreateForm = false;
+                this.newAgent = {name:'', description:'', system_prompt:'', model_override:'', intent_patterns_text:'', mcp_tools_json:''};
+                await this.loadAgents();
+            } catch (e) {
+                if (e.code === 'auth_expired') return;
+                this.message = e.detail || 'Network error';
+                this.messageType = 'error';
+            }
         },
         editAgent(agent) {
             this.editingAgent = agent.name;
@@ -201,7 +201,7 @@ function customAgents() {
         async updateAgent(name) {
             const patterns = this.editData.intent_patterns_text.split('\n').map(s => s.trim()).filter(Boolean);
             try {
-                const resp = await fetch('/api/admin/custom-agents/' + encodeURIComponent(name), {
+                await window.dashboardApi.request('/api/admin/custom-agents/' + encodeURIComponent(name), {
                     method: 'PUT',
                     headers: {'Content-Type': 'application/json'},
                     body: JSON.stringify({
@@ -212,32 +212,28 @@ function customAgents() {
                         enabled: this.editData.enabled,
                     }),
                 });
-                if (resp.ok) {
-                    this.message = 'Agent updated and hot-reloaded';
-                    this.messageType = 'success';
-                    this.editingAgent = null;
-                    await this.loadAgents();
-                } else {
-                    const err = await resp.json();
-                    this.message = err.detail || 'Update failed';
-                    this.messageType = 'error';
-                }
-            } catch (e) { this.message = 'Network error'; this.messageType = 'error'; }
+                this.message = 'Agent updated and hot-reloaded';
+                this.messageType = 'success';
+                this.editingAgent = null;
+                await this.loadAgents();
+            } catch (e) {
+                if (e.code === 'auth_expired') return;
+                this.message = e.detail || 'Network error';
+                this.messageType = 'error';
+            }
         },
         async deleteAgent(name) {
             if (!confirm('Delete custom agent "' + name + '"? This cannot be undone.')) return;
             try {
-                const resp = await fetch('/api/admin/custom-agents/' + encodeURIComponent(name), {method: 'DELETE'});
-                if (resp.ok) {
-                    this.message = 'Agent deleted';
-                    this.messageType = 'success';
-                    await this.loadAgents();
-                } else {
-                    const err = await resp.json();
-                    this.message = err.detail || 'Delete failed';
-                    this.messageType = 'error';
-                }
-            } catch (e) { this.message = 'Network error'; this.messageType = 'error'; }
+                await window.dashboardApi.request('/api/admin/custom-agents/' + encodeURIComponent(name), {method: 'DELETE'});
+                this.message = 'Agent deleted';
+                this.messageType = 'success';
+                await this.loadAgents();
+            } catch (e) {
+                if (e.code === 'auth_expired') return;
+                this.message = e.detail || 'Network error';
+                this.messageType = 'error';
+            }
         },
     };
 }

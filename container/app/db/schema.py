@@ -1093,3 +1093,9 @@ async def _run_migrations(db: aiosqlite.Connection) -> None:
         with suppress(Exception):
             await db.execute("ALTER TABLE scheduled_timers ADD COLUMN briefing INTEGER NOT NULL DEFAULT 0")
         await db.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (21)")
+
+    if current_version < 22:
+        # Migration 22 (1.2.0): MCP transport "http" was removed.
+        # Rewrite any legacy rows so the registry only sees stdio/sse.
+        await db.execute("UPDATE mcp_servers SET transport = 'sse' WHERE transport = 'http'")
+        await db.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (22)")

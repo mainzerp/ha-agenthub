@@ -343,14 +343,13 @@ function settingsPage() {
 
         async loadHaConnection() {
             try {
-                var resp = await fetch('/api/admin/ha-connection', { credentials: 'same-origin' });
-                if (!resp.ok) return;
-                var data = await resp.json();
+                var data = await window.dashboardApi.json('/api/admin/ha-connection');
                 this.haConn.url = data.ha_url || '';
                 this.haConn.token = '';
                 this.haConn.token_configured = !!data.token_configured;
                 this.haConn.token_masked = data.token_masked || null;
             } catch (e) {
+                if (e.code === 'auth_expired') return;
                 console.error('Failed to load HA connection', e);
             }
         },
@@ -366,29 +365,17 @@ function settingsPage() {
                 if (this.haConn.token && this.haConn.token.trim()) {
                     body.ha_token = this.haConn.token.trim();
                 }
-                var resp = await fetch('/api/admin/ha-connection', {
+                await window.dashboardApi.request('/api/admin/ha-connection', {
                     method: 'PUT',
                     headers: { 'Content-Type': 'application/json' },
-                    credentials: 'same-origin',
                     body: JSON.stringify(body),
                 });
-                if (resp.ok) {
-                    this.haConn.token = '';
-                    await this.loadHaConnection();
-                    this.showHaConnMessage('Home Assistant connection saved. REST and WebSocket reloaded.', 'success');
-                } else {
-                    var err = await resp.json().catch(function() { return {}; });
-                    var d = err.detail;
-                    var msg = 'Failed to save HA connection.';
-                    if (typeof d === 'string') {
-                        msg = d;
-                    } else if (Array.isArray(d) && d.length && d[0].msg) {
-                        msg = d[0].msg;
-                    }
-                    this.showHaConnMessage(msg, 'error');
-                }
+                this.haConn.token = '';
+                await this.loadHaConnection();
+                this.showHaConnMessage('Home Assistant connection saved. REST and WebSocket reloaded.', 'success');
             } catch (e) {
-                this.showHaConnMessage('Network error.', 'error');
+                if (e.code === 'auth_expired') return;
+                this.showHaConnMessage(e.detail || 'Network error.', 'error');
             }
         },
 
@@ -399,20 +386,19 @@ function settingsPage() {
                 if (u) body.ha_url = u;
                 var t = (this.haConn.token || '').trim();
                 if (t) body.ha_token = t;
-                var resp = await fetch('/api/admin/ha-connection/test', {
+                var data = await window.dashboardApi.json('/api/admin/ha-connection/test', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    credentials: 'same-origin',
                     body: JSON.stringify(body),
                 });
-                var data = await resp.json();
                 if (data.status === 'ok') {
                     this.showHaConnMessage('Connected to Home Assistant.', 'success');
                 } else {
                     this.showHaConnMessage(data.detail || 'Test failed.', 'error');
                 }
             } catch (e) {
-                this.showHaConnMessage('Network error.', 'error');
+                if (e.code === 'auth_expired') return;
+                this.showHaConnMessage(e.detail || 'Network error.', 'error');
             }
         },
 
@@ -425,12 +411,11 @@ function settingsPage() {
 
         async loadContainerApiKey() {
             try {
-                var resp = await fetch('/api/admin/container-api-key', { credentials: 'same-origin' });
-                if (!resp.ok) return;
-                var data = await resp.json();
+                var data = await window.dashboardApi.json('/api/admin/container-api-key');
                 this.containerApiKey.configured = !!data.configured;
                 this.containerApiKey.token_masked = data.token_masked || null;
             } catch (e) {
+                if (e.code === 'auth_expired') return;
                 console.error('Failed to load container API key status', e);
             }
         },
@@ -446,27 +431,18 @@ function settingsPage() {
                 return;
             }
             try {
-                var resp = await fetch('/api/admin/container-api-key', {
+                await window.dashboardApi.request('/api/admin/container-api-key', {
                     method: 'PUT',
                     headers: { 'Content-Type': 'application/json' },
-                    credentials: 'same-origin',
                     body: JSON.stringify({ api_key: key }),
                 });
-                if (resp.ok) {
-                    this.containerApiKey.customInput = '';
-                    this.containerApiKey.shownOnce = null;
-                    await this.loadContainerApiKey();
-                    this.showContainerApiKeyMessage('API key saved. Update HA-AgentHub in HA if you changed it.', 'success');
-                } else {
-                    var err = await resp.json().catch(function() { return {}; });
-                    var d = err.detail;
-                    var msg = 'Failed to save API key.';
-                    if (typeof d === 'string') msg = d;
-                    else if (Array.isArray(d) && d.length && d[0].msg) msg = d[0].msg;
-                    this.showContainerApiKeyMessage(msg, 'error');
-                }
+                this.containerApiKey.customInput = '';
+                this.containerApiKey.shownOnce = null;
+                await this.loadContainerApiKey();
+                this.showContainerApiKeyMessage('API key saved. Update HA-AgentHub in HA if you changed it.', 'success');
             } catch (e) {
-                this.showContainerApiKeyMessage('Network error.', 'error');
+                if (e.code === 'auth_expired') return;
+                this.showContainerApiKeyMessage(e.detail || 'Network error.', 'error');
             }
         },
 
@@ -478,12 +454,10 @@ function settingsPage() {
                 return;
             }
             try {
-                var resp = await fetch('/api/admin/container-api-key/rotate', {
+                var data = await window.dashboardApi.json('/api/admin/container-api-key/rotate', {
                     method: 'POST',
-                    credentials: 'same-origin',
                 });
-                var data = await resp.json();
-                if (resp.ok && data.api_key) {
+                if (data.api_key) {
                     this.containerApiKey.shownOnce = data.api_key;
                     this.containerApiKey.customInput = '';
                     await this.loadContainerApiKey();
@@ -492,7 +466,8 @@ function settingsPage() {
                     this.showContainerApiKeyMessage(data.detail || 'Rotation failed.', 'error');
                 }
             } catch (e) {
-                this.showContainerApiKeyMessage('Network error.', 'error');
+                if (e.code === 'auth_expired') return;
+                this.showContainerApiKeyMessage(e.detail || 'Network error.', 'error');
             }
         },
 
@@ -516,10 +491,10 @@ function settingsPage() {
 
         async loadProviders() {
             try {
-                var resp = await fetch('/api/admin/llm-providers', { credentials: 'same-origin' });
-                var data = await resp.json();
+                var data = await window.dashboardApi.json('/api/admin/llm-providers');
                 this.providers = data.providers;
             } catch (e) {
+                if (e.code === 'auth_expired') return;
                 console.error('Failed to load LLM providers', e);
             }
         },
@@ -534,41 +509,36 @@ function settingsPage() {
                     url = '/api/admin/llm-providers';
                     body = JSON.stringify({ provider: provider, api_key: this.providerKeys[provider] });
                 }
-                var resp = await fetch(url, {
+                await window.dashboardApi.request(url, {
                     method: 'PUT',
                     headers: { 'Content-Type': 'application/json' },
-                    credentials: 'same-origin',
                     body: body,
                 });
-                if (resp.ok) {
-                    this.providerKeys[provider] = '';
-                    await this.loadProviders();
-                    this.showProviderMessage(provider + ' saved.', 'success');
-                } else {
-                    this.showProviderMessage('Failed to save ' + provider + '.', 'error');
-                }
+                this.providerKeys[provider] = '';
+                await this.loadProviders();
+                this.showProviderMessage(provider + ' saved.', 'success');
             } catch (e) {
-                this.showProviderMessage('Network error.', 'error');
+                if (e.code === 'auth_expired') return;
+                this.showProviderMessage(e.detail || 'Network error.', 'error');
             }
         },
 
         async testProvider(provider) {
             try {
                 var key = this.providerKeys[provider] || null;
-                var resp = await fetch('/api/admin/llm-providers/test', {
+                var data = await window.dashboardApi.json('/api/admin/llm-providers/test', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    credentials: 'same-origin',
                     body: JSON.stringify({ provider: provider, api_key: key }),
                 });
-                var data = await resp.json();
                 if (data.status === 'ok') {
                     this.showProviderMessage(provider + ' connected successfully!', 'success');
                 } else {
                     this.showProviderMessage(provider + ': ' + (data.detail || 'Test failed'), 'error');
                 }
             } catch (e) {
-                this.showProviderMessage('Network error testing ' + provider + '.', 'error');
+                if (e.code === 'auth_expired') return;
+                this.showProviderMessage(e.detail || ('Network error testing ' + provider + '.'), 'error');
             }
         },
 
@@ -593,8 +563,7 @@ function settingsPage() {
 
         async loadSettings() {
             try {
-                var resp = await fetch('/api/admin/settings', { credentials: 'same-origin' });
-                var data = await resp.json();
+                var data = await window.dashboardApi.json('/api/admin/settings');
                 var flat = {};
                 for (var cat in data.settings) {
                     for (var item of data.settings[cat]) {
@@ -607,20 +576,21 @@ function settingsPage() {
                 }
                 this.s = flat;
             } catch (e) {
+                if (e.code === 'auth_expired') return;
                 console.error('Failed to load settings', e);
             }
         },
 
         async loadWeights() {
             try {
-                var resp = await fetch('/api/admin/entity-matching-weights', { credentials: 'same-origin' });
-                var data = await resp.json();
+                var data = await window.dashboardApi.json('/api/admin/entity-matching-weights');
                 var w = {};
                 for (var key in data.weights) {
                     w[key] = parseFloat(data.weights[key]);
                 }
                 this.weights = w;
             } catch (e) {
+                if (e.code === 'auth_expired') return;
                 console.error('Failed to load weights', e);
             }
         },
@@ -633,19 +603,15 @@ function settingsPage() {
                 }
             }
             try {
-                var resp = await fetch('/api/admin/settings', {
+                await window.dashboardApi.request('/api/admin/settings', {
                     method: 'PUT',
                     headers: { 'Content-Type': 'application/json' },
-                    credentials: 'same-origin',
                     body: JSON.stringify({items: payload}),
                 });
-                if (resp.ok) {
-                    this.showMessage('Settings saved.', 'success');
-                } else {
-                    this.showMessage('Failed to save.', 'error');
-                }
+                this.showMessage('Settings saved.', 'success');
             } catch (e) {
-                this.showMessage('Network error.', 'error');
+                if (e.code === 'auth_expired') return;
+                this.showMessage(e.detail || 'Network error.', 'error');
             }
         },
 
@@ -663,27 +629,22 @@ function settingsPage() {
                 weightsPayload[key] = this.weights[key];
             }
             try {
-                var results = await Promise.all([
-                    fetch('/api/admin/settings', {
+                await Promise.all([
+                    window.dashboardApi.request('/api/admin/settings', {
                         method: 'PUT',
                         headers: { 'Content-Type': 'application/json' },
-                        credentials: 'same-origin',
                         body: JSON.stringify({items: settingsPayload}),
                     }),
-                    fetch('/api/admin/entity-matching-weights', {
+                    window.dashboardApi.request('/api/admin/entity-matching-weights', {
                         method: 'PUT',
                         headers: { 'Content-Type': 'application/json' },
-                        credentials: 'same-origin',
                         body: JSON.stringify(weightsPayload),
                     }),
                 ]);
-                if (results.every(function(r) { return r.ok; })) {
-                    this.showMessage('Entity matching settings saved.', 'success');
-                } else {
-                    this.showMessage('Failed to save some settings.', 'error');
-                }
+                this.showMessage('Entity matching settings saved.', 'success');
             } catch (e) {
-                this.showMessage('Network error.', 'error');
+                if (e.code === 'auth_expired') return;
+                this.showMessage(e.detail || 'Network error.', 'error');
             }
         },
 
@@ -698,19 +659,15 @@ function settingsPage() {
                 payload['language'] = this.s['language'];
             }
             try {
-                var resp = await fetch('/api/admin/settings', {
+                await window.dashboardApi.request('/api/admin/settings', {
                     method: 'PUT',
                     headers: { 'Content-Type': 'application/json' },
-                    credentials: 'same-origin',
                     body: JSON.stringify({items: payload}),
                 });
-                if (resp.ok) {
-                    this.showMessage('Settings saved.', 'success');
-                } else {
-                    this.showMessage('Failed to save.', 'error');
-                }
+                this.showMessage('Settings saved.', 'success');
             } catch (e) {
-                this.showMessage('Network error.', 'error');
+                if (e.code === 'auth_expired') return;
+                this.showMessage(e.detail || 'Network error.', 'error');
             }
         },
 

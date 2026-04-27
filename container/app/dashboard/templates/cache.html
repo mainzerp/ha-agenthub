@@ -109,7 +109,7 @@
                 <div class="stat-card-detail">
                     max: <span x-text="stats.routing?.max_entries ?? '-'"></span>
                     | threshold: <span x-text="stats.routing?.threshold ?? '-'"></span>
-                    | <a href="/dashboard/settings" class="text-blue">Edit</a>
+                    | <a href="{{ root_url(request, '/dashboard/settings') }}" class="text-blue">Edit</a>
                 </div>
                 <div class="btn-group mt-sm">
                     <button class="btn btn-sm btn-secondary" @click="flushCache('routing')">Flush Routing</button>
@@ -186,7 +186,7 @@
                     max: <span x-text="stats.action?.max_entries ?? '-'"></span>
                     | hit: <span x-text="stats.action?.hit_threshold ?? '-'"></span>
                     | partial: <span x-text="stats.action?.partial_threshold ?? '-'"></span>
-                    | <a href="/dashboard/settings" class="text-blue">Edit</a>
+                    | <a href="{{ root_url(request, '/dashboard/settings') }}" class="text-blue">Edit</a>
                 </div>
                 <div class="btn-group mt-sm">
                     <button class="btn btn-sm btn-secondary" @click="flushCache('action')">Flush Action</button>
@@ -278,8 +278,7 @@ function cachePage() {
 
         async loadStats() {
             try {
-                const resp = await fetch('/api/admin/cache/stats');
-                const data = await resp.json();
+                const data = await window.dashboardApi.json('/api/admin/cache/stats');
                 // Defensive read: fall back to the legacy stats key for
                 // dashboards talking to a 0.20.x server during a rolling
                 // restart on dev environments.
@@ -287,6 +286,7 @@ function cachePage() {
                 const routing = data.routing ?? {};
                 this.stats = { ...data, routing, action };
             } catch (e) {
+                if (e.code === 'auth_expired') return;
                 console.error('Failed to load cache stats', e);
             }
         },
@@ -299,12 +299,12 @@ function cachePage() {
             params.set('per_page', '50');
             if (this.search) params.set('search', this.search);
             try {
-                const resp = await fetch('/api/admin/cache/entries?' + params.toString());
-                const data = await resp.json();
+                const data = await window.dashboardApi.json('/api/admin/cache/entries?' + params.toString());
                 this.entries = data.entries || [];
                 this.entryTotal = data.total || 0;
                 this.entryPages = data.pages || 1;
             } catch (e) {
+                if (e.code === 'auth_expired') return;
                 console.error('Failed to load cache entries', e);
             }
             this.loadingEntries = false;
@@ -318,24 +318,24 @@ function cachePage() {
             const msg = messages[tier] || 'Are you sure you want to flush ALL caches? This cannot be undone.';
             if (!confirm(msg)) return;
             try {
-                const resp = await fetch('/api/admin/cache/flush', {
+                const data = await window.dashboardApi.json('/api/admin/cache/flush', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ tier: tier })
                 });
-                const data = await resp.json();
                 this.flushMessage = 'Flushed: ' + (data.flushed || 'unknown');
                 this.loadStats();
                 this.loadEntries();
                 setTimeout(() => { this.flushMessage = ''; }, 3000);
             } catch (e) {
+                if (e.code === 'auth_expired') return;
                 console.error('Failed to flush cache', e);
             }
         },
 
         exportCache() {
             const url = '/api/admin/cache/export?tier=' + encodeURIComponent(this.exportTier);
-            window.location.assign(url);
+            window.location.assign(window.dashUrl(url));
         },
 
         async importCache(event) {
@@ -357,8 +357,7 @@ function cachePage() {
             fd.append('re_embed', this.importReembed ? 'true' : 'false');
             this.backupMessage = 'Importing...';
             try {
-                const resp = await fetch('/api/admin/cache/import', { method: 'POST', body: fd });
-                const data = await resp.json();
+                const data = await window.dashboardApi.json('/api/admin/cache/import', { method: 'POST', body: fd });
                 if (data.status === 'ok') {
                     const r = data.tiers && data.tiers.routing;
                     const s = data.tiers && data.tiers.action;
@@ -372,6 +371,7 @@ function cachePage() {
                 this.loadStats();
                 this.loadEntries();
             } catch (e) {
+                if (e.code === 'auth_expired') return;
                 console.error('Import failed', e);
                 this.backupMessage = 'Import failed: network error';
             }

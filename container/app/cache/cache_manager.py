@@ -293,6 +293,10 @@ class CacheManager:
         """Reactive invalidation -- remove a response entry on action failure."""
         self._response_cache.invalidate(entry_id)
 
+    def invalidate_routing(self, entry_id: str) -> None:
+        """Reactive invalidation -- remove a routing entry after unsafe reuse."""
+        self._routing_cache.invalidate(entry_id)
+
     def flush(self, tier: str | None = None) -> None:
         """Clear one or both cache tiers. Used by admin UI.
 

@@ -1021,6 +1021,30 @@ class TestMigrationV21:
         assert len(schema_versions) == 1
 
 
+class TestMigrationV22:
+    async def test_migration_v22_rewrites_legacy_http_transport_to_sse(self, db_repository):
+        from app.db.schema import _run_migrations
+
+        await McpServerRepository.create("legacy-http", "http", "http://localhost:9000/sse")
+
+        async with aiosqlite.connect(str(db_repository)) as db:
+            db.row_factory = aiosqlite.Row
+            await db.execute("DELETE FROM schema_version WHERE version >= 22")
+            await db.commit()
+
+            await _run_migrations(db)
+            await db.commit()
+
+            row = await (await db.execute("SELECT transport FROM mcp_servers WHERE name = 'legacy-http'")).fetchone()
+            schema_versions = await (
+                await db.execute("SELECT version FROM schema_version WHERE version = 22")
+            ).fetchall()
+
+        assert row is not None
+        assert row["transport"] == "sse"
+        assert len(schema_versions) == 1
+
+
 # ---------------------------------------------------------------------------
 # SendDeviceMappingRepository
 # ---------------------------------------------------------------------------

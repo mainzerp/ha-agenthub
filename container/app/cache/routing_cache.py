@@ -34,6 +34,12 @@ _CORRUPTED_CONDENSED_RE = re.compile(
 )
 
 
+def make_routing_entry_id(query_text: str, *, language: str = "en") -> str:
+    """Return the deterministic routing-cache key for a query/language pair."""
+    lang = (language or "en").lower()
+    return hashlib.sha256(f"{lang}\n{query_text}".encode()).hexdigest()[:16]
+
+
 def _condensed_task_is_corrupted(text: str | None) -> bool:
     if not text:
         return False
@@ -155,7 +161,7 @@ class RoutingCache:
         lang = (language or "en").lower()
         # FLOW-HIGH-4: prefix the key with language so identical text
         # in different languages produces distinct entries.
-        entry_id = hashlib.sha256(f"{lang}\n{query_text}".encode()).hexdigest()[:16]
+        entry_id = make_routing_entry_id(query_text, language=lang)
         self._flush_pending_updates()
         if not self._state.matches_generation(gen_at_start):
             logger.info("Skipping routing store -- cache was flushed during write")
@@ -176,6 +182,12 @@ class RoutingCache:
                 }
             ],
         )
+
+    def invalidate(self, entry_id: str) -> None:
+        """Remove one routing entry and drop any queued metadata updates for it."""
+        self._state.discard_pending(entry_id)
+        self._store.delete(COLLECTION_ROUTING_CACHE, ids=[entry_id])
+        logger.info("Routing cache entry invalidated: %s", entry_id)
 
     def _enforce_lru(self) -> None:
         """Evict oldest entries if collection exceeds max_entries.

@@ -15,6 +15,7 @@ from app.security.auth import require_admin_session
 logger = logging.getLogger(__name__)
 
 BUILTIN_MCP_SERVERS = {"duckduckgo-search"}
+SUPPORTED_MCP_TRANSPORTS = frozenset({"stdio", "sse"})
 
 router = APIRouter(
     prefix="/api/admin/mcp-servers",
@@ -49,6 +50,15 @@ async def list_mcp_servers(request: Request) -> list[dict[str, Any]]:
 @router.post("", status_code=201)
 async def add_mcp_server(request: Request, body: McpServerCreate) -> dict[str, Any]:
     """Add a new MCP server."""
+    if body.transport not in SUPPORTED_MCP_TRANSPORTS:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Unsupported transport. Supported transports: "
+                + ", ".join(sorted(SUPPORTED_MCP_TRANSPORTS))
+            ),
+        )
+
     existing = await McpServerRepository.get(body.name)
     if existing:
         raise HTTPException(status_code=409, detail="Server with this name already exists")

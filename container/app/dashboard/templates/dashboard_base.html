@@ -4,16 +4,30 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{% block page_title %}Dashboard{% endblock %} - HA-AgentHub</title>
-    <link rel="icon" type="image/svg+xml" href="/dashboard/static/favicon.svg">
-    <link rel="alternate icon" type="image/png" href="/dashboard/static/favicon.png">
-    <link rel="apple-touch-icon" href="/dashboard/static/favicon.png">
+    <link rel="icon" type="image/svg+xml" href="{{ root_url(request, '/dashboard/static/favicon.svg') }}">
+    <link rel="alternate icon" type="image/png" href="{{ root_url(request, '/dashboard/static/favicon.png') }}">
+    <link rel="apple-touch-icon" href="{{ root_url(request, '/dashboard/static/favicon.png') }}">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=Outfit:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="/dashboard/static/style.css?v=7">
+    <link rel="stylesheet" href="{{ root_url(request, '/dashboard/static/style.css') }}?v=7">
     <script src="https://unpkg.com/htmx.org@2.0.4" integrity="sha384-HGfztofotfshcF7+8n44JQL2oJmowVChPTg48S+jvZoztPfvwD79OC/LTtG6dMp+" crossorigin="anonymous"></script>
     <script>
     (function() {
+        document.addEventListener('dashboard:alpine-missing', function() {
+            var banner = document.createElement('div');
+            banner.setAttribute('role', 'alert');
+            banner.style.cssText =
+                'position:fixed;top:0;left:0;right:0;z-index:9999;' +
+                'padding:0.75rem 1rem;background:#7a1f1f;color:#fff;' +
+                'font-family:sans-serif;font-size:0.95rem;text-align:center;';
+            banner.textContent =
+                'Dashboard JavaScript framework failed to load. ' +
+                'Some controls will not work. Check network access to the ' +
+                'CDN or vendor {{ root_url(request, '/dashboard/static/alpine.min.js') }}.';
+            document.body.appendChild(banner);
+        }, { once: true });
+
         var state = window.__dashboardAlpine = {
             init: false,
             fallbackAttempted: false,
@@ -45,7 +59,7 @@
             var script = document.createElement('script');
             script.id = 'dashboard-alpine-fallback';
             script.defer = true;
-            script.src = '/dashboard/static/alpine.min.js';
+            script.src = '{{ root_url(request, '/dashboard/static/alpine.min.js') }}';
             script.onload = function() {
                 state.fallbackLoaded = true;
             };
@@ -73,10 +87,10 @@
         }, 1200);
     })();
     </script>
-    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.1/dist/cdn.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
 </head>
-<body x-data="{ sidebarOpen: true }" class="dashboard-body">
+<body x-data="dashboardShell()" x-init="init()" class="dashboard-body">
 
     <!-- Mobile hamburger -->
     <button class="sidebar-toggle" @click="sidebarOpen = !sidebarOpen" aria-label="Toggle sidebar"
@@ -89,9 +103,9 @@
     </button>
 
     <!-- Sidebar -->
-    <aside id="dashboard-sidebar" class="sidebar" :class="{ 'sidebar-open': sidebarOpen }">
+    <aside id="dashboard-sidebar" class="sidebar" :class="{ 'sidebar-open': sidebarOpen }" :inert="sidebarInert ? true : null" :aria-hidden="sidebarInert ? 'true' : 'false'">
         <div class="sidebar-header">
-            <a href="/dashboard/" class="sidebar-brand">
+            <a href="{{ root_url(request, '/dashboard/') }}" class="sidebar-brand">
                 <svg class="sidebar-brand-icon" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
                     <circle cx="12" cy="12" r="4"/>
                     <circle cx="4" cy="5" r="2"/>
@@ -105,73 +119,76 @@
             </a>
         </div>
         <nav class="sidebar-nav">
-            <a href="/dashboard/" class="nav-link {% block nav_overview %}{% endblock %}">
+            <a href="{{ root_url(request, '/dashboard/') }}" class="nav-link {% block nav_overview %}{% endblock %}">
                 <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
                 <span>Overview</span>
             </a>
-            <a href="/dashboard/chat" class="nav-link {% block nav_chat %}{% endblock %}">
+            <a href="{{ root_url(request, '/dashboard/chat') }}" class="nav-link {% block nav_chat %}{% endblock %}">
                 <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>
                 <span>Chat</span>
             </a>
-            <a href="/dashboard/agents" class="nav-link {% block nav_agents %}{% endblock %}">
+            <a href="{{ root_url(request, '/dashboard/agents') }}" class="nav-link {% block nav_agents %}{% endblock %}">
                 <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
                 <span>Agents</span>
             </a>
-            <a href="/dashboard/custom-agents" class="nav-link {% block nav_custom_agents %}{% endblock %}">
+            <a href="{{ root_url(request, '/dashboard/custom-agents') }}" class="nav-link {% block nav_custom_agents %}{% endblock %}">
                 <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/><circle cx="20" cy="7" r="3" fill="currentColor" stroke="none"/><line x1="20" y1="5.5" x2="20" y2="8.5" stroke="var(--bg-obsidian, #1a1a2e)" stroke-width="1.5"/><line x1="18.5" y1="7" x2="21.5" y2="7" stroke="var(--bg-obsidian, #1a1a2e)" stroke-width="1.5"/></svg>
                 <span>Custom Agents</span>
             </a>
-            <a href="/dashboard/personality" class="nav-link {% block nav_personality %}{% endblock %}">
+            <a href="{{ root_url(request, '/dashboard/personality') }}" class="nav-link {% block nav_personality %}{% endblock %}">
                 <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
                 <span>Personality</span>
             </a>
 
-            <a href="/dashboard/entity-index" class="nav-link {% block nav_entity_index %}{% endblock %}">
+            <a href="{{ root_url(request, '/dashboard/entity-index') }}" class="nav-link {% block nav_entity_index %}{% endblock %}">
                 <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>
                 <span>Entity Index</span>
             </a>
-            <a href="/dashboard/send-devices" class="nav-link {% block nav_send_devices %}{% endblock %}">
+            <a href="{{ root_url(request, '/dashboard/send-devices') }}" class="nav-link {% block nav_send_devices %}{% endblock %}">
                 <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
                 <span>Send Devices</span>
             </a>
-            <a href="/dashboard/timers" class="nav-link {% block nav_timers %}{% endblock %}">
+            <a href="{{ root_url(request, '/dashboard/timers') }}" class="nav-link {% block nav_timers %}{% endblock %}">
                 <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
                 <span>Timers</span>
             </a>
-            <a href="/dashboard/cache" class="nav-link {% block nav_cache %}{% endblock %}">
+            <a href="{{ root_url(request, '/dashboard/cache') }}" class="nav-link {% block nav_cache %}{% endblock %}">
                 <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg>
                 <span>Cache</span>
             </a>
-            <a href="/dashboard/analytics" class="nav-link {% block nav_analytics %}{% endblock %}">
+            <a href="{{ root_url(request, '/dashboard/analytics') }}" class="nav-link {% block nav_analytics %}{% endblock %}">
                 <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
                 <span>Analytics</span>
             </a>
-            <a href="/dashboard/traces" class="nav-link {% block nav_traces %}{% endblock %}">
+            <a href="{{ root_url(request, '/dashboard/traces') }}" class="nav-link {% block nav_traces %}{% endblock %}">
                 <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
                 <span>Traces</span>
             </a>
-            <a href="/dashboard/mcp-servers" class="nav-link {% block nav_mcp_servers %}{% endblock %}">
+            <a href="{{ root_url(request, '/dashboard/mcp-servers') }}" class="nav-link {% block nav_mcp_servers %}{% endblock %}">
                 <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg>
                 <span>MCP Servers</span>
             </a>
-            <a href="/dashboard/plugins" class="nav-link {% block nav_plugins %}{% endblock %}">
+            <a href="{{ root_url(request, '/dashboard/plugins') }}" class="nav-link {% block nav_plugins %}{% endblock %}">
                 <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v6m0 12v2M4.93 4.93l4.24 4.24m5.66 5.66l4.24 4.24M2 12h6m12 0h2M4.93 19.07l4.24-4.24m5.66-5.66l4.24-4.24"/></svg>
                 <span>Plugins</span>
             </a>
-            <a href="/dashboard/system-health" class="nav-link {% block nav_system_health %}{% endblock %}">
+            <a href="{{ root_url(request, '/dashboard/system-health') }}" class="nav-link {% block nav_system_health %}{% endblock %}">
                 <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>
                 <span>System Health</span>
             </a>
-            <a href="/dashboard/settings" class="nav-link {% block nav_settings %}{% endblock %}">
+            <a href="{{ root_url(request, '/dashboard/settings') }}" class="nav-link {% block nav_settings %}{% endblock %}">
                 <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09a1.65 1.65 0 0 0-1.08-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09a1.65 1.65 0 0 0 1.51-1.08 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1.08 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9c.26.604.852.997 1.51 1.08H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1.08z"/></svg>
                 <span>Settings</span>
             </a>
         </nav>
         <div class="sidebar-footer">
-            <a href="/dashboard/logout" class="nav-link sidebar-logout">
-                <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
-                <span>Logout</span>
-            </a>
+            <form method="post" action="{{ root_url(request, '/dashboard/logout') }}" class="sidebar-logout-form">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                <button type="submit" class="nav-link sidebar-logout">
+                    <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+                    <span>Logout</span>
+                </button>
+            </form>
         </div>
     </aside>
 
@@ -193,6 +210,22 @@
 
     <script>
     (function() {
+        window.__dashboard = {
+            rootPath: '{{ root_path }}',
+            loginUrl: '{{ root_url(request, '/dashboard/login') }}'
+        };
+
+        window.dashUrl = function(url) {
+            if (!url || typeof url !== 'string' || url.charAt(0) !== '/') {
+                return url;
+            }
+            var rootPath = (window.__dashboard && window.__dashboard.rootPath) || '';
+            if (!rootPath) {
+                return url;
+            }
+            return rootPath + url;
+        };
+
         function getErrorDetail(payload, fallback) {
             if (!payload) {
                 return fallback;
@@ -218,14 +251,15 @@
         }
 
         window.dashboardApi = {
-            loginUrl: '/dashboard/login',
+            loginUrl: window.__dashboard.loginUrl,
 
             redirectToLogin: function(redirectUrl) {
                 window.location.assign(redirectUrl || this.loginUrl);
             },
 
             async request(url, options) {
-                var response = await fetch(url, Object.assign({ credentials: 'same-origin' }, options || {}));
+                var requestUrl = typeof url === 'string' && url.charAt(0) === '/' ? window.dashUrl(url) : url;
+                var response = await fetch(requestUrl, Object.assign({ credentials: 'same-origin' }, options || {}));
                 var redirectUrl = response.headers.get('HX-Redirect');
 
                 if (response.status === 401 || redirectUrl) {
@@ -270,7 +304,79 @@
                 return await response.json();
             }
         };
+
+        window.dashFetch = function(url, options) {
+            return window.dashboardApi.request(url, options);
+        };
+
+        window.dashFetch.json = function(url, options) {
+            return window.dashboardApi.json(url, options);
+        };
     })();
+    </script>
+
+    <script>
+    window.dashboardShell = function() {
+        return {
+            sidebarOpen: true,
+            isMobile: false,
+            init() {
+                var mql = window.matchMedia('(max-width: 768px)');
+                var apply = function() {
+                    this.isMobile = mql.matches;
+                    if (this.isMobile) {
+                        this.sidebarOpen = false;
+                    } else {
+                        this.sidebarOpen = true;
+                    }
+                }.bind(this);
+
+                apply();
+                if (mql.addEventListener) {
+                    mql.addEventListener('change', apply);
+                } else if (mql.addListener) {
+                    mql.addListener(apply);
+                }
+            },
+            get sidebarInert() {
+                return this.isMobile && !this.sidebarOpen;
+            }
+        };
+    };
+
+    window.dashModal = function(initialOpen) {
+        return {
+            open: !!initialOpen,
+            _previouslyFocused: null,
+            show() {
+                this._previouslyFocused = document.activeElement;
+                this.open = true;
+                this.$nextTick(function() {
+                    var root = this.$refs.modalRoot;
+                    if (!root) return;
+                    var focusable = root.querySelector(
+                        '[autofocus], button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
+                    );
+                    if (focusable) {
+                        focusable.focus();
+                    }
+                }.bind(this));
+            },
+            hide() {
+                this.open = false;
+                if (this._previouslyFocused && this._previouslyFocused.focus) {
+                    this._previouslyFocused.focus();
+                }
+            },
+            onKeydown(e) {
+                if (!this.open) return;
+                if (e.key === 'Escape') {
+                    e.stopPropagation();
+                    this.hide();
+                }
+            }
+        };
+    };
     </script>
 
 </body>

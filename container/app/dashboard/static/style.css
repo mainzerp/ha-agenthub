@@ -248,6 +248,10 @@ main {
     position: relative;
 }
 
+[x-cloak] {
+    display: none !important;
+}
+
 .nav-icon {
     display: block;
     width: 18px;
@@ -284,6 +288,21 @@ main {
     padding: 0.75rem;
     border-top: 1px solid color-mix(in srgb, var(--bg-stone) 40%, transparent);
     margin-top: auto;
+}
+
+.sidebar-logout-form {
+    margin: 0;
+    padding: 0;
+}
+
+button.sidebar-logout {
+    width: 100%;
+    background: transparent;
+    border: 0;
+    cursor: pointer;
+    text-align: left;
+    font: inherit;
+    color: inherit;
 }
 
 .sidebar-logout:hover {

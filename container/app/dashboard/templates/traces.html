@@ -603,14 +603,14 @@ function tracesPage() {
                 if (this.dateFrom) params.set('from', this.dateFrom);
                 if (this.dateTo) params.set('to', this.dateTo);
 
-                const resp = await fetch('/api/admin/traces?' + params.toString());
-                const data = await resp.json();
+                const data = await window.dashboardApi.json('/api/admin/traces?' + params.toString());
                 this.traces = data.traces || [];
                 this.total = data.total || 0;
                 this.pages = data.pages || 1;
                 this.allLabels = data.labels || [];
                 this.allAgents = data.agents || [];
             } catch (e) {
+                if (e.code === 'auth_expired') return;
                 console.error('Failed to load traces', e);
             }
             this.loading = false;
@@ -623,7 +623,7 @@ function tracesPage() {
             if (this.labelFilter) params.set('label', this.labelFilter);
             if (this.dateFrom) params.set('from', this.dateFrom);
             if (this.dateTo) params.set('to', this.dateTo);
-            window.open('/api/admin/traces/export?' + params.toString(), '_blank');
+            window.open(window.dashUrl('/api/admin/traces/export?' + params.toString()), '_blank');
         },
 
         async showDetail(traceId) {
@@ -632,8 +632,7 @@ function tracesPage() {
             this.selectedSpan = null;
             this.editingLabel = false;
             try {
-                const resp = await fetch('/api/admin/traces/' + encodeURIComponent(traceId));
-                this.traceDetail = await resp.json();
+                this.traceDetail = await window.dashboardApi.json('/api/admin/traces/' + encodeURIComponent(traceId));
                 this.ganttSpans = (this.traceDetail.spans || []).slice().sort((a, b) => {
                     if (a.start_time < b.start_time) return -1;
                     if (a.start_time > b.start_time) return 1;
@@ -641,6 +640,7 @@ function tracesPage() {
                 });
                 this.$nextTick(() => { this.renderGantt(); });
             } catch (e) {
+                if (e.code === 'auth_expired') return;
                 console.error('Failed to load trace detail', e);
             }
             this.detailLoading = false;
@@ -657,7 +657,7 @@ function tracesPage() {
         async saveLabel() {
             if (!this.selectedTraceId) return;
             try {
-                await fetch('/api/admin/traces/' + encodeURIComponent(this.selectedTraceId) + '/label', {
+                await window.dashboardApi.request('/api/admin/traces/' + encodeURIComponent(this.selectedTraceId) + '/label', {
                     method: 'PUT',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ label: this.newLabel || null }),
@@ -666,6 +666,7 @@ function tracesPage() {
                 this.editingLabel = false;
                 this.loadTraces();
             } catch (e) {
+                if (e.code === 'auth_expired') return;
                 console.error('Failed to save label', e);
             }
         },

@@ -6,6 +6,8 @@ template rendering.
 
 from __future__ import annotations
 
+from pathlib import Path
+import re
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
@@ -170,9 +172,36 @@ class TestDashboardTemplateRendering:
         assert "<form" in html.lower() or "form" in html.lower()
 
     async def test_logout_clears_session(self, dashboard_client: httpx.AsyncClient):
-        resp = await dashboard_client.get("/dashboard/logout")
+        page = await dashboard_client.get("/dashboard/agents")
+        match = re.search(r'name="csrf_token" value="([^"]+)"', page.text)
+        assert match
+        token = match.group(1)
+        assert token == dashboard_client.cookies.get("agent_assist_csrf")
+
+        resp = await dashboard_client.post("/dashboard/logout", data={"csrf_token": token})
         assert resp.status_code == 303
         assert "/dashboard/login" in resp.headers.get("location", "")
+
+    async def test_logout_get_method_not_allowed(self, dashboard_client: httpx.AsyncClient):
+        resp = await dashboard_client.get("/dashboard/logout")
+        assert resp.status_code == 405
+
+    async def test_logout_post_without_csrf_rejected(self, dashboard_client: httpx.AsyncClient):
+        resp = await dashboard_client.post("/dashboard/logout")
+        assert resp.status_code == 401
+
+    async def test_dashboard_base_alpine_fallback_asset_exists(self, dashboard_client: httpx.AsyncClient):
+        alpine_path = Path(__file__).resolve().parents[1] / "app" / "dashboard" / "static" / "alpine.min.js"
+        content = alpine_path.read_text(encoding="utf-8")
+        assert alpine_path.is_file()
+        assert alpine_path.stat().st_size > 0
+        assert re.search(r"Alpine\.js v3\.\d+\.\d+", content)
+
+    async def test_dashboard_base_renders_alpine_missing_banner_handler(self, dashboard_client: httpx.AsyncClient):
+        resp = await dashboard_client.get("/dashboard/agents")
+        html = resp.text
+        assert "dashboard:alpine-missing" in html
+        assert "Dashboard JavaScript framework failed to load" in html
 
     async def test_system_health_page_includes_dashboard_helper(self, dashboard_client: httpx.AsyncClient):
         resp = await dashboard_client.get("/dashboard/system-health")
@@ -195,6 +224,12 @@ class TestDashboardTemplateRendering:
         assert "x-bind:aria-expanded=\"sidebarOpen ? 'true' : 'false'\"" in html
         assert 'id="dashboard-sidebar"' in html
 
+    async def test_sidebar_inert_binding(self, dashboard_client: httpx.AsyncClient):
+        resp = await dashboard_client.get("/dashboard/agents")
+        html = resp.text
+        assert ':inert="sidebarInert ? true : null"' in html
+        assert ':aria-hidden="sidebarInert ? \'true\' : \'false\'"' in html
+
     async def test_send_devices_page_has_labels_and_live_region(self, dashboard_client: httpx.AsyncClient):
         resp = await dashboard_client.get("/dashboard/send-devices")
         html = resp.text
@@ -207,6 +242,86 @@ class TestDashboardTemplateRendering:
         assert '@submit.prevent="createMapping()"' in html
         assert ":aria-live=\"messageType === 'error' ? 'assertive' : 'polite'\"" in html
         assert ":role=\"messageType === 'error' ? 'alert' : 'status'\"" in html
+
+    async def test_send_devices_page_uses_dashboard_api_helper(self, dashboard_client: httpx.AsyncClient):
+        resp = await dashboard_client.get("/dashboard/send-devices")
+        html = resp.text
+        assert "window.dashboardApi.json('/api/admin/send-devices')" in html
+        assert "await fetch('/api/admin/send-devices'" not in html
+
+    async def test_mcp_servers_page_only_offers_supported_transports(self, dashboard_client: httpx.AsyncClient):
+        resp = await dashboard_client.get("/dashboard/mcp-servers")
+        html = resp.text
+        assert '<option value="stdio">stdio</option>' in html
+        assert '<option value="sse">sse</option>' in html
+        assert '<option value="http">' not in html
+
+    async def test_dashboard_respects_root_path(self, db_repository):
+        app = _build_dashboard_app(override_session=True)
+        with patch(
+            "app.db.repository.SetupStateRepository.is_complete",
+            new_callable=AsyncMock,
+            return_value=True,
+        ):
+            transport = httpx.ASGITransport(app=app, root_path="/proxy")
+            async with httpx.AsyncClient(
+                transport=transport,
+                base_url="http://testserver",
+                follow_redirects=False,
+            ) as client:
+                resp = await client.get("/dashboard/agents")
+                assert resp.status_code == 200
+                html = resp.text
+                assert 'href="/proxy/dashboard/static/favicon.svg"' in html
+                assert 'href="/proxy/dashboard/chat"' in html
+                assert 'action="/proxy/dashboard/logout"' in html
+                assert "rootPath: '/proxy'" in html
+                assert "loginUrl: '/proxy/dashboard/login'" in html
+
+                login_resp = await client.get("/dashboard/login")
+                assert login_resp.status_code == 200
+                assert 'action="/proxy/dashboard/login"' in login_resp.text
+
+    async def test_login_redirect_respects_root_path(self, db_repository):
+        app = _build_dashboard_app(override_session=False)
+        with patch(
+            "app.db.repository.SetupStateRepository.is_complete",
+            new_callable=AsyncMock,
+            return_value=True,
+        ):
+            transport = httpx.ASGITransport(app=app, root_path="/proxy")
+            async with httpx.AsyncClient(
+                transport=transport,
+                base_url="http://testserver",
+                follow_redirects=False,
+            ) as client:
+                resp = await client.get("/dashboard/agents")
+                assert resp.status_code == 303
+                assert resp.headers.get("location") == "/proxy/dashboard/login"
+
+    async def test_entity_index_diagnostics_in_english(self, dashboard_client: httpx.AsyncClient):
+        resp = await dashboard_client.get("/dashboard/entity-index")
+        html = resp.text
+        assert "No matches." in html
+        assert "Allowed domains: " in html
+        assert "In index: " in html
+        assert "Likely cause: no entities of the allowed domains exist in the index." in html
+        assert "Likely cause: entities exist but were filtered out by visibility, recall, or confidence threshold." in html
+        assert "Keine Treffer." not in html
+        assert "Erlaubte Domains: " not in html
+
+    def test_orphaned_templates_removed(self):
+        template_dir = Path(__file__).resolve().parents[1] / "app" / "dashboard" / "templates"
+        assert not (template_dir / "conversations.html").exists()
+        assert not (template_dir / "rewrite_config.html").exists()
+
+    def test_no_raw_fetch_in_dashboard_templates(self):
+        template_dir = Path(__file__).resolve().parents[1] / "app" / "dashboard" / "templates"
+        for template_path in sorted(template_dir.glob("*.html")):
+            if template_path.name == "dashboard_base.html":
+                continue
+            html = template_path.read_text(encoding="utf-8")
+            assert "fetch(" not in html, f"raw fetch found in {template_path.name}"
 
     async def test_settings_page_has_live_regions(self, dashboard_client: httpx.AsyncClient):
         resp = await dashboard_client.get("/dashboard/settings")
@@ -236,6 +351,31 @@ class TestDashboardTemplateRendering:
         assert area_idx != -1
         assert label_idx < device_idx
         assert device_idx < area_idx
+
+    async def test_timers_modal_has_dialog_semantics(self, dashboard_client: httpx.AsyncClient):
+        resp = await dashboard_client.get("/dashboard/timers")
+        html = resp.text
+        assert 'role="dialog"' in html
+        assert 'aria-modal="true"' in html
+        assert 'aria-labelledby="timer-edit-modal-title"' in html
+        assert '@keydown.escape.window="showEditModal=false"' in html
+
+    def test_dashboard_x_cloak_global_rule(self):
+        style_path = Path(__file__).resolve().parents[1] / "app" / "dashboard" / "static" / "style.css"
+        css = style_path.read_text(encoding="utf-8")
+        assert '[x-cloak]' in css
+
+    def test_dashboard_polling_templates_clear_refresh_interval(self):
+        template_dir = Path(__file__).resolve().parents[1] / "app" / "dashboard" / "templates"
+        for template_name in ("overview.html", "system_health.html", "timers.html"):
+            html = (template_dir / template_name).read_text(encoding="utf-8")
+            assert "clearInterval(this.refreshInterval)" in html
+
+    def test_no_btn_xs_class_in_templates(self):
+        template_dir = Path(__file__).resolve().parents[1] / "app" / "dashboard" / "templates"
+        for template_path in sorted(template_dir.glob("*.html")):
+            html = template_path.read_text(encoding="utf-8")
+            assert "btn-xs" not in html, f"btn-xs found in {template_path.name}"
 
 
 @pytest.mark.integration

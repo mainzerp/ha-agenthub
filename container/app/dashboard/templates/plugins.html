@@ -69,30 +69,27 @@ function pluginsPage() {
         async loadPlugins() {
             this.loading = true;
             try {
-                const resp = await fetch('/api/admin/plugins');
-                if (resp.ok) this.plugins = await resp.json();
-            } catch (e) { console.error('Failed to load plugins', e); }
+                this.plugins = await window.dashboardApi.json('/api/admin/plugins');
+            } catch (e) {
+                if (e.code === 'auth_expired') return;
+                console.error('Failed to load plugins', e);
+            }
             this.loading = false;
         },
         async togglePlugin(name, enabled) {
             const action = enabled ? 'enable' : 'disable';
             try {
-                const resp = await fetch('/api/admin/plugins/' + encodeURIComponent(name) + '/' + action, {
+                await window.dashboardApi.request('/api/admin/plugins/' + encodeURIComponent(name) + '/' + action, {
                     method: 'POST',
                 });
-                if (resp.ok) {
-                    this.message = 'Plugin ' + name + ' ' + action + 'd';
-                    this.messageType = 'success';
-                    await this.loadPlugins();
-                } else {
-                    const err = await resp.json();
-                    this.message = err.detail || 'Failed to ' + action + ' plugin';
-                    this.messageType = 'error';
-                    await this.loadPlugins();
-                }
+                this.message = 'Plugin ' + name + ' ' + action + 'd';
+                this.messageType = 'success';
+                await this.loadPlugins();
             } catch (e) {
-                this.message = 'Network error';
+                if (e.code === 'auth_expired') return;
+                this.message = e.detail || 'Network error';
                 this.messageType = 'error';
+                await this.loadPlugins();
             }
         },
     };

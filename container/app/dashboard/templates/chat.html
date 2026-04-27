@@ -107,7 +107,7 @@ function chatPage() {
             this.streamBuffer = '';
 
             try {
-                const resp = await fetch('/api/admin/chat/stream', {
+                const resp = await window.dashboardApi.request('/api/admin/chat/stream', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
@@ -116,14 +116,6 @@ function chatPage() {
                         language: (navigator.language || 'en').split('-')[0],
                     }),
                 });
-
-                if (!resp.ok) {
-                    const err = await resp.text();
-                    this.messages.push({ role: 'error', text: 'Error: ' + (err || resp.statusText) });
-                    this.streaming = false;
-                    this.scrollToBottom();
-                    return;
-                }
 
                 const reader = resp.body.getReader();
                 const decoder = new TextDecoder();
@@ -176,6 +168,7 @@ function chatPage() {
                     this.messages.push({ role: 'assistant', text: '(empty response)' });
                 }
             } catch (e) {
+                if (e.code === 'auth_expired') return;
                 this.messages.push({ role: 'error', text: 'Request failed: ' + e.message });
             }
 

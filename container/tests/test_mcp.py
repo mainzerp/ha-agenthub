@@ -521,3 +521,29 @@ class TestMcpServerAdminApiAuth:
                     },
                 )
                 assert resp.status_code == 401
+
+    async def test_add_mcp_server_rejects_http_transport(self, db_repository):
+        import httpx
+
+        app = build_integration_test_app(setup_complete=True, override_admin_session=True)
+
+        with patch(
+            "app.db.repository.SetupStateRepository.is_complete",
+            new_callable=AsyncMock,
+            return_value=True,
+        ):
+            transport = httpx.ASGITransport(app=app)
+            async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+                resp = await client.post(
+                    "/api/admin/mcp-servers",
+                    json={
+                        "name": "legacy-http",
+                        "transport": "http",
+                        "command_or_url": "http://localhost:9000/sse",
+                    },
+                )
+
+        assert resp.status_code == 400
+        detail = resp.json()["detail"]
+        assert "stdio" in detail
+        assert "sse" in detail

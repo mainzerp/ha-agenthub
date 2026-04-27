@@ -145,7 +145,7 @@
         <div class="chart-card">
             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem;">
                 <h3 class="chart-card-title" style="margin: 0;">Recent Activity</h3>
-                <a href="/dashboard/traces" class="section-link">View all</a>
+                <a href="{{ root_url(request, '/dashboard/traces') }}" class="section-link">View all</a>
             </div>
             <div class="table-container-flush">
                 <table class="data-table">
@@ -193,33 +193,45 @@ function overviewPage() {
         requestTrendChart: null,
         agentDistChart: null,
         cacheTierChart: null,
+        refreshInterval: null,
 
         async loadAll() {
             await Promise.all([this.loadExtended(), this.loadHealth()]);
             this.$nextTick(() => this.initCharts());
-            setInterval(async () => {
-                await Promise.all([this.loadExtended(), this.loadHealth()]);
-                this.updateCharts();
-            }, 30000);
+            if (!this.refreshInterval) {
+                this.refreshInterval = setInterval(async () => {
+                    await Promise.all([this.loadExtended(), this.loadHealth()]);
+                    this.updateCharts();
+                }, 30000);
+            }
+        },
+
+        destroy() {
+            if (this.refreshInterval) {
+                clearInterval(this.refreshInterval);
+                this.refreshInterval = null;
+            }
         },
 
         async loadExtended() {
             try {
-                var resp = await fetch("/api/admin/overview/extended", { credentials: "same-origin" });
-                if (resp.ok) this.data = await resp.json();
-            } catch(e) { console.error("Failed to load extended overview", e); }
+                this.data = await window.dashboardApi.json('/api/admin/overview/extended');
+            } catch(e) {
+                if (e.code === 'auth_expired') return;
+                console.error('Failed to load extended overview', e);
+            }
         },
 
         async loadHealth() {
             try {
-                var resp = await fetch("/api/admin/health/extended", { credentials: "same-origin" });
-                if (resp.ok) {
-                    this.health = await resp.json();
-                    this.healthErrors = Object.entries(this.health)
-                        .filter(([k, v]) => v.status === "error" && k !== "uptime")
-                        .map(([k]) => this.healthComponents.find(c => c.key === k)?.label || k);
-                }
-            } catch(e) { console.error("Failed to load health", e); }
+                this.health = await window.dashboardApi.json('/api/admin/health/extended');
+                this.healthErrors = Object.entries(this.health)
+                    .filter(([k, v]) => v.status === 'error' && k !== 'uptime')
+                    .map(([k]) => this.healthComponents.find(c => c.key === k)?.label || k);
+            } catch(e) {
+                if (e.code === 'auth_expired') return;
+                console.error('Failed to load health', e);
+            }
         },
 
         initCharts() {

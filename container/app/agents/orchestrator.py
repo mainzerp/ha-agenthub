@@ -17,10 +17,12 @@ from datetime import UTC, datetime, timedelta
 from app.a2a.protocol import JsonRpcRequest
 from app.agents.base import BaseAgent
 from app.agents.cancel_speech import generate_cancel_speech
+from app.agents.compound_utterance import looks_compound
 from app.agents.language_detect import detect_user_language
 from app.agents.sanitize import strip_markdown
 from app.analytics.collector import track_agent_timeout, track_request
 from app.analytics.tracer import _optional_span
+from app.cache.routing_cache import make_routing_entry_id
 from app.db.repository import ConversationRepository, SettingsRepository
 from app.entity.visibility import entity_is_visible
 from app.ha_client.home_context import home_context_provider
@@ -1080,6 +1082,88 @@ class OrchestratorAgent(BaseAgent):
             logger.warning("Failed to store response cache", exc_info=True)
             return False
 
+    @staticmethod
+    def _is_actionable_routing_agent(target_agent: str) -> bool:
+        return (
+            target_agent not in (_FALLBACK_AGENT, _CANCEL_INTERACTION_AGENT, "send-agent")
+            and target_agent not in _INTERNAL_ONLY_AGENTS
+        )
+
+    @staticmethod
+    def _bool_setting_default(default: bool) -> str:
+        return "true" if default else "false"
+
+    async def _get_bool_setting(self, key: str, default: bool) -> bool:
+        try:
+            raw = await SettingsRepository.get_value(key, self._bool_setting_default(default))
+        except Exception:
+            return default
+        if raw is None:
+            return default
+        normalized = str(raw).strip().lower()
+        if not normalized:
+            return default
+        if normalized in {"true", "1", "yes", "on"}:
+            return True
+        if normalized in {"false", "0", "no", "off"}:
+            return False
+        return default
+
+    async def _invalidate_routing_for_turn(self, user_text: str, *, language: str) -> None:
+        if not self._cache_manager:
+            return
+        entry_id = make_routing_entry_id(user_text, language=language)
+        try:
+            self._cache_manager.invalidate_routing(entry_id)
+        except Exception:
+            logger.debug("Routing cache invalidate failed", exc_info=True)
+
+    async def _maybe_store_routing(
+        self,
+        *,
+        user_text: str,
+        target_agent: str,
+        confidence: float | None,
+        condensed_task: str,
+        action_executed,
+        has_error: bool,
+        language: str = "en",
+    ) -> bool:
+        if not self._cache_manager or self._legacy_pipeline_enabled():
+            return False
+        if target_agent in (_FALLBACK_AGENT, _CANCEL_INTERACTION_AGENT, "send-agent"):
+            return False
+        if target_agent in _INTERNAL_ONLY_AGENTS:
+            return False
+        if has_error:
+            return False
+        try:
+            min_confidence = float(
+                await SettingsRepository.get_value(
+                    "routing.cache_min_confidence",
+                    "0.7",
+                )
+            )
+        except Exception:
+            min_confidence = 0.7
+        if confidence is None or confidence < min_confidence:
+            return False
+        if self._is_actionable_routing_agent(target_agent):
+            if not action_executed or not action_executed.get("success"):
+                return False
+        try:
+            await self._cache_manager.store_routing_async(
+                user_text,
+                target_agent,
+                confidence,
+                condensed_task,
+                language=language,
+            )
+            return True
+        except Exception:
+            logger.warning("Failed to store routing decision", exc_info=True)
+            return False
+
     async def _create_trace(
         self,
         span_collector,
@@ -1234,6 +1318,7 @@ class OrchestratorAgent(BaseAgent):
         routing_cached: bool,
         *,
         extended_metadata: bool = False,
+        extra_metadata: dict | None = None,
     ) -> None:
         """Populate the ``classify`` span metadata block.
 
@@ -1254,6 +1339,8 @@ class OrchestratorAgent(BaseAgent):
             span["metadata"]["all_classifications"] = {
                 a: {"task": t[:300], "confidence": c} for a, t, c in classifications
             }
+        if extra_metadata:
+            span["metadata"].update(extra_metadata)
 
     async def _finalize_single_agent_response(
         self,
@@ -1300,6 +1387,7 @@ class OrchestratorAgent(BaseAgent):
             mediation_agent = target_agent
         original_speech = speech
         cache_stored_response = False
+        cache_stored_routing = False
         async with _optional_span(span_collector, "return", agent_id="orchestrator") as ret_span:
             ret_span["metadata"]["from_agent"] = routed_to
             ret_span["metadata"]["agent_response"] = speech[:500]
@@ -1334,7 +1422,17 @@ class OrchestratorAgent(BaseAgent):
                     has_error,
                     language=language,
                 )
+                cache_stored_routing = await self._maybe_store_routing(
+                    user_text=user_text,
+                    target_agent=target_agent,
+                    confidence=confidence,
+                    condensed_task=condensed_task,
+                    action_executed=action_executed,
+                    has_error=has_error,
+                    language=language,
+                )
             ret_span["metadata"]["cache_stored_response"] = cache_stored_response
+            ret_span["metadata"]["cache_stored_routing"] = cache_stored_routing
             await self._store_turn(conversation_id, user_text, speech, agent_id=routed_to)
             if span_collector:
                 await self._create_trace(
@@ -1357,6 +1455,8 @@ class OrchestratorAgent(BaseAgent):
         *,
         streaming: bool,
         _pre_classified: tuple[list[tuple[str, str, float]], bool] | None = None,
+        _classify_reason: str | None = None,
+        _allow_classify_cache_lookup: bool | None = None,
     ) -> AsyncGenerator[dict, None]:
         """Unified pipeline entry.
 
@@ -1385,11 +1485,21 @@ class OrchestratorAgent(BaseAgent):
             async for chunk in self._handle_task_stream_impl(task):
                 yield chunk
             return
-        result = await self._handle_task_impl(task, _pre_classified=_pre_classified)
+        result = await self._handle_task_impl(
+            task,
+            _pre_classified=_pre_classified,
+            _classify_reason=_classify_reason,
+            _allow_classify_cache_lookup=_allow_classify_cache_lookup,
+        )
         yield {"done": True, "payload": result}
 
     async def handle_task(
-        self, task: AgentTask, *, _pre_classified: tuple[list[tuple[str, str, float]], bool] | None = None
+        self,
+        task: AgentTask,
+        *,
+        _pre_classified: tuple[list[tuple[str, str, float]], bool] | None = None,
+        _classify_reason: str | None = None,
+        _allow_classify_cache_lookup: bool | None = None,
     ) -> dict:
         """Public non-streaming entry point.
 
@@ -1398,9 +1508,20 @@ class OrchestratorAgent(BaseAgent):
         rollback to the direct impl call.
         """
         if self._legacy_pipeline_enabled():
-            return await self._handle_task_impl(task, _pre_classified=_pre_classified)
+            return await self._handle_task_impl(
+                task,
+                _pre_classified=_pre_classified,
+                _classify_reason=_classify_reason,
+                _allow_classify_cache_lookup=_allow_classify_cache_lookup,
+            )
         final: dict | None = None
-        async for chunk in self._run_pipeline(task, streaming=False, _pre_classified=_pre_classified):
+        async for chunk in self._run_pipeline(
+            task,
+            streaming=False,
+            _pre_classified=_pre_classified,
+            _classify_reason=_classify_reason,
+            _allow_classify_cache_lookup=_allow_classify_cache_lookup,
+        ):
             if chunk.get("done"):
                 final = chunk
         if final is None or "payload" not in final:
@@ -1408,7 +1529,12 @@ class OrchestratorAgent(BaseAgent):
             # terminal chunk with ``payload``. Reaching this means
             # something replaced the pipeline at runtime; fall back
             # to a direct impl call rather than returning ``None``.
-            return await self._handle_task_impl(task, _pre_classified=_pre_classified)
+            return await self._handle_task_impl(
+                task,
+                _pre_classified=_pre_classified,
+                _classify_reason=_classify_reason,
+                _allow_classify_cache_lookup=_allow_classify_cache_lookup,
+            )
         return final["payload"]
 
     def handle_task_stream(self, task: AgentTask) -> AsyncGenerator[dict, None]:
@@ -1422,7 +1548,12 @@ class OrchestratorAgent(BaseAgent):
         return self._run_pipeline(task, streaming=True)
 
     async def _handle_task_impl(
-        self, task: AgentTask, *, _pre_classified: tuple[list[tuple[str, str, float]], bool] | None = None
+        self,
+        task: AgentTask,
+        *,
+        _pre_classified: tuple[list[tuple[str, str, float]], bool] | None = None,
+        _classify_reason: str | None = None,
+        _allow_classify_cache_lookup: bool | None = None,
     ) -> dict:
         user_text = task.user_text or task.description
         conversation_id, detected_language, _lang_turns = await self._pipeline_resolve_conversation_and_language(task)
@@ -1444,12 +1575,18 @@ class OrchestratorAgent(BaseAgent):
         # 0. Cache lookup (before classify)
         cache_result = None
         cache_span_ref = None
+        compound_bypass = False
+        parse_miss_fallthrough_enabled = await self._get_bool_setting("routing.parse_miss_fallthrough", True)
         if _pre_classified is None and self._cache_manager:
-            cache_result, cache_span_ref = await self._do_cache_lookup(
-                user_text,
-                span_collector,
-                language=detected_language,
-            )
+            if await self._get_bool_setting("routing.compound_utterance_bypass", True) and looks_compound(user_text):
+                compound_bypass = True
+                logger.debug("Skipping cache lookup for structurally compound utterance: %r", user_text[:80])
+            else:
+                cache_result, cache_span_ref = await self._do_cache_lookup(
+                    user_text,
+                    span_collector,
+                    language=detected_language,
+                )
 
         # Response hit short-circuit: skip classify and dispatch entirely
         if cache_result and cache_result.hit_type in ("action_hit", "response_hit"):
@@ -1467,121 +1604,90 @@ class OrchestratorAgent(BaseAgent):
             # Cached action replay failed -- fall through to classify + dispatch
             cache_result = None  # Reset so _classify() can re-check routing cache
 
-        # 1. Classify intent (skip if pre-classified by handle_task_stream)
-        if _pre_classified is not None:
-            classifications, routing_cached = _pre_classified
-            target_agent, condensed_task, confidence = classifications[0]
-        else:
-            try:
-                async with _optional_span(span_collector, "classify", agent_id="orchestrator") as span:
-                    classifications, routing_cached = await self._classify(
-                        user_text,
-                        cache_result=cache_result,
-                        conversation_id=conversation_id,
-                        span_collector=span_collector,
-                        language=detected_language,
-                    )
-                    target_agent, condensed_task, confidence = classifications[0]
-                    self._pipeline_record_classify_span(
-                        span,
-                        classifications,
-                        user_text,
-                        condensed_task,
-                        confidence,
-                        routing_cached,
-                        extended_metadata=True,
-                    )
-            except _RecoverableClassificationError as exc:
-                return {
-                    "speech": exc.message,
-                    "conversation_id": conversation_id,
-                    "routed_to": "orchestrator",
-                    "action_executed": None,
-                    "voice_followup": False,
-                    "error": {
-                        "code": exc.code,
-                        "message": exc.message,
-                        "recoverable": True,
-                    },
-                }
-        # P3-10: per-request routing log; debug.
-        logger.debug(
-            "Routed to %s (%s): %s (conversation=%s)",
-            target_agent,
-            # P1-4: model did not report a confidence value -> render
-            # ``unknown`` instead of faking ``0%`` or ``80%``.
-            f"{confidence * 100:.0f}%" if confidence is not None else "unknown",
-            condensed_task[:80],
-            conversation_id,
+        pre_classified = _pre_classified
+        fallthrough_used = False
+        allow_classify_cache_lookup = (
+            _allow_classify_cache_lookup if _allow_classify_cache_lookup is not None else not compound_bypass
         )
+        next_classify_extra: dict[str, object] = {}
+        if compound_bypass:
+            next_classify_extra["compound_bypass"] = True
+            next_classify_extra["compound_bypass_reason"] = "multi_sentence"
+        if _classify_reason:
+            next_classify_extra["reason"] = _classify_reason
 
-        # 2. Build context with conversation turns
-        turns = await self._get_turns(conversation_id)
+        agent_responses: list[tuple[str, str, bool]] = []
+        while True:
+            # 1. Classify intent (skip if pre-classified by handle_task_stream)
+            if pre_classified is not None:
+                classifications, routing_cached = pre_classified
+                target_agent, condensed_task, confidence = classifications[0]
+                pre_classified = None
+            else:
+                try:
+                    async with _optional_span(span_collector, "classify", agent_id="orchestrator") as span:
+                        classifications, routing_cached = await self._classify(
+                            user_text,
+                            cache_result=cache_result,
+                            conversation_id=conversation_id,
+                            span_collector=span_collector,
+                            language=detected_language,
+                            allow_cache_lookup=allow_classify_cache_lookup,
+                        )
+                        target_agent, condensed_task, confidence = classifications[0]
+                        self._pipeline_record_classify_span(
+                            span,
+                            classifications,
+                            user_text,
+                            condensed_task,
+                            confidence,
+                            routing_cached,
+                            extended_metadata=True,
+                            extra_metadata=next_classify_extra or None,
+                        )
+                except _RecoverableClassificationError as exc:
+                    return {
+                        "speech": exc.message,
+                        "conversation_id": conversation_id,
+                        "routed_to": "orchestrator",
+                        "action_executed": None,
+                        "voice_followup": False,
+                        "error": {
+                            "code": exc.code,
+                            "message": exc.message,
+                            "recoverable": True,
+                        },
+                    }
+            next_classify_extra = {}
+            allow_classify_cache_lookup = True
 
-        # Check for sequential send dispatch
-        is_sequential_send = any(a == "send-agent" for a, _, _ in classifications) and any(
-            a != "send-agent" for a, _, _ in classifications
-        )
-
-        # 3-4. Dispatch
-        incoming_context = task.context
-        failed_agents: list[tuple[str, str]] = []
-        agent_error = None
-        agent_voice_followup = False
-        directive = None
-        directive_reason = None
-        if is_sequential_send:
-            # --- Sequential send dispatch (content agent -> send agent) ---
-            routed_to, speech, result = await self._handle_sequential_send(
-                classifications,
-                user_text,
-                conversation_id,
-                turns,
-                span_collector,
-                incoming_context=incoming_context,
-                resolved_language=detected_language,
-            )
-            action_executed = (result or {}).get("action_executed")
-            has_error = bool((result or {}).get("error"))
-            agent_error = (result or {}).get("error")
-            agent_voice_followup = bool((result or {}).get("voice_followup"))
-        elif len(classifications) == 1:
-            # --- Single agent path (unchanged flow) ---
-            agent_id, speech, result = await self._dispatch_single(
+            # P3-10: per-request routing log; debug.
+            logger.debug(
+                "Routed to %s (%s): %s (conversation=%s)",
                 target_agent,
-                condensed_task,
-                user_text,
+                f"{confidence * 100:.0f}%" if confidence is not None else "unknown",
+                condensed_task[:80],
                 conversation_id,
-                turns,
-                span_collector,
-                incoming_context=incoming_context,
-                resolved_language=detected_language,
             )
-            action_executed = (result or {}).get("action_executed")
-            routed_to = agent_id
-            directive = (result or {}).get("directive")
-            directive_reason = (result or {}).get("reason")
-            if directive:
-                return {
-                    "speech": result.get("speech", ""),
-                    "conversation_id": conversation_id,
-                    "routed_to": routed_to,
-                    "action_executed": None,
-                    "voice_followup": False,
-                    "directive": directive,
-                    "reason": directive_reason,
-                }
 
-            # Check for agent-level error
-            agent_error = (result or {}).get("error")
-            has_error = agent_error is not None
-            agent_voice_followup = bool((result or {}).get("voice_followup"))
-        else:
-            # --- Multi-agent parallel dispatch ---
-            dispatch_coros = [
-                self._dispatch_single(
-                    aid,
-                    ctask,
+            # 2. Build context with conversation turns
+            turns = await self._get_turns(conversation_id)
+
+            # Check for sequential send dispatch
+            is_sequential_send = any(a == "send-agent" for a, _, _ in classifications) and any(
+                a != "send-agent" for a, _, _ in classifications
+            )
+
+            # 3-4. Dispatch
+            incoming_context = task.context
+            failed_agents: list[tuple[str, str]] = []
+            agent_error = None
+            agent_voice_followup = False
+            directive = None
+            directive_reason = None
+            if is_sequential_send:
+                routed_to, speech, result = await self._handle_sequential_send(
+                    classifications,
                     user_text,
                     conversation_id,
                     turns,
@@ -1589,59 +1695,118 @@ class OrchestratorAgent(BaseAgent):
                     incoming_context=incoming_context,
                     resolved_language=detected_language,
                 )
-                for aid, ctask, _ in classifications
-            ]
-            dispatch_results = await asyncio.gather(*dispatch_coros, return_exceptions=True)
+                action_executed = (result or {}).get("action_executed")
+                has_error = bool((result or {}).get("error"))
+                agent_error = (result or {}).get("error")
+                agent_voice_followup = bool((result or {}).get("voice_followup"))
+            elif len(classifications) == 1:
+                agent_id, speech, result = await self._dispatch_single(
+                    target_agent,
+                    condensed_task,
+                    user_text,
+                    conversation_id,
+                    turns,
+                    span_collector,
+                    incoming_context=incoming_context,
+                    resolved_language=detected_language,
+                )
+                action_executed = (result or {}).get("action_executed")
+                routed_to = agent_id
+                directive = (result or {}).get("directive")
+                directive_reason = (result or {}).get("reason")
+                if directive:
+                    return {
+                        "speech": result.get("speech", ""),
+                        "conversation_id": conversation_id,
+                        "routed_to": routed_to,
+                        "action_executed": None,
+                        "voice_followup": False,
+                        "directive": directive,
+                        "reason": directive_reason,
+                    }
 
-            agent_responses: list[tuple[str, str, bool]] = []
-            action_executed = None
-            routed_agents: list[str] = []
-            for idx, dr in enumerate(dispatch_results):
-                agent_id_for_idx = classifications[idx][0]
-                if isinstance(dr, Exception):
-                    logger.warning("Multi-agent dispatch error for %s: %s", agent_id_for_idx, dr)
-                    failed_agents.append((agent_id_for_idx, str(dr)))
-                    continue
-                aid, sp, res = dr
-                # FLOW-HIGH-10: _dispatch_single never raises on timeout
-                # or agent error; it returns either a canned speech +
-                # result=None tuple (timeout) or a structured error
-                # result (general-agent failure). Previously the
-                # "(Note: X could not be reached.)" branch was dead
-                # because those cases still went into agent_responses
-                # with the canned text as real speech. Detect them here
-                # and route into failed_agents so the merge step excludes
-                # them and appends the failure note.
-                res_dict = res or {}
-                res_error = res_dict.get("error") if isinstance(res_dict, dict) else None
-                if res is None or res_error or sp in (_CANNED_TIMEOUT_SPEECH, _CANNED_GENERAL_ERROR_SPEECH):
-                    if res_error:
-                        reason = (
-                            res_error.get("code", "canned_error") if isinstance(res_error, dict) else "canned_error"
-                        )
-                    elif res is None:
-                        reason = "timeout"
-                    else:
-                        reason = "canned_speech"
-                    logger.warning(
-                        "Multi-agent dispatch reported error for %s: %s",
-                        agent_id_for_idx,
-                        reason,
+                agent_error = (result or {}).get("error")
+                has_error = agent_error is not None
+                agent_voice_followup = bool((result or {}).get("voice_followup"))
+                if (
+                    parse_miss_fallthrough_enabled
+                    and routing_cached
+                    and not fallthrough_used
+                    and self._is_actionable_routing_agent(target_agent)
+                    and not has_error
+                    and not action_executed
+                ):
+                    fallthrough_used = True
+                    await self._invalidate_routing_for_turn(user_text, language=detected_language)
+                    async with _optional_span(span_collector, "cache_fallthrough", agent_id="orchestrator") as span:
+                        span["metadata"]["reason"] = "routing_hit_actionable_parse_miss"
+                    logger.debug(
+                        "Routing cache hit for %s produced no executed action; invalidated entry and reclassifying live",
+                        target_agent,
                     )
-                    failed_agents.append((agent_id_for_idx, reason))
+                    cache_result = None
+                    allow_classify_cache_lookup = False
+                    next_classify_extra = {"reason": "routing_hit_actionable_parse_miss"}
                     continue
-                routed_agents.append(aid)
-                acted = bool(res and res.get("action_executed"))
-                agent_responses.append((aid, sp, acted))
-                if res and res.get("action_executed") and action_executed is None:
-                    action_executed = res["action_executed"]
-                if res and res.get("voice_followup"):
-                    agent_voice_followup = True
+            else:
+                dispatch_coros = [
+                    self._dispatch_single(
+                        aid,
+                        ctask,
+                        user_text,
+                        conversation_id,
+                        turns,
+                        span_collector,
+                        incoming_context=incoming_context,
+                        resolved_language=detected_language,
+                    )
+                    for aid, ctask, _ in classifications
+                ]
+                dispatch_results = await asyncio.gather(*dispatch_coros, return_exceptions=True)
 
-            target_agent = routed_agents[0] if routed_agents else _FALLBACK_AGENT
-            routed_to = ", ".join(routed_agents) if routed_agents else _FALLBACK_AGENT
-            speech = ""  # Will be set by _merge_responses inside return span
-            has_error = len(failed_agents) > 0
+                agent_responses = []
+                action_executed = None
+                routed_agents: list[str] = []
+                for idx, dr in enumerate(dispatch_results):
+                    agent_id_for_idx = classifications[idx][0]
+                    if isinstance(dr, Exception):
+                        logger.warning("Multi-agent dispatch error for %s: %s", agent_id_for_idx, dr)
+                        failed_agents.append((agent_id_for_idx, str(dr)))
+                        continue
+                    aid, sp, res = dr
+                    res_dict = res or {}
+                    res_error = res_dict.get("error") if isinstance(res_dict, dict) else None
+                    if res is None or res_error or sp in (_CANNED_TIMEOUT_SPEECH, _CANNED_GENERAL_ERROR_SPEECH):
+                        if res_error:
+                            reason = (
+                                res_error.get("code", "canned_error")
+                                if isinstance(res_error, dict)
+                                else "canned_error"
+                            )
+                        elif res is None:
+                            reason = "timeout"
+                        else:
+                            reason = "canned_speech"
+                        logger.warning(
+                            "Multi-agent dispatch reported error for %s: %s",
+                            agent_id_for_idx,
+                            reason,
+                        )
+                        failed_agents.append((agent_id_for_idx, reason))
+                        continue
+                    routed_agents.append(aid)
+                    acted = bool(res and res.get("action_executed"))
+                    agent_responses.append((aid, sp, acted))
+                    if res and res.get("action_executed") and action_executed is None:
+                        action_executed = res["action_executed"]
+                    if res and res.get("voice_followup"):
+                        agent_voice_followup = True
+
+                target_agent = routed_agents[0] if routed_agents else _FALLBACK_AGENT
+                routed_to = ", ".join(routed_agents) if routed_agents else _FALLBACK_AGENT
+                speech = ""
+                has_error = len(failed_agents) > 0
+            break
 
         # 5. Mediate response, store turn, trace
         voice_followup_effective = False
@@ -1671,6 +1836,7 @@ class OrchestratorAgent(BaseAgent):
                 ret_span["metadata"]["mediated"] = (speech != original_speech) or len(classifications) > 1
                 ret_span["metadata"]["voice_followup"] = voice_followup_effective
                 ret_span["metadata"]["cache_stored_response"] = False
+                ret_span["metadata"]["cache_stored_routing"] = False
                 await self._store_turn(conversation_id, user_text, speech, agent_id=routed_to)
                 if span_collector:
                     await self._create_trace(
@@ -1738,6 +1904,8 @@ class OrchestratorAgent(BaseAgent):
         # 0. Cache lookup (before classify)
         cache_result = None
         cache_span_ref = None
+        compound_bypass = False
+        parse_miss_fallthrough_enabled = await self._get_bool_setting("routing.parse_miss_fallthrough", True)
         if self._is_background_turn(task):
             result = await self._handle_background_turn(task)
             final_chunk = {
@@ -1751,11 +1919,15 @@ class OrchestratorAgent(BaseAgent):
             yield final_chunk
             return
         if self._cache_manager:
-            cache_result, cache_span_ref = await self._do_cache_lookup(
-                user_text,
-                span_collector,
-                language=detected_language,
-            )
+            if await self._get_bool_setting("routing.compound_utterance_bypass", True) and looks_compound(user_text):
+                compound_bypass = True
+                logger.debug("Skipping cache lookup for structurally compound utterance: %r", user_text[:80])
+            else:
+                cache_result, cache_span_ref = await self._do_cache_lookup(
+                    user_text,
+                    span_collector,
+                    language=detected_language,
+                )
 
         # Response hit short-circuit for streaming
         if cache_result and cache_result.hit_type in ("action_hit", "response_hit"):
@@ -1779,6 +1951,10 @@ class OrchestratorAgent(BaseAgent):
             cache_result = None  # Reset so _classify() can re-check routing cache
 
         # 1. Classify (non-streaming -- fast via Groq)
+        classify_extra: dict[str, object] = {}
+        if compound_bypass:
+            classify_extra["compound_bypass"] = True
+            classify_extra["compound_bypass_reason"] = "multi_sentence"
         try:
             async with _optional_span(span_collector, "classify", agent_id="orchestrator") as span:
                 classifications, routing_cached = await self._classify(
@@ -1787,6 +1963,7 @@ class OrchestratorAgent(BaseAgent):
                     conversation_id=conversation_id,
                     span_collector=span_collector,
                     language=detected_language,
+                    allow_cache_lookup=not compound_bypass,
                 )
                 target_agent, condensed_task, confidence = classifications[0]
                 self._pipeline_record_classify_span(
@@ -1797,6 +1974,7 @@ class OrchestratorAgent(BaseAgent):
                     confidence,
                     routing_cached,
                     extended_metadata=False,
+                    extra_metadata=classify_extra or None,
                 )
         except _RecoverableClassificationError as exc:
             yield {
@@ -1837,6 +2015,7 @@ class OrchestratorAgent(BaseAgent):
                 ret_span["metadata"]["mediated"] = False
                 ret_span["metadata"]["voice_followup"] = vf_eff
                 ret_span["metadata"]["cache_stored_response"] = False
+                ret_span["metadata"]["cache_stored_routing"] = False
                 await self._store_turn(conversation_id, user_text, full_speech, agent_id=target_agent)
                 if span_collector:
                     clf = [(target_agent, condensed_task, confidence)]
@@ -2228,6 +2407,42 @@ class OrchestratorAgent(BaseAgent):
             yield final_chunk
             return
 
+        if (
+            parse_miss_fallthrough_enabled
+            and routing_cached
+            and self._is_actionable_routing_agent(target_agent)
+            and stream_error is None
+            and action_executed is None
+        ):
+            await self._invalidate_routing_for_turn(user_text, language=detected_language)
+            async with _optional_span(span_collector, "cache_fallthrough", agent_id="orchestrator") as span:
+                span["metadata"]["reason"] = "routing_hit_actionable_parse_miss"
+            logger.debug(
+                "Routing cache hit for %s produced no executed action during streaming; falling back to non-streaming handle_task",
+                target_agent,
+            )
+            result = await self.handle_task(
+                task,
+                _classify_reason="routing_hit_actionable_parse_miss",
+                _allow_classify_cache_lookup=False,
+            )
+            final_chunk = {
+                "token": result["speech"],
+                "done": True,
+                "conversation_id": conversation_id,
+                "mediated_speech": result["speech"],
+            }
+            if result.get("error"):
+                final_chunk["error"] = result["error"]
+            if result.get("voice_followup"):
+                final_chunk["voice_followup"] = True
+            if result.get("directive"):
+                final_chunk["directive"] = result["directive"]
+            if result.get("reason") is not None:
+                final_chunk["reason"] = result["reason"]
+            yield final_chunk
+            return
+
         # 4. Store conversation turn and create trace summary
         full_speech = "".join(collected_speech)
         if stream_error is not None and target_agent == _FALLBACK_AGENT:
@@ -2604,6 +2819,7 @@ class OrchestratorAgent(BaseAgent):
         conversation_id: str | None = None,
         span_collector=None,
         language: str = "en",
+        allow_cache_lookup: bool = True,
     ) -> tuple[list[tuple[str, str, float | None]], bool]:
         """Classify user intent and produce a condensed task.
 
@@ -2632,7 +2848,7 @@ class OrchestratorAgent(BaseAgent):
                     logger.debug("Routing cache hit: %s for '%s'", cache_result.agent_id, user_text[:80])
                     condensed = user_text
                     return [(cache_result.agent_id, condensed, 1.0)], True
-        elif self._cache_manager:
+        elif allow_cache_lookup and self._cache_manager:
             # Fallback: no pre-computed result (e.g. called without handle_task)
             try:
                 cache_result = await self._cache_manager.process(
@@ -2695,13 +2911,7 @@ class OrchestratorAgent(BaseAgent):
                 span_collector=span_collector,
                 language=language,
             )
-            # P1-4: only persist routing decisions when the LLM actually
-            # emitted a confidence value AND that value clears the
-            # configured minimum. The previous 0.8 default (synthetic
-            # fallback when the LLM used the old format) caused every
-            # old-format classification to enter the routing cache as if
-            # the model was highly confident.
-            if self._cache_manager and len(classifications) == 1:
+            if self._cache_manager and self._legacy_pipeline_enabled() and len(classifications) == 1:
                 target_agent, condensed, confidence = classifications[0]
                 if target_agent not in (_FALLBACK_AGENT, _CANCEL_INTERACTION_AGENT, "send-agent"):
                     try:

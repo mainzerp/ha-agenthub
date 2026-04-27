@@ -101,7 +101,7 @@
                 <template x-for="(entityId, index) in wakeBriefing.sensor_entities" :key="entityId">
                     <span class="badge badge-teal" style="display:inline-flex;align-items:center;gap:0.4rem;">
                         <span x-text="entityId"></span>
-                        <button type="button" class="btn btn-xs btn-danger" @click="removeSensorEntity(index)">x</button>
+                        <button type="button" class="btn btn-sm btn-danger" @click="removeSensorEntity(index)">x</button>
                     </span>
                 </template>
             </div>
@@ -161,8 +161,8 @@
                         <td class="text-mono" x-text="formatDurationSeconds(t.duration_seconds)"></td>
                         <td class="text-mono" x-text="displayOrigin(t)"></td>
                         <td style="white-space:nowrap;">
-                            <button class="btn btn-xs btn-secondary" @click="openEditTimer(t)">Edit</button>
-                            <button class="btn btn-xs btn-danger" @click="cancelRow(t.id)">Cancel</button>
+                            <button class="btn btn-sm btn-secondary" @click="openEditTimer(t)">Edit</button>
+                            <button class="btn btn-sm btn-danger" @click="cancelRow(t.id)">Cancel</button>
                         </td>
                     </tr>
                 </template>
@@ -218,8 +218,8 @@
                         <td style="white-space:nowrap;">
                             <template x-if="a.source === 'internal'">
                                 <span>
-                                    <button class="btn btn-xs btn-secondary" @click="openEditAlarm(a)">Edit</button>
-                                    <button class="btn btn-xs btn-danger" @click="cancelRow(a.id)">Cancel</button>
+                                    <button class="btn btn-sm btn-secondary" @click="openEditAlarm(a)">Edit</button>
+                                    <button class="btn btn-sm btn-danger" @click="cancelRow(a.id)">Cancel</button>
                                 </span>
                             </template>
                             <template x-if="a.source !== 'internal'">
@@ -237,9 +237,9 @@
     </template>
 
     <!-- Edit Timer/Alarm Modal -->
-    <div x-show="showEditModal" class="modal-overlay" @click.self="showEditModal=false">
-        <div style="background:var(--surface,#1e1e2e);padding:1.5rem;border-radius:8px;min-width:320px;max-width:480px;width:90%;">
-            <h3 style="margin-top:0;" x-text="editMode === 'alarm' ? 'Edit Alarm' : 'Edit Timer'"></h3>
+    <div x-show="showEditModal" class="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="timer-edit-modal-title" @click.self="showEditModal=false" @keydown.escape.window="showEditModal=false">
+        <div class="card" tabindex="-1" style="background:var(--surface,#1e1e2e);padding:1.5rem;border-radius:8px;min-width:320px;max-width:480px;width:90%;">
+            <h3 id="timer-edit-modal-title" style="margin-top:0;" x-text="editMode === 'alarm' ? 'Edit Alarm' : 'Edit Timer'"></h3>
             <div style="margin-bottom:1rem;">
                 <label style="display:block;margin-bottom:0.25rem;">Label</label>
                 <input type="text" x-model="editName" maxlength="128"
@@ -276,7 +276,7 @@
                             <div style="display:flex;flex-wrap:wrap;gap:0.45rem;">
                                 <template x-for="day in weekdayOptions" :key="day.code">
                                     <button type="button"
-                                            class="btn btn-xs"
+                                            class="btn btn-sm"
                                             :class="editRecurrenceByweekday.includes(day.code) ? 'btn-primary' : 'btn-secondary'"
                                             @click="toggleEditWeekday(day.code)"
                                             x-text="day.label"></button>
@@ -350,14 +350,17 @@ function timersPage() {
             this.refreshInterval = setInterval(() => this.loadData(), 5000);
         },
 
+        destroy() {
+            if (this.refreshInterval) {
+                clearInterval(this.refreshInterval);
+                this.refreshInterval = null;
+            }
+        },
+
         async loadWakeBriefingSettings() {
             this.wakeBriefingError = '';
             try {
-                const resp = await fetch('/api/admin/settings/wake-briefing', { credentials: 'same-origin' });
-                if (!resp.ok) {
-                    throw new Error('HTTP ' + resp.status);
-                }
-                const data = await resp.json();
+                const data = await window.dashboardApi.json('/api/admin/settings/wake-briefing');
                 this.wakeBriefing = {
                     enabled: !!data.enabled,
                     sources: {
@@ -374,6 +377,7 @@ function timersPage() {
                     composer_prompt: data.composer_prompt || '',
                 };
             } catch (e) {
+                if (e.code === 'auth_expired') return;
                 this.wakeBriefingError = 'Failed to load wake briefing settings.';
                 console.error('Failed to load wake briefing settings', e);
             }
@@ -382,13 +386,11 @@ function timersPage() {
 
         async loadData() {
             try {
-                const resp = await fetch('/api/admin/timers', { credentials: 'same-origin' });
-                if (resp.ok) {
-                    const data = await resp.json();
-                    this.timers = data.timers || [];
-                    this.alarms = data.alarms || [];
-                }
+                const data = await window.dashboardApi.json('/api/admin/timers');
+                this.timers = data.timers || [];
+                this.alarms = data.alarms || [];
             } catch (e) {
+                if (e.code === 'auth_expired') return;
                 console.error('Failed to load timer data', e);
             }
             this.loading = false;
@@ -439,17 +441,12 @@ function timersPage() {
         async cancelRow(id) {
             if (!confirm('Cancel this timer/alarm?')) return;
             try {
-                const resp = await fetch(`/api/admin/timers/${encodeURIComponent(id)}`, {
+                await window.dashboardApi.request(`/api/admin/timers/${encodeURIComponent(id)}`, {
                     method: 'DELETE',
-                    credentials: 'same-origin',
                 });
-                if (!resp.ok) {
-                    const body = await resp.json().catch(() => ({}));
-                    alert('Cancel failed: ' + (body.detail || resp.status));
-                    return;
-                }
             } catch (e) {
-                alert('Cancel failed: ' + e);
+                if (e.code === 'auth_expired') return;
+                alert('Cancel failed: ' + (e.detail || e));
                 return;
             }
             await this.loadData();
@@ -553,19 +550,14 @@ function timersPage() {
                 return;
             }
             try {
-                const resp = await fetch(`/api/admin/timers/${encodeURIComponent(id)}`, {
+                await window.dashboardApi.request(`/api/admin/timers/${encodeURIComponent(id)}`, {
                     method: 'PATCH',
-                    credentials: 'same-origin',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(body),
                 });
-                if (!resp.ok) {
-                    const err = await resp.json().catch(() => ({}));
-                    this.modalError = err.detail || ('Error ' + resp.status);
-                    return;
-                }
             } catch (e) {
-                this.modalError = String(e);
+                if (e.code === 'auth_expired') return;
+                this.modalError = e.detail || String(e);
                 return;
             }
             this.showEditModal = false;
@@ -606,23 +598,18 @@ function timersPage() {
                 return;
             }
             try {
-                const resp = await fetch('/api/admin/settings/wake-briefing', {
+                const data = await window.dashboardApi.json('/api/admin/settings/wake-briefing', {
                     method: 'PUT',
-                    credentials: 'same-origin',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(payload),
                 });
-                if (!resp.ok) {
-                    const body = await resp.json().catch(() => ({}));
-                    throw new Error(body.detail || ('HTTP ' + resp.status));
-                }
-                const data = await resp.json();
                 if (data.settings) {
                     this.wakeBriefing = data.settings;
                 }
                 this.wakeBriefingSaved = 'Wake briefing settings saved.';
             } catch (e) {
-                this.wakeBriefingError = String(e);
+                if (e.code === 'auth_expired') return;
+                this.wakeBriefingError = e.detail || String(e);
             } finally {
                 this.wakeBriefingSaving = false;
             }
@@ -638,21 +625,16 @@ function timersPage() {
                 return;
             }
             try {
-                const resp = await fetch('/api/admin/settings/wake-briefing/test', {
+                const data = await window.dashboardApi.json('/api/admin/settings/wake-briefing/test', {
                     method: 'POST',
-                    credentials: 'same-origin',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(payload),
                 });
-                if (!resp.ok) {
-                    const body = await resp.json().catch(() => ({}));
-                    throw new Error(body.detail || ('HTTP ' + resp.status));
-                }
-                const data = await resp.json();
                 this.wakeBriefingPreview = String(data.preview || '').trim() || 'No preview returned.';
             } catch (e) {
+                if (e.code === 'auth_expired') return;
                 this.wakeBriefingPreview = '';
-                this.wakeBriefingError = String(e);
+                this.wakeBriefingError = e.detail || String(e);
             } finally {
                 this.wakeBriefingTesting = false;
             }

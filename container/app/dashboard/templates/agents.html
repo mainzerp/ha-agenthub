@@ -46,27 +46,27 @@
                 <div class="form-row gap-sm mt-sm" style="display:flex; flex-wrap:wrap; gap:0.25rem;">
                     <template x-if="visibilitySummary[agent.agent_id] && visibilitySummary[agent.agent_id].has_rules && visibilitySummary[agent.agent_id].domains.length > 0">
                         <template x-for="domain in visibilitySummary[agent.agent_id].domains.filter(d => !(visibilitySummary[agent.agent_id].device_classes || []).length || !['sensor','binary_sensor'].includes(d))" :key="domain">
-                            <a :href="'/dashboard/entity-index?agent=' + agent.agent_id"
+                                     <a :href="window.dashUrl('/dashboard/entity-index') + '?agent=' + encodeURIComponent(agent.agent_id)"
                                class="badge badge-teal" style="cursor:pointer; text-decoration:none; font-size:0.75rem;"
                                x-text="domain"></a>
                         </template>
                     </template>
                     <template x-if="visibilitySummary[agent.agent_id] && (visibilitySummary[agent.agent_id].device_classes || []).length > 0">
                         <template x-for="dc in visibilitySummary[agent.agent_id].device_classes" :key="dc">
-                            <a :href="'/dashboard/entity-index?agent=' + agent.agent_id"
+                                     <a :href="window.dashUrl('/dashboard/entity-index') + '?agent=' + encodeURIComponent(agent.agent_id)"
                                class="badge" style="cursor:pointer; text-decoration:none; font-size:0.75rem; background:rgba(99,102,241,0.15); color:#818cf8;"
                                x-text="'sensor:' + dc"></a>
                         </template>
                     </template>
                     <template x-if="visibilitySummary[agent.agent_id] && visibilitySummary[agent.agent_id].has_rules && visibilitySummary[agent.agent_id].domains.length === 0 && !(visibilitySummary[agent.agent_id].device_classes || []).length">
-                        <a :href="'/dashboard/entity-index?agent=' + agent.agent_id"
+                                <a :href="window.dashUrl('/dashboard/entity-index') + '?agent=' + encodeURIComponent(agent.agent_id)"
                            class="badge badge-teal" style="cursor:pointer; text-decoration:none; font-size:0.75rem;">Entity rules</a>
                     </template>
                     <template x-if="(!visibilitySummary[agent.agent_id] || !visibilitySummary[agent.agent_id].has_rules) && nonEntityAgents.indexOf(agent.agent_id) !== -1">
                         <span class="badge badge-muted" style="font-size:0.75rem; opacity:0.6;">No entity access</span>
                     </template>
                     <template x-if="(!visibilitySummary[agent.agent_id] || !visibilitySummary[agent.agent_id].has_rules) && nonEntityAgents.indexOf(agent.agent_id) === -1">
-                        <a :href="'/dashboard/entity-index?agent=' + agent.agent_id"
+                                <a :href="window.dashUrl('/dashboard/entity-index') + '?agent=' + encodeURIComponent(agent.agent_id)"
                            class="badge badge-muted" style="cursor:pointer; text-decoration:none; font-size:0.75rem;">All entities</a>
                     </template>
                     <!-- MCP tool badges -->

@@ -12,7 +12,7 @@
     {% if error %}
     <div class="login-error">{{ error }}</div>
     {% endif %}
-    <form method="post" action="/dashboard/login">
+    <form method="post" action="{{ root_url(request, '/dashboard/login') }}">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <label for="username">Username</label>
         <input type="text" id="username" name="username" required>

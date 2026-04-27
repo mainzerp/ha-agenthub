@@ -1,12 +1,43 @@
 # Version
 
-**Current Version:** 1.1.0
+**Current Version:** 1.3.1
 
-## Recent Changes (since 1.1.0)
+## Recent Changes (since 1.3.0)
 
-(none yet)
+- HA bridge filler playback now waits on real completion signals only before speaking the final reply: `assist_satellite.announce` uses `blocking=True`, the TTS fallback waits for the target `media_player` to leave `playing`, and the hard cap remains only as a stuck-signal safety net. No duration estimation is used.
+
+- Routing cache no longer persists single-agent decisions before dispatch. The store moves to the post-execution finalize step and only fires when an actionable agent returned `action_executed.success=True` (or for non-actionable routes, when no error was raised). Prevents poisoned routing entries from parse-misses, HA failures, and short-circuited dispatches.
+- Routing-hit fall-through: when a routing-cache hit dispatches a single actionable agent and the agent returns neither an executed action nor an error (parse miss), the orchestrator now invalidates the offending routing entry and re-runs live LLM classification once for the same turn instead of speaking the parse-miss prose as success.
+- Compound-utterance routing-cache bypass: a purely structural, language-agnostic detector (counts sentence terminators `.!?;` and requires each segment to be substantive in word count) now skips the routing-cache lookup for obviously multi-sentence inputs. No keyword lists, no language tables, no conjunction tables. Single-sentence comma-joined compounds are not detected by this layer and are handled by the parse-miss fall-through above. Agent selection itself still goes through the LLM classifier in every case (Prime Directive 11 universally satisfied).
+- Added `RoutingCache.invalidate(entry_id)` and `CacheManager.invalidate_routing(entry_id)` to symmetrize routing-cache invalidation with the existing response-cache invalidation primitive.
 
 ## Version History
+
+### 1.3.1 (PATCH) -- Filler playback waits for real completion signals only
+
+- The Home Assistant bridge now waits for real filler completion signals before returning the final spoken reply: `assist_satellite.announce` uses `blocking=True`, and the TTS fallback waits for the target `media_player` to leave `playing` after first observing playback start.
+- Retained `MAX_FILLER_WAIT_SECONDS` only as a stuck-signal safety net and removed all duration-estimation behavior from the filler overlap path.
+
+### 1.3.0 (MINOR) -- Routing-cache hardening for compound and parse-miss utterances
+
+- Routing cache no longer persists single-agent decisions before dispatch; the store moved to post-execution and is gated on `action_executed.success` for actionable routes.
+- Added orchestrator-side routing-hit fall-through: routing-cache hits that dispatch a single actionable agent and yield no executed action and no error are now invalidated and re-classified live for the same turn.
+- Added a purely structural, language-agnostic compound-utterance detector that bypasses the routing-cache lookup for obviously multi-sentence inputs (no keyword lists, sentence-terminator + segment-word-count only).
+- Added `RoutingCache.invalidate` / `CacheManager.invalidate_routing`.
+- Closes the live failure where `Cached` routing on `"Kueche ausschalten. Dann neben sie machen wir es auf Ruhe Musik."` produced spoken success without any HA service call.
+
+### 1.2.0 (MINOR) -- Dashboard frontend hardening
+
+- MCP server form: replaced removed `http` transport option with `sse`; API now rejects unsupported transports; one-time migration 22 rewrites legacy `http` rows to `sse`.
+- Vendored Alpine.js 3.x at `container/app/dashboard/static/alpine.min.js`; CDN-failure path now surfaces a visible operator-facing banner.
+- Logout converted from GET to POST with CSRF protection; sidebar uses a hidden form button.
+- All dashboard pages now route fetches through `window.dashFetch` / `window.dashboardApi` so session-expired and HTTP errors are handled consistently.
+- Mobile sidebar now toggles `inert` + `aria-hidden` so off-canvas content is not in the tab order; timer modal gained `role="dialog"`, `aria-modal`, labelled title, and Escape-to-close.
+- Polling intervals on overview, system-health, and timers pages are now cleared on Alpine destroy.
+- CSS: added global `[x-cloak]` rule; replaced unused `btn-xs` usages with the existing `btn-sm`.
+- Translated remaining German empty-state strings on the entity-index diagnostics block to English.
+- Removed orphaned `conversations.html` and `rewrite_config.html` templates.
+- New `dashUrl()` helper plus `root_path`-aware redirects make the dashboard work behind a reverse-proxy subpath.
 
 ### 1.1.0 (MINOR) -- LLM-generated cancel-interaction acknowledgement
 

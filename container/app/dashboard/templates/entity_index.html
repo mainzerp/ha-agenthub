@@ -280,23 +280,23 @@
                                     && previewResult.diagnostics
                                     && previewResult.diagnostics.reason !== 'unknown'">
                         <div class="empty-state">
-                            <p><strong>Keine Treffer.</strong></p>
+                            <p><strong>No matches.</strong></p>
                             <template x-if="previewResult.diagnostics.allowed_domains.length > 0">
-                                <p x-text="'Erlaubte Domains: ' + previewResult.diagnostics.allowed_domains.join(', ')"></p>
+                                <p x-text="'Allowed domains: ' + previewResult.diagnostics.allowed_domains.join(', ')"></p>
                             </template>
                             <template x-if="Object.keys(previewResult.diagnostics.domain_counts || {}).length > 0">
                                 <p>
-                                    <span>Im Index: </span>
+                                    <span>In index: </span>
                                     <span x-text="Object.entries(previewResult.diagnostics.domain_counts)
                                                     .map(function(e){ return e[0] + '=' + e[1]; })
                                                     .join(', ')"></span>
                                 </p>
                             </template>
                             <template x-if="previewResult.diagnostics.reason === 'no_entities_of_allowed_domains'">
-                                <p>Wahrscheinliche Ursache: Keine Entitaeten der erlaubten Domains im Index.</p>
+                                <p>Likely cause: no entities of the allowed domains exist in the index.</p>
                             </template>
                             <template x-if="previewResult.diagnostics.reason === 'filtered_out'">
-                                <p>Wahrscheinliche Ursache: Entitaeten sind vorhanden, wurden aber durch Sichtbarkeit, Recall oder Confidence-Schwelle herausgefiltert.</p>
+                                <p>Likely cause: entities exist but were filtered out by visibility, recall, or confidence threshold.</p>
                             </template>
                         </div>
                     </template>
@@ -562,15 +562,10 @@ function entityIndexPage() {
                 const params = new URLSearchParams({ q });
                 if (this.previewAgent) params.set('agent_id', this.previewAgent);
                 if (this.previewDomain) params.set('domain', this.previewDomain);
-                const resp = await fetch('/api/admin/entity-index/match-preview?' + params.toString());
-                if (!resp.ok) {
-                    const detail = await resp.text();
-                    this.previewError = 'HTTP ' + resp.status + ': ' + detail;
-                } else {
-                    this.previewResult = await resp.json();
-                }
+                this.previewResult = await window.dashboardApi.json('/api/admin/entity-index/match-preview?' + params.toString());
             } catch (e) {
-                this.previewError = 'Request failed: ' + e;
+                if (e.code === 'auth_expired') return;
+                this.previewError = e.detail || ('Request failed: ' + e);
                 console.error('match-preview failed', e);
             }
             this.previewing = false;
@@ -580,14 +575,14 @@ function entityIndexPage() {
 
         async loadStats() {
             try {
-                const resp = await fetch('/api/admin/entity-index/stats');
-                this.stats = await resp.json();
+                this.stats = await window.dashboardApi.json('/api/admin/entity-index/stats');
                 if (this.stats.embedding?.state === 'building') {
                     this.startPolling();
                 } else {
                     this.stopPolling();
                 }
             } catch (e) {
+                if (e.code === 'auth_expired') return;
                 console.error('Failed to load entity index stats', e);
             }
         },
@@ -608,8 +603,7 @@ function entityIndexPage() {
             this.refreshing = true;
             this.refreshMessage = '';
             try {
-                const resp = await fetch('/api/admin/entity-index/refresh', { method: 'POST' });
-                const data = await resp.json();
+                const data = await window.dashboardApi.json('/api/admin/entity-index/refresh', { method: 'POST' });
                 if (data.status === 'ok') {
                     this.refreshMessage = 'Refreshed ' + data.count + ' entities';
                     this.loadStats();
@@ -617,6 +611,7 @@ function entityIndexPage() {
                     this.refreshMessage = 'Error: ' + (data.detail || 'Unknown error');
                 }
             } catch (e) {
+                if (e.code === 'auth_expired') return;
                 this.refreshMessage = 'Failed to refresh';
                 console.error('Failed to refresh entity index', e);
             }
@@ -639,20 +634,20 @@ function entityIndexPage() {
             this.domainMapLoading = true;
             this.dcMapLoading = true;
             try {
-                const resp = await fetch('/api/admin/domain-agent-map');
-                if (resp.ok) {
-                    const data = await resp.json();
-                    this.allAgents = data.all_agents || [];
-                    this.domainAgentMap = (data.domains || []).map(d => ({
-                        ...d,
-                        selected_agents: d.agents || [],
-                    }));
-                    this.deviceClassMap = (data.device_classes || []).map(dc => ({
-                        ...dc,
-                        selected_agents: dc.agents || [],
-                    }));
-                }
-            } catch (e) { console.error('Failed to load domain-agent map', e); }
+                const data = await window.dashboardApi.json('/api/admin/domain-agent-map');
+                this.allAgents = data.all_agents || [];
+                this.domainAgentMap = (data.domains || []).map(d => ({
+                    ...d,
+                    selected_agents: d.agents || [],
+                }));
+                this.deviceClassMap = (data.device_classes || []).map(dc => ({
+                    ...dc,
+                    selected_agents: dc.agents || [],
+                }));
+            } catch (e) {
+                if (e.code === 'auth_expired') return;
+                console.error('Failed to load domain-agent map', e);
+            }
             this.domainMapLoading = false;
             this.dcMapLoading = false;
         },
@@ -674,18 +669,16 @@ function entityIndexPage() {
         async saveDomainAgent(domain, agentIds) {
             this.domainMapMessage = '';
             try {
-                const resp = await fetch('/api/admin/domain-agent-map', {
+                await window.dashboardApi.request('/api/admin/domain-agent-map', {
                     method: 'PUT',
                     headers: {'Content-Type': 'application/json'},
                     body: JSON.stringify({domain: domain, agent_ids: agentIds}),
                 });
-                if (resp.ok) {
-                    this.domainMapMessage = 'Saved agents for ' + domain;
-                } else {
-                    const err = await resp.json();
-                    this.domainMapMessage = 'Error: ' + (err.detail || 'Failed to save');
-                }
-            } catch (e) { this.domainMapMessage = 'Network error'; }
+                this.domainMapMessage = 'Saved agents for ' + domain;
+            } catch (e) {
+                if (e.code === 'auth_expired') return;
+                this.domainMapMessage = 'Error: ' + (e.detail || 'Failed to save');
+            }
             setTimeout(() => { this.domainMapMessage = ''; }, 5000);
         },
 
@@ -708,18 +701,16 @@ function entityIndexPage() {
         async saveDeviceClassAgent(deviceClass, agentIds) {
             this.dcMapMessage = '';
             try {
-                const resp = await fetch('/api/admin/domain-agent-map/device-class', {
+                await window.dashboardApi.request('/api/admin/domain-agent-map/device-class', {
                     method: 'PUT',
                     headers: {'Content-Type': 'application/json'},
                     body: JSON.stringify({device_class: deviceClass, agent_ids: agentIds}),
                 });
-                if (resp.ok) {
-                    this.dcMapMessage = 'Saved agents for ' + deviceClass;
-                } else {
-                    const err = await resp.json();
-                    this.dcMapMessage = 'Error: ' + (err.detail || 'Failed to save');
-                }
-            } catch (e) { this.dcMapMessage = 'Network error'; }
+                this.dcMapMessage = 'Saved agents for ' + deviceClass;
+            } catch (e) {
+                if (e.code === 'auth_expired') return;
+                this.dcMapMessage = 'Error: ' + (e.detail || 'Failed to save');
+            }
             setTimeout(() => { this.dcMapMessage = ''; }, 5000);
         },
 

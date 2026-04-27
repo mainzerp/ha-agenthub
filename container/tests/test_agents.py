@@ -3283,6 +3283,90 @@ class TestOrchestratorAgent:
     @patch("app.agents.orchestrator.SettingsRepository")
     @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
     @patch("app.llm.client.complete", new_callable=AsyncMock)
+    async def test_routing_hit_to_actionable_parse_miss_does_not_speak_success(
+        self, mock_complete, mock_track, mock_settings
+    ):
+        from app.cache.cache_manager import CacheResult
+        from app.cache.routing_cache import make_routing_entry_id
+
+        user_text = "Bitte Kueche ausschalten. Dann neben sie machen wir Musik an."
+        mock_settings.get_value = AsyncMock(
+            side_effect=lambda key, default=None: (
+                "false"
+                if key == "routing.compound_utterance_bypass"
+                else {"language": "auto"}.get(key, default)
+            )
+        )
+        orch, *_ = self._make_orchestrator()
+        orch._do_cache_lookup = AsyncMock(
+            return_value=(
+                CacheResult(
+                    hit_type="routing_hit",
+                    agent_id="light-agent",
+                    condensed_task="Bitte Kueche ausschalten",
+                    similarity=0.96,
+                ),
+                None,
+            )
+        )
+        orch._cache_manager.invalidate_routing = MagicMock()
+        orch._merge_responses = AsyncMock(return_value="The kitchen lights are off and calm music is playing.")
+        orch._merge_voice_followup_and_organic = AsyncMock(
+            return_value=("The kitchen lights are off and calm music is playing.", False)
+        )
+
+        dispatch_count = {"light-agent": 0}
+
+        async def _dispatch_single(agent_id, condensed_task, *args, **kwargs):
+            if agent_id == "light-agent":
+                dispatch_count["light-agent"] += 1
+                if dispatch_count["light-agent"] == 1:
+                    return (
+                        "light-agent",
+                        "Die Kueche ist jetzt ausgeschaltet.",
+                        {"speech": "Die Kueche ist jetzt ausgeschaltet.", "action_executed": None},
+                    )
+                return (
+                    "light-agent",
+                    "The kitchen lights are off.",
+                    {
+                        "speech": "The kitchen lights are off.",
+                        "action_executed": {"success": True, "entity_id": "light.kitchen", "action": "turn_off"},
+                    },
+                )
+            if agent_id == "music-agent":
+                return (
+                    "music-agent",
+                    "Playing calm music.",
+                    {
+                        "speech": "Playing calm music.",
+                        "action_executed": {
+                            "success": True,
+                            "entity_id": "media_player.kitchen",
+                            "action": "play_media",
+                        },
+                    },
+                )
+            raise AssertionError(f"Unexpected agent: {agent_id}")
+
+        orch._dispatch_single = AsyncMock(side_effect=_dispatch_single)
+        mock_complete.return_value = "light-agent (95%): turn off kitchen lights\nmusic-agent (94%): play calm music"
+
+        task = _make_task(user_text, user_text=user_text, context=TaskContext(language="de"))
+        task.conversation_id = "conv-routing-parse-miss"
+        result = await orch.handle_task(task)
+
+        assert result["speech"] == "The kitchen lights are off and calm music is playing."
+        assert result["speech"] != "Die Kueche ist jetzt ausgeschaltet."
+        assert result["action_executed"] is not None
+        orch._cache_manager.invalidate_routing.assert_called_once_with(
+            make_routing_entry_id(user_text, language="de")
+        )
+        assert mock_complete.await_count == 1
+
+    @patch("app.agents.orchestrator.SettingsRepository")
+    @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
+    @patch("app.llm.client.complete", new_callable=AsyncMock)
     async def test_classify_multi_agent_skips_cache_store(self, mock_complete, mock_track, mock_settings):
         """Multi-agent results should NOT be cached."""
         orch, *_ = self._make_orchestrator()
@@ -3295,13 +3379,99 @@ class TestOrchestratorAgent:
     @patch("app.agents.orchestrator.SettingsRepository")
     @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
     @patch("app.llm.client.complete", new_callable=AsyncMock)
-    async def test_classify_single_agent_stores_cache(self, mock_complete, mock_track, mock_settings):
-        """Single-agent results should still be cached."""
+    async def test_routing_cache_not_persisted_when_action_executed_missing(self, mock_complete, mock_track, mock_settings):
         orch, *_ = self._make_orchestrator()
+        mock_settings.get_value = AsyncMock(side_effect=lambda key, default=None: {"language": "auto"}.get(key, default))
         mock_complete.return_value = "light-agent (95%): turn on light"
-        classifications, _routing_cached = await orch._classify("turn on light")
-        assert len(classifications) == 1
-        orch._cache_manager.store_routing.assert_called_once()
+        orch._dispatch_single = AsyncMock(
+            return_value=(
+                "light-agent",
+                "Done.",
+                {"speech": "Done.", "action_executed": None},
+            )
+        )
+
+        await orch.handle_task(_make_task("turn on light"))
+
+        orch._cache_manager.store_routing.assert_not_called()
+
+    @patch("app.agents.orchestrator.SettingsRepository")
+    @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
+    @patch("app.llm.client.complete", new_callable=AsyncMock)
+    async def test_routing_cache_not_persisted_when_action_failed(self, mock_complete, mock_track, mock_settings):
+        orch, *_ = self._make_orchestrator()
+        mock_settings.get_value = AsyncMock(side_effect=lambda key, default=None: {"language": "auto"}.get(key, default))
+        mock_complete.return_value = "light-agent (95%): turn on light"
+        orch._dispatch_single = AsyncMock(
+            return_value=(
+                "light-agent",
+                "Done.",
+                {
+                    "speech": "Done.",
+                    "action_executed": {"success": False, "entity_id": "light.kitchen", "action": "turn_on"},
+                },
+            )
+        )
+
+        await orch.handle_task(_make_task("turn on light"))
+
+        orch._cache_manager.store_routing.assert_not_called()
+
+    @patch("app.agents.orchestrator.SettingsRepository")
+    @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
+    @patch("app.llm.client.complete", new_callable=AsyncMock)
+    async def test_routing_cache_persisted_after_successful_actionable_dispatch(
+        self, mock_complete, mock_track, mock_settings
+    ):
+        orch, *_ = self._make_orchestrator()
+        mock_settings.get_value = AsyncMock(side_effect=lambda key, default=None: {"language": "auto"}.get(key, default))
+        mock_complete.return_value = "light-agent (95%): turn on light"
+        orch._dispatch_single = AsyncMock(
+            return_value=(
+                "light-agent",
+                "Done.",
+                {
+                    "speech": "Done.",
+                    "action_executed": {"success": True, "entity_id": "light.kitchen", "action": "turn_on"},
+                },
+            )
+        )
+
+        await orch.handle_task(_make_task("turn on light"))
+
+        orch._cache_manager.store_routing.assert_called_once_with(
+            "turn on light",
+            "light-agent",
+            0.95,
+            "turn on light",
+            language="en",
+        )
+
+    @pytest.mark.parametrize(
+        "user_text",
+        [
+            "Bitte Kueche ausschalten. Dann neben sie machen wir Musik an.",
+            "Turn off the kitchen lights. Then play some jazz music.",
+            "Schalte das Licht aus; mach die Musik an bitte.",
+            "Allume la cuisine. Joue de la musique douce.",
+        ],
+    )
+    @patch("app.agents.orchestrator.SettingsRepository")
+    @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
+    @patch("app.llm.client.complete", new_callable=AsyncMock)
+    async def test_compound_utterance_bypasses_routing_cache_lookup(
+        self, mock_complete, mock_track, mock_settings, user_text
+    ):
+        orch, *_ = self._make_orchestrator()
+        mock_settings.get_value = AsyncMock(side_effect=lambda key, default=None: {"language": "auto"}.get(key, default))
+        orch._do_cache_lookup = AsyncMock(side_effect=AssertionError("routing cache lookup should be bypassed"))
+        mock_complete.return_value = "general-agent (95%): answer directly"
+
+        result = await orch.handle_task(_make_task(user_text, user_text=user_text))
+
+        orch._do_cache_lookup.assert_not_awaited()
+        assert result["routed_to"] == "general-agent"
+        assert mock_complete.await_count == 1
 
     @patch("app.agents.orchestrator.SettingsRepository")
     @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
@@ -3471,7 +3641,7 @@ class TestOrchestratorAgent:
         from app.analytics.tracer import SpanCollector
         from app.cache.cache_manager import CacheResult
 
-        orch, *_ = self._make_orchestrator()
+        orch, dispatcher, *_ = self._make_orchestrator()
         orch._cache_manager.process = AsyncMock(
             return_value=CacheResult(
                 hit_type="routing_hit",
@@ -3480,6 +3650,10 @@ class TestOrchestratorAgent:
                 similarity=0.96,
             )
         )
+        dispatcher.dispatch.return_value.result = {
+            "speech": "Done!",
+            "action_executed": {"success": True, "entity_id": "light.kitchen", "action": "turn_on"},
+        }
         mock_complete.return_value = "light-agent: Turn on light"
         mock_settings.get_value = AsyncMock(return_value="")
         collector = SpanCollector("trace-cache-routing")
@@ -7451,7 +7625,10 @@ class TestResponseCacheFallThrough:
 
         response_mock = MagicMock()
         response_mock.error = None
-        response_mock.result = {"speech": "Light is on!"}
+        response_mock.result = {
+            "speech": "Light is on!",
+            "action_executed": {"success": True, "entity_id": "light.kitchen", "action": "turn_on"},
+        }
         dispatcher.dispatch = AsyncMock(return_value=response_mock)
 
         registry.list_agents = AsyncMock(

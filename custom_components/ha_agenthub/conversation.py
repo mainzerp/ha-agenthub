@@ -21,6 +21,12 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers import area_registry as ar, device_registry as dr, entity_registry as er, intent
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
+try:
+    from homeassistant.helpers.event import async_track_state_change_event
+except ModuleNotFoundError:
+    async_track_state_change_event = None
+
+from ._filler_gate import FillerGate
 from .const import (
     DOMAIN,
     WS_PATH,
@@ -76,6 +82,10 @@ _suppress_native_plain_timer_eligibility: contextvars.ContextVar[bool] = context
     "ha_agenthub_suppress_native_plain_timer_eligibility",
     default=False,
 )
+
+MAX_FILLER_WAIT_SECONDS = 6.0
+_FILLER_PLAYING_STATES = frozenset({"playing"})
+_FILLER_FINISHED_STATES = frozenset({"idle", "off", "paused"})
 
 
 class _WsDroppedAfterSendError(Exception):
@@ -195,6 +205,7 @@ class HaAgentHubConversationEntity(
         # first completed task forever.
         self._inflight_bridge: dict[tuple[str, str], tuple[float, asyncio.Task]] = {}
         self._coalesce_window_sec: float = 0.25
+        self._filler_gates: dict[str, FillerGate] = {}
         self._attr_device_info = dr.DeviceInfo(
             identifiers={(DOMAIN, entry.entry_id)},
             name=entry.title,
@@ -602,8 +613,19 @@ class HaAgentHubConversationEntity(
             logger.debug("area_registry lookup failed for %s", area_id, exc_info=True)
         return extra
 
+    def _filler_gate_key(self, user_input) -> str:
+        """Return the per-origin key used to gate filler completion."""
+        device_id = getattr(user_input, "device_id", None)
+        if isinstance(device_id, str) and device_id:
+            return f"device:{device_id}"
+        area_id = getattr(user_input, "area_id", None)
+        if isinstance(area_id, str) and area_id:
+            return f"area:{area_id}"
+        return "__global__"
+
     async def _process_via_ws(self, user_input: conversation.ConversationInput) -> conversation.ConversationResult | _BridgeDirective:
         """Send request via WebSocket and accumulate streaming tokens."""
+        gate_key = HaAgentHubConversationEntity._filler_gate_key(self, user_input)
         payload: dict[str, Any] = {
             "text": user_input.text,
             "conversation_id": user_input.conversation_id,
@@ -653,6 +675,10 @@ class HaAgentHubConversationEntity(
                         # Assist instead of returning the (empty) speech.
                         directive_value = data.get("directive")
                         if directive_value:
+                            try:
+                                await HaAgentHubConversationEntity._await_filler_gate(self, gate_key)
+                            except Exception:
+                                logger.debug("Filler gate await raised; proceeding", exc_info=True)
                             self._ws_last_active = time.monotonic()
                             return _BridgeDirective(
                                 directive=str(directive_value),
@@ -689,10 +715,27 @@ class HaAgentHubConversationEntity(
                 self._ws = None
                 raise aiohttp.ClientError("WebSocket stream ended without done token")
 
+            try:
+                await HaAgentHubConversationEntity._await_filler_gate(self, gate_key)
+            except Exception:
+                logger.debug("Filler gate await raised; proceeding", exc_info=True)
             self._ws_last_active = time.monotonic()
             speech = "".join(speech_parts)
             return self._build_result(speech, final_conversation_id, user_input.language, sanitized=stream_sanitized)
         except (aiohttp.ClientError, asyncio.TimeoutError, json.JSONDecodeError) as err:
+            gates = getattr(self, "_filler_gates", None)
+            if not isinstance(gates, dict):
+                gates = {}
+                self._filler_gates = gates
+            stale = gates.pop(gate_key, None)
+            if stale is not None:
+                try:
+                    if stale.cleanup:
+                        stale.cleanup()
+                except Exception:
+                    logger.debug("Failed to clean up filler gate after dropped stream", exc_info=True)
+                finally:
+                    stale.event.set()
             raise _WsDroppedAfterSendError() from err
 
     async def _process_via_rest(self, user_input: conversation.ConversationInput) -> conversation.ConversationResult | _BridgeDirective:
@@ -759,6 +802,103 @@ class HaAgentHubConversationEntity(
         response.async_set_speech(speech if sanitized else _strip_markdown(speech))
         return conversation.ConversationResult(response=response, conversation_id=conversation_id)
 
+    def _resolve_satellite_entity(self, user_input) -> str | None:
+        """Resolve the originating assist_satellite entity from device or area context."""
+        try:
+            entity_reg = er.async_get(self.hass)
+            device_reg = dr.async_get(self.hass)
+
+            device_id = getattr(user_input, "device_id", None)
+            area_id = getattr(user_input, "area_id", None)
+            if isinstance(device_id, str) and device_id:
+                for entry in entity_reg.entities.values():
+                    if entry.domain == "assist_satellite" and entry.device_id == device_id:
+                        return entry.entity_id
+                device = device_reg.async_get(device_id)
+                if device and device.area_id:
+                    area_id = device.area_id
+
+            if not isinstance(area_id, str) or not area_id:
+                return None
+
+            for entry in entity_reg.entities.values():
+                if entry.domain != "assist_satellite" or not entry.device_id:
+                    continue
+                sat_device = device_reg.async_get(entry.device_id)
+                if sat_device and sat_device.area_id == area_id:
+                    return entry.entity_id
+        except Exception:
+            logger.debug("Failed to resolve assist satellite entity", exc_info=True)
+        return None
+
+    def _arm_filler_gate(self, key: str, *, mechanism, cleanup=None) -> FillerGate:
+        """Create or replace the filler gate for a given origin key."""
+        gates = getattr(self, "_filler_gates", None)
+        if not isinstance(gates, dict):
+            gates = {}
+            self._filler_gates = gates
+
+        stale = gates.pop(key, None)
+        if stale is not None:
+            stale.event.set()
+            if stale.cleanup:
+                try:
+                    stale.cleanup()
+                except Exception:
+                    logger.debug("Failed to clean up stale filler gate", exc_info=True)
+
+        gate = FillerGate(
+            event=asyncio.Event(),
+            deadline=time.monotonic() + MAX_FILLER_WAIT_SECONDS,
+            mechanism=mechanism,
+            cleanup=cleanup,
+        )
+        gates[key] = gate
+        return gate
+
+    def _make_media_player_state_callback(self, gate: FillerGate):
+        """Build the media_player state callback for filler completion."""
+
+        def _handle_state_change(event) -> None:
+            new_state = event.data.get("new_state") if event else None
+            new_state_value = getattr(new_state, "state", None)
+            if new_state_value in _FILLER_PLAYING_STATES:
+                gate.observed_playing = True
+            elif new_state_value in _FILLER_FINISHED_STATES and gate.observed_playing:
+                gate.event.set()
+
+        return _handle_state_change
+
+    async def _await_filler_gate(self, key: str) -> None:
+        """Wait for filler playback to finish for the given origin key."""
+        gates = getattr(self, "_filler_gates", None)
+        if not isinstance(gates, dict):
+            gates = {}
+            self._filler_gates = gates
+
+        gate = gates.get(key)
+        if gate is None:
+            return
+
+        remaining = max(0.0, gate.deadline - time.monotonic())
+        try:
+            await asyncio.wait_for(gate.event.wait(), timeout=remaining)
+        except asyncio.TimeoutError:
+            gate.event.set()
+            logger.warning(
+                "Filler completion signal not received within %.1fs cap; releasing gate",
+                MAX_FILLER_WAIT_SECONDS,
+            )
+        finally:
+            if gate.cleanup:
+                try:
+                    gate.cleanup()
+                except Exception:
+                    logger.debug("Failed to clean up filler gate subscription", exc_info=True)
+            current = gates.get(key)
+            if current is gate:
+                gates.pop(key, None)
+
     async def _speak_filler(self, text: str, user_input) -> None:
         """Speak filler text immediately via TTS, bypassing the
         conversation result.
@@ -770,26 +910,63 @@ class HaAgentHubConversationEntity(
         ``entity_id`` = a ``tts.*`` engine entity, and
         ``media_player_entity_id`` = the target media_player.
         """
+        gate_key = self._filler_gate_key(user_input)
         try:
+            satellite = self._resolve_satellite_entity(user_input)
+            if satellite:
+                gate = self._arm_filler_gate(gate_key, mechanism="announce")
+                try:
+                    await asyncio.wait_for(
+                        self.hass.services.async_call(
+                            "assist_satellite",
+                            "announce",
+                            {
+                                "entity_id": satellite,
+                                "message": _strip_markdown(text),
+                            },
+                            blocking=True,
+                        ),
+                        timeout=MAX_FILLER_WAIT_SECONDS,
+                    )
+                except Exception:
+                    logger.debug("assist_satellite.announce failed", exc_info=True)
+                finally:
+                    gate.event.set()
+                return
+
             device_id = getattr(user_input, "device_id", None)
-            if not device_id:
+            if not isinstance(device_id, str) or not device_id:
                 return
             media_player = self._resolve_tts_entity(device_id)
             tts_engine = self._resolve_tts_engine_entity()
-            if not media_player or not tts_engine:
+            if not media_player or not tts_engine or async_track_state_change_event is None:
                 return
-            await self.hass.services.async_call(
-                "tts",
-                "speak",
-                {
-                    "entity_id": tts_engine,
-                    "media_player_entity_id": media_player,
-                    "message": _strip_markdown(text),
-                },
-                blocking=False,
-            )
+
+            gate = self._arm_filler_gate(gate_key, mechanism="media_player_state")
+            callback = self._make_media_player_state_callback(gate)
+            gate.cleanup = async_track_state_change_event(self.hass, [media_player], callback)
+
+            try:
+                await self.hass.services.async_call(
+                    "tts",
+                    "speak",
+                    {
+                        "entity_id": tts_engine,
+                        "media_player_entity_id": media_player,
+                        "message": _strip_markdown(text),
+                    },
+                    blocking=False,
+                )
+            except Exception:
+                logger.debug("tts.speak failed", exc_info=True)
+                gate.event.set()
         except Exception:
             logger.debug("Failed to speak filler text", exc_info=True)
+            gates = getattr(self, "_filler_gates", None)
+            if isinstance(gates, dict):
+                stale = gates.get(gate_key)
+                if stale is not None:
+                    stale.event.set()
 
     def _resolve_tts_engine_entity(self) -> str | None:
         """Return a configured TTS engine entity_id (``tts.*``).

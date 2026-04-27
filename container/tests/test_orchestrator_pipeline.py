@@ -151,7 +151,7 @@ async def test_legacy_pipeline_flag_routes_directly_to_impls(monkeypatch):
 
     impl_called = {"sync": 0, "stream": 0}
 
-    async def _fake_impl(task, *, _pre_classified=None):
+    async def _fake_impl(task, *, _pre_classified=None, _classify_reason=None, _allow_classify_cache_lookup=None):
         impl_called["sync"] += 1
         return {"speech": "ok", "conversation_id": task.conversation_id, "routed_to": "x"}
 

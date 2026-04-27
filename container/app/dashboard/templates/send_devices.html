@@ -96,42 +96,60 @@ function sendDevicesPage() {
         messageType: 'success',
 
         async loadMappings() {
-            const res = await fetch('/api/admin/send-devices');
-            if (res.ok) this.mappings = await res.json();
+            try {
+                this.mappings = await window.dashboardApi.json('/api/admin/send-devices');
+            } catch (e) {
+                if (e.code === 'auth_expired') return;
+                this.message = e.detail || 'Failed to load mappings';
+                this.messageType = 'error';
+                this.mappings = [];
+            }
             await this.loadAvailableTargets();
         },
 
         async loadAvailableTargets() {
             const type = this.newMapping.device_type;
-            const res = await fetch(`/api/admin/send-devices/available-targets?type=${type}`);
-            if (res.ok) this.availableTargets = await res.json();
+            try {
+                this.availableTargets = await window.dashboardApi.json(
+                    `/api/admin/send-devices/available-targets?type=${encodeURIComponent(type)}`
+                );
+            } catch (e) {
+                if (e.code === 'auth_expired') return;
+                this.message = e.detail || 'Failed to load available targets';
+                this.messageType = 'error';
+                this.availableTargets = [];
+            }
         },
 
         async createMapping() {
-            const res = await fetch('/api/admin/send-devices', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(this.newMapping),
-            });
-            if (res.ok) {
+            try {
+                await window.dashboardApi.request('/api/admin/send-devices', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(this.newMapping),
+                });
                 this.message = 'Mapping created';
                 this.messageType = 'success';
                 this.newMapping = { display_name: '', device_type: 'notify', ha_service_target: '' };
                 await this.loadMappings();
-            } else {
-                const err = await res.json();
-                this.message = err.detail || 'Failed to create mapping';
+            } catch (e) {
+                if (e.code === 'auth_expired') return;
+                this.message = e.detail || 'Failed to create mapping';
                 this.messageType = 'error';
             }
         },
 
         async deleteMapping(id) {
             if (!confirm('Delete this mapping?')) return;
-            const res = await fetch(`/api/admin/send-devices/${id}`, { method: 'DELETE' });
-            if (res.ok) {
+            try {
+                await window.dashboardApi.request(`/api/admin/send-devices/${id}`, { method: 'DELETE' });
                 this.message = 'Mapping deleted';
                 this.messageType = 'success';
                 await this.loadMappings();
+            } catch (e) {
+                if (e.code === 'auth_expired') return;
+                this.message = e.detail || 'Failed to delete mapping';
+                this.messageType = 'error';
             }
         },
     };
