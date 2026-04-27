@@ -1,12 +1,53 @@
 # Version
 
-**Current Version:** 0.31.0
+**Current Version:** 1.1.0
 
-## Recent Changes (since 0.31.0)
+## Recent Changes (since 1.1.0)
 
 (none yet)
 
 ## Version History
+
+### 1.1.0 (MINOR) -- LLM-generated cancel-interaction acknowledgement
+
+- Replaced the static cancel-interaction ACK ("Okay." / "Alles klar.")
+  with an LLM-generated single short spoken acknowledgement that varies
+  phrasing naturally for dismissals like "Abbrechen", "Vergiss es",
+  "never mind", and "forget it".
+- Added `container/app/agents/cancel_speech.generate_cancel_speech(...)`
+  with a 1.5s hard timeout via `asyncio.wait_for` and a deterministic
+  static fallback on LLM timeout, exception, empty or whitespace output,
+  or guardrail violation (length, follow-up question, markdown).
+- Wired the new helper into both orchestrator cancel short-circuit paths
+  (`_dispatch_single` and `handle_task_stream`) without changing the
+  no-dispatch, no-mediation, or no-cache-store contract for
+  `cancel-interaction`.
+- Reused the existing `filler-agent` configuration row for the cancel
+  acknowledgement LLM call, with per-call `max_tokens=30` and
+  `temperature=0.6`, so no new `agent_configs` seed row or migration was
+  required.
+
+### 1.0.0 (MAJOR) -- Wake briefing alarms and weather-query hardening
+
+- Added internal-alarm wake briefing support across the timer prompt,
+  timer executor, scheduler persistence, alarm background handling, and
+  timers dashboard settings UI. Internal alarms can now opt into a
+  composed spoken wake briefing that merges date facts, weather, news,
+  calendar events, and optional configured sensor readings.
+- Added the orchestrator-owned wake briefing composer in
+  `container/app/agents/wake_briefing.py`, with the A2A boundary kept
+  strict: cross-agent data gathering goes only through
+  `OrchestratorGateway`, while calendar and sensor facts come from the
+  HA REST client.
+- Added structured admin settings endpoints and dashboard controls for
+  wake briefing configuration, plus focused regression coverage for the
+  new alarm/background/API/DB paths.
+- Fixed climate weather-query routing so short weather questions now
+  reliably produce structured weather actions, allow entity-less weather
+  queries, and auto-discover only visibility-permitted weather entities.
+- User-directed release note: version advanced from `0.31.0` to
+  `1.0.0` as a MAJOR release. Sentinel mode remains deferred and is not
+  part of this release.
 
 ### 0.31.0 (MINOR) -- D8/D9/D10/D13 prime-directive remediation
 

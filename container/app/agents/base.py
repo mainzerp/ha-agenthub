@@ -22,6 +22,7 @@ _prompt_cache: dict[str, str] = {}
 
 _KNOWN_PROMPT_NAMES = (
     "automation",
+    "cancel_speech",
     "climate",
     "filler",
     "general",

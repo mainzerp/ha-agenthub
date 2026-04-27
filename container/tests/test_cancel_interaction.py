@@ -1,7 +1,8 @@
-"""Tests for cancel-interaction routing (orchestrator classification + canned speech)."""
+"""Tests for cancel-interaction routing and LLM-backed acknowledgement."""
 
 from __future__ import annotations
 
+import asyncio
 import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -14,12 +15,26 @@ _litellm_mock.exceptions.AuthenticationError = type("AuthenticationError", (Exce
 sys.modules.setdefault("litellm", _litellm_mock)
 
 import app.llm.client  # noqa: E402,F401
-from app.agents.cancel_speech import cancel_interaction_ack  # noqa: E402
+from app.agents.cancel_speech import cancel_interaction_ack, generate_cancel_speech  # noqa: E402
 from app.agents.orchestrator import OrchestratorAgent  # noqa: E402
 from app.models.agent import AgentCard, AgentTask, TaskContext  # noqa: E402
 from tests.helpers import make_agent_task  # noqa: E402
 
 CANCEL_AGENT = "cancel-interaction"
+
+
+def _classify_then_cancel(classify_text: str, cancel_text: str | Exception):
+    calls = {"n": 0}
+
+    async def _side_effect(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return classify_text
+        if isinstance(cancel_text, Exception):
+            raise cancel_text
+        return cancel_text
+
+    return _side_effect
 
 
 def _make_orch():
@@ -64,6 +79,45 @@ class TestCancelInteractionAck:
         assert cancel_interaction_ack("de-DE") == "Alles klar."
 
 
+class TestGenerateCancelSpeech:
+    @patch("app.agents.cancel_speech.complete", new_callable=AsyncMock)
+    async def test_generate_cancel_speech_uses_llm(self, mock_complete):
+        mock_complete.return_value = "Verstanden."
+
+        result = await generate_cancel_speech("de", "Vergiss es")
+
+        assert result == "Verstanden."
+        mock_complete.assert_awaited_once()
+        kwargs = mock_complete.await_args.kwargs
+        assert kwargs["agent_id"] == "filler-agent"
+        assert kwargs["max_tokens"] == 30
+        assert kwargs["temperature"] == 0.6
+
+    @patch("app.agents.cancel_speech.complete", new_callable=AsyncMock)
+    async def test_generate_cancel_speech_falls_back_on_timeout(self, mock_complete):
+        mock_complete.side_effect = asyncio.TimeoutError()
+
+        result = await generate_cancel_speech("de", "Vergiss es")
+
+        assert result == cancel_interaction_ack("de")
+
+    @patch("app.agents.cancel_speech.complete", new_callable=AsyncMock)
+    async def test_generate_cancel_speech_falls_back_on_empty(self, mock_complete):
+        mock_complete.return_value = "   "
+
+        result = await generate_cancel_speech("en", "never mind")
+
+        assert result == cancel_interaction_ack("en")
+
+    @patch("app.agents.cancel_speech.complete", new_callable=AsyncMock)
+    async def test_generate_cancel_speech_falls_back_on_question(self, mock_complete):
+        mock_complete.return_value = "Soll ich noch etwas tun?"
+
+        result = await generate_cancel_speech("de", "Vergiss es")
+
+        assert result == cancel_interaction_ack("de")
+
+
 class TestOrchestratorCancelInteraction:
     @pytest.fixture(autouse=True)
     def _mock_conversation_repo(self):
@@ -73,43 +127,66 @@ class TestOrchestratorCancelInteraction:
 
     @patch("app.agents.orchestrator.SettingsRepository")
     @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
+    @patch("app.agents.cancel_speech.complete", new_callable=AsyncMock)
     @patch("app.llm.client.complete", new_callable=AsyncMock)
-    async def test_handle_task_cancel_does_not_dispatch(self, mock_complete, mock_track, mock_settings):
+    async def test_handle_task_cancel_does_not_dispatch(self, mock_complete, mock_cancel_complete, mock_track, mock_settings):
         mock_settings.get_value = AsyncMock(side_effect=lambda k, d=None: "auto" if k == "language" else d)
         orch, dispatcher = _make_orch()
-        mock_complete.return_value = f"{CANCEL_AGENT} (98%): dismiss interaction"
+        mock_complete.side_effect = _classify_then_cancel(
+            f"{CANCEL_AGENT} (98%): dismiss interaction",
+            "Okay, dismissed.",
+        )
+        mock_cancel_complete.side_effect = mock_complete.side_effect
 
         task = make_agent_task(description="nevermind", user_text="nevermind", context=TaskContext(language="en"))
         task.conversation_id = "c1"
         result = await orch.handle_task(task)
 
-        assert result["speech"] == "Okay."
+        assert result["speech"]
+        assert len(result["speech"]) <= 80
+        assert "?" not in result["speech"]
         assert result["routed_to"] == CANCEL_AGENT
+        assert mock_complete.await_count == 1
+        assert mock_cancel_complete.await_count == 1
         dispatcher.dispatch.assert_not_awaited()
         dispatcher.dispatch_stream.assert_not_awaited()
 
     @patch("app.agents.orchestrator.SettingsRepository")
     @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
+    @patch("app.agents.cancel_speech.complete", new_callable=AsyncMock)
     @patch("app.llm.client.complete", new_callable=AsyncMock)
-    async def test_handle_task_cancel_german_ack(self, mock_complete, mock_track, mock_settings):
+    async def test_handle_task_cancel_german_ack(self, mock_complete, mock_cancel_complete, mock_track, mock_settings):
         mock_settings.get_value = AsyncMock(side_effect=lambda k, d=None: "de" if k == "language" else d)
         orch, dispatcher = _make_orch()
-        mock_complete.return_value = f"{CANCEL_AGENT} (95%): dismiss"
+        mock_complete.side_effect = _classify_then_cancel(
+            f"{CANCEL_AGENT} (95%): dismiss",
+            "Verstanden.",
+        )
+        mock_cancel_complete.side_effect = mock_complete.side_effect
 
         task = make_agent_task(description="Abbrechen", user_text="Abbrechen", context=TaskContext(language="de"))
         task.conversation_id = "c2"
         result = await orch.handle_task(task)
 
-        assert result["speech"] == "Alles klar."
+        assert result["speech"]
+        assert len(result["speech"]) <= 80
+        assert "?" not in result["speech"]
+        assert mock_complete.await_count == 1
+        assert mock_cancel_complete.await_count == 1
         dispatcher.dispatch.assert_not_awaited()
 
     @patch("app.agents.orchestrator.SettingsRepository")
     @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
+    @patch("app.agents.cancel_speech.complete", new_callable=AsyncMock)
     @patch("app.llm.client.complete", new_callable=AsyncMock)
-    async def test_handle_task_stream_early_return_cancel(self, mock_complete, mock_track, mock_settings):
+    async def test_handle_task_stream_early_return_cancel(self, mock_complete, mock_cancel_complete, mock_track, mock_settings):
         mock_settings.get_value = AsyncMock(side_effect=lambda k, d=None: "auto" if k == "language" else d)
         orch, dispatcher = _make_orch()
-        mock_complete.return_value = f"{CANCEL_AGENT} (95%): dismiss interaction"
+        mock_complete.side_effect = _classify_then_cancel(
+            f"{CANCEL_AGENT} (95%): dismiss interaction",
+            "Understood.",
+        )
+        mock_cancel_complete.side_effect = mock_complete.side_effect
 
         task = AgentTask(
             description="stop",
@@ -124,6 +201,10 @@ class TestOrchestratorCancelInteraction:
 
         assert len(chunks) == 1
         assert chunks[0]["done"] is True
-        assert chunks[0]["mediated_speech"] == "Okay."
+        assert chunks[0]["mediated_speech"]
+        assert len(chunks[0]["mediated_speech"]) <= 80
+        assert "?" not in chunks[0]["mediated_speech"]
+        assert mock_complete.await_count == 1
+        assert mock_cancel_complete.await_count == 1
         dispatcher.dispatch.assert_not_awaited()
         dispatcher.dispatch_stream.assert_not_awaited()

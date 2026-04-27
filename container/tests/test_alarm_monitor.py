@@ -41,6 +41,7 @@ async def test_alarm_monitor_reads_entity_index_and_dispatches_gateway() -> None
     assert gateway.dispatch_background_event.await_args.args[0] == "alarm_notification"
     payload = gateway.dispatch_background_event.await_args.args[1]
     assert payload["entity_id"] == "input_datetime.morning_alarm"
+    assert payload["briefing"] is False
     assert payload["origin_area"] == "bedroom"
     assert payload["origin_device_id"] == "device-bedroom"
     assert payload["media_player"] == "media_player.bedroom"

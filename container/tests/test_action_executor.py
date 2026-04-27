@@ -222,6 +222,37 @@ class TestParseAction:
         assert result is not None
         assert result["action"] == "list_lights"
 
+    def test_parse_action_allows_entityless_weather_query(self):
+        response = '```json\n{"action": "query_weather"}\n```'
+        result = parse_action(response)
+        assert result is not None
+        assert result["action"] == "query_weather"
+
+    def test_parse_action_allows_weather_forecast_days_payload(self):
+        response = '```json\n{"action": "query_weather_forecast", "parameters": {"days": 3}}\n```'
+        result = parse_action(response)
+        assert result is not None
+        assert result["action"] == "query_weather_forecast"
+        assert result["parameters"] == {"days": 3}
+
+    def test_parse_action_allows_weather_forecast_without_days(self):
+        response = '```json\n{"action": "query_weather_forecast"}\n```'
+        result = parse_action(response)
+        assert result is not None
+        assert result["action"] == "query_weather_forecast"
+
+    def test_parse_action_accepts_set_datetime_with_briefing(self):
+        response = (
+            '```json\n'
+            '{"action": "set_datetime", "entity": "alarm", '
+            '"parameters": {"time": "07:00:00", "briefing": true}}\n'
+            '```'
+        )
+        result = parse_action(response)
+        assert result is not None
+        assert result["action"] == "set_datetime"
+        assert result["parameters"]["briefing"] is True
+
     def test_parse_action_falls_through_when_first_fence_invalid(self):
         """P2-6 (FLOW-PARSE-1): if a labelled ```json fence contains a
         malformed-but-decodable action stub (no entity), the parser

@@ -40,6 +40,12 @@ _RECURRING_WEEKDAY_INDEX: dict[str, int] = {
 }
 
 
+def _coerce_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _load_recurrence(payload: dict[str, Any]) -> dict[str, Any] | None:
     recurrence = payload.get("recurrence")
     if not isinstance(recurrence, dict):
@@ -224,6 +230,7 @@ class TimerScheduler:
         duration_seconds: int,
         origin_device_id: str | None = None,
         origin_area: str | None = None,
+        briefing: bool = False,
         payload: dict | None = None,
     ) -> str:
         """Persist a new timer row and start its firing task."""
@@ -234,7 +241,13 @@ class TimerScheduler:
         timer_id = uuid.uuid4().hex
         now = int(time.time())
         fires_at = now + int(duration_seconds)
-        payload_json = json.dumps(payload or {})
+        payload_dict = dict(payload or {})
+        if kind == "alarm":
+            briefing = _coerce_bool(payload_dict.get("briefing", briefing))
+            payload_dict["briefing"] = briefing
+        else:
+            briefing = False
+        payload_json = json.dumps(payload_dict)
         await self._repo.insert(
             id=timer_id,
             logical_name=logical_name,
@@ -244,6 +257,7 @@ class TimerScheduler:
             duration_seconds=int(duration_seconds),
             origin_device_id=origin_device_id,
             origin_area=origin_area,
+            briefing=briefing,
             payload_json=payload_json,
         )
         row = {
@@ -255,6 +269,7 @@ class TimerScheduler:
             "duration_seconds": int(duration_seconds),
             "origin_device_id": origin_device_id,
             "origin_area": origin_area,
+            "briefing": 1 if briefing else 0,
             "payload_json": payload_json,
             "state": "pending",
         }
@@ -309,6 +324,9 @@ class TimerScheduler:
         logical_name: str | None = None,
         new_fires_at: int | None = None,
         new_duration_seconds: int | None = None,
+        briefing: bool | None = None,
+        recurrence: dict[str, Any] | None = None,
+        clear_recurrence: bool = False,
     ) -> bool:
         """Update a pending timer/alarm in-place and restart its asyncio task.
 
@@ -323,11 +341,39 @@ class TimerScheduler:
         if not row or row.get("state") != "pending":
             return False
 
+        payload_json: str | None = None
+        normalized_briefing = _coerce_bool(briefing) if briefing is not None else None
+        if row.get("kind") == "alarm":
+            try:
+                payload_dict = json.loads(row.get("payload_json") or "{}")
+            except Exception:
+                payload_dict = {}
+            if logical_name is not None:
+                payload_dict["alarm_label"] = logical_name
+            if new_fires_at is not None:
+                payload_dict["scheduled_for_epoch"] = int(new_fires_at)
+            if normalized_briefing is not None:
+                payload_dict["briefing"] = normalized_briefing
+            if clear_recurrence:
+                payload_dict.pop("recurrence", None)
+            elif recurrence is not None:
+                payload_dict["recurrence"] = dict(recurrence)
+            if (
+                logical_name is not None
+                or new_fires_at is not None
+                or normalized_briefing is not None
+                or recurrence is not None
+                or clear_recurrence
+            ):
+                payload_json = json.dumps(payload_dict)
+
         updated = await self._repo.update_scheduled_timer(
             id_,
             logical_name=logical_name,
             fires_at=new_fires_at,
             duration_seconds=new_duration_seconds,
+            briefing=normalized_briefing,
+            payload_json=payload_json,
         )
         if not updated:
             return False
@@ -346,6 +392,10 @@ class TimerScheduler:
             updated_row["fires_at"] = int(new_fires_at)
         if new_duration_seconds is not None:
             updated_row["duration_seconds"] = int(new_duration_seconds)
+        if normalized_briefing is not None:
+            updated_row["briefing"] = 1 if normalized_briefing else 0
+        if payload_json is not None:
+            updated_row["payload_json"] = payload_json
 
         # Keep cancellation semantics centralized in _cancel_task.
         self._cancel_task(id_)
@@ -489,15 +539,20 @@ class TimerScheduler:
         if kind == "alarm":
             alarm_name = (payload.get("alarm_label") or logical_name or "alarm").strip() or "alarm"
             synthetic_entity_id = f"agenthub_alarm:{row['id']}"
+            briefing = _coerce_bool(payload.get("briefing", False))
             await gateway.dispatch_background_event(
                 "alarm_notification",
                 {
                     "alarm_name": alarm_name,
+                    "alarm_label": payload.get("alarm_label") or alarm_name,
+                    "briefing": briefing,
                     "entity_id": synthetic_entity_id,
                     "media_player": payload.get("media_player"),
                     "origin_device_id": origin_device_id,
                     "origin_area": origin_area,
                     "language": language,
+                    "scheduled_for_epoch": int(payload.get("scheduled_for_epoch") or row.get("fires_at") or 0),
+                    "timezone": payload.get("timezone"),
                 },
                 description=f"Dispatch alarm notification for {alarm_name}",
             )

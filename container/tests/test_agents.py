@@ -56,7 +56,7 @@ from app.models.agent import (  # noqa: E402
 )
 from app.models.conversation import StreamToken  # noqa: E402
 from app.security.sanitization import USER_INPUT_END, USER_INPUT_START  # noqa: E402
-from tests.helpers import make_agent_task  # noqa: E402
+from tests.helpers import make_agent_task, make_entity_index_entry  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -552,6 +552,41 @@ class TestClimateAgent:
         assert "current_weather" in card.skills
         assert "weather_forecast" in card.skills
         assert "weather" in card.description.lower()
+
+    @pytest.mark.parametrize(
+        ("user_text", "language"),
+        [
+            ("wie ist das wetter heute?", "de"),
+            ("was ist das wetter?", "de"),
+            ("weather today", "en"),
+            ("how is the weather", "en"),
+        ],
+    )
+    @patch(
+        "app.agents.climate.execute_climate_action",
+        new_callable=AsyncMock,
+        return_value={"success": True, "entity_id": "weather.home", "new_state": "sunny", "speech": "Sunny."},
+    )
+    @patch(
+        "app.llm.client.complete",
+        new_callable=AsyncMock,
+        return_value='```json\n{"action": "query_weather"}\n```',
+    )
+    async def test_handle_task_short_weather_queries_dispatch_to_weather_action(
+        self,
+        mock_complete,
+        mock_exec,
+        user_text,
+        language,
+    ):
+        agent = ClimateAgent(ha_client=MagicMock(), entity_index=MagicMock(), entity_matcher=MagicMock())
+        result = await agent.handle_task(_make_task(user_text, user_text=user_text, context=TaskContext(language=language)))
+
+        assert result.action_executed is not None
+        assert result.action_executed.action == "query_weather"
+        forwarded_action = mock_exec.await_args.args[0]
+        assert forwarded_action["action"] == "query_weather"
+        assert not forwarded_action.get("entity")
 
 
 class TestMediaAgent:
@@ -1248,6 +1283,53 @@ class TestTimerExecutor:
         assert kwargs["origin_area"] == "bedroom"
         assert kwargs["payload"]["alarm_label"] == "Morning Alarm"
         assert kwargs["payload"]["language"] == "de"
+
+    async def test_set_datetime_with_briefing_forwards_flag(self):
+        from unittest.mock import patch as _patch
+
+        scheduler = MagicMock()
+        scheduler.schedule = AsyncMock(return_value="alarm-briefing")
+
+        with _patch("app.agents.timer_executor._get_scheduler", return_value=scheduler):
+            result = await execute_timer_action(
+                {
+                    "action": "set_datetime",
+                    "entity": "Wake Alarm",
+                    "parameters": {"time": "07:00:00", "briefing": True},
+                },
+                AsyncMock(),
+                None,
+                None,
+                agent_id="timer-agent",
+                language="en",
+                timezone="Europe/Berlin",
+            )
+
+        assert result["success"] is True
+        kwargs = scheduler.schedule.await_args.kwargs
+        assert kwargs["briefing"] is True
+        assert kwargs["payload"]["briefing"] is True
+        assert kwargs["payload"]["timezone"] == "Europe/Berlin"
+
+    async def test_set_datetime_defaults_briefing_to_false(self):
+        from unittest.mock import patch as _patch
+
+        scheduler = MagicMock()
+        scheduler.schedule = AsyncMock(return_value="alarm-no-briefing")
+
+        with _patch("app.agents.timer_executor._get_scheduler", return_value=scheduler):
+            result = await execute_timer_action(
+                {"action": "set_datetime", "entity": "Alarm", "parameters": {"time": "07:00:00"}},
+                AsyncMock(),
+                None,
+                None,
+                agent_id="timer-agent",
+            )
+
+        assert result["success"] is True
+        kwargs = scheduler.schedule.await_args.kwargs
+        assert kwargs["briefing"] is False
+        assert kwargs["payload"]["briefing"] is False
 
     async def test_set_datetime_time_only_rolls_over_to_next_day_when_needed(self):
         """time-only set_datetime schedules for next day if the time already passed today."""
@@ -5359,6 +5441,79 @@ class TestClimateExecutorQueries:
         )
         assert result["success"]
         assert "cloudy" in result["speech"]
+
+    async def test_query_weather_auto_discover_picks_only_visible_entity(self, monkeypatch):
+        ha = AsyncMock()
+        ha.get_state = AsyncMock(
+            side_effect=lambda entity_id: {
+                "state": "sunny" if entity_id == "weather.visible" else "stormy",
+                "attributes": {
+                    "friendly_name": "Visible Weather" if entity_id == "weather.visible" else "Hidden Weather",
+                    "temperature": 21 if entity_id == "weather.visible" else 8,
+                },
+            }
+        )
+        entity_entries = [
+            make_entity_index_entry("weather.hidden", "Hidden Weather", area="roof"),
+            make_entity_index_entry("weather.visible", "Visible Weather", area="garden"),
+        ]
+        entity_index = MagicMock()
+        entity_index.list_entries_async = AsyncMock(return_value=entity_entries)
+        entity_index.get_by_id = MagicMock(
+            side_effect=lambda entity_id: next((entry for entry in entity_entries if entry.entity_id == entity_id), None)
+        )
+        matcher = AsyncMock()
+        matcher.match = AsyncMock(return_value=[])
+        monkeypatch.setattr(
+            "app.entity.visibility.EntityVisibilityRepository.get_rules",
+            AsyncMock(return_value=[{"rule_type": "area_exclude", "rule_value": "roof"}]),
+        )
+
+        result = await execute_climate_action(
+            {"action": "query_weather", "entity": ""},
+            ha,
+            entity_index,
+            matcher,
+            agent_id="climate-agent",
+        )
+
+        assert result["success"]
+        assert result["entity_id"] == "weather.visible"
+        ha.get_state.assert_awaited_once_with("weather.visible")
+
+    async def test_query_weather_named_entity_uses_deterministic_resolution(self, monkeypatch):
+        ha = AsyncMock()
+        ha.get_state = AsyncMock(
+            return_value={
+                "state": "rainy",
+                "attributes": {"friendly_name": "Garden Weather", "temperature": 14},
+            }
+        )
+        monkeypatch.setattr(
+            "app.entity.visibility.EntityVisibilityRepository.get_rules",
+            AsyncMock(return_value=[]),
+        )
+        entity_entries = [
+            make_entity_index_entry("weather.garden", "Garden Weather", area="garden"),
+            make_entity_index_entry("weather.home", "Home Weather", area="house"),
+        ]
+        entity_index = MagicMock()
+        entity_index.list_entries_async = AsyncMock(return_value=entity_entries)
+        entity_index.get_by_id = MagicMock(side_effect=lambda entity_id: None)
+        matcher = AsyncMock()
+        matcher.match = AsyncMock(return_value=[MagicMock(entity_id="weather.home", friendly_name="Home Weather")])
+
+        result = await execute_climate_action(
+            {"action": "query_weather", "entity": "Garden Weather"},
+            ha,
+            entity_index,
+            matcher,
+            agent_id="climate-agent",
+        )
+
+        assert result["success"]
+        assert result["entity_id"] == "weather.garden"
+        matcher.match.assert_not_awaited()
 
     async def test_query_weather_forecast_success(self):
         ha = AsyncMock()

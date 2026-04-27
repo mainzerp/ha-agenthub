@@ -765,16 +765,26 @@ async def _set_alarm(
     entity_query = (action.get("entity") or "").strip()
     logical_name = entity_query or str(params.get("label", "")).strip() or "alarm"
     duration_seconds = max(0, int(target_epoch) - now_ts)
+    raw_briefing = params.get("briefing", False)
+    briefing = raw_briefing if isinstance(raw_briefing, bool) else str(raw_briefing).strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
     timer_id = await scheduler.schedule(
         logical_name=logical_name,
         kind="alarm",
         duration_seconds=duration_seconds,
         origin_device_id=device_id,
         origin_area=area_id,
+        briefing=briefing,
         payload={
             "alarm_label": logical_name,
+            "briefing": briefing,
             "language": language,
             "scheduled_for_epoch": int(target_epoch),
+            "timezone": timezone,
             **({"recurrence": recurrence_payload} if recurrence_payload is not None else {}),
         },
     )

@@ -20,6 +20,106 @@
         </div>
     </div>
 
+    <div class="card" style="margin-bottom:1.5rem;">
+        <div style="display:flex;justify-content:space-between;gap:1rem;align-items:flex-start;flex-wrap:wrap;">
+            <div>
+                <h2 class="section-title mt-0 mb-0">Wake Briefing</h2>
+                <p class="text-muted" style="margin-top:0.4rem;max-width:58rem;">
+                    Configure the composed morning briefing used by internal alarms when the timer agent sets the briefing flag.
+                </p>
+            </div>
+            <div style="display:flex;gap:0.5rem;align-items:center;">
+                <span class="text-muted" x-show="wakeBriefingSaving">Saving...</span>
+                <span class="text-muted" x-show="wakeBriefingTesting">Testing...</span>
+                <button class="btn btn-sm btn-secondary" @click="testWakeBriefing()">Test Run</button>
+                <button class="btn btn-sm btn-primary" @click="saveWakeBriefingSettings()">Save Wake Briefing</button>
+            </div>
+        </div>
+
+        <template x-if="wakeBriefingError">
+            <p style="color:var(--danger,#f38ba8);margin-top:0.75rem;" x-text="wakeBriefingError"></p>
+        </template>
+        <template x-if="wakeBriefingSaved">
+            <p style="color:var(--success,#a6e3a1);margin-top:0.75rem;" x-text="wakeBriefingSaved"></p>
+        </template>
+
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:0.9rem;margin-top:1rem;">
+            <label class="card" style="padding:0.85rem;display:flex;justify-content:space-between;align-items:center;gap:1rem;">
+                <span>Enable wake briefings</span>
+                <input type="checkbox" x-model="wakeBriefing.enabled">
+            </label>
+            <label class="card" style="padding:0.85rem;display:flex;justify-content:space-between;align-items:center;gap:1rem;">
+                <span>Include date</span>
+                <input type="checkbox" x-model="wakeBriefing.sources.date">
+            </label>
+            <label class="card" style="padding:0.85rem;display:flex;justify-content:space-between;align-items:center;gap:1rem;">
+                <span>Include weather</span>
+                <input type="checkbox" x-model="wakeBriefing.sources.weather">
+            </label>
+            <label class="card" style="padding:0.85rem;display:flex;justify-content:space-between;align-items:center;gap:1rem;">
+                <span>Include news</span>
+                <input type="checkbox" x-model="wakeBriefing.sources.news">
+            </label>
+            <label class="card" style="padding:0.85rem;display:flex;justify-content:space-between;align-items:center;gap:1rem;">
+                <span>Include calendar</span>
+                <input type="checkbox" x-model="wakeBriefing.sources.calendar">
+            </label>
+            <label class="card" style="padding:0.85rem;display:flex;justify-content:space-between;align-items:center;gap:1rem;">
+                <span>Include sensors</span>
+                <input type="checkbox" x-model="wakeBriefing.sources.sensors">
+            </label>
+        </div>
+
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:1rem;margin-top:1rem;">
+            <div>
+                <label style="display:block;margin-bottom:0.35rem;">News topic or prompt</label>
+                <textarea x-model="wakeBriefing.news_query" rows="3" placeholder="top technology news in Germany today"
+                          style="width:100%;box-sizing:border-box;padding:0.55rem 0.7rem;background:var(--input-bg,#313244);border:1px solid var(--border,#45475a);border-radius:4px;color:inherit;"></textarea>
+                <p class="text-muted" style="margin-top:0.4rem;">Use this field to steer the type of news, region, language, or exclusions.</p>
+            </div>
+            <div>
+                <label style="display:block;margin-bottom:0.35rem;">Headline count</label>
+                <input type="number" min="1" max="10" x-model.number="wakeBriefing.news_count"
+                       style="width:100%;box-sizing:border-box;padding:0.45rem 0.6rem;background:var(--input-bg,#313244);border:1px solid var(--border,#45475a);border-radius:4px;color:inherit;"/>
+                <p class="text-muted" style="margin-top:0.4rem;">The wake-briefing composer requests this many concise headlines from the news step.</p>
+            </div>
+            <div>
+                <label style="display:block;margin-bottom:0.35rem;">Timeout seconds</label>
+                <input type="number" min="1" max="60" x-model.number="wakeBriefing.timeout_seconds"
+                       style="width:100%;box-sizing:border-box;padding:0.45rem 0.6rem;background:var(--input-bg,#313244);border:1px solid var(--border,#45475a);border-radius:4px;color:inherit;"/>
+            </div>
+        </div>
+
+        <div style="margin-top:1rem;">
+            <label style="display:block;margin-bottom:0.35rem;">Sensor entities</label>
+            <div style="display:flex;gap:0.5rem;flex-wrap:wrap;align-items:center;">
+                <input type="text" x-model="newSensorEntity" placeholder="sensor.dishwasher_status"
+                       style="flex:1 1 240px;box-sizing:border-box;padding:0.45rem 0.6rem;background:var(--input-bg,#313244);border:1px solid var(--border,#45475a);border-radius:4px;color:inherit;"/>
+                <button class="btn btn-sm btn-secondary" @click="addSensorEntity()">Add Sensor</button>
+            </div>
+            <div style="display:flex;flex-wrap:wrap;gap:0.5rem;margin-top:0.75rem;" x-show="wakeBriefing.sensor_entities.length > 0">
+                <template x-for="(entityId, index) in wakeBriefing.sensor_entities" :key="entityId">
+                    <span class="badge badge-teal" style="display:inline-flex;align-items:center;gap:0.4rem;">
+                        <span x-text="entityId"></span>
+                        <button type="button" class="btn btn-xs btn-danger" @click="removeSensorEntity(index)">x</button>
+                    </span>
+                </template>
+            </div>
+            <p class="text-muted" style="margin-top:0.5rem;">Use `domain.object_id` values. Hidden entities are ignored by the composer.</p>
+        </div>
+
+        <div style="margin-top:1rem;">
+            <label style="display:block;margin-bottom:0.35rem;">Composer prompt</label>
+            <textarea x-model="wakeBriefing.composer_prompt" rows="5"
+                      style="width:100%;box-sizing:border-box;padding:0.55rem 0.7rem;background:var(--input-bg,#313244);border:1px solid var(--border,#45475a);border-radius:4px;color:inherit;"></textarea>
+        </div>
+
+        <div style="margin-top:1rem;" x-show="wakeBriefingPreview">
+            <label style="display:block;margin-bottom:0.35rem;">Test preview</label>
+            <div class="card" style="padding:0.9rem;white-space:pre-wrap;line-height:1.5;" x-text="wakeBriefingPreview"></div>
+        </div>
+    </div>
+
     <!-- Section 1: Active Timers -->
     <div class="section-header">
         <h2 class="section-title mt-0 mb-0">Scheduler Timers</h2>
@@ -91,7 +191,10 @@
             <tbody>
                 <template x-for="a in alarms" :key="alarmRowKey(a)">
                     <tr>
-                        <td x-text="a.name"></td>
+                        <td>
+                            <div x-text="a.name"></div>
+                            <div class="text-muted" style="font-size:0.8em;" x-show="a.source === 'internal' && recurrenceSummary(a.recurrence)" x-text="recurrenceSummary(a.recurrence)"></div>
+                        </td>
                         <td class="text-mono" x-text="a.entity_id"></td>
                         <td class="text-mono" x-text="a.state"></td>
                         <td>
@@ -146,6 +249,42 @@
                 <input type="datetime-local" x-model="editFiresAt"
                        style="width:100%;box-sizing:border-box;padding:0.4rem 0.6rem;background:var(--input-bg,#313244);border:1px solid var(--border,#45475a);border-radius:4px;color:inherit;"/>
             </div>
+            <template x-if="editMode === 'alarm'">
+                <div>
+                    <label class="card" style="padding:0.85rem;display:flex;justify-content:space-between;align-items:center;gap:1rem;margin-bottom:1rem;">
+                        <span>Wake briefing enabled</span>
+                        <input type="checkbox" x-model="editBriefing">
+                    </label>
+                    <div class="card" style="padding:0.85rem;margin-bottom:1rem;">
+                        <label style="display:block;margin-bottom:0.35rem;">Recurrence</label>
+                        <select x-model="editRecurrenceMode"
+                                style="width:100%;box-sizing:border-box;padding:0.45rem 0.6rem;background:var(--input-bg,#313244);border:1px solid var(--border,#45475a);border-radius:4px;color:inherit;">
+                            <option value="once">One time</option>
+                            <option value="daily">Daily</option>
+                            <option value="weekly">Weekly</option>
+                        </select>
+
+                        <div x-show="editRecurrenceMode !== 'once'" style="margin-top:0.85rem;">
+                            <label style="display:block;margin-bottom:0.35rem;">Repeat every</label>
+                            <input type="number" min="1" max="30" x-model.number="editRecurrenceInterval"
+                                   style="width:100%;box-sizing:border-box;padding:0.45rem 0.6rem;background:var(--input-bg,#313244);border:1px solid var(--border,#45475a);border-radius:4px;color:inherit;"/>
+                        </div>
+
+                        <div x-show="editRecurrenceMode === 'weekly'" style="margin-top:0.85rem;">
+                            <label style="display:block;margin-bottom:0.35rem;">Weekdays</label>
+                            <div style="display:flex;flex-wrap:wrap;gap:0.45rem;">
+                                <template x-for="day in weekdayOptions" :key="day.code">
+                                    <button type="button"
+                                            class="btn btn-xs"
+                                            :class="editRecurrenceByweekday.includes(day.code) ? 'btn-primary' : 'btn-secondary'"
+                                            @click="toggleEditWeekday(day.code)"
+                                            x-text="day.label"></button>
+                                </template>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </template>
             <p x-show="modalError" x-text="modalError" style="color:var(--danger,#f38ba8);margin:0 0 0.75rem;"></p>
             <div style="display:flex;gap:0.5rem;justify-content:flex-end;">
                 <button class="btn btn-sm btn-secondary" @click="showEditModal=false">Cancel</button>
@@ -162,6 +301,37 @@ function timersPage() {
         timers: [],
         alarms: [],
         loading: true,
+        wakeBriefingLoading: true,
+        wakeBriefingSaving: false,
+        wakeBriefingTesting: false,
+        wakeBriefingError: '',
+        wakeBriefingSaved: '',
+        wakeBriefingPreview: '',
+        newSensorEntity: '',
+        weekdayOptions: [
+            { code: 'MO', label: 'Mon' },
+            { code: 'TU', label: 'Tue' },
+            { code: 'WE', label: 'Wed' },
+            { code: 'TH', label: 'Thu' },
+            { code: 'FR', label: 'Fri' },
+            { code: 'SA', label: 'Sat' },
+            { code: 'SU', label: 'Sun' },
+        ],
+        wakeBriefing: {
+            enabled: true,
+            sources: {
+                weather: true,
+                date: true,
+                news: true,
+                calendar: true,
+                sensors: false,
+            },
+            sensor_entities: [],
+            news_query: 'top news today',
+            news_count: 3,
+            timeout_seconds: 10,
+            composer_prompt: '',
+        },
         refreshInterval: null,
         showEditModal: false,
         editTarget: null,
@@ -169,10 +339,44 @@ function timersPage() {
         modalError: '',
         editName: '',
         editFiresAt: '',
+        editBriefing: false,
+        editRecurrenceMode: 'once',
+        editRecurrenceInterval: 1,
+        editRecurrenceByweekday: [],
 
         async init() {
-            await this.loadData();
+            await Promise.all([this.loadData(), this.loadWakeBriefingSettings()]);
             this.refreshInterval = setInterval(() => this.loadData(), 5000);
+        },
+
+        async loadWakeBriefingSettings() {
+            this.wakeBriefingError = '';
+            try {
+                const resp = await fetch('/api/admin/settings/wake-briefing', { credentials: 'same-origin' });
+                if (!resp.ok) {
+                    throw new Error('HTTP ' + resp.status);
+                }
+                const data = await resp.json();
+                this.wakeBriefing = {
+                    enabled: !!data.enabled,
+                    sources: {
+                        weather: !!data.sources?.weather,
+                        date: !!data.sources?.date,
+                        news: !!data.sources?.news,
+                        calendar: !!data.sources?.calendar,
+                        sensors: !!data.sources?.sensors,
+                    },
+                    sensor_entities: Array.isArray(data.sensor_entities) ? data.sensor_entities : [],
+                    news_query: data.news_query || 'top news today',
+                    news_count: Number(data.news_count || 3),
+                    timeout_seconds: Number(data.timeout_seconds || 10),
+                    composer_prompt: data.composer_prompt || '',
+                };
+            } catch (e) {
+                this.wakeBriefingError = 'Failed to load wake briefing settings.';
+                console.error('Failed to load wake briefing settings', e);
+            }
+            this.wakeBriefingLoading = false;
         },
 
         async loadData() {
@@ -209,6 +413,20 @@ function timersPage() {
             return String(alarm.id || alarm.entity_id || `${alarm.name || 'alarm'}-${alarm.state || '-'}`);
         },
 
+        recurrenceSummary(recurrence) {
+            if (!recurrence || typeof recurrence !== 'object') return '';
+            if (recurrence.freq === 'daily') {
+                const interval = Number(recurrence.interval || 1);
+                return interval > 1 ? `Repeats every ${interval} days` : 'Repeats daily';
+            }
+            if (recurrence.freq === 'weekly') {
+                const days = Array.isArray(recurrence.byweekday) ? recurrence.byweekday.join(', ') : '';
+                const interval = Number(recurrence.interval || 1);
+                return interval > 1 ? `Repeats every ${interval} weeks on ${days}` : `Repeats weekly on ${days}`;
+            }
+            return '';
+        },
+
         displayOrigin(timer) {
             if (!timer) return '-';
             if (timer.origin_label) return String(timer.origin_label);
@@ -242,6 +460,10 @@ function timersPage() {
             this.editName = t.logical_name || '';
             const d = new Date((t.fires_at || 0) * 1000);
             this.editFiresAt = this._toDatetimeLocal(d);
+            this.editBriefing = false;
+            this.editRecurrenceMode = 'once';
+            this.editRecurrenceInterval = 1;
+            this.editRecurrenceByweekday = [];
             this.modalError = '';
             this.showEditModal = true;
         },
@@ -252,8 +474,46 @@ function timersPage() {
             this.editName = a.name || '';
             const d = new Date((a.fires_at || 0) * 1000);
             this.editFiresAt = this._toDatetimeLocal(d);
+            this.editBriefing = !!a.briefing;
+            this.editRecurrenceMode = a.is_recurring ? (a.recurrence?.freq || 'daily') : 'once';
+            this.editRecurrenceInterval = Number(a.recurrence?.interval || 1);
+            this.editRecurrenceByweekday = Array.isArray(a.recurrence?.byweekday) ? [...a.recurrence.byweekday] : [];
             this.modalError = '';
             this.showEditModal = true;
+        },
+
+        toggleEditWeekday(code) {
+            if (this.editRecurrenceByweekday.includes(code)) {
+                this.editRecurrenceByweekday = this.editRecurrenceByweekday.filter((item) => item !== code);
+                return;
+            }
+            const order = this.weekdayOptions.map((item) => item.code);
+            this.editRecurrenceByweekday = [...this.editRecurrenceByweekday, code].sort(
+                (left, right) => order.indexOf(left) - order.indexOf(right)
+            );
+        },
+
+        buildWakeBriefingPayload() {
+            const payload = {
+                enabled: !!this.wakeBriefing.enabled,
+                sources: {
+                    weather: !!this.wakeBriefing.sources.weather,
+                    date: !!this.wakeBriefing.sources.date,
+                    news: !!this.wakeBriefing.sources.news,
+                    calendar: !!this.wakeBriefing.sources.calendar,
+                    sensors: !!this.wakeBriefing.sources.sensors,
+                },
+                sensor_entities: this.wakeBriefing.sensor_entities.filter((entityId) => this.validateSensorEntity(entityId)),
+                news_query: String(this.wakeBriefing.news_query || '').trim() || 'top news today',
+                news_count: Math.max(1, Math.min(10, Number(this.wakeBriefing.news_count || 3))),
+                timeout_seconds: Math.max(1, Math.min(60, Number(this.wakeBriefing.timeout_seconds || 10))),
+                composer_prompt: String(this.wakeBriefing.composer_prompt || '').trim(),
+            };
+            if (!payload.composer_prompt) {
+                this.wakeBriefingError = 'Composer prompt cannot be empty.';
+                return null;
+            }
+            return payload;
         },
 
         async submitEdit() {
@@ -267,6 +527,24 @@ function timersPage() {
                 if (!isNaN(epoch) && epoch > Math.floor(Date.now() / 1000)) {
                     body.fires_at = epoch;
                     body.duration_seconds = epoch - Math.floor(Date.now() / 1000);
+                }
+            }
+            if (this.editMode === 'alarm') {
+                body.briefing = !!this.editBriefing;
+                body.is_recurring = this.editRecurrenceMode !== 'once';
+                if (body.is_recurring) {
+                    const interval = Math.max(1, Math.min(30, Number(this.editRecurrenceInterval || 1)));
+                    body.recurrence = {
+                        freq: this.editRecurrenceMode,
+                        interval,
+                    };
+                    if (this.editRecurrenceMode === 'weekly') {
+                        if (!this.editRecurrenceByweekday.length) {
+                            this.modalError = 'Select at least one weekday for weekly alarms.';
+                            return;
+                        }
+                        body.recurrence.byweekday = [...this.editRecurrenceByweekday];
+                    }
                 }
             }
             if (!Object.keys(body).length) {
@@ -291,6 +569,92 @@ function timersPage() {
             }
             this.showEditModal = false;
             await this.loadData();
+        },
+
+        validateSensorEntity(entityId) {
+            return /^[A-Za-z0-9_]+\.[A-Za-z0-9_]+$/.test(String(entityId || '').trim());
+        },
+
+        addSensorEntity() {
+            const normalized = String(this.newSensorEntity || '').trim();
+            if (!normalized) {
+                return;
+            }
+            if (!this.validateSensorEntity(normalized)) {
+                this.wakeBriefingError = 'Sensor entities must use the domain.object_id format.';
+                return;
+            }
+            if (!this.wakeBriefing.sensor_entities.includes(normalized)) {
+                this.wakeBriefing.sensor_entities.push(normalized);
+            }
+            this.newSensorEntity = '';
+            this.wakeBriefingError = '';
+        },
+
+        removeSensorEntity(index) {
+            this.wakeBriefing.sensor_entities.splice(index, 1);
+        },
+
+        async saveWakeBriefingSettings() {
+            this.wakeBriefingSaving = true;
+            this.wakeBriefingError = '';
+            this.wakeBriefingSaved = '';
+            const payload = this.buildWakeBriefingPayload();
+            if (!payload) {
+                this.wakeBriefingSaving = false;
+                return;
+            }
+            try {
+                const resp = await fetch('/api/admin/settings/wake-briefing', {
+                    method: 'PUT',
+                    credentials: 'same-origin',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload),
+                });
+                if (!resp.ok) {
+                    const body = await resp.json().catch(() => ({}));
+                    throw new Error(body.detail || ('HTTP ' + resp.status));
+                }
+                const data = await resp.json();
+                if (data.settings) {
+                    this.wakeBriefing = data.settings;
+                }
+                this.wakeBriefingSaved = 'Wake briefing settings saved.';
+            } catch (e) {
+                this.wakeBriefingError = String(e);
+            } finally {
+                this.wakeBriefingSaving = false;
+            }
+        },
+
+        async testWakeBriefing() {
+            this.wakeBriefingTesting = true;
+            this.wakeBriefingError = '';
+            this.wakeBriefingSaved = '';
+            const payload = this.buildWakeBriefingPayload();
+            if (!payload) {
+                this.wakeBriefingTesting = false;
+                return;
+            }
+            try {
+                const resp = await fetch('/api/admin/settings/wake-briefing/test', {
+                    method: 'POST',
+                    credentials: 'same-origin',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload),
+                });
+                if (!resp.ok) {
+                    const body = await resp.json().catch(() => ({}));
+                    throw new Error(body.detail || ('HTTP ' + resp.status));
+                }
+                const data = await resp.json();
+                this.wakeBriefingPreview = String(data.preview || '').trim() || 'No preview returned.';
+            } catch (e) {
+                this.wakeBriefingPreview = '';
+                this.wakeBriefingError = String(e);
+            } finally {
+                this.wakeBriefingTesting = false;
+            }
         },
 
         _toDatetimeLocal(d) {

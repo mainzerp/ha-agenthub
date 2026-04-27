@@ -6,6 +6,7 @@ real FastAPI app with mocked dependencies.
 
 from __future__ import annotations
 
+import json
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -653,6 +654,106 @@ class TestAdminSettingsEndpoints:
         assert threshold["value_type"] == "float"
         assert threshold["category"] == "cache"
 
+    async def test_get_wake_briefing_settings_returns_structured_payload(self, authed_client: httpx.AsyncClient):
+        resp = await authed_client.get("/api/admin/settings/wake-briefing")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "enabled" in data
+        assert "sources" in data
+        assert "news_count" in data
+        assert "composer_prompt" in data
+
+    async def test_put_wake_briefing_settings_persists_values(self, authed_client: httpx.AsyncClient):
+        resp = await authed_client.put(
+            "/api/admin/settings/wake-briefing",
+            json={
+                "enabled": True,
+                "sources": {
+                    "weather": True,
+                    "date": True,
+                    "news": False,
+                    "calendar": True,
+                    "sensors": True,
+                },
+                "sensor_entities": ["sensor.dishwasher_status"],
+                "news_query": "top science news today",
+                "news_count": 4,
+                "timeout_seconds": 12,
+                "composer_prompt": "Compose a concise morning update.",
+            },
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "ok"
+        assert data["settings"]["sources"]["news"] is False
+        assert data["settings"]["sensor_entities"] == ["sensor.dishwasher_status"]
+        assert data["settings"]["news_count"] == 4
+        assert data["settings"]["timeout_seconds"] == 12
+
+    async def test_put_wake_briefing_settings_rejects_invalid_sensor_entity(self, authed_client: httpx.AsyncClient):
+        resp = await authed_client.put(
+            "/api/admin/settings/wake-briefing",
+            json={
+                "enabled": True,
+                "sources": {
+                    "weather": True,
+                    "date": True,
+                    "news": True,
+                    "calendar": True,
+                    "sensors": True,
+                },
+                "sensor_entities": ["not-valid"],
+                "news_query": "top news today",
+                "news_count": 3,
+                "timeout_seconds": 10,
+                "composer_prompt": "Compose a concise morning update.",
+            },
+        )
+        assert resp.status_code == 422
+
+    async def test_post_wake_briefing_test_returns_preview(self, db_repository):
+        async def _fake_compose(gateway, alarm_payload, **kwargs):
+            settings_repo = kwargs["settings_repo"]
+            assert await settings_repo.get_value("wake_briefing.news_query") == "top science news today"
+            assert await settings_repo.get_value("wake_briefing.news_count") == "4"
+            return "Preview briefing"
+
+        ha_client = AsyncMock()
+        ha_client.get_config = AsyncMock(return_value={"time_zone": "Europe/Berlin", "location_name": "Home"})
+        app = _build_test_app(mock_ha_rest_client=ha_client)
+        app.state.orchestrator_gateway = MagicMock()
+        app.state.entity_index = MagicMock()
+
+        with (
+            patch("app.db.repository.SetupStateRepository.is_complete", new_callable=AsyncMock, return_value=True),
+            patch("app.agents.wake_briefing.compose_wake_briefing", new=AsyncMock(side_effect=_fake_compose)),
+        ):
+            transport = httpx.ASGITransport(app=app)
+            async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+                resp = await client.post(
+                    "/api/admin/settings/wake-briefing/test",
+                    json={
+                        "enabled": False,
+                        "sources": {
+                            "weather": True,
+                            "date": True,
+                            "news": True,
+                            "calendar": False,
+                            "sensors": False,
+                        },
+                        "sensor_entities": [],
+                        "news_query": "top science news today",
+                        "news_count": 4,
+                        "timeout_seconds": 12,
+                        "composer_prompt": "Compose a concise morning update.",
+                    },
+                )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "ok"
+        assert data["preview"] == "Preview briefing"
+
 
 # ===================================================================
 # Admin Agents
@@ -723,6 +824,113 @@ class TestAdminTimersAPI:
 
         resp = await client.patch(f"/api/admin/timers/{timer_id}", json={})
         assert resp.status_code == 422
+
+    async def test_patch_alarm_updates_briefing_flag(self, timer_admin_client):
+        from app.db.repository import ScheduledTimersRepository
+
+        client, scheduler = timer_admin_client
+        fires_at = int(time.time()) + 900
+        timer_id = await scheduler.schedule(
+            logical_name="wake me",
+            kind="alarm",
+            duration_seconds=900,
+            briefing=False,
+            payload={
+                "alarm_label": "wake me",
+                "scheduled_for_epoch": fires_at,
+                "briefing": False,
+            },
+        )
+
+        resp = await client.patch(f"/api/admin/timers/{timer_id}", json={"briefing": True})
+        assert resp.status_code == 200
+
+        row = await ScheduledTimersRepository.get(timer_id)
+        assert row is not None
+        assert row["briefing"] == 1
+        assert json.loads(row["payload_json"])["briefing"] is True
+
+        list_resp = await client.get("/api/admin/timers")
+        assert list_resp.status_code == 200
+        alarm_row = next(row for row in list_resp.json()["alarms"] if row.get("id") == timer_id)
+        assert alarm_row["briefing"] is True
+
+    async def test_patch_alarm_updates_weekly_recurrence(self, timer_admin_client):
+        from app.db.repository import ScheduledTimersRepository
+
+        client, scheduler = timer_admin_client
+        fires_at = int(time.time()) + 1800
+        timer_id = await scheduler.schedule(
+            logical_name="weekday wake",
+            kind="alarm",
+            duration_seconds=1800,
+            briefing=True,
+            payload={
+                "alarm_label": "weekday wake",
+                "scheduled_for_epoch": fires_at,
+                "briefing": True,
+                "timezone": "Europe/Berlin",
+                "recurrence": {
+                    "freq": "daily",
+                    "interval": 1,
+                    "anchor_time": "07:00:00",
+                    "timezone": "Europe/Berlin",
+                },
+            },
+        )
+
+        resp = await client.patch(
+            f"/api/admin/timers/{timer_id}",
+            json={
+                "is_recurring": True,
+                "recurrence": {"freq": "weekly", "interval": 1, "byweekday": ["MO", "WE", "FR"]},
+            },
+        )
+        assert resp.status_code == 200
+
+        row = await ScheduledTimersRepository.get(timer_id)
+        assert row is not None
+        recurrence = json.loads(row["payload_json"])["recurrence"]
+        assert recurrence["freq"] == "weekly"
+        assert recurrence["interval"] == 1
+        assert recurrence["byweekday"] == ["MO", "WE", "FR"]
+
+        list_resp = await client.get("/api/admin/timers")
+        alarm_row = next(item for item in list_resp.json()["alarms"] if item.get("id") == timer_id)
+        assert alarm_row["is_recurring"] is True
+        assert alarm_row["recurrence"] == {"freq": "weekly", "interval": 1, "byweekday": ["MO", "WE", "FR"]}
+
+    async def test_patch_alarm_can_clear_recurrence(self, timer_admin_client):
+        from app.db.repository import ScheduledTimersRepository
+
+        client, scheduler = timer_admin_client
+        timer_id = await scheduler.schedule(
+            logical_name="daily wake",
+            kind="alarm",
+            duration_seconds=1200,
+            payload={
+                "alarm_label": "daily wake",
+                "scheduled_for_epoch": int(time.time()) + 1200,
+                "recurrence": {
+                    "freq": "daily",
+                    "interval": 1,
+                    "anchor_time": "06:45:00",
+                    "timezone": "Europe/Berlin",
+                },
+            },
+        )
+
+        resp = await client.patch(f"/api/admin/timers/{timer_id}", json={"is_recurring": False})
+        assert resp.status_code == 200
+
+        row = await ScheduledTimersRepository.get(timer_id)
+        assert row is not None
+        assert "recurrence" not in json.loads(row["payload_json"])
+
+        list_resp = await client.get("/api/admin/timers")
+        alarm_row = next(item for item in list_resp.json()["alarms"] if item.get("id") == timer_id)
+        assert alarm_row["is_recurring"] is False
+        assert alarm_row["recurrence"] is None
 
     async def test_post_timer_and_alarm_create(self, timer_admin_client):
         client, scheduler = timer_admin_client

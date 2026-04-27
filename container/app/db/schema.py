@@ -330,6 +330,7 @@ async def _create_tables(db: aiosqlite.Connection) -> None:
             duration_seconds INTEGER NOT NULL,
             origin_device_id TEXT,
             origin_area TEXT,
+            briefing INTEGER NOT NULL DEFAULT 0,
             payload_json TEXT NOT NULL,
             state TEXT NOT NULL DEFAULT 'pending',
             fired_at INTEGER,
@@ -477,6 +478,83 @@ async def _seed_defaults(db: aiosqlite.Connection) -> None:
             "agents",
             "Primary user message for actionable agents: 'original_when_translated' or 'description_first'",
         ),
+        (
+            "wake_briefing.enabled",
+            "true",
+            "bool",
+            "agents",
+            "Enable LLM-composed wake briefings for internal alarms.",
+        ),
+        (
+            "wake_briefing.sources.weather",
+            "true",
+            "bool",
+            "agents",
+            "Include weather summary in wake briefings.",
+        ),
+        (
+            "wake_briefing.sources.date",
+            "true",
+            "bool",
+            "agents",
+            "Include current date and weekday in wake briefings.",
+        ),
+        (
+            "wake_briefing.sources.news",
+            "true",
+            "bool",
+            "agents",
+            "Include news headlines in wake briefings using general-agent tools.",
+        ),
+        (
+            "wake_briefing.sources.calendar",
+            "true",
+            "bool",
+            "agents",
+            "Include calendar events for the next 24 hours in wake briefings.",
+        ),
+        (
+            "wake_briefing.sources.sensors",
+            "false",
+            "bool",
+            "agents",
+            "Include configured sensor states in wake briefings.",
+        ),
+        (
+            "wake_briefing.sensor_entities",
+            "[]",
+            "json",
+            "agents",
+            "List of sensor entity_ids to read for wake briefings.",
+        ),
+        (
+            "wake_briefing.news_query",
+            "top news today",
+            "string",
+            "agents",
+            "User-text dispatched to general-agent for news.",
+        ),
+        (
+            "wake_briefing.news_count",
+            "3",
+            "int",
+            "agents",
+            "Requested number of news headlines for wake briefings.",
+        ),
+        (
+            "wake_briefing.timeout_seconds",
+            "10",
+            "int",
+            "agents",
+            "Total budget for composing a wake briefing before falling back.",
+        ),
+        (
+            "wake_briefing.composer_prompt",
+            "You compose a short friendly spoken morning briefing from a JSON facts object. Mention the date and weekday, weather, calendar, news headlines, and any sensor readings the user configured. Keep it under 90 spoken seconds. Reply in the user's language.",
+            "string",
+            "agents",
+            "System prompt for the wake-briefing composer LLM.",
+        ),
         # Rewrite agent settings
         ("rewrite.model", "groq/llama-3.1-8b-instant", "string", "rewrite", "LLM model for rewrite agent"),
         ("rewrite.temperature", "0.8", "float", "rewrite", "Temperature for rewrite agent"),
@@ -534,6 +612,16 @@ async def _seed_defaults(db: aiosqlite.Connection) -> None:
         ("light-agent", 1, "openrouter/openai/gpt-4o-mini", 5, 3, 0.2, 1024, "Lighting control"),
         ("music-agent", 1, "openrouter/openai/gpt-4o-mini", 5, 3, 0.2, 1024, "Music and media playback"),
         ("general-agent", 1, "openrouter/openai/gpt-4o-mini", 5, 3, 0.5, 1024, "Fallback and general Q&A"),
+        (
+            "wake-briefing-composer",
+            1,
+            "openrouter/openai/gpt-4o-mini",
+            5,
+            3,
+            0.5,
+            1024,
+            "LLM-composed wake briefings for internal alarms",
+        ),
         ("timer-agent", 0, "openrouter/openai/gpt-4o-mini", 5, 3, 0.2, 1024, "Timers and alarms"),
         ("climate-agent", 0, "openrouter/openai/gpt-4o-mini", 5, 3, 0.2, 1024, "Climate and HVAC control"),
         ("media-agent", 0, "openrouter/openai/gpt-4o-mini", 5, 3, 0.2, 1024, "Media player control"),
@@ -999,3 +1087,9 @@ async def _run_migrations(db: aiosqlite.Connection) -> None:
             ],
         )
         await db.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (20)")
+
+    if current_version < 21:
+        # Migration 21 (1.0.0): persist wake-briefing alarm flags explicitly.
+        with suppress(Exception):
+            await db.execute("ALTER TABLE scheduled_timers ADD COLUMN briefing INTEGER NOT NULL DEFAULT 0")
+        await db.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (21)")

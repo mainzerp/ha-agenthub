@@ -65,11 +65,14 @@ _ACTIONS_WITHOUT_ENTITY: frozenset[str] = frozenset(
         # Light / switch / sensor read paths
         "list_lights",
         # Climate / scene / security / media / music / automation list paths
+        "list_climate",
         "list_automations",
         "list_security",
         "list_media_players",
         "list_music_players",
         "list_scenes",
+        "query_weather",
+        "query_weather_forecast",
         # Timer agent list/query paths that aggregate across entities
         "list_timers",
         "list_alarms",

@@ -126,6 +126,7 @@ class AlarmMonitor:
                 "alarm_notification",
                 {
                     "alarm_name": friendly_name,
+                    "briefing": False,
                     "entity_id": entity_id,
                     "media_player": getattr(entry, "media_player", None),
                     "origin_device_id": getattr(entry, "origin_device_id", None),

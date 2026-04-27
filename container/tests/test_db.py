@@ -71,6 +71,25 @@ class TestSchemaCreation:
 
 
 class TestScheduledTimersRepository:
+    async def test_insert_persists_briefing_flag(self, db_repository):
+        now = int(time.time())
+        await ScheduledTimersRepository.insert(
+            id="sched-briefing",
+            logical_name="wake alarm",
+            kind="alarm",
+            created_at=now,
+            fires_at=now + 120,
+            duration_seconds=120,
+            origin_device_id=None,
+            origin_area="bedroom",
+            payload_json=json.dumps({"alarm_label": "Wake Alarm"}),
+            briefing=True,
+        )
+
+        row = await ScheduledTimersRepository.get("sched-briefing")
+        assert row is not None
+        assert row["briefing"] == 1
+
     async def test_update_scheduled_timer_renames(self, db_repository):
         now = int(time.time())
         await ScheduledTimersRepository.insert(
@@ -940,6 +959,64 @@ class TestMigrationV5:
 
         row = await AgentConfigRepository.get("rewrite-agent")
         assert row["max_tokens"] == 1024  # preserved
+
+
+# ---------------------------------------------------------------------------
+# Schema migration v21 -- scheduled timer briefing column
+# ---------------------------------------------------------------------------
+
+
+class TestMigrationV21:
+    async def test_migration_v21_adds_briefing_column_idempotently(self, db_repository):
+        from app.db.schema import _run_migrations
+
+        async with aiosqlite.connect(str(db_repository)) as db:
+            db.row_factory = aiosqlite.Row
+            await db.execute("DELETE FROM schema_version WHERE version >= 21")
+            await db.execute("ALTER TABLE scheduled_timers RENAME TO scheduled_timers_old")
+            await db.execute(
+                """
+                CREATE TABLE scheduled_timers (
+                    id TEXT PRIMARY KEY,
+                    logical_name TEXT NOT NULL,
+                    kind TEXT NOT NULL,
+                    created_at INTEGER NOT NULL,
+                    fires_at INTEGER NOT NULL,
+                    duration_seconds INTEGER NOT NULL,
+                    origin_device_id TEXT,
+                    origin_area TEXT,
+                    payload_json TEXT NOT NULL,
+                    state TEXT NOT NULL DEFAULT 'pending',
+                    fired_at INTEGER,
+                    cancelled_at INTEGER
+                )
+                """
+            )
+            await db.execute(
+                """
+                INSERT INTO scheduled_timers (
+                    id, logical_name, kind, created_at, fires_at, duration_seconds,
+                    origin_device_id, origin_area, payload_json, state, fired_at, cancelled_at
+                )
+                SELECT
+                    id, logical_name, kind, created_at, fires_at, duration_seconds,
+                    origin_device_id, origin_area, payload_json, state, fired_at, cancelled_at
+                FROM scheduled_timers_old
+                """
+            )
+            await db.execute("DROP TABLE scheduled_timers_old")
+            await db.commit()
+
+            await _run_migrations(db)
+            await _run_migrations(db)
+            await db.commit()
+
+            columns = await (await db.execute("PRAGMA table_info(scheduled_timers)")).fetchall()
+            schema_versions = await (await db.execute("SELECT version FROM schema_version WHERE version = 21")).fetchall()
+
+        column_names = {row[1] for row in columns}
+        assert "briefing" in column_names
+        assert len(schema_versions) == 1
 
 
 # ---------------------------------------------------------------------------

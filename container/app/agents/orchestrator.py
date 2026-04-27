@@ -16,7 +16,7 @@ from datetime import UTC, datetime, timedelta
 
 from app.a2a.protocol import JsonRpcRequest
 from app.agents.base import BaseAgent
-from app.agents.cancel_speech import cancel_interaction_ack
+from app.agents.cancel_speech import cancel_interaction_ack, generate_cancel_speech
 from app.agents.language_detect import detect_user_language
 from app.agents.sanitize import strip_markdown
 from app.analytics.collector import track_agent_timeout, track_request
@@ -385,7 +385,7 @@ class OrchestratorAgent(BaseAgent):
             context.language = resolved_language
 
         if target_agent == _CANCEL_INTERACTION_AGENT:
-            speech = cancel_interaction_ack(context.language)
+            speech = await generate_cancel_speech(context.language, user_text)
             await track_request(
                 _CANCEL_INTERACTION_AGENT,
                 cache_hit=False,
@@ -1820,7 +1820,7 @@ class OrchestratorAgent(BaseAgent):
         )
 
         if len(classifications) == 1 and target_agent == _CANCEL_INTERACTION_AGENT:
-            full_speech = cancel_interaction_ack(detected_language)
+            full_speech = await generate_cancel_speech(detected_language, user_text)
             latency_ms = (time.perf_counter() - t0_request) * 1000
             await track_request(_CANCEL_INTERACTION_AGENT, cache_hit=False, latency_ms=latency_ms)
             async with _optional_span(span_collector, "return", agent_id="orchestrator") as ret_span:
@@ -2470,6 +2470,7 @@ class OrchestratorAgent(BaseAgent):
                     "recoverable": True,
                 },
             }
+        from app.a2a.orchestrator_gateway import OrchestratorGateway
         from app.agents.background_actions import handle_background_event
 
         return await handle_background_event(
@@ -2477,6 +2478,7 @@ class OrchestratorAgent(BaseAgent):
             context=ctx,
             ha_client=self._ha_client,
             entity_index=self._entity_index,
+            gateway=OrchestratorGateway(self._dispatcher),
         )
 
     async def _repair_send_agent_classifications(

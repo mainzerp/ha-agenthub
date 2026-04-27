@@ -53,6 +53,7 @@ async def handle_background_event(
     context: TaskContext | None = None,
     ha_client: Any,
     entity_index: Any = None,
+    gateway: Any = None,
 ) -> dict[str, Any]:
     """Execute a structured background event inside orchestrator ownership."""
     payload = dict(event.payload or {})
@@ -65,12 +66,23 @@ async def handle_background_event(
             duration=None,
             language=payload.get("language"),
         )
+        custom_message = None
+        if payload.get("briefing") and gateway is not None:
+            from app.agents.wake_briefing import compose_wake_briefing
+
+            custom_message = await compose_wake_briefing(
+                gateway,
+                payload,
+                ha_client=ha_client,
+                entity_index=entity_index,
+            )
         await dispatch_alarm_notification(
             ha_client=ha_client,
             alarm_name=payload.get("alarm_name") or "Alarm",
             entity_id=payload.get("entity_id") or "",
             metadata=metadata,
             entity_index=entity_index,
+            custom_message=custom_message,
         )
         return {"speech": ""}
 
@@ -356,6 +368,7 @@ async def dispatch_alarm_notification(
     entity_id: str,
     metadata: Any = None,
     entity_index: Any = None,
+    custom_message: str | None = None,
 ) -> None:
     """Dispatch notifications for an alarm that has fired."""
     profile = await _load_notification_profile()
@@ -378,10 +391,11 @@ async def dispatch_alarm_notification(
         "en": "Alarm {name} has triggered",
     }
     message = alarm_messages.get(lang_key, alarm_messages["en"]).format(name=alarm_name)
+    spoken_message = (custom_message or "").strip() or message
 
     if profile.get("tts_enabled", True):
-        if satellite_entity and message:
-            await _notify_satellite_announce(ha_client, satellite_entity, message)
+        if satellite_entity and spoken_message:
+            await _notify_satellite_announce(ha_client, satellite_entity, spoken_message)
             spawn(
                 _trigger_conversation_continuation(
                     ha_client,
@@ -392,10 +406,10 @@ async def dispatch_alarm_notification(
                 ),
                 name="alarm-tts-followup",
             )
-        elif media_player and message:
+        elif media_player and spoken_message:
             if profile.get("chime_enabled", True):
                 await _play_chime(ha_client, media_player, profile)
-            await _notify_tts(ha_client, media_player, message, profile)
+            await _notify_tts(ha_client, media_player, spoken_message, profile)
             spawn(
                 _trigger_conversation_continuation(
                     ha_client,

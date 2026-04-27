@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.agents import background_actions as nd
+from app.models.agent import BackgroundEvent, TaskContext
 from app.security.sanitization import USER_INPUT_END, USER_INPUT_START
 
 
@@ -705,6 +706,65 @@ async def test_alarm_falls_back_to_persistent_when_no_audio_target() -> None:
     notify_satellite.assert_not_awaited()
     notify_tts.assert_not_awaited()
     notify_persistent.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_handle_background_alarm_with_briefing_composes_custom_message() -> None:
+    event = BackgroundEvent(
+        event_type="alarm_notification",
+        payload={
+            "alarm_name": "Wake Up",
+            "alarm_label": "Wake Up",
+            "briefing": True,
+            "entity_id": "agenthub_alarm:1",
+        },
+    )
+
+    with (
+        patch("app.agents.wake_briefing.compose_wake_briefing", new=AsyncMock(return_value="Custom wake briefing")) as compose,
+        patch.object(nd, "dispatch_alarm_notification", new=AsyncMock(return_value=None)) as dispatch_alarm,
+    ):
+        result = await nd.handle_background_event(
+            event,
+            context=TaskContext(source="background"),
+            ha_client=MagicMock(),
+            entity_index=MagicMock(),
+            gateway=MagicMock(),
+        )
+
+    compose.assert_awaited_once()
+    dispatch_alarm.assert_awaited_once()
+    assert dispatch_alarm.await_args.kwargs["custom_message"] == "Custom wake briefing"
+    assert result["speech"] == ""
+
+
+@pytest.mark.asyncio
+async def test_handle_background_alarm_without_briefing_skips_composer() -> None:
+    event = BackgroundEvent(
+        event_type="alarm_notification",
+        payload={
+            "alarm_name": "Wake Up",
+            "alarm_label": "Wake Up",
+            "briefing": False,
+            "entity_id": "agenthub_alarm:2",
+        },
+    )
+
+    with (
+        patch("app.agents.wake_briefing.compose_wake_briefing", new=AsyncMock(return_value="unused")) as compose,
+        patch.object(nd, "dispatch_alarm_notification", new=AsyncMock(return_value=None)) as dispatch_alarm,
+    ):
+        await nd.handle_background_event(
+            event,
+            context=TaskContext(source="background"),
+            ha_client=MagicMock(),
+            entity_index=MagicMock(),
+            gateway=MagicMock(),
+        )
+
+    compose.assert_not_awaited()
+    dispatch_alarm.assert_awaited_once()
+    assert dispatch_alarm.await_args.kwargs["custom_message"] is None
 
 
 @pytest.mark.asyncio

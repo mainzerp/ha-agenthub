@@ -243,6 +243,48 @@ class TestReschedule:
         finally:
             await sched.stop()
 
+    async def test_reschedule_alarm_updates_recurrence_payload(self, db_repository):
+        sched, _gateway = _make_scheduler()
+        try:
+            timer_id = await sched.schedule(
+                logical_name="wake-recur",
+                kind="alarm",
+                duration_seconds=900,
+                briefing=True,
+                payload={
+                    "alarm_label": "wake-recur",
+                    "scheduled_for_epoch": int(time.time()) + 900,
+                    "briefing": True,
+                    "recurrence": {
+                        "freq": "daily",
+                        "interval": 1,
+                        "anchor_time": "07:30:00",
+                        "timezone": "Europe/Berlin",
+                    },
+                },
+            )
+
+            updated = await sched.reschedule(
+                timer_id,
+                recurrence={
+                    "freq": "weekly",
+                    "interval": 2,
+                    "byweekday": ["MO", "WE", "FR"],
+                    "anchor_time": "07:30:00",
+                    "timezone": "Europe/Berlin",
+                },
+            )
+            assert updated is True
+
+            row = await ScheduledTimersRepository.get(timer_id)
+            assert row is not None
+            payload = json.loads(row["payload_json"])
+            assert payload["recurrence"]["freq"] == "weekly"
+            assert payload["recurrence"]["interval"] == 2
+            assert payload["recurrence"]["byweekday"] == ["MO", "WE", "FR"]
+        finally:
+            await sched.stop()
+
 
 class TestRestartRecovery:
     async def test_restart_recovery(self, db_repository):
@@ -442,8 +484,11 @@ class TestKindDispatch:
                 origin_area="bedroom",
                 payload={
                     "alarm_label": "Morning Alarm",
+                    "briefing": True,
                     "language": "de",
                     "media_player": "media_player.bedroom",
+                    "scheduled_for_epoch": 123456,
+                    "timezone": "Europe/Berlin",
                 },
             )
             for _ in range(20):
@@ -461,6 +506,9 @@ class TestKindDispatch:
             assert payload["origin_area"] == "bedroom"
             assert payload["language"] == "de"
             assert payload["media_player"] == "media_player.bedroom"
+            assert payload["briefing"] is True
+            assert payload["scheduled_for_epoch"] == 123456
+            assert payload["timezone"] == "Europe/Berlin"
         finally:
             await sched.stop()
 
@@ -481,6 +529,7 @@ class TestKindDispatch:
                     origin_area="bedroom",
                     payload={
                         "alarm_label": "Morning Alarm",
+                        "briefing": True,
                         "language": "de",
                         "recurrence": {
                             "freq": "daily",
@@ -504,9 +553,11 @@ class TestKindDispatch:
             next_row = pending[0]
             assert next_row["origin_device_id"] == "device-123"
             assert next_row["origin_area"] == "bedroom"
+            assert next_row["briefing"] == 1
 
             next_payload = json.loads(next_row["payload_json"])
             assert next_payload["alarm_label"] == "Morning Alarm"
+            assert next_payload["briefing"] is True
             assert next_payload["language"] == "de"
             assert next_payload["recurrence"]["freq"] == "daily"
             assert int(next_payload["scheduled_for_epoch"]) == next_fire

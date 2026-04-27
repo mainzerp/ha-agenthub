@@ -105,6 +105,15 @@ route to them through the same dispatcher boundary as built-in agents.
 
 For eligible plain timer start/cancel turns, the timer-agent may instead return a delegation directive, which the HA integration honors by calling Home Assistant's built-in conversation agent once.
 
+When an internal scheduler alarm fires with `briefing=true`, the
+background path stays orchestrator-owned: the scheduler emits an
+`alarm_notification` event, the orchestrator passes an
+`OrchestratorGateway` into `background_actions`, and the wake briefing
+composer gathers weather/news through A2A plus calendar/sensor facts
+through HA REST before overriding the spoken alarm text. This keeps the
+cross-agent boundary narrow and avoids direct peer-agent imports from
+the wake briefing module.
+
 ### Send Agent and Sequential Dispatch
 
 When the orchestrator classifies a turn as a delivery action ("tell

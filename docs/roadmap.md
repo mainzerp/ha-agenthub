@@ -15,6 +15,9 @@ This page tracks planned or not-yet-implemented work for HA-AgentHub.
 - calendar access with event creation and reminder-aware context
 - opt-in user memory with explicit save, recall, and profile controls
 - occupancy-aware routing for area-sensitive targeting
+- security-agent sentinel mode with explicit trigger contracts and a
+	dedicated admin UI remains deferred; 1.0.0 ships wake briefing for
+	internal alarms only.
 
 ## Weaker / Speculative Ideas
 

@@ -49,15 +49,15 @@
     </div>
 
     <div class="card card-narrow" style="margin-top: 1.5rem;">
-        <h3 class="card-title mb-md">Filler / Interim Responses</h3>
+        <h3 class="card-title mb-md">Filler / Interim / Cancel Responses</h3>
         <p class="text-muted mb-md" style="font-size: 0.875rem;">
-            When enabled, the assistant speaks a short filler phrase while waiting for slow agents (e.g. web search). Only triggers for agents marked as high-latency.
+            When enabled, the assistant speaks a short filler phrase while waiting for slow agents (e.g. web search; only for agents marked as high-latency) and uses the same lightweight LLM to generate a natural spoken acknowledgement when the user dismisses the turn (e.g. "never mind", "forget it"). A deterministic fallback is used if the LLM is slow or unavailable, so voice satellites never hang.
         </p>
 
         <div class="form-group">
             <label class="form-label" style="display: flex; align-items: center; gap: 0.5rem;">
                 <input type="checkbox" x-model="config.filler_enabled" style="width: auto;">
-                Enable filler responses
+                Enable
             </label>
         </div>
 

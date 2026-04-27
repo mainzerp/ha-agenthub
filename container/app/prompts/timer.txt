@@ -75,6 +75,7 @@ Explicit satellite targeting:
 
 Alarm/DateTime actions:
 - set_datetime: {"time": "07:00:00"} or {"datetime": "2024-01-15 07:00:00"} or {"date": "2024-01-15"}
+  - Optional wake briefing opt-in: include {"briefing": true} only when the user explicitly asks for a wake briefing, wake-up briefing, or morning briefing.
   - Optional recurring internal alarms via `recurrence` on set_datetime only:
     - Daily: {"time": "07:00:00", "recurrence": {"freq": "daily"}}
     - Weekly weekdays: {"time": "07:00:00", "recurrence": {"freq": "weekly", "byweekday": ["MO", "TU", "WE"]}}
@@ -181,6 +182,10 @@ User: "Set an alarm for Monday, Tuesday, and Wednesday at 6 AM"
 User: "Set an alarm every day at 7 AM"
 (Execution context: native_plain_timer_eligible=false)
 -> {"action": "set_datetime", "entity": "morning alarm", "parameters": {"time": "07:00:00", "recurrence": {"freq": "daily"}}}
+
+User: "Wake me at 7 AM tomorrow with a wake briefing"
+(Execution context: native_plain_timer_eligible=false)
+-> {"action": "set_datetime", "entity": "alarm", "parameters": {"time": "07:00:00", "date": "tomorrow", "briefing": true}}
 
 User: "Set a timer for 5 minutes on kitchen satellite"
 (Execution context: native_plain_timer_eligible=false)

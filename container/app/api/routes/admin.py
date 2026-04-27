@@ -3,17 +3,21 @@
 from __future__ import annotations
 
 import logging
+import json
+import re
 import secrets
 from datetime import datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, ValidationError, field_validator, model_validator
 
 from app.db.repository import (
     AgentConfigRepository,
     EntityMatchingConfigRepository,
     EntityVisibilityRepository,
+    ScheduledTimersRepository,
     SecretsRepository,
     SettingsRepository,
 )
@@ -30,6 +34,8 @@ PROVIDER_SECRET_KEYS = {
     "groq": "groq_api_key",
     "anthropic": "anthropic_api_key",
 }
+_ENTITY_ID_LOOKS_VALID_RE = re.compile(r"^[a-zA-Z0-9_]+\.[a-zA-Z0-9_]+$")
+_WEEKDAY_CODES = ("MO", "TU", "WE", "TH", "FR", "SA", "SU")
 
 
 class ProviderKeyUpdate(BaseModel):
@@ -60,6 +66,114 @@ class SettingsUpdatePayload(BaseModel):
             if not isinstance(key, str) or len(key) > 128:
                 raise ValueError(f"Invalid setting key: {key}")
         return v
+
+
+class WakeBriefingSourcesPayload(BaseModel):
+    weather: bool = True
+    date: bool = True
+    news: bool = True
+    calendar: bool = True
+    sensors: bool = False
+
+
+class WakeBriefingSettingsPayload(BaseModel):
+    enabled: bool = True
+    sources: WakeBriefingSourcesPayload = WakeBriefingSourcesPayload()
+    sensor_entities: list[str] = []
+    news_query: str = "top news today"
+    news_count: int = 3
+    timeout_seconds: int = 10
+    composer_prompt: str
+
+    @field_validator("news_count")
+    @classmethod
+    def validate_news_count(cls, v: int) -> int:
+        if v < 1 or v > 10:
+            raise ValueError("news_count must be between 1 and 10")
+        return v
+
+    @field_validator("timeout_seconds")
+    @classmethod
+    def validate_timeout_seconds(cls, v: int) -> int:
+        if v < 1 or v > 60:
+            raise ValueError("timeout_seconds must be between 1 and 60")
+        return v
+
+    @field_validator("sensor_entities")
+    @classmethod
+    def validate_sensor_entities(cls, v: list[str]) -> list[str]:
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for entity_id in v:
+            candidate = str(entity_id or "").strip()
+            if not candidate:
+                continue
+            if not _ENTITY_ID_LOOKS_VALID_RE.match(candidate):
+                raise ValueError(f"Invalid sensor entity_id: {entity_id}")
+            if candidate not in seen:
+                seen.add(candidate)
+                normalized.append(candidate)
+        return normalized
+
+    @field_validator("composer_prompt")
+    @classmethod
+    def validate_composer_prompt(cls, v: str) -> str:
+        prompt = (v or "").strip()
+        if not prompt:
+            raise ValueError("composer_prompt must not be empty")
+        return prompt
+
+
+class AlarmRecurrencePayload(BaseModel):
+    freq: str
+    interval: int = 1
+    byweekday: list[str] | None = None
+
+    @field_validator("freq")
+    @classmethod
+    def validate_freq(cls, v: str) -> str:
+        normalized = str(v or "").strip().casefold()
+        if normalized not in {"daily", "weekly"}:
+            raise ValueError("freq must be 'daily' or 'weekly'")
+        return normalized
+
+    @field_validator("interval")
+    @classmethod
+    def validate_interval(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError("interval must be >= 1")
+        return v
+
+    @field_validator("byweekday")
+    @classmethod
+    def validate_byweekday(cls, v: list[str] | None) -> list[str] | None:
+        if v is None:
+            return None
+        normalized: list[str] = []
+        for item in v:
+            code = str(item or "").strip().upper()
+            if code not in _WEEKDAY_CODES:
+                raise ValueError("byweekday must contain only MO,TU,WE,TH,FR,SA,SU")
+            if code not in normalized:
+                normalized.append(code)
+        return normalized
+
+    @model_validator(mode="after")
+    def validate_shape(self):
+        if self.freq == "weekly" and not self.byweekday:
+            raise ValueError("weekly recurrence requires a non-empty byweekday list")
+        if self.freq == "daily":
+            self.byweekday = None
+        return self
+
+    def to_runtime_dict(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "freq": self.freq,
+            "interval": self.interval,
+        }
+        if self.freq == "weekly":
+            payload["byweekday"] = list(self.byweekday or [])
+        return payload
 
 
 class HaConnectionUpdate(BaseModel):
@@ -107,6 +221,9 @@ class TimerPatchPayload(BaseModel):
     logical_name: str | None = None
     fires_at: int | None = None
     duration_seconds: int | None = None
+    briefing: bool | None = None
+    is_recurring: bool | None = None
+    recurrence: AlarmRecurrencePayload | None = None
 
     @field_validator("logical_name")
     @classmethod
@@ -338,6 +455,149 @@ def _validate_setting_value(key: str, value: str, value_type: str) -> None:
         ) from None
 
 
+def _bool_from_setting(value: str | None, default: bool) -> bool:
+    if value is None:
+        return default
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+async def _load_wake_briefing_settings() -> dict[str, Any]:
+    try:
+        sensor_entities = json.loads((await SettingsRepository.get_value("wake_briefing.sensor_entities", "[]")) or "[]")
+    except Exception:
+        sensor_entities = []
+    if not isinstance(sensor_entities, list):
+        sensor_entities = []
+
+    timeout_raw = await SettingsRepository.get_value("wake_briefing.timeout_seconds", "10")
+    try:
+        timeout_seconds = int(timeout_raw or "10")
+    except (TypeError, ValueError):
+        timeout_seconds = 10
+
+    news_count_raw = await SettingsRepository.get_value("wake_briefing.news_count", "3")
+    try:
+        news_count = int(news_count_raw or "3")
+    except (TypeError, ValueError):
+        news_count = 3
+
+    return {
+        "enabled": _bool_from_setting(await SettingsRepository.get_value("wake_briefing.enabled", "true"), True),
+        "sources": {
+            "weather": _bool_from_setting(
+                await SettingsRepository.get_value("wake_briefing.sources.weather", "true"),
+                True,
+            ),
+            "date": _bool_from_setting(await SettingsRepository.get_value("wake_briefing.sources.date", "true"), True),
+            "news": _bool_from_setting(await SettingsRepository.get_value("wake_briefing.sources.news", "true"), True),
+            "calendar": _bool_from_setting(
+                await SettingsRepository.get_value("wake_briefing.sources.calendar", "true"),
+                True,
+            ),
+            "sensors": _bool_from_setting(
+                await SettingsRepository.get_value("wake_briefing.sources.sensors", "false"),
+                False,
+            ),
+        },
+        "sensor_entities": [str(entity_id).strip() for entity_id in sensor_entities if str(entity_id).strip()],
+        "news_query": (await SettingsRepository.get_value("wake_briefing.news_query", "top news today"))
+        or "top news today",
+        "news_count": max(1, min(10, news_count)),
+        "timeout_seconds": max(1, min(60, timeout_seconds)),
+        "composer_prompt": (await SettingsRepository.get_value("wake_briefing.composer_prompt", "")) or "",
+    }
+
+
+def _normalize_alarm_recurrence_for_response(raw: Any) -> dict[str, Any] | None:
+    if not isinstance(raw, dict):
+        return None
+    try:
+        recurrence = AlarmRecurrencePayload.model_validate(raw)
+    except ValidationError:
+        return None
+    return recurrence.to_runtime_dict()
+
+
+def _wake_briefing_updates_from_payload(
+    payload: WakeBriefingSettingsPayload,
+    *,
+    force_enabled: bool = False,
+) -> dict[str, str]:
+    return {
+        "wake_briefing.enabled": "true" if (force_enabled or payload.enabled) else "false",
+        "wake_briefing.sources.weather": "true" if payload.sources.weather else "false",
+        "wake_briefing.sources.date": "true" if payload.sources.date else "false",
+        "wake_briefing.sources.news": "true" if payload.sources.news else "false",
+        "wake_briefing.sources.calendar": "true" if payload.sources.calendar else "false",
+        "wake_briefing.sources.sensors": "true" if payload.sources.sensors else "false",
+        "wake_briefing.sensor_entities": json.dumps(payload.sensor_entities),
+        "wake_briefing.news_query": (payload.news_query or "").strip() or "top news today",
+        "wake_briefing.news_count": str(payload.news_count),
+        "wake_briefing.timeout_seconds": str(payload.timeout_seconds),
+        "wake_briefing.composer_prompt": payload.composer_prompt,
+    }
+
+
+class _WakeBriefingPreviewSettingsRepository:
+    def __init__(self, overrides: dict[str, str]) -> None:
+        self._overrides = overrides
+
+    async def get_value(self, key: str, default: Any = None) -> Any:
+        if key in self._overrides:
+            return self._overrides[key]
+        return await SettingsRepository.get_value(key, default)
+
+
+async def _build_alarm_recurrence_patch(
+    row: dict[str, Any],
+    payload: TimerPatchPayload,
+    request: Request,
+) -> tuple[dict[str, Any] | None, bool]:
+    if payload.is_recurring is None and payload.recurrence is None:
+        return None, False
+    if payload.is_recurring is False:
+        return None, True
+    if payload.is_recurring is not True:
+        return None, False
+    if payload.recurrence is None:
+        raise HTTPException(status_code=422, detail="recurrence is required when is_recurring=true")
+
+    try:
+        payload_dict = json.loads(row.get("payload_json") or "{}")
+    except Exception:
+        payload_dict = {}
+
+    current_recurrence = payload_dict.get("recurrence") if isinstance(payload_dict.get("recurrence"), dict) else {}
+    timezone_name = str(current_recurrence.get("timezone") or payload_dict.get("timezone") or "").strip()
+    if not timezone_name:
+        timezone_name = "UTC"
+        ha_client = getattr(request.app.state, "ha_client", None)
+        if ha_client is not None:
+            try:
+                from app.ha_client.home_context import home_context_provider
+
+                home_context = await home_context_provider.get(ha_client)
+                timezone_name = getattr(home_context, "timezone", "UTC") or "UTC"
+            except Exception:
+                logger.debug("Failed to resolve HomeContext while patching alarm recurrence", exc_info=True)
+
+    tzinfo = None
+    try:
+        tzinfo = ZoneInfo(timezone_name)
+    except Exception:
+        timezone_name = "UTC"
+
+    fires_at_epoch = int(payload.fires_at or row.get("fires_at") or 0)
+    if fires_at_epoch <= 0:
+        raise HTTPException(status_code=422, detail="fires_at is required to build recurring alarm metadata")
+    local_dt = datetime.fromtimestamp(fires_at_epoch, tz=tzinfo) if tzinfo is not None else datetime.fromtimestamp(fires_at_epoch)
+
+    recurrence = payload.recurrence.to_runtime_dict()
+    recurrence["anchor_time"] = local_dt.strftime("%H:%M:%S")
+    recurrence["timezone"] = timezone_name
+    return recurrence, False
+
+
 @router.put("/settings")
 async def update_settings(payload: SettingsUpdatePayload):
     """Update multiple settings. Payload: {"items": {key: value, ...}}."""
@@ -356,6 +616,78 @@ async def update_settings(payload: SettingsUpdatePayload):
             description=existing.get("description"),
         )
     return {"status": "ok"}
+
+
+@router.get("/settings/wake-briefing")
+async def get_wake_briefing_settings():
+    """Return structured wake-briefing settings for the timers dashboard."""
+    return await _load_wake_briefing_settings()
+
+
+@router.put("/settings/wake-briefing")
+async def update_wake_briefing_settings(payload: WakeBriefingSettingsPayload):
+    """Persist wake-briefing settings from the timers dashboard."""
+    updates = _wake_briefing_updates_from_payload(payload)
+
+    for key, value in updates.items():
+        existing = await SettingsRepository.get(key)
+        if existing is None:
+            raise HTTPException(status_code=400, detail=f"Unknown setting key: {key}")
+        await SettingsRepository.set(
+            key,
+            value,
+            value_type=existing["value_type"],
+            category=existing.get("category", "general"),
+            description=existing.get("description"),
+        )
+
+    return {"status": "ok", "settings": await _load_wake_briefing_settings()}
+
+
+@router.post("/settings/wake-briefing/test")
+async def test_wake_briefing_settings(payload: WakeBriefingSettingsPayload, request: Request):
+    """Compose a wake briefing preview from unsaved dashboard values."""
+    gateway = getattr(request.app.state, "orchestrator_gateway", None)
+    ha_client = getattr(request.app.state, "ha_client", None)
+    entity_index = getattr(request.app.state, "entity_index", None)
+    if gateway is None or ha_client is None:
+        raise HTTPException(status_code=503, detail="Wake briefing preview unavailable")
+
+    from app.agents.wake_briefing import compose_wake_briefing
+    from app.ha_client.home_context import home_context_provider
+
+    import time as _time
+
+    timezone_name = "UTC"
+    try:
+        home_context = await home_context_provider.get(ha_client)
+        timezone_name = getattr(home_context, "timezone", "UTC") or "UTC"
+    except Exception:
+        logger.debug("Failed to resolve HomeContext for wake briefing preview", exc_info=True)
+
+    language = str(await SettingsRepository.get_value("language", "en") or "en").strip() or "en"
+    if language == "auto":
+        language = "en"
+
+    preview = await compose_wake_briefing(
+        gateway,
+        {
+            "alarm_name": "Wake Briefing Test",
+            "alarm_label": "Wake Briefing Test",
+            "briefing": True,
+            "language": language,
+            "scheduled_for_epoch": int(_time.time()) + 60,
+            "timezone": timezone_name,
+            "origin_device_id": None,
+            "origin_area": None,
+        },
+        ha_client=ha_client,
+        entity_index=entity_index,
+        settings_repo=_WakeBriefingPreviewSettingsRepository(
+            _wake_briefing_updates_from_payload(payload, force_enabled=True)
+        ),
+    )
+    return {"status": "ok", "preview": preview}
 
 
 @router.put("/settings/{key}")
@@ -692,6 +1024,11 @@ async def get_timers_info(request: Request):
         for row in rows:
             if row.get("kind") == "alarm":
                 fires_at = int(row.get("fires_at") or 0)
+                try:
+                    alarm_payload = json.loads(row.get("payload_json") or "{}")
+                except Exception:
+                    alarm_payload = {}
+                recurrence = _normalize_alarm_recurrence_for_response(alarm_payload.get("recurrence"))
                 alarms.append(
                     {
                         "id": row.get("id"),
@@ -701,6 +1038,9 @@ async def get_timers_info(request: Request):
                         "type": "internal",
                         "source": "internal",
                         "fires_at": fires_at,
+                        "briefing": _bool_from_setting(str(row.get("briefing") or "0"), False),
+                        "is_recurring": recurrence is not None,
+                        "recurrence": recurrence,
                         "origin_area": row.get("origin_area"),
                         "origin_device_id": row.get("origin_device_id"),
                         "origin_label": await _resolve_origin_label(
@@ -838,13 +1178,34 @@ async def patch_timer(timer_id: str, payload: TimerPatchPayload, request: Reques
     scheduler = getattr(request.app.state, "timer_scheduler", None)
     if scheduler is None:
         raise HTTPException(status_code=503, detail="Timer scheduler unavailable")
-    if payload.logical_name is None and payload.fires_at is None and payload.duration_seconds is None:
+    if (
+        payload.logical_name is None
+        and payload.fires_at is None
+        and payload.duration_seconds is None
+        and payload.briefing is None
+        and payload.is_recurring is None
+        and payload.recurrence is None
+    ):
         raise HTTPException(status_code=422, detail="At least one field must be provided")
+
+    row = await ScheduledTimersRepository.get(timer_id)
+    if not row or row.get("state") != "pending":
+        raise HTTPException(status_code=404, detail="Timer not found or already completed")
+
+    if row.get("kind") != "alarm" and (
+        payload.briefing is not None or payload.is_recurring is not None or payload.recurrence is not None
+    ):
+        raise HTTPException(status_code=422, detail="briefing and recurrence updates are only supported for alarms")
+
+    recurrence, clear_recurrence = await _build_alarm_recurrence_patch(row, payload, request)
     updated = await scheduler.reschedule(
         timer_id,
         logical_name=payload.logical_name,
         new_fires_at=payload.fires_at,
         new_duration_seconds=payload.duration_seconds,
+        briefing=payload.briefing,
+        recurrence=recurrence,
+        clear_recurrence=clear_recurrence,
     )
     if not updated:
         raise HTTPException(status_code=404, detail="Timer not found or already completed")

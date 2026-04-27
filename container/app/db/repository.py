@@ -1812,14 +1812,15 @@ class ScheduledTimersRepository:
         duration_seconds: int,
         origin_device_id: str | None,
         origin_area: str | None,
+        briefing: bool = False,
         payload_json: str,
     ) -> None:
         async with get_db_write() as db:
             await db.execute(
                 "INSERT INTO scheduled_timers "
                 "(id, logical_name, kind, created_at, fires_at, duration_seconds, "
-                "origin_device_id, origin_area, payload_json, state) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')",
+                "origin_device_id, origin_area, briefing, payload_json, state) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')",
                 (
                     id,
                     logical_name,
@@ -1829,6 +1830,7 @@ class ScheduledTimersRepository:
                     int(duration_seconds),
                     origin_device_id,
                     origin_area,
+                    1 if briefing else 0,
                     payload_json,
                 ),
             )
@@ -1929,6 +1931,7 @@ class ScheduledTimersRepository:
         logical_name: str | None = None,
         fires_at: int | None = None,
         duration_seconds: int | None = None,
+        briefing: bool | None = None,
         payload_json: str | None = None,
     ) -> bool:
         """Update mutable fields on a pending scheduled_timers row.
@@ -1949,6 +1952,9 @@ class ScheduledTimersRepository:
         if duration_seconds is not None:
             clauses.append("duration_seconds = ?")
             params.append(int(duration_seconds))
+        if briefing is not None:
+            clauses.append("briefing = ?")
+            params.append(1 if briefing else 0)
         if payload_json is not None:
             clauses.append("payload_json = ?")
             params.append(payload_json)

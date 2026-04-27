@@ -203,6 +203,26 @@ delegation directive.
   timers, and any compound or multi-intent timer request. These always
   stay on the AgentHub path even when the native option is enabled.
 
+### Wake briefing for internal alarms (1.0.0)
+
+Internal AgentHub alarms created through `set_datetime` can now opt into
+an additional spoken wake briefing by including
+`parameters.briefing=true`. This applies only to AgentHub-managed
+internal alarms, not HA native plain timers and not the deferred
+security sentinel work.
+
+- Configure the feature from the Timers dashboard card labeled
+  **Wake Briefing**.
+- The composer can include date/weekday/time facts, weather, news,
+  visible calendar events, and optional user-selected sensor entities.
+- Weather and news are gathered through the orchestrator's A2A gateway;
+  calendar events and sensor states come from the HA REST client.
+- If a briefing source fails or times out, the remaining sources still
+  compose. If the overall composition fails, the system falls back to
+  the plain alarm message.
+- `wake_briefing.sensor_entities` must use `domain.object_id` values.
+  Visibility rules still apply, so hidden entities are skipped.
+
 The orchestrator uses a lower temperature (0.3) for consistent intent classification.
 
 Internal helper agents (`filler-agent`, `rewrite-agent`,

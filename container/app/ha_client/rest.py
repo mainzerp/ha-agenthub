@@ -191,6 +191,28 @@ class HARestClient:
         resp.raise_for_status()
         return resp.json()
 
+    async def get_calendar_events(
+        self,
+        entity_id: str,
+        start: str,
+        end: str,
+    ) -> list[dict[str, Any]]:
+        """Return Home Assistant calendar events for one calendar entity."""
+        resp = await self.call_service(
+            "calendar",
+            "get_events",
+            entity_id,
+            {"start_date_time": start, "end_date_time": end},
+            return_response=True,
+        )
+        if not isinstance(resp, dict):
+            return []
+        entry = resp.get(entity_id) or {}
+        if not isinstance(entry, dict):
+            return []
+        events = entry.get("events")
+        return events if isinstance(events, list) else []
+
     async def call_service(
         self,
         domain: str,

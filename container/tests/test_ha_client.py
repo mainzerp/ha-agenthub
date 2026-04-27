@@ -90,6 +90,34 @@ class TestHARestClient:
         assert b"brightness" in body
         await client.close()
 
+    async def test_get_calendar_events_uses_calendar_service_response_shape(self):
+        client = HARestClient()
+        client.call_service = AsyncMock(
+            return_value={
+                "calendar.home": {
+                    "events": [{"summary": "Standup", "start": "2026-04-27T09:00:00+00:00"}],
+                }
+            }
+        )
+
+        events = await client.get_calendar_events(
+            "calendar.home",
+            "2026-04-27T00:00:00+00:00",
+            "2026-04-28T00:00:00+00:00",
+        )
+
+        assert events == [{"summary": "Standup", "start": "2026-04-27T09:00:00+00:00"}]
+        client.call_service.assert_awaited_once_with(
+            "calendar",
+            "get_events",
+            "calendar.home",
+            {
+                "start_date_time": "2026-04-27T00:00:00+00:00",
+                "end_date_time": "2026-04-28T00:00:00+00:00",
+            },
+            return_response=True,
+        )
+
     @respx.mock
     async def test_fire_event_posts_correct_endpoint(self):
         respx.post("http://ha.local/api/events/test_event").mock(

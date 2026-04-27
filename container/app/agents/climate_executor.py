@@ -11,6 +11,8 @@ from app.agents.action_executor import (
 )
 from app.analytics.tracer import _optional_span
 from app.entity.deterministic_resolver import resolve_entity_deterministic_first
+from app.entity.matcher import MatchResult
+from app.entity.visibility import filter_visible_results
 from app.ha_client.history_query import execute_recorder_history_query
 from app.models.agent import TaskContext
 
@@ -463,7 +465,7 @@ async def _resolve_weather_entity(
     preferred_area_id: str | None = None,
     verbatim_terms: list[str] | None = None,
 ) -> tuple[str | None, str, str | None]:
-    """Resolve a weather entity from query or auto-discover the first weather.* entity."""
+    """Resolve a weather entity from query or auto-discover the first visible weather.* entity."""
     entity_id = None
     friendly_name = entity_query or "weather"
     resolution_speech = None
@@ -490,19 +492,63 @@ async def _resolve_weather_entity(
     if entity_id and not _validate_domain(entity_id):
         entity_id = None
 
-    # Auto-discover first weather.* entity only when resolution found no
-    # candidate and did not surface an ambiguity or visibility error.
+    # Auto-discover the first visible weather.* entity only when resolution
+    # found no candidate and did not surface an ambiguity or visibility error.
     if not entity_id and not resolution_speech:
-        try:
-            states = await ha_client.get_states()
-            for s in states:
-                eid = s.get("entity_id", "")
-                if eid.startswith("weather."):
-                    entity_id = eid
-                    friendly_name = s.get("attributes", {}).get("friendly_name", eid)
-                    break
-        except Exception:
-            logger.warning("Failed to auto-discover weather entity", exc_info=True)
+        effective_agent_id = agent_id or "climate-agent"
+        weather_results: list[MatchResult] = []
+
+        if entity_index is not None:
+            try:
+                entries: list[Any] = []
+                list_entries_async = getattr(entity_index, "list_entries_async", None)
+                list_entries = getattr(entity_index, "list_entries", None)
+                if callable(list_entries_async):
+                    entries = await list_entries_async(domains=_WEATHER_DOMAINS)
+                elif callable(list_entries):
+                    entries = list_entries(domains=_WEATHER_DOMAINS)
+                weather_results = [
+                    MatchResult(
+                        entity_id=entry.entity_id,
+                        friendly_name=entry.friendly_name or entry.entity_id,
+                        score=1.0,
+                    )
+                    for entry in entries
+                    if getattr(entry, "entity_id", "").startswith("weather.")
+                ]
+            except Exception:
+                logger.warning("Failed to auto-discover weather entity from entity index", exc_info=True)
+        else:
+            try:
+                states = await ha_client.get_states()
+                weather_results = [
+                    MatchResult(
+                        entity_id=state.get("entity_id", ""),
+                        friendly_name=state.get("attributes", {}).get("friendly_name")
+                        or state.get("entity_id", ""),
+                        score=1.0,
+                    )
+                    for state in states
+                    if state.get("entity_id", "").startswith("weather.")
+                ]
+            except Exception:
+                logger.warning("Failed to auto-discover weather entity", exc_info=True)
+
+        if weather_results:
+            try:
+                visible_results = await filter_visible_results(
+                    effective_agent_id,
+                    weather_results,
+                    entity_index,
+                )
+            except Exception:
+                logger.warning("Failed to filter visible weather entities", exc_info=True)
+                visible_results = weather_results
+
+            if visible_results:
+                chosen = sorted(visible_results, key=lambda result: result.entity_id.casefold())[0]
+                entity_id = chosen.entity_id
+                friendly_name = chosen.friendly_name or chosen.entity_id
 
     return entity_id, friendly_name, resolution_speech
 
