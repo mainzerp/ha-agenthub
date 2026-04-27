@@ -12,7 +12,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from app.a2a.orchestrator_gateway import OrchestratorGateway
-from app.db.repository import SettingsRepository
+from app.db.repository import AgentConfigRepository, SettingsRepository
 from app.entity.matcher import MatchResult
 from app.entity.visibility import filter_visible_results
 from app.llm.client import complete
@@ -313,14 +313,29 @@ async def _compose_wake_briefing_inner(
             "You compose a short friendly spoken morning briefing from a JSON facts object. Mention the date and weekday, weather, calendar, news headlines, and any sensor readings the user configured. Keep it under 90 spoken seconds. Reply in the user's language.",
         )
         system_prompt = f"{composer_prompt}\nUser language: {language}. Reply in that language."
+
+        complete_kwargs: dict[str, Any] = {
+            "max_tokens": 400,
+            "temperature": 0.6,
+        }
+        # Wake briefing always inherits the general-agent model so the
+        # composer reuses the operator's already-configured provider/key.
+        try:
+            general_row = await AgentConfigRepository.get("general-agent")
+        except Exception:
+            general_row = None
+        if general_row:
+            inherited_model = (general_row.get("model") or "").strip()
+            if inherited_model:
+                complete_kwargs["model"] = inherited_model
+
         return await complete(
             agent_id=_WAKE_BRIEFING_AGENT_ID,
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": json.dumps(facts, ensure_ascii=False)},
             ],
-            max_tokens=400,
-            temperature=0.6,
+            **complete_kwargs,
         )
 
     return await asyncio.wait_for(_compose(), timeout=timeout_seconds)

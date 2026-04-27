@@ -15,6 +15,6 @@
 security agent:
 sentinel mode bleibt vorerst deferred. wenn ein/oder mehrere explizit dem security agent zugewiesene sensoren (z. b. bewegungsmelder) automatisch einen security-agent-run triggern sollen, braucht das einen separaten trigger-contract und wahrscheinlich eine eigene ui page.
 
-in HA Debug-Logging aktivieren
+Debug-Logging aktivieren
 
 Aktiviert ausfuehrliches Logging zur Fehlersuche.

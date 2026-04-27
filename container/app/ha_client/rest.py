@@ -197,14 +197,22 @@ class HARestClient:
         start: str,
         end: str,
     ) -> list[dict[str, Any]]:
-        """Return Home Assistant calendar events for one calendar entity."""
-        resp = await self.call_service(
-            "calendar",
-            "get_events",
-            entity_id,
-            {"start_date_time": start, "end_date_time": end},
-            return_response=True,
-        )
+        """Return Home Assistant calendar events for one calendar entity.
+
+        ``calendar.get_events`` is a read-only HA service (it requires
+        ``return_response=True`` and never mutates state). Mark the
+        underlying ``call_service`` as an internal call so the global
+        "direct HA service write" warning is not raised for every
+        calendar entity on every wake briefing run.
+        """
+        with allow_internal_ha_service_calls("ha_client.get_calendar_events"):
+            resp = await self.call_service(
+                "calendar",
+                "get_events",
+                entity_id,
+                {"start_date_time": start, "end_date_time": end},
+                return_response=True,
+            )
         if not isinstance(resp, dict):
             return []
         entry = resp.get(entity_id) or {}
