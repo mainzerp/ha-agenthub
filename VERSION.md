@@ -1,6 +1,10 @@
 # Version
 
-**Current Version:** 1.5.1
+**Current Version:** 1.5.2
+
+## Recent Changes (since 1.5.1)
+
+- **Container:** Fixed `filler_push` not reaching the HA integration. The orchestrator generated and yielded filler frames correctly, but the WebSocket and SSE routes in `conversation.py` constructed `StreamToken` objects that silently dropped the `filler_push` field because the model did not declare it. Added `filler_push: str | None` to `StreamToken` and wired it through in both SSE and WebSocket handlers.
 
 ## Recent Changes (since 1.5.0)
 
