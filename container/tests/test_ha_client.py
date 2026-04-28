@@ -438,6 +438,9 @@ class TestHAConfigFlow:
                 "api_key": "stored-token",
                 "native_plain_timers": False,
             },
+            options={
+                "enable_post_filler_push": True,
+            },
         )
 
     async def test_options_flow_schema_uses_blank_password_field(self):

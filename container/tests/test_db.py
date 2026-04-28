@@ -197,7 +197,7 @@ class TestSeedData:
     async def test_default_settings_populated(self, db_repository):
         all_settings = await SettingsRepository.get_all()
         keys = {s["key"] for s in all_settings}
-        assert "cache.routing.threshold" in keys
+        assert "cache.routing.semantic_threshold" in keys
         assert "embedding.provider" in keys
         assert "a2a.default_timeout" in keys
 
@@ -247,12 +247,12 @@ class TestSeedData:
 
 class TestSettingsRepository:
     async def test_get_existing_setting(self, db_repository):
-        result = await SettingsRepository.get("cache.routing.threshold")
+        result = await SettingsRepository.get("cache.routing.semantic_threshold")
         assert result is not None
         assert result["value"] == "0.92"
 
     async def test_get_value_existing(self, db_repository):
-        val = await SettingsRepository.get_value("cache.routing.threshold")
+        val = await SettingsRepository.get_value("cache.routing.semantic_threshold")
         assert val == "0.92"
 
     async def test_get_value_missing_returns_default(self, db_repository):
@@ -269,8 +269,8 @@ class TestSettingsRepository:
         assert val == "test_value"
 
     async def test_set_overwrites_existing(self, db_repository):
-        await SettingsRepository.set("cache.routing.threshold", "0.85")
-        val = await SettingsRepository.get_value("cache.routing.threshold")
+        await SettingsRepository.set("cache.routing.semantic_threshold", "0.85")
+        val = await SettingsRepository.get_value("cache.routing.semantic_threshold")
         assert val == "0.85"
 
     async def test_get_by_category(self, db_repository):
@@ -284,22 +284,22 @@ class TestSettingsRepository:
 
     async def test_set_preserves_value_type_on_conflict(self, db_repository):
         """ON CONFLICT update should preserve existing value_type."""
-        before = await SettingsRepository.get("cache.routing.threshold")
+        before = await SettingsRepository.get("cache.routing.semantic_threshold")
         assert before is not None
         assert before["value_type"] == "float"
 
-        await SettingsRepository.set("cache.routing.threshold", "0.80")
-        after = await SettingsRepository.get("cache.routing.threshold")
+        await SettingsRepository.set("cache.routing.semantic_threshold", "0.80")
+        after = await SettingsRepository.get("cache.routing.semantic_threshold")
         assert after["value"] == "0.80"
         assert after["value_type"] == "float"
 
     async def test_set_preserves_category_on_conflict(self, db_repository):
         """ON CONFLICT update should preserve existing category."""
-        before = await SettingsRepository.get("cache.routing.threshold")
+        before = await SettingsRepository.get("cache.routing.semantic_threshold")
         assert before["category"] == "cache"
 
-        await SettingsRepository.set("cache.routing.threshold", "0.75")
-        after = await SettingsRepository.get("cache.routing.threshold")
+        await SettingsRepository.set("cache.routing.semantic_threshold", "0.75")
+        after = await SettingsRepository.get("cache.routing.semantic_threshold")
         assert after["category"] == "cache"
 
 

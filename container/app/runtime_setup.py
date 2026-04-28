@@ -354,6 +354,98 @@ async def _purge_stale_response_cache(cache_manager: CacheManager) -> None:
         logger.warning("Failed to purge stale response cache entries", exc_info=True)
 
 
+def _resolve_registry_event_entity_ids(app: FastAPI, entity_index: EntityIndex, event: dict) -> list[str]:
+    """Resolve affected entity ids for HA registry events."""
+    data = event.get("data") or {}
+    changes = data.get("changes") or {}
+    if not isinstance(changes, dict):
+        changes = {}
+    entity_ids: set[str] = set()
+
+    direct_entity_id = data.get("entity_id")
+    if isinstance(direct_entity_id, str) and direct_entity_id:
+        entity_ids.add(direct_entity_id)
+    changed_entity_id = changes.get("entity_id")
+    if isinstance(changed_entity_id, str) and changed_entity_id:
+        entity_ids.add(changed_entity_id)
+    raw_entity_ids = data.get("entity_ids")
+    if isinstance(raw_entity_ids, list):
+        entity_ids.update(str(item) for item in raw_entity_ids if item)
+    changed_entity_ids = changes.get("entity_ids")
+    if isinstance(changed_entity_ids, list):
+        entity_ids.update(str(item) for item in changed_entity_ids if item)
+    if entity_ids:
+        return sorted(entity_ids)
+
+    entries = entity_index.list_entries()
+
+    area_ids = {
+        str(value)
+        for key in ("area_id", "old_area_id", "new_area_id")
+        for value in [data.get(key), changes.get(key)]
+        if value
+    }
+    if area_ids:
+        entity_ids.update(entry.entity_id for entry in entries if (entry.area or "") in area_ids)
+
+    names = {
+        str(value).strip().lower()
+        for key in ("name", "old_name", "new_name", "device_name")
+        for value in [data.get(key), changes.get(key)]
+        if isinstance(value, str) and value.strip()
+    }
+    if names:
+        entity_ids.update(
+            entry.entity_id
+            for entry in entries
+            if (entry.device_name or "").strip().lower() in names
+        )
+
+    if entity_ids:
+        return sorted(entity_ids)
+
+    lookups = getattr(app.state, "entity_lookups", None) or {}
+    area_lookup = lookups.get("area_id") or {}
+    if area_ids:
+        entity_ids.update(entity_id for entity_id, area_id in area_lookup.items() if area_id in area_ids)
+    return sorted(entity_ids)
+
+
+async def _refresh_registry_entities(
+    app: FastAPI,
+    ha_client: HARestClient,
+    entity_index: EntityIndex,
+    entity_ids: list[str],
+) -> None:
+    """Refresh or remove entity-index rows affected by a HA registry event."""
+    if not entity_ids:
+        return
+
+    area_lookup, alias_lookup, device_lookup, area_id_lookup = await _gather_ha_lookups(ha_client)
+    _store_entity_lookups(app, area_lookup, alias_lookup, device_lookup, area_id_lookup)
+
+    for entity_id in entity_ids:
+        try:
+            state = await ha_client.get_state(entity_id)
+        except Exception:
+            logger.warning("Registry refresh failed for %s", entity_id, exc_info=True)
+            continue
+
+        if state is None:
+            await entity_index.remove_async(entity_id)
+            continue
+
+        entry = state_to_entity_index_entry(
+            state,
+            entity_id=entity_id,
+            area_lookup=area_lookup,
+            alias_lookup=alias_lookup,
+            device_lookup=device_lookup,
+            area_id_lookup=area_id_lookup,
+        )
+        await entity_index.add_async(entry)
+
+
 def _create_phase2_agent(agent_id: str, app: FastAPI):
     """Instantiate a Phase 2 agent by ID for runtime registration."""
     agent_map = {
@@ -634,7 +726,36 @@ async def _initialize_setup_dependent_services(app: FastAPI, *, source: str) -> 
                 )
                 entity_update_queue.put_nowait(entry)
 
+        async def _invalidate_registry_event(event: dict) -> list[str]:
+            resolved_entity_ids = _resolve_registry_event_entity_ids(app, entity_index, event)
+            if not resolved_entity_ids:
+                return []
+            try:
+                await cache_manager.invalidate_by_entity_id(resolved_entity_ids)
+            except Exception:
+                logger.warning(
+                    "Cache invalidation for registry event failed: %s",
+                    sorted(resolved_entity_ids),
+                    exc_info=True,
+                )
+            return resolved_entity_ids
+
+        async def on_entity_registry_updated(event: dict) -> None:
+            resolved_entity_ids = await _invalidate_registry_event(event)
+            await _refresh_registry_entities(app, ha_client, entity_index, resolved_entity_ids)
+
+        async def on_device_registry_updated(event: dict) -> None:
+            resolved_entity_ids = await _invalidate_registry_event(event)
+            await _refresh_registry_entities(app, ha_client, entity_index, resolved_entity_ids)
+
+        async def on_area_registry_updated(event: dict) -> None:
+            resolved_entity_ids = await _invalidate_registry_event(event)
+            await _refresh_registry_entities(app, ha_client, entity_index, resolved_entity_ids)
+
         ws_client.on_event("state_changed", on_state_changed)
+        ws_client.on_event("entity_registry_updated", on_entity_registry_updated)
+        ws_client.on_event("device_registry_updated", on_device_registry_updated)
+        ws_client.on_event("area_registry_updated", on_area_registry_updated)
 
         app.state.ws_client = ws_client
         app.state.ws_task = asyncio.create_task(ws_client.run())

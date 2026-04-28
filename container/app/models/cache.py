@@ -5,21 +5,6 @@ from __future__ import annotations
 from pydantic import BaseModel, Field
 
 
-class RoutingCacheEntry(BaseModel):
-    """Entry in the routing cache tier."""
-
-    query_text: str
-    agent_id: str
-    confidence: float
-    hit_count: int = 0
-    condensed_task: str | None = None
-    created_at: str | None = None
-    last_accessed: str | None = None
-    # FLOW-HIGH-4: detected language at store time. Lookup filters on
-    # this so cross-language hits cannot leak.
-    language: str = "en"
-
-
 class CachedAction(BaseModel):
     """A cached HA service call for direct execution on cache hit."""
 
@@ -28,24 +13,36 @@ class CachedAction(BaseModel):
     service_data: dict = Field(default_factory=dict)
 
 
-class ResponseCacheEntry(BaseModel):
-    """Entry in the response cache tier."""
+class ActionCacheEntry(BaseModel):
+    """Entry in the action replay cache tier."""
 
     query_text: str
-    response_text: str
+    language: str
     agent_id: str
-    cached_action: CachedAction | None = None
-    confidence: float
+    condensed_task: str | None = None
+    confidence: float = 0.0
+    response_text: str
+    cached_action: CachedAction
+    entity_ids: list[str] = Field(default_factory=list)
+    origin_area_id: str | None = None
+    origin_device_id: str | None = None
+    created_at: str | None = None
+    last_accessed: str | None = None
+    executed_at: str | None = None
     hit_count: int = 0
+    schema_version: int = 4
+
+
+class RoutingCacheEntry(BaseModel):
+    """Entry in the routing cache tier."""
+
+    query_text: str
+    language: str
+    agent_id: str
+    condensed_task: str | None = None
+    confidence: float = 0.0
     entity_ids: list[str] = Field(default_factory=list)
     created_at: str | None = None
     last_accessed: str | None = None
-    # FLOW-HIGH-4: detected language at store time. Lookup filters on
-    # this so cross-language hits cannot leak.
-    language: str = "en"
-
-
-# Public alias (added in 0.21.0). The class keeps the name
-# ResponseCacheEntry internally to avoid churn; new callers should use
-# ActionCacheEntry. The alias will remain for at least one minor.
-ActionCacheEntry = ResponseCacheEntry
+    hit_count: int = 0
+    schema_version: int = 4

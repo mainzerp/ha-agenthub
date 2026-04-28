@@ -1,33 +1,319 @@
-"""Tests for app.cache -- routing cache, response cache, cache manager, embedding, vector store."""
+"""Focused unit tests for the two-cache implementation."""
 
 from __future__ import annotations
 
-import logging
-from typing import ClassVar
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.cache.cache_manager import CacheManager, CacheResult
-from app.cache.embedding import ChromaEmbeddingFunction, EmbeddingEngine
-from app.cache.response_cache import ResponseCache
+from app.cache._base_cache import make_text_id, normalize_text
+from app.cache.action_cache import ActionCache, make_action_entry_id
+from app.cache.cache_manager import ActionReplayOutcome, CacheManager, CacheResult
 from app.cache.routing_cache import RoutingCache, make_routing_entry_id
-from app.cache.vector_store import (
-    COLLECTION_ENTITY_INDEX,
-    COLLECTION_RESPONSE_CACHE,
-    COLLECTION_ROUTING_CACHE,
-    VectorStore,
-)
-from app.defaults import DEFAULT_LOCAL_EMBEDDING_MODEL
+from app.cache.vector_store import COLLECTION_ACTION_CACHE, COLLECTION_ROUTING_CACHE, VectorStore
 from app.models.cache import CachedAction
-from tests.helpers import make_response_cache_entry
+from tests.helpers import make_action_cache_entry, make_routing_cache_entry
 
-# ---------------------------------------------------------------------------
-# Routing cache
-# ---------------------------------------------------------------------------
+
+def _empty_get_result() -> dict:
+    return {"ids": [], "documents": [], "metadatas": []}
+
+
+def _empty_query_result() -> dict:
+    return {"ids": [[]], "documents": [[]], "metadatas": [[]], "distances": [[]]}
+
+
+def _make_vector_store() -> MagicMock:
+    store = MagicMock(spec=VectorStore)
+    store.count.return_value = 0
+    store.get.return_value = _empty_get_result()
+    store.query.return_value = _empty_query_result()
+    return store
+
+
+class TestNormalization:
+    def test_normalize_text_casefolds_and_strips_terminal_punctuation(self):
+        assert normalize_text("  Turn   ON kitchen light!!  ") == "turn on kitchen light"
+
+    def test_make_text_id_uses_normalized_text_and_language(self):
+        a = make_text_id("Turn on kitchen light!!", "EN")
+        b = make_text_id("  turn on  kitchen light ", "en")
+        c = make_text_id("turn on kitchen light", "de")
+
+        assert a == b
+        assert a != c
+
+
+class TestActionCache:
+    def _make_cache(self) -> tuple[ActionCache, MagicMock]:
+        store = _make_vector_store()
+        cache = ActionCache(store)
+        return cache, store
+
+    def test_store_uses_normalized_entry_id(self):
+        cache, store = self._make_cache()
+        entry = make_action_cache_entry(query_text="Turn on   kitchen light!!")
+
+        cache.store(entry)
+
+        kwargs = store.upsert.call_args.kwargs
+        assert kwargs["ids"] == [make_action_entry_id("turn on kitchen light", language="en")]
+        assert kwargs["documents"] == [entry.query_text]
+
+    def test_lookup_exact_hit_returns_entry_and_similarity(self):
+        cache, store = self._make_cache()
+        entry = make_action_cache_entry(query_text="turn on kitchen light")
+        metadata = cache._serialize_metadata(entry)
+        store.get.return_value = {
+            "ids": [make_action_entry_id(entry.query_text, language=entry.language)],
+            "documents": [entry.query_text],
+            "metadatas": [metadata],
+        }
+
+        hit, similarity = cache.lookup("Turn on kitchen light!!", language="en")
+
+        assert hit is not None
+        assert hit.cached_action.entity_id == entry.cached_action.entity_id
+        assert similarity == pytest.approx(1.0)
+        store.query.assert_not_called()
+
+    def test_lookup_semantic_below_threshold_misses(self):
+        cache, store = self._make_cache()
+        entry = make_action_cache_entry(query_text="turn on kitchen light")
+        metadata = cache._serialize_metadata(entry)
+        store.query.return_value = {
+            "ids": [["semantic-1"]],
+            "documents": [[entry.query_text]],
+            "metadatas": [[metadata]],
+            "distances": [[0.08]],
+        }
+
+        hit, similarity = cache.lookup("switch on the kitchen lamp", language="en")
+
+        assert hit is None
+        assert similarity == pytest.approx(0.92)
+
+    def test_purge_readonly_entries_deletes_query_rows(self):
+        cache, store = self._make_cache()
+        store.get.return_value = {
+            "ids": ["a", "b", "c"],
+            "metadatas": [
+                {"cached_action": CachedAction(service="light/query_state", entity_id="light.kitchen").model_dump_json()},
+                {"cached_action": CachedAction(service="light/turn_on", entity_id="light.kitchen").model_dump_json()},
+                {"cached_action": ""},
+            ],
+        }
+
+        deleted = cache.purge_readonly_entries()
+
+        assert deleted == 2
+        store.delete.assert_called_once_with(COLLECTION_ACTION_CACHE, ids=["a", "c"])
+
+    def test_invalidate_by_entity_id_scans_paginated_rows(self):
+        cache, store = self._make_cache()
+        with patch("app.cache._base_cache._LRU_PAGE_SIZE", 2):
+            store.get.side_effect = [
+                {
+                    "ids": ["a", "b"],
+                    "metadatas": [
+                        {"entity_ids": '["light.kitchen"]'},
+                        {"entity_ids": '["light.porch"]'},
+                    ],
+                },
+                {
+                    "ids": ["c"],
+                    "metadatas": [
+                        {"entity_ids": '["switch.garage", "light.kitchen"]'},
+                    ],
+                },
+            ]
+
+            deleted = cache.invalidate_by_entity_id(["light.kitchen"])
+
+        assert deleted == 2
+        assert store.delete.call_args_list[0].kwargs == {"ids": ["a", "c"]}
 
 
 class TestRoutingCache:
+    def _make_cache(self) -> tuple[RoutingCache, MagicMock]:
+        store = _make_vector_store()
+        cache = RoutingCache(store)
+        return cache, store
+
+    def test_store_uses_normalized_entry_id(self):
+        cache, store = self._make_cache()
+        entry = make_routing_cache_entry(query_text="What is  the kitchen temperature?")
+
+        cache.store(entry)
+
+        kwargs = store.upsert.call_args.kwargs
+        assert kwargs["ids"] == [make_routing_entry_id("what is the kitchen temperature", language="en")]
+
+    def test_lookup_rejects_corrupted_condensed_task(self):
+        cache, store = self._make_cache()
+        entry = make_routing_cache_entry(query_text="lights", condensed_task="light-agent (95%): lights")
+        metadata = cache._serialize_metadata(entry)
+        store.get.return_value = {
+            "ids": [make_routing_entry_id(entry.query_text, language=entry.language)],
+            "documents": [entry.query_text],
+            "metadatas": [metadata],
+        }
+
+        hit, similarity = cache.lookup("lights", language="en")
+
+        assert hit is None
+        assert similarity == pytest.approx(1.0)
+
+    def test_invalidate_by_entity_id_deletes_matching_rows(self):
+        cache, store = self._make_cache()
+        store.get.return_value = {
+            "ids": ["r1", "r2"],
+            "metadatas": [
+                {"entity_ids": '["sensor.temp"]'},
+                {"entity_ids": '["light.kitchen"]'},
+            ],
+        }
+
+        deleted = cache.invalidate_by_entity_id(["light.kitchen"])
+
+        assert deleted == 1
+        store.delete.assert_called_once_with(COLLECTION_ROUTING_CACHE, ids=["r2"])
+
+
+class TestCacheManager:
+    def _make_manager(self) -> tuple[CacheManager, MagicMock]:
+        store = _make_vector_store()
+        manager = CacheManager(store)
+        return manager, store
+
+    @pytest.mark.asyncio
+    async def test_try_replay_action_returns_full_hit(self):
+        manager, _store = self._make_manager()
+        entry = make_action_cache_entry(cached_action=CachedAction(service="light/turn_on", entity_id="light.kitchen"))
+        manager._action_cache.lookup = MagicMock(return_value=(entry, 0.99))
+        manager._action_cache.invalidate_by_entry_id = MagicMock()
+
+        with patch("app.cache.cache_manager.track_cache_event", new_callable=AsyncMock) as track:
+            result = await manager.try_replay_action(
+                query_text=entry.query_text,
+                language=entry.language,
+                resolve_entity=AsyncMock(return_value="light.kitchen"),
+                check_visibility=AsyncMock(return_value=True),
+                execute_cached_action=AsyncMock(return_value={"success": True, "entity_id": "light.kitchen"}),
+            )
+
+        assert result is not None
+        assert result.kind == "full_hit"
+        assert result.cached_action is not None
+        manager._action_cache.invalidate_by_entry_id.assert_not_called()
+        track.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_try_replay_action_invalidates_on_entity_divergence(self):
+        manager, _store = self._make_manager()
+        entry = make_action_cache_entry(cached_action=CachedAction(service="light/turn_on", entity_id="light.kitchen"))
+        manager._action_cache.lookup = MagicMock(return_value=(entry, 0.99))
+        manager._action_cache.invalidate_by_entry_id = MagicMock()
+
+        result = await manager.try_replay_action(
+            query_text=entry.query_text,
+            language=entry.language,
+            resolve_entity=AsyncMock(return_value="light.other"),
+            check_visibility=AsyncMock(return_value=True),
+            execute_cached_action=AsyncMock(return_value={"success": True}),
+        )
+
+        assert result is None
+        manager._action_cache.invalidate_by_entry_id.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_try_replay_action_transient_replay_miss_does_not_invalidate(self):
+        manager, _store = self._make_manager()
+        entry = make_action_cache_entry(cached_action=CachedAction(service="light/turn_on", entity_id="light.kitchen"))
+        manager._action_cache.lookup = MagicMock(return_value=(entry, 0.99))
+        manager._action_cache.invalidate_by_entry_id = MagicMock()
+
+        result = await manager.try_replay_action(
+            query_text=entry.query_text,
+            language=entry.language,
+            resolve_entity=AsyncMock(return_value="light.kitchen"),
+            check_visibility=AsyncMock(return_value=True),
+            execute_cached_action=AsyncMock(return_value=None),
+        )
+
+        assert result is None
+        manager._action_cache.invalidate_by_entry_id.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_try_routing_skip_returns_hit(self):
+        manager, _store = self._make_manager()
+        entry = make_routing_cache_entry(condensed_task="Read kitchen temperature")
+        manager._routing_cache.lookup = MagicMock(return_value=(entry, 0.96))
+
+        with patch("app.cache.cache_manager.track_cache_event", new_callable=AsyncMock) as track:
+            result = await manager.try_routing_skip(query_text=entry.query_text, language=entry.language)
+
+        assert result is not None
+        assert result.kind == "routing_hit"
+        assert result.condensed_task == "Read kitchen temperature"
+        track.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_invalidate_by_entity_id_fans_out_to_both_caches(self):
+        manager, _store = self._make_manager()
+        manager._action_cache.invalidate_by_entity_id = MagicMock(side_effect=[2, 1])
+        manager._routing_cache.invalidate_by_entity_id = MagicMock(side_effect=[3, 2])
+
+        counts = await manager.invalidate_by_entity_id(["light.kitchen", "switch.garage"])
+
+        assert counts == {"action": 3, "routing": 5}
+        assert manager._action_cache.invalidate_by_entity_id.call_args_list == [
+            ((["light.kitchen"],), {}),
+            ((["switch.garage"],), {}),
+        ]
+        assert manager._routing_cache.invalidate_by_entity_id.call_args_list == [
+            ((["light.kitchen"],), {}),
+            ((["switch.garage"],), {}),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_apply_rewrite_returns_original_when_disabled(self):
+        manager, _store = self._make_manager()
+        manager._rewrite_agent = AsyncMock()
+        manager._rewrite_enabled = False
+        result = CacheResult(hit_type="action_hit", response_text="Cached text.")
+
+        output = await manager.apply_rewrite(result)
+
+        assert output == "Cached text."
+        manager._rewrite_agent.rewrite.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_apply_rewrite_sets_metadata_on_success(self):
+        manager, _store = self._make_manager()
+        manager._rewrite_agent = AsyncMock()
+        manager._rewrite_agent.rewrite = AsyncMock(return_value="Rewritten text.")
+        manager._rewrite_enabled = True
+        result = ActionReplayOutcome(kind="full_hit", entry_id="id-1", agent_id="light-agent", response_text="Cached text.")
+
+        with patch("app.cache.cache_manager.track_rewrite", new_callable=AsyncMock) as track:
+            output = await manager.apply_rewrite(result)
+
+        assert output == "Rewritten text."
+        assert result.rewrite_applied is True
+        assert result.original_response_text == "Cached text."
+        assert result.rewrite_latency_ms is not None
+        track.assert_awaited_once()
+
+    def test_get_stats_returns_both_tiers(self):
+        manager, _store = self._make_manager()
+        manager._action_cache.get_stats = MagicMock(return_value={"count": 1})
+        manager._routing_cache.get_stats = MagicMock(return_value={"count": 2})
+
+        stats = manager.get_stats()
+
+        assert stats == {"action": {"count": 1}, "routing": {"count": 2}}
+'''
     def _make_cache(self) -> tuple[RoutingCache, MagicMock]:
         store = MagicMock(spec=VectorStore)
         cache = RoutingCache(store)
@@ -468,25 +754,108 @@ class TestResponseCache:
 
 
 class TestCacheManager:
+    def test_build_replay_context_returns_neutral_dict(self):
+        context = _make_replay_context()
+
+        assert set(context) == {
+            "language",
+            "agent_id",
+            "domain",
+            "service",
+            "entity_id",
+            "entity_label_verbatim",
+            "area_id",
+            "area_label_verbatim",
+            "params",
+        }
+        assert context["language"] == "de"
+        assert context["domain"] == "light"
+        assert context["service"] == "turn_on"
+        assert context["entity_label_verbatim"] == "kueche"
+        assert context["area_label_verbatim"] == "Kueche"
+
+    def test_replay_context_has_no_language_strings(self):
+        forbidden_tokens = [
+            "eingeschaltet",
+            "ausgeschaltet",
+            "geoeffnet",
+            "geschlossen",
+            "aktiviert",
+            "gesetzt",
+            "turned on",
+            "turned off",
+            "opened",
+            "closed",
+            "activated",
+            "set to",
+            "degrees",
+            "Grad",
+            "Szene",
+            "Scene",
+            "Temperatur aktualisiert",
+            "temperature updated",
+        ]
+        contexts = [
+            _make_replay_context(service="light/turn_on", language="de"),
+            _make_replay_context(service="light/turn_off", language="en"),
+            _make_replay_context(
+                service="climate/set_temperature",
+                entity_id="climate.wohnzimmer",
+                service_data={"temperature": 22},
+                language="de",
+                agent_id="climate-agent",
+                area_label="Wohnzimmer",
+            ),
+            _make_replay_context(
+                service="scene/turn_on",
+                entity_id="scene.movie_night",
+                language="en",
+                agent_id="scene-agent",
+                area_id="living_room",
+                area_label="Living Room",
+            ),
+            _make_replay_context(service="cover/open_cover", entity_id="cover.garage_door", language="de"),
+            _make_replay_context(service="cover/close_cover", entity_id="cover.garage_door", language="en"),
+        ]
+
+        def _walk_strings(value):
+            if isinstance(value, str):
+                yield value
+                return
+            if isinstance(value, dict):
+                for nested in value.values():
+                    yield from _walk_strings(nested)
+
+        for context in contexts:
+            for value in _walk_strings(context):
+                if value in {"de", "en"}:
+                    continue
+                for token in forbidden_tokens:
+                    assert token not in value
+
+        source = inspect.getsource(rewrite_template_module)
+        for token in forbidden_tokens:
+            assert token not in source
+
     def _make_manager(self) -> tuple[CacheManager, MagicMock]:
         store = MagicMock(spec=VectorStore)
         manager = CacheManager(store)
         return manager, store
 
-    async def test_process_response_hit(self):
+    async def test_process_routing_hit(self):
         manager, _store = self._make_manager()
         with (
             patch.object(manager, "_process_inner") as mock_inner,
             patch("app.cache.cache_manager.track_cache_event", new_callable=AsyncMock),
         ):
             mock_inner.return_value = CacheResult(
-                hit_type="response_hit",
+                hit_type="routing_hit",
                 agent_id="light-agent",
-                response_text="Done.",
+                condensed_task="Turn on light",
             )
             result = await manager.process("turn on light")
-        assert result.hit_type == "response_hit"
-        assert result.response_text == "Done."
+        assert result.hit_type == "routing_hit"
+        assert result.condensed_task == "Turn on light"
 
     async def test_process_miss(self):
         manager, _store = self._make_manager()
@@ -497,33 +866,50 @@ class TestCacheManager:
             mock_inner.return_value = CacheResult(hit_type="miss")
             result = await manager.process("random query")
         assert result.hit_type == "miss"
-        # FLOW-TELEM-1 (P2-5): miss must not emit a cache analytics event.
         track.assert_not_awaited()
 
-    async def test_process_emits_event_only_for_real_hits(self):
-        """Routing / response hits emit track_cache_event, miss does not."""
+    async def test_process_emits_event_only_for_routing_hits(self):
         manager, _store = self._make_manager()
         with (
             patch.object(manager, "_process_inner") as mock_inner,
             patch("app.cache.cache_manager.track_cache_event", new_callable=AsyncMock) as track,
         ):
-            mock_inner.return_value = CacheResult(
-                hit_type="routing_hit",
-                agent_id="light-agent",
-                similarity=0.94,
-            )
+            mock_inner.return_value = CacheResult(hit_type="routing_hit", agent_id="light-agent", similarity=0.94)
             await manager.process("turn on light")
-            mock_inner.return_value = CacheResult(
-                hit_type="response_partial",
-                agent_id="light-agent",
-                response_text="partial",
-                similarity=0.9,
-            )
-            await manager.process("turn on light again")
             mock_inner.return_value = CacheResult(hit_type="miss")
             await manager.process("nothing matches")
-        # Two events (routing_hit, response_partial); miss does not log.
-        assert track.await_count == 2
+        assert track.await_count == 1
+
+    async def test_lookup_action_by_key_returns_action_hit(self):
+        manager, _store = self._make_manager()
+        entry = make_response_cache_entry(
+            cached_action=CachedAction(
+                service="light/turn_on",
+                entity_id="light.keller",
+                service_data={},
+            )
+        )
+        with (
+            patch.object(manager._response_cache, "lookup_by_structured_key", return_value=("hit", entry)),
+            patch("app.cache.cache_manager.track_cache_event", new_callable=AsyncMock) as track,
+        ):
+            result = await manager.lookup_action_by_key(entry.structured_key)
+
+        assert result.hit_type == "action_hit"
+        assert result.cached_action is not None
+        track.assert_awaited_once()
+
+    async def test_lookup_action_by_key_skips_non_replayable_entry(self):
+        manager, _store = self._make_manager()
+        entry = make_response_cache_entry(cached_action=None)
+        with (
+            patch.object(manager._response_cache, "lookup_by_structured_key", return_value=("hit", entry)),
+            patch("app.cache.cache_manager.track_cache_event", new_callable=AsyncMock) as track,
+        ):
+            result = await manager.lookup_action_by_key(entry.structured_key)
+
+        assert result.hit_type == "miss"
+        track.assert_not_awaited()
 
     async def test_process_exception_returns_miss(self):
         manager, _store = self._make_manager()
@@ -540,7 +926,6 @@ class TestCacheManager:
         store.query.return_value = {"ids": [[]], "distances": [[]], "documents": [[]], "metadatas": [[]]}
         manager.store_routing("query", "light-agent", 0.95, "Turn on the light")
         store.upsert.assert_called()
-        # Verify condensed_task is in the metadata
         call_args = store.upsert.call_args
         metadatas = (
             call_args[1].get("metadatas") or call_args[0][2] if len(call_args[0]) > 2 else call_args[1]["metadatas"]
@@ -591,19 +976,17 @@ class TestCacheManager:
         manager, _store = self._make_manager()
 
         async def routing_get_value(key, default=None):
-            mapping = {
+            return {
                 "cache.routing.threshold": "0.92",
                 "cache.routing.max_entries": "50000",
-            }
-            return mapping.get(key, default)
+            }.get(key, default)
 
         async def response_get_value(key, default=None):
-            mapping = {
+            return {
                 "cache.response.threshold": "0.95",
                 "cache.response.partial_threshold": "0.80",
                 "cache.response.max_entries": "20000",
-            }
-            return mapping.get(key, default)
+            }.get(key, default)
 
         async def mgr_get_value(key, default=None):
             if key == "personality.prompt":
@@ -619,25 +1002,22 @@ class TestCacheManager:
             mock_resps.get_value = AsyncMock(side_effect=response_get_value)
             mock_cms.get_value = AsyncMock(side_effect=mgr_get_value)
             await manager.initialize()
-        # No assertion needed -- just verifying no exception is raised
 
     async def test_reload_config(self):
         manager, _store = self._make_manager()
 
         async def routing_get_value(key, default=None):
-            mapping = {
+            return {
                 "cache.routing.threshold": "0.90",
                 "cache.routing.max_entries": "50000",
-            }
-            return mapping.get(key, default)
+            }.get(key, default)
 
         async def response_get_value(key, default=None):
-            mapping = {
+            return {
                 "cache.response.threshold": "0.90",
                 "cache.response.partial_threshold": "0.75",
                 "cache.response.max_entries": "20000",
-            }
-            return mapping.get(key, default)
+            }.get(key, default)
 
         async def mgr_get_value(key, default=None):
             if key == "personality.prompt":
@@ -655,18 +1035,15 @@ class TestCacheManager:
             await manager.reload_config()
 
     def test_flush_pending_delegates_to_both_caches(self):
-        """flush_pending() should call flush_pending() on both caches."""
         manager, store = self._make_manager()
         manager._routing_cache._state.record_pending_update("r-1", "q", {"hit_count": "2"}, flush_interval=1_000_000)
         manager._response_cache._state.record_pending_update("s-1", "q", {"hit_count": "3"}, flush_interval=1_000_000)
         manager.flush_pending()
-        # Both should have been flushed via update_metadata
         assert not manager._routing_cache._state.has_pending()
         assert not manager._response_cache._state.has_pending()
         assert store.update_metadata.call_count == 2
 
     def test_routing_cache_stores_condensed_task(self):
-        """Routing cache should persist condensed_task in the ChromaDB metadata."""
         cache, store = TestRoutingCache()._make_cache()
         store.count.return_value = 0
         cache.store("turn on light", "light-agent", 0.95, "Turn on the light")
@@ -676,7 +1053,6 @@ class TestCacheManager:
         assert metadatas[0]["condensed_task"] == "Turn on the light"
 
     def test_routing_cache_lookup_returns_condensed_task(self):
-        """Routing cache lookup should return the stored condensed_task."""
         cache, store = TestRoutingCache()._make_cache()
         store.query.return_value = {
             "ids": [["entry-1"]],
@@ -701,197 +1077,29 @@ class TestCacheManager:
         assert similarity == pytest.approx(0.95)
 
     def test_cache_result_carries_condensed_task(self):
-        """CacheResult should propagate condensed_task from routing entry.
-
-        FLOW-CACHE-1: response cache is now checked first, so we feed a
-        response miss and then a routing hit. The condensed_task must
-        still surface from the routing entry.
-        """
         manager, store = self._make_manager()
-        store.query.side_effect = [
-            # 1. Response cache miss (distance 0.5 -> similarity 0.5 < partial 0.8)
-            {
-                "ids": [["s-1"]],
-                "distances": [[0.50]],
-                "documents": [["unrelated"]],
-                "metadatas": [
-                    [
-                        {
-                            "response_text": "x",
-                            "agent_id": "gen",
-                            "confidence": "0.5",
-                            "hit_count": "0",
-                            "entity_ids": "",
-                            "cached_action": "",
-                            "created_at": "",
-                            "last_accessed": "",
-                        }
-                    ]
-                ],
-            },
-            # 2. Routing cache hit (distance 0.03 -> similarity 0.97 > 0.92)
-            {
-                "ids": [["r-1"]],
-                "distances": [[0.03]],
-                "documents": [["turn on light"]],
-                "metadatas": [
-                    [
-                        {
-                            "agent_id": "light-agent",
-                            "confidence": "0.95",
-                            "hit_count": "0",
-                            "condensed_task": "Turn on the light",
-                            "created_at": "2025-01-01T00:00:00",
-                            "last_accessed": "2025-01-01T00:00:00",
-                        }
-                    ]
-                ],
-            },
-        ]
+        store.query.return_value = {
+            "ids": [["r-1"]],
+            "distances": [[0.03]],
+            "documents": [["turn on light"]],
+            "metadatas": [
+                [
+                    {
+                        "agent_id": "light-agent",
+                        "confidence": "0.95",
+                        "hit_count": "0",
+                        "condensed_task": "Turn on the light",
+                        "created_at": "2025-01-01T00:00:00",
+                        "last_accessed": "2025-01-01T00:00:00",
+                    }
+                ]
+            ],
+        }
         result = manager._process_inner("turn on light")
         assert result.hit_type == "routing_hit"
         assert result.condensed_task == "Turn on the light"
 
-    def test_response_hit_with_cached_action_shadows_routing(self):
-        """FLOW-CACHE-1: a response_hit carrying a cached_action wins over
-        any routing_hit. Replay + rewrite is strictly more valuable than
-        a routing short-circuit (which still dispatches the agent)."""
-        manager, store = self._make_manager()
-        action_json = CachedAction(
-            service="light/turn_on",
-            entity_id="light.keller",
-            service_data={},
-        ).model_dump_json()
-        store.query.side_effect = [
-            # 1. Response cache hit with cached_action (similarity 0.97 > 0.95)
-            {
-                "ids": [["s-1"]],
-                "distances": [[0.03]],
-                "documents": [["schalte keller ein"]],
-                "metadatas": [
-                    [
-                        {
-                            "response_text": "Keller ist an.",
-                            "agent_id": "light-agent",
-                            "confidence": "0.95",
-                            "hit_count": "0",
-                            "entity_ids": "light.keller",
-                            "cached_action": action_json,
-                            "created_at": "2025-01-01T00:00:00",
-                            "last_accessed": "2025-01-01T00:00:00",
-                        }
-                    ]
-                ],
-            },
-        ]
-        result = manager._process_inner("schalte keller ein")
-        assert result.hit_type == "action_hit"
-        assert result.agent_id == "light-agent"
-        assert result.cached_action is not None
-        assert result.cached_action.entity_id == "light.keller"
-        # Routing cache must NOT have been queried -- response_hit short-circuits
-        assert store.query.call_count == 1
-
-    def test_response_hit_without_cached_action_falls_through_to_routing(self):
-        """State queries (no cached_action) must not replay stale response
-        text. They fall through to routing so the agent runs against live
-        HA state and recomputes the answer."""
-        manager, store = self._make_manager()
-        store.query.side_effect = [
-            # 1. Response cache hit WITHOUT cached_action (stale-risk entry)
-            {
-                "ids": [["s-1"]],
-                "distances": [[0.02]],
-                "documents": [["wie warm ist es im schlafzimmer"]],
-                "metadatas": [
-                    [
-                        {
-                            "response_text": "Es sind 21 Grad.",
-                            "agent_id": "climate-agent",
-                            "confidence": "0.95",
-                            "hit_count": "0",
-                            "entity_ids": "climate.bedroom",
-                            "cached_action": "",
-                            "created_at": "2025-01-01T00:00:00",
-                            "last_accessed": "2025-01-01T00:00:00",
-                        }
-                    ]
-                ],
-            },
-            # 2. Routing cache hit -> this is what we expect to surface
-            {
-                "ids": [["r-1"]],
-                "distances": [[0.03]],
-                "documents": [["wie warm ist es im schlafzimmer"]],
-                "metadatas": [
-                    [
-                        {
-                            "agent_id": "climate-agent",
-                            "confidence": "0.95",
-                            "hit_count": "0",
-                            "condensed_task": "Read bedroom temperature",
-                            "created_at": "2025-01-01T00:00:00",
-                            "last_accessed": "2025-01-01T00:00:00",
-                        }
-                    ]
-                ],
-            },
-        ]
-        result = manager._process_inner("wie warm ist es im schlafzimmer")
-        assert result.hit_type == "routing_hit"
-        assert result.agent_id == "climate-agent"
-        assert result.condensed_task == "Read bedroom temperature"
-
-    def test_response_partial_surfaces_only_when_routing_misses(self):
-        """response_partial must not short-circuit and only surfaces as a
-        diagnostic when routing also misses."""
-        manager, store = self._make_manager()
-        store.query.side_effect = [
-            # 1. Response partial (similarity 0.85, above partial 0.80 but
-            #    below hit 0.95)
-            {
-                "ids": [["s-1"]],
-                "distances": [[0.15]],
-                "documents": [["dim lights"]],
-                "metadatas": [
-                    [
-                        {
-                            "response_text": "Lights dimmed.",
-                            "agent_id": "light-agent",
-                            "confidence": "0.85",
-                            "hit_count": "0",
-                            "entity_ids": "",
-                            "cached_action": "",
-                            "created_at": "",
-                            "last_accessed": "",
-                        }
-                    ]
-                ],
-            },
-            # 2. Routing miss (similarity 0.5)
-            {
-                "ids": [["r-1"]],
-                "distances": [[0.50]],
-                "documents": [["unrelated"]],
-                "metadatas": [
-                    [
-                        {
-                            "agent_id": "general-agent",
-                            "confidence": "0.5",
-                            "hit_count": "0",
-                            "created_at": "",
-                            "last_accessed": "",
-                        }
-                    ]
-                ],
-            },
-        ]
-        result = manager._process_inner("dim the lights")
-        assert result.hit_type == "action_partial"
-        assert result.response_text == "Lights dimmed."
-
     def test_store_response_disabled_skips_store(self):
-        """store_response should no-op when _response_cache_enabled is False."""
         manager, store = self._make_manager()
         manager._response_cache_enabled = False
         entry = make_response_cache_entry()
@@ -899,53 +1107,29 @@ class TestCacheManager:
         store.upsert.assert_not_called()
 
     def test_complete_miss_returns_none_similarity(self):
-        """COR-3: a full miss must report similarity=None instead of leaking
-        the best cross-tier similarity into the trace UI."""
         manager, store = self._make_manager()
-        # FLOW-CACHE-1: response cache is queried first now.
-        store.query.side_effect = [
-            # Response miss (similarity 0.4 < partial 0.8)
-            {
-                "ids": [["s-1"]],
-                "distances": [[0.6]],
-                "documents": [["yet another"]],
-                "metadatas": [
-                    [
-                        {
-                            "agent_id": "light-agent",
-                            "response_text": "x",
-                            "hit_count": "0",
-                            "created_at": "2025-01-01T00:00:00",
-                            "last_accessed": "2025-01-01T00:00:00",
-                        }
-                    ]
-                ],
-            },
-            # Routing miss (similarity 0.5 < threshold 0.92)
-            {
-                "ids": [["r-1"]],
-                "distances": [[0.5]],
-                "documents": [["something else"]],
-                "metadatas": [
-                    [
-                        {
-                            "agent_id": "light-agent",
-                            "confidence": "0.5",
-                            "hit_count": "0",
-                            "condensed_task": "",
-                            "created_at": "2025-01-01T00:00:00",
-                            "last_accessed": "2025-01-01T00:00:00",
-                        }
-                    ]
-                ],
-            },
-        ]
+        store.query.return_value = {
+            "ids": [["r-1"]],
+            "distances": [[0.5]],
+            "documents": [["something else"]],
+            "metadatas": [
+                [
+                    {
+                        "agent_id": "light-agent",
+                        "confidence": "0.5",
+                        "hit_count": "0",
+                        "condensed_task": "",
+                        "created_at": "2025-01-01T00:00:00",
+                        "last_accessed": "2025-01-01T00:00:00",
+                    }
+                ]
+            ],
+        }
         result = manager._process_inner("totally unrelated query")
         assert result.hit_type == "miss"
         assert result.similarity is None
 
     def test_store_response_enabled_delegates(self):
-        """store_response should delegate when _response_cache_enabled is True."""
         manager, store = self._make_manager()
         manager._response_cache_enabled = True
         store.count.return_value = 0
@@ -953,108 +1137,173 @@ class TestCacheManager:
         manager.store_response(entry)
         store.upsert.assert_called()
 
-    async def test_process_response_hit_preserves_text_on_empty_rewrite(self):
+    async def test_action_hit_preserves_cached_text_on_empty_rewrite(self):
         manager, _store = self._make_manager()
         rewrite_agent = AsyncMock()
         rewrite_agent.rewrite = AsyncMock(return_value="")
         manager._rewrite_agent = rewrite_agent
-        with (
-            patch.object(manager, "_process_inner") as mock_inner,
-            patch("app.cache.cache_manager.track_cache_event", new_callable=AsyncMock),
-            patch("app.cache.cache_manager.track_rewrite", new_callable=AsyncMock),
-        ):
-            mock_inner.return_value = CacheResult(
-                hit_type="response_hit",
-                agent_id="light-agent",
-                response_text="Original cached text.",
-            )
-            result = await manager.process("turn on light")
-            await manager.apply_rewrite(result)
+        result = CacheResult(hit_type="action_hit", agent_id="light-agent", response_text="Original cached text.")
+        with patch("app.cache.cache_manager.track_rewrite", new_callable=AsyncMock):
+            await manager.apply_rewrite(result, structured=_make_replay_context(language="en"))
         assert result.response_text == "Original cached text."
 
-    async def test_process_response_hit_applies_rewrite(self):
+    async def test_action_hit_applies_rewrite(self):
         manager, _store = self._make_manager()
         rewrite_agent = AsyncMock()
         rewrite_agent.rewrite = AsyncMock(return_value="Rephrased text.")
         manager._rewrite_agent = rewrite_agent
-        with (
-            patch.object(manager, "_process_inner") as mock_inner,
-            patch("app.cache.cache_manager.track_cache_event", new_callable=AsyncMock),
-            patch("app.cache.cache_manager.track_rewrite", new_callable=AsyncMock),
-        ):
-            mock_inner.return_value = CacheResult(
-                hit_type="response_hit",
-                agent_id="light-agent",
-                response_text="Original text.",
-            )
-            result = await manager.process("turn on light")
-            await manager.apply_rewrite(result)
+        result = CacheResult(hit_type="action_hit", agent_id="light-agent", response_text="Original text.")
+        with patch("app.cache.cache_manager.track_rewrite", new_callable=AsyncMock):
+            await manager.apply_rewrite(result, structured=_make_replay_context(language="en"))
         assert result.response_text == "Rephrased text."
 
-    async def test_process_response_hit_sets_rewrite_metadata(self):
+    async def test_action_hit_sets_rewrite_metadata(self):
         manager, _store = self._make_manager()
         rewrite_agent = AsyncMock()
         rewrite_agent.rewrite = AsyncMock(return_value="Rephrased.")
         manager._rewrite_agent = rewrite_agent
-        with (
-            patch.object(manager, "_process_inner") as mock_inner,
-            patch("app.cache.cache_manager.track_cache_event", new_callable=AsyncMock),
-            patch("app.cache.cache_manager.track_rewrite", new_callable=AsyncMock),
-        ):
-            mock_inner.return_value = CacheResult(
-                hit_type="response_hit",
-                agent_id="light-agent",
-                response_text="Original.",
-            )
-            result = await manager.process("turn on light")
-            await manager.apply_rewrite(result)
+        result = CacheResult(hit_type="action_hit", agent_id="light-agent", response_text="Original.")
+        with patch("app.cache.cache_manager.track_rewrite", new_callable=AsyncMock):
+            await manager.apply_rewrite(result, structured=_make_replay_context(language="en"))
         assert result.rewrite_applied is True
         assert result.rewrite_latency_ms is not None
         assert result.rewrite_latency_ms > 0
         assert result.original_response_text == "Original."
         assert result.response_text == "Rephrased."
 
-    async def test_process_response_hit_no_rewrite_metadata_on_empty(self):
+    async def test_action_hit_no_rewrite_metadata_on_empty(self):
         manager, _store = self._make_manager()
         rewrite_agent = AsyncMock()
         rewrite_agent.rewrite = AsyncMock(return_value="")
         manager._rewrite_agent = rewrite_agent
-        with (
-            patch.object(manager, "_process_inner") as mock_inner,
-            patch("app.cache.cache_manager.track_cache_event", new_callable=AsyncMock),
-            patch("app.cache.cache_manager.track_rewrite", new_callable=AsyncMock),
-        ):
-            mock_inner.return_value = CacheResult(
-                hit_type="response_hit",
-                agent_id="light-agent",
-                response_text="Original.",
-            )
-            result = await manager.process("turn on light")
-            await manager.apply_rewrite(result)
+        result = CacheResult(hit_type="action_hit", agent_id="light-agent", response_text="Original.")
+        with patch("app.cache.cache_manager.track_rewrite", new_callable=AsyncMock):
+            await manager.apply_rewrite(result, structured=_make_replay_context(language="en"))
         assert result.rewrite_applied is False
         assert result.original_response_text is None
         assert result.response_text == "Original."
 
-    async def test_process_response_hit_no_rewrite_metadata_on_exception(self):
+    async def test_action_hit_no_rewrite_metadata_on_exception(self):
         manager, _store = self._make_manager()
         rewrite_agent = AsyncMock()
         rewrite_agent.rewrite = AsyncMock(side_effect=RuntimeError("LLM error"))
         manager._rewrite_agent = rewrite_agent
-        with (
-            patch.object(manager, "_process_inner") as mock_inner,
-            patch("app.cache.cache_manager.track_cache_event", new_callable=AsyncMock),
-            patch("app.cache.cache_manager.track_rewrite", new_callable=AsyncMock),
-        ):
-            mock_inner.return_value = CacheResult(
-                hit_type="response_hit",
-                agent_id="light-agent",
-                response_text="Original.",
-            )
-            result = await manager.process("turn on light")
-            await manager.apply_rewrite(result)
+        result = CacheResult(hit_type="action_hit", agent_id="light-agent", response_text="Original.")
+        with patch("app.cache.cache_manager.track_rewrite", new_callable=AsyncMock):
+            await manager.apply_rewrite(result, structured=_make_replay_context(language="en"))
         assert result.rewrite_applied is False
         assert result.original_response_text is None
         assert result.rewrite_latency_ms is not None
+        assert result.response_text == "Original."
+
+    async def test_cache_hit_with_rewrite_disabled_returns_cached_text_verbatim(self):
+        manager, _store = self._make_manager()
+        context = _make_replay_context(language="de")
+        result = CacheResult(hit_type="action_hit", agent_id="light-agent", response_text="Kueche ist aus.")
+
+        with patch("app.cache.cache_manager.track_rewrite", new_callable=AsyncMock) as track_rewrite:
+            await manager.apply_rewrite(result, structured=context)
+
+        assert result.response_text == "Kueche ist aus."
+        assert result.rewrite_applied is False
+        track_rewrite.assert_not_awaited()
+
+    async def test_cache_hit_with_rewrite_enabled_passes_structured_to_llm(self):
+        manager, _store = self._make_manager()
+        rewrite_agent = AsyncMock()
+        rewrite_agent.rewrite = AsyncMock(return_value="Rephrased.")
+        manager._rewrite_agent = rewrite_agent
+        context = _make_replay_context(language="de")
+        cached_text = "Kueche ist aus."
+        result = CacheResult(hit_type="action_hit", agent_id="light-agent", response_text=cached_text)
+
+        with patch("app.cache.cache_manager.track_rewrite", new_callable=AsyncMock):
+            await manager.apply_rewrite(result, structured=context)
+
+        assert rewrite_agent.rewrite.await_args.args[0] == cached_text
+        assert rewrite_agent.rewrite.await_args.kwargs["structured"] == context
+        assert result.response_text == "Rephrased."
+        assert result.rewrite_applied is True
+        assert result.original_response_text == cached_text
+
+    def test_structured_key_hash_stable_across_field_order(self):
+        key_a = StructuredActionKey(
+            language="en",
+            target_agent="light-agent",
+            domain="light",
+            service="turn_on",
+            target_kind="entity_ids",
+            target_value="light.kitchen",
+            service_data_norm='{"brightness_pct":30,"transition":2}',
+        )
+        key_b = StructuredActionKey.model_validate_json(
+            '{"service":"turn_on","domain":"light","language":"en","target_agent":"light-agent","target_kind":"entity_ids","target_value":"light.kitchen","service_data_norm":"{\\"brightness_pct\\":30,\\"transition\\":2}"}'
+        )
+        assert _structured_key_hash(key_a) == _structured_key_hash(key_b)
+
+    def test_legacy_schema_v2_row_is_ignored_on_read(self):
+        cache, store = TestResponseCache()._make_cache()
+        key = StructuredActionKey(
+            language="en",
+            target_agent="light-agent",
+            domain="light",
+            service="turn_on",
+            target_kind="entity_ids",
+            target_value="light.kitchen",
+            service_data_norm="{}",
+        )
+        store.get.return_value = {
+            "ids": [_structured_key_hash(key)],
+            "documents": ["turn on kitchen light"],
+            "metadatas": [
+                {
+                    "response_text": "Done.",
+                    "agent_id": "light-agent",
+                    "confidence": "0.95",
+                    "hit_count": "0",
+                    "entity_ids": "light.kitchen",
+                    "cached_action": "",
+                    "schema_version": "2",
+                    "structured_key": key.model_dump_json(),
+                }
+            ],
+        }
+        hit_type, entry = cache.lookup_by_structured_key(key)
+        assert hit_type == "miss"
+        assert entry is None
+
+    async def test_purge_legacy_schema_entries_removes_v2_rows_on_initialize(self):
+        manager, _store = self._make_manager()
+
+        async def routing_get_value(key, default=None):
+            return {
+                "cache.routing.threshold": "0.92",
+                "cache.routing.max_entries": "50000",
+            }.get(key, default)
+
+        async def response_get_value(key, default=None):
+            return {
+                "cache.response.threshold": "0.95",
+                "cache.response.partial_threshold": "0.80",
+                "cache.response.max_entries": "20000",
+            }.get(key, default)
+
+        async def mgr_get_value(key, default=None):
+            if key == "personality.prompt":
+                return ""
+            return default
+
+        with (
+            patch("app.cache.routing_cache.SettingsRepository") as mock_rs,
+            patch("app.cache.response_cache.SettingsRepository") as mock_resps,
+            patch("app.db.repository.SettingsRepository") as mock_cms,
+            patch.object(manager._response_cache, "purge_legacy_schema_entries", return_value=3) as purge_legacy,
+        ):
+            mock_rs.get_value = AsyncMock(side_effect=routing_get_value)
+            mock_resps.get_value = AsyncMock(side_effect=response_get_value)
+            mock_cms.get_value = AsyncMock(side_effect=mgr_get_value)
+            await manager.initialize()
+        purge_legacy.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
@@ -1379,105 +1628,50 @@ class TestVectorStore:
 
 class TestCacheTraceSimilarity:
     def test_cache_result_includes_similarity_on_routing_hit(self):
-        """CacheResult.similarity is populated on a routing cache hit.
-
-        FLOW-CACHE-1: response cache is queried first, so we feed a
-        response miss and then a routing hit.
-        """
+        """CacheResult.similarity is populated on a routing cache hit."""
         store = MagicMock(spec=VectorStore)
         manager = CacheManager(store)
-        store.query.side_effect = [
-            # Response miss
-            {
-                "ids": [["s-1"]],
-                "distances": [[0.5]],
-                "documents": [["unrelated"]],
-                "metadatas": [
-                    [
-                        {
-                            "response_text": "x",
-                            "agent_id": "gen",
-                            "confidence": "0.5",
-                            "hit_count": "0",
-                            "entity_ids": "",
-                            "cached_action": "",
-                            "created_at": "",
-                            "last_accessed": "",
-                        }
-                    ]
-                ],
-            },
-            # Routing hit (distance 0.05 -> similarity 0.95)
-            {
-                "ids": [["r-1"]],
-                "distances": [[0.05]],
-                "documents": [["turn on light"]],
-                "metadatas": [
-                    [
-                        {
-                            "agent_id": "light-agent",
-                            "confidence": "0.95",
-                            "hit_count": "0",
-                            "condensed_task": "Turn on",
-                            "created_at": "2025-01-01T00:00:00",
-                            "last_accessed": "2025-01-01T00:00:00",
-                        }
-                    ]
-                ],
-            },
-        ]
+        store.query.return_value = {
+            "ids": [["r-1"]],
+            "distances": [[0.05]],
+            "documents": [["turn on light"]],
+            "metadatas": [
+                [
+                    {
+                        "agent_id": "light-agent",
+                        "confidence": "0.95",
+                        "hit_count": "0",
+                        "condensed_task": "Turn on",
+                        "created_at": "2025-01-01T00:00:00",
+                        "last_accessed": "2025-01-01T00:00:00",
+                    }
+                ]
+            ],
+        }
         result = manager._process_inner("turn on light")
         assert result.hit_type == "routing_hit"
         assert result.similarity == pytest.approx(0.95)
 
     def test_cache_result_includes_similarity_on_miss(self):
-        """COR-3: CacheResult.similarity is None on a complete miss; the
-        previous behavior of leaking the best cross-tier similarity was
-        misleading in the trace UI.
-
-        FLOW-CACHE-1: query order is now response -> routing.
-        """
+        """CacheResult.similarity is None on a complete routing miss."""
         store = MagicMock(spec=VectorStore)
         manager = CacheManager(store)
-        store.query.side_effect = [
-            # Response cache miss with similarity 0.70 (below partial 0.80)
-            {
-                "ids": [["resp-1"]],
-                "distances": [[0.30]],
-                "documents": [["unrelated"]],
-                "metadatas": [
-                    [
-                        {
-                            "response_text": "x",
-                            "agent_id": "gen",
-                            "confidence": "0.7",
-                            "hit_count": "0",
-                            "entity_ids": "",
-                            "cached_action": "",
-                            "created_at": "",
-                            "last_accessed": "",
-                        }
-                    ]
-                ],
-            },
-            # Routing cache miss with similarity 0.80 (below threshold 0.92)
-            {
-                "ids": [["r-1"]],
-                "distances": [[0.20]],
-                "documents": [["other"]],
-                "metadatas": [
-                    [
-                        {
-                            "agent_id": "general-agent",
-                            "confidence": "0.80",
-                            "hit_count": "0",
-                            "created_at": "",
-                            "last_accessed": "",
-                        }
-                    ]
-                ],
-            },
-        ]
+        store.query.return_value = {
+            "ids": [["r-1"]],
+            "distances": [[0.20]],
+            "documents": [["other"]],
+            "metadatas": [
+                [
+                    {
+                        "agent_id": "general-agent",
+                        "confidence": "0.80",
+                        "hit_count": "0",
+                        "created_at": "",
+                        "last_accessed": "",
+                    }
+                ]
+            ],
+        }
         result = manager._process_inner("some query")
         assert result.hit_type == "miss"
         assert result.similarity is None
@@ -1847,3 +2041,4 @@ class TestResponseCachePurgeReadonly:
             is False
         )
         assert ResponseCache._is_readonly_action("invalid json") is False
+'''

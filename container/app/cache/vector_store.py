@@ -16,11 +16,12 @@ logger = logging.getLogger(__name__)
 
 COLLECTION_ENTITY_INDEX = "entity_index"
 COLLECTION_ROUTING_CACHE = "routing_cache"
+COLLECTION_ACTION_CACHE = "action_cache"
 COLLECTION_RESPONSE_CACHE = "response_cache"
 
 
 class VectorStore:
-    """Manages ChromaDB PersistentClient and all three collections."""
+    """Manages ChromaDB PersistentClient and all cache/index collections."""
 
     def __init__(self) -> None:
         self._client: chromadb.ClientAPI | None = None
@@ -37,17 +38,31 @@ class VectorStore:
         engine = await get_embedding_engine()
         self._embedding_fn = ChromaEmbeddingFunction(engine)
         self._client = chromadb.PersistentClient(path=settings.chromadb_persist_dir)
-        for name in (COLLECTION_ENTITY_INDEX, COLLECTION_ROUTING_CACHE, COLLECTION_RESPONSE_CACHE):
+        for name in (COLLECTION_ENTITY_INDEX, COLLECTION_ROUTING_CACHE, COLLECTION_ACTION_CACHE):
             self._collections[name] = self._client.get_or_create_collection(
                 name=name,
                 embedding_function=self._embedding_fn,
                 metadata={"hnsw:space": "cosine"},
             )
+        self._delete_legacy_response_collection()
         logger.info(
             "VectorStore initialized with %d collections at %s",
             len(self._collections),
             settings.chromadb_persist_dir,
         )
+
+    def _delete_legacy_response_collection(self) -> None:
+        """Drop the obsolete v3 response cache collection after v4 init."""
+        if self._client is None:
+            return
+        try:
+            self._client.delete_collection(name=COLLECTION_RESPONSE_CACHE)
+        except Exception as exc:
+            if "not" in str(exc).lower() and "found" in str(exc).lower():
+                return
+            logger.debug("Ignoring legacy response_cache delete failure: %s", exc)
+        else:
+            logger.info("Dropped legacy Chroma collection %s", COLLECTION_RESPONSE_CACHE)
 
     def _is_alive(self) -> bool:
         """Check if the ChromaDB client is still responsive."""
@@ -70,12 +85,13 @@ class VectorStore:
                 return
             logger.warning("ChromaDB client dead, reinitializing VectorStore")
             self._client = chromadb.PersistentClient(path=settings.chromadb_persist_dir)
-            for name in (COLLECTION_ENTITY_INDEX, COLLECTION_ROUTING_CACHE, COLLECTION_RESPONSE_CACHE):
+            for name in (COLLECTION_ENTITY_INDEX, COLLECTION_ROUTING_CACHE, COLLECTION_ACTION_CACHE):
                 self._collections[name] = self._client.get_or_create_collection(
                     name=name,
                     embedding_function=self._embedding_fn,
                     metadata={"hnsw:space": "cosine"},
                 )
+            self._delete_legacy_response_collection()
             logger.info("VectorStore reinitialized successfully")
 
     def close(self) -> None:

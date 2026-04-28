@@ -627,7 +627,7 @@ class TestOverviewExtended:
         assert isinstance(data["agent_distribution"], list)
         assert isinstance(data["cache_tier"], dict)
         assert "routing_hits" in data["cache_tier"]
-        assert "response_hits" in data["cache_tier"]
+        assert "action_hits" in data["cache_tier"]
         assert "misses" in data["cache_tier"]
         assert isinstance(data["request_trend"], dict)
         assert "labels" in data["request_trend"]

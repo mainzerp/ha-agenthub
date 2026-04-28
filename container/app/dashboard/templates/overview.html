@@ -133,8 +133,8 @@
                     <div class="cache-breakdown-label">Routing Hits</div>
                 </div>
                 <div class="cache-breakdown-item">
-                    <div class="cache-breakdown-value text-teal" x-text="data ? data.cache_tier.response_hits : '-'"></div>
-                    <div class="cache-breakdown-label">Response Hits</div>
+                    <div class="cache-breakdown-value text-teal" x-text="data ? data.cache_tier.action_hits : '-'"></div>
+                    <div class="cache-breakdown-label">Action Hits</div>
                 </div>
                 <div class="cache-breakdown-item">
                     <div class="cache-breakdown-value text-coral" x-text="data ? data.cache_tier.misses : '-'"></div>
@@ -286,9 +286,9 @@ function overviewPage() {
                 this.cacheTierChart = new Chart(ctCtx, {
                     type: "doughnut",
                     data: {
-                        labels: ["Routing Hits", "Response Hits", "Misses"],
+                        labels: ["Routing Hits", "Action Hits", "Misses"],
                         datasets: [{
-                            data: [tier.routing_hits, tier.response_hits, tier.misses],
+                            data: [tier.routing_hits, tier.action_hits, tier.misses],
                             backgroundColor: [
                                 "rgba(134,239,172,0.8)",
                                 "rgba(94,234,212,0.8)",
@@ -321,7 +321,7 @@ function overviewPage() {
             }
             if (this.cacheTierChart) {
                 var tier = this.data.cache_tier;
-                this.cacheTierChart.data.datasets[0].data = [tier.routing_hits, tier.response_hits, tier.misses];
+                this.cacheTierChart.data.datasets[0].data = [tier.routing_hits, tier.action_hits, tier.misses];
                 this.cacheTierChart.update();
             }
         },

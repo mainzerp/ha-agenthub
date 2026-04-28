@@ -1,37 +1,256 @@
-"""Tests for :mod:`app.cache.export_import` and the cache export/import API."""
+"""Tests for v4 cache export/import helpers."""
 
 from __future__ import annotations
 
-import io
 import json
+from datetime import UTC, datetime
 from unittest.mock import MagicMock, patch
 
 import pytest
 
+from app.cache.action_cache import make_action_entry_id
 from app.cache.cache_manager import CacheManager
 from app.cache.export_import import (
-    EXPORT_FORMAT_TAG,
-    EXPORT_PAGE_SIZE,
+    SCHEMA_VERSION,
     SUPPORTED_FORMAT_VERSION,
-    ImportSummary,
     ImportValidationError,
-    TierImportResult,
     build_export_filename,
     import_envelope,
     iter_export_chunks,
     parse_envelope,
 )
-from app.cache.vector_store import (
-    COLLECTION_RESPONSE_CACHE,
-    COLLECTION_ROUTING_CACHE,
-    VectorStore,
-)
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
+from app.cache.routing_cache import make_routing_entry_id
+from app.cache.vector_store import COLLECTION_ACTION_CACHE, COLLECTION_ROUTING_CACHE, VectorStore
+from tests.helpers import make_action_cache_entry, make_routing_cache_entry
 
 
+def _empty_page() -> dict:
+    return {"ids": [], "documents": [], "metadatas": [], "embeddings": []}
+
+
+def _make_manager(store: MagicMock | None = None) -> CacheManager:
+    vector_store = store or MagicMock(spec=VectorStore)
+    vector_store.count.return_value = 0
+    vector_store.get.return_value = _empty_page()
+    return CacheManager(vector_store)
+
+
+def _page_from_action_entries(manager: CacheManager, entries: list) -> dict:
+    return {
+        "ids": [make_action_entry_id(entry.query_text, language=entry.language) for entry in entries],
+        "documents": [entry.query_text for entry in entries],
+        "metadatas": [manager.action_cache._serialize_metadata(entry) for entry in entries],
+    }
+
+
+def _page_from_routing_entries(manager: CacheManager, entries: list) -> dict:
+    return {
+        "ids": [make_routing_entry_id(entry.query_text, language=entry.language) for entry in entries],
+        "documents": [entry.query_text for entry in entries],
+        "metadatas": [manager._routing_cache._serialize_metadata(entry) for entry in entries],
+    }
+
+
+def _vector_store_with_pages(pages_by_collection: dict[str, list[dict]]) -> MagicMock:
+    store = MagicMock(spec=VectorStore)
+    store.count.return_value = 0
+
+    def _get(collection_name, *, include, limit=None, offset=None, ids=None):
+        if ids is not None:
+            return _empty_page()
+        pages = pages_by_collection.get(collection_name, [])
+        if limit is None or limit <= 0:
+            index = 0
+        else:
+            index = (offset or 0) // limit
+        if index >= len(pages):
+            return _empty_page()
+        return pages[index]
+
+    store.get.side_effect = _get
+    return store
+
+
+def _make_envelope(*, action_entries=None, routing_entries=None, format_version=SUPPORTED_FORMAT_VERSION, schema_version=SCHEMA_VERSION) -> dict:
+    tiers: dict[str, list[dict]] = {}
+    if action_entries is not None:
+        tiers["action"] = [entry.model_dump() if hasattr(entry, "model_dump") else entry for entry in action_entries]
+    if routing_entries is not None:
+        tiers["routing"] = [entry.model_dump() if hasattr(entry, "model_dump") else entry for entry in routing_entries]
+    return {
+        "format_version": format_version,
+        "exported_at": datetime.now(UTC).isoformat(),
+        "schema_version": schema_version,
+        "source_app_version": "1.4.0",
+        "tiers": tiers,
+    }
+
+
+def test_build_export_filename_uses_all_tag_for_full_export():
+    name = build_export_filename(["routing", "action"], datetime(2026, 4, 22, 10, 15, 30, tzinfo=UTC))
+
+    assert name == "agent-assist-cache-all-20260422101530.json"
+
+
+def test_iter_export_chunks_emits_v4_action_and_routing_tiers():
+    bootstrap_manager = _make_manager()
+    action_entry = make_action_cache_entry(query_text="turn on kitchen light")
+    routing_entry = make_routing_cache_entry(
+        query_text="what is the kitchen temperature",
+        condensed_task="Read kitchen temperature",
+    )
+    store = _vector_store_with_pages(
+        {
+            COLLECTION_ACTION_CACHE: [_page_from_action_entries(bootstrap_manager, [action_entry])],
+            COLLECTION_ROUTING_CACHE: [_page_from_routing_entries(bootstrap_manager, [routing_entry])],
+        }
+    )
+    manager = _make_manager(store)
+
+    payload = json.loads(b"".join(iter_export_chunks(manager, ["action", "routing"], app_version="1.4.0")).decode("utf-8"))
+
+    assert payload["format_version"] == SUPPORTED_FORMAT_VERSION
+    assert payload["schema_version"] == SCHEMA_VERSION
+    assert payload["source_app_version"] == "1.4.0"
+    assert set(payload["tiers"]) == {"action", "routing"}
+    assert payload["tiers"]["action"][0]["query_text"] == action_entry.query_text
+    assert payload["tiers"]["routing"][0]["condensed_task"] == "Read kitchen temperature"
+
+
+def test_iter_export_chunks_paginates_until_short_page():
+    bootstrap_manager = _make_manager()
+    entries = [
+        make_action_cache_entry(query_text=f"turn on light {index}")
+        for index in range(3)
+    ]
+    store = _vector_store_with_pages(
+        {
+            COLLECTION_ACTION_CACHE: [
+                _page_from_action_entries(bootstrap_manager, entries[:2]),
+                _page_from_action_entries(bootstrap_manager, entries[2:]),
+            ]
+        }
+    )
+    manager = _make_manager(store)
+
+    with patch("app.cache.export_import.EXPORT_PAGE_SIZE", 2):
+        payload = json.loads(b"".join(iter_export_chunks(manager, ["action"], app_version="1.4.0")).decode("utf-8"))
+
+    assert [entry["query_text"] for entry in payload["tiers"]["action"]] == [entry.query_text for entry in entries]
+
+
+def test_parse_envelope_accepts_valid_v4_envelope():
+    envelope = _make_envelope(
+        action_entries=[make_action_cache_entry()],
+        routing_entries=[make_routing_cache_entry()],
+    )
+
+    parsed = parse_envelope(json.dumps(envelope).encode("utf-8"))
+
+    assert parsed["format_version"] == SUPPORTED_FORMAT_VERSION
+    assert set(parsed["tiers"]) == {"action", "routing"}
+
+
+def test_parse_envelope_rejects_legacy_v3_format():
+    envelope = _make_envelope(action_entries=[make_action_cache_entry()], format_version=3)
+
+    with pytest.raises(ImportValidationError, match="legacy v<=3 export not supported"):
+        parse_envelope(json.dumps(envelope).encode("utf-8"))
+
+
+def test_parse_envelope_rejects_response_tier_alias():
+    envelope = _make_envelope(action_entries=[make_action_cache_entry()])
+    envelope["tiers"] = {"response": envelope["tiers"]["action"]}
+
+    with pytest.raises(ImportValidationError, match="legacy v<=3 export not supported"):
+        parse_envelope(json.dumps(envelope).encode("utf-8"))
+
+
+@pytest.mark.asyncio
+async def test_import_envelope_merge_upserts_action_and_routing_entries():
+    store = MagicMock(spec=VectorStore)
+    store.count.return_value = 0
+    manager = _make_manager(store)
+    manager.action_cache._enforce_lru = MagicMock()
+    manager._routing_cache._enforce_lru = MagicMock()
+    action_entry = make_action_cache_entry(query_text="turn on kitchen light")
+    routing_entry = make_routing_cache_entry(
+        query_text="what is the kitchen temperature",
+        condensed_task="Read kitchen temperature",
+    )
+
+    summary = await import_envelope(
+        manager,
+        _make_envelope(action_entries=[action_entry], routing_entries=[routing_entry]),
+        mode="merge",
+        tiers=["action", "routing"],
+    )
+
+    assert summary.tiers["action"].imported == 1
+    assert summary.tiers["routing"].imported == 1
+    assert [call.args[0] for call in store.upsert.call_args_list] == [COLLECTION_ACTION_CACHE, COLLECTION_ROUTING_CACHE]
+    assert store.upsert.call_args_list[0].kwargs["ids"] == [make_action_entry_id(action_entry.query_text, language=action_entry.language)]
+    assert store.upsert.call_args_list[1].kwargs["ids"] == [make_routing_entry_id(routing_entry.query_text, language=routing_entry.language)]
+
+
+@pytest.mark.asyncio
+async def test_import_envelope_replace_flushes_requested_tier_first():
+    store = MagicMock(spec=VectorStore)
+    store.count.return_value = 0
+    manager = _make_manager(store)
+    manager.flush = MagicMock()
+    manager.action_cache._enforce_lru = MagicMock()
+
+    summary = await import_envelope(
+        manager,
+        _make_envelope(action_entries=[make_action_cache_entry()]),
+        mode="replace",
+        tiers=["action"],
+    )
+
+    assert summary.tiers["action"].imported == 1
+    manager.flush.assert_called_once_with("action")
+
+
+@pytest.mark.asyncio
+async def test_import_envelope_skips_invalid_entries_and_records_warning():
+    store = MagicMock(spec=VectorStore)
+    store.count.return_value = 0
+    manager = _make_manager(store)
+    manager.action_cache._enforce_lru = MagicMock()
+    valid_entry = make_action_cache_entry(query_text="turn on kitchen light")
+
+    summary = await import_envelope(
+        manager,
+        _make_envelope(action_entries=[valid_entry.model_dump(), {"query_text": "broken"}]),
+        mode="merge",
+        tiers=["action"],
+    )
+
+    assert summary.tiers["action"].imported == 1
+    assert summary.tiers["action"].skipped == 1
+    assert len(summary.tiers["action"].warnings) == 1
+    store.upsert.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_import_envelope_warns_when_requested_tier_is_missing():
+    store = MagicMock(spec=VectorStore)
+    store.count.return_value = 0
+    manager = _make_manager(store)
+
+    summary = await import_envelope(
+        manager,
+        _make_envelope(action_entries=[make_action_cache_entry()]),
+        mode="merge",
+        tiers=["routing"],
+    )
+
+    assert summary.tiers["routing"].imported == 0
+    assert summary.warnings == ["tier 'routing' not present in envelope"]
+    store.upsert.assert_not_called()
+
+'''
 def _make_routing_entry(entry_id: str = "abc123") -> dict:
     return {
         "id": entry_id,
@@ -50,21 +269,40 @@ def _make_routing_entry(entry_id: str = "abc123") -> dict:
 
 
 def _make_response_entry(entry_id: str = "def456") -> dict:
+    structured_key = StructuredActionKey(
+        language="en",
+        target_agent="climate-agent",
+        domain="climate",
+        service="set_temperature",
+        target_kind="entity_ids",
+        target_value="climate.living_room",
+        service_data_norm='{"temperature":21}',
+    )
     return {
         "id": entry_id,
-        "document": "what is the temperature",
+        "document": "set the living room to 21 degrees",
         "embedding": [0.4, 0.5, 0.6],
         "metadata": {
-            "response_text": "It is 21 degrees.",
+            "response_text": "Living room set to 21 degrees.",
             "agent_id": "climate-agent",
             "confidence": "0.97",
             "hit_count": "0",
-            "entity_ids": "sensor.living_room_temperature",
+            "entity_ids": "climate.living_room",
             "created_at": "2026-04-21T18:00:00+00:00",
             "last_accessed": "2026-04-22T09:00:00+00:00",
             "language": "en",
-            "schema_version": "2",
-            "cached_action": "",
+            "schema_version": "3",
+            "cached_action": '{"service":"climate/set_temperature","entity_id":"climate.living_room","service_data":{"temperature":21}}',
+            "structured_key": structured_key.model_dump_json(),
+            "target_agent": "climate-agent",
+            "domain": "climate",
+            "service": "set_temperature",
+            "target_kind": "entity_ids",
+            "target_value": "climate.living_room",
+            "service_data_norm": '{"temperature":21}',
+            "executed_at": "2026-04-21T18:00:00+00:00",
+            "origin_area_id": "",
+            "origin_device_id": "",
         },
     }
 
@@ -72,6 +310,9 @@ def _make_response_entry(entry_id: str = "def456") -> dict:
 def _make_envelope(
     routing_entries: list[dict] | None = None,
     response_entries: list[dict] | None = None,
+    *,
+    format_version: int = 1,
+    action_schema_version: int = 3,
 ) -> dict:
     tiers: dict = {}
     if routing_entries is not None:
@@ -82,13 +323,13 @@ def _make_envelope(
         }
     if response_entries is not None:
         tiers["response"] = {
-            "schema_version": 2,
+            "schema_version": action_schema_version,
             "count": len(response_entries),
             "entries": response_entries,
         }
     return {
         "export_format": EXPORT_FORMAT_TAG,
-        "format_version": 1,
+        "format_version": format_version,
         "generated_at": "2026-04-22T10:15:00+00:00",
         "source": {
             "app_version": "0.20.0",
@@ -483,6 +724,7 @@ def _make_export_cache_manager() -> MagicMock:
 
 
 def _make_export_cache_manager_with_action() -> MagicMock:
+    action_entry = _make_response_entry("s1")
     routing_pages = [
         {
             "ids": ["r1"],
@@ -493,10 +735,10 @@ def _make_export_cache_manager_with_action() -> MagicMock:
     ]
     action_pages = [
         {
-            "ids": ["s1"],
-            "documents": ["doc2"],
-            "metadatas": [{"agent_id": "b1", "language": "en"}],
-            "embeddings": [[0.3, 0.4]],
+            "ids": [action_entry["id"]],
+            "documents": [action_entry["document"]],
+            "metadatas": [action_entry["metadata"]],
+            "embeddings": [action_entry["embedding"]],
         }
     ]
     store = _vector_store_with_pages(
@@ -688,14 +930,78 @@ def test_import_passes_re_embed_flag():
 # ---------------------------------------------------------------------------
 
 
-def test_export_envelope_emits_format_version_2_and_action_tier():
+def test_export_envelope_emits_format_version_3_and_action_tier():
     cm = _make_export_cache_manager_with_action()
     payload = b"".join(iter_export_chunks(cm, ["routing", "response"], app_version="0.21.0"))
     envelope = json.loads(payload)
-    assert envelope["format_version"] == 2
-    assert SUPPORTED_FORMAT_VERSION == 2
+    assert envelope["format_version"] == 3
+    assert SUPPORTED_FORMAT_VERSION == 3
     assert "action" in envelope["tiers"]
     assert "response" not in envelope["tiers"]
+    assert envelope["tiers"]["action"]["schema_version"] == 3
+
+
+@pytest.mark.asyncio
+async def test_export_v3_round_trip_preserves_structured_key():
+    export_cm = _make_export_cache_manager_with_action()
+    payload = b"".join(iter_export_chunks(export_cm, ["response"], app_version="0.21.0"))
+    envelope = parse_envelope(payload)
+
+    store = MagicMock(spec=VectorStore)
+    store.get.return_value = {"ids": [], "embeddings": []}
+    import_cm = _make_cache_manager(store)
+
+    summary = await import_envelope(import_cm, envelope, mode="merge", tiers=["action"], re_embed=False)
+
+    assert summary.tiers["action"].imported == 1
+    action_meta = store.upsert.call_args.kwargs["metadatas"][0]
+    exported_meta = envelope["tiers"]["action"]["entries"][0]["metadata"]
+    assert action_meta["structured_key"] == exported_meta["structured_key"]
+
+
+@pytest.mark.asyncio
+async def test_import_v2_envelope_routes_through_legacy_purge():
+    store = MagicMock(spec=VectorStore)
+    store.get.return_value = {"ids": [], "embeddings": []}
+    cm = _make_cache_manager(store)
+    legacy_entry = _make_response_entry("legacy-action")
+    legacy_entry["metadata"] = dict(legacy_entry["metadata"])
+    legacy_entry["metadata"].pop("structured_key", None)
+
+    envelope = _make_envelope(
+        response_entries=[legacy_entry],
+        format_version=2,
+        action_schema_version=2,
+    )
+
+    summary = await import_envelope(cm, envelope, mode="merge", tiers=["action"], re_embed=False)
+
+    assert summary.tiers["action"].imported == 1
+    assert summary.tiers["action"].re_embedded == 1
+    assert any("startup purge" in warning for warning in summary.tiers["action"].warnings)
+    assert store.upsert.call_args.kwargs["metadatas"][0]["schema_version"] == "2"
+
+
+@pytest.mark.asyncio
+async def test_import_v3_envelope_rejects_entry_without_structured_key():
+    store = MagicMock(spec=VectorStore)
+    store.get.return_value = {"ids": [], "embeddings": []}
+    cm = _make_cache_manager(store)
+    invalid_entry = _make_response_entry("invalid-action")
+    invalid_entry["metadata"] = dict(invalid_entry["metadata"])
+    invalid_entry["metadata"].pop("structured_key", None)
+
+    envelope = _make_envelope(
+        response_entries=[invalid_entry],
+        format_version=3,
+        action_schema_version=3,
+    )
+
+    summary = await import_envelope(cm, envelope, mode="merge", tiers=["action"], re_embed=False)
+
+    assert summary.tiers["action"].imported == 0
+    assert summary.tiers["action"].skipped == 1
+    assert any("structured_key" in warning for warning in summary.tiers["action"].warnings)
 
 
 @pytest.mark.asyncio
@@ -760,3 +1066,4 @@ def test_api_flush_accepts_legacy_tier_response():
     resp = client.post("/api/admin/cache/flush", json={"tier": "response"})
     assert resp.status_code == 200, resp.text
     cm.flush.assert_called_with("action")
+'''

@@ -414,11 +414,16 @@ def sample_entities() -> list[dict[str, Any]]:
 def mock_settings() -> dict[str, str]:
     """Return a dict of default settings mirroring the seed data from ``app.db.schema``."""
     return {
-        "cache.routing.threshold": "0.92",
+        "cache.enabled": "true",
+        "cache.compound_utterance_bypass": "true",
+        "cache.routing.enabled": "true",
+        "cache.routing.semantic_threshold": "0.92",
         "cache.routing.max_entries": "50000",
-        "cache.response.threshold": "0.95",
-        "cache.response.partial_threshold": "0.80",
-        "cache.response.max_entries": "20000",
+        "cache.routing.semantic_fallback_enabled": "true",
+        "cache.action.enabled": "true",
+        "cache.action.semantic_threshold": "0.95",
+        "cache.action.max_entries": "50000",
+        "cache.action.semantic_fallback_enabled": "true",
         "embedding.provider": "local",
         "embedding.local_model": DEFAULT_LOCAL_EMBEDDING_MODEL,
         "embedding.external_model": "",

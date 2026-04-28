@@ -47,17 +47,15 @@ def _make_orchestrator() -> tuple[OrchestratorAgent, AsyncMock]:
     dispatcher = AsyncMock()
     registry = AsyncMock()
     cache_manager = MagicMock()
-    cache_manager.process = AsyncMock(return_value=MagicMock(hit_type="miss", agent_id=None, similarity=0.5))
     cache_manager.apply_rewrite = AsyncMock()
+    cache_manager.try_replay_action = AsyncMock(return_value=None)
+    cache_manager.try_routing_skip = AsyncMock(return_value=None)
+    cache_manager.store_action_async = AsyncMock()
 
     async def _store_routing_async(*args, **kwargs):
         return cache_manager.store_routing(*args, **kwargs)
 
-    async def _store_response_async(entry):
-        return cache_manager.store_response(entry)
-
     cache_manager.store_routing_async = _store_routing_async
-    cache_manager.store_response_async = _store_response_async
 
     registry.list_agents = AsyncMock(
         return_value=[

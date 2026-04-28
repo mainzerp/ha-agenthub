@@ -55,15 +55,18 @@ def _make_orch():
     cache_manager = MagicMock()
     cache_manager.process = AsyncMock(return_value=MagicMock(hit_type="miss", agent_id=None, similarity=0.5))
     cache_manager.apply_rewrite = AsyncMock()
+    cache_manager.try_replay_action = AsyncMock(return_value=None)
+    cache_manager.try_routing_skip = AsyncMock(return_value=None)
+    cache_manager.store_response = MagicMock()
 
     async def _store_routing_async(*args, **kwargs):
         return cache_manager.store_routing(*args, **kwargs)
 
-    async def _store_response_async(entry):
+    async def _store_action_async(entry):
         return cache_manager.store_response(entry)
 
     cache_manager.store_routing_async = _store_routing_async
-    cache_manager.store_response_async = _store_response_async
+    cache_manager.store_action_async = _store_action_async
 
     return OrchestratorAgent(dispatcher=dispatcher, registry=registry, cache_manager=cache_manager), dispatcher
 

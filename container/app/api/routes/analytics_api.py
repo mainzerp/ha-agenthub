@@ -64,7 +64,7 @@ async def analytics_overview(
     avg_latency = round(sum(latencies) / len(latencies), 1) if latencies else 0
 
     # Cache hit rate
-    hits = sum(1 for e in cache_events if e.get("event_type") in ("routing_hit", "response_hit"))
+    hits = sum(1 for e in cache_events if e.get("event_type") in ("routing_hit", "action_hit"))
     misses = sum(1 for e in cache_events if e.get("event_type") == "miss")
     total_cache = hits + misses
     hit_rate = round(hits / total_cache * 100, 1) if total_cache > 0 else 0
@@ -165,7 +165,7 @@ async def analytics_cache(
     start = (datetime.now(UTC) - timedelta(hours=hours)).strftime("%Y-%m-%d %H:%M:%S")
     events = await AnalyticsRepository.query_by_range(start=start, limit=100000)
 
-    hit_types = {"routing_hit", "action_hit", "action_partial", "response_hit", "response_partial"}
+    hit_types = {"routing_hit", "action_hit"}
     miss_types = {"miss"}
 
     hits_per_bucket: dict[str, int] = defaultdict(int)

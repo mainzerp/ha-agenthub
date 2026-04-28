@@ -6,11 +6,12 @@ import pytest
 from pydantic import ValidationError
 
 from app.models.agent import AgentCard, AgentConfig, AgentTask, BackgroundEvent, TaskContext, TaskResult
-from app.models.cache import CachedAction, RoutingCacheEntry
+from app.models.cache import ActionCacheEntry, CachedAction, RoutingCacheEntry
 from app.models.conversation import ActionResult, ConversationRequest, ConversationResponse, StreamToken
 from app.models.entity_index import EntityIndexEntry
 from tests.helpers import (
     make_action_result,
+    make_action_cache_entry,
     make_agent_card,
     make_agent_config,
     make_agent_task,
@@ -18,7 +19,6 @@ from tests.helpers import (
     make_conversation_request,
     make_conversation_response,
     make_entity_index_entry,
-    make_response_cache_entry,
     make_routing_cache_entry,
     make_stream_token,
 )
@@ -218,24 +218,36 @@ class TestRoutingCacheEntry:
         entry = make_routing_cache_entry()
         assert entry.agent_id == "light-agent"
         assert entry.hit_count == 1
+        assert entry.language == "en"
+        assert entry.schema_version == 4
 
     def test_json_round_trip(self):
         entry = make_routing_cache_entry()
         data = entry.model_dump_json()
         restored = RoutingCacheEntry.model_validate_json(data)
         assert restored.query_text == entry.query_text
+        assert restored.schema_version == 4
 
 
-class TestResponseCacheEntry:
+class TestActionCacheEntry:
     def test_valid_entry(self):
-        entry = make_response_cache_entry()
+        entry = make_action_cache_entry()
         assert entry.agent_id == "light-agent"
         assert "light.kitchen_ceiling" in entry.entity_ids
+        assert entry.language == "en"
+        assert entry.schema_version == 4
 
     def test_with_cached_action(self):
         action = make_cached_action()
-        entry = make_response_cache_entry(cached_action=action)
+        entry = make_action_cache_entry(cached_action=action)
         assert entry.cached_action.service == "light/turn_on"
+
+    def test_json_round_trip(self):
+        entry = make_action_cache_entry()
+        data = entry.model_dump_json()
+        restored = ActionCacheEntry.model_validate_json(data)
+        assert restored.response_text == entry.response_text
+        assert restored.cached_action.entity_id == entry.cached_action.entity_id
 
 
 class TestCachedAction:

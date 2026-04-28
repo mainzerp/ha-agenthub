@@ -577,7 +577,7 @@ class TestAdminSettingsEndpoints:
     async def test_put_settings_updates_value(self, authed_client: httpx.AsyncClient):
         resp = await authed_client.put(
             "/api/admin/settings",
-            json={"items": {"cache.routing.threshold": "0.90"}},
+            json={"items": {"cache.routing.semantic_threshold": "0.90"}},
         )
         assert resp.status_code == 200
         data = resp.json()
@@ -585,25 +585,25 @@ class TestAdminSettingsEndpoints:
 
     async def test_put_single_setting(self, authed_client: httpx.AsyncClient):
         resp = await authed_client.put(
-            "/api/admin/settings/cache.routing.threshold",
+            "/api/admin/settings/cache.routing.semantic_threshold",
             json={"value": "0.88"},
         )
         assert resp.status_code == 200
         data = resp.json()
         assert data["status"] == "ok"
-        assert data["key"] == "cache.routing.threshold"
+        assert data["key"] == "cache.routing.semantic_threshold"
 
     async def test_bulk_update_preserves_value_type(self, authed_client: httpx.AsyncClient):
         resp = await authed_client.put(
             "/api/admin/settings",
-            json={"items": {"cache.routing.threshold": "0.80"}},
+            json={"items": {"cache.routing.semantic_threshold": "0.80"}},
         )
         assert resp.status_code == 200
         # Verify type preserved
         resp2 = await authed_client.get("/api/admin/settings")
         all_settings = resp2.json()["settings"]
         cache_settings = all_settings.get("cache", [])
-        threshold = next((s for s in cache_settings if s["key"] == "cache.routing.threshold"), None)
+        threshold = next((s for s in cache_settings if s["key"] == "cache.routing.semantic_threshold"), None)
         assert threshold is not None
         assert threshold["value_type"] == "float"
 
@@ -617,7 +617,7 @@ class TestAdminSettingsEndpoints:
 
     async def test_single_setting_validates_type(self, authed_client: httpx.AsyncClient):
         resp = await authed_client.put(
-            "/api/admin/settings/cache.response.enabled",
+            "/api/admin/settings/cache.action.enabled",
             json={"value": "notabool"},
         )
         assert resp.status_code == 400
@@ -626,7 +626,7 @@ class TestAdminSettingsEndpoints:
     async def test_single_setting_rejects_empty_string_for_bool(self, authed_client: httpx.AsyncClient):
         """COR-6: an empty-string value for a bool setting must be rejected."""
         resp = await authed_client.put(
-            "/api/admin/settings/cache.response.enabled",
+            "/api/admin/settings/cache.action.enabled",
             json={"value": ""},
         )
         assert resp.status_code == 400
@@ -636,20 +636,20 @@ class TestAdminSettingsEndpoints:
         """COR-6: bulk update must reject empty-string for typed numeric settings."""
         resp = await authed_client.put(
             "/api/admin/settings",
-            json={"items": {"cache.routing.threshold": ""}},
+            json={"items": {"cache.routing.semantic_threshold": ""}},
         )
         assert resp.status_code == 400
 
     async def test_single_setting_preserves_metadata(self, authed_client: httpx.AsyncClient):
         resp = await authed_client.put(
-            "/api/admin/settings/cache.routing.threshold",
+            "/api/admin/settings/cache.routing.semantic_threshold",
             json={"value": "0.80"},
         )
         assert resp.status_code == 200
         resp2 = await authed_client.get("/api/admin/settings")
         all_settings = resp2.json()["settings"]
         cache_settings = all_settings.get("cache", [])
-        threshold = next((s for s in cache_settings if s["key"] == "cache.routing.threshold"), None)
+        threshold = next((s for s in cache_settings if s["key"] == "cache.routing.semantic_threshold"), None)
         assert threshold is not None
         assert threshold["value_type"] == "float"
         assert threshold["category"] == "cache"

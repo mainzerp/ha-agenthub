@@ -114,27 +114,38 @@
     <details class="card mb-md">
         <summary>Cache Thresholds</summary>
         <div class="details-content">
-            <small class="text-muted" style="display:block; margin-bottom: 0.5rem;">Settings keys remain cache.response.* for backward compatibility; this is intentional.</small>
             <div class="form-grid-2">
                 <div class="form-group">
-                    <label class="form-label">Routing Threshold: <span class="text-mono" x-text="s['cache.routing.threshold']"></span></label>
-                    <input type="range" min="0" max="1" step="0.01" x-model.number="s['cache.routing.threshold']">
+                    <label class="form-label">Cache Enabled</label>
+                    <input type="checkbox" x-model="s['cache.enabled']">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Compound Utterance Bypass</label>
+                    <input type="checkbox" x-model="s['cache.compound_utterance_bypass']">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Routing Enabled</label>
+                    <input type="checkbox" x-model="s['cache.routing.enabled']">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Routing Semantic Threshold: <span class="text-mono" x-text="s['cache.routing.semantic_threshold']"></span></label>
+                    <input type="range" min="0" max="1" step="0.01" x-model.number="s['cache.routing.semantic_threshold']">
                 </div>
                 <div class="form-group">
                     <label class="form-label">Routing Max Entries</label>
                     <input type="number" class="form-input" x-model.number="s['cache.routing.max_entries']" min="1">
                 </div>
                 <div class="form-group">
-                    <label class="form-label">Action Threshold: <span class="text-mono" x-text="s['cache.response.threshold']"></span></label>
-                    <input type="range" min="0" max="1" step="0.01" x-model.number="s['cache.response.threshold']">
+                    <label class="form-label">Action Enabled</label>
+                    <input type="checkbox" x-model="s['cache.action.enabled']">
                 </div>
                 <div class="form-group">
-                    <label class="form-label">Action Partial Threshold: <span class="text-mono" x-text="s['cache.response.partial_threshold']"></span></label>
-                    <input type="range" min="0" max="1" step="0.01" x-model.number="s['cache.response.partial_threshold']">
+                    <label class="form-label">Action Semantic Threshold: <span class="text-mono" x-text="s['cache.action.semantic_threshold']"></span></label>
+                    <input type="range" min="0" max="1" step="0.01" x-model.number="s['cache.action.semantic_threshold']">
                 </div>
                 <div class="form-group">
                     <label class="form-label">Action Max Entries</label>
-                    <input type="number" class="form-input" x-model.number="s['cache.response.max_entries']" min="1">
+                    <input type="number" class="form-input" x-model.number="s['cache.action.max_entries']" min="1">
                 </div>
             </div>
             <div class="form-actions">

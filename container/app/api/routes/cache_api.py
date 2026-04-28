@@ -19,7 +19,7 @@ from app.cache.export_import import (
     parse_envelope,
 )
 from app.cache.vector_store import (
-    COLLECTION_RESPONSE_CACHE,
+    COLLECTION_ACTION_CACHE,
     COLLECTION_ROUTING_CACHE,
 )
 from app.config import settings
@@ -35,21 +35,8 @@ router = APIRouter(
 )
 
 
-# Tier param accepts both the canonical 0.21.0+ value ``action`` and the
-# legacy ``response`` alias. ``_normalize_tier`` collapses the alias once
-# at the route entry so downstream code only sees ``action`` (or
-# ``routing``, or ``None``).
-_TIER_ALIASES = {"response": "action"}
-
-
-def _normalize_tier(tier: str | None) -> str | None:
-    if tier is None:
-        return None
-    return _TIER_ALIASES.get(tier, tier)
-
-
 class FlushRequest(BaseModel):
-    tier: str | None = None  # "routing", "action", "response" (legacy), or None for all
+    tier: str | None = None  # "routing", "action", or None for all
 
 
 @router.get("/stats")
@@ -76,13 +63,13 @@ async def browse_cache_entries(
     per_page: int = Query(50, ge=1, le=200),
 ):
     """Browse/search cache entries by tier."""
-    tier = _normalize_tier(tier) or "routing"
+    tier = tier or "routing"
     cache_manager = request.app.state.cache_manager
     if not cache_manager:
         return {"entries": [], "total": 0}
 
     vector_store = cache_manager._vector_store
-    collection_name = COLLECTION_ROUTING_CACHE if tier == "routing" else COLLECTION_RESPONSE_CACHE
+    collection_name = COLLECTION_ROUTING_CACHE if tier == "routing" else COLLECTION_ACTION_CACHE
 
     try:
         total = vector_store.count(collection_name)
@@ -162,11 +149,11 @@ async def flush_cache(request: Request, payload: FlushRequest):
     if not cache_manager:
         return {"status": "error", "detail": "Cache not initialized"}
 
-    tier = _normalize_tier(payload.tier)
+    tier = payload.tier
     if tier and tier not in ("routing", "action"):
         return {
             "status": "error",
-            "detail": "Invalid tier. Use 'routing', 'action' (or legacy 'response'), or omit for all.",
+            "detail": "Invalid tier. Use 'routing', 'action', or omit for all.",
         }
 
     try:
@@ -180,7 +167,7 @@ async def flush_cache(request: Request, payload: FlushRequest):
 @router.get("/export")
 async def export_cache(
     request: Request,
-    tier: str = Query("all", pattern="^(routing|action|response|all)$"),
+    tier: str = Query("all", pattern="^(routing|action|all)$"),
 ):
     """Stream a JSON envelope containing the requested cache tier(s)."""
     await ensure_setup_runtime_initialized(request.app)
@@ -191,8 +178,7 @@ async def export_cache(
             content={"status": "error", "detail": "cache not initialized"},
         )
 
-    canonical_tier = _normalize_tier(tier)
-    tiers = [t for t in ALLOWED_TIERS if t != "response"] if canonical_tier == "all" else [canonical_tier]
+    tiers = list(ALLOWED_TIERS) if tier == "all" else [tier]
     raw_version = getattr(settings, "app_version", None)
     app_version = raw_version if isinstance(raw_version, str) else "unknown"
     filename = build_export_filename(tiers, datetime.now(UTC))
@@ -236,7 +222,6 @@ async def import_cache(
         )
 
     requested_tiers = [t.strip() for t in (tiers or "").split(",") if t.strip()]
-    requested_tiers = [_normalize_tier(t) for t in requested_tiers]
     requested_tiers = [t for t in requested_tiers if t in ("routing", "action")]
     if not requested_tiers:
         return JSONResponse(
@@ -273,7 +258,6 @@ async def import_cache(
             envelope,
             mode=mode,
             tiers=requested_tiers,
-            re_embed=re_embed,
         )
     except ImportValidationError as exc:
         return JSONResponse(

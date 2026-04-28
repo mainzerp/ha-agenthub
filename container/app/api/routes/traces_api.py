@@ -259,6 +259,7 @@ async def get_trace_detail(trace_id: str):
 
     # Detect action_cache_hit (no classify span, return span has action_cache_hit
     # or the legacy response_cache_hit key)
+    # v3+: structured-key hits also surface as hit_type="action_hit".
     action_cache_hit = False
     if return_span and not classify_span:
         ret_meta = return_span.get("metadata") or {}

@@ -194,9 +194,7 @@ async def get_overview(request: Request):
         )
         if cache_events:
             total_lookups = len(cache_events)
-            hits = sum(
-                1 for e in cache_events if e.get("hit_type", "") in ("routing_hit", "response_hit", "response_partial")
-            )
+            hits = sum(1 for e in cache_events if e.get("hit_type", "") in ("routing_hit", "action_hit"))
             cache_hit_rate = round(hits / total_lookups * 100, 1)
     except Exception:
         pass
@@ -272,7 +270,7 @@ async def get_overview_extended(request: Request):
             limit=100000,
         )
 
-    hit_types = {"routing_hit", "response_hit", "response_partial"}
+    hit_types = {"routing_hit", "action_hit"}
     miss_types = {"miss"}
     hits = sum(1 for e in all_events if e.get("event_type") in hit_types)
     misses = sum(1 for e in all_events if e.get("event_type") in miss_types)
@@ -281,7 +279,7 @@ async def get_overview_extended(request: Request):
 
     # Cache tier breakdown counts
     routing_hits = sum(1 for e in all_events if e.get("event_type") == "routing_hit")
-    response_hits = sum(1 for e in all_events if e.get("event_type") in ("response_hit", "response_partial"))
+    action_hits = sum(1 for e in all_events if e.get("event_type") == "action_hit")
     cache_misses = misses
 
     # Conversations count
@@ -370,7 +368,7 @@ async def get_overview_extended(request: Request):
         "agent_distribution": agent_distribution,
         "cache_tier": {
             "routing_hits": routing_hits,
-            "response_hits": response_hits,
+            "action_hits": action_hits,
             "misses": cache_misses,
         },
         "request_trend": request_trend,

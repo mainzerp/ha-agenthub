@@ -118,6 +118,7 @@ async def conversation_rest(
         speech=result.get("speech", ""),
         conversation_id=result.get("conversation_id") or conv_request.conversation_id,
         voice_followup=bool(result.get("voice_followup")),
+        sanitized=bool(result.get("sanitized", True)),
         directive=result.get("directive"),
         reason=result.get("reason"),
     )
@@ -150,6 +151,7 @@ async def conversation_sse(
                     is_filler=chunk.result.get("is_filler", False),
                     error=chunk.result.get("error") if chunk.done else None,
                     voice_followup=bool(chunk.result.get("voice_followup")) if chunk.done else False,
+                    sanitized=bool(chunk.result.get("sanitized", True)) if chunk.done else not chunk.result.get("is_filler", False),
                     directive=chunk.result.get("directive") if chunk.done else None,
                     reason=chunk.result.get("reason") if chunk.done else None,
                 )
@@ -221,6 +223,7 @@ async def ws_conversation(
                         is_filler=chunk.result.get("is_filler", False),
                         error=chunk.result.get("error") if chunk.done else None,
                         voice_followup=bool(chunk.result.get("voice_followup")) if chunk.done else False,
+                        sanitized=bool(chunk.result.get("sanitized", True)) if chunk.done else not chunk.result.get("is_filler", False),
                         directive=chunk.result.get("directive") if chunk.done else None,
                         reason=chunk.result.get("reason") if chunk.done else None,
                     )

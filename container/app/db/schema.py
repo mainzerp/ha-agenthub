@@ -12,7 +12,7 @@ from pathlib import Path
 import aiosqlite
 
 from app.config import settings
-from app.defaults import DEFAULT_LOCAL_EMBEDDING_MODEL
+from app.defaults import CACHE_DEFAULTS, DEFAULT_LOCAL_EMBEDDING_MODEL
 
 _write_conn: aiosqlite.Connection | None = None
 _write_lock = asyncio.Lock()
@@ -369,35 +369,75 @@ async def _seed_defaults(db: aiosqlite.Connection) -> None:
     # Default settings
     default_settings = [
         # Cache settings
-        ("cache.routing.threshold", "0.92", "float", "cache", "Routing cache hit threshold"),
-        ("cache.routing.max_entries", "50000", "int", "cache", "Routing cache max entries (LRU eviction)"),
         (
-            "cache.response.threshold",
-            "0.95",
-            "float",
-            "cache",
-            "Action cache hit threshold (legacy key name: cache.response.threshold)",
-        ),
-        (
-            "cache.response.partial_threshold",
-            "0.80",
-            "float",
-            "cache",
-            "Action cache partial match threshold (legacy key name: cache.response.partial_threshold)",
-        ),
-        (
-            "cache.response.max_entries",
-            "20000",
-            "int",
-            "cache",
-            "Action cache max entries (LRU eviction; legacy key name: cache.response.max_entries)",
-        ),
-        (
-            "cache.response.enabled",
-            "true",
+            "cache.enabled",
+            "true" if CACHE_DEFAULTS["cache.enabled"] else "false",
             "bool",
             "cache",
-            "Enable action cache storage (legacy key name: cache.response.enabled)",
+            "Enable cache lookups and writes globally",
+        ),
+        (
+            "cache.compound_utterance_bypass",
+            "true" if CACHE_DEFAULTS["cache.compound_utterance_bypass"] else "false",
+            "bool",
+            "cache",
+            "Bypass cache lookup for structurally compound utterances",
+        ),
+        (
+            "cache.routing.enabled",
+            "true" if CACHE_DEFAULTS["cache.routing.enabled"] else "false",
+            "bool",
+            "cache",
+            "Enable routing cache lookup and storage",
+        ),
+        (
+            "cache.routing.semantic_threshold",
+            str(CACHE_DEFAULTS["cache.routing.semantic_threshold"]),
+            "float",
+            "cache",
+            "Routing cache semantic hit threshold",
+        ),
+        (
+            "cache.routing.max_entries",
+            str(CACHE_DEFAULTS["cache.routing.max_entries"]),
+            "int",
+            "cache",
+            "Routing cache max entries (LRU eviction)",
+        ),
+        (
+            "cache.routing.semantic_fallback_enabled",
+            "true" if CACHE_DEFAULTS["cache.routing.semantic_fallback_enabled"] else "false",
+            "bool",
+            "cache",
+            "Enable routing cache semantic fallback after an exact-id miss",
+        ),
+        (
+            "cache.action.enabled",
+            "true" if CACHE_DEFAULTS["cache.action.enabled"] else "false",
+            "bool",
+            "cache",
+            "Enable action cache lookup and storage",
+        ),
+        (
+            "cache.action.semantic_threshold",
+            str(CACHE_DEFAULTS["cache.action.semantic_threshold"]),
+            "float",
+            "cache",
+            "Action cache semantic hit threshold",
+        ),
+        (
+            "cache.action.max_entries",
+            str(CACHE_DEFAULTS["cache.action.max_entries"]),
+            "int",
+            "cache",
+            "Action cache max entries (LRU eviction)",
+        ),
+        (
+            "cache.action.semantic_fallback_enabled",
+            "true" if CACHE_DEFAULTS["cache.action.semantic_fallback_enabled"] else "false",
+            "bool",
+            "cache",
+            "Enable action cache semantic fallback after an exact-id miss",
         ),
         # Embedding settings
         (
@@ -1099,3 +1139,123 @@ async def _run_migrations(db: aiosqlite.Connection) -> None:
         # Rewrite any legacy rows so the registry only sees stdio/sse.
         await db.execute("UPDATE mcp_servers SET transport = 'sse' WHERE transport = 'http'")
         await db.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (22)")
+
+    if current_version < 23:
+        # Migration 23 (1.3.0): canonicalize cache settings to cache.action.*
+        # and cache.routing.semantic_threshold.
+        await db.executemany(
+            """
+            INSERT OR IGNORE INTO settings (key, value, value_type, category, description, updated_at)
+            SELECT ?, value, value_type, category, ?, updated_at
+            FROM settings
+            WHERE key = ?
+            """,
+            [
+                (
+                    "cache.routing.semantic_threshold",
+                    "Routing cache semantic hit threshold",
+                    "cache.routing.threshold",
+                ),
+                (
+                    "cache.action.enabled",
+                    "Enable action cache lookup and storage",
+                    "cache.response.enabled",
+                ),
+                (
+                    "cache.action.semantic_threshold",
+                    "Action cache semantic hit threshold",
+                    "cache.response.threshold",
+                ),
+                (
+                    "cache.action.max_entries",
+                    "Action cache max entries (LRU eviction)",
+                    "cache.response.max_entries",
+                ),
+            ],
+        )
+        await db.executemany(
+            "DELETE FROM settings WHERE key = ?",
+            [
+                ("cache.routing.threshold",),
+                ("cache.response.enabled",),
+                ("cache.response.threshold",),
+                ("cache.response.partial_threshold",),
+                ("cache.response.max_entries",),
+            ],
+        )
+        await db.executemany(
+            "INSERT OR IGNORE INTO settings (key, value, value_type, category, description, updated_at) VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)",
+            [
+                (
+                    "cache.enabled",
+                    "true" if CACHE_DEFAULTS["cache.enabled"] else "false",
+                    "bool",
+                    "cache",
+                    "Enable cache lookups and writes globally",
+                ),
+                (
+                    "cache.compound_utterance_bypass",
+                    "true" if CACHE_DEFAULTS["cache.compound_utterance_bypass"] else "false",
+                    "bool",
+                    "cache",
+                    "Bypass cache lookup for structurally compound utterances",
+                ),
+                (
+                    "cache.routing.enabled",
+                    "true" if CACHE_DEFAULTS["cache.routing.enabled"] else "false",
+                    "bool",
+                    "cache",
+                    "Enable routing cache lookup and storage",
+                ),
+                (
+                    "cache.routing.semantic_threshold",
+                    str(CACHE_DEFAULTS["cache.routing.semantic_threshold"]),
+                    "float",
+                    "cache",
+                    "Routing cache semantic hit threshold",
+                ),
+                (
+                    "cache.routing.max_entries",
+                    str(CACHE_DEFAULTS["cache.routing.max_entries"]),
+                    "int",
+                    "cache",
+                    "Routing cache max entries (LRU eviction)",
+                ),
+                (
+                    "cache.routing.semantic_fallback_enabled",
+                    "true" if CACHE_DEFAULTS["cache.routing.semantic_fallback_enabled"] else "false",
+                    "bool",
+                    "cache",
+                    "Enable routing cache semantic fallback after an exact-id miss",
+                ),
+                (
+                    "cache.action.enabled",
+                    "true" if CACHE_DEFAULTS["cache.action.enabled"] else "false",
+                    "bool",
+                    "cache",
+                    "Enable action cache lookup and storage",
+                ),
+                (
+                    "cache.action.semantic_threshold",
+                    str(CACHE_DEFAULTS["cache.action.semantic_threshold"]),
+                    "float",
+                    "cache",
+                    "Action cache semantic hit threshold",
+                ),
+                (
+                    "cache.action.max_entries",
+                    str(CACHE_DEFAULTS["cache.action.max_entries"]),
+                    "int",
+                    "cache",
+                    "Action cache max entries (LRU eviction)",
+                ),
+                (
+                    "cache.action.semantic_fallback_enabled",
+                    "true" if CACHE_DEFAULTS["cache.action.semantic_fallback_enabled"] else "false",
+                    "bool",
+                    "cache",
+                    "Enable action cache semantic fallback after an exact-id miss",
+                ),
+            ],
+        )
+        await db.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (23)")

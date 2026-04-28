@@ -2482,15 +2482,18 @@ class TestOrchestratorAgent:
         cache_manager = MagicMock()
         cache_manager.process = AsyncMock(return_value=MagicMock(hit_type="miss", agent_id=None, similarity=0.5))
         cache_manager.apply_rewrite = AsyncMock()
+        cache_manager.try_replay_action = AsyncMock(return_value=None)
+        cache_manager.try_routing_skip = AsyncMock(return_value=None)
+        cache_manager.store_response = MagicMock()
 
         async def _store_routing_async(*args, **kwargs):
             return cache_manager.store_routing(*args, **kwargs)
 
-        async def _store_response_async(entry):
+        async def _store_action_async(entry):
             return cache_manager.store_response(entry)
 
         cache_manager.store_routing_async = _store_routing_async
-        cache_manager.store_response_async = _store_response_async
+        cache_manager.store_action_async = _store_action_async
 
         # Mock dispatch response
         response_mock = MagicMock()
@@ -3134,34 +3137,29 @@ class TestOrchestratorAgent:
     @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
     @patch("app.llm.client.complete", new_callable=AsyncMock)
     async def test_handle_task_cache_fallthrough_span(self, mock_complete, mock_track, mock_settings):
-        """handle_task should create a 'cache_fallthrough' span when cached action replay fails."""
+        """handle_task should record a cache miss and continue to live dispatch when neither tier hits."""
         from app.analytics.tracer import SpanCollector
-        from app.cache.cache_manager import CacheResult
 
-        orch, *_ = self._make_orchestrator()
+        orch, dispatcher, _, cache_manager = self._make_orchestrator()
         mock_complete.return_value = "light-agent: Turn on light"
-        mock_settings.get_value = AsyncMock(return_value="false")
+        mock_settings.get_value = AsyncMock(side_effect=lambda key, default=None: "auto" if key == "language" else default)
+        cache_manager.try_replay_action = AsyncMock(return_value=None)
+        cache_manager.try_routing_skip = AsyncMock(return_value=None)
         collector = SpanCollector("trace-fallthrough-test")
         task = _make_task("turn on light")
         task.span_collector = collector
         task.conversation_id = "conv-ft"
-        # Simulate response cache hit where action replay fails
-        with (
-            patch.object(orch, "_do_cache_lookup", new_callable=AsyncMock) as mock_lookup,
-            patch.object(orch, "_handle_response_cache_hit", new_callable=AsyncMock) as mock_hit,
-            patch("app.analytics.tracer.create_trace_summary", new_callable=AsyncMock),
-        ):
-            mock_lookup.return_value = (
-                CacheResult(hit_type="response_hit", agent_id="light-agent", response_text="Done."),
-                None,
-            )
-            mock_hit.return_value = None  # Simulate replay failure
+        with patch("app.analytics.tracer.create_trace_summary", new_callable=AsyncMock):
             await orch.handle_task(task)
+
+        dispatcher.dispatch.assert_awaited_once()
         span_names = [s["span_name"] for s in collector._spans]
-        assert "cache_fallthrough" in span_names
-        ft_span = next(s for s in collector._spans if s["span_name"] == "cache_fallthrough")
-        assert ft_span["agent_id"] == "orchestrator"
-        assert ft_span["metadata"]["reason"] == "cached_action_replay_failed"
+        assert "cache_lookup" in span_names
+        assert "cache_fallthrough" not in span_names
+        cache_span = next(s for s in collector._spans if s["span_name"] == "cache_lookup")
+        assert cache_span["agent_id"] == "orchestrator"
+        assert cache_span["metadata"]["hit_type"] == "miss"
+        assert cache_span["metadata"]["cache_tier"] == "both_miss"
 
     @patch("app.agents.orchestrator.SettingsRepository")
     @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
@@ -3286,64 +3284,29 @@ class TestOrchestratorAgent:
     async def test_routing_hit_to_actionable_parse_miss_does_not_speak_success(
         self, mock_complete, mock_track, mock_settings
     ):
-        from app.cache.cache_manager import CacheResult
-        from app.cache.routing_cache import make_routing_entry_id
-
         user_text = "Bitte Kueche ausschalten. Dann neben sie machen wir Musik an."
         mock_settings.get_value = AsyncMock(
             side_effect=lambda key, default=None: (
-                "false" if key == "routing.compound_utterance_bypass" else {"language": "auto"}.get(key, default)
+                "false" if key == "cache.compound_utterance_bypass" else {"language": "auto"}.get(key, default)
             )
         )
         orch, *_ = self._make_orchestrator()
-        orch._do_cache_lookup = AsyncMock(
-            return_value=(
-                CacheResult(
-                    hit_type="routing_hit",
-                    agent_id="light-agent",
-                    condensed_task="Bitte Kueche ausschalten",
-                    similarity=0.96,
-                ),
-                None,
+        orch._cache_manager.try_replay_action = AsyncMock(return_value=None)
+        orch._cache_manager.try_routing_skip = AsyncMock(
+            return_value=MagicMock(
+                agent_id="light-agent",
+                condensed_task="Bitte Kueche ausschalten",
+                similarity=0.96,
             )
         )
         orch._cache_manager.invalidate_routing = MagicMock()
-        orch._merge_responses = AsyncMock(return_value="The kitchen lights are off and calm music is playing.")
-        orch._merge_voice_followup_and_organic = AsyncMock(
-            return_value=("The kitchen lights are off and calm music is playing.", False)
-        )
-
-        dispatch_count = {"light-agent": 0}
 
         async def _dispatch_single(agent_id, condensed_task, *args, **kwargs):
             if agent_id == "light-agent":
-                dispatch_count["light-agent"] += 1
-                if dispatch_count["light-agent"] == 1:
-                    return (
-                        "light-agent",
-                        "Die Kueche ist jetzt ausgeschaltet.",
-                        {"speech": "Die Kueche ist jetzt ausgeschaltet.", "action_executed": None},
-                    )
                 return (
                     "light-agent",
-                    "The kitchen lights are off.",
-                    {
-                        "speech": "The kitchen lights are off.",
-                        "action_executed": {"success": True, "entity_id": "light.kitchen", "action": "turn_off"},
-                    },
-                )
-            if agent_id == "music-agent":
-                return (
-                    "music-agent",
-                    "Playing calm music.",
-                    {
-                        "speech": "Playing calm music.",
-                        "action_executed": {
-                            "success": True,
-                            "entity_id": "media_player.kitchen",
-                            "action": "play_media",
-                        },
-                    },
+                    "Die Kueche ist jetzt ausgeschaltet.",
+                    {"speech": "Die Kueche ist jetzt ausgeschaltet.", "action_executed": None},
                 )
             raise AssertionError(f"Unexpected agent: {agent_id}")
 
@@ -3354,11 +3317,10 @@ class TestOrchestratorAgent:
         task.conversation_id = "conv-routing-parse-miss"
         result = await orch.handle_task(task)
 
-        assert result["speech"] == "The kitchen lights are off and calm music is playing."
-        assert result["speech"] != "Die Kueche ist jetzt ausgeschaltet."
-        assert result["action_executed"] is not None
-        orch._cache_manager.invalidate_routing.assert_called_once_with(make_routing_entry_id(user_text, language="de"))
-        assert mock_complete.await_count == 1
+        assert result["speech"] == "Die Kueche ist jetzt ausgeschaltet."
+        assert result["action_executed"] is None
+        orch._cache_manager.invalidate_routing.assert_not_called()
+        assert mock_complete.await_count == 0
 
     @patch("app.agents.orchestrator.SettingsRepository")
     @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
@@ -3443,13 +3405,14 @@ class TestOrchestratorAgent:
 
         await orch.handle_task(_make_task("turn on light"))
 
-        orch._cache_manager.store_routing.assert_called_once_with(
-            "turn on light",
-            "light-agent",
-            0.95,
-            "turn on light",
-            language="en",
-        )
+        orch._cache_manager.store_routing.assert_not_called()
+        orch._cache_manager.store_response.assert_called_once()
+        entry = orch._cache_manager.store_response.call_args.args[0]
+        assert entry.agent_id == "light-agent"
+        assert entry.query_text == "turn on light"
+        assert entry.cached_action is not None
+        assert entry.cached_action.service == "light/turn_on"
+        assert entry.cached_action.entity_id == "light.kitchen"
 
     @pytest.mark.parametrize(
         "user_text",
@@ -3470,12 +3433,12 @@ class TestOrchestratorAgent:
         mock_settings.get_value = AsyncMock(
             side_effect=lambda key, default=None: {"language": "auto"}.get(key, default)
         )
-        orch._do_cache_lookup = AsyncMock(side_effect=AssertionError("routing cache lookup should be bypassed"))
+        orch._try_cache_replay = AsyncMock(side_effect=AssertionError("cache lookup should be bypassed"))
         mock_complete.return_value = "general-agent (95%): answer directly"
 
         result = await orch.handle_task(_make_task(user_text, user_text=user_text))
 
-        orch._do_cache_lookup.assert_not_awaited()
+        orch._try_cache_replay.assert_not_awaited()
         assert result["routed_to"] == "general-agent"
         assert mock_complete.await_count == 1
 
@@ -3622,7 +3585,7 @@ class TestOrchestratorAgent:
     @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
     @patch("app.llm.client.complete", new_callable=AsyncMock)
     async def test_handle_task_cache_lookup_span_on_miss(self, mock_complete, mock_track, mock_settings):
-        """cache_lookup span is created with hit_type=miss and similarity score."""
+        """cache_lookup span is created with hit_type=miss and no similarity value."""
         from app.analytics.tracer import SpanCollector
 
         orch, *_ = self._make_orchestrator()
@@ -3637,7 +3600,8 @@ class TestOrchestratorAgent:
         cache_spans = [s for s in collector._spans if s["span_name"] == "cache_lookup"]
         assert len(cache_spans) == 1
         assert cache_spans[0]["metadata"]["hit_type"] == "miss"
-        assert cache_spans[0]["metadata"]["similarity"] is not None
+        assert cache_spans[0]["metadata"]["cache_tier"] == "both_miss"
+        assert cache_spans[0]["metadata"].get("similarity") is None
 
     @patch("app.agents.orchestrator.SettingsRepository")
     @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
@@ -3645,12 +3609,14 @@ class TestOrchestratorAgent:
     async def test_handle_task_cache_lookup_span_on_routing_hit(self, mock_complete, mock_track, mock_settings):
         """cache_lookup span shows routing_hit; classify span should show routing_cached=True."""
         from app.analytics.tracer import SpanCollector
-        from app.cache.cache_manager import CacheResult
+        from app.cache.cache_manager import RoutingSkipOutcome
 
         orch, dispatcher, *_ = self._make_orchestrator()
-        orch._cache_manager.process = AsyncMock(
-            return_value=CacheResult(
-                hit_type="routing_hit",
+        orch._cache_manager.try_replay_action = AsyncMock(return_value=None)
+        orch._cache_manager.try_routing_skip = AsyncMock(
+            return_value=RoutingSkipOutcome(
+                kind="routing_hit",
+                entry_id="routing-1",
                 agent_id="light-agent",
                 condensed_task="Turn on light",
                 similarity=0.96,
@@ -3678,17 +3644,20 @@ class TestOrchestratorAgent:
 
     @patch("app.agents.orchestrator.SettingsRepository")
     @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
-    async def test_handle_task_response_hit_short_circuit(self, mock_track, mock_settings):
-        """response_hit creates cache_lookup + return spans only (no classify/dispatch)."""
+    async def test_handle_task_action_hit_short_circuit(self, mock_track, mock_settings):
+        """action_hit creates cache_lookup + return spans only (no classify/dispatch)."""
         from app.analytics.tracer import SpanCollector
-        from app.cache.cache_manager import CacheResult
+        from app.cache.cache_manager import ActionReplayOutcome
 
         orch, *_ = self._make_orchestrator()
-        orch._cache_manager.process = AsyncMock(
-            return_value=CacheResult(
-                hit_type="response_hit",
+        orch._cache_manager.apply_rewrite.return_value = "Light is on."
+        orch._cache_manager.try_replay_action = AsyncMock(
+            return_value=ActionReplayOutcome(
+                kind="full_hit",
+                entry_id="action-1",
                 agent_id="light-agent",
                 response_text="Light is on.",
+                replay_result={"success": True},
                 similarity=0.99,
             )
         )
@@ -3708,17 +3677,20 @@ class TestOrchestratorAgent:
 
     @patch("app.agents.orchestrator.SettingsRepository")
     @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
-    async def test_handle_task_response_hit_creates_rewrite_span(self, mock_track, mock_settings):
-        """response_hit with rewrite_applied creates a rewrite span between cache_lookup and return."""
+    async def test_handle_task_action_hit_creates_rewrite_span(self, mock_track, mock_settings):
+        """action_hit with rewrite_applied creates a rewrite span between cache_lookup and return."""
         from app.analytics.tracer import SpanCollector
-        from app.cache.cache_manager import CacheResult
+        from app.cache.cache_manager import ActionReplayOutcome
 
         orch, *_ = self._make_orchestrator()
-        orch._cache_manager.process = AsyncMock(
-            return_value=CacheResult(
-                hit_type="response_hit",
+        orch._cache_manager.apply_rewrite.return_value = "Rewritten."
+        orch._cache_manager.try_replay_action = AsyncMock(
+            return_value=ActionReplayOutcome(
+                kind="full_hit",
+                entry_id="action-1",
                 agent_id="light-agent",
-                response_text="Rewritten.",
+                response_text="Original.",
+                replay_result={"success": True},
                 similarity=0.99,
                 rewrite_applied=True,
                 rewrite_latency_ms=42.5,
@@ -3746,17 +3718,20 @@ class TestOrchestratorAgent:
 
     @patch("app.agents.orchestrator.SettingsRepository")
     @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
-    async def test_handle_task_response_hit_no_rewrite_span_when_not_applied(self, mock_track, mock_settings):
-        """response_hit without rewrite_applied should NOT create a rewrite span."""
+    async def test_handle_task_action_hit_no_rewrite_span_when_not_applied(self, mock_track, mock_settings):
+        """action_hit without rewrite_applied should NOT create a rewrite span."""
         from app.analytics.tracer import SpanCollector
-        from app.cache.cache_manager import CacheResult
+        from app.cache.cache_manager import ActionReplayOutcome
 
         orch, *_ = self._make_orchestrator()
-        orch._cache_manager.process = AsyncMock(
-            return_value=CacheResult(
-                hit_type="response_hit",
+        orch._cache_manager.apply_rewrite.return_value = "Cached text."
+        orch._cache_manager.try_replay_action = AsyncMock(
+            return_value=ActionReplayOutcome(
+                kind="full_hit",
+                entry_id="action-1",
                 agent_id="light-agent",
                 response_text="Cached text.",
+                replay_result={"success": True},
                 similarity=0.99,
                 rewrite_applied=False,
             )
@@ -4694,15 +4669,18 @@ class TestOrchestratorFiller:
         cache_manager = MagicMock()
         cache_manager.process = AsyncMock(return_value=MagicMock(hit_type="miss", agent_id=None, similarity=0.5))
         cache_manager.apply_rewrite = AsyncMock()
+        cache_manager.try_replay_action = AsyncMock(return_value=None)
+        cache_manager.try_routing_skip = AsyncMock(return_value=None)
+        cache_manager.store_response = MagicMock()
 
         async def _store_routing_async(*args, **kwargs):
             return cache_manager.store_routing(*args, **kwargs)
 
-        async def _store_response_async(entry):
+        async def _store_action_async(entry):
             return cache_manager.store_response(entry)
 
         cache_manager.store_routing_async = _store_routing_async
-        cache_manager.store_response_async = _store_response_async
+        cache_manager.store_action_async = _store_action_async
 
         response_mock = MagicMock()
         response_mock.error = None
@@ -6204,15 +6182,18 @@ class TestConversationMemoryEviction:
         cache_manager = MagicMock()
         cache_manager.process = AsyncMock(return_value=MagicMock(hit_type="miss", agent_id=None, similarity=0.5))
         cache_manager.apply_rewrite = AsyncMock()
+        cache_manager.try_replay_action = AsyncMock(return_value=None)
+        cache_manager.try_routing_skip = AsyncMock(return_value=None)
+        cache_manager.store_response = MagicMock()
 
         async def _store_routing_async(*args, **kwargs):
             return cache_manager.store_routing(*args, **kwargs)
 
-        async def _store_response_async(entry):
+        async def _store_action_async(entry):
             return cache_manager.store_response(entry)
 
         cache_manager.store_routing_async = _store_routing_async
-        cache_manager.store_response_async = _store_response_async
+        cache_manager.store_action_async = _store_action_async
 
         response_mock = MagicMock()
         response_mock.error = None
@@ -6409,15 +6390,18 @@ class TestStreamMediatedSpeech:
         cache_manager = MagicMock()
         cache_manager.process = AsyncMock(return_value=MagicMock(hit_type="miss", agent_id=None, similarity=0.5))
         cache_manager.apply_rewrite = AsyncMock()
+        cache_manager.try_replay_action = AsyncMock(return_value=None)
+        cache_manager.try_routing_skip = AsyncMock(return_value=None)
+        cache_manager.store_response = MagicMock()
 
         async def _store_routing_async(*args, **kwargs):
             return cache_manager.store_routing(*args, **kwargs)
 
-        async def _store_response_async(entry):
+        async def _store_action_async(entry):
             return cache_manager.store_response(entry)
 
         cache_manager.store_routing_async = _store_routing_async
-        cache_manager.store_response_async = _store_response_async
+        cache_manager.store_action_async = _store_action_async
 
         registry.list_agents = AsyncMock(
             return_value=[
@@ -6880,15 +6864,18 @@ class TestSequentialSendFiller:
         cache_manager = MagicMock()
         cache_manager.process = AsyncMock(return_value=MagicMock(hit_type="miss", agent_id=None, similarity=0.5))
         cache_manager.apply_rewrite = AsyncMock()
+        cache_manager.try_replay_action = AsyncMock(return_value=None)
+        cache_manager.try_routing_skip = AsyncMock(return_value=None)
+        cache_manager.store_response = MagicMock()
 
         async def _store_routing_async(*args, **kwargs):
             return cache_manager.store_routing(*args, **kwargs)
 
-        async def _store_response_async(entry):
+        async def _store_action_async(entry):
             return cache_manager.store_response(entry)
 
         cache_manager.store_routing_async = _store_routing_async
-        cache_manager.store_response_async = _store_response_async
+        cache_manager.store_action_async = _store_action_async
 
         registry.list_agents = AsyncMock(
             return_value=[
@@ -7535,32 +7522,26 @@ class TestResponseCacheFallThrough:
     @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
     @patch("app.llm.client.complete", new_callable=AsyncMock)
     async def test_handle_task_falls_through_on_failed_replay(self, mock_complete, mock_track, mock_settings):
-        """When _handle_response_cache_hit returns None, handle_task falls through to classify+dispatch."""
+        """When action replay misses, handle_task falls through to live classify and dispatch."""
         mock_settings.get_value = AsyncMock(side_effect=lambda k, d=None: "auto" if k == "language" else d)
 
         dispatcher = AsyncMock()
         registry = AsyncMock()
         cache_manager = MagicMock()
 
-        # First call: process returns a response_hit
-        cache_hit = MagicMock(hit_type="response_hit", agent_id="light-agent", similarity=0.98)
-        cache_hit.cached_action = MagicMock()
-        cache_hit.response_text = "Done, kitchen light is on."
-        cache_hit.rewrite_applied = False
-        cache_hit.original_response_text = None
-        cache_hit.rewrite_latency_ms = None
-        cache_manager.process = AsyncMock(return_value=cache_hit)
         cache_manager.apply_rewrite = AsyncMock()
+        cache_manager.try_replay_action = AsyncMock(return_value=None)
+        cache_manager.try_routing_skip = AsyncMock(return_value=None)
+        cache_manager.store_response = MagicMock()
 
         async def _store_routing_async(*args, **kwargs):
             return cache_manager.store_routing(*args, **kwargs)
 
-        async def _store_response_async(entry):
+        async def _store_action_async(entry):
             return cache_manager.store_response(entry)
 
         cache_manager.store_routing_async = _store_routing_async
-        cache_manager.store_response_async = _store_response_async
-        cache_manager.store_response = MagicMock()
+        cache_manager.store_action_async = _store_action_async
 
         response_mock = MagicMock()
         response_mock.error = None
@@ -7575,58 +7556,47 @@ class TestResponseCacheFallThrough:
         )
 
         orch = OrchestratorAgent(dispatcher=dispatcher, registry=registry, cache_manager=cache_manager)
-        # Make _execute_cached_action return None (failed)
-        orch._execute_cached_action = AsyncMock(return_value=None)
 
         mock_complete.return_value = "light-agent: turn on kitchen light"
         task = _make_task("turn on kitchen light", user_text="turn on kitchen light")
         task.conversation_id = "conv-fallthrough"
         result = await orch.handle_task(task)
 
-        # Should have fallen through to dispatch since cache replay failed
         assert result["speech"] == "Fresh response!"
         dispatcher.dispatch.assert_awaited_once()
+        cache_manager.try_replay_action.assert_awaited_once()
+        cache_manager.try_routing_skip.assert_awaited_once()
 
     @patch("app.agents.orchestrator.SettingsRepository")
     @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
     @patch("app.llm.client.complete", new_callable=AsyncMock)
     async def test_failed_replay_resets_cache_result_for_routing(self, mock_complete, mock_track, mock_settings):
-        """After failed response-hit replay, _classify() should re-check routing cache (not skip it)."""
+        """After action replay misses, the same cache phase can still skip classify via a routing hit."""
         mock_settings.get_value = AsyncMock(side_effect=lambda k, d=None: "auto" if k == "language" else d)
 
         dispatcher = AsyncMock()
         registry = AsyncMock()
         cache_manager = MagicMock()
 
-        # First call: process returns a response_hit (will fail replay)
-        cache_hit = MagicMock(hit_type="response_hit", agent_id="light-agent", similarity=0.98)
-        cache_hit.cached_action = MagicMock()
-        cache_hit.response_text = "Done, kitchen light is on."
-        cache_hit.rewrite_applied = False
-        cache_hit.original_response_text = None
-        cache_hit.rewrite_latency_ms = None
-
-        # Second call (from _classify fallback): returns routing_hit
-        from app.cache.cache_manager import CacheResult
-
-        routing_hit = CacheResult(
-            hit_type="routing_hit",
-            agent_id="light-agent",
-            condensed_task="Turn on kitchen light",
-            similarity=0.96,
+        cache_manager.try_replay_action = AsyncMock(return_value=None)
+        cache_manager.try_routing_skip = AsyncMock(
+            return_value=MagicMock(
+                agent_id="light-agent",
+                condensed_task="Turn on kitchen light",
+                similarity=0.96,
+            )
         )
-        cache_manager.process = AsyncMock(side_effect=[cache_hit, routing_hit])
         cache_manager.apply_rewrite = AsyncMock()
+        cache_manager.store_response = MagicMock()
 
         async def _store_routing_async(*args, **kwargs):
             return cache_manager.store_routing(*args, **kwargs)
 
-        async def _store_response_async(entry):
+        async def _store_action_async(entry):
             return cache_manager.store_response(entry)
 
         cache_manager.store_routing_async = _store_routing_async
-        cache_manager.store_response_async = _store_response_async
-        cache_manager.store_response = MagicMock()
+        cache_manager.store_action_async = _store_action_async
         cache_manager.store_routing = MagicMock()
 
         response_mock = MagicMock()
@@ -7645,16 +7615,15 @@ class TestResponseCacheFallThrough:
         )
 
         orch = OrchestratorAgent(dispatcher=dispatcher, registry=registry, cache_manager=cache_manager)
-        orch._execute_cached_action = AsyncMock(return_value=None)
 
         mock_complete.return_value = "light-agent: turn on kitchen light"
         task = _make_task("turn on kitchen light", user_text="turn on kitchen light")
         task.conversation_id = "conv-routing-recheck"
         result = await orch.handle_task(task)
 
-        # Should have used dispatch (routing cache re-checked via _classify)
         assert result["speech"] == "Light is on!"
         dispatcher.dispatch.assert_awaited_once()
+        assert mock_complete.await_count == 0
 
 
 # ---------------------------------------------------------------------------

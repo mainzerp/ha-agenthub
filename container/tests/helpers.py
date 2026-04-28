@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import random
 import uuid
 from contextlib import asynccontextmanager
@@ -9,7 +10,7 @@ from typing import Any
 from unittest.mock import MagicMock
 
 from app.models.agent import AgentCard, AgentConfig, AgentTask, TaskContext
-from app.models.cache import CachedAction, ResponseCacheEntry, RoutingCacheEntry
+from app.models.cache import ActionCacheEntry, CachedAction, RoutingCacheEntry
 from app.models.conversation import ActionResult, ConversationRequest, ConversationResponse, StreamToken
 from app.models.entity_index import EntityIndexEntry
 
@@ -197,33 +198,49 @@ def make_routing_cache_entry(
     agent_id: str = "light-agent",
     confidence: float = 0.95,
     hit_count: int = 1,
+    language: str = "en",
+    condensed_task: str | None = None,
+    entity_ids: list[str] | None = None,
 ) -> RoutingCacheEntry:
     """Build a RoutingCacheEntry."""
     return RoutingCacheEntry(
         query_text=query_text,
+        language=language,
         agent_id=agent_id,
+        condensed_task=condensed_task,
         confidence=confidence,
+        entity_ids=entity_ids or [],
         hit_count=hit_count,
     )
 
 
-def make_response_cache_entry(
+def make_action_cache_entry(
     query_text: str = "turn on kitchen lights",
     response_text: str = "Done, kitchen light is on.",
     agent_id: str = "light-agent",
     confidence: float = 0.97,
     cached_action: CachedAction | None = None,
     entity_ids: list[str] | None = None,
-) -> ResponseCacheEntry:
-    """Build a ResponseCacheEntry."""
-    return ResponseCacheEntry(
+    language: str = "en",
+    condensed_task: str | None = None,
+) -> ActionCacheEntry:
+    """Build an ActionCacheEntry."""
+    action = cached_action or make_cached_action()
+    return ActionCacheEntry(
         query_text=query_text,
+        language=language,
         response_text=response_text,
         agent_id=agent_id,
+        condensed_task=condensed_task,
         confidence=confidence,
-        cached_action=cached_action,
-        entity_ids=entity_ids or ["light.kitchen_ceiling"],
+        cached_action=action,
+        entity_ids=entity_ids or [action.entity_id],
     )
+
+
+def make_response_cache_entry(*args, **kwargs) -> ActionCacheEntry:
+    """Legacy test helper alias; returns an ActionCacheEntry."""
+    return make_action_cache_entry(*args, **kwargs)
 
 
 def make_cached_action(

@@ -1,17 +1,26 @@
 # Version
 
-**Current Version:** 1.3.3
+**Current Version:** 1.4.1
 
-## Recent Changes (since 1.3.2)
+## Recent Changes (since 1.4.0)
 
-- Echo guard for the post-filler push pipeline now requires both satellite identity AND normalized inbound text to match a recent announcement within an 8 s TTL, instead of suppressing every turn from a satellite while a push is in flight. Eliminates the possibility of silently masking unrelated voice turns.
-- Push-task cancellation on supersession and on integration unload/removal now awaits the cancelled task's cleanup (state listener unsubscribe, local WS close) before proceeding.
-- Optional `homeassistant.helpers.event.async_track_state_change_event` import now also tolerates `ImportError` (in addition to `ModuleNotFoundError`); when the symbol is unavailable the push falls back to a fixed `POST_FILLER_FALLBACK_DELAY_SECONDS = 1.5` delay before announcing.
-- WebSocket ownership transfer in `_process_via_ws` is now atomic: the background push task is registered before `self._ws` is detached; if registration fails the foreground keeps the socket and falls back to the buffered unified-string path.
-- Removed the stale empty `_filler_gate.py` artifact.
-- Added two `DEBUG`-level diagnostic log lines (turn entry, WebSocket entry) under the `ha-agenthub:` prefix so future "no container trace, no HA log" regressions are immediately diagnosable when debug logging is enabled.
+- Removed hardcoded German and English replay phrasing from `rewrite_template.py` and replaced it with a neutral structured replay context for cache-hit rewrite.
+- Rewrite-disabled or rewrite-failed action-cache hits now keep the cached `response_text` verbatim, which remains safe under v3 structured-key equality.
 
 ## Version History
+
+### 1.4.1 (PATCH) -- Neutral structured replay context
+
+- Replaced deterministic replay speech templating with a neutral `ReplayContext` passed into the rewrite agent.
+- Removed the internal `fresh_text` rewrite path so cache hits no longer overwrite the cached `response_text` before rewrite.
+- Kept v3 structured-key replay correctness intact while adding regression coverage for structured replay context and rewrite-disabled cache hits.
+
+### 1.4.0 (MINOR) -- Structured action cache key
+
+- Action cache is now keyed by a structured action signature `(language, target_agent, domain, service, normalized target set, normalized service_data)` instead of semantic nearest-neighbor over user text, eliminating polarity and cross-room replay collisions.
+- Cache-hit rewrite now operates on freshly templated speech derived from the executed cached action; cached `response_text` is retained only as a personality-voice reference.
+- Schema bumped to v3; legacy v2 rows are ignored on read and one-shot purged on startup.
+- Export/import format bumped to v3.
 
 ### 1.3.3 (PATCH) -- HA bridge V4 audit fixes
 

@@ -12,9 +12,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.cache.response_cache import ResponseCache
+from app.cache.action_cache import ActionCache
 from app.cache.vector_store import VectorStore
-from app.models.cache import ResponseCacheEntry
+from app.models.cache import ActionCacheEntry, CachedAction
 from app.models.conversation import ConversationResponse, StreamToken
 
 # ---------------------------------------------------------------------------
@@ -95,16 +95,14 @@ class TestVectorStoreReinitLock:
 
 
 # ---------------------------------------------------------------------------
-# P3-4: ResponseCache.prepare_for_flush mirrors RoutingCache behaviour.
+# P3-4: ActionCache.prepare_for_flush mirrors RoutingCache behaviour.
 # ---------------------------------------------------------------------------
 
 
-class TestResponseCachePrepareForFlush:
-    def _make_cache(self) -> tuple[ResponseCache, MagicMock]:
+class TestActionCachePrepareForFlush:
+    def _make_cache(self) -> tuple[ActionCache, MagicMock]:
         store = MagicMock(spec=VectorStore)
-        cache = ResponseCache(store)
-        cache._hit_threshold = 0.95
-        cache._partial_threshold = 0.80
+        cache = ActionCache(store)
         cache._max_entries = 100
         return cache, store
 
@@ -130,11 +128,11 @@ class TestResponseCachePrepareForFlush:
             cache.prepare_for_flush()
 
         cache._flush_pending_updates = flush_pending_then_invalidate
-        entry = ResponseCacheEntry(
+        entry = ActionCacheEntry(
             query_text="turn on light",
             response_text="done",
             agent_id="light-agent",
-            cached_action=None,
+            cached_action=CachedAction(service="light/turn_on", entity_id="light.kitchen"),
             confidence=0.99,
             entity_ids=["light.kitchen"],
             language="en",
@@ -142,7 +140,7 @@ class TestResponseCachePrepareForFlush:
         cache.store(entry)
         store.upsert.assert_not_called()
 
-    def test_cache_manager_flush_calls_response_prepare(self):
+    def test_cache_manager_flush_calls_action_prepare(self):
         """flush('response') must call the response tier's prepare_for_flush."""
         from app.cache.cache_manager import CacheManager
 
@@ -150,11 +148,10 @@ class TestResponseCachePrepareForFlush:
         manager._vector_store = MagicMock()
         manager._vector_store.count.return_value = 0
         manager._routing_cache = MagicMock()
-        manager._response_cache = MagicMock()
-        manager._response_cache_enabled = True
+        manager._action_cache = MagicMock()
 
-        manager.flush(tier="response")
-        manager._response_cache.prepare_for_flush.assert_called_once()
+        manager.flush(tier="action")
+        manager._action_cache.prepare_for_flush.assert_called_once()
 
     def test_cache_manager_flush_all_calls_both_prepares(self):
         from app.cache.cache_manager import CacheManager
@@ -163,12 +160,11 @@ class TestResponseCachePrepareForFlush:
         manager._vector_store = MagicMock()
         manager._vector_store.count.return_value = 0
         manager._routing_cache = MagicMock()
-        manager._response_cache = MagicMock()
-        manager._response_cache_enabled = True
+        manager._action_cache = MagicMock()
 
         manager.flush()  # tier=None -> both
         manager._routing_cache.prepare_for_flush.assert_called_once()
-        manager._response_cache.prepare_for_flush.assert_called_once()
+        manager._action_cache.prepare_for_flush.assert_called_once()
 
 
 # ---------------------------------------------------------------------------

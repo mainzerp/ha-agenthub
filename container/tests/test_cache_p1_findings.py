@@ -1,25 +1,18 @@
-"""Regression tests for P1-3 / P1-4 / P1-5 cache findings.
-
-P1-3: thread-safety + LRU pagination + re-queue on flush failure.
-P1-4: classify confidence gating + ``None`` for old-format lines.
-P1-5: response-cache replays service_data parameters.
-"""
+"""Regression tests for the two-cache P1 findings."""
 
 from __future__ import annotations
 
 import asyncio
 import threading
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 
 from app.cache._state import _CacheState
-from app.cache.response_cache import ResponseCache
+from app.cache.action_cache import ActionCache
 from app.cache.routing_cache import RoutingCache
 from app.cache.vector_store import VectorStore
-from app.models.cache import CachedAction, ResponseCacheEntry
-
-# ---------------------------------------------------------------------------
-# P1-3: threadsafety
-# ---------------------------------------------------------------------------
+from app.models.cache import ActionCacheEntry, CachedAction
 
 
 class TestCacheStateConcurrency:
@@ -81,7 +74,15 @@ class TestRoutingCacheStoreConcurrency:
 
         async def spawn_all() -> None:
             await asyncio.gather(
-                *(asyncio.to_thread(cache.store, f"query-{i}", "light-agent", 0.95) for i in range(50))
+                *(
+                    asyncio.to_thread(
+                        cache.store,
+                        query_text=f"query-{i}",
+                        agent_id="light-agent",
+                        confidence=0.95,
+                    )
+                    for i in range(50)
+                )
             )
 
         asyncio.run(spawn_all())
@@ -155,6 +156,7 @@ class TestRoutingCacheLRUPagination:
 
 
 class TestClassifyNoConfidence:
+    @pytest.mark.asyncio
     async def test_old_format_line_yields_none_confidence(self):
         from app.agents.orchestrator import OrchestratorAgent
         from app.models.agent import AgentCard
@@ -172,112 +174,100 @@ class TestClassifyNoConfidence:
         assert results[0][2] is None
 
 
-# ---------------------------------------------------------------------------
-# P1-5: response cache replay with parameters
-# ---------------------------------------------------------------------------
-
-
-def _make_response_cache() -> tuple[ResponseCache, MagicMock]:
+def _make_action_cache() -> tuple[ActionCache, MagicMock]:
     store = MagicMock(spec=VectorStore)
-    cache = ResponseCache(store)
-    cache._hit_threshold = 0.95
-    cache._partial_threshold = 0.80
+    store.count.return_value = 0
+    store.get.return_value = {"ids": [], "documents": [], "metadatas": []}
+    cache = ActionCache(store)
     cache._max_entries = 1000
     cache._eviction_interval = 1000
     return cache, store
 
 
-class TestResponseCacheReplayServiceData:
+class TestActionCacheReplayServiceData:
     def test_store_and_lookup_round_trips_service_data(self):
-        cache, store = _make_response_cache()
-        store.count.return_value = 0
+        cache, store = _make_action_cache()
 
         cached_action = CachedAction(
             service="light/turn_on",
             entity_id="light.bedroom",
             service_data={"brightness_pct": 30, "transition": 2},
         )
-        entry = ResponseCacheEntry(
+        entry = ActionCacheEntry(
             query_text="dim the bedroom lights",
+            language="en",
             response_text="Done.",
             agent_id="light-agent",
+            condensed_task="Dim the bedroom lights",
             confidence=0.97,
             cached_action=cached_action,
             entity_ids=["light.bedroom"],
         )
         cache.store(entry)
 
-        # Inspect what was persisted -- this is the contract the cache
-        # manager relies on for replay.
         store.upsert.assert_called_once()
         kwargs = store.upsert.call_args.kwargs
         meta = kwargs["metadatas"][0]
-        assert meta["schema_version"] == "2"
         restored = CachedAction.model_validate_json(meta["cached_action"])
         assert restored.service_data == {"brightness_pct": 30, "transition": 2}
 
-        # Now simulate a lookup hit on the stored entry.
-        store.query.return_value = {
-            "ids": [[kwargs["ids"][0]]],
-            "distances": [[0.02]],
-            "documents": [[entry.query_text]],
-            "metadatas": [[meta]],
+        store.get.return_value = {
+            "ids": [kwargs["ids"][0]],
+            "documents": [entry.query_text],
+            "metadatas": [meta],
         }
-        hit_type, looked_up, _similarity = cache.lookup(entry.query_text)
-        assert hit_type == "hit"
+        looked_up, similarity = cache.lookup(entry.query_text, language="en")
+
         assert looked_up is not None
-        assert looked_up.cached_action is not None
+        assert similarity == pytest.approx(1.0)
         assert looked_up.cached_action.service_data == {
             "brightness_pct": 30,
             "transition": 2,
         }
 
-    def test_lookup_of_legacy_entry_without_schema_version(self):
-        """Backward compat: entries persisted before P1-5 lack
-        ``schema_version`` and ``service_data``. They must still decode
-        into a ``CachedAction`` with an empty ``service_data`` dict."""
-        cache, store = _make_response_cache()
-        legacy_action_json = '{"service":"light/turn_on","entity_id":"light.bedroom"}'
-        store.query.return_value = {
-            "ids": [["legacy-1"]],
-            "distances": [[0.02]],
-            "documents": [["dim the bedroom lights"]],
-            "metadatas": [
-                [
-                    {
-                        "response_text": "Done.",
-                        "agent_id": "light-agent",
-                        "confidence": "0.97",
-                        "hit_count": "1",
-                        "entity_ids": "light.bedroom",
-                        "created_at": "2025-01-01T00:00:00",
-                        "last_accessed": "2025-01-01T00:00:00",
-                        "language": "en",
-                        "cached_action": legacy_action_json,
-                    }
-                ]
-            ],
-        }
-        hit_type, looked_up, _ = cache.lookup("dim the bedroom lights")
-        assert hit_type == "hit"
-        assert looked_up is not None
-        assert looked_up.cached_action is not None
-        assert looked_up.cached_action.service_data == {}
+    def test_invalidate_by_entity_id_accepts_multiple_targets(self):
+        cache, store = _make_action_cache()
+
+        with patch("app.cache._base_cache._LRU_PAGE_SIZE", 2):
+            store.get.side_effect = [
+                {
+                    "ids": ["id-1", "id-2"],
+                    "metadatas": [
+                        {"entity_ids": '["light.kitchen"]'},
+                        {"entity_ids": '["light.porch"]'},
+                    ],
+                },
+                {
+                    "ids": ["id-3", "id-4"],
+                    "metadatas": [
+                        {"entity_ids": '["switch.garage"]'},
+                        {"entity_ids": '["light.kitchen", "switch.garage"]'},
+                    ],
+                },
+                {"ids": [], "metadatas": []},
+            ]
+
+            deleted = cache.invalidate_by_entity_id(["light.kitchen", "switch.garage"])
+
+        assert deleted == 3
+        store.delete.assert_called_once_with(cache._collection_name, ids=["id-1", "id-3", "id-4"])
 
 
-class TestStoreResponseCacheWhitelist:
+class TestStoreAfterDispatchWhitelist:
+    @pytest.mark.asyncio
     async def test_non_whitelisted_keys_dropped(self):
-        """Orchestrator must only persist whitelisted service_data keys."""
         from app.agents.orchestrator import OrchestratorAgent
 
         orch = OrchestratorAgent.__new__(OrchestratorAgent)
-        stored: list[ResponseCacheEntry] = []
+        stored: list[ActionCacheEntry] = []
 
-        async def fake_store(entry: ResponseCacheEntry) -> None:
+        async def fake_store(entry: ActionCacheEntry) -> None:
             stored.append(entry)
 
         orch._cache_manager = MagicMock()
-        orch._cache_manager.store_response_async = AsyncMock(side_effect=fake_store)
+        orch._cache_manager.store_action_async = AsyncMock(side_effect=fake_store)
+        orch._legacy_pipeline_enabled = MagicMock(return_value=False)
+        orch._get_bool_setting = AsyncMock(return_value=True)
 
         action_executed = {
             "success": True,
@@ -291,24 +281,22 @@ class TestStoreResponseCacheWhitelist:
                 "__proto__": "drop me too",
             },
         }
-        await orch._store_response_cache(
+        stored_action, stored_routing = await orch._store_after_dispatch(
             user_text="turn on kitchen",
+            language="en",
             speech="Done.",
             target_agent="light-agent",
+            condensed_task="Turn on kitchen light",
             confidence=0.97,
             action_executed=action_executed,
             has_error=False,
-            language="en",
         )
 
+        assert (stored_action, stored_routing) == (True, False)
         assert len(stored) == 1
         entry = stored[0]
         assert entry.cached_action is not None
-        # Only whitelisted keys survive; unknown keys are dropped.
         assert entry.cached_action.service_data == {
             "brightness_pct": 50,
             "transition": 2,
         }
-
-
-# Async tests rely on the repo-wide asyncio_mode = auto (see pytest config).

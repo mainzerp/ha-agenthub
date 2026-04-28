@@ -22,12 +22,13 @@ from app.agents.language_detect import detect_user_language
 from app.agents.sanitize import strip_markdown
 from app.analytics.collector import track_agent_timeout, track_request
 from app.analytics.tracer import _optional_span
-from app.cache.routing_cache import make_routing_entry_id
+from app.cache.cache_manager import ActionReplayOutcome, RoutingSkipOutcome
 from app.db.repository import ConversationRepository, SettingsRepository
+from app.entity.deterministic_resolver import resolve_entity_deterministic_first
 from app.entity.visibility import entity_is_visible
 from app.ha_client.home_context import home_context_provider
 from app.models.agent import AgentCard, AgentTask, TaskContext
-from app.models.cache import CachedAction, ResponseCacheEntry
+from app.models.cache import ActionCacheEntry, CachedAction
 
 logger = logging.getLogger(__name__)
 
@@ -72,8 +73,6 @@ def _sanitize_condensed(
     original = condensed
 
     parts = fragment_re.split(condensed)
-    # ``parts`` shape with one capture group:
-    # [text0, agent1, text1, agent2, text2, ...]
     text_segments = [parts[0], *parts[2::2]]
     text_segments = [seg.strip(" ;|,-") for seg in text_segments if seg and seg.strip()]
 
@@ -84,7 +83,6 @@ def _sanitize_condensed(
 
     if seen:
         cleaned = seen[0]
-        # Collapse "ABC ABC ABC..." literal repetitions of the same prefix.
         half = len(cleaned) // 2
         while half > 0 and cleaned[:half] == cleaned[half : 2 * half] and cleaned[half:].startswith(cleaned[:half]):
             cleaned = cleaned[:half].rstrip()
@@ -101,18 +99,9 @@ def _sanitize_condensed(
     return cleaned
 
 
-# Canned fallback strings emitted by _dispatch_single when an agent
-# times out or the general-agent itself errors. Multi-agent merge
-# must treat these as failures, not as real content, even though they
-# arrive as non-empty speech.
 _CANNED_TIMEOUT_SPEECH = "I couldn't process that request in time."
 _CANNED_GENERAL_ERROR_SPEECH = "I couldn't process that request right now."
 
-# P1-5: service_data keys that are safe to persist on a response-cache
-# entry and replay verbatim. Anything outside this set is dropped
-# before it reaches the cache so we do not accidentally leak entity
-# state blobs, PII, or per-request transport metadata into the
-# ChromaDB collection.
 _CACHED_SERVICE_DATA_KEYS: frozenset[str] = frozenset(
     {
         "brightness",
@@ -163,21 +152,8 @@ class OrchestratorAgent(BaseAgent):
         self._mediation_model: str | None = None
         self._mediation_temperature: float = 0.3
         self._mediation_max_tokens: int = 2048
-        # P2-2 (FLOW-TIMEOUT-1): per-agent dispatch timeout cache.
-        # Resolution order: ``agent.dispatch_timeout.<agent_id>``
-        # setting > AgentCard.timeout_sec > self._default_timeout.
-        # The cache is populated lazily on first lookup per agent_id
-        # so the SettingsRepository is hit at most once per agent and
-        # the hot dispatch path stays in-memory.
         self._per_agent_timeout_cache: dict[str, float] = {}
-        # Hard upper bound (defense against misconfiguration).
         self._max_dispatch_timeout: float = 60.0
-        # P3-7: short-TTL memo for ``_get_known_agents``. Classification
-        # asks for the registered agent set on every request; the
-        # registry rarely changes within a few seconds, so caching the
-        # tuple avoids one ``list_agents`` round-trip per task while
-        # still picking up ``register_agent`` / ``unregister_agent``
-        # quickly enough that operators do not have to restart.
         self._known_agents_cache: tuple[float, set[str]] | None = None
         self._known_agents_ttl: float = 5.0
 
@@ -792,57 +768,71 @@ class OrchestratorAgent(BaseAgent):
     # Shared helpers to reduce duplication between handle_task / handle_task_stream
     # ------------------------------------------------------------------
 
-    async def _do_cache_lookup(
+    async def _try_cache_replay(
         self,
-        user_text: str,
-        span_collector,
         *,
+        task: AgentTask | None = None,
+        user_text: str,
         language: str = "en",
-    ) -> tuple:
-        """Perform cache lookup with optional span recording.
-
-        Returns (cache_result, cache_span_or_None).
-        """
-        cache_result = None
-        cache_span_ref = None
+        requesting_agent_id: str = "orchestrator",
+        span_collector=None,
+    ) -> tuple[ActionReplayOutcome | None, RoutingSkipOutcome | None]:
+        """Try action replay first, then routing skip, before live classify."""
         if not self._cache_manager:
-            return cache_result, cache_span_ref
+            return None, None
+        if not await self._get_bool_setting("cache.enabled", True):
+            return None, None
+
+        async def _resolve_entity(current_text: str, target_agent: str) -> str | None:
+            if not self._entity_index:
+                return None
+            context = getattr(task, "context", None)
+            resolution = await resolve_entity_deterministic_first(
+                current_text,
+                self._entity_index,
+                None,
+                target_agent,
+                preferred_area_id=getattr(context, "area_id", None),
+                verbatim_terms=list(getattr(task, "verbatim_terms", []) or []),
+            )
+            return resolution.get("entity_id")
 
         async with _optional_span(span_collector, "cache_lookup", agent_id="orchestrator") as cache_span:
-            try:
-                cache_result = await self._cache_manager.process(
-                    user_text,
-                    language=language,
-                )
-            except Exception:
-                logger.warning("Cache lookup failed", exc_info=True)
-                cache_result = None
-            if cache_result:
-                cache_span["metadata"]["hit_type"] = cache_result.hit_type
-                cache_span["metadata"]["similarity"] = cache_result.similarity
-                cache_span["metadata"]["cached_agent_id"] = cache_result.agent_id
-                if cache_result.hit_type.startswith("action") or cache_result.hit_type.startswith("response"):
-                    cache_span["metadata"]["cache_tier"] = "action"
-                elif cache_result.hit_type == "routing_hit":
-                    cache_span["metadata"]["cache_tier"] = "routing"
-                else:
-                    cache_span["metadata"]["cache_tier"] = "both_miss"
-                if cache_result.entry:
-                    cache_span["metadata"]["hit_count"] = getattr(cache_result.entry, "hit_count", None)
-                    created = getattr(cache_result.entry, "created_at", None)
-                    if created:
-                        try:
-                            created_dt = datetime.fromisoformat(created)
-                            age = (datetime.now(UTC) - created_dt).total_seconds()
-                            cache_span["metadata"]["entry_age_seconds"] = round(age, 1)
-                        except Exception:
-                            pass
-            else:
-                cache_span["metadata"]["hit_type"] = "miss"
-                cache_span["metadata"]["cache_tier"] = "both_miss"
-            cache_span_ref = cache_span
+            action_hit = await self._cache_manager.try_replay_action(
+                query_text=user_text,
+                language=language,
+                requesting_agent_id=requesting_agent_id,
+                resolve_entity=_resolve_entity,
+                check_visibility=self._cached_action_is_still_visible,
+                execute_cached_action=self._execute_cached_action,
+            )
+            if action_hit is not None:
+                cache_span["metadata"]["hit_type"] = "action_hit"
+                cache_span["metadata"]["similarity"] = action_hit.similarity
+                cache_span["metadata"]["cached_agent_id"] = action_hit.agent_id
+                cache_span["metadata"]["cache_tier"] = "action"
+                return action_hit, None
 
-        return cache_result, cache_span_ref
+            routing_hit = await self._cache_manager.try_routing_skip(
+                query_text=user_text,
+                language=language,
+            )
+            if routing_hit is not None:
+                cache_span["metadata"]["hit_type"] = "routing_hit"
+                cache_span["metadata"]["similarity"] = routing_hit.similarity
+                cache_span["metadata"]["cached_agent_id"] = routing_hit.agent_id
+                cache_span["metadata"]["cache_tier"] = "routing"
+                return None, routing_hit
+
+            cache_span["metadata"]["hit_type"] = "miss"
+            cache_span["metadata"]["cache_tier"] = "both_miss"
+            return None, None
+
+    @staticmethod
+    def _build_synthetic_classifications(
+        routing: RoutingSkipOutcome,
+    ) -> list[tuple[str, str, float | None]]:
+        return [(routing.agent_id, routing.condensed_task, 1.0)]
 
     async def _cached_action_is_still_visible(self, agent_id: str, entity_id: str) -> bool:
         """Re-evaluate per-agent visibility rules for a cached action's entity.
@@ -870,120 +860,51 @@ class OrchestratorAgent(BaseAgent):
             )
             return False
 
-    async def _handle_response_cache_hit(
+    async def _finalize_action_replay_hit(
         self,
-        cache_result,
+        hit: ActionReplayOutcome,
         conversation_id: str,
         user_text: str,
         span_collector,
-        cache_span=None,
         *,
         task: AgentTask | None = None,
     ) -> dict:
-        """Handle a response cache hit: execute cached action, rewrite, store turn, trace.
+        """Finalize a successful action-cache full hit."""
+        target_agent = hit.agent_id or "unknown"
+        task_context = getattr(task, "context", None) if task is not None else None
+        speech = hit.response_text or ""
+        if self._cache_manager:
+            speech = await self._cache_manager.apply_rewrite(hit)
 
-        Returns the response dict.
-        """
-        target_agent = cache_result.agent_id or "unknown"
-        action_executed = None
-
-        # FLOW-CRIT-1: Re-check entity visibility before replaying any cached
-        # action. Visibility rules can change after a cache entry is created
-        # (admin revoking a light from an agent, etc.); without this check the
-        # cached action would keep firing until LRU eviction.
-        cached_action = cache_result.cached_action
-        if cached_action and target_agent != "unknown" and cached_action.entity_id:
-            visible = await self._cached_action_is_still_visible(target_agent, cached_action.entity_id)
-            if not visible:
-                # P3-10: per-request cache-visibility note; debug.
-                logger.debug(
-                    "Cached action for %s on %s no longer visible to %s; "
-                    "invalidating cache entry and falling through to live dispatch",
-                    cached_action.service,
-                    cached_action.entity_id,
-                    target_agent,
-                )
-                try:
-                    if self._cache_manager and cache_result.entry is not None:
-                        import hashlib
-
-                        # FLOW-HIGH-4: cache keys are language-scoped now, so
-                        # the invalidation hash must include the language to
-                        # target the correct row.
-                        entry_lang = (getattr(cache_result.entry, "language", None) or "en").lower()
-                        entry_id = hashlib.sha256(
-                            f"{entry_lang}\n{cache_result.entry.query_text}".encode()
-                        ).hexdigest()[:16]
-                        self._cache_manager.invalidate_response(entry_id)
-                except Exception:
-                    logger.debug("Cache invalidate failed", exc_info=True)
-                return None
-
-        async def _do_ha():
-            if not cache_result.cached_action:
-                return None
-            try:
-                return await self._execute_cached_action(cache_result.cached_action)
-            except Exception:
-                logger.warning("Cached action execution failed", exc_info=True)
-                return None
-
-        async def _do_rewrite():
-            if self._cache_manager:
-                await self._cache_manager.apply_rewrite(cache_result)
-
-        ha_result, _ = await asyncio.gather(_do_ha(), _do_rewrite())
-        action_executed = ha_result
-
-        # If a cached action existed but replay failed, fall through to live dispatch
-        if cache_result.cached_action and action_executed is None:
-            return None
-
-        speech = cache_result.response_text or ""
-
-        if cache_result.cached_action:
+        if hit.cached_action:
             async with _optional_span(span_collector, "ha_action", agent_id=target_agent) as ha_span:
-                ha_span["metadata"]["action"] = cache_result.cached_action.service
-                ha_span["metadata"]["entity"] = cache_result.cached_action.entity_id
-                ha_span["metadata"]["success"] = action_executed is not None
+                ha_span["metadata"]["action"] = hit.cached_action.service
+                ha_span["metadata"]["entity"] = hit.cached_action.entity_id
+                ha_span["metadata"]["success"] = hit.replay_result is not None
                 ha_span["metadata"]["cached"] = True
-            if cache_span:
-                try:
-                    _cs = datetime.fromisoformat(cache_span["start_time"])
-                    ha_span["start_time"] = (_cs + timedelta(milliseconds=cache_span.get("duration_ms", 0))).isoformat()
-                except Exception:
-                    pass
-        if cache_result.rewrite_applied:
+        if hit.rewrite_applied:
             async with _optional_span(span_collector, "rewrite", agent_id="rewrite-agent") as rw_span:
-                rw_span["metadata"]["original_text"] = (cache_result.original_response_text or "")[:500]
+                rw_span["metadata"]["original_text"] = (hit.original_response_text or "")[:500]
                 rw_span["metadata"]["rewritten_text"] = speech[:500]
-                rw_span["metadata"]["latency_ms"] = cache_result.rewrite_latency_ms
+                rw_span["metadata"]["latency_ms"] = hit.rewrite_latency_ms
                 rw_span["metadata"]["success"] = True
-            if cache_result.rewrite_latency_ms is not None:
-                rw_span["duration_ms"] = round(cache_result.rewrite_latency_ms, 2)
-            if cache_span:
-                try:
-                    _cs = datetime.fromisoformat(cache_span["start_time"])
-                    rw_span["start_time"] = (_cs + timedelta(milliseconds=cache_span.get("duration_ms", 0))).isoformat()
-                except Exception:
-                    pass
+                if hit.rewrite_latency_ms is not None:
+                    rw_span["duration_ms"] = round(hit.rewrite_latency_ms, 2)
+
         async with _optional_span(span_collector, "return", agent_id="orchestrator") as ret_span:
             ret_span["metadata"]["from_agent"] = target_agent
             ret_span["metadata"]["agent_response"] = speech[:500]
             ret_span["metadata"]["final_response"] = speech[:500]
-            ret_span["metadata"]["mediated"] = False
-            ret_span["metadata"]["response_cache_hit"] = True
+            ret_span["metadata"]["mediated"] = bool(hit.rewrite_applied)
             ret_span["metadata"]["action_cache_hit"] = True
+            ret_span["metadata"]["response_cache_hit"] = False
+            ret_span["metadata"]["sanitized"] = False
             prior_turns = await self._get_turns(conversation_id)
             await self._store_turn(conversation_id, user_text, speech, agent_id=target_agent)
             if span_collector:
                 try:
                     from app.analytics.tracer import create_trace_summary
 
-                    # FLOW-CTX-1 (0.18.6): task is passed by both cache-hit
-                    # callers so we can annotate the trace with the
-                    # originating satellite even for replayed responses.
-                    task_context = getattr(task, "context", None) if task is not None else None
                     await create_trace_summary(
                         trace_id=span_collector.trace_id,
                         conversation_id=conversation_id,
@@ -1007,80 +928,131 @@ class OrchestratorAgent(BaseAgent):
         return {
             "speech": speech,
             "routed_to": target_agent,
-            "action_executed": action_executed,
+            "action_executed": hit.replay_result,
+            "sanitized": False,
+            "voice_followup": False,
         }
 
-    async def _store_response_cache(
+    @staticmethod
+    def _is_readonly_action_result(action_executed) -> bool:
+        if not isinstance(action_executed, dict):
+            return False
+        action_name = str(action_executed.get("action") or "").strip().lower()
+        if not action_name:
+            service_name = str(action_executed.get("service") or "").strip().lower()
+            action_name = service_name.split("/", 1)[1] if "/" in service_name else service_name
+        return action_name.startswith(("query_", "list_"))
+
+    async def _store_after_dispatch(
         self,
+        *,
         user_text: str,
-        speech: str,
+        language: str,
         target_agent: str,
+        condensed_task: str,
         confidence: float | None,
+        speech: str,
         action_executed,
         has_error: bool,
-        *,
-        language: str = "en",
-    ) -> bool:
-        """Store a response in the cache. Returns True if stored.
+        task: AgentTask | None = None,
+        merged_multi_agent: bool = False,
+        used_origin_context: bool = False,
+    ) -> tuple[bool, bool]:
+        """Store either an action-cache row or a routing-cache row, never both."""
+        if merged_multi_agent or not self._cache_manager or not speech or has_error:
+            return False, False
+        if self._legacy_pipeline_enabled():
+            return False, False
+        if not await self._get_bool_setting("cache.enabled", True):
+            return False, False
+        if target_agent in (_CANCEL_INTERACTION_AGENT, "send-agent") or target_agent in _INTERNAL_ONLY_AGENTS:
+            return False, False
 
-        The ChromaDB write is offloaded to a worker thread (PERF-4) so a
-        slow embedding flush does not stall the event loop.
-        """
-        if not self._cache_manager or target_agent == _FALLBACK_AGENT or not speech or has_error:
-            return False
-        # FLOW-MED-5 / FLOW-MED-6: informational responses (no
-        # action_executed at all, or action_executed explicitly
-        # ``cacheable=False``) must NOT enter the response cache.
-        # These typically carry real-time facts (weather, time,
-        # general-agent answers) that go stale silently. Opt-in
-        # escape hatch: ``{"cacheable": True, "informational": True}``
-        # passes; no agent currently emits it, leaving the path
-        # latent but documented.
-        if not action_executed:
-            return False
-        if not action_executed.get("cacheable", True):
-            return False
+        entity_ids: list[str] = []
+        if isinstance(action_executed, dict):
+            raw_entity_ids = action_executed.get("entity_ids")
+            if isinstance(raw_entity_ids, list):
+                entity_ids.extend(str(item) for item in raw_entity_ids if item)
+            entity_id = str(action_executed.get("entity_id") or "").strip()
+            if entity_id:
+                entity_ids.append(entity_id)
+            entity_ids = list(dict.fromkeys(entity_ids))
+
+        confidence_value = confidence if confidence is not None else 0.0
+        readonly_action = self._is_readonly_action_result(action_executed)
+        if isinstance(action_executed, dict) and action_executed.get("success"):
+            if readonly_action:
+                try:
+                    await self._cache_manager.store_routing_async(
+                        user_text,
+                        target_agent,
+                        confidence_value,
+                        condensed_task,
+                        language=language,
+                        entity_ids=entity_ids,
+                    )
+                    return False, True
+                except Exception:
+                    logger.warning("Failed to store routing decision", exc_info=True)
+                    return False, False
+
+            if action_executed.get("cacheable", True):
+                entity_id = str(action_executed.get("entity_id") or "").strip()
+                action_name = str(action_executed.get("action") or "").strip().lower()
+                if entity_id and action_name:
+                    raw_service_data = action_executed.get("service_data") or {}
+                    cached_service_data: dict = {}
+                    if isinstance(raw_service_data, dict):
+                        for key in _CACHED_SERVICE_DATA_KEYS:
+                            if key in raw_service_data:
+                                cached_service_data[key] = raw_service_data[key]
+                    domain = entity_id.split(".", 1)[0] if "." in entity_id else ""
+                    cached_action = CachedAction(
+                        service=f"{domain}/{action_name}" if domain else action_name,
+                        entity_id=entity_id,
+                        service_data=cached_service_data,
+                    )
+                    entry = ActionCacheEntry(
+                        query_text=user_text,
+                        language=language,
+                        agent_id=target_agent,
+                        condensed_task=condensed_task,
+                        confidence=confidence_value,
+                        response_text=speech,
+                        cached_action=cached_action,
+                        entity_ids=entity_ids,
+                        origin_area_id=(task.context.area_id if used_origin_context and task and task.context else None),
+                        origin_device_id=(
+                            task.context.device_id if used_origin_context and task and task.context else None
+                        ),
+                        executed_at=datetime.now(UTC).isoformat(),
+                    )
+                    try:
+                        await self._cache_manager.store_action_async(entry)
+                        return True, False
+                    except Exception:
+                        logger.warning("Failed to store action cache entry", exc_info=True)
+                        return False, False
+                return False, False
+
+            return False, False
+
+        if self._is_actionable_routing_agent(target_agent):
+            return False, False
+
         try:
-            cached_action = None
-            entity_ids: list[str] = []
-            if action_executed and action_executed.get("success"):
-                entity_id_str = action_executed.get("entity_id", "")
-                domain = entity_id_str.split(".")[0] if "." in entity_id_str else ""
-                # P1-5: persist the structured service_data subset so a
-                # cache hit can replay ``brightness_pct=30`` etc. instead
-                # of degrading to a bare ``turn_on``. We whitelist keys
-                # to avoid caching PII or entity-specific state blobs
-                # that future HA versions might add.
-                raw_service_data = action_executed.get("service_data") or {}
-                cached_service_data: dict = {}
-                if isinstance(raw_service_data, dict):
-                    for key in _CACHED_SERVICE_DATA_KEYS:
-                        if key in raw_service_data:
-                            cached_service_data[key] = raw_service_data[key]
-                cached_action = CachedAction(
-                    service=f"{domain}/{action_executed['action']}",
-                    entity_id=entity_id_str,
-                    service_data=cached_service_data,
-                )
-                entity_ids = [entity_id_str] if entity_id_str else []
-            entry = ResponseCacheEntry(
-                query_text=user_text,
-                response_text=speech,
-                agent_id=target_agent,
-                cached_action=cached_action,
-                # P1-4: ``confidence`` may be ``None`` when the LLM
-                # emitted an old-format line. Persist a neutral 0.0
-                # rather than synthesising 0.8 so the cached value is
-                # a faithful record of "no confidence reported".
-                confidence=confidence if confidence is not None else 0.0,
-                entity_ids=entity_ids,
+            await self._cache_manager.store_routing_async(
+                user_text,
+                target_agent,
+                confidence_value,
+                condensed_task,
                 language=language,
+                entity_ids=entity_ids,
             )
-            await self._cache_manager.store_response_async(entry)
-            return True
+            return False, True
         except Exception:
-            logger.warning("Failed to store response cache", exc_info=True)
-            return False
+            logger.warning("Failed to store routing decision", exc_info=True)
+            return False, False
 
     @staticmethod
     def _is_actionable_routing_agent(target_agent: str) -> bool:
@@ -1095,7 +1067,12 @@ class OrchestratorAgent(BaseAgent):
 
     async def _get_bool_setting(self, key: str, default: bool) -> bool:
         try:
-            raw = await SettingsRepository.get_value(key, self._bool_setting_default(default))
+            legacy_key = {
+                "cache.compound_utterance_bypass": "routing.compound_utterance_bypass",
+            }.get(key)
+            raw = await SettingsRepository.get_value(key, None)
+            if raw is None and legacy_key is not None:
+                raw = await SettingsRepository.get_value(legacy_key, None)
         except Exception:
             return default
         if raw is None:
@@ -1108,62 +1085,6 @@ class OrchestratorAgent(BaseAgent):
         if normalized in {"false", "0", "no", "off"}:
             return False
         return default
-
-    async def _invalidate_routing_for_turn(self, user_text: str, *, language: str) -> None:
-        if not self._cache_manager:
-            return
-        entry_id = make_routing_entry_id(user_text, language=language)
-        try:
-            self._cache_manager.invalidate_routing(entry_id)
-        except Exception:
-            logger.debug("Routing cache invalidate failed", exc_info=True)
-
-    async def _maybe_store_routing(
-        self,
-        *,
-        user_text: str,
-        target_agent: str,
-        confidence: float | None,
-        condensed_task: str,
-        action_executed,
-        has_error: bool,
-        language: str = "en",
-    ) -> bool:
-        if not self._cache_manager or self._legacy_pipeline_enabled():
-            return False
-        if target_agent in (_FALLBACK_AGENT, _CANCEL_INTERACTION_AGENT, "send-agent"):
-            return False
-        if target_agent in _INTERNAL_ONLY_AGENTS:
-            return False
-        if has_error:
-            return False
-        try:
-            min_confidence = float(
-                await SettingsRepository.get_value(
-                    "routing.cache_min_confidence",
-                    "0.7",
-                )
-            )
-        except Exception:
-            min_confidence = 0.7
-        if confidence is None or confidence < min_confidence:
-            return False
-        if self._is_actionable_routing_agent(target_agent) and (
-            not action_executed or not action_executed.get("success")
-        ):
-            return False
-        try:
-            await self._cache_manager.store_routing_async(
-                user_text,
-                target_agent,
-                confidence,
-                condensed_task,
-                language=language,
-            )
-            return True
-        except Exception:
-            logger.warning("Failed to store routing decision", exc_info=True)
-            return False
 
     async def _create_trace(
         self,
@@ -1266,49 +1187,6 @@ class OrchestratorAgent(BaseAgent):
         detected_language = await self._resolve_language(user_text, context_language, turns=lang_turns)
         return conversation_id, detected_language, lang_turns
 
-    async def _pipeline_try_response_cache_replay(
-        self,
-        cache_result,
-        cache_span_ref,
-        conversation_id: str,
-        user_text: str,
-        span_collector,
-        task: AgentTask,
-        *,
-        streaming: bool,
-    ) -> dict | None:
-        """If ``cache_result`` is a response-hit, attempt replay and
-        return the resulting payload dict. Returns ``None`` either
-        when no replay was attempted (not a response_hit) or when
-        replay failed -- on failure a ``cache_fallthrough`` span is
-        recorded and an info log is emitted (with ``(stream)`` suffix
-        when ``streaming`` is True), matching the prior inline
-        behaviour in both pipeline impls. Callers are responsible for
-        resetting their local ``cache_result`` to ``None`` after a
-        ``None`` return that followed a response_hit, so downstream
-        classify routing-cache logic matches the previous flow.
-        """
-        if not (cache_result and cache_result.hit_type in ("action_hit", "response_hit")):
-            return None
-        result = await self._handle_response_cache_hit(
-            cache_result,
-            conversation_id,
-            user_text,
-            span_collector,
-            cache_span_ref,
-            task=task,
-        )
-        if result is not None:
-            return result
-        async with _optional_span(span_collector, "cache_fallthrough", agent_id="orchestrator") as ft_span:
-            ft_span["metadata"]["reason"] = "cached_action_replay_failed"
-        # P3-10: cache-replay fall-through is per-request and recoverable; debug.
-        if streaming:
-            logger.debug("Cached action replay failed, falling through to live dispatch (stream)")
-        else:
-            logger.debug("Cached action replay failed, falling through to live dispatch")
-        return None
-
     @staticmethod
     def _pipeline_record_classify_span(
         span,
@@ -1364,6 +1242,7 @@ class OrchestratorAgent(BaseAgent):
         mediation_agent: str | None = None,
         skip_mediation_on_error: bool = True,
         skip_response_cache: bool = False,
+        used_origin_context: bool = False,
     ) -> tuple[str, bool]:
         """Run the shared single-agent / sequential-send finalization
         block: open the ``return`` span, mediate the agent speech,
@@ -1387,7 +1266,7 @@ class OrchestratorAgent(BaseAgent):
         if mediation_agent is None:
             mediation_agent = target_agent
         original_speech = speech
-        cache_stored_response = False
+        cache_stored_action = False
         cache_stored_routing = False
         async with _optional_span(span_collector, "return", agent_id="orchestrator") as ret_span:
             ret_span["metadata"]["from_agent"] = routed_to
@@ -1414,25 +1293,21 @@ class OrchestratorAgent(BaseAgent):
             ret_span["metadata"]["mediated"] = speech != original_speech
             ret_span["metadata"]["voice_followup"] = voice_followup_effective
             if not skip_response_cache and target_agent != _CANCEL_INTERACTION_AGENT:
-                cache_stored_response = await self._store_response_cache(
-                    user_text,
-                    speech,
-                    target_agent,
-                    confidence,
-                    action_executed,
-                    has_error,
-                    language=language,
-                )
-                cache_stored_routing = await self._maybe_store_routing(
+                cache_stored_action, cache_stored_routing = await self._store_after_dispatch(
                     user_text=user_text,
+                    language=language,
                     target_agent=target_agent,
-                    confidence=confidence,
                     condensed_task=condensed_task,
+                    confidence=confidence,
+                    speech=speech,
                     action_executed=action_executed,
                     has_error=has_error,
-                    language=language,
+                    task=task,
+                    merged_multi_agent=False,
+                    used_origin_context=used_origin_context,
                 )
-            ret_span["metadata"]["cache_stored_response"] = cache_stored_response
+            ret_span["metadata"]["cache_stored_action"] = cache_stored_action
+            ret_span["metadata"]["cache_stored_response"] = cache_stored_action
             ret_span["metadata"]["cache_stored_routing"] = cache_stored_routing
             await self._store_turn(conversation_id, user_text, speech, agent_id=routed_to)
             if span_collector:
@@ -1472,8 +1347,8 @@ class OrchestratorAgent(BaseAgent):
         consolidating the streaming and non-streaming dispatch paths
         into a single coroutine. After P1-1 iterations 1-3 the shared
         helpers (``_dispatch_single``, ``_handle_sequential_send``,
-        ``_do_cache_lookup``, ``_classify``, ``_finalize_single_agent_response``,
-        ``_create_trace``, ``_store_response_cache``) already cover all
+        ``_classify``, ``_finalize_single_agent_response``,
+        ``_create_trace``, ``_store_after_dispatch``) already cover all
         non-streaming-specific logic. The streaming impl additionally
         delegates multi-agent and sequential-send back to ``handle_task``
         instead of re-implementing them. The remaining differences are
@@ -1573,47 +1448,45 @@ class OrchestratorAgent(BaseAgent):
                 "error": result.get("error"),
             }
 
-        # 0. Cache lookup (before classify)
-        cache_result = None
-        cache_span_ref = None
+        # 0. Routing cache lookup (before classify)
         compound_bypass = False
-        parse_miss_fallthrough_enabled = await self._get_bool_setting("routing.parse_miss_fallthrough", True)
+        action_replay = None
+        routing_skip = None
         if _pre_classified is None and self._cache_manager:
-            if await self._get_bool_setting("routing.compound_utterance_bypass", True) and looks_compound(user_text):
+            if await self._get_bool_setting("cache.compound_utterance_bypass", True) and looks_compound(user_text):
                 compound_bypass = True
                 logger.debug("Skipping cache lookup for structurally compound utterance: %r", user_text[:80])
             else:
-                cache_result, cache_span_ref = await self._do_cache_lookup(
-                    user_text,
-                    span_collector,
+                action_replay, routing_skip = await self._try_cache_replay(
+                    task=task,
+                    user_text=user_text,
                     language=detected_language,
+                    span_collector=span_collector,
                 )
-
-        # Response hit short-circuit: skip classify and dispatch entirely
-        if cache_result and cache_result.hit_type in ("action_hit", "response_hit"):
-            replay = await self._pipeline_try_response_cache_replay(
-                cache_result,
-                cache_span_ref,
+        if action_replay is not None:
+            replay = await self._finalize_action_replay_hit(
+                action_replay,
                 conversation_id,
                 user_text,
                 span_collector,
-                task,
-                streaming=False,
+                task=task,
             )
-            if replay is not None:
-                return replay
-            # Cached action replay failed -- fall through to classify + dispatch
-            cache_result = None  # Reset so _classify() can re-check routing cache
+            replay["conversation_id"] = conversation_id
+            self._schedule_ha_voice_followup_if_requested(task, False)
+            return replay
 
         pre_classified = _pre_classified
-        fallthrough_used = False
-        allow_classify_cache_lookup = (
-            _allow_classify_cache_lookup if _allow_classify_cache_lookup is not None else not compound_bypass
-        )
+        synthetic_preclassified = False
+        allow_classify_cache_lookup = _allow_classify_cache_lookup if _allow_classify_cache_lookup is not None else False
         next_classify_extra: dict[str, object] = {}
+        used_origin_context = False
         if compound_bypass:
             next_classify_extra["compound_bypass"] = True
             next_classify_extra["compound_bypass_reason"] = "multi_sentence"
+        if routing_skip is not None:
+            pre_classified = (self._build_synthetic_classifications(routing_skip), True)
+            synthetic_preclassified = True
+            next_classify_extra["reason"] = "routing_cache_skip"
         if _classify_reason:
             next_classify_extra["reason"] = _classify_reason
 
@@ -1624,12 +1497,25 @@ class OrchestratorAgent(BaseAgent):
                 classifications, routing_cached = pre_classified
                 target_agent, condensed_task, confidence = classifications[0]
                 pre_classified = None
+                if synthetic_preclassified:
+                    async with _optional_span(span_collector, "classify", agent_id="orchestrator") as span:
+                        self._pipeline_record_classify_span(
+                            span,
+                            classifications,
+                            user_text,
+                            condensed_task,
+                            confidence,
+                            routing_cached,
+                            extended_metadata=True,
+                            extra_metadata=next_classify_extra or None,
+                        )
+                    synthetic_preclassified = False
             else:
                 try:
                     async with _optional_span(span_collector, "classify", agent_id="orchestrator") as span:
                         classifications, routing_cached = await self._classify(
                             user_text,
-                            cache_result=cache_result,
+                            cache_result=None,
                             conversation_id=conversation_id,
                             span_collector=span_collector,
                             language=detected_language,
@@ -1660,7 +1546,7 @@ class OrchestratorAgent(BaseAgent):
                         },
                     }
             next_classify_extra = {}
-            allow_classify_cache_lookup = True
+            allow_classify_cache_lookup = False
 
             # P3-10: per-request routing log; debug.
             logger.debug(
@@ -1729,26 +1615,6 @@ class OrchestratorAgent(BaseAgent):
                 agent_error = (result or {}).get("error")
                 has_error = agent_error is not None
                 agent_voice_followup = bool((result or {}).get("voice_followup"))
-                if (
-                    parse_miss_fallthrough_enabled
-                    and routing_cached
-                    and not fallthrough_used
-                    and self._is_actionable_routing_agent(target_agent)
-                    and not has_error
-                    and not action_executed
-                ):
-                    fallthrough_used = True
-                    await self._invalidate_routing_for_turn(user_text, language=detected_language)
-                    async with _optional_span(span_collector, "cache_fallthrough", agent_id="orchestrator") as span:
-                        span["metadata"]["reason"] = "routing_hit_actionable_parse_miss"
-                    logger.debug(
-                        "Routing cache hit for %s produced no executed action; invalidated entry and reclassifying live",
-                        target_agent,
-                    )
-                    cache_result = None
-                    allow_classify_cache_lookup = False
-                    next_classify_extra = {"reason": "routing_hit_actionable_parse_miss"}
-                    continue
             else:
                 dispatch_coros = [
                     self._dispatch_single(
@@ -1871,6 +1737,7 @@ class OrchestratorAgent(BaseAgent):
                 mediation_agent=mediation_agent,
                 skip_mediation_on_error=True,
                 skip_response_cache=is_sequential_send,
+                used_origin_context=used_origin_context,
             )
 
         response = {
@@ -1900,11 +1767,10 @@ class OrchestratorAgent(BaseAgent):
         t0_request = time.perf_counter()  # Wall-clock start for filler threshold
         t0_request_utc = datetime.now(UTC)  # Absolute UTC for span timestamp overrides
 
-        # 0. Cache lookup (before classify)
-        cache_result = None
-        cache_span_ref = None
+        # 0. Cache replay / routing skip (before classify)
         compound_bypass = False
-        parse_miss_fallthrough_enabled = await self._get_bool_setting("routing.parse_miss_fallthrough", True)
+        action_replay = None
+        routing_skip = None
         if self._is_background_turn(task):
             result = await self._handle_background_turn(task)
             final_chunk = {
@@ -1918,63 +1784,76 @@ class OrchestratorAgent(BaseAgent):
             yield final_chunk
             return
         if self._cache_manager:
-            if await self._get_bool_setting("routing.compound_utterance_bypass", True) and looks_compound(user_text):
+            if await self._get_bool_setting("cache.compound_utterance_bypass", True) and looks_compound(user_text):
                 compound_bypass = True
                 logger.debug("Skipping cache lookup for structurally compound utterance: %r", user_text[:80])
             else:
-                cache_result, cache_span_ref = await self._do_cache_lookup(
-                    user_text,
-                    span_collector,
+                action_replay, routing_skip = await self._try_cache_replay(
+                    task=task,
+                    user_text=user_text,
                     language=detected_language,
+                    span_collector=span_collector,
                 )
-
-        # Response hit short-circuit for streaming
-        if cache_result and cache_result.hit_type in ("action_hit", "response_hit"):
-            replay = await self._pipeline_try_response_cache_replay(
-                cache_result,
-                cache_span_ref,
+        if action_replay is not None:
+            replay = await self._finalize_action_replay_hit(
+                action_replay,
                 conversation_id,
                 user_text,
                 span_collector,
-                task,
-                streaming=True,
+                task=task,
             )
-            if replay is not None:
-                yield {
-                    "token": strip_markdown(replay["speech"]),
-                    "done": True,
-                    "conversation_id": conversation_id,
-                }
-                return
-            # Cached action replay failed -- fall through to classify + dispatch
-            cache_result = None  # Reset so _classify() can re-check routing cache
+            yield {
+                "token": replay["speech"],
+                "done": True,
+                "conversation_id": conversation_id,
+                "mediated_speech": replay["speech"],
+                "sanitized": False,
+            }
+            return
 
         # 1. Classify (non-streaming -- fast via Groq)
         classify_extra: dict[str, object] = {}
+        used_origin_context = False
         if compound_bypass:
             classify_extra["compound_bypass"] = True
             classify_extra["compound_bypass_reason"] = "multi_sentence"
         try:
-            async with _optional_span(span_collector, "classify", agent_id="orchestrator") as span:
-                classifications, routing_cached = await self._classify(
-                    user_text,
-                    cache_result=cache_result,
-                    conversation_id=conversation_id,
-                    span_collector=span_collector,
-                    language=detected_language,
-                    allow_cache_lookup=not compound_bypass,
-                )
+            if routing_skip is not None:
+                classifications = self._build_synthetic_classifications(routing_skip)
+                routing_cached = True
                 target_agent, condensed_task, confidence = classifications[0]
-                self._pipeline_record_classify_span(
-                    span,
-                    classifications,
-                    user_text,
-                    condensed_task,
-                    confidence,
-                    routing_cached,
-                    extended_metadata=False,
-                    extra_metadata=classify_extra or None,
-                )
+                async with _optional_span(span_collector, "classify", agent_id="orchestrator") as span:
+                    self._pipeline_record_classify_span(
+                        span,
+                        classifications,
+                        user_text,
+                        condensed_task,
+                        confidence,
+                        routing_cached,
+                        extended_metadata=False,
+                        extra_metadata={**classify_extra, "reason": "routing_cache_skip"} if classify_extra else {"reason": "routing_cache_skip"},
+                    )
+            else:
+                async with _optional_span(span_collector, "classify", agent_id="orchestrator") as span:
+                    classifications, routing_cached = await self._classify(
+                        user_text,
+                        cache_result=None,
+                        conversation_id=conversation_id,
+                        span_collector=span_collector,
+                        language=detected_language,
+                        allow_cache_lookup=False,
+                    )
+                    target_agent, condensed_task, confidence = classifications[0]
+                    self._pipeline_record_classify_span(
+                        span,
+                        classifications,
+                        user_text,
+                        condensed_task,
+                        confidence,
+                        routing_cached,
+                        extended_metadata=False,
+                        extra_metadata=classify_extra or None,
+                    )
         except _RecoverableClassificationError as exc:
             yield {
                 "token": "",
@@ -2406,42 +2285,6 @@ class OrchestratorAgent(BaseAgent):
             yield final_chunk
             return
 
-        if (
-            parse_miss_fallthrough_enabled
-            and routing_cached
-            and self._is_actionable_routing_agent(target_agent)
-            and stream_error is None
-            and action_executed is None
-        ):
-            await self._invalidate_routing_for_turn(user_text, language=detected_language)
-            async with _optional_span(span_collector, "cache_fallthrough", agent_id="orchestrator") as span:
-                span["metadata"]["reason"] = "routing_hit_actionable_parse_miss"
-            logger.debug(
-                "Routing cache hit for %s produced no executed action during streaming; falling back to non-streaming handle_task",
-                target_agent,
-            )
-            result = await self.handle_task(
-                task,
-                _classify_reason="routing_hit_actionable_parse_miss",
-                _allow_classify_cache_lookup=False,
-            )
-            final_chunk = {
-                "token": result["speech"],
-                "done": True,
-                "conversation_id": conversation_id,
-                "mediated_speech": result["speech"],
-            }
-            if result.get("error"):
-                final_chunk["error"] = result["error"]
-            if result.get("voice_followup"):
-                final_chunk["voice_followup"] = True
-            if result.get("directive"):
-                final_chunk["directive"] = result["directive"]
-            if result.get("reason") is not None:
-                final_chunk["reason"] = result["reason"]
-            yield final_chunk
-            return
-
         # 4. Store conversation turn and create trace summary
         full_speech = "".join(collected_speech)
         if stream_error is not None and target_agent == _FALLBACK_AGENT:
@@ -2469,6 +2312,7 @@ class OrchestratorAgent(BaseAgent):
             routed_to=target_agent,
             mediation_agent=target_agent,
             skip_mediation_on_error=False,
+            used_origin_context=used_origin_context,
         )
 
         # Yield final done chunk with mediated_speech (always included)
@@ -2913,16 +2757,7 @@ class OrchestratorAgent(BaseAgent):
             if self._cache_manager and self._legacy_pipeline_enabled() and len(classifications) == 1:
                 target_agent, condensed, confidence = classifications[0]
                 if target_agent not in (_FALLBACK_AGENT, _CANCEL_INTERACTION_AGENT, "send-agent"):
-                    try:
-                        min_confidence = float(
-                            await SettingsRepository.get_value(
-                                "routing.cache_min_confidence",
-                                "0.7",
-                            )
-                        )
-                    except Exception:
-                        min_confidence = 0.7
-                    if confidence is not None and confidence >= min_confidence:
+                    if confidence is not None:
                         try:
                             await self._cache_manager.store_routing_async(
                                 user_text,
