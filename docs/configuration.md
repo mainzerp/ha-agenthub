@@ -33,18 +33,19 @@ All runtime settings are stored in the `settings` table, organized by category. 
 ### Cache Settings
 
 The action cache was named "response cache" in 0.20.x and earlier.
-The `cache.response.*` setting keys below are intentionally kept to
-preserve user-tuned thresholds across the rename. The export and
-import API surface uses the `action` tier name (`response` is still
-accepted as a legacy alias on read).
+The v4 schema migration renamed the keys to canonical `cache.action.*`
+form. The export and import API surface uses the `action` tier name.
 
 | Key | Default | Type | Description |
 |-----|---------|------|-------------|
-| `cache.routing.threshold` | `0.92` | float | Cosine similarity threshold for routing cache hits |
+| `cache.routing.enabled` | `true` | bool | Enable the routing cache tier |
+| `cache.routing.semantic_threshold` | `0.92` | float | Cosine similarity threshold for routing cache hits |
 | `cache.routing.max_entries` | `50000` | int | Maximum routing cache entries (LRU eviction) |
-| `cache.response.threshold` | `0.95` | float | Cosine similarity threshold for full action cache hits |
-| `cache.response.partial_threshold` | `0.80` | float | Threshold for partial action cache matches |
-| `cache.response.max_entries` | `20000` | int | Maximum action cache entries (LRU eviction) |
+| `cache.action.enabled` | `true` | bool | Enable the action cache tier |
+| `cache.action.semantic_threshold` | `0.95` | float | Cosine similarity threshold for action cache hits |
+| `cache.action.max_entries` | `50000` | int | Maximum action cache entries (LRU eviction) |
+| `cache.lru.trigger_fraction` | `0.95` | float | Early-eviction trigger fraction of `max_entries` |
+| `cache.lru.eviction_interval` | `100` | int | Operations between LRU eviction sweeps |
 
 ### Embedding Settings
 

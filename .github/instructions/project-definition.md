@@ -267,19 +267,20 @@ HA-AgentHub currently uses two persistent vector-backed cache tiers:
 
 Compatibility note:
 
-- internal collection names still use `response_cache`
-- internal classes and settings keys still use `response` naming in several places
-- `action_cache` is an alias over the same underlying response-cache implementation
+- internal collection names still use `response_cache` for backward compatibility on the Chroma side
+- runtime settings keys are canonical `cache.action.*` and `cache.routing.*` after migration 23
+- there is no partial-threshold tier; partial matches do not short-circuit live execution
 
 ### Thresholds and Bounds
 
 | Cache Setting | Current Default |
 | --- | --- |
-| `cache.routing.threshold` | `0.92` |
+| `cache.routing.semantic_threshold` | `0.92` |
 | `cache.routing.max_entries` | `50000` |
-| `cache.response.threshold` | `0.95` |
-| `cache.response.partial_threshold` | `0.80` |
-| `cache.response.max_entries` | `20000` |
+| `cache.action.semantic_threshold` | `0.95` |
+| `cache.action.max_entries` | `50000` |
+| `cache.lru.trigger_fraction` | `0.95` |
+| `cache.lru.eviction_interval` | `100` |
 
 Both tiers are persistent and have no TTL, but they are not unbounded. They use LRU-style entry caps to limit growth.
 

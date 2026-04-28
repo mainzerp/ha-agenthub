@@ -213,9 +213,17 @@ async def test_invalidate_by_entity_id_returns_per_cache_counts():
     store = MagicMock(spec=VectorStore)
     store.count.return_value = 0
     manager = CacheManager(store)
-    manager._action_cache.invalidate_by_entity_id = MagicMock(side_effect=[2, 1])
-    manager._routing_cache.invalidate_by_entity_id = MagicMock(side_effect=[3, 2])
+    # I6: invalidate_by_entity_id now batches all ids into one underlying call
+    # per cache so the collection is paginated once instead of N times.
+    manager._action_cache.invalidate_by_entity_id = MagicMock(return_value=3)
+    manager._routing_cache.invalidate_by_entity_id = MagicMock(return_value=5)
 
     counts = await manager.invalidate_by_entity_id(["light.kitchen", "switch.garage"])
 
     assert counts == {"action": 3, "routing": 5}
+    manager._action_cache.invalidate_by_entity_id.assert_called_once_with(
+        ["light.kitchen", "switch.garage"]
+    )
+    manager._routing_cache.invalidate_by_entity_id.assert_called_once_with(
+        ["light.kitchen", "switch.garage"]
+    )

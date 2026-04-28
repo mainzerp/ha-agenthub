@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import UTC, datetime
 
@@ -57,7 +58,7 @@ async def get_cache_stats(request: Request):
 @router.get("/entries")
 async def browse_cache_entries(
     request: Request,
-    tier: str = Query("routing", pattern="^(routing|action|response)$"),
+    tier: str = Query("routing", pattern="^(routing|action)$"),
     search: str | None = Query(None),
     page: int = Query(1, ge=1),
     per_page: int = Query(50, ge=1, le=200),
@@ -72,14 +73,14 @@ async def browse_cache_entries(
     collection_name = COLLECTION_ROUTING_CACHE if tier == "routing" else COLLECTION_ACTION_CACHE
 
     try:
-        total = vector_store.count(collection_name)
+        total = await vector_store.acount(collection_name)
         if total == 0:
             return {"entries": [], "total": 0, "page": page, "per_page": per_page}
 
         # When not searching, use limit/offset to avoid loading all entries
         if not search:
             offset_val = (page - 1) * per_page
-            data = vector_store.get(
+            data = await vector_store.aget(
                 collection_name,
                 include=["metadatas", "documents"],
                 limit=per_page,
@@ -101,7 +102,7 @@ async def browse_cache_entries(
             }
 
         # Search requires loading all entries for text filtering
-        data = vector_store.get(
+        data = await vector_store.aget(
             collection_name,
             include=["metadatas", "documents"],
         )
@@ -157,10 +158,10 @@ async def flush_cache(request: Request, payload: FlushRequest):
         }
 
     try:
-        cache_manager.flush(tier)
+        await asyncio.to_thread(cache_manager.flush, tier)
         return {"status": "ok", "flushed": tier or "all"}
     except Exception as exc:
-        logger.warning("Failed to flush action cache", exc_info=True)
+        logger.warning("Failed to flush cache", exc_info=True)
         return {"status": "error", "detail": str(exc)}
 
 

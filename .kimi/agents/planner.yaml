@@ -1,0 +1,4 @@
+version: 1
+agent:
+  extend: ../orchestrator.yaml
+  system_prompt_path: ./planner-prompt.md

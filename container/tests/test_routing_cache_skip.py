@@ -224,3 +224,37 @@ async def test_routing_cache_disabled_setting_short_circuits():
 
     assert result is None
     track.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_routing_hit_for_disabled_agent_is_invalidated_and_falls_through():
+    """F2 / T1: a routing-cache hit pointing at a now-disabled agent must be
+    invalidated and the turn must fall through to live orchestration instead of
+    dispatching to a non-existent agent."""
+    cache_manager = MagicMock()
+    cache_manager.try_replay_action = AsyncMock(return_value=None)
+    stale_outcome = RoutingSkipOutcome(
+        kind="routing_hit",
+        entry_id="stale-entry-id",
+        agent_id="climate-agent",
+        condensed_task="What is the bedroom temperature?",
+        similarity=0.99,
+    )
+    cache_manager.try_routing_skip = AsyncMock(return_value=stale_outcome)
+    cache_manager.invalidate_routing = MagicMock()
+
+    orch = _make_orchestrator(cache_manager)
+    # Live agent registry no longer includes climate-agent.
+    orch._get_known_agents = AsyncMock(return_value={"light-agent", "general-agent"})
+    orch._get_bool_setting = AsyncMock(side_effect=lambda _key, default: default)
+    orch._entity_index = None
+
+    action_replay, routing_skip = await orch._try_cache_replay(
+        task=_make_task("what is the bedroom temperature"),
+        user_text="what is the bedroom temperature",
+        language="en",
+    )
+
+    assert action_replay is None
+    assert routing_skip is None
+    cache_manager.invalidate_routing.assert_called_once_with("stale-entry-id")

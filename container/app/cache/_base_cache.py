@@ -95,6 +95,7 @@ class _BaseCache(ABC, Generic[TEntry]):
         self._semantic_fallback_enabled: bool = True
         self._max_entries: int = default_max_entries
         self._eviction_interval: int = 100
+        self._lru_trigger_fraction: float = _LRU_TRIGGER_FRACTION
         self._flush_interval: int = 5
         self._state = _CacheState()
 
@@ -165,6 +166,10 @@ class _BaseCache(ABC, Generic[TEntry]):
         )
         self._enabled = self._coerce_bool(enabled_raw, enabled_default)
         self._max_entries = self._coerce_int(max_entries_raw, max_entries_default)
+        trigger_raw = await self._get_setting("cache.lru.trigger_fraction", "0.95")
+        self._lru_trigger_fraction = self._coerce_float(trigger_raw, _LRU_TRIGGER_FRACTION)
+        interval_raw = await self._get_setting("cache.lru.eviction_interval", "100")
+        self._eviction_interval = self._coerce_int(interval_raw, 100)
         if semantic_fallback_enabled_key:
             semantic_raw = await self._get_setting(
                 semantic_fallback_enabled_key,
@@ -199,6 +204,9 @@ class _BaseCache(ABC, Generic[TEntry]):
         )
 
     def invalidate_by_entry_id(self, entry_id: str) -> bool:
+        # Bump invalidation generation so a concurrent store() that captured the
+        # pre-invalidate generation cannot resurrect the row after delete.
+        self._state.invalidate()
         self._state.discard_pending(entry_id)
         self._store.delete(self._collection_name, ids=[entry_id])
         return True
@@ -362,11 +370,12 @@ class _BaseCache(ABC, Generic[TEntry]):
     def _enforce_lru(self) -> None:
         self._flush_pending_updates()
         count = self._store.count(self._collection_name)
-        if count <= int(self._max_entries * _LRU_TRIGGER_FRACTION):
+        trigger = int(self._max_entries * self._lru_trigger_fraction)
+        if count <= trigger:
             return
-        if count <= self._max_entries:
-            return
-        overage = count - self._max_entries + int(self._max_entries * 0.1)
+        # Evict down to 90% of max so the next eviction sweep is not immediate.
+        target = int(self._max_entries * 0.9)
+        overage = count - target
 
         def _iter_all():
             offset = 0

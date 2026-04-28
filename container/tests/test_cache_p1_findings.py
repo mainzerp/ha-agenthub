@@ -92,6 +92,17 @@ class TestRoutingCacheStoreConcurrency:
         # would deadlock before reaching the assertion.
         assert store.upsert.call_count == 50
 
+    def test_invalidate_by_entry_id_bumps_generation(self):
+        """F6 / T3: invalidate_by_entry_id() must bump the invalidation
+        generation so a concurrent store() that captured the pre-invalidate
+        generation is rejected and cannot resurrect the deleted row."""
+        cache, store = self._make_cache()
+        gen_before = cache._state.current_generation()
+        cache.invalidate_by_entry_id("some-entry-id")
+        gen_after = cache._state.current_generation()
+        assert gen_after != gen_before, "invalidation must bump the state generation"
+        assert store.delete.call_count == 1
+
 
 class TestRoutingCacheFlushRequeue:
     def test_flush_failure_requeues_pending(self):

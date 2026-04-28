@@ -108,7 +108,7 @@
                 <div class="stat-card-value text-teal" x-text="stats.routing?.count ?? '-'"></div>
                 <div class="stat-card-detail">
                     max: <span x-text="stats.routing?.max_entries ?? '-'"></span>
-                    | threshold: <span x-text="stats.routing?.threshold ?? '-'"></span>
+                    | threshold: <span x-text="stats.routing?.semantic_threshold ?? '-'"></span>
                     | <a href="{{ root_url(request, '/dashboard/settings') }}" class="text-blue">Edit</a>
                 </div>
                 <div class="btn-group mt-sm">
@@ -184,8 +184,7 @@
                 <div class="stat-card-value text-sage" x-text="stats.action?.count ?? '-'"></div>
                 <div class="stat-card-detail">
                     max: <span x-text="stats.action?.max_entries ?? '-'"></span>
-                    | hit: <span x-text="stats.action?.hit_threshold ?? '-'"></span>
-                    | partial: <span x-text="stats.action?.partial_threshold ?? '-'"></span>
+                    | threshold: <span x-text="stats.action?.semantic_threshold ?? '-'"></span>
                     | <a href="{{ root_url(request, '/dashboard/settings') }}" class="text-blue">Edit</a>
                 </div>
                 <div class="btn-group mt-sm">

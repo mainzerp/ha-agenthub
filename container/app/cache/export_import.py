@@ -101,11 +101,22 @@ def iter_export_chunks(
     """Yield UTF-8 JSON bytes that together form one v4 export envelope."""
 
     requested = [tier for tier in tiers if tier in ALLOWED_TIERS]
+    embedding_model = "unknown"
+    try:
+        from app.config import settings as _runtime_settings
+        embedding_model = (
+            getattr(_runtime_settings, "embedding_local_model", None)
+            or getattr(_runtime_settings, "embedding_model", None)
+            or "unknown"
+        )
+    except Exception:
+        pass
     header = {
         "format_version": SUPPORTED_FORMAT_VERSION,
         "exported_at": datetime.now(UTC).isoformat(),
         "schema_version": SCHEMA_VERSION,
         "source_app_version": app_version,
+        "embedding_model": embedding_model,
     }
     header_json = json.dumps(header)
     assert header_json.endswith("}")
@@ -234,6 +245,17 @@ async def import_envelope(
         mode=mode,
         format_version=int(envelope.get("format_version", SUPPORTED_FORMAT_VERSION)),
     )
+    source_model = envelope.get("embedding_model")
+    if source_model and source_model != "unknown":
+        try:
+            from app.config import settings as _runtime_settings
+            local_model = getattr(_runtime_settings, "embedding_local_model", None)
+            if local_model and local_model != source_model:
+                summary.warnings.append(
+                    f"embedding model mismatch: export={source_model!r} runtime={local_model!r} (entries will be re-embedded)"
+                )
+        except Exception:
+            pass
     tiers_block = envelope.get("tiers") or {}
 
     for tier in requested:

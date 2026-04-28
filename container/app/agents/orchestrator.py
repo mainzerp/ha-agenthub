@@ -818,6 +818,19 @@ class OrchestratorAgent(BaseAgent):
                 language=language,
             )
             if routing_hit is not None:
+                # Directive 7: a routing-cache hit may skip reclassification but
+                # MUST NOT dispatch to an agent that has since been disabled or
+                # removed. Drop the entry and fall through to live classify.
+                known_agents = await self._get_known_agents()
+                if routing_hit.agent_id not in known_agents:
+                    with contextlib.suppress(Exception):
+                        await asyncio.to_thread(
+                            self._cache_manager.invalidate_routing, routing_hit.entry_id
+                        )
+                    cache_span["metadata"]["hit_type"] = "routing_stale_agent"
+                    cache_span["metadata"]["cached_agent_id"] = routing_hit.agent_id
+                    cache_span["metadata"]["cache_tier"] = "both_miss"
+                    return None, None
                 cache_span["metadata"]["hit_type"] = "routing_hit"
                 cache_span["metadata"]["similarity"] = routing_hit.similarity
                 cache_span["metadata"]["cached_agent_id"] = routing_hit.agent_id

@@ -167,14 +167,21 @@ class CacheManager:
         entry_id = self._action_cache.make_entry_id(entry.query_text, language=entry.language)
         entity_id = entry.cached_action.entity_id
         if entity_id:
+            # F12 split: distinguish entity-index outage (transient) from a real
+            # entity divergence. On outage we fall through to live orchestration
+            # WITHOUT invalidating, so a flaky index does not drain the cache.
+            resolution_failed = False
             try:
                 resolved_entity = await resolve_entity(query_text, entry.agent_id)
             except Exception:
                 logger.warning("Action cache entity re-resolution failed", exc_info=True)
                 resolved_entity = None
+                resolution_failed = True
+            if resolution_failed:
+                return None
             if not resolved_entity or resolved_entity != entity_id:
                 with contextlib.suppress(Exception):
-                    self._action_cache.invalidate_by_entry_id(entry_id)
+                    await asyncio.to_thread(self._action_cache.invalidate_by_entry_id, entry_id)
                 return None
             try:
                 visible = await check_visibility(entry.agent_id or requesting_agent_id, entity_id)
@@ -183,7 +190,7 @@ class CacheManager:
                 visible = False
             if not visible:
                 with contextlib.suppress(Exception):
-                    self._action_cache.invalidate_by_entry_id(entry_id)
+                    await asyncio.to_thread(self._action_cache.invalidate_by_entry_id, entry_id)
                 return None
 
         try:
@@ -373,10 +380,9 @@ class CacheManager:
             return {"action": 0, "routing": 0}
 
         def _invalidate(cache) -> int:
-            deleted = 0
-            for entity_id in unique_ids:
-                deleted += cache.invalidate_by_entity_id([entity_id])
-            return deleted
+            # Pass the full id set so the underlying scan paginates the
+            # collection once instead of N times for N entity ids.
+            return cache.invalidate_by_entity_id(unique_ids)
 
         action_count, routing_count = await asyncio.gather(
             asyncio.to_thread(_invalidate, self._action_cache),

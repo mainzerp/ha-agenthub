@@ -1259,3 +1259,28 @@ async def _run_migrations(db: aiosqlite.Connection) -> None:
             ],
         )
         await db.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (23)")
+
+    if current_version < 24:
+        # Migration 24: Seed cache LRU policy settings (early-eviction trigger,
+        # eviction sweep interval). Both lift previously hardcoded constants in
+        # _base_cache.py into runtime settings.
+        await db.executemany(
+            "INSERT OR IGNORE INTO settings (key, value, value_type, category, description, updated_at) VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)",
+            [
+                (
+                    "cache.lru.trigger_fraction",
+                    str(CACHE_DEFAULTS["cache.lru.trigger_fraction"]),
+                    "float",
+                    "cache",
+                    "Fraction of max_entries that triggers early LRU eviction",
+                ),
+                (
+                    "cache.lru.eviction_interval",
+                    str(CACHE_DEFAULTS["cache.lru.eviction_interval"]),
+                    "int",
+                    "cache",
+                    "Number of store operations between LRU eviction sweeps",
+                ),
+            ],
+        )
+        await db.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (24)")

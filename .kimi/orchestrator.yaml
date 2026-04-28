@@ -1,0 +1,21 @@
+version: 1
+agent:
+  extend: default
+  name: ha-agenthub-orchestrator
+  system_prompt_path: ./orchestrator-prompt.md
+  subagents:
+    research:
+      path: ./agents/research.yaml
+      description: >
+        Read-focused codebase analysis agent. Produces docs/SubAgent/<NAME>_ANALYSIS.md.
+        Use as the first phase of any non-trivial task. Runs with read-only tools only.
+    planner:
+      path: ./agents/planner.yaml
+      description: >
+        Produces a detailed implementation plan with checklist at docs/SubAgent/<NAME>_PLAN.md.
+        Run after the research subagent returns. Runs with read-only tools only.
+    implementer:
+      path: ./agents/implementer.yaml
+      description: >
+        Implements an already-approved plan from docs/SubAgent/<NAME>_PLAN.md.
+        Only run after the user has explicitly approved the plan in chat.

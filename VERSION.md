@@ -6,6 +6,9 @@
 
 - Removed hardcoded German and English replay phrasing from `rewrite_template.py` and replaced it with a neutral structured replay context for cache-hit rewrite.
 - Rewrite-disabled or rewrite-failed action-cache hits now keep the cached `response_text` verbatim, which remains safe under v3 structured-key equality.
+- Cache audit fixes: routing-cache hits now invalidate against `_get_known_agents()` so a hit pointing at a disabled or removed agent is dropped instead of dispatched (Directive 7). Synchronous Chroma calls in `cache_api` browse/flush handlers and the inline `invalidate_by_entry_id` calls in `try_replay_action` now run via `asyncio.to_thread` / the `aget`/`acount`/`adelete` async wrappers (Directive 9).
+- Cache audit fixes (continued): `invalidate_by_entry_id` now bumps the invalidation generation so a concurrent `store()` cannot resurrect a deleted row; LRU early-eviction at `cache.lru.trigger_fraction = 0.95` is now active and lifted into runtime settings together with `cache.lru.eviction_interval = 100` (migration 24); the legacy `response_cache.py` shim was deleted; the `closed`-state heuristic on Chroma reconnect is narrowed to client-/connection-closed wording; the action-cache export envelope now records the embedding model and import surfaces a mismatch warning; entity-resolution exceptions during action-cache replay no longer pre-emptively invalidate cached rows during a transient entity-index outage; `invalidate_by_entity_id` batches all ids into one underlying call per cache.
+- Documentation alignment: `docs/configuration.md`, `.github/instructions/project-definition.md`, and the cache dashboard template now use the canonical `cache.action.semantic_threshold` / `cache.routing.semantic_threshold` keys, document `max_entries=50000` for both tiers, and surface the new LRU policy settings.
 
 ## Version History
 

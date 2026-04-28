@@ -20,6 +20,19 @@ COLLECTION_ACTION_CACHE = "action_cache"
 COLLECTION_RESPONSE_CACHE = "response_cache"
 
 
+def _is_client_closed_error(exc: BaseException) -> bool:
+    # Narrow the heuristic to chromadb client-closed / connection-closed wording
+    # so unrelated errors whose stringification happens to contain "closed" do
+    # not trigger a heavyweight PersistentClient reinit.
+    msg = str(exc).lower()
+    return (
+        "client is closed" in msg
+        or "client closed" in msg
+        or "connection closed" in msg
+        or "connection is closed" in msg
+    )
+
+
 class VectorStore:
     """Manages ChromaDB PersistentClient and all cache/index collections."""
 
@@ -162,7 +175,7 @@ class VectorStore:
         try:
             col.add(**kwargs)
         except Exception as exc:
-            if "closed" in str(exc).lower():
+            if _is_client_closed_error(exc):
                 self._reinitialize_sync()
                 self.get_collection(collection_name).add(**kwargs)
             else:
@@ -188,7 +201,7 @@ class VectorStore:
         try:
             col.upsert(**kwargs)
         except Exception as exc:
-            if "closed" in str(exc).lower():
+            if _is_client_closed_error(exc):
                 self._reinitialize_sync()
                 self.get_collection(collection_name).upsert(**kwargs)
             else:
@@ -217,7 +230,7 @@ class VectorStore:
         try:
             return col.query(**kwargs)
         except Exception as exc:
-            if "closed" in str(exc).lower():
+            if _is_client_closed_error(exc):
                 self._reinitialize_sync()
                 return self.get_collection(collection_name).query(**kwargs)
             raise
@@ -227,7 +240,7 @@ class VectorStore:
         try:
             self.get_collection(collection_name).delete(ids=ids)
         except Exception as exc:
-            if "closed" in str(exc).lower():
+            if _is_client_closed_error(exc):
                 self._reinitialize_sync()
                 self.get_collection(collection_name).delete(ids=ids)
             else:
@@ -238,7 +251,7 @@ class VectorStore:
         try:
             return self.get_collection(collection_name).count()
         except Exception as exc:
-            if "closed" in str(exc).lower():
+            if _is_client_closed_error(exc):
                 self._reinitialize_sync()
                 return self.get_collection(collection_name).count()
             raise
@@ -254,7 +267,7 @@ class VectorStore:
         try:
             col.update(ids=ids, metadatas=metadatas)
         except Exception as exc:
-            if "closed" in str(exc).lower():
+            if _is_client_closed_error(exc):
                 self._reinitialize_sync()
                 self.get_collection(collection_name).update(ids=ids, metadatas=metadatas)
             else:
@@ -285,7 +298,7 @@ class VectorStore:
         try:
             return col.get(**kwargs)
         except Exception as exc:
-            if "closed" in str(exc).lower():
+            if _is_client_closed_error(exc):
                 self._reinitialize_sync()
                 return self.get_collection(collection_name).get(**kwargs)
             raise

@@ -17,4 +17,6 @@ CACHE_DEFAULTS: dict[str, object] = {
     "cache.action.semantic_fallback_enabled": True,
     "cache.action.semantic_threshold": 0.95,
     "cache.action.max_entries": 50000,
+    "cache.lru.trigger_fraction": 0.95,
+    "cache.lru.eviction_interval": 100,
 }
