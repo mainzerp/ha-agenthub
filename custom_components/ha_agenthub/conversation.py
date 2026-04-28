@@ -449,7 +449,7 @@ class HaAgentHubConversationEntity(
                     "preannounce": False,
                 },
                 target={"entity_id": satellite_entity},
-                blocking=True,
+                blocking=False,
             )
             logger.info(
                 "filler_push: successfully announced on %s: %s", satellite_entity, filler_text[:80]
