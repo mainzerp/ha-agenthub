@@ -442,6 +442,37 @@ class HARestClient:
         self._registry_cache_put("entity_areas", result)
         return result
 
+    async def get_hidden_entity_ids(self) -> set[str]:
+        """Return entity IDs that are hidden or disabled in HA's entity registry.
+
+        HA only exposes the entity registry via WebSocket
+        (``config/entity_registry/list``).  If the WebSocket observer is
+        available and connected we use it; otherwise we fall back to the
+        legacy REST endpoint (which returns 404 on current HA versions) and
+        simply return an empty set so ingest is not blocked.
+        """
+        cached = self._registry_cache_get("hidden_entity_ids")
+        if cached is not None:
+            return cached
+        result: set[str] = set()
+        # PREFER-WS: entity registry is a WebSocket-only API in HA.
+        ws = self._state_observer
+        if ws is not None and ws.is_connected():
+            try:
+                result = await ws.get_hidden_entity_ids()
+            except Exception:
+                logger.debug("WebSocket get_hidden_entity_ids failed", exc_info=True)
+        else:
+            logger.debug(
+                "WebSocket not available for entity_registry query "
+                "(ws=%s connected=%s); hidden entity filtering disabled for this sync.",
+                ws is not None,
+                ws.is_connected() if ws else False,
+            )
+        self._registry_cache_put("hidden_entity_ids", result)
+        logger.info("Fetched %d hidden/disabled entities from HA registry", len(result))
+        return result
+
     async def get_user_language(self) -> str | None:
         """Return the HA-configured UI language code (e.g. ``de``, ``en``)."""
         cached = self._registry_cache_get("user_language")

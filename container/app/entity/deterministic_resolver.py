@@ -240,6 +240,8 @@ async def resolve_entity_deterministic_first(
     )
     normalized_terms = {value for value in (_normalize_lookup_text(term) for term in ordered_terms) if value}
 
+    ambiguous_result: dict[str, Any] | None = None
+
     if visible_entries and normalized_terms:
         exact_name_matches = [
             entry for entry in visible_entries if _normalize_lookup_text(entry.friendly_name or "") in normalized_terms
@@ -265,13 +267,11 @@ async def resolve_entity_deterministic_first(
                 friendly_name=candidate.friendly_name or candidate.entity_id,
             )
         if ambiguity:
-            metadata.update(
-                {
-                    "match_count": len(exact_name_matches),
-                    "resolution_path": "exact_friendly_name_ambiguous",
-                }
-            )
-            return _build_resolution_result(entity_query=entity_query, metadata=metadata, speech=ambiguity)
+            ambiguous_result = {
+                "match_count": len(exact_name_matches),
+                "resolution_path": "exact_friendly_name_ambiguous",
+                "speech": ambiguity,
+            }
 
         if enable_exact_alias:
             alias_matches = []
@@ -300,13 +300,11 @@ async def resolve_entity_deterministic_first(
                     friendly_name=candidate.friendly_name or candidate.entity_id,
                 )
             if ambiguity:
-                metadata.update(
-                    {
-                        "match_count": len(alias_matches),
-                        "resolution_path": "exact_alias_ambiguous",
-                    }
-                )
-                return _build_resolution_result(entity_query=entity_query, metadata=metadata, speech=ambiguity)
+                ambiguous_result = {
+                    "match_count": len(alias_matches),
+                    "resolution_path": "exact_alias_ambiguous",
+                    "speech": ambiguity,
+                }
 
     if entity_matcher:
         matches = await entity_matcher.match(
@@ -337,6 +335,19 @@ async def resolve_entity_deterministic_first(
                 entity_id=chosen.entity_id,
                 friendly_name=chosen.friendly_name or chosen.entity_id,
             )
+
+    if ambiguous_result:
+        metadata.update(
+            {
+                "match_count": ambiguous_result["match_count"],
+                "resolution_path": ambiguous_result["resolution_path"],
+            }
+        )
+        return _build_resolution_result(
+            entity_query=entity_query,
+            metadata=metadata,
+            speech=ambiguous_result["speech"],
+        )
 
     metadata["resolution_path"] = "no_match"
     return _build_resolution_result(entity_query=entity_query, metadata=metadata)

@@ -135,8 +135,14 @@ def parse_ha_states(
     alias_lookup: dict[str, list[str]] | None = None,
     device_lookup: dict[str, str] | None = None,
     area_id_lookup: dict[str, str] | None = None,
+    hidden_ids: set[str] | None = None,
 ) -> list[EntityIndexEntry]:
-    """Convert a Home Assistant states snapshot into index entries."""
+    """Convert a Home Assistant states snapshot into index entries.
+
+    Entries whose ``entity_id`` appears in ``hidden_ids`` (entities that
+    HA has marked as hidden or disabled) are silently skipped.
+    """
+    hidden = hidden_ids or set()
     return [
         state_to_entity_index_entry(
             state,
@@ -146,4 +152,5 @@ def parse_ha_states(
             area_id_lookup=area_id_lookup,
         )
         for state in states
+        if (state.get("entity_id") or "") not in hidden
     ]

@@ -1,6 +1,11 @@
 # Version
 
-**Current Version:** 1.5.5
+**Current Version:** 1.6.0
+
+## Recent Changes (since 1.5.5)
+
+- **Container:** Hidden/disabled entity filtering via WebSocket. HA's entity registry (`config/entity_registry/list`) is only available over WebSocket, not REST. Added `send_command` / `get_hidden_entity_ids` to `HAWebSocketClient` with request-response routing in `_receive_loop`. The REST client now delegates to the WebSocket observer when connected. A deferred post-startup sync fetches hidden entities after the WS connects and re-syncs the index, removing them from the entity matcher (e.g. `switch.keller` shown as light no longer collides with `light.keller`).
+- **Container:** Entity ambiguity fallback now uses the hybrid matcher (vector/fuzzy) as a tie-breaker instead of immediately asking the user to clarify. `voice_followup=True` is set in `TaskResult` when ambiguity speech is returned, keeping the HA Assist microphone open.
 
 ## Recent Changes (since 1.5.4)
 

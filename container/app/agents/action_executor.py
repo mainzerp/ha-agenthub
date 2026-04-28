@@ -554,8 +554,9 @@ async def _resolve_light_entity(
         allowed_domains=allowed_domains,
         preferred_area_id=preferred_area_id,
     )
-    if resolution.get("entity_id") or resolution.get("speech"):
+    if resolution.get("entity_id"):
         return resolution
+    ambiguous_speech = resolution.get("speech")
 
     metadata = dict(resolution["metadata"])
     normalized_query = metadata["normalized_query"]
@@ -599,11 +600,7 @@ async def _resolve_light_entity(
                             "normalized_query_without_device_noun": stripped_query,
                         }
                     )
-                    return _build_resolution_result(
-                        entity_query=entity_query,
-                        metadata=metadata,
-                        speech=ambiguity,
-                    )
+                    ambiguous_speech = ambiguity
 
             area_queries = {normalized_query}
             if stripped_query:
@@ -640,11 +637,7 @@ async def _resolve_light_entity(
                         "resolution_path": "exact_area_ambiguous",
                     }
                 )
-                return _build_resolution_result(
-                    entity_query=entity_query,
-                    metadata=metadata,
-                    speech=ambiguity,
-                )
+                ambiguous_speech = ambiguity
 
     if entity_matcher:
         matches = await entity_matcher.match(
@@ -676,6 +669,13 @@ async def _resolve_light_entity(
                 entity_id=chosen.entity_id,
                 friendly_name=chosen.friendly_name or chosen.entity_id,
             )
+
+    if ambiguous_speech:
+        return _build_resolution_result(
+            entity_query=entity_query,
+            metadata=metadata,
+            speech=ambiguous_speech,
+        )
 
     metadata["resolution_path"] = "no_match"
     return _build_resolution_result(entity_query=entity_query, metadata=metadata)
@@ -831,6 +831,7 @@ async def execute_action(
             "entity_id": None,
             "new_state": None,
             "speech": resolution["speech"] or f"Could not find an entity matching '{entity_query}'.",
+            "voice_followup": bool(resolution.get("speech")),
         }
 
     # Extract domain from entity_id
@@ -954,6 +955,7 @@ async def _query_light_state(
             "new_state": None,
             "speech": resolution["speech"] or f"Could not find an entity matching '{entity_query}'.",
             "cacheable": False,
+            "voice_followup": bool(resolution.get("speech")),
         }
 
     try:
@@ -1032,6 +1034,7 @@ async def _query_light_entity_history(
             "new_state": None,
             "speech": resolution["speech"] or f"Could not find a visible entity matching '{entity_query}'.",
             "cacheable": False,
+            "voice_followup": bool(resolution.get("speech")),
         }
 
     return await execute_recorder_history_query(

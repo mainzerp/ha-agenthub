@@ -61,6 +61,9 @@ class HAWebSocketClient:
         # concurrent actions on the same entity resolve in the order they
         # registered.
         self._state_waiters: dict[str, list[tuple[asyncio.Future[str], str | None]]] = {}
+        # PENDING-RESP: track in-flight command/result pairs for
+        # request-response style WebSocket calls (e.g. entity_registry).
+        self._pending_responses: dict[int, asyncio.Future[dict]] = {}
 
     def is_connected(self) -> bool:
         """Return True if the WebSocket connection is active and running."""
@@ -267,6 +270,14 @@ class HAWebSocketClient:
                                     await result
                             except Exception:
                                 self._logger.error("Event callback error", exc_info=True)
+                    elif event_type == "result":
+                        msg_id = data.get("id")
+                        self._logger.debug("_receive_loop: got result id=%d pending=%s", msg_id, msg_id in self._pending_responses)
+                        if isinstance(msg_id, int) and msg_id in self._pending_responses:
+                            future = self._pending_responses.pop(msg_id)
+                            if not future.done():
+                                with contextlib.suppress(asyncio.InvalidStateError):
+                                    future.set_result(data)
                 except json.JSONDecodeError:
                     self._logger.warning("Received non-JSON WebSocket message")
             elif msg.type in (
@@ -285,6 +296,59 @@ class HAWebSocketClient:
         if self._ws and not self._ws.closed:
             await self._ws.send_json(payload)
         return msg_id
+
+    async def send_command(self, msg_type: str, **kwargs: Any) -> dict | None:
+        """Send a request-response command over the WebSocket and await the result.
+
+        Returns the ``result`` payload dict on success, or ``None`` if the
+        command could not be sent or the response indicated an error.
+        """
+        if not self._ws or self._ws.closed:
+            return None
+        msg_id = self._next_id()
+        payload: dict[str, Any] = {"id": msg_id, "type": msg_type, **kwargs}
+        future: asyncio.Future[dict] = asyncio.get_running_loop().create_future()
+        self._pending_responses[msg_id] = future
+        try:
+            async with self._ws_lock:
+                await self._ws.send_json(payload)
+            # PENDING-RESP: HA typically answers within a few hundred ms.
+            # Cap at 10s so a lost message does not hang the sync forever.
+            result_data = await asyncio.wait_for(future, timeout=10.0)
+            self._logger.debug("send_command: received result for id=%d success=%s", msg_id, result_data.get("success"))
+        except TimeoutError:
+            self._pending_responses.pop(msg_id, None)
+            self._logger.debug("WebSocket command %s (id=%d) timed out", msg_type, msg_id)
+            return None
+        except Exception:
+            self._pending_responses.pop(msg_id, None)
+            self._logger.debug("WebSocket command %s (id=%d) failed", msg_type, msg_id, exc_info=True)
+            return None
+        if result_data.get("success"):
+            return result_data.get("result")
+        self._logger.debug(
+            "WebSocket command %s (id=%d) returned error: %s",
+            msg_type,
+            msg_id,
+            result_data.get("error"),
+        )
+        return None
+
+    async def get_hidden_entity_ids(self) -> set[str]:
+        """Query HA's entity registry via WebSocket for hidden/disabled entities."""
+        result = await self.send_command("config/entity_registry/list")
+        if not isinstance(result, list):
+            return set()
+        hidden: set[str] = set()
+        for row in result:
+            if not isinstance(row, dict):
+                continue
+            if row.get("hidden_by") or row.get("disabled_by"):
+                eid = row.get("entity_id")
+                if isinstance(eid, str) and eid:
+                    hidden.add(eid)
+        self._logger.info("Fetched %d hidden/disabled entities via WebSocket", len(hidden))
+        return hidden
 
     def on_event(self, event_type: str, callback: Callable) -> None:
         if event_type not in self._listeners:

@@ -1212,6 +1212,29 @@ class TestEntityIngest:
         assert entries[0].entity_id == "light.keller"
         assert entries[0].area is None
 
+    def test_parse_ha_states_skips_hidden_entities(self):
+        entries = parse_ha_states(
+            [
+                {"entity_id": "light.keller", "attributes": {"friendly_name": "Keller"}},
+                {"entity_id": "switch.keller", "attributes": {"friendly_name": "Keller"}},
+            ],
+            hidden_ids={"switch.keller"},
+        )
+
+        assert len(entries) == 1
+        assert entries[0].entity_id == "light.keller"
+
+    def test_parse_ha_states_empty_hidden_ids_allows_all(self):
+        entries = parse_ha_states(
+            [
+                {"entity_id": "light.keller", "attributes": {"friendly_name": "Keller"}},
+                {"entity_id": "switch.keller", "attributes": {"friendly_name": "Keller"}},
+            ],
+            hidden_ids=set(),
+        )
+
+        assert len(entries) == 2
+
 
 # ---------------------------------------------------------------------------
 # Entity index helpers

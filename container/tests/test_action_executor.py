@@ -511,7 +511,9 @@ class TestExecuteAction:
         matcher.match = AsyncMock(return_value=[])
         matcher.filter_visible_results = AsyncMock(side_effect=lambda agent_id, results: results)
         index = MagicMock(spec=EntityIndex)
-        index.get_by_id.return_value = make_entity_index_entry("light.keller", "Keller", area="Basement")
+        index.get_by_id_async = AsyncMock(
+            return_value=make_entity_index_entry("light.keller", "Keller", area="Basement")
+        )
         index.list_entries_async = AsyncMock(return_value=[])
 
         action = {"action": "turn_on", "entity": "light.keller", "parameters": {}}
@@ -519,7 +521,7 @@ class TestExecuteAction:
 
         assert result["success"] is True
         assert result["entity_id"] == "light.keller"
-        index.get_by_id.assert_called_once_with("light.keller")
+        index.get_by_id_async.assert_awaited_once_with("light.keller")
         matcher.match.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -541,6 +543,55 @@ class TestExecuteAction:
 
         assert result["success"] is False
         assert "Multiple entities match 'Keller'" in result["speech"]
+        ha_client.call_service.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_exact_friendly_name_ambiguity_falls_back_to_hybrid_matcher(self, ha_client):
+        """When multiple entities share the same friendly name, the hybrid matcher should break the tie."""
+        match_result = MagicMock()
+        match_result.entity_id = "light.keller_main"
+        match_result.friendly_name = "Keller"
+        match_result.score = 0.95
+        matcher = MagicMock(spec=EntityMatcher)
+        matcher.match = AsyncMock(return_value=[match_result])
+        matcher.filter_visible_results = AsyncMock(side_effect=lambda agent_id, results: results)
+        index = MagicMock(spec=EntityIndex)
+        index.get_by_id.return_value = None
+        index.list_entries_async = AsyncMock(
+            return_value=[
+                make_entity_index_entry("light.keller_main", "Keller", area="Keller"),
+                make_entity_index_entry("light.keller_side", "Keller", area="Keller"),
+            ]
+        )
+
+        action = {"action": "turn_on", "entity": "Keller", "parameters": {}}
+        result = await execute_action(action, ha_client, index, matcher, agent_id="light-agent")
+
+        assert result["success"] is True
+        assert result["entity_id"] == "light.keller_main"
+        ha_client.call_service.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_ambiguity_returns_voice_followup(self, ha_client):
+        """When entity resolution is ambiguous, voice_followup should be True so the user can reply."""
+        matcher = MagicMock(spec=EntityMatcher)
+        matcher.match = AsyncMock(return_value=[])
+        matcher.filter_visible_results = AsyncMock(side_effect=lambda agent_id, results: results)
+        index = MagicMock(spec=EntityIndex)
+        index.get_by_id.return_value = None
+        index.list_entries_async = AsyncMock(
+            return_value=[
+                make_entity_index_entry("light.keller_main", "Keller", area="Keller"),
+                make_entity_index_entry("light.keller_side", "Keller", area="Keller"),
+            ]
+        )
+
+        action = {"action": "turn_on", "entity": "Keller", "parameters": {}}
+        result = await execute_action(action, ha_client, index, matcher, agent_id="light-agent")
+
+        assert result["success"] is False
+        assert "Multiple entities match 'Keller'" in result["speech"]
+        assert result.get("voice_followup") is True
         ha_client.call_service.assert_not_awaited()
 
     @pytest.mark.asyncio

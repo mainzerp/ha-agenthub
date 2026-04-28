@@ -161,18 +161,35 @@ def _is_chroma_dimension_error(exc: BaseException) -> bool:
     return "compaction" in msg or "hnsw" in msg or "dimension" in msg or "dimensionality" in msg
 
 
+async def _wait_for_ws_connection(app: FastAPI, timeout: float = 8.0) -> bool:
+    """Poll ``app.state.ws_client`` until it reports connected or *timeout* expires.
+
+    Returns ``True`` if the client became connected within the window.
+    """
+    deadline = asyncio.get_running_loop().time() + timeout
+    while asyncio.get_running_loop().time() < deadline:
+        ws = getattr(app.state, "ws_client", None)
+        if ws is not None and ws.is_connected():
+            return True
+        await asyncio.sleep(0.5)
+    return False
+
+
 async def _prime_entity_index(app: FastAPI, ha_client: HARestClient, entity_index: EntityIndex, vector_store) -> None:
     """Fetch HA states and build/sync the entity index in the background."""
     try:
         states = await ha_client.get_states()
         area_lookup, alias_lookup, device_lookup, area_id_lookup = await _gather_ha_lookups(ha_client)
         _store_entity_lookups(app, area_lookup, alias_lookup, device_lookup, area_id_lookup)
+        hidden_ids = await ha_client.get_hidden_entity_ids()
+        app.state.hidden_entity_ids = hidden_ids
         entities = parse_ha_states(
             states,
             area_lookup=area_lookup,
             alias_lookup=alias_lookup,
             device_lookup=device_lookup,
             area_id_lookup=area_id_lookup,
+            hidden_ids=hidden_ids,
         )
         # 0.23.0: detect stale on-disk index built before the
         # EntityIndexEntry shape changed -- or built with a different
@@ -345,12 +362,15 @@ async def _periodic_entity_sync(app: FastAPI) -> None:
             states = await ha_client.get_states()
             area_lookup, alias_lookup, device_lookup, area_id_lookup = await _gather_ha_lookups(ha_client)
             _store_entity_lookups(app, area_lookup, alias_lookup, device_lookup, area_id_lookup)
+            hidden_ids = await ha_client.get_hidden_entity_ids()
+            app.state.hidden_entity_ids = hidden_ids
             entities = parse_ha_states(
                 states,
                 area_lookup=area_lookup,
                 alias_lookup=alias_lookup,
                 device_lookup=device_lookup,
                 area_id_lookup=area_id_lookup,
+                hidden_ids=hidden_ids,
             )
             result = await entity_index.sync_async(entities)
             logger.info(
@@ -445,6 +465,8 @@ async def _refresh_registry_entities(
 
     area_lookup, alias_lookup, device_lookup, area_id_lookup = await _gather_ha_lookups(ha_client)
     _store_entity_lookups(app, area_lookup, alias_lookup, device_lookup, area_id_lookup)
+    hidden_ids = await ha_client.get_hidden_entity_ids()
+    app.state.hidden_entity_ids = hidden_ids
 
     for entity_id in entity_ids:
         try:
@@ -453,7 +475,7 @@ async def _refresh_registry_entities(
             logger.warning("Registry refresh failed for %s", entity_id, exc_info=True)
             continue
 
-        if state is None:
+        if state is None or entity_id in hidden_ids:
             await entity_index.remove_async(entity_id)
             continue
 
@@ -735,6 +757,12 @@ async def _initialize_setup_dependent_services(app: FastAPI, *, source: str) -> 
             old_state = data.get("old_state")
             entity_id = data.get("entity_id", "")
 
+            hidden_ids: set[str] = getattr(app.state, "hidden_entity_ids", None) or set()
+            if entity_id in hidden_ids:
+                if old_state is not None:
+                    await entity_index.remove_async(entity_id)
+                return
+
             if new_state is None and old_state is not None:
                 await entity_index.remove_async(entity_id)
             elif new_state is not None:
@@ -764,6 +792,7 @@ async def _initialize_setup_dependent_services(app: FastAPI, *, source: str) -> 
             return resolved_entity_ids
 
         async def on_entity_registry_updated(event: dict) -> None:
+            ha_client.clear_area_registry_cache()
             resolved_entity_ids = await _invalidate_registry_event(event)
             await _refresh_registry_entities(app, ha_client, entity_index, resolved_entity_ids)
 
@@ -786,6 +815,49 @@ async def _initialize_setup_dependent_services(app: FastAPI, *, source: str) -> 
 
     if ha_client is not None and ws_client is not None:
         ha_client.set_state_observer(ws_client)
+
+    # WS-HIDDEN-SYNC: the first entity prime often runs before the WS client
+    # has connected.  Spawn a tiny background task that waits for the WS,
+    # fetches hidden entities over the WebSocket, and re-syncs the index
+    # if any hidden IDs were discovered post-startup.
+    async def _deferred_hidden_entity_sync() -> None:
+        logger.info("Deferred hidden-entity sync task started")
+        try:
+            connected = await _wait_for_ws_connection(app, timeout=10.0)
+            logger.info("Deferred hidden-entity sync: ws_connected=%s", connected)
+            if connected:
+                # Give _receive_loop() a moment to start so send_command()
+                # does not race into a timeout.
+                await asyncio.sleep(1.0)
+                # Call the WebSocket client directly to bypass the REST
+                # client's empty-set cache from the pre-WS startup sync.
+                hidden_ids = await ws_client.get_hidden_entity_ids()
+                logger.info("Deferred hidden-entity sync: hidden_ids=%d", len(hidden_ids))
+                if hidden_ids:
+                    app.state.hidden_entity_ids = hidden_ids
+                    states = await ha_client.get_states()
+                    lookups = getattr(app.state, "entity_lookups", None) or {}
+                    entities = parse_ha_states(
+                        states,
+                        area_lookup=lookups.get("area") or {},
+                        alias_lookup=lookups.get("alias") or {},
+                        device_lookup=lookups.get("device") or {},
+                        area_id_lookup=lookups.get("area_id") or {},
+                        hidden_ids=hidden_ids,
+                    )
+                    result = await entity_index.sync_async(entities)
+                    logger.info(
+                        "Deferred hidden-entity re-sync: +%d ~%d -%d =%d (hidden=%d)",
+                        result["added"],
+                        result["updated"],
+                        result["removed"],
+                        result["unchanged"],
+                        len(hidden_ids),
+                    )
+        except Exception:
+            logger.warning("Deferred hidden-entity sync failed", exc_info=True)
+
+    _spawn(_deferred_hidden_entity_sync())
 
     sync_task = getattr(app.state, "sync_task", None)
     if sync_task is None or sync_task.done():

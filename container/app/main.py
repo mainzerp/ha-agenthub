@@ -88,7 +88,9 @@ async def _periodic_entity_sync(app: FastAPI) -> None:
                 continue
 
             states = await ha_client.get_states()
-            entities = _parse_ha_states(states)
+            hidden_ids = await ha_client.get_hidden_entity_ids()
+            app.state.hidden_entity_ids = hidden_ids
+            entities = parse_ha_states(states, hidden_ids=hidden_ids)
             result = await entity_index.sync_async(entities)
             logger.info(
                 "Periodic entity sync: +%d ~%d -%d =%d",

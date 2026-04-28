@@ -188,6 +188,7 @@ class ActionableAgent(BaseAgent):
                 return TaskResult(
                     speech=result["speech"],
                     metadata=metadata,
+                    voice_followup=bool(result.get("voice_followup")),
                     action_executed=ActionExecuted(
                         action=action.get("action", ""),
                         entity_id=result.get("entity_id") or "",
