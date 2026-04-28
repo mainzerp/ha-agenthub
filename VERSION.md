@@ -1,6 +1,10 @@
 # Version
 
-**Current Version:** 1.5.4
+**Current Version:** 1.5.5
+
+## Recent Changes (since 1.5.4)
+
+- **Container:** Removed `task.user_text` from agent LLM prompts. The orchestrator owns intent classification and condensation; agents now receive only `task.description`. Previously agents saw both the condensed task and the original user text, which allowed cache false-positives to be silently corrected by the LLM instead of surfacing as errors. The `agents.actionable.primary_text_source` setting has been removed.
 
 ## Recent Changes (since 1.5.3)
 
