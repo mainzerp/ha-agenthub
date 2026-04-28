@@ -1,6 +1,11 @@
 # Version
 
-**Current Version:** 1.5.0
+**Current Version:** 1.5.1
+
+## Recent Changes (since 1.5.0)
+
+- **Integration:** Promoted `filler_push` diagnostic logs from `DEBUG` to `INFO`/`WARNING` so filler playback issues are visible without enabling HA debug logging.
+- **Container:** Fixed missing `FillerAgent` A2A registry registration in `main.py` and `runtime_setup.py` (v1.5.0 follow-up).
 
 ## Recent Changes (since 1.4.1)
 
