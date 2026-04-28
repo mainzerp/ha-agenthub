@@ -1,6 +1,10 @@
 # Version
 
-**Current Version:** 1.5.2
+**Current Version:** 1.5.3
+
+## Recent Changes (since 1.5.2)
+
+- **Integration:** Reverted to the proven v1.3.2 "filler-first return" design. The in-pipeline `assist_satellite.announce` approach caused the satellite to enter idle after the filler, losing the final response. Now the integration returns the filler immediately as the ConversationResult (pipeline ends), and a background task pushes the final answer via `assist_satellite.announce` after the satellite is observed back in idle state.
 
 ## Recent Changes (since 1.5.1)
 
