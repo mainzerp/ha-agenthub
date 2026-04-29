@@ -20,20 +20,20 @@
     <details class="card mb-md" open>
         <summary>LLM Providers</summary>
         <div class="details-content">
-            <p class="text-muted mb-md" style="font-size: 0.875rem;">
+            <p class="text-muted mb-md text-sm">
                 Configure API keys for LLM providers. Keys are encrypted at rest.
             </p>
-            <div style="display:flex; flex-direction:column; gap:0.5rem; max-width:700px;">
+            <div class="provider-grid">
                 <template x-for="p in [{id:'openrouter', label:'OpenRouter', placeholder:'sk-or-...', type:'password'}, {id:'groq', label:'Groq', placeholder:'gsk_...', type:'password'}, {id:'anthropic', label:'Anthropic', placeholder:'sk-ant-...', type:'password'}, {id:'ollama', label:'Ollama', placeholder:'http://localhost:11434', type:'url'}]" :key="p.id">
-                    <div style="display:grid; grid-template-columns: 90px 70px 1fr auto; align-items:center; gap:0.5rem; padding:0.4rem 0; border-bottom:1px solid var(--border-subtle, rgba(255,255,255,0.06));">
-                        <span class="form-label" style="margin:0; font-weight:600;" x-text="p.label"></span>
+                    <div class="provider-row">
+                        <span class="form-label m-0 fw-600" x-text="p.label"></span>
                         <div>
-                            <span x-show="providers[p.id] && providers[p.id].configured" class="badge badge-teal" style="font-size:0.7rem;"
+                            <span x-show="providers[p.id] && providers[p.id].configured" class="badge badge-teal text-2xs"
                                   x-text="p.id === 'ollama' ? 'Configured' : ('...' + (providers[p.id] && providers[p.id].masked_key || ''))"></span>
-                            <span x-show="!providers[p.id] || !providers[p.id].configured" class="badge" style="font-size:0.7rem; background:var(--danger, #ef4444); color:#fff;">No key</span>
+                            <span x-show="!providers[p.id] || !providers[p.id].configured" class="badge text-2xs badge-danger">No key</span>
                         </div>
-                        <input :type="p.type" class="form-input" x-model="providerKeys[p.id]" :placeholder="p.placeholder" style="margin:0;">
-                        <div style="display:flex; gap:0.25rem; flex-shrink:0;">
+                        <input :type="p.type" class="form-input m-0" x-model="providerKeys[p.id]" :placeholder="p.placeholder">
+                        <div class="flex gap-xs flex-shrink-0">
                             <button class="btn btn-primary btn-sm" @click="saveProviderKey(p.id)"
                                 x-show="providerKeys[p.id]">Save</button>
                             <button class="btn btn-secondary btn-sm" @click="testProvider(p.id)">Test</button>
@@ -95,7 +95,7 @@
                     <input type="number" class="form-input" x-model.number="s['entity_matching.top_n_candidates']" min="1" max="20">
                 </div>
             </div>
-            <h4 class="section-header mt-md mb-sm" style="font-size: 0.875rem;">Signal Weights</h4>
+            <h4 class="section-header mt-md mb-sm text-sm">Signal Weights</h4>
             <div class="form-grid-2">
                 <template x-for="w in weightKeys" :key="w.key">
                     <div class="form-group">
@@ -158,29 +158,29 @@
     <details class="card mb-md">
         <summary>Communication</summary>
         <div class="details-content">
-            <h4 class="section-header mb-sm" style="font-size: 0.875rem;">Home Assistant</h4>
-            <p class="text-muted mb-md" style="font-size: 0.8125rem;">
+            <h4 class="section-header mb-sm text-sm">Home Assistant</h4>
+            <p class="text-muted mb-md text-80">
                 REST and WebSocket traffic to your HA instance (entity sync, service calls, real-time state).
                 Matches the setup wizard; changing URL or token reloads clients immediately.
             </p>
-            <div style="display:flex; flex-direction:column; gap:0.75rem; max-width:720px;">
-                <div class="form-group" style="margin:0;">
+            <div class="ha-config">
+                <div class="form-group m-0">
                     <label class="form-label">HA base URL</label>
                     <input type="url" class="form-input" x-model="haConn.url"
                            placeholder="http://homeassistant.local:8123">
                 </div>
-                <div class="form-group" style="margin:0;">
+                <div class="form-group m-0">
                     <label class="form-label">Long-lived access token</label>
-                    <div style="display:flex; align-items:center; gap:0.5rem; flex-wrap:wrap;">
-                        <input type="password" class="form-input" style="flex:1; min-width:200px;"
+                    <div class="flex-center flex-wrap">
+                        <input type="password" class="form-input flex-1 min-w-200"
                                x-model="haConn.token" placeholder="Leave blank to keep existing token"
                                autocomplete="off">
-                        <span x-show="haConn.token_configured" class="badge badge-teal" style="font-size:0.7rem;"
+                        <span x-show="haConn.token_configured" class="badge badge-teal text-2xs"
                               x-text="haConn.token_masked ? ('Saved ' + haConn.token_masked) : 'Saved'"></span>
-                        <span x-show="!haConn.token_configured" class="badge" style="font-size:0.7rem; background:var(--danger, #ef4444); color:#fff;">No token</span>
+                        <span x-show="!haConn.token_configured" class="badge text-2xs badge-danger">No token</span>
                     </div>
                 </div>
-                <div style="display:flex; gap:0.35rem; flex-wrap:wrap;">
+                <div class="flex flex-wrap gap-35">
                     <button type="button" class="btn btn-primary btn-sm" @click="saveHaConnection()">Save HA connection</button>
                     <button type="button" class="btn btn-secondary btn-sm" @click="testHaConnection()">Test connection</button>
                 </div>
@@ -189,37 +189,37 @@
                  :class="haConnMessageType === 'error' ? 'alert-error' : 'alert-success'"
                  x-text="haConnMessage"></div>
 
-            <h4 class="section-header mt-md mb-sm" style="font-size: 0.875rem;">Home Assistant integration (HA to Agent Hub)</h4>
-            <p class="text-muted mb-md" style="font-size: 0.8125rem;">
+            <h4 class="section-header mt-md mb-sm text-sm">Home Assistant integration (HA to Agent Hub)</h4>
+            <p class="text-muted mb-md text-80">
                 The HA-AgentHub integration in Home Assistant calls this container with
-                <span class="text-mono" style="font-size: 0.75rem;">Authorization: Bearer &lt;this key&gt;</span>
-                on <span class="text-mono" style="font-size: 0.75rem;">/api/conversation</span> and the conversation WebSocket.
+                <span class="text-mono text-xs">Authorization: Bearer &lt;this key&gt;</span>
+                on <span class="text-mono text-xs">/api/conversation</span> and the conversation WebSocket.
                 Paste the same key under HA-AgentHub integration settings (API Key).
             </p>
-            <div style="max-width:720px;">
-                <div style="display:flex; align-items:center; gap:0.5rem; flex-wrap:wrap; margin-bottom:0.5rem;">
-                    <span x-show="containerApiKey.configured" class="badge badge-teal" style="font-size:0.7rem;"
+            <div class="max-w-720">
+                <div class="flex-center flex-wrap mb-sm">
+                    <span x-show="containerApiKey.configured" class="badge badge-teal text-2xs"
                           x-text="containerApiKey.token_masked ? ('Key saved ' + containerApiKey.token_masked) : 'Key saved'"></span>
-                    <span x-show="!containerApiKey.configured" class="badge" style="font-size:0.7rem; background:var(--danger, #ef4444); color:#fff;">No key configured</span>
+                    <span x-show="!containerApiKey.configured" class="badge text-2xs badge-danger">No key configured</span>
                 </div>
-                <div class="form-group" style="margin:0 0 0.5rem 0;">
+                <div class="form-group m-0 mb-sm">
                     <label class="form-label">Set custom API key (min. 16 characters)</label>
-                    <div style="display:flex; gap:0.35rem; flex-wrap:wrap; align-items:center;">
-                        <input type="password" class="form-input" style="flex:1; min-width:200px;"
+                    <div class="flex flex-wrap items-center gap-35">
+                        <input type="password" class="form-input flex-1 min-w-200"
                                x-model="containerApiKey.customInput" placeholder="Paste a key or leave empty"
                                autocomplete="off">
                         <button type="button" class="btn btn-primary btn-sm" @click="saveContainerApiKey()">Save key</button>
                     </div>
                 </div>
-                <div style="display:flex; gap:0.35rem; flex-wrap:wrap; align-items:center;">
+                <div class="flex flex-wrap items-center gap-35">
                     <button type="button" class="btn btn-secondary btn-sm" @click="rotateContainerApiKey()">Generate new key</button>
                 </div>
                 <template x-if="containerApiKey.shownOnce">
-                    <div class="mt-sm" style="padding:0.75rem; border:1px solid var(--teal-glow, #14b8a6); border-radius:0.35rem; background:rgba(20,184,166,0.06);">
-                        <p class="text-muted mb-sm" style="font-size:0.78rem; margin:0;">Copy this key now. It is not shown again after you leave the page.</p>
-                        <pre style="margin:0 0 0.5rem 0; font-size:0.75rem; word-break:break-all; white-space:pre-wrap; color:var(--color-cloud);"
+                    <div class="mt-sm api-key-shown">
+                        <p class="text-muted mb-sm text-xs m-0">Copy this key now. It is not shown again after you leave the page.</p>
+                        <pre class="api-key-text"
                              x-text="containerApiKey.shownOnce"></pre>
-                        <div style="display:flex; gap:0.35rem; flex-wrap:wrap;">
+                        <div class="flex flex-wrap gap-35">
                             <button type="button" class="btn btn-primary btn-sm" @click="copyContainerApiKeyShown()">Copy to clipboard</button>
                             <button type="button" class="btn btn-secondary btn-sm" @click="containerApiKey.shownOnce = null">Hide</button>
                         </div>
@@ -230,7 +230,7 @@
                  :class="containerApiKeyMessageType === 'error' ? 'alert-error' : 'alert-success'"
                  x-text="containerApiKeyMessage"></div>
 
-            <h4 class="section-header mt-md mb-sm" style="font-size: 0.875rem;">Voice / streaming to HA</h4>
+            <h4 class="section-header mt-md mb-sm text-sm">Voice / streaming to HA</h4>
             <div class="form-grid-2">
                 <div class="form-group">
                     <label class="form-label">Streaming Mode</label>

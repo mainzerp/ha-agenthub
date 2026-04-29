@@ -1,6 +1,42 @@
 # Version
 
-**Current Version:** 1.6.1
+**Current Version:** 1.9.0
+
+## Recent Changes (since 1.8.0)
+
+- **Security:** Closed Jinja2 template injection via `device_id` with strict whitelist validation (`^[a-zA-Z0-9_]+$`).
+- **Security:** Added explicit SQLite transactions (`BEGIN` + `rollback()`) in `get_db_write()` to prevent partial writes on exception.
+- **Security:** Fixed singleton race conditions in `get_vector_store()` and `get_embedding_engine()` with `asyncio.Lock` double-checked locking.
+- **Security:** Closed rate-limit `X-Forwarded-For` spoofing with configurable `TRUSTED_PROXIES`.
+- **Security:** Hardened plugin loader path check to use `Path.is_relative_to()` instead of string prefix comparison.
+- **Performance:** Eliminated N+1 ChromaDB query in `EntityMatcher` via batch `get_by_ids()`.
+- **Performance:** Fixed cache entry-ID drift in `lookup_with_id` so invalidation uses the stored ID directly.
+- **Reliability:** Added embedding retry loop (3 attempts, exponential backoff) for `litellm.RateLimitError`.
+- **Reliability:** Hardened JSON parsing in repositories with `try/except JSONDecodeError` and safe defaults.
+- **Reliability:** Made `AliasResolver.reload()` atomic with a reentrant lock.
+- **HA Integration:** Added re-auth flow to config flow, URL validation wrapping, and `unique_id` update on URL change.
+- **HA Integration:** Hardened WebSocket connection with duplicate-guard, `urlparse` for URL building, and JSON decode error handling.
+- **UI:** Agents in Agent Configuration are now sorted alphabetically with `orchestrator` pinned to the top and visually highlighted.
+- **UI:** Fixed "All entities" badge incorrectly shown on `filler-agent` and `send-agent`; now correctly shows "No entity access".
+- **Cleanup:** Removed dead code (`migrations.py`, unused constants), added DB indexes for `enabled` columns, and pre-compiled regex patterns in `_strip_markdown`.
+
+## Recent Changes (since 1.7.0)
+
+- **Dashboard:** Unified the visual style across the entire admin UI. The setup wizard now shares the dashboard's dark teal-on-nebula palette, fonts, and component classes. Added the missing semantic CSS tokens (`--danger`, `--success`, `--warning`, `--info`, `--input-bg`, `--border-subtle`) so templates no longer fall back to a foreign palette.
+- **Dashboard:** Replaced ad-hoc inline styling on the timers, settings, traces, entity_index, cache, agents, calendar, and chat pages with the shared component classes (`.form-input`, `.form-grid-2`, `.btn-group`, `.badge-danger`, `.tree-*`, `.chart-canvas-wrap`).
+- **Dashboard:** Activated the previously dead toast system and migrated calendar, custom-agents, send-devices, mcp-servers, plugins, and settings status feedback away from inline alert banners.
+- **Dashboard:** Chart.js palettes for overview, analytics, and cache pages now derive from the dashboard CSS tokens (new `chartColors()` / `chartRgba()` helpers) instead of hardcoded RGBA literals.
+- **Setup:** Renamed the wizard from `agent-assist Setup` to `HA-AgentHub Setup` to match the rest of the product.
+- **Docs:** Added `docs/style-guide.md` documenting the design tokens, component classes, and JavaScript helpers for future contributors.
+
+## Recent Changes (since 1.6.1)
+
+- **Container:** Added dedicated `calendar-agent` with full CRUD (list, create, delete, update, query events) and proactive reminder injection. Calendar functionality was removed from `timer-agent`; all calendar flows now route through the new agent.
+- **Container:** Added `calendar_user_mappings` and `calendar_reminder_state` tables (migration 25) with phonetic name matching via `pyphonetics.Metaphone`.
+- **Container:** Added `UserIdentityResolver` for spoken self-identification ("ich bin Anna") with phonetic fallback, device fallback, and default-user fallback.
+- **Container:** Added `CalendarReminderInjector` integrated into the orchestrator finalization path; injects one-time 15min/1h/24h reminders into agent responses when upcoming calendar events are detected.
+- **Container:** Added calendar admin API (`/api/admin/calendar/*`) and dashboard page (`/dashboard/calendar`) with Alpine.js UI for user mappings, events, settings, and reminder state management.
+- **Container:** Calendar executor uses deterministic-first entity resolution (`domain_include calendar` visibility) and HA `calendar` service calls.
 
 ## Recent Changes (since 1.6.0)
 

@@ -834,7 +834,6 @@ class TestMediaExecutorDomainValidation:
 from app.agents.automation_executor import execute_automation_action  # noqa: E402
 from app.agents.scene_executor import execute_scene_action  # noqa: E402
 from app.agents.security_executor import execute_security_action  # noqa: E402
-from app.agents.timer_executor import execute_timer_action  # noqa: E402
 
 
 class TestSharedDeterministicResolution:
@@ -959,7 +958,8 @@ class TestSharedDeterministicResolution:
         index.search.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_timer_hidden_calendar_does_not_fall_back_to_raw_search(self, monkeypatch):
+    async def test_calendar_hidden_calendar_does_not_fall_back_to_raw_search(self, monkeypatch):
+        from app.agents.calendar_executor import execute_calendar_action
         monkeypatch.setattr(
             "app.entity.visibility.EntityVisibilityRepository.get_rules",
             AsyncMock(return_value=[{"rule_type": "domain_include", "rule_value": "input_datetime"}]),
@@ -970,9 +970,9 @@ class TestSharedDeterministicResolution:
         index = _make_listable_entity_index(entry)
         index.search_async = AsyncMock(return_value=[(entry, 0.08)])
 
-        result = await execute_timer_action(
+        result = await execute_calendar_action(
             {
-                "action": "create_reminder",
+                "action": "create_event",
                 "entity": "Family Calendar",
                 "parameters": {
                     "summary": "Take medication",
@@ -982,7 +982,7 @@ class TestSharedDeterministicResolution:
             ha_client,
             index,
             None,
-            agent_id="timer-agent",
+            agent_id="calendar-agent",
         )
 
         assert result["success"] is False

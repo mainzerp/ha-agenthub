@@ -1,13 +1,17 @@
 {% extends "base_setup.html" %}
 {% block content %}
 <h2>Create Admin Account</h2>
-<p style="color: #94a3b8; margin-bottom: 1rem;">Set up your administrator credentials for the dashboard.</p>
+<p class="text-muted mb-md">Set up your administrator credentials for the dashboard.</p>
 <form method="post" action="/setup/step/1">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-    <label for="username">Username</label>
-    <input type="text" id="username" name="username" value="admin" required>
-    <label for="password">Password</label>
-    <input type="password" id="password" name="password" required minlength="8">
-    <button type="submit" class="btn-primary">Next</button>
+    <div class="form-group">
+        <label class="form-label" for="username">Username</label>
+        <input type="text" id="username" name="username" value="admin" required class="form-input">
+    </div>
+    <div class="form-group">
+        <label class="form-label" for="password">Password</label>
+        <input type="password" id="password" name="password" required minlength="8" class="form-input">
+    </div>
+    <button type="submit" class="btn btn-primary">Next</button>
 </form>
 {% endblock %}

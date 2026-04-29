@@ -16,10 +16,10 @@
     <div x-show="!selectedTraceId">
 
         <!-- Search & Filter Bar -->
-        <div class="card mb-md" style="padding: 1rem;">
-            <div class="form-row" style="align-items: flex-end;">
+        <div class="card mb-md p-md">
+            <div class="form-row items-end">
                 <!-- Search -->
-                <div class="form-group mb-0" style="flex: 1; min-width: 200px;">
+                <div class="form-group mb-0 flex-1 min-w-200">
                     <label class="form-label">Search</label>
                     <input type="text" class="form-input" placeholder="Search user input..."
                            x-model="search"
@@ -30,7 +30,7 @@
                 <!-- Agent filter -->
                 <div class="form-group mb-0">
                     <label class="form-label">Agent</label>
-                    <select class="form-input" style="width: auto; min-width: 150px;"
+                    <select class="form-input w-auto min-w-150"
                             x-model="agentFilter" @change="page=1; loadTraces()">
                         <option value="">All Agents</option>
                         <template x-for="a in allAgents" :key="a">
@@ -42,7 +42,7 @@
                 <!-- Label filter -->
                 <div class="form-group mb-0">
                     <label class="form-label">Label</label>
-                    <select class="form-input" style="width: auto; min-width: 120px;"
+                    <select class="form-input w-auto min-w-120"
                             x-model="labelFilter" @change="page=1; loadTraces()">
                         <option value="">All Labels</option>
                         <template x-for="l in allLabels" :key="l">
@@ -54,29 +54,29 @@
                 <!-- Date From -->
                 <div class="form-group mb-0">
                     <label class="form-label">From</label>
-                    <input type="date" class="form-input" style="width: auto;"
+                    <input type="date" class="form-input w-auto"
                            x-model="dateFrom" @change="page=1; loadTraces()">
                 </div>
 
                 <!-- Date To -->
                 <div class="form-group mb-0">
                     <label class="form-label">To</label>
-                    <input type="date" class="form-input" style="width: auto;"
+                    <input type="date" class="form-input w-auto"
                            x-model="dateTo" @change="page=1; loadTraces()">
                 </div>
 
                 <!-- Export -->
-                <button class="btn btn-sm btn-secondary" style="align-self: flex-end;" @click="exportCSV()">Export CSV</button>
+                <button class="btn btn-sm btn-secondary self-end" @click="exportCSV()">Export CSV</button>
             </div>
         </div>
 
         <!-- Traces Table -->
         <div class="card mb-lg">
             <div class="flex-between mb-md">
-                <span class="text-muted" style="font-size: 0.875rem;" x-text="'Total: ' + total + ' traces'"></span>
-                <div class="flex-center" style="gap: 0.5rem;">
+                <span class="text-muted text-sm" x-text="'Total: ' + total + ' traces'"></span>
+                <div class="flex-center">
                     <button class="btn btn-sm btn-secondary" :disabled="page <= 1" @click="page--; loadTraces()">Prev</button>
-                    <span class="text-mono" style="font-size: 0.875rem;" x-text="page + ' / ' + pages"></span>
+                    <span class="text-mono text-sm" x-text="page + ' / ' + pages"></span>
                     <button class="btn btn-sm btn-secondary" :disabled="page >= pages" @click="page++; loadTraces()">Next</button>
                 </div>
             </div>
@@ -100,12 +100,12 @@
                     <tbody>
                         <template x-for="t in traces" :key="t.trace_id">
                             <tr class="row-clickable" @click="showDetail(t.trace_id)">
-                                <td class="text-mono" style="font-size: 0.75rem; white-space: nowrap;"
+                                <td class="text-mono text-xs text-nowrap"
                                     x-text="formatTimestamp(t.created_at)"></td>
-                                <td class="truncate" style="max-width: 300px;"
+                                <td class="truncate max-w-300"
                                     x-text="t.user_input || '-'"></td>
                                 <td>
-                                    <div style="display: flex; gap: 0.25rem; flex-wrap: wrap;">
+                                    <div class="flex flex-wrap gap-xs">
                                         <template x-for="agent in (t.agents || [])" :key="agent">
                                             <span class="badge" :style="'background-color:' + agentColor(agent) + '22; color:' + agentColor(agent) + '; font-size: 0.7rem;'"
                                                   x-text="agent"></span>
@@ -114,7 +114,7 @@
                                 </td>
                                 <td class="text-mono" x-text="t.total_duration_ms ? Math.round(t.total_duration_ms) + 'ms' : '-'"></td>
                                 <td>
-                                    <span x-show="t.label" class="badge badge-blue" style="font-size: 0.7rem;"
+                                    <span x-show="t.label" class="badge badge-blue text-2xs"
                                           x-text="t.label"></span>
                                 </td>
                                 <td>
@@ -153,48 +153,48 @@
                         </div>
 
                         <!-- Summary bar -->
-                        <div class="flex-center" style="gap: 1.5rem; flex-wrap: wrap;">
+                        <div class="flex-center gap-lg flex-wrap">
                             <div>
-                                <span class="text-muted" style="font-size: 0.75rem;">Timestamp</span><br>
-                                <span class="text-mono" style="font-size: 0.875rem;" x-text="formatTimestamp(traceDetail.timestamp)"></span>
+                                <span class="text-muted text-xs">Timestamp</span><br>
+                                <span class="text-mono text-sm" x-text="formatTimestamp(traceDetail.timestamp)"></span>
                             </div>
                             <div>
-                                <span class="text-muted" style="font-size: 0.75rem;">Session</span><br>
-                                <span class="text-mono" style="font-size: 0.875rem;" x-text="traceDetail.conversation_id || '-'"></span>
+                                <span class="text-muted text-xs">Session</span><br>
+                                <span class="text-mono text-sm" x-text="traceDetail.conversation_id || '-'"></span>
                             </div>
                             <div>
-                                <span class="text-muted" style="font-size: 0.75rem;">Duration</span><br>
-                                <span class="text-mono" style="font-size: 0.875rem;" x-text="traceDetail.duration_ms ? Math.round(traceDetail.duration_ms) + 'ms' : '-'"></span>
+                                <span class="text-muted text-xs">Duration</span><br>
+                                <span class="text-mono text-sm" x-text="traceDetail.duration_ms ? Math.round(traceDetail.duration_ms) + 'ms' : '-'"></span>
                             </div>
                             <div>
-                                <span class="text-muted" style="font-size: 0.75rem;">Source</span><br>
-                                <span class="badge badge-blue" style="font-size: 0.7rem;" x-text="traceDetail.source || '-'"></span>
+                                <span class="text-muted text-xs">Source</span><br>
+                                <span class="badge badge-blue text-2xs" x-text="traceDetail.source || '-'"></span>
                             </div>
                             <div x-show="traceDetail.device_name || traceDetail.device_id">
-                                <span class="text-muted" style="font-size: 0.75rem;">Satellite</span><br>
-                                <span class="text-mono" style="font-size: 0.875rem;"
+                                <span class="text-muted text-xs">Satellite</span><br>
+                                <span class="text-mono text-sm"
                                       :title="traceDetail.device_id || ''"
                                       x-text="traceDetail.device_name || traceDetail.device_id || '-'"></span>
                             </div>
                             <div x-show="traceDetail.area_name || traceDetail.area_id">
-                                <span class="text-muted" style="font-size: 0.75rem;">Area</span><br>
-                                <span class="text-mono" style="font-size: 0.875rem;"
+                                <span class="text-muted text-xs">Area</span><br>
+                                <span class="text-mono text-sm"
                                       :title="traceDetail.area_id || ''"
                                       x-text="traceDetail.area_name || traceDetail.area_id || '-'"></span>
                             </div>
                             <div>
-                                <span class="text-muted" style="font-size: 0.75rem;">Label</span><br>
+                                <span class="text-muted text-xs">Label</span><br>
                                 <template x-if="!editingLabel">
                                     <span>
-                                        <span x-show="traceDetail.label" class="badge badge-blue" style="font-size: 0.7rem; cursor: pointer;"
+                                        <span x-show="traceDetail.label" class="badge badge-blue text-2xs cursor-pointer"
                                               x-text="traceDetail.label" @click="editingLabel = true; newLabel = traceDetail.label || ''"></span>
-                                        <button x-show="!traceDetail.label" class="btn btn-sm btn-secondary" style="font-size: 0.7rem; padding: 0.15rem 0.5rem;"
+                                        <button x-show="!traceDetail.label" class="btn btn-sm btn-secondary btn-sm"
                                                 @click="editingLabel = true; newLabel = ''">+ Label</button>
                                     </span>
                                 </template>
                                 <template x-if="editingLabel">
-                                    <span style="display: flex; gap: 0.25rem; align-items: center;">
-                                        <input type="text" class="form-input" style="width: 100px; font-size: 0.75rem; padding: 0.25rem 0.5rem;"
+                                    <span class="flex-center gap-xs">
+                                        <input type="text" class="form-input form-input-xs"
                                                x-model="newLabel" @keyup.enter="saveLabel()" @keyup.escape="editingLabel = false">
                                         <button class="btn btn-sm btn-primary" @click="saveLabel()">Save</button>
                                         <button class="btn btn-sm btn-secondary" @click="editingLabel = false">Cancel</button>
@@ -205,29 +205,29 @@
                     </div>
 
                     <!-- User Input -->
-                    <div class="card mb-md" style="background: var(--bg-obsidian);">
-                        <h4 class="card-title mb-sm" style="font-size: 0.875rem;">User Input</h4>
-                        <pre style="white-space: pre-wrap; word-break: break-word; font-size: 0.875rem; margin: 0; color: var(--color-cloud);"
+                    <div class="card mb-md bg-obsidian">
+                        <h4 class="card-title mb-sm text-sm">User Input</h4>
+                        <pre class="pre-cloud"
                              x-text="traceDetail.user_input || '-'"></pre>
                     </div>
 
 
 
                     <!-- Final Response -->
-                    <div class="card mb-md" style="background: var(--bg-obsidian);">
-                        <h4 class="card-title mb-sm" style="font-size: 0.875rem;">Final Response</h4>
-                        <pre style="white-space: pre-wrap; word-break: break-word; font-size: 0.875rem; margin: 0; color: var(--color-cloud);"
+                    <div class="card mb-md bg-obsidian">
+                        <h4 class="card-title mb-sm text-sm">Final Response</h4>
+                        <pre class="pre-cloud"
                              x-text="traceDetail.final_response || '-'"></pre>
                     </div>
 
                     <!-- Routing Decision -->
-                    <div class="card mb-md" style="background: var(--bg-obsidian);">
-                        <h4 class="card-title mb-sm" style="font-size: 0.875rem;">Routing Decision</h4>
+                    <div class="card mb-md bg-obsidian">
+                        <h4 class="card-title mb-sm text-sm">Routing Decision</h4>
                         <div class="span-detail-grid">
                             <div class="span-detail-row">
                                 <span class="span-detail-label">Selected Agent</span>
                                 <template x-if="traceDetail.routing?.multi_agent && traceDetail.routing?.all_agents">
-                                    <span style="display: flex; gap: 0.3rem; flex-wrap: wrap;">
+                                    <span class="flex flex-wrap gap-xs">
                                         <template x-for="a in (traceDetail.routing.all_agents || '').split(', ')" :key="a">
                                             <span class="badge" :style="'background-color:' + agentColor(a.trim()) + '22; color:' + agentColor(a.trim()) + ';'"
                                                   x-text="a.trim()"></span>
@@ -259,13 +259,13 @@
 
                     <!-- Agent Instructions -->
                     <template x-if="traceDetail.agent_instructions && Object.keys(traceDetail.agent_instructions).length > 0">
-                        <div class="card mb-md" style="background: var(--bg-obsidian);">
-                            <h4 class="card-title mb-sm" style="font-size: 0.875rem;">Agent Instructions</h4>
+                        <div class="card mb-md bg-obsidian">
+                            <h4 class="card-title mb-sm text-sm">Agent Instructions</h4>
                             <template x-for="[agent, task] in Object.entries(traceDetail.agent_instructions || {})" :key="agent">
-                                <div style="margin-bottom: 0.4rem; display: flex; align-items: center; gap: 0.5rem;">
+                                <div class="mb-40 flex-center">
                                     <span class="badge" :style="'background-color:' + agentColor(agent) + '22; color:' + agentColor(agent) + '; font-size: 0.7rem;'"
                                           x-text="agent"></span>
-                                    <span style="font-size: 0.875rem; color: var(--color-cloud);" x-text="task"></span>
+                                    <span class="text-sm text-cloud" x-text="task"></span>
                                 </div>
                             </template>
                         </div>
@@ -273,24 +273,24 @@
 
                     <!-- Agent Communication -->
                     <template x-if="traceDetail.agent_communication && traceDetail.agent_communication.length > 0">
-                        <div class="card mb-md" style="background: var(--bg-obsidian);">
-                            <h4 class="card-title mb-sm" style="font-size: 0.875rem;">Agent Communication</h4>
+                        <div class="card mb-md bg-obsidian">
+                            <h4 class="card-title mb-sm text-sm">Agent Communication</h4>
                             <template x-for="(comm, idx) in traceDetail.agent_communication" :key="idx">
-                                <div style="margin-bottom: 0.75rem;" :class="comm.parallel ? 'parallel-step' : ''">
+                                <div class="mb-md" :class="comm.parallel ? 'parallel-step' : ''">
                                     <!-- Flow step indicator -->
-                                    <div style="display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.4rem;">
-                                        <span style="font-size: 0.65rem; color: var(--text-silver); min-width: 1.2rem; text-align: center; font-weight: 600;"
+                                    <div class="flex-center mb-40">
+                                        <span class="step-num"
                                               x-text="'#' + (idx + 1)"></span>
                                         <span class="badge" :style="'background-color:' + agentColor(comm.from_agent) + '22; color:' + agentColor(comm.from_agent) + '; font-size: 0.7rem;'"
                                               x-text="comm.from_agent"></span>
-                                        <span style="color: var(--text-silver); font-size: 0.75rem;">--&gt;</span>
+                                        <span class="text-silver text-xs">--&gt;</span>
                                         <span class="badge" :style="'background-color:' + agentColor(comm.to_agent) + '22; color:' + agentColor(comm.to_agent) + '; font-size: 0.7rem;'"
                                               x-text="comm.to_agent"></span>
                                         <template x-if="comm.parallel">
-                                            <span style="font-size: 0.65rem; color: var(--teal-glow); font-weight: 600; margin-left: 0.25rem;">PARALLEL</span>
+                                            <span class="text-3xs text-teal-glow fw-600 ml-xs">PARALLEL</span>
                                         </template>
                                         <template x-if="comm.sequential">
-                                            <span style="font-size: 0.65rem; color: #a78bfa; font-weight: 600; margin-left: 0.25rem;"
+                                            <span class="text-3xs text-purple fw-600 ml-xs"
                                                   x-text="'SEQUENTIAL (' + (comm.sequential_step || '') + ')'"></span>
                                         </template>
                                         <template x-if="comm.is_filler">
@@ -299,43 +299,43 @@
                                         </template>
                                     </div>
                                     <template x-if="comm.task">
-                                        <div style="margin-left: 2rem; margin-bottom: 0.4rem;">
-                                            <span class="text-muted" style="font-size: 0.7rem;">Task:</span>
+                                        <div class="ml-2 mb-40">
+                                            <span class="text-muted text-2xs">Task:</span>
                                             <template x-if="comm.task_pass_through">
-                                                <span style="font-size: 0.8rem; color: var(--text-silver); font-style: italic;"
+                                                <span class="text-xs text-silver italic"
                                                       x-text="comm.task + ' (forwarded as-is)'"></span>
                                             </template>
                                             <template x-if="!comm.task_pass_through">
-                                                <pre style="white-space: pre-wrap; word-break: break-word; font-size: 0.8rem; margin: 0.2rem 0 0 0; color: var(--color-cloud);"
+                                                <pre class="pre-cloud-sm"
                                                      x-text="comm.task"></pre>
                                             </template>
                                         </div>
                                     </template>
                                     <!-- Memory (conversation history) -->
                                     <template x-if="comm.memory && comm.memory.length > 0">
-                                        <div style="margin-left: 2rem; margin-top: 0.5rem;">
-                                            <div style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer;"
+                                        <div class="ml-2 mt-sm">
+                                            <div class="flex-center cursor-pointer"
                                                  @click="comm._showMemory = !comm._showMemory">
-                                                <span style="font-size: 0.75rem; color: var(--teal-glow); font-weight: 600;">Memory</span>
-                                                <span style="font-size: 0.65rem; color: var(--text-silver);"
+                                                <span class="text-xs text-teal-glow fw-600">Memory</span>
+                                                <span class="text-3xs text-silver"
                                                       x-text="'(' + comm.memory.length + ' prior messages)'"></span>
-                                                <span style="font-size: 0.65rem; color: var(--text-silver);"
+                                                <span class="text-3xs text-silver"
                                                       x-text="comm._showMemory ? 'hide' : 'show'"></span>
                                             </div>
-                                            <div x-show="comm._showMemory" x-transition style="margin-top: 0.25rem;">
+                                            <div x-show="comm._showMemory" x-transition class="mt-25">
                                                 <template x-for="(turn, tidx) in comm.memory" :key="tidx">
-                                                    <div style="margin-bottom: 0.3rem; padding: 0.3rem 0.5rem; border-radius: 4px; font-size: 0.75rem;"
+                                                    <div class="memory-turn"
                                                          :style="turn.role === 'user'
                                                              ? 'background: var(--bg-charcoal); border-left: 2px solid var(--accent-blue);'
                                                              : 'background: var(--bg-charcoal); border-left: 2px solid var(--teal-glow);'">
-                                                        <span style="font-weight: 600; text-transform: uppercase; font-size: 0.65rem;"
+                                                        <span class="fw-600 text-uppercase text-3xs"
                                                               :style="turn.role === 'user' ? 'color: var(--accent-blue);' : 'color: var(--teal-glow);'"
                                                               x-text="turn.role"></span>
                                                         <template x-if="turn.agent_id">
-                                                            <span class="badge" style="font-size: 0.55rem; margin-left: 0.3rem;"
+                                                            <span class="badge text-3xs ml-xs"
                                                                   x-text="turn.agent_id"></span>
                                                         </template>
-                                                        <pre style="white-space: pre-wrap; word-break: break-word; font-size: 0.75rem; margin: 0.15rem 0 0 0; color: var(--color-cloud);"
+                                                        <pre class="pre-cloud-xs"
                                                              x-text="turn.content"></pre>
                                                     </div>
                                                 </template>
@@ -343,16 +343,16 @@
                                         </div>
                                     </template>
                                     <template x-if="comm.response_unchanged">
-                                        <div style="margin-left: 2rem;">
-                                            <span style="font-size: 0.8rem; color: var(--text-silver); font-style: italic;">
+                                        <div class="ml-2">
+                                            <span class="text-xs text-silver italic">
                                                 Returned unchanged
                                             </span>
                                         </div>
                                     </template>
                                     <template x-if="!comm.response_unchanged && comm.response">
-                                        <div style="margin-left: 2rem;">
-                                            <span class="text-muted" style="font-size: 0.7rem;">Response:</span>
-                                            <pre style="white-space: pre-wrap; word-break: break-word; font-size: 0.8rem; margin: 0.2rem 0 0 0; color: var(--color-cloud);"
+                                        <div class="ml-2">
+                                            <span class="text-muted text-2xs">Response:</span>
+                                            <pre class="pre-cloud-sm"
                                                  x-text="comm.response"></pre>
                                         </div>
                                     </template>
@@ -362,8 +362,8 @@
                     </template>
 
                     <!-- Span Timeline (Gantt) -->
-                    <div class="card mb-md" style="background: var(--bg-obsidian);">
-                        <h4 class="card-title mb-sm" style="font-size: 0.875rem;">Span Timeline</h4>
+                    <div class="card mb-md bg-obsidian">
+                        <h4 class="card-title mb-sm text-sm">Span Timeline</h4>
                         {% include "partials/_trace_gantt.html" %}
                     </div>
 
@@ -395,10 +395,10 @@
                                         <template x-if="selectedSpan.metadata.all_classifications">
                                             <div>
                                                 <template x-for="[agent, info] in Object.entries(selectedSpan.metadata.all_classifications)" :key="agent">
-                                                    <div style="margin-bottom: 0.3rem; display: flex; align-items: center; gap: 0.5rem;">
+                                                    <div class="mb-30 flex-center">
                                                         <span class="badge" :style="'background-color:' + agentColor(agent) + '22; color:' + agentColor(agent) + '; font-size: 0.65rem;'"
                                                               x-text="agent"></span>
-                                                        <span style="font-size: 0.8rem; color: var(--color-cloud);" x-text="info.task + ' (' + Math.round(info.confidence * 100) + '%)'"></span>
+                                                        <span class="text-xs text-cloud" x-text="info.task + ' (' + Math.round(info.confidence * 100) + '%)'"></span>
                                                     </div>
                                                 </template>
                                             </div>
@@ -483,8 +483,8 @@
 
                     <!-- Agent Executions -->
                     <template x-if="traceDetail.agent_executions && traceDetail.agent_executions.length > 0">
-                        <div class="card mb-md" style="background: var(--bg-obsidian);">
-                            <h4 class="card-title mb-sm" style="font-size: 0.875rem;">Agent Executions</h4>
+                        <div class="card mb-md bg-obsidian">
+                            <h4 class="card-title mb-sm text-sm">Agent Executions</h4>
                             <div class="table-container-flush">
                                 <table class="data-table">
                                     <thead>
@@ -503,13 +503,13 @@
                                                     <span class="badge" :style="'background-color:' + agentColor(exec.agent_id) + '22; color:' + agentColor(exec.agent_id) + '; font-size: 0.7rem;'"
                                                           x-text="exec.agent_id"></span>
                                                 </td>
-                                                <td class="text-mono" style="font-size: 0.75rem;" x-text="exec.span_name"></td>
+                                                <td class="text-mono text-xs" x-text="exec.span_name"></td>
                                                 <td class="text-mono" x-text="exec.duration_ms ? Math.round(exec.duration_ms) + 'ms' : '-'"></td>
                                                 <td>
                                                     <span :class="exec.status === 'error' ? 'badge badge-red' : 'badge badge-green'"
                                                           x-text="exec.status"></span>
                                                 </td>
-                                                <td class="truncate" style="max-width: 300px; font-size: 0.75rem;"
+                                                <td class="truncate max-w-300 text-xs"
                                                     x-text="exec.response || '-'"></td>
                                             </tr>
                                         </template>

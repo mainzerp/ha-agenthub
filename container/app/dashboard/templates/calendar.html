@@ -1,0 +1,443 @@
+{% extends "dashboard_base.html" %}
+
+{% block page_title %}Calendar{% endblock %}
+{% block header_title %}Calendar{% endblock %}
+{% block nav_calendar %}active{% endblock %}
+
+{% block page_content %}
+<div x-data="calendarPage()" x-init="loadAll()">
+
+    <div class="page-header">
+        <div class="page-header-text">
+            <p class="page-subtitle">Manage calendar user mappings, active calendars, events, and reminder injection settings.</p>
+        </div>
+        <div  class="page-actions btn-group">
+            <span class="text-muted" x-text="users.length + ' user(s), ' + calendars.length + ' calendar(s)'"></span>
+        </div>
+    </div>
+
+
+    <!-- Tab navigation -->
+    <div class="tab-nav">
+        <button class="tab-btn" :class="tab === 'users' ? 'active' : ''" @click="tab = 'users'">User Mappings</button>
+        <button class="tab-btn" :class="tab === 'calendars' ? 'active' : ''" @click="tab = 'calendars'">Calendars</button>
+        <button class="tab-btn" :class="tab === 'events' ? 'active' : ''" @click="tab = 'events'">Events</button>
+        <button class="tab-btn" :class="tab === 'settings' ? 'active' : ''" @click="tab = 'settings'">Settings</button>
+        <button class="tab-btn" :class="tab === 'state' ? 'active' : ''" @click="tab = 'state'">Reminder State</button>
+    </div>
+
+    <!-- Tab: User Mappings -->
+    <div x-show="tab === 'users'" x-cloak>
+        <div class="card mb-lg">
+            <h3 class="card-title mb-md">Add User Mapping</h3>
+            <form @submit.prevent="createUser()">
+                <div class="form-row">
+                    <div class="form-group flex-1 min-w-180">
+                        <label class="form-label" for="cal-user-name">Display Name</label>
+                        <input id="cal-user-name" type="text" x-model="newUser.display_name" placeholder="e.g. Anna" class="form-input">
+                    </div>
+                    <div class="form-group flex-1 min-w-220">
+                        <label class="form-label" for="cal-user-calendars">Calendars</label>
+                        <select id="cal-user-calendars" x-model="newUser.calendar_entity_ids" class="form-input" multiple size="3">
+                            <template x-for="c in calendars" :key="c.entity_id">
+                                <option :value="c.entity_id" x-text="c.friendly_name"></option>
+                            </template>
+                        </select>
+                        <p class="text-muted text-80 mt-25">Hold Ctrl/Cmd to select multiple</p>
+                    </div>
+                    <div class="form-group flex-none-w-180">
+                        <label class="form-label" for="cal-user-offsets">Offsets (minutes)</label>
+                        <input id="cal-user-offsets" type="text" x-model="newUser.offsets_text" placeholder="1440, 60, 15" class="form-input">
+                    </div>
+                    <div class="form-group flex-none-w-120">
+                        <label class="form-label" for="cal-user-default">Default User</label>
+                        <label  class="toggle mt-sm">
+                            <input id="cal-user-default" type="checkbox" x-model="newUser.is_default_user">
+                            <span class="toggle-slider"></span>
+                        </label>
+                    </div>
+                </div>
+                <button type="submit" class="btn btn-primary">Add Mapping</button>
+            </form>
+            <p class="text-muted text-80 mt-75">Names are matched phonetically. Simple names work best.</p>
+        </div>
+
+        <div class="card">
+            <h3 class="card-title mb-md">User Mappings</h3>
+            <div class="table-container">
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th>Display Name</th>
+                            <th>Calendars</th>
+                            <th>Offsets</th>
+                            <th>Default</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <template x-for="u in users" :key="u.id">
+                            <tr>
+                                <td x-text="u.display_name"></td>
+                                <td>
+                                    <template x-for="c in (u.calendar_entity_ids || [])" :key="c">
+                                        <code class="badge badge-teal mr-xs" x-text="c"></code>
+                                    </template>
+                                </td>
+                                <td x-text="(u.reminder_offsets || []).join(', ')"></td>
+                                <td>
+                                    <span class="badge" :class="u.is_default_user ? 'badge-green' : 'badge-muted'" x-text="u.is_default_user ? 'Yes' : 'No'"></span>
+                                </td>
+                                <td>
+                                    <button class="btn btn-sm btn-danger" @click="deleteUser(u.id)">Delete</button>
+                                </td>
+                            </tr>
+                        </template>
+                    </tbody>
+                </table>
+                <p x-show="users.length === 0" class="text-muted">No user mappings configured.</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- Tab: Calendars -->
+    <div x-show="tab === 'calendars'" x-cloak>
+        <div class="card mb-lg">
+            <div class="flex-between mb-md">
+                <h3 class="card-title mb-0">Active Calendars</h3>
+                <button class="btn btn-sm btn-secondary" @click="syncCalendars()">Sync from HA</button>
+            </div>
+            <p class="text-muted mb-md">Toggle which calendars are included in proactive reminder checks. Only enabled calendars are scanned for upcoming events.</p>
+            <div class="table-container">
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th>Entity ID</th>
+                            <th>Friendly Name</th>
+                            <th class="w-80 text-center">Enabled</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <template x-for="c in calendars" :key="c.entity_id">
+                            <tr>
+                                <td><code class="mono text-xs" x-text="c.entity_id"></code></td>
+                                <td x-text="c.friendly_name"></td>
+                                <td class="text-center">
+                                    <label class="toggle va-middle">
+                                        <input type="checkbox" :checked="c.enabled" @change="toggleCalendar(c.entity_id, $event.target.checked)">
+                                        <span class="toggle-slider"></span>
+                                    </label>
+                                </td>
+                            </tr>
+                        </template>
+                    </tbody>
+                </table>
+                <p x-show="calendars.length === 0" class="text-muted">No calendar entities found.</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- Tab: Events -->
+    <div x-show="tab === 'events'" x-cloak>
+        <div class="card mb-lg">
+            <h3 class="card-title mb-md">View Events</h3>
+            <div class="form-row">
+                <div class="form-group flex-1 min-w-220">
+                    <label class="form-label" for="cal-event-calendar">Calendar</label>
+                    <select id="cal-event-calendar" x-model="eventQuery.calendar_id" class="form-input">
+                        <option value="">-- select --</option>
+                        <template x-for="c in calendars" :key="c.entity_id">
+                            <option :value="c.entity_id" x-text="c.friendly_name"></option>
+                        </template>
+                    </select>
+                </div>
+                <div class="form-group flex-1 min-w-180">
+                    <label class="form-label" for="cal-event-start">Start</label>
+                    <input id="cal-event-start" type="datetime-local" x-model="eventQuery.start" class="form-input">
+                </div>
+                <div class="form-group flex-1 min-w-180">
+                    <label class="form-label" for="cal-event-end">End</label>
+                    <input id="cal-event-end" type="datetime-local" x-model="eventQuery.end" class="form-input">
+                </div>
+                <div class="form-group self-end flex-none-w-120">
+                    <button class="btn btn-primary" @click="loadEvents()">Load</button>
+                </div>
+            </div>
+        </div>
+
+        <div class="card">
+            <h3 class="card-title mb-md">Events</h3>
+            <div class="table-container">
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th>Summary</th>
+                            <th>Start</th>
+                            <th>End</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <template x-for="ev in events" :key="ev.uid || ev.summary + ev.start">
+                            <tr>
+                                <td x-text="ev.summary"></td>
+                                <td x-text="ev.start"></td>
+                                <td x-text="ev.end"></td>
+                                <td>
+                                    <button class="btn btn-sm btn-danger" @click="deleteEvent(ev.uid)">Delete</button>
+                                </td>
+                            </tr>
+                        </template>
+                    </tbody>
+                </table>
+                <p x-show="events.length === 0" class="text-muted">No events to display.</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- Tab: Settings -->
+    <div x-show="tab === 'settings'" x-cloak>
+        <div class="card mb-lg">
+            <h3 class="card-title mb-md">Reminder Injection Settings</h3>
+            <form @submit.prevent="saveSettings()">
+                <div class="form-row">
+                    <div class="form-group flex-none-w-180">
+                        <label class="form-label" for="cal-setting-enabled">Enabled</label>
+                        <label class="toggle mt-sm">
+                            <input id="cal-setting-enabled" type="checkbox" x-model="settings.enabled">
+                            <span class="toggle-slider"></span>
+                        </label>
+                    </div>
+                    <div class="form-group flex-1 min-w-180">
+                        <label class="form-label" for="cal-setting-offsets">Offsets (minutes)</label>
+                        <input id="cal-setting-offsets" type="text" x-model="settings.offsets_text" placeholder="1440, 60, 15" class="form-input">
+                    </div>
+                    <div class="form-group flex-1 min-w-180">
+                        <label class="form-label" for="cal-setting-lookahead">Lookahead Hours</label>
+                        <input id="cal-setting-lookahead" type="number" x-model="settings.lookahead_hours" class="form-input">
+                    </div>
+                </div>
+                <button type="submit" class="btn btn-primary">Save Settings</button>
+            </form>
+        </div>
+    </div>
+
+    <!-- Tab: Reminder State -->
+    <div x-show="tab === 'state'" x-cloak>
+        <div class="card">
+            <div class="mb-md flex-between">
+                <h3 class="card-title mb-0">Reminder State</h3>
+                <button class="btn btn-sm btn-danger" @click="clearReminderState()">Clear All</button>
+            </div>
+            <p class="text-muted">Recently fired reminder markers are tracked per user and event. Use "Clear All" to reset.</p>
+        </div>
+    </div>
+</div>
+
+<script>
+function calendarPage() {
+    return {
+        tab: 'users',
+        message: '',
+        messageType: 'success',
+        users: [],
+        calendars: [],
+        events: [],
+        newUser: { display_name: '', calendar_entity_ids: [], offsets_text: '1440, 60, 15', is_default_user: false },
+        eventQuery: { calendar_id: '', start: '', end: '' },
+        settings: { enabled: true, offsets_text: '1440, 60, 15', lookahead_hours: 24 },
+
+        init() {
+            this.$watch('message', (value) => {
+                if (value) {
+                    window.toast(value, this.messageType);
+                    this.message = '';
+                }
+            });
+            this.loadAll();
+        },
+
+        async loadAll() {
+            await this.loadUsers();
+            await this.loadCalendars();
+            await this.loadSettings();
+        },
+
+        async loadUsers() {
+            try {
+                this.users = await window.dashboardApi.json('/api/admin/calendar/users');
+            } catch (e) {
+                if (e.code === 'auth_expired') return;
+                this.message = e.detail || 'Failed to load users';
+                this.messageType = 'error';
+            }
+        },
+
+        async loadCalendars() {
+            try {
+                this.calendars = await window.dashboardApi.json('/api/admin/calendar/calendars');
+            } catch (e) {
+                if (e.code === 'auth_expired') return;
+                this.message = e.detail || 'Failed to load calendars';
+                this.messageType = 'error';
+            }
+        },
+
+        async loadSettings() {
+            try {
+                const s = await window.dashboardApi.json('/api/admin/calendar/settings');
+                this.settings.enabled = s.enabled;
+                this.settings.offsets_text = (s.offsets || []).join(', ');
+                this.settings.lookahead_hours = s.lookahead_hours;
+            } catch (e) {
+                if (e.code === 'auth_expired') return;
+                this.message = e.detail || 'Failed to load settings';
+                this.messageType = 'error';
+            }
+        },
+
+        async createUser() {
+            const offsets = this.newUser.offsets_text.split(',').map(s => parseInt(s.trim(), 10)).filter(n => !isNaN(n));
+            const payload = {
+                display_name: this.newUser.display_name,
+                calendar_entity_ids: this.newUser.calendar_entity_ids,
+                reminder_offsets: offsets,
+                is_default_user: this.newUser.is_default_user,
+            };
+            try {
+                await window.dashboardApi.request('/api/admin/calendar/users', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload),
+                });
+                this.message = 'User mapping created';
+                this.messageType = 'success';
+                this.newUser = { display_name: '', calendar_entity_ids: [], offsets_text: '1440, 60, 15', is_default_user: false };
+                await this.loadUsers();
+            } catch (e) {
+                if (e.code === 'auth_expired') return;
+                this.message = e.detail || 'Failed to create user mapping';
+                this.messageType = 'error';
+            }
+        },
+
+        async deleteUser(id) {
+            if (!confirm('Delete this user mapping?')) return;
+            try {
+                await window.dashboardApi.request(`/api/admin/calendar/users/${id}`, { method: 'DELETE' });
+                this.message = 'User mapping deleted';
+                this.messageType = 'success';
+                await this.loadUsers();
+            } catch (e) {
+                if (e.code === 'auth_expired') return;
+                this.message = e.detail || 'Failed to delete user mapping';
+                this.messageType = 'error';
+            }
+        },
+
+        async toggleCalendar(entityId, enabled) {
+            try {
+                await window.dashboardApi.request(`/api/admin/calendar/entity-settings/${encodeURIComponent(entityId)}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ enabled }),
+                });
+                const cal = this.calendars.find(c => c.entity_id === entityId);
+                if (cal) cal.enabled = enabled;
+                this.message = `Calendar ${enabled ? 'enabled' : 'disabled'}`;
+                this.messageType = 'success';
+            } catch (e) {
+                if (e.code === 'auth_expired') return;
+                this.message = e.detail || 'Failed to update calendar';
+                this.messageType = 'error';
+                await this.loadCalendars();
+            }
+        },
+
+        async syncCalendars() {
+            try {
+                const result = await window.dashboardApi.json('/api/admin/calendar/entity-settings/sync', { method: 'POST' });
+                this.message = `Synced ${result.synced || 0} calendars from HA`;
+                this.messageType = 'success';
+                await this.loadCalendars();
+            } catch (e) {
+                if (e.code === 'auth_expired') return;
+                this.message = e.detail || 'Failed to sync calendars';
+                this.messageType = 'error';
+            }
+        },
+
+        async loadEvents() {
+            if (!this.eventQuery.calendar_id || !this.eventQuery.start || !this.eventQuery.end) {
+                this.message = 'Please select calendar, start, and end';
+                this.messageType = 'error';
+                return;
+            }
+            try {
+                const result = await window.dashboardApi.json(
+                    `/api/admin/calendar/events?calendar_id=${encodeURIComponent(this.eventQuery.calendar_id)}&start=${encodeURIComponent(this.eventQuery.start)}&end=${encodeURIComponent(this.eventQuery.end)}`
+                );
+                this.events = result.events || [];
+            } catch (e) {
+                if (e.code === 'auth_expired') return;
+                this.message = e.detail || 'Failed to load events';
+                this.messageType = 'error';
+            }
+        },
+
+        async deleteEvent(uid) {
+            if (!uid || !confirm('Delete this event?')) return;
+            try {
+                await window.dashboardApi.request('/api/admin/calendar/events', {
+                    method: 'DELETE',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ calendar_id: this.eventQuery.calendar_id, uid: uid }),
+                });
+                this.message = 'Event deleted';
+                this.messageType = 'success';
+                await this.loadEvents();
+            } catch (e) {
+                if (e.code === 'auth_expired') return;
+                this.message = e.detail || 'Failed to delete event';
+                this.messageType = 'error';
+            }
+        },
+
+        async saveSettings() {
+            const offsets = this.settings.offsets_text.split(',').map(s => parseInt(s.trim(), 10)).filter(n => !isNaN(n));
+            const payload = {
+                enabled: this.settings.enabled,
+                offsets: offsets,
+                lookahead_hours: parseInt(this.settings.lookahead_hours, 10) || 24,
+            };
+            try {
+                await window.dashboardApi.request('/api/admin/calendar/settings', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload),
+                });
+                this.message = 'Settings saved';
+                this.messageType = 'success';
+            } catch (e) {
+                if (e.code === 'auth_expired') return;
+                this.message = e.detail || 'Failed to save settings';
+                this.messageType = 'error';
+            }
+        },
+
+        async clearReminderState() {
+            if (!confirm('Clear all fired reminder state?')) return;
+            try {
+                const result = await window.dashboardApi.json('/api/admin/calendar/reminder-state', { method: 'DELETE' });
+                this.message = `Cleared ${result.cleared || 0} reminder state entries`;
+                this.messageType = 'success';
+            } catch (e) {
+                if (e.code === 'auth_expired') return;
+                this.message = e.detail || 'Failed to clear reminder state';
+                this.messageType = 'error';
+            }
+        },
+    };
+}
+</script>
+{% endblock %}

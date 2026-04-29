@@ -58,15 +58,17 @@ class EntityIndex:
     @staticmethod
     def _build_metadata(entry: EntityIndexEntry) -> dict:
         """Build ChromaDB metadata dict from an EntityIndexEntry."""
+        import json as _json
+
         return {
             "friendly_name": entry.friendly_name,
             "domain": entry.domain,
             "area": entry.area or "",
             "area_name": entry.area_name or "",
             "device_class": entry.device_class or "",
-            "aliases": ",".join(entry.aliases) if entry.aliases else "",
+            "aliases": _json.dumps(entry.aliases or []),
             "device_name": entry.device_name or "",
-            "id_tokens": ",".join(entry.id_tokens) if entry.id_tokens else "",
+            "id_tokens": _json.dumps(entry.id_tokens or []),
             "state": entry.state or "",
             "has_date": "1" if entry.has_date else "0",
             "has_time": "1" if entry.has_time else "0",
@@ -84,8 +86,25 @@ class EntityIndex:
     @staticmethod
     def _entry_from_metadata(entity_id: str, meta: dict) -> EntityIndexEntry:
         """Build an EntityIndexEntry from stored Chroma metadata."""
-        aliases_str = meta.get("aliases", "") or ""
-        id_tokens_str = meta.get("id_tokens", "") or ""
+        import json as _json
+
+        aliases_raw = meta.get("aliases", "") or ""
+        id_tokens_raw = meta.get("id_tokens", "") or ""
+        # Support both legacy comma-separated and new JSON-encoded lists.
+        if aliases_raw.startswith("["):
+            try:
+                aliases = _json.loads(aliases_raw)
+            except _json.JSONDecodeError:
+                aliases = []
+        else:
+            aliases = [a for a in aliases_raw.split(",") if a]
+        if id_tokens_raw.startswith("["):
+            try:
+                id_tokens = _json.loads(id_tokens_raw)
+            except _json.JSONDecodeError:
+                id_tokens = []
+        else:
+            id_tokens = [t for t in id_tokens_raw.split(",") if t]
         entry = EntityIndexEntry(
             entity_id=entity_id,
             friendly_name=meta.get("friendly_name", ""),
@@ -93,9 +112,9 @@ class EntityIndex:
             area=meta.get("area", "") or None,
             area_name=meta.get("area_name", "") or None,
             device_class=meta.get("device_class", "") or None,
-            aliases=[a for a in aliases_str.split(",") if a] if aliases_str else [],
+            aliases=aliases,
             device_name=meta.get("device_name", "") or None,
-            id_tokens=[t for t in id_tokens_str.split(",") if t] if id_tokens_str else [],
+            id_tokens=id_tokens,
             state=meta.get("state", "") or None,
             has_date=str(meta.get("has_date", "0")) == "1",
             has_time=str(meta.get("has_time", "0")) == "1",
@@ -210,6 +229,21 @@ class EntityIndex:
             return None
         meta = data["metadatas"][0]
         return self._entry_from_metadata(entity_id, meta)
+
+    def get_by_ids(self, entity_ids: list[str]) -> dict[str, EntityIndexEntry]:
+        """Retrieve multiple entities by ID. Returns a mapping of entity_id -> entry."""
+        if not entity_ids:
+            return {}
+        data = self._store.get(
+            COLLECTION_ENTITY_INDEX,
+            ids=entity_ids,
+            include=["metadatas"],
+        )
+        result: dict[str, EntityIndexEntry] = {}
+        for eid, meta in zip(data.get("ids", []), data.get("metadatas", []), strict=False):
+            if meta is not None:
+                result[eid] = self._entry_from_metadata(eid, meta)
+        return result
 
     def list_entries(self, domains: set[str] | frozenset[str] | None = None) -> list[EntityIndexEntry]:
         """Return all indexed entities, optionally filtered by domain."""

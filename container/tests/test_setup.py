@@ -333,7 +333,7 @@ class TestHAConnectionTest:
                 get_url="/setup/step/2",
             )
             assert resp.status_code == 200
-            assert "test-success" in resp.text
+            assert "alert-success" in resp.text
             assert "Connected to Home Assistant" in resp.text
 
     async def test_ha_connection_test_failure(self, setup_client: httpx.AsyncClient):
@@ -349,7 +349,7 @@ class TestHAConnectionTest:
                 get_url="/setup/step/2",
             )
             assert resp.status_code == 200
-            assert "test-error" in resp.text
+            assert "alert-error" in resp.text
             assert "Failed to connect" in resp.text
 
 
@@ -376,7 +376,7 @@ class TestLLMTest:
                 get_url="/setup/step/4",
             )
             assert resp.status_code == 200
-            assert "test-success" in resp.text
+            assert "alert-success" in resp.text
             assert "Connected to openrouter" in resp.text
 
     async def test_llm_test_groq_success(self, setup_client: httpx.AsyncClient):
@@ -394,7 +394,7 @@ class TestLLMTest:
                 get_url="/setup/step/4",
             )
         assert resp.status_code == 200
-        assert "test-success" in resp.text
+        assert "alert-success" in resp.text
         assert "Connected to groq" in resp.text
         called = mock_litellm_mod.acompletion.await_args
         assert called.kwargs["model"] == "groq/llama-3.1-8b-instant"
@@ -414,7 +414,7 @@ class TestLLMTest:
                 get_url="/setup/step/4",
             )
         assert resp.status_code == 200
-        assert "test-success" in resp.text
+        assert "alert-success" in resp.text
         assert "Connected to ollama" in resp.text
         called = mock_litellm_mod.acompletion.await_args
         assert called.kwargs["model"] == "ollama/llama3"
@@ -430,7 +430,7 @@ class TestLLMTest:
                 get_url="/setup/step/4",
             )
             assert resp.status_code == 200
-            assert "test-error" in resp.text
+            assert "alert-error" in resp.text
             assert "Provider test failed" in resp.text
 
     async def test_llm_test_unknown_provider(self, setup_client: httpx.AsyncClient):
@@ -443,7 +443,7 @@ class TestLLMTest:
                 get_url="/setup/step/4",
             )
             assert resp.status_code == 200
-            assert "test-error" in resp.text
+            assert "alert-error" in resp.text
             assert "Unknown provider" in resp.text
 
 

@@ -10,7 +10,7 @@
 
 - [ ] **HA-Service fuer Automationen (`ai_task`-Aequivalent)**: Service oder klarer Contract fuer Automatisierungen (z. B. strukturierter Output / `generate_data`-Pattern), der den Container ohne manuelles HTTP-Basteln nutzbar macht.
 
-- [ ] **Kalender: lesen, proaktive Reminder, Zuordnungen**: Kalenderereignisse lesen, gestufte/proaktive Erinnerungen, optional Nutzer-zu-Kalender-Mappings (wie im Smart-Assist-Prompt-Pattern); Dashboard/Traces wo passend.
+- [ ] **Kalender: lesen, schreiben, proaktive Reminder, Zuordnungen**: Kalenderereignisse lesen, schreiben, gestufte/proaktive Erinnerungen, optional Nutzer-zu-Kalender-Mappings (wie im Smart-Assist-Prompt-Pattern); Dashboard/Traces wo passend.
 
 security agent:
 sentinel mode bleibt vorerst deferred. wenn ein/oder mehrere explizit dem security agent zugewiesene sensoren (z. b. bewegungsmelder) automatisch einen security-agent-run triggern sollen, braucht das einen separaten trigger-contract und wahrscheinlich eine eigene ui page.

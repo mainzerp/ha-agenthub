@@ -3,54 +3,33 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>agent-assist Setup</title>
+    <title>HA-AgentHub Setup</title>
     <script src="https://unpkg.com/htmx.org@2.0.4"
         integrity="sha384-HGfztofotfshcF7+8n44JQL2oJmowVChPTg48S+jvZoztPfvwD79OC/LTtG6dMp+"
         crossorigin="anonymous"></script>
-    <style>
-        * { box-sizing: border-box; margin: 0; padding: 0; }
-        body { font-family: system-ui, sans-serif; background: #0f172a; color: #e2e8f0; min-height: 100vh; display: flex; flex-direction: column; align-items: center; padding: 2rem; }
-        .setup-container { max-width: 600px; width: 100%; flex: 1 0 auto; }
-        h1 { font-size: 1.5rem; margin-bottom: 1.5rem; text-align: center; }
-        .progress { display: flex; gap: 0.5rem; margin-bottom: 2rem; justify-content: center; }
-        .progress-step { width: 2rem; height: 2rem; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 0.75rem; font-weight: bold; }
-        .progress-step.completed { background: #22c55e; color: #fff; }
-        .progress-step.current { background: #3b82f6; color: #fff; }
-        .progress-step.pending { background: #334155; color: #94a3b8; }
-        .card { background: #1e293b; border: 1px solid #334155; border-radius: 0.5rem; padding: 1.5rem; margin-bottom: 1rem; }
-        label { display: block; margin-bottom: 0.25rem; font-size: 0.875rem; color: #94a3b8; }
-        input[type="text"], input[type="password"], input[type="url"] { width: 100%; padding: 0.5rem; border: 1px solid #475569; border-radius: 0.25rem; background: #0f172a; color: #e2e8f0; margin-bottom: 1rem; }
-        button { padding: 0.5rem 1rem; border: none; border-radius: 0.25rem; cursor: pointer; font-weight: 600; }
-        .btn-primary { background: #3b82f6; color: #fff; }
-        .btn-secondary { background: #475569; color: #e2e8f0; }
-        .btn-primary:hover { background: #2563eb; }
-        .btn-secondary:hover { background: #64748b; }
-        .test-result { margin-top: 0.5rem; padding: 0.5rem; border-radius: 0.25rem; font-size: 0.875rem; }
-        .test-success { background: #166534; color: #bbf7d0; }
-        .test-error { background: #7f1d1d; color: #fecaca; }
-        .api-key-display { background: #0f172a; border: 1px solid #22c55e; padding: 1rem; border-radius: 0.25rem; font-family: monospace; word-break: break-all; margin: 1rem 0; }
-        .setup-footer { flex-shrink: 0; padding-top: 1.25rem; padding-bottom: 0.5rem; font-size: 0.8125rem; color: #94a3b8; text-align: center; width: 100%; max-width: 600px; }
-        .setup-footer .setup-footer-version { color: #cbd5e1; font-variant-numeric: tabular-nums; }
-    </style>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=Outfit:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/dashboard/static/style.css?v=8">
 </head>
-<body>
+<body class="setup-shell">
     <div class="setup-container">
-        <h1>agent-assist Setup</h1>
+        <h1 class="page-title">HA-AgentHub Setup</h1>
         {% block progress %}
-        <div class="progress">
+        <div class="setup-progress">
             {% for i in range(1, total_steps + 1) %}
-            <div class="progress-step {% if i < step_num %}completed{% elif i == step_num %}current{% else %}pending{% endif %}">
+            <div class="setup-progress-step {% if i < step_num %}setup-progress-step--completed{% elif i == step_num %}setup-progress-step--current{% else %}setup-progress-step--pending{% endif %}">
                 {{ i }}
             </div>
             {% endfor %}
         </div>
         {% endblock %}
-        <div class="card">
+        <div class="card setup-card">
             {% block content %}{% endblock %}
         </div>
     </div>
     <footer class="setup-footer" role="contentinfo">
-        agent-assist <span class="setup-footer-version">{{ app_version }}</span>
+        HA-AgentHub <span class="setup-footer-version">{{ app_version }}</span>
     </footer>
 </body>
 </html>

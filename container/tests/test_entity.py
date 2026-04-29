@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -178,6 +179,16 @@ class TestEntityMatcher:
     def _make_matcher(self) -> tuple[EntityMatcher, MagicMock, AsyncMock]:
         mock_index = MagicMock(spec=EntityIndex)
         mock_index.get_by_id = MagicMock(return_value=None)
+
+        def _get_by_ids(ids: list[str]) -> dict[str, Any]:
+            result: dict[str, Any] = {}
+            for eid in ids:
+                entry = mock_index.get_by_id(eid)
+                if entry is not None:
+                    result[eid] = entry
+            return result
+
+        mock_index.get_by_ids = MagicMock(side_effect=_get_by_ids)
         mock_alias_resolver = AsyncMock(spec=AliasResolver)
         matcher = EntityMatcher(mock_index, mock_alias_resolver)
         matcher._weights = {

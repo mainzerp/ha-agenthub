@@ -79,10 +79,10 @@
                         <tr>
                             <td>
                                 <strong x-text="server.name"></strong>
-                                <span x-show="server.is_builtin" class="badge badge-muted" style="font-size:0.65rem; margin-left:0.25rem;">Built-in</span>
+                                <span x-show="server.is_builtin" class="badge badge-muted text-3xs ml-xs">Built-in</span>
                             </td>
                             <td><span class="badge badge-teal" x-text="server.transport"></span></td>
-                            <td class="text-mono truncate" style="max-width: 300px;" x-text="server.command_or_url"></td>
+                            <td class="text-mono truncate max-w-300" x-text="server.command_or_url"></td>
                             <td>
                                 <span class="badge badge-dot"
                                       :class="server.connected ? 'badge-green' : 'badge-red'"

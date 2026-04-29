@@ -153,8 +153,8 @@ class CacheManager:
     ) -> ActionReplayOutcome | None:
         """Attempt to replay a cached action after current-turn validation."""
         try:
-            entry, similarity = await asyncio.to_thread(
-                self._action_cache.lookup,
+            entry_id, entry, similarity = await asyncio.to_thread(
+                self._action_cache.lookup_with_id,
                 query_text,
                 language=language,
             )
@@ -164,7 +164,6 @@ class CacheManager:
         if entry is None or entry.cached_action is None:
             return None
 
-        entry_id = self._action_cache.make_entry_id(entry.query_text, language=entry.language)
         entity_id = entry.cached_action.entity_id
         if entity_id:
             # F12 split: distinguish entity-index outage (transient) from a real
@@ -228,8 +227,8 @@ class CacheManager:
     ) -> RoutingSkipOutcome | None:
         """Return a routing cache hit that can skip live classification."""
         try:
-            entry, similarity = await asyncio.to_thread(
-                self._routing_cache.lookup,
+            entry_id, entry, similarity = await asyncio.to_thread(
+                self._routing_cache.lookup_with_id,
                 query_text,
                 language=language,
             )
@@ -246,7 +245,7 @@ class CacheManager:
         )
         return RoutingSkipOutcome(
             kind="routing_hit",
-            entry_id=self._routing_cache.make_entry_id(entry.query_text, language=entry.language),
+            entry_id=entry_id or "",
             agent_id=entry.agent_id,
             condensed_task=entry.condensed_task or entry.query_text,
             similarity=similarity,

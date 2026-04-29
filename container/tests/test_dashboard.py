@@ -240,8 +240,7 @@ class TestDashboardTemplateRendering:
         assert 'for="send-device-target-select"' in html
         assert 'id="send-device-target-manual"' in html
         assert '@submit.prevent="createMapping()"' in html
-        assert ":aria-live=\"messageType === 'error' ? 'assertive' : 'polite'\"" in html
-        assert ":role=\"messageType === 'error' ? 'alert' : 'status'\"" in html
+        assert "window.toast" in html
 
     async def test_send_devices_page_uses_dashboard_api_helper(self, dashboard_client: httpx.AsyncClient):
         resp = await dashboard_client.get("/dashboard/send-devices")
@@ -328,8 +327,8 @@ class TestDashboardTemplateRendering:
     async def test_settings_page_has_live_regions(self, dashboard_client: httpx.AsyncClient):
         resp = await dashboard_client.get("/dashboard/settings")
         html = resp.text
-        assert html.count('role="status"') >= 4
-        assert html.count('aria-live="polite"') >= 4
+        assert "window.toast" in html
+        assert "dashToasts" in html
 
     async def test_timers_page_uses_scheduler_contract_copy(self, dashboard_client: httpx.AsyncClient):
         resp = await dashboard_client.get("/dashboard/timers")

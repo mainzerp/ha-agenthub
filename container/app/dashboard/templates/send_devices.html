@@ -23,12 +23,12 @@
         <h3 class="card-title mb-md">Add Device Mapping</h3>
         <form @submit.prevent="createMapping()">
             <div class="form-row">
-                <div class="form-group" style="flex: 1; min-width: 180px;">
+                <div class="form-group flex-1 min-w-180">
                     <label class="form-label" for="send-device-display-name">Display Name</label>
                     <input id="send-device-display-name" type="text" x-model="newMapping.display_name"
                            placeholder="e.g. Laura Handy" class="form-input">
                 </div>
-                <div class="form-group" style="flex: 0 0 180px;">
+                <div class="form-group flex-none-w-180">
                     <label class="form-label" for="send-device-type">Device Type</label>
                     <select id="send-device-type" x-model="newMapping.device_type" class="form-input"
                             @change="loadAvailableTargets()">
@@ -36,7 +36,7 @@
                         <option value="tts">Satellite (TTS)</option>
                     </select>
                 </div>
-                <div class="form-group" style="flex: 1; min-width: 220px;">
+                <div class="form-group flex-1 min-w-220">
                     <label class="form-label" for="send-device-target-select">HA Service Target</label>
                     <select id="send-device-target-select" x-model="newMapping.ha_service_target" class="form-input">
                         <option value="">-- select --</option>
@@ -44,9 +44,9 @@
                             <option :value="t.id" x-text="t.label"></option>
                         </template>
                     </select>
-                    <label class="form-label" for="send-device-target-manual" style="font-size: 0.8125rem; margin-top: 0.5rem;">Or type a target manually</label>
+                    <label class="form-label text-sm mt-sm" for="send-device-target-manual">Or type a target manually</label>
                     <input id="send-device-target-manual" type="text" x-model="newMapping.ha_service_target"
-                           placeholder="or type manually" class="form-input" style="margin-top:0.5rem">
+                           placeholder="or type manually" class="form-input mt-sm">
                 </div>
             </div>
             <button type="submit" class="btn btn-primary">Add Mapping</button>

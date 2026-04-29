@@ -14,18 +14,18 @@
     <div class="stat-grid-3" id="health-cards">
         <template x-if="!health">
             <div class="stat-card">
-                <div class="flex-center" style="gap: 0.5rem; margin-bottom: 0.5rem;">
-                    <span class="badge badge-dot" style="--dot-color: var(--soft-amber);"></span>
+                <div class="flex-center gap-sm mb-sm">
+                    <span class="badge badge-dot dot-amber"></span>
                     <strong>Loading...</strong>
                 </div>
-                <p class="text-muted" style="font-size: 0.875rem;">Checking subsystem status...</p>
+                <p class="text-muted text-sm">Checking subsystem status...</p>
             </div>
         </template>
         <template x-if="health">
             <template x-for="c in components" :key="c.key">
                 <div class="stat-card">
-                    <div class="flex-between" style="margin-bottom: 0.5rem;">
-                        <div class="flex-center" style="gap: 0.5rem;">
+                    <div class="flex-between mb-sm">
+                        <div class="flex-center gap-sm">
                             <span class="badge badge-dot" :style="'--dot-color: ' + getDotColor(health[c.key])"></span>
                             <strong x-text="c.label"></strong>
                         </div>

@@ -101,6 +101,22 @@ class ActionCache(_BaseCache[ActionCacheEntry]):
             return None, similarity
         return entry, similarity
 
+    def lookup_with_id(
+        self,
+        query_text: str,
+        *,
+        language: str = "en",
+    ) -> tuple[str | None, ActionCacheEntry | None, float | None]:
+        """Like lookup() but also returns the computed entry_id."""
+        entry_id, entry, similarity = self._lookup_common(query_text, language=language)
+        if entry is None or similarity is None:
+            return entry_id, None, similarity
+        if similarity < self._semantic_threshold:
+            return entry_id, None, similarity
+        if entry.cached_action is None:
+            return entry_id, None, similarity
+        return entry_id, entry, similarity
+
     def purge_readonly_entries(self) -> int:
         page = self._store.get(COLLECTION_ACTION_CACHE, include=["metadatas"])
         ids = page.get("ids") or []

@@ -6,7 +6,7 @@
 <div x-data="timersPage()" x-init="init()">
 
     <div id="timers-alpine-warning" class="card" style="display:none;margin-bottom:1rem;border-color:var(--danger,#f38ba8);">
-        <p style="margin:0;color:var(--danger,#f38ba8);font-weight:600;">
+        <p class="m-0 text-danger fw-600">
             Interactive controls failed to initialize (Alpine.js unavailable). Edit actions may not work until you reload the page or restore network access.
         </p>
     </div>
@@ -15,20 +15,20 @@
         <div class="page-header-text">
             <p class="page-subtitle">Scheduler-managed timers and source-labeled alarms (internal scheduler and HA legacy visibility). Auto-refreshes every 5s.</p>
         </div>
-        <div class="page-actions" style="display:flex;gap:0.5rem;align-items:center;">
+        <div class="page-actions gap-sm">
             <span class="text-muted" x-text="timers.length + ' timer(s), ' + alarms.length + ' alarm(s)'"></span>
         </div>
     </div>
 
-    <div class="card" style="margin-bottom:1.5rem;">
-        <div style="display:flex;justify-content:space-between;gap:1rem;align-items:flex-start;flex-wrap:wrap;">
+    <div class="card mb-lg">
+        <div class="flex-between items-start flex-wrap gap-md">
             <div>
                 <h2 class="section-title mt-0 mb-0">Wake Briefing</h2>
-                <p class="text-muted" style="margin-top:0.4rem;max-width:58rem;">
+                <p class="text-muted mt-sm">
                     Configure the composed morning briefing used by internal alarms when the timer agent sets the briefing flag.
                 </p>
             </div>
-            <div style="display:flex;gap:0.5rem;align-items:center;">
+            <div class="flex-center">
                 <span class="text-muted" x-show="wakeBriefingSaving">Saving...</span>
                 <span class="text-muted" x-show="wakeBriefingTesting">Testing...</span>
                 <button class="btn btn-sm btn-secondary" @click="testWakeBriefing()">Test Run</button>
@@ -37,87 +37,87 @@
         </div>
 
         <template x-if="wakeBriefingError">
-            <p style="color:var(--danger,#f38ba8);margin-top:0.75rem;" x-text="wakeBriefingError"></p>
+            <p class="text-danger mt-75" x-text="wakeBriefingError"></p>
         </template>
         <template x-if="wakeBriefingSaved">
-            <p style="color:var(--success,#a6e3a1);margin-top:0.75rem;" x-text="wakeBriefingSaved"></p>
+            <p class="text-success mt-75" x-text="wakeBriefingSaved"></p>
         </template>
 
-        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:0.9rem;margin-top:1rem;">
-            <label class="card" style="padding:0.85rem;display:flex;justify-content:space-between;align-items:center;gap:1rem;">
+        <div class="wake-grid">
+            <label class="card toggle-card">
                 <span>Enable wake briefings</span>
                 <input type="checkbox" x-model="wakeBriefing.enabled">
             </label>
-            <label class="card" style="padding:0.85rem;display:flex;justify-content:space-between;align-items:center;gap:1rem;">
+            <label class="card toggle-card">
                 <span>Include date</span>
                 <input type="checkbox" x-model="wakeBriefing.sources.date">
             </label>
-            <label class="card" style="padding:0.85rem;display:flex;justify-content:space-between;align-items:center;gap:1rem;">
+            <label class="card toggle-card">
                 <span>Include weather</span>
                 <input type="checkbox" x-model="wakeBriefing.sources.weather">
             </label>
-            <label class="card" style="padding:0.85rem;display:flex;justify-content:space-between;align-items:center;gap:1rem;">
+            <label class="card toggle-card">
                 <span>Include news</span>
                 <input type="checkbox" x-model="wakeBriefing.sources.news">
             </label>
-            <label class="card" style="padding:0.85rem;display:flex;justify-content:space-between;align-items:center;gap:1rem;">
+            <label class="card toggle-card">
                 <span>Include calendar</span>
                 <input type="checkbox" x-model="wakeBriefing.sources.calendar">
             </label>
-            <label class="card" style="padding:0.85rem;display:flex;justify-content:space-between;align-items:center;gap:1rem;">
+            <label class="card toggle-card">
                 <span>Include sensors</span>
                 <input type="checkbox" x-model="wakeBriefing.sources.sensors">
             </label>
         </div>
 
-        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:1rem;margin-top:1rem;">
+        <div class="config-grid">
             <div>
-                <label style="display:block;margin-bottom:0.35rem;">News topic or prompt</label>
+                <label class="form-label-block">News topic or prompt</label>
                 <textarea x-model="wakeBriefing.news_query" rows="3" placeholder="top technology news in Germany today"
-                          style="width:100%;box-sizing:border-box;padding:0.55rem 0.7rem;background:var(--input-bg,#313244);border:1px solid var(--border,#45475a);border-radius:4px;color:inherit;"></textarea>
-                <p class="text-muted" style="margin-top:0.4rem;">Use this field to steer the type of news, region, language, or exclusions.</p>
+                          class="form-input-native"></textarea>
+                <p class="text-muted mt-sm">Use this field to steer the type of news, region, language, or exclusions.</p>
             </div>
             <div>
-                <label style="display:block;margin-bottom:0.35rem;">Headline count</label>
+                <label class="form-label-block">Headline count</label>
                 <input type="number" min="1" max="10" x-model.number="wakeBriefing.news_count"
-                       style="width:100%;box-sizing:border-box;padding:0.45rem 0.6rem;background:var(--input-bg,#313244);border:1px solid var(--border,#45475a);border-radius:4px;color:inherit;"/>
-                <p class="text-muted" style="margin-top:0.4rem;">The wake-briefing composer requests this many concise headlines from the news step.</p>
+                       class="form-input-native-sm"/>
+                <p class="text-muted mt-sm">The wake-briefing composer requests this many concise headlines from the news step.</p>
             </div>
             <div>
-                <label style="display:block;margin-bottom:0.35rem;">Timeout seconds</label>
+                <label class="form-label-block">Timeout seconds</label>
                 <input type="number" min="1" max="60" x-model.number="wakeBriefing.timeout_seconds"
-                       style="width:100%;box-sizing:border-box;padding:0.45rem 0.6rem;background:var(--input-bg,#313244);border:1px solid var(--border,#45475a);border-radius:4px;color:inherit;"/>
+                       class="form-input-native-sm"/>
             </div>
         </div>
 
-        <div style="margin-top:1rem;">
-            <label style="display:block;margin-bottom:0.35rem;">Sensor entities</label>
-            <div style="display:flex;gap:0.5rem;flex-wrap:wrap;align-items:center;">
+        <div class="mt-md">
+            <label class="form-label-block">Sensor entities</label>
+            <div class="flex-center flex-wrap">
                 <input type="text" x-model="newSensorEntity" placeholder="sensor.dishwasher_status"
                        style="flex:1 1 240px;box-sizing:border-box;padding:0.45rem 0.6rem;background:var(--input-bg,#313244);border:1px solid var(--border,#45475a);border-radius:4px;color:inherit;"/>
                 <button class="btn btn-sm btn-secondary" @click="addSensorEntity()">Add Sensor</button>
             </div>
-            <div style="display:flex;flex-wrap:wrap;gap:0.5rem;margin-top:0.75rem;" x-show="wakeBriefing.sensor_entities.length > 0">
+            <div class="flex flex-wrap gap-sm mt-75" x-show="wakeBriefing.sensor_entities.length > 0">
                 <template x-for="(entityId, index) in wakeBriefing.sensor_entities" :key="entityId">
-                    <span class="badge badge-teal" style="display:inline-flex;align-items:center;gap:0.4rem;">
+                    <span class="badge badge-teal badge-sensor">
                         <span x-text="entityId"></span>
                         <button type="button" class="btn btn-sm btn-danger" @click="removeSensorEntity(index)">x</button>
                     </span>
                 </template>
             </div>
-            <p class="text-muted" style="margin-top:0.5rem;">Use `domain.object_id` values. Hidden entities are ignored by the composer.</p>
+            <p class="text-muted mt-sm">Use `domain.object_id` values. Hidden entities are ignored by the composer.</p>
         </div>
 
-        <div style="margin-top:1rem;">
-            <label style="display:block;margin-bottom:0.35rem;">Composer prompt</label>
+        <div class="mt-md">
+            <label class="form-label-block">Composer prompt</label>
             <textarea x-model="wakeBriefing.composer_prompt" rows="5"
-                      style="width:100%;box-sizing:border-box;padding:0.55rem 0.7rem;background:var(--input-bg,#313244);border:1px solid var(--border,#45475a);border-radius:4px;color:inherit;"></textarea>
-            <p class="text-muted" style="margin-top:0.4rem;">Composer always uses the same LLM model as the general-agent.</p>
+                      class="form-input-native"></textarea>
+            <p class="text-muted mt-sm">Composer always uses the same LLM model as the general-agent.</p>
         </div>
 
-        <div style="margin-top:1rem;" x-show="wakeBriefingPreview">
-            <label style="display:block;margin-bottom:0.35rem;">Test preview</label>
-            <div class="card" style="padding:0.9rem;white-space:pre-wrap;line-height:1.5;" x-text="wakeBriefingPreview"></div>
+        <div class="mt-md" x-show="wakeBriefingPreview">
+            <label class="form-label-block">Test preview</label>
+            <div class="card preview-box" x-text="wakeBriefingPreview"></div>
         </div>
     </div>
 
@@ -160,7 +160,7 @@
                         <td class="text-mono" x-text="formatDurationSeconds(t.remaining_seconds)"></td>
                         <td class="text-mono" x-text="formatDurationSeconds(t.duration_seconds)"></td>
                         <td class="text-mono" x-text="displayOrigin(t)"></td>
-                        <td style="white-space:nowrap;">
+                        <td class="text-nowrap">
                             <button class="btn btn-sm btn-secondary" @click="openEditTimer(t)">Edit</button>
                             <button class="btn btn-sm btn-danger" @click="cancelRow(t.id)">Cancel</button>
                         </td>
@@ -171,7 +171,7 @@
     </div>
 
     <!-- Section 2: Alarms & Schedules -->
-    <div class="section-header" style="margin-top: 2rem;">
+    <div class="section-header mt-2xl">
         <h2 class="section-title mt-0 mb-0">Alarms & Schedules</h2>
     </div>
     <template x-if="!loading && alarms.length === 0">
@@ -194,7 +194,7 @@
                     <tr>
                         <td>
                             <div x-text="a.name"></div>
-                            <div class="text-muted" style="font-size:0.8em;" x-show="a.source === 'internal' && recurrenceSummary(a.recurrence)" x-text="recurrenceSummary(a.recurrence)"></div>
+                            <div class="text-muted text-xs" x-show="a.source === 'internal' && recurrenceSummary(a.recurrence)" x-text="recurrenceSummary(a.recurrence)"></div>
                         </td>
                         <td class="text-mono" x-text="a.entity_id"></td>
                         <td class="text-mono" x-text="a.state"></td>
@@ -215,7 +215,7 @@
                                   }"
                                   x-text="a.source || 'ha_legacy'"></span>
                         </td>
-                        <td style="white-space:nowrap;">
+                        <td class="text-nowrap">
                             <template x-if="a.source === 'internal'">
                                 <span>
                                     <button class="btn btn-sm btn-secondary" @click="openEditAlarm(a)">Edit</button>
@@ -223,7 +223,7 @@
                                 </span>
                             </template>
                             <template x-if="a.source !== 'internal'">
-                                <span class="text-muted" style="font-size:0.8em;">read-only</span>
+                                <span class="text-muted text-xs">read-only</span>
                             </template>
                         </td>
                     </tr>
@@ -233,47 +233,47 @@
     </div>
 
     <template x-if="loading">
-        <p class="text-muted" style="padding: 1rem 0;">Loading timer data...</p>
+        <p class="text-muted py-md">Loading timer data...</p>
     </template>
 
     <!-- Edit Timer/Alarm Modal -->
     <div x-show="showEditModal" class="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="timer-edit-modal-title" @click.self="showEditModal=false" @keydown.escape.window="showEditModal=false">
-        <div class="card" tabindex="-1" style="background:var(--surface,#1e1e2e);padding:1.5rem;border-radius:8px;min-width:320px;max-width:480px;width:90%;">
-            <h3 id="timer-edit-modal-title" style="margin-top:0;" x-text="editMode === 'alarm' ? 'Edit Alarm' : 'Edit Timer'"></h3>
-            <div style="margin-bottom:1rem;">
-                <label style="display:block;margin-bottom:0.25rem;">Label</label>
+        <div class="card modal-card" tabindex="-1">
+            <h3 id="timer-edit-modal-title" class="mt-0" x-text="editMode === 'alarm' ? 'Edit Alarm' : 'Edit Timer'"></h3>
+            <div class="mb-md">
+                <label class="form-label">Label</label>
                 <input type="text" x-model="editName" maxlength="128"
-                       style="width:100%;box-sizing:border-box;padding:0.4rem 0.6rem;background:var(--input-bg,#313244);border:1px solid var(--border,#45475a);border-radius:4px;color:inherit;"/>
+                       class="form-input-native-xs"/>
             </div>
-            <div style="margin-bottom:1rem;">
-                <label style="display:block;margin-bottom:0.25rem;">New Fire Time (local)</label>
+            <div class="mb-md">
+                <label class="form-label">New Fire Time (local)</label>
                 <input type="datetime-local" x-model="editFiresAt"
-                       style="width:100%;box-sizing:border-box;padding:0.4rem 0.6rem;background:var(--input-bg,#313244);border:1px solid var(--border,#45475a);border-radius:4px;color:inherit;"/>
+                       class="form-input-native-xs"/>
             </div>
             <template x-if="editMode === 'alarm'">
                 <div>
-                    <label class="card" style="padding:0.85rem;display:flex;justify-content:space-between;align-items:center;gap:1rem;margin-bottom:1rem;">
+                    <label class="card toggle-card mb-md">
                         <span>Wake briefing enabled</span>
                         <input type="checkbox" x-model="editBriefing">
                     </label>
-                    <div class="card" style="padding:0.85rem;margin-bottom:1rem;">
-                        <label style="display:block;margin-bottom:0.35rem;">Recurrence</label>
+                    <div class="card p-form mb-md">
+                        <label class="form-label-block">Recurrence</label>
                         <select x-model="editRecurrenceMode"
-                                style="width:100%;box-sizing:border-box;padding:0.45rem 0.6rem;background:var(--input-bg,#313244);border:1px solid var(--border,#45475a);border-radius:4px;color:inherit;">
+                                class="form-input-native-sm">
                             <option value="once">One time</option>
                             <option value="daily">Daily</option>
                             <option value="weekly">Weekly</option>
                         </select>
 
-                        <div x-show="editRecurrenceMode !== 'once'" style="margin-top:0.85rem;">
-                            <label style="display:block;margin-bottom:0.35rem;">Repeat every</label>
+                        <div x-show="editRecurrenceMode !== 'once'" class="mt-md">
+                            <label class="form-label-block">Repeat every</label>
                             <input type="number" min="1" max="30" x-model.number="editRecurrenceInterval"
-                                   style="width:100%;box-sizing:border-box;padding:0.45rem 0.6rem;background:var(--input-bg,#313244);border:1px solid var(--border,#45475a);border-radius:4px;color:inherit;"/>
+                                   class="form-input-native-sm"/>
                         </div>
 
-                        <div x-show="editRecurrenceMode === 'weekly'" style="margin-top:0.85rem;">
-                            <label style="display:block;margin-bottom:0.35rem;">Weekdays</label>
-                            <div style="display:flex;flex-wrap:wrap;gap:0.45rem;">
+                        <div x-show="editRecurrenceMode === 'weekly'" class="mt-md">
+                            <label class="form-label-block">Weekdays</label>
+                            <div class="flex flex-wrap gap-xs">
                                 <template x-for="day in weekdayOptions" :key="day.code">
                                     <button type="button"
                                             class="btn btn-sm"
@@ -286,8 +286,8 @@
                     </div>
                 </div>
             </template>
-            <p x-show="modalError" x-text="modalError" style="color:var(--danger,#f38ba8);margin:0 0 0.75rem;"></p>
-            <div style="display:flex;gap:0.5rem;justify-content:flex-end;">
+            <p x-show="modalError" x-text="modalError" class="text-danger m-0 mb-75"></p>
+            <div class="flex gap-sm justify-end">
                 <button class="btn btn-sm btn-secondary" @click="showEditModal=false">Cancel</button>
                 <button class="btn btn-sm btn-primary" @click="submitEdit()">Save</button>
             </div>

@@ -741,16 +741,12 @@ async def update_single_setting(key: str, payload: dict):
 
 @router.get("/ha-connection")
 async def get_ha_connection():
-    """Return HA base URL and whether a long-lived token is stored (masked)."""
+    """Return HA base URL and whether a long-lived token is stored."""
     url = await SettingsRepository.get_value("ha_url") or ""
     token = await get_ha_token()
-    masked = None
-    if token:
-        masked = f"...{token[-4:]}" if len(token) >= 4 else "****"
     return {
         "ha_url": url or None,
         "token_configured": bool(token),
-        "token_masked": masked,
     }
 
 
@@ -804,12 +800,9 @@ async def test_ha_connection_admin(payload: HaConnectionTestRequest):
 
 @router.get("/container-api-key")
 async def get_container_api_key_status():
-    """Return whether the HA integration key exists and a last-4 mask (never full key)."""
+    """Return whether the HA integration key is configured."""
     raw = await retrieve_secret(API_KEY_SECRET_NAME)
-    if not raw:
-        return {"configured": False, "token_masked": None}
-    masked = f"...{raw[-4:]}" if len(raw) >= 4 else "****"
-    return {"configured": True, "token_masked": masked}
+    return {"configured": bool(raw)}
 
 
 @router.post("/container-api-key/rotate")

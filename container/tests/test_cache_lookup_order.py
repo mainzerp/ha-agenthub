@@ -183,7 +183,7 @@ async def test_action_disabled_still_consults_routing():
     manager = CacheManager(store)
     manager._action_cache._enabled = False
     routing_entry = make_routing_cache_entry(condensed_task="Turn on kitchen light")
-    manager._routing_cache.lookup = MagicMock(return_value=(routing_entry, 0.96))
+    manager._routing_cache.lookup_with_id = MagicMock(return_value=("routing-1", routing_entry, 0.96))
     orch = _make_orchestrator(manager)
 
     with patch("app.cache.cache_manager.track_cache_event", new_callable=AsyncMock):
@@ -195,7 +195,7 @@ async def test_action_disabled_still_consults_routing():
 
     assert action_hit is None
     assert routing_hit is not None
-    manager._routing_cache.lookup.assert_called_once()
+    manager._routing_cache.lookup_with_id.assert_called_once()
 
 
 @pytest.mark.asyncio
@@ -203,9 +203,9 @@ async def test_routing_disabled_still_consults_action():
     store = MagicMock(spec=VectorStore)
     store.count.return_value = 0
     manager = CacheManager(store)
-    manager._routing_cache.lookup = MagicMock(side_effect=AssertionError("routing should not be consulted"))
+    manager._routing_cache.lookup_with_id = MagicMock(side_effect=AssertionError("routing should not be consulted"))
     action_entry = make_action_cache_entry(query_text="turn on kitchen light")
-    manager._action_cache.lookup = MagicMock(return_value=(action_entry, 1.0))
+    manager._action_cache.lookup_with_id = MagicMock(return_value=("action-1", action_entry, 1.0))
     orch = _make_orchestrator(manager)
 
     with (
@@ -224,4 +224,4 @@ async def test_routing_disabled_still_consults_action():
 
     assert action_hit is not None
     assert routing_hit is None
-    manager._routing_cache.lookup.assert_not_called()
+    manager._routing_cache.lookup_with_id.assert_not_called()

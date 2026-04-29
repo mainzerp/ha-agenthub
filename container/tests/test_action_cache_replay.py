@@ -60,7 +60,7 @@ def _make_orchestrator(cache_manager) -> OrchestratorAgent:
 async def test_exact_text_hit_replays_without_classify():
     manager = _make_manager()
     entry = make_action_cache_entry(query_text="turn on kitchen light")
-    manager._action_cache.lookup = MagicMock(return_value=(entry, 1.0))
+    manager._action_cache.lookup_with_id = MagicMock(return_value=("entry-1", entry, 1.0))
     manager._action_cache.invalidate_by_entry_id = MagicMock()
     execute_cached_action = AsyncMock(return_value={"success": True, "entity_id": entry.cached_action.entity_id})
 
@@ -86,7 +86,7 @@ async def test_exact_text_hit_replays_without_classify():
 async def test_semantic_fallback_hit_above_threshold_replays():
     manager = _make_manager()
     entry = make_action_cache_entry(query_text="turn on kitchen light")
-    manager._action_cache.lookup = MagicMock(return_value=(entry, 0.97))
+    manager._action_cache.lookup_with_id = MagicMock(return_value=("entry-1", entry, 0.97))
     manager._action_cache.invalidate_by_entry_id = MagicMock()
 
     result = await manager.try_replay_action(
@@ -105,7 +105,7 @@ async def test_semantic_fallback_hit_above_threshold_replays():
 @pytest.mark.asyncio
 async def test_semantic_fallback_below_threshold_misses():
     manager = _make_manager()
-    manager._action_cache.lookup = MagicMock(return_value=(None, 0.91))
+    manager._action_cache.lookup_with_id = MagicMock(return_value=(None, None, 0.91))
     execute_cached_action = AsyncMock()
 
     result = await manager.try_replay_action(
@@ -124,7 +124,7 @@ async def test_semantic_fallback_below_threshold_misses():
 async def test_entity_divergence_invalidates_row():
     manager = _make_manager()
     entry = make_action_cache_entry(query_text="turn on kitchen light")
-    manager._action_cache.lookup = MagicMock(return_value=(entry, 1.0))
+    manager._action_cache.lookup_with_id = MagicMock(return_value=("entry-1", entry, 1.0))
     manager._action_cache.invalidate_by_entry_id = MagicMock()
 
     result = await manager.try_replay_action(
@@ -143,7 +143,7 @@ async def test_entity_divergence_invalidates_row():
 async def test_visibility_recheck_failure_invalidates_row():
     manager = _make_manager()
     entry = make_action_cache_entry(query_text="turn on kitchen light")
-    manager._action_cache.lookup = MagicMock(return_value=(entry, 1.0))
+    manager._action_cache.lookup_with_id = MagicMock(return_value=("entry-1", entry, 1.0))
     manager._action_cache.invalidate_by_entry_id = MagicMock()
 
     result = await manager.try_replay_action(
@@ -162,7 +162,7 @@ async def test_visibility_recheck_failure_invalidates_row():
 async def test_transient_replay_miss_does_not_invalidate():
     manager = _make_manager()
     entry = make_action_cache_entry(query_text="turn on kitchen light")
-    manager._action_cache.lookup = MagicMock(return_value=(entry, 1.0))
+    manager._action_cache.lookup_with_id = MagicMock(return_value=("entry-1", entry, 1.0))
     manager._action_cache.invalidate_by_entry_id = MagicMock()
 
     result = await manager.try_replay_action(

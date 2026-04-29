@@ -460,7 +460,7 @@ class TestAdminSettingsEndpoints:
         data = resp.json()
         assert "ha_url" in data
         assert "token_configured" in data
-        assert "token_masked" in data
+        assert "token_masked" not in data
 
     async def test_put_ha_connection_rejects_invalid_url(self, authed_client: httpx.AsyncClient):
         resp = await authed_client.put(
@@ -492,7 +492,7 @@ class TestAdminSettingsEndpoints:
         assert resp.status_code == 200
         data = resp.json()
         assert "configured" in data
-        assert "token_masked" in data
+        assert "token_masked" not in data
 
     async def test_put_container_api_key_rejects_short_key(self, authed_client: httpx.AsyncClient):
         resp = await authed_client.put(

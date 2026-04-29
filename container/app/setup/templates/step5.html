@@ -1,23 +1,27 @@
 {% extends "base_setup.html" %}
 {% block content %}
 <h2>Review &amp; Complete</h2>
-<p style="color: #94a3b8; margin-bottom: 1rem;">Review your setup configuration.</p>
-<table style="width: 100%; margin-bottom: 1rem;">
-    {% for step_name, completed in steps.items() %}
-    <tr>
-        <td style="padding: 0.5rem;">{{ step_name.replace("_", " ").title() }}</td>
-        <td style="padding: 0.5rem; text-align: right;">
-            {% if completed %}
-            <span style="color: #22c55e;">Done</span>
-            {% else %}
-            <span style="color: #ef4444;">Pending</span>
-            {% endif %}
-        </td>
-    </tr>
-    {% endfor %}
-</table>
+<p class="text-muted mb-md">Review your setup configuration.</p>
+<div class="table-container mb-md">
+    <table class="data-table">
+        <tbody>
+            {% for step_name, completed in steps.items() %}
+            <tr>
+                <td>{{ step_name.replace("_", " ").title() }}</td>
+                <td class="text-right">
+                    {% if completed %}
+                    <span class="text-sage">Done</span>
+                    {% else %}
+                    <span class="text-coral">Pending</span>
+                    {% endif %}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
 <form method="post" action="/setup/step/5">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-    <button type="submit" class="btn-primary">Complete Setup</button>
+    <button type="submit" class="btn btn-primary">Complete Setup</button>
 </form>
 {% endblock %}

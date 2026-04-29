@@ -27,6 +27,13 @@ def _normalize_url(url: str) -> str:
 
 async def async_migrate_entry(hass: HomeAssistant, config_entry: ConfigEntry) -> bool:
     """Migrate old config entries to the current version."""
+    if config_entry.version > 2:
+        logger.error(
+            "HA-AgentHub config entry version %d is newer than supported (max 2). "
+            "Skipping migration.",
+            config_entry.version,
+        )
+        return False
     if config_entry.version == 1:
         url = _normalize_url(config_entry.data.get(CONF_URL, ""))
         new_unique_id = url if url else config_entry.entry_id
@@ -36,9 +43,10 @@ async def async_migrate_entry(hass: HomeAssistant, config_entry: ConfigEntry) ->
             unique_id=new_unique_id,
             version=2,
         )
+        old_unique_id = config_entry.unique_id
         logger.info(
             "Migrated HA-AgentHub config entry from version 1 to 2 (unique_id: %s -> %s)",
-            DOMAIN,
+            old_unique_id,
             new_unique_id,
         )
     return True
@@ -73,4 +81,6 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if unload_ok:
         hass.data[DOMAIN].pop(entry.entry_id, None)
+        if not hass.data[DOMAIN]:
+            hass.data.pop(DOMAIN, None)
     return unload_ok

@@ -97,7 +97,7 @@ class TimerAgent(ActionableAgent):
         return AgentCard(
             agent_id="timer-agent",
             name="Timer Agent",
-            description="Manages timers, alarms, reminders, and scheduled actions. Start, cancel, pause, resume, snooze timers. Sets alarms, schedules delayed actions and sleep timers, creates calendar reminders. Reports timer status and remaining time.",
+            description="Manages timers, alarms, reminders, and scheduled actions. Start, cancel, pause, resume, snooze timers. Sets alarms, schedules delayed actions and sleep timers. Reports timer status and remaining time.",
             skills=[
                 "timer_set",
                 "timer_cancel",
@@ -109,7 +109,6 @@ class TimerAgent(ActionableAgent):
                 "reminder",
                 "delayed_action",
                 "sleep_timer",
-                "calendar",
             ],
             endpoint="local://timer-agent",
         )

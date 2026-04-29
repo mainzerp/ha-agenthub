@@ -248,6 +248,15 @@ async def send_devices_page(
     return _render_dashboard(request, "send_devices.html")
 
 
+@router.get("/calendar", response_class=HTMLResponse)
+async def calendar_page(
+    request: Request,
+    _session: dict = Depends(require_admin_session_redirect),
+):
+    """Calendar management page."""
+    return _render_dashboard(request, "calendar.html")
+
+
 @router.get("/settings", response_class=HTMLResponse)
 async def settings_page(
     request: Request,

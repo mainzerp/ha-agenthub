@@ -10,6 +10,7 @@ import time
 from typing import Any, Literal
 
 import aiohttp
+from urllib.parse import urlparse
 
 from homeassistant.components import assist_pipeline, conversation
 from homeassistant.components.conversation import ConversationEntityFeature
@@ -67,6 +68,28 @@ def _rest_fallback_error_message(status_code: int | None) -> str:
     )
 
 
+# Pre-compiled regex patterns for _strip_markdown (LOW-15)
+_STRIP_MARKDOWN_PATTERNS: list[tuple[re.Pattern[str], str]] = [
+    (re.compile(r"```[a-zA-Z]*\n?"), ""),
+    (re.compile(r"`([^`]+)`"), r"\1"),
+    (re.compile(r"!\[([^\]]*)\]\([^)]*\)"), r"\1"),
+    (re.compile(r"\[([^\]]+)\]\([^)]*\)"), r"\1"),
+    (re.compile(r"\[([^\]]+)\]\[[^\]]*\]"), r"\1"),
+    (re.compile(r"^#{1,6}\s+", re.MULTILINE), ""),
+    (re.compile(r"\*{1,3}([^*]+)\*{1,3}"), r"\1"),
+    (re.compile(r"_{1,3}([^_]+)_{1,3}"), r"\1"),
+    (re.compile(r"~~([^~]+)~~"), r"\1"),
+    (re.compile(r"^[\s]*([-*_]){3,}\s*$", re.MULTILINE), ""),
+    (re.compile(r"^[\s]*[-*+]\s+", re.MULTILINE), ""),
+    (re.compile(r"^[\s]*\d+\.\s+", re.MULTILINE), ""),
+    (re.compile(r"^>\s?", re.MULTILINE), ""),
+    (re.compile(r"<[^>]+>"), ""),
+    (re.compile(r"https?://\S+"), ""),
+    (re.compile(r"\n{3,}"), "\n\n"),
+    (re.compile(r" {2,}"), " "),
+]
+
+
 def _strip_markdown(text: str) -> str:
     """Remove Markdown formatting for TTS-friendly output.
 
@@ -82,23 +105,8 @@ def _strip_markdown(text: str) -> str:
     """
     if not text:
         return text
-    text = re.sub(r"```[a-zA-Z]*\n?", "", text)
-    text = re.sub(r"`([^`]+)`", r"\1", text)
-    text = re.sub(r"!\[([^\]]*)\]\([^)]*\)", r"\1", text)
-    text = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", text)
-    text = re.sub(r"\[([^\]]+)\]\[[^\]]*\]", r"\1", text)
-    text = re.sub(r"^#{1,6}\s+", "", text, flags=re.MULTILINE)
-    text = re.sub(r"\*{1,3}([^*]+)\*{1,3}", r"\1", text)
-    text = re.sub(r"_{1,3}([^_]+)_{1,3}", r"\1", text)
-    text = re.sub(r"~~([^~]+)~~", r"\1", text)
-    text = re.sub(r"^[\s]*([-*_]){3,}\s*$", "", text, flags=re.MULTILINE)
-    text = re.sub(r"^[\s]*[-*+]\s+", "", text, flags=re.MULTILINE)
-    text = re.sub(r"^[\s]*\d+\.\s+", "", text, flags=re.MULTILINE)
-    text = re.sub(r"^>\s?", "", text, flags=re.MULTILINE)
-    text = re.sub(r"<[^>]+>", "", text)
-    text = re.sub(r"https?://\S+", "", text)
-    text = re.sub(r"\n{3,}", "\n\n", text)
-    text = re.sub(r" {2,}", " ", text)
+    for pattern, replacement in _STRIP_MARKDOWN_PATTERNS:
+        text = pattern.sub(replacement, text)
     lines = [line.strip() for line in text.splitlines()]
     return "\n".join(lines).strip()
 
@@ -228,11 +236,15 @@ class HaAgentHubConversationEntity(
     async def _connect_ws_locked(self) -> bool:
         """Locked body of :meth:`_connect_ws`. Caller MUST hold
         ``self._ws_lock``. See FLOW-HIGH-8."""
+        if self._ws is not None and not self._ws.closed:
+            return True
         try:
             if self._session is None:
                 self._session = aiohttp.ClientSession()
 
-            ws_url = self._url.replace("http://", "ws://").replace("https://", "wss://")
+            parsed = urlparse(self._url)
+            ws_scheme = "wss" if parsed.scheme == "https" else "ws"
+            ws_url = parsed._replace(scheme=ws_scheme).geturl()
             self._ws = await self._session.ws_connect(
                 f"{ws_url}{WS_PATH}",
                 headers={"Authorization": f"Bearer {self._api_key}"},
@@ -243,7 +255,7 @@ class HaAgentHubConversationEntity(
             self._ws_last_active = time.monotonic()
             logger.info("Connected to HA-AgentHub container at %s", self._url)
             return True
-        except (aiohttp.ClientError, TimeoutError):
+        except (aiohttp.ClientError, asyncio.TimeoutError):
             logger.warning("Failed to connect to container at %s", self._url)
             if self._session:
                 try:
@@ -567,7 +579,11 @@ class HaAgentHubConversationEntity(
                     continue
 
                 if msg.type == aiohttp.WSMsgType.TEXT:
-                    data = json.loads(msg.data)
+                    try:
+                        data = json.loads(msg.data)
+                    except json.JSONDecodeError:
+                        logger.warning("ha-agenthub: ignoring malformed WS message in push key=%s", gate_key)
+                        continue
                     if data.get("filler_push") is not None:
                         logger.info(
                             "ha-agenthub: ignoring secondary filler in push key=%s",
@@ -855,7 +871,7 @@ class HaAgentHubConversationEntity(
                     user_input.language,
                     sanitized=bool(data.get("sanitized", False)),
                 )
-        except (aiohttp.ClientError, TimeoutError, json.JSONDecodeError):
+        except (aiohttp.ClientError, asyncio.TimeoutError, json.JSONDecodeError):
             return self._build_result(
                 (
                     "Sorry, the assistant container is unavailable. "

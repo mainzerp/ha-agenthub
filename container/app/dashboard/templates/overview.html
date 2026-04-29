@@ -105,16 +105,16 @@
     </div>
 
     <!-- Charts row: Request Trend + Agent Distribution -->
-    <div class="grid-2" style="margin-bottom: 1.5rem;">
+    <div class="grid-2 mb-lg">
         <div class="chart-card">
             <h3 class="chart-card-title">Requests (24h)</h3>
-            <div style="position: relative; height: 200px;">
+            <div class="chart-wrap-sm">
                 <canvas id="requestTrendChart"></canvas>
             </div>
         </div>
         <div class="chart-card">
             <h3 class="chart-card-title">Agent Distribution</h3>
-            <div style="position: relative; height: 200px;">
+            <div class="chart-wrap-sm">
                 <canvas id="agentDistChart"></canvas>
             </div>
         </div>
@@ -124,7 +124,7 @@
     <div class="grid-2">
         <div class="chart-card">
             <h3 class="chart-card-title">Cache Performance</h3>
-            <div style="position: relative; height: 160px;">
+            <div class="chart-wrap-xs">
                 <canvas id="cacheTierChart"></canvas>
             </div>
             <div class="cache-breakdown">
@@ -143,8 +143,8 @@
             </div>
         </div>
         <div class="chart-card">
-            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem;">
-                <h3 class="chart-card-title" style="margin: 0;">Recent Activity</h3>
+            <div class="flex-between mb-md">
+                <h3 class="chart-card-title m-0">Recent Activity</h3>
                 <a href="{{ root_url(request, '/dashboard/traces') }}" class="section-link">View all</a>
             </div>
             <div class="table-container-flush">
@@ -170,7 +170,7 @@
                 </table>
             </div>
             <template x-if="data && data.recent_traces.length === 0">
-                <p class="text-muted" style="padding: 1rem 0;">No recent traces.</p>
+                <p class="text-muted pt-md pb-md">No recent traces.</p>
             </template>
         </div>
     </div>

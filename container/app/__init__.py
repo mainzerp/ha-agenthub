@@ -1,3 +1,3 @@
 """agent-assist container application."""
 
-__version__ = "1.6.0"
+__version__ = "1.9.0"

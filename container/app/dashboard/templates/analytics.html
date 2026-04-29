@@ -10,7 +10,7 @@
             <p class="page-subtitle">Request metrics, latency, cache performance, and token usage.</p>
         </div>
         <div class="page-actions">
-            <select class="form-input" x-model.number="hours" @change="loadAll()" style="width: 140px;">
+            <select class="form-input w-140" x-model.number="hours" @change="loadAll()">
                 <option value="1">Last 1h</option>
                 <option value="6">Last 6h</option>
                 <option value="24" selected>Last 24h</option>
@@ -24,7 +24,7 @@
     <div class="stat-grid mb-lg">
         <div class="stat-card">
             <div class="stat-card-header">
-                <div class="stat-card-icon" style="background: rgba(94,234,212,0.10);">
+                <div class="stat-card-icon bg-teal-10">
                     <svg width="22" height="22" fill="none" stroke="var(--teal)" stroke-width="2" viewBox="0 0 24 24"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
                 </div>
                 <span class="stat-card-label">Total Requests</span>
@@ -33,7 +33,7 @@
         </div>
         <div class="stat-card">
             <div class="stat-card-header">
-                <div class="stat-card-icon" style="background: rgba(251,191,36,0.10);">
+                <div class="stat-card-icon bg-amber-10">
                     <svg width="22" height="22" fill="none" stroke="var(--soft-amber)" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
                 </div>
                 <span class="stat-card-label">Avg Latency</span>
@@ -42,7 +42,7 @@
         </div>
         <div class="stat-card">
             <div class="stat-card-header">
-                <div class="stat-card-icon" style="background: rgba(134,239,172,0.10);">
+                <div class="stat-card-icon bg-green-10">
                     <svg width="22" height="22" fill="none" stroke="var(--sage)" stroke-width="2" viewBox="0 0 24 24"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
                 </div>
                 <span class="stat-card-label">Cache Hit Rate</span>
@@ -51,7 +51,7 @@
         </div>
         <div class="stat-card">
             <div class="stat-card-header">
-                <div class="stat-card-icon" style="background: rgba(96,165,250,0.10);">
+                <div class="stat-card-icon bg-blue-10">
                     <svg width="22" height="22" fill="none" stroke="var(--blue)" stroke-width="2" viewBox="0 0 24 24"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>
                 </div>
                 <span class="stat-card-label">Conversations</span>
@@ -64,13 +64,13 @@
     <div class="grid-2 mb-lg">
         <div class="card">
             <h3 class="card-title mb-md">Requests Over Time</h3>
-            <div style="position: relative; height: 200px;">
+            <div class="chart-wrap-sm">
                 <canvas id="requestsChart"></canvas>
             </div>
         </div>
         <div class="card">
             <h3 class="card-title mb-md">Cache Hit Rate</h3>
-            <div style="position: relative; height: 200px;">
+            <div class="chart-wrap-sm">
                 <canvas id="cacheChart"></canvas>
             </div>
         </div>
@@ -139,20 +139,20 @@
             <h3 class="card-title mb-md">Rewrite Stats</h3>
             <div class="stat-grid" style="grid-template-columns: 1fr 1fr;">
                 <div>
-                    <div class="text-muted" style="font-size: 0.75rem;">Total</div>
-                    <div style="font-size: 1.25rem; font-weight: 600;" x-text="rewriteData.total ?? 0"></div>
+                    <div class="text-muted text-xs">Total</div>
+                    <div class="text-lg" x-text="rewriteData.total ?? 0"></div>
                 </div>
                 <div>
-                    <div class="text-muted" style="font-size: 0.75rem;">Avg Latency</div>
-                    <div style="font-size: 1.25rem; font-weight: 600;" x-text="(rewriteData.avg_latency_ms ?? 0) + 'ms'"></div>
+                    <div class="text-muted text-xs">Avg Latency</div>
+                    <div class="text-lg" x-text="(rewriteData.avg_latency_ms ?? 0) + 'ms'"></div>
                 </div>
                 <div>
-                    <div class="text-muted" style="font-size: 0.75rem;">Successes</div>
-                    <div class="text-sage" style="font-size: 1.25rem; font-weight: 600;" x-text="rewriteData.successes ?? 0"></div>
+                    <div class="text-muted text-xs">Successes</div>
+                    <div class="text-sage text-lg" x-text="rewriteData.successes ?? 0"></div>
                 </div>
                 <div>
-                    <div class="text-muted" style="font-size: 0.75rem;">Failures</div>
-                    <div class="text-coral" style="font-size: 1.25rem; font-weight: 600;" x-text="rewriteData.failures ?? 0"></div>
+                    <div class="text-muted text-xs">Failures</div>
+                    <div class="text-coral text-lg" x-text="rewriteData.failures ?? 0"></div>
                 </div>
             </div>
         </div>

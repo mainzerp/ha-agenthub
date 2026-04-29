@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from app.db.repository import AliasRepository
@@ -14,6 +15,7 @@ class AliasResolver:
 
     def __init__(self) -> None:
         self._cache: dict[str, str] | None = None
+        self._lock = asyncio.Lock()
 
     async def load(self) -> None:
         """Load all aliases into an in-memory dict for fast lookup."""
@@ -56,5 +58,6 @@ class AliasResolver:
 
     async def reload(self) -> None:
         """Reload aliases from DB (e.g. after admin changes)."""
-        self._cache = None
-        await self.load()
+        async with self._lock:
+            self._cache = None
+            await self.load()

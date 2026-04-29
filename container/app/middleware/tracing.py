@@ -85,7 +85,7 @@ class TracingMiddleware:
             duration_ms = (time.perf_counter() - t0) * 1000
             status_code = status_code_holder["code"]
 
-            span_collector._spans.append(
+            span_collector.record_root_span(
                 {
                     "span_id": root_span_id,
                     "trace_id": trace_id,
@@ -109,7 +109,7 @@ class TracingMiddleware:
 
                 await TraceSummaryRepository.update_duration(trace_id, round(duration_ms, 2))
             except Exception:
-                pass
+                logger.error("Failed to update trace summary duration for %s", trace_id, exc_info=True)
 
             logger.info(
                 "[%s] %s %s -> %d (%.1fms)",

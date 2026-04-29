@@ -334,6 +334,10 @@ class SpanCollector:
         """Return a shallow copy of the collected spans."""
         return list(self._spans)
 
+    def record_root_span(self, span_data: dict[str, Any]) -> None:
+        """Append a pre-built root span (e.g. from middleware timing)."""
+        self._spans.append(span_data)
+
     async def flush(self) -> None:
         """Bulk insert all collected spans. Fire-and-forget."""
         if not self._spans:
@@ -450,16 +454,28 @@ async def create_trace_summary(
 
 
 class _NoOpSpan:
-    """No-op span for when span_collector is None."""
+    """No-op span for when span_collector is None.
+
+    Accepts writes so callers that mutate a span do not crash.
+    """
+
+    def __init__(self) -> None:
+        self._data: dict[str, Any] = {}
 
     def __setitem__(self, key, value):
         pass
 
     def __getitem__(self, key):
-        return {}
+        return self._data.get(key, {})
 
     def get(self, key, default=None):
-        return default
+        return self._data.get(key, default)
+
+    def __contains__(self, key):
+        return key in self._data
+
+    def pop(self, key, default=None):
+        return self._data.pop(key, default)
 
 
 @contextlib.asynccontextmanager

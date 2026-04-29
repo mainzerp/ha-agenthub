@@ -158,6 +158,12 @@ class OrchestratorAgent(BaseAgent):
         self._max_dispatch_timeout: float = 60.0
         self._known_agents_cache: tuple[float, set[str]] | None = None
         self._known_agents_ttl: float = 5.0
+        self._calendar_injector = None
+        if ha_client is not None and entity_index is not None:
+            from app.agents.calendar_injector import CalendarReminderInjector
+            self._calendar_injector = CalendarReminderInjector(
+                ha_client, entity_index, llm_call=self._call_llm
+            )
 
     async def initialize(self) -> None:
         """Load reliability config from DB. Call during startup."""
@@ -908,6 +914,21 @@ class OrchestratorAgent(BaseAgent):
         if self._cache_manager:
             speech = await self._cache_manager.apply_rewrite(hit)
 
+        # Inject proactive calendar reminders even on cache hits
+        if self._calendar_injector is not None:
+            try:
+                reminder_text = await self._calendar_injector.inject_reminders(
+                    utterance=task.description if task else None,
+                    device_id=task_context.device_id if task_context else None,
+                    area_id=task_context.area_id if task_context else None,
+                    language=(task_context.language if task_context else "en") or "en",
+                )
+                if reminder_text:
+                    separator = " " if speech and speech[-1] in ".!?" else ". "
+                    speech = f"{speech}{separator}{reminder_text}" if speech else reminder_text
+            except Exception:
+                logger.debug("Calendar reminder injection failed", exc_info=True)
+
         if hit.cached_action:
             async with _optional_span(span_collector, "ha_action", agent_id=target_agent) as ha_span:
                 ha_span["metadata"]["action"] = hit.cached_action.service
@@ -1305,6 +1326,21 @@ class OrchestratorAgent(BaseAgent):
         async with _optional_span(span_collector, "return", agent_id="orchestrator") as ret_span:
             ret_span["metadata"]["from_agent"] = routed_to
             ret_span["metadata"]["agent_response"] = speech[:500]
+            # Inject proactive calendar reminders before mediation
+            if self._calendar_injector is not None and not has_error:
+                try:
+                    reminder_text = await self._calendar_injector.inject_reminders(
+                        utterance=task.description,
+                        device_id=task.context.device_id if task.context else None,
+                        area_id=task.context.area_id if task.context else None,
+                        language=(task.context.language if task.context else "en") or "en",
+                    )
+                    if reminder_text:
+                        separator = " " if speech and speech[-1] in ".!?" else ". "
+                        speech = f"{speech}{separator}{reminder_text}" if speech else reminder_text
+                except Exception:
+                    logger.debug("Calendar reminder injection failed", exc_info=True)
+
             should_mediate = target_agent != _CANCEL_INTERACTION_AGENT and (
                 not has_error or not skip_mediation_on_error
             )
@@ -1724,6 +1760,22 @@ class OrchestratorAgent(BaseAgent):
                     if failed_agents:
                         failed_names = ", ".join(aid for aid, _ in failed_agents)
                         speech += f"\n\n(Note: {failed_names} could not be reached.)"
+
+                # Inject proactive calendar reminders in multi-agent path
+                if self._calendar_injector is not None and not has_error:
+                    try:
+                        reminder_text = await self._calendar_injector.inject_reminders(
+                            utterance=task.description if task else None,
+                            device_id=incoming_context.device_id if incoming_context else None,
+                            area_id=incoming_context.area_id if incoming_context else None,
+                            language=detected_language or "en",
+                        )
+                        if reminder_text:
+                            separator = " " if speech and speech[-1] in ".!?" else ". "
+                            speech = f"{speech}{separator}{reminder_text}" if speech else reminder_text
+                    except Exception:
+                        logger.debug("Calendar reminder injection failed", exc_info=True)
+
                 result = {"speech": speech}
                 ret_span["metadata"]["agent_response"] = speech[:500]
                 speech, voice_followup_effective = await self._merge_voice_followup_and_organic(
@@ -1996,7 +2048,7 @@ class OrchestratorAgent(BaseAgent):
                 seq_filler_threshold_ms = await self._get_filler_threshold_ms()
                 # Race handle_task against filler threshold
                 task_coro = self.handle_task(task, _pre_classified=(classifications, routing_cached))
-                task_future = asyncio.ensure_future(task_coro)
+                task_future = asyncio.create_task(task_coro)
 
                 elapsed = time.perf_counter() - t0_request
                 remaining = max(0, seq_filler_threshold_ms / 1000 - elapsed)

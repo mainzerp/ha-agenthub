@@ -27,6 +27,9 @@ class Settings(BaseSettings):
     cookie_secure: bool = True
     # CORS origins (comma-separated). Empty list disables CORS.
     cors_origins: str = ""
+    # Trusted proxy IPs (comma-separated). Only these IPs may supply
+    # X-Forwarded-For; otherwise the direct client IP is used for rate limiting.
+    trusted_proxies: str = ""
 
     model_config = SettingsConfigDict(
         env_prefix="",

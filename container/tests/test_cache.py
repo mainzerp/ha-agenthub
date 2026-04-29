@@ -216,7 +216,7 @@ class TestCacheManager:
     async def test_try_replay_action_returns_full_hit(self):
         manager, _store = self._make_manager()
         entry = make_action_cache_entry(cached_action=CachedAction(service="light/turn_on", entity_id="light.kitchen"))
-        manager._action_cache.lookup = MagicMock(return_value=(entry, 0.99))
+        manager._action_cache.lookup_with_id = MagicMock(return_value=("test-id", entry, 0.99))
         manager._action_cache.invalidate_by_entry_id = MagicMock()
 
         with patch("app.cache.cache_manager.track_cache_event", new_callable=AsyncMock) as track:
@@ -238,7 +238,7 @@ class TestCacheManager:
     async def test_try_replay_action_invalidates_on_entity_divergence(self):
         manager, _store = self._make_manager()
         entry = make_action_cache_entry(cached_action=CachedAction(service="light/turn_on", entity_id="light.kitchen"))
-        manager._action_cache.lookup = MagicMock(return_value=(entry, 0.99))
+        manager._action_cache.lookup_with_id = MagicMock(return_value=("test-id", entry, 0.99))
         manager._action_cache.invalidate_by_entry_id = MagicMock()
 
         result = await manager.try_replay_action(
@@ -256,7 +256,7 @@ class TestCacheManager:
     async def test_try_replay_action_transient_replay_miss_does_not_invalidate(self):
         manager, _store = self._make_manager()
         entry = make_action_cache_entry(cached_action=CachedAction(service="light/turn_on", entity_id="light.kitchen"))
-        manager._action_cache.lookup = MagicMock(return_value=(entry, 0.99))
+        manager._action_cache.lookup_with_id = MagicMock(return_value=("test-id", entry, 0.99))
         manager._action_cache.invalidate_by_entry_id = MagicMock()
 
         result = await manager.try_replay_action(
@@ -274,7 +274,7 @@ class TestCacheManager:
     async def test_try_routing_skip_returns_hit(self):
         manager, _store = self._make_manager()
         entry = make_routing_cache_entry(condensed_task="Read kitchen temperature")
-        manager._routing_cache.lookup = MagicMock(return_value=(entry, 0.96))
+        manager._routing_cache.lookup_with_id = MagicMock(return_value=("test-id", entry, 0.96))
 
         with patch("app.cache.cache_manager.track_cache_event", new_callable=AsyncMock) as track:
             result = await manager.try_routing_skip(query_text=entry.query_text, language=entry.language)
@@ -811,7 +811,7 @@ class TestCacheManagerExtended:
         # v4: process() calls try_routing_skip internally; mock _routing_cache.lookup
         manager, _store = self._make_manager()
         entry = make_routing_cache_entry(condensed_task="Turn on light")
-        manager._routing_cache.lookup = MagicMock(return_value=(entry, 0.96))
+        manager._routing_cache.lookup_with_id = MagicMock(return_value=("test-id", entry, 0.96))
         with patch("app.cache.cache_manager.track_cache_event", new_callable=AsyncMock):
             result = await manager.process("turn on light")
         assert result.hit_type == "routing_hit"
@@ -820,7 +820,7 @@ class TestCacheManagerExtended:
     @pytest.mark.asyncio
     async def test_process_miss(self):
         manager, _store = self._make_manager()
-        manager._routing_cache.lookup = MagicMock(return_value=(None, None))
+        manager._routing_cache.lookup_with_id = MagicMock(return_value=(None, None, None))
         with patch("app.cache.cache_manager.track_cache_event", new_callable=AsyncMock) as track:
             result = await manager.process("random query")
         assert result.hit_type == "miss"
@@ -831,16 +831,16 @@ class TestCacheManagerExtended:
         manager, _store = self._make_manager()
         entry = make_routing_cache_entry(condensed_task="Turn on light")
         with patch("app.cache.cache_manager.track_cache_event", new_callable=AsyncMock) as track:
-            manager._routing_cache.lookup = MagicMock(return_value=(entry, 0.94))
+            manager._routing_cache.lookup_with_id = MagicMock(return_value=("test-id", entry, 0.94))
             await manager.process("turn on light")
-            manager._routing_cache.lookup = MagicMock(return_value=(None, None))
+            manager._routing_cache.lookup_with_id = MagicMock(return_value=(None, None, None))
             await manager.process("nothing matches")
         assert track.await_count == 1
 
     @pytest.mark.asyncio
     async def test_process_exception_returns_miss(self):
         manager, _store = self._make_manager()
-        manager._routing_cache.lookup = MagicMock(side_effect=RuntimeError("db fail"))
+        manager._routing_cache.lookup_with_id = MagicMock(side_effect=RuntimeError("db fail"))
         with patch("app.cache.cache_manager.track_cache_event", new_callable=AsyncMock):
             result = await manager.process("any query")
         assert result.hit_type == "miss"

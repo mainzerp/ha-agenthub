@@ -6,7 +6,6 @@ import asyncio
 import importlib.util
 import inspect
 import logging
-import os
 from pathlib import Path
 
 from app.db.repository import PluginRepository
@@ -186,8 +185,7 @@ class PluginLoader:
         # Validate path is strictly inside the plugin directory
         resolved = file_path.resolve()
         plugin_dir = self._plugin_dir.resolve()
-        sep = os.sep
-        if not str(resolved).startswith(str(plugin_dir) + sep) and resolved != plugin_dir:
+        if not resolved.is_relative_to(plugin_dir):
             logger.error("Plugin file %s must reside in %s", resolved, plugin_dir)
             raise ValueError(f"Plugin file {resolved} must reside in {plugin_dir}")
 

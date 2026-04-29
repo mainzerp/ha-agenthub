@@ -8,6 +8,8 @@ import time
 
 from fastapi import HTTPException, Request
 
+from app.config import settings
+
 logger = logging.getLogger(__name__)
 
 # In-memory store: key -> (count, window_start)
@@ -16,6 +18,12 @@ _rate_limit_store: dict[str, tuple[int, float]] = {}
 _store_lock = asyncio.Lock()
 
 DEFAULT_WINDOW_SECONDS = 60
+
+
+# Parse once at module load; entries are IP strings or networks.
+_TRUSTED_PROXIES: set[str] = set()
+if settings.trusted_proxies:
+    _TRUSTED_PROXIES = {p.strip() for p in settings.trusted_proxies.split(",") if p.strip()}
 
 
 def _make_key(identifier: str, scope: str) -> str:
@@ -49,10 +57,11 @@ async def _check_rate_limit(identifier: str, max_requests: int, window_seconds: 
 
 
 def _get_client_ip(request: Request) -> str:
+    direct = request.client.host if request.client else "unknown"
     forwarded = request.headers.get("x-forwarded-for")
-    if forwarded:
+    if forwarded and direct in _TRUSTED_PROXIES:
         return forwarded.split(",")[0].strip()
-    return request.client.host if request.client else "unknown"
+    return direct
 
 
 async def rate_limit_conversation(request: Request) -> None:

@@ -9,9 +9,9 @@
         <div class="page-header-text">
             <p class="page-subtitle">Send messages and see real-time streamed responses from the agent pipeline.</p>
         </div>
-        <div style="display: flex; gap: 0.5rem; align-items: center;">
+        <div class="flex-center">
             <button class="btn btn-secondary btn-sm" @click="clearChat()">Clear</button>
-            <span class="text-mono text-muted" style="font-size: 0.75rem;" x-show="conversationId" x-text="'Conv: ' + (conversationId || '').substring(0, 8) + '...'"></span>
+            <span class="text-mono text-muted text-xs" x-show="conversationId" x-text="'Conv: ' + (conversationId || '').substring(0, 8) + '...'"></span>
         </div>
     </div>
 
@@ -19,7 +19,7 @@
         <!-- Message area -->
         <div class="chat-messages" x-ref="messages">
             <template x-if="messages.length === 0">
-                <div class="empty-state" style="margin: auto;">
+                <div class="empty-state mx-auto">
                     <p class="text-muted">Send a message to start a conversation.</p>
                 </div>
             </template>
@@ -33,7 +33,7 @@
                              'chat-bubble-error': msg.role === 'error',
                              'chat-bubble-filler': msg.role === 'filler'
                          }"
-                         :style="msg.role === 'filler' ? 'opacity: 0.7; font-style: italic; border-left: 3px solid var(--sage-green, #6b8e6b);' : ''"
+                         :class="{ 'filler-message': msg.role === 'filler' }"
                          x-text="msg.text">
                     </div>
                 </div>

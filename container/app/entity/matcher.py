@@ -314,6 +314,11 @@ class EntityMatcher:
         # Compute weighted score for each candidate
         query.lower().strip()
         query_containment = _normalize_for_containment(query)
+
+        # Batch-fetch metadata for all candidates to avoid N+1 ChromaDB calls.
+        candidate_ids = list(results.keys())
+        entry_map = self._entity_index.get_by_ids(candidate_ids)
+
         for result in results.values():
             weighted_sum = 0.0
             for signal_name, weight in self._weights.items():
@@ -328,7 +333,7 @@ class EntityMatcher:
 
             # Area bonus: query matches or is contained in normalized area
             # (slug) name OR human-readable area_name OR id_tokens.
-            entry = self._entity_index.get_by_id(result.entity_id)
+            entry = entry_map.get(result.entity_id)
             if entry:
                 best_area_bonus = 0.0
                 if entry.area:

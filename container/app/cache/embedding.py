@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
+import time
 from contextlib import contextmanager
 
 import chromadb
@@ -128,11 +130,21 @@ class EmbeddingEngine:
         return [emb.tolist() for emb in embeddings]
 
     def _embed_external(self, texts: list[str]) -> list[list[float]]:
-        """Use litellm for external provider embedding."""
+        """Use litellm for external provider embedding with retry."""
         import litellm
 
-        response = litellm.embedding(model=self._model_name, input=texts)
-        return [item["embedding"] for item in response.data]
+        last_exc: Exception | None = None
+        for attempt in range(3):
+            try:
+                response = litellm.embedding(model=self._model_name, input=texts)
+                return [item["embedding"] for item in response.data]
+            except litellm.RateLimitError as exc:
+                last_exc = exc
+                time.sleep(2 ** attempt)
+            except Exception as exc:
+                last_exc = exc
+                raise RuntimeError(f"External embedding failed: {exc}") from exc
+        raise RuntimeError(f"External embedding rate-limited after retries: {last_exc}") from last_exc
 
 
 class ChromaEmbeddingFunction(chromadb.EmbeddingFunction[list[str]]):
@@ -146,14 +158,17 @@ class ChromaEmbeddingFunction(chromadb.EmbeddingFunction[list[str]]):
 
 
 _engine: EmbeddingEngine | None = None
+_engine_init_lock = asyncio.Lock()
 
 
 async def get_embedding_engine() -> EmbeddingEngine:
     """Return the singleton EmbeddingEngine, initializing on first call."""
     global _engine
     if _engine is None:
-        _engine = EmbeddingEngine()
-        await _engine.initialize()
+        async with _engine_init_lock:
+            if _engine is None:
+                _engine = EmbeddingEngine()
+                await _engine.initialize()
     return _engine
 
 

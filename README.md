@@ -100,6 +100,7 @@ See [docs/configuration.md](docs/configuration.md) for the full reference.
 - [Backup and Restore](docs/backup-restore.md) -- Volume backup, Fernet key export, cache export/import
 - [Plugin Development](docs/plugin-development.md) -- Writing plugins, lifecycle hooks, event bus
 - [Troubleshooting](docs/troubleshooting.md) -- Common issues and solutions
+- [UI Style Guide](docs/style-guide.md) -- Design tokens, component classes, and dashboard conventions
 
 ## Development
 

@@ -164,6 +164,8 @@ The cache manager exposes a routing cache and a public action cache. Internal co
 
 The current admin surface is operational, not aspirational. It includes setup and login flows, cache tooling, analytics, traces, entity-index management, timers and alarms, MCP server management, custom-agent controls, plugin management, send-device mappings, and unified advanced settings.
 
+Visual conventions for the admin surface are documented in `docs/style-guide.md`.
+
 #### Plugin System
 
 Plugins are Python code loaded in-process. Lifecycle hooks currently include `configure`, `startup`, `ready`, and `shutdown`. Plugins can extend routing, register agents, add routes, or integrate with other runtime services, but they are not isolated from the main process. They should be treated as trusted code installed by an administrator.

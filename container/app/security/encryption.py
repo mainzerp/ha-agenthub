@@ -42,6 +42,8 @@ def _load_or_generate_key() -> bytes:
             # Accepted cold-path sync file I/O: key creation happens once per deployment.
             FERNET_KEY_PATH.parent.mkdir(parents=True, exist_ok=True)
             FERNET_KEY_PATH.write_bytes(key)
+            # NOTE: chmod has limited effect on Windows. The /data directory
+            # should additionally be secured via NTFS permissions.
             FERNET_KEY_PATH.chmod(0o600)
             logger.info("New Fernet key generated")
         _key_bytes = key

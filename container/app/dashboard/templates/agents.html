@@ -23,12 +23,12 @@
             </div>
         </template>
         <template x-for="agent in agents" :key="agent.agent_id">
-            <div class="card">
+            <div class="card" :class="agent.agent_id === 'orchestrator' ? 'card-orchestrator' : ''">
                 <div class="flex-between flex-wrap">
                     <div class="flex-center">
                         <span class="badge badge-dot" :class="agent.enabled == 1 ? 'badge-green' : 'badge-muted'" x-text="agent.enabled == 1 ? 'Enabled' : 'Disabled'"></span>
                         <strong x-text="agent.agent_id" class="mono"></strong>
-                        <span x-show="agent.description" class="text-muted" x-text="agent.description" style="font-size: 0.875rem;"></span>
+                        <span x-show="agent.description" class="text-muted text-sm" x-text="agent.description"></span>
                     </div>
                     <div class="btn-group">
                         <label class="toggle">
@@ -43,31 +43,31 @@
                 <div x-show="agent._actionError" class="alert alert-error mt-sm" x-text="agent._actionError"></div>
 
                 <!-- Entity visibility badges -->
-                <div class="form-row gap-sm mt-sm" style="display:flex; flex-wrap:wrap; gap:0.25rem;">
+                <div class="form-row gap-sm mt-sm flex-wrap gap-xs">
                     <template x-if="visibilitySummary[agent.agent_id] && visibilitySummary[agent.agent_id].has_rules && visibilitySummary[agent.agent_id].domains.length > 0">
                         <template x-for="domain in visibilitySummary[agent.agent_id].domains.filter(d => !(visibilitySummary[agent.agent_id].device_classes || []).length || !['sensor','binary_sensor'].includes(d))" :key="domain">
                                      <a :href="window.dashUrl('/dashboard/entity-index') + '?agent=' + encodeURIComponent(agent.agent_id)"
-                               class="badge badge-teal" style="cursor:pointer; text-decoration:none; font-size:0.75rem;"
+                               class="badge badge-teal cursor-pointer no-underline text-xs"
                                x-text="domain"></a>
                         </template>
                     </template>
                     <template x-if="visibilitySummary[agent.agent_id] && (visibilitySummary[agent.agent_id].device_classes || []).length > 0">
                         <template x-for="dc in visibilitySummary[agent.agent_id].device_classes" :key="dc">
                                      <a :href="window.dashUrl('/dashboard/entity-index') + '?agent=' + encodeURIComponent(agent.agent_id)"
-                               class="badge" style="cursor:pointer; text-decoration:none; font-size:0.75rem; background:rgba(99,102,241,0.15); color:#818cf8;"
+                               class="badge cursor-pointer no-underline text-xs" style="background:rgba(99,102,241,0.15); color:#818cf8;"
                                x-text="'sensor:' + dc"></a>
                         </template>
                     </template>
                     <template x-if="visibilitySummary[agent.agent_id] && visibilitySummary[agent.agent_id].has_rules && visibilitySummary[agent.agent_id].domains.length === 0 && !(visibilitySummary[agent.agent_id].device_classes || []).length">
                                 <a :href="window.dashUrl('/dashboard/entity-index') + '?agent=' + encodeURIComponent(agent.agent_id)"
-                           class="badge badge-teal" style="cursor:pointer; text-decoration:none; font-size:0.75rem;">Entity rules</a>
+                           class="badge badge-teal cursor-pointer no-underline text-xs">Entity rules</a>
                     </template>
                     <template x-if="(!visibilitySummary[agent.agent_id] || !visibilitySummary[agent.agent_id].has_rules) && nonEntityAgents.indexOf(agent.agent_id) !== -1">
-                        <span class="badge badge-muted" style="font-size:0.75rem; opacity:0.6;">No entity access</span>
+                        <span class="badge badge-muted text-xs opacity-60">No entity access</span>
                     </template>
                     <template x-if="(!visibilitySummary[agent.agent_id] || !visibilitySummary[agent.agent_id].has_rules) && nonEntityAgents.indexOf(agent.agent_id) === -1">
                                 <a :href="window.dashUrl('/dashboard/entity-index') + '?agent=' + encodeURIComponent(agent.agent_id)"
-                           class="badge badge-muted" style="cursor:pointer; text-decoration:none; font-size:0.75rem;">All entities</a>
+                           class="badge badge-muted cursor-pointer no-underline text-xs">All entities</a>
                     </template>
                     <!-- MCP tool badges -->
                     <template x-if="allMcpAssignments[agent.agent_id] && allMcpAssignments[agent.agent_id].length > 0">
@@ -77,7 +77,7 @@
                                 return acc;
                             }, {})
                         )" :key="serverGroup[0]">
-                            <span class="badge badge-purple" style="font-size:0.75rem;"
+                            <span class="badge badge-purple text-xs"
                                   x-text="'MCP: ' + serverGroup[0] + ' (' + serverGroup[1] + ')'"></span>
                         </template>
                     </template>
@@ -120,7 +120,7 @@
                             <div class="form-group">
                                 <label class="form-label">Temperature</label>
                                 <input type="range" min="0" max="2" step="0.1" x-model.number="agent.temperature">
-                                <span class="mono" x-text="agent.temperature" style="font-size: 0.75rem;"></span>
+                                <span class="mono text-xs" x-text="agent.temperature"></span>
                             </div>
                             <div class="form-group">
                                 <label class="form-label">Max Tokens</label>
@@ -148,11 +148,11 @@
                         <div class="mt-md">
                             <label class="form-label">MCP Servers</label>
                             <template x-if="mcpServers.filter(s => s.connected).length === 0">
-                                <p class="text-muted" style="font-size:0.85rem;">No connected MCP servers available.</p>
+                                <p class="text-muted text-sm">No connected MCP servers available.</p>
                             </template>
-                            <div style="display:flex; flex-wrap:wrap; gap:0.35rem;">
+                            <div class="flex-wrap">
                                 <template x-for="server in mcpServers.filter(s => s.connected)" :key="server.name">
-                                    <label class="badge" style="cursor:pointer; font-size:0.75rem; user-select:none;"
+                                    <label class="badge cursor-pointer text-xs"
                                            :class="isServerAssigned(agent.agent_id, server.name) ? 'badge-purple' : 'badge-muted'">
                                         <input type="checkbox" style="display:none;"
                                                :checked="isServerAssigned(agent.agent_id, server.name)"
@@ -165,7 +165,7 @@
                         <div class="form-actions">
                             <button class="btn btn-primary btn-sm" @click="saveAgent(agent)">Save</button>
                             <span x-show="agent._saved" class="save-feedback text-sage">Saved</span>
-                            <span x-show="agent._saveError" class="save-feedback" style="color: var(--danger, #ef4444);" x-text="agent._saveError"></span>
+                            <span x-show="agent._saveError" class="save-feedback text-danger" x-text="agent._saveError"></span>
                         </div>
                     </div>
                 </template>
@@ -196,7 +196,7 @@ function agentsPage() {
         allProviders: [],
         configuredProviders: [],
         visibilitySummary: {},
-        nonEntityAgents: ['orchestrator', 'rewrite-agent', 'general-agent'],
+        nonEntityAgents: ['orchestrator', 'rewrite-agent', 'general-agent', 'filler-agent', 'send-agent'],
         mcpServers: [],
         mcpServerTools: {},
         agentMcpTools: {},
@@ -206,7 +206,11 @@ function agentsPage() {
             try {
                 await this.loadConfiguredProviders();
                 var data = await window.dashboardApi.json('/api/admin/agents');
-                this.agents = (data.agents || []).map((a) => this.prepareAgent(a));
+                var allAgents = (data.agents || []).map((a) => this.prepareAgent(a));
+                var orch = allAgents.filter((a) => a.agent_id === 'orchestrator');
+                var rest = allAgents.filter((a) => a.agent_id !== 'orchestrator');
+                rest.sort((a, b) => (a.name || a.agent_id).localeCompare(b.name || b.agent_id));
+                this.agents = orch.concat(rest);
                 await this.loadVisibilitySummary();
                 await this.loadMcpServers();
                 await this.loadAllMcpAssignments();

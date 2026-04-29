@@ -19,7 +19,6 @@ handler, and the expired-timer tracking deque are deleted.
 
 from __future__ import annotations
 
-import contextlib
 import json
 import logging
 import re
@@ -27,9 +26,6 @@ import time
 from datetime import datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
-
-from app.analytics.tracer import _optional_span
-from app.entity.deterministic_resolver import resolve_entity_deterministic_first
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +35,6 @@ _ACTION_PHRASES: dict[str, str] = {}
 _ALLOWED_DOMAINS: frozenset[str] = frozenset({"input_datetime"})
 
 _INPUT_DATETIME_DOMAINS: frozenset[str] = frozenset({"input_datetime"})
-_CALENDAR_DOMAINS: frozenset[str] = frozenset({"calendar"})
 _ALARM_WEEKDAY_CODES: frozenset[str] = frozenset({"MO", "TU", "WE", "TH", "FR", "SA", "SU"})
 
 
@@ -868,260 +863,6 @@ async def _cancel_alarm(action: dict, *, area_id: str | None, timezone: str | No
 
 
 # ---------------------------------------------------------------------------
-# Calendar action handlers
-# ---------------------------------------------------------------------------
-
-
-async def _create_reminder(
-    action: dict,
-    ha_client: Any,
-    entity_index: Any,
-    entity_matcher: Any,
-    agent_id: str | None,
-    span_collector=None,
-    *,
-    verbatim_terms: list[str] | None = None,
-) -> dict:
-    entity_query = action.get("entity", "")
-    params = action.get("parameters") or {}
-    summary = str(params.get("summary", ""))
-    start_time = str(params.get("start_date_time", ""))
-    end_time = str(params.get("end_date_time", ""))
-    description = str(params.get("description", ""))
-
-    if not summary:
-        return {
-            "success": False,
-            "entity_id": None,
-            "new_state": None,
-            "speech": "Summary is required for create_reminder.",
-        }
-    if not start_time:
-        return {
-            "success": False,
-            "entity_id": None,
-            "new_state": None,
-            "speech": "start_date_time is required for create_reminder.",
-        }
-
-    resolution = {
-        "entity_id": None,
-        "friendly_name": entity_query,
-        "speech": None,
-        "metadata": {"query": entity_query, "match_count": 0, "resolution_path": "not_attempted"},
-    }
-    try:
-        if entity_index or entity_matcher:
-            async with _optional_span(span_collector, "entity_match", agent_id=agent_id) as em_span:
-                resolution = await resolve_entity_deterministic_first(
-                    entity_query,
-                    entity_index,
-                    entity_matcher,
-                    agent_id,
-                    allowed_domains=_CALENDAR_DOMAINS,
-                    verbatim_terms=verbatim_terms,
-                )
-                em_span["metadata"] = resolution["metadata"]
-    except Exception:
-        logger.warning("Entity resolution failed for '%s'", entity_query, exc_info=True)
-
-    entity_id = resolution["entity_id"]
-    friendly_name = resolution["friendly_name"]
-    if not entity_id:
-        return {
-            "success": False,
-            "entity_id": None,
-            "new_state": None,
-            "speech": resolution["speech"] or f"Could not find a calendar entity matching '{entity_query}'.",
-        }
-
-    service_data: dict[str, str] = {"summary": summary, "start_date_time": start_time}
-    service_data["end_date_time"] = end_time or start_time
-    if description:
-        service_data["description"] = description
-
-    try:
-        await ha_client.call_service("calendar", "create_event", entity_id, service_data)
-    except Exception as exc:
-        logger.error("Failed to create calendar event on %s", entity_id, exc_info=True)
-        return {
-            "success": False,
-            "entity_id": entity_id,
-            "new_state": None,
-            "speech": f"Failed to create reminder: {exc}",
-        }
-
-    return {
-        "success": True,
-        "entity_id": entity_id,
-        "new_state": None,
-        "speech": f'Created reminder "{summary}" at {start_time} on {friendly_name}.',
-    }
-
-
-_ALARM_LIKE_TERMS: frozenset[str] = frozenset({"alarm", "wecker", "wake"})
-
-
-def _parse_rrule_to_recurrence(rrule: str) -> dict[str, Any] | None:
-    """Parse a simple RRULE string into a recurrence dict for _set_alarm."""
-    parts: dict[str, str] = {}
-    for part in rrule.split(";"):
-        if "=" in part:
-            key, value = part.split("=", 1)
-            parts[key.strip().upper()] = value.strip().upper()
-    freq_map = {"DAILY": "daily", "WEEKLY": "weekly"}
-    freq = freq_map.get(parts.get("FREQ", ""))
-    if not freq:
-        return None
-    result: dict[str, Any] = {"freq": freq}
-    if "INTERVAL" in parts:
-        with contextlib.suppress(ValueError):
-            result["interval"] = int(parts["INTERVAL"])
-    if "BYDAY" in parts:
-        result["byweekday"] = [d.strip().upper() for d in parts["BYDAY"].split(",")]
-    return result
-
-
-async def _create_recurring_reminder(
-    action: dict,
-    ha_client: Any,
-    entity_index: Any,
-    entity_matcher: Any,
-    agent_id: str | None,
-    span_collector=None,
-    *,
-    device_id: str | None = None,
-    area_id: str | None = None,
-    language: str | None = None,
-    timezone: str | None = None,
-    verbatim_terms: list[str] | None = None,
-) -> dict:
-    entity_query = action.get("entity", "")
-    params = action.get("parameters") or {}
-    summary = str(params.get("summary", ""))
-    start_time = str(params.get("start_date_time", ""))
-    end_time = str(params.get("end_date_time", ""))
-    rrule = str(params.get("rrule", ""))
-
-    if not summary:
-        return {
-            "success": False,
-            "entity_id": None,
-            "new_state": None,
-            "speech": "Summary is required for create_recurring_reminder.",
-        }
-    if not start_time:
-        return {
-            "success": False,
-            "entity_id": None,
-            "new_state": None,
-            "speech": "start_date_time is required for create_recurring_reminder.",
-        }
-    if not rrule:
-        return {
-            "success": False,
-            "entity_id": None,
-            "new_state": None,
-            "speech": "rrule is required for create_recurring_reminder (e.g. 'FREQ=DAILY', 'FREQ=WEEKLY;BYDAY=MO,WE,FR').",
-        }
-
-    # Validate RRULE frequency up-front so unsupported values fail before
-    # any entity lookup or side-effect (calendar create_event / scheduler).
-    recurrence = _parse_rrule_to_recurrence(rrule)
-    if recurrence is None:
-        return {
-            "success": False,
-            "entity_id": None,
-            "new_state": None,
-            "speech": "Unsupported RRULE frequency. Only DAILY and WEEKLY are supported.",
-        }
-
-    resolution = {
-        "entity_id": None,
-        "friendly_name": entity_query,
-        "speech": None,
-        "metadata": {"query": entity_query, "match_count": 0, "resolution_path": "not_attempted"},
-    }
-    try:
-        if entity_index or entity_matcher:
-            async with _optional_span(span_collector, "entity_match", agent_id=agent_id) as em_span:
-                resolution = await resolve_entity_deterministic_first(
-                    entity_query,
-                    entity_index,
-                    entity_matcher,
-                    agent_id,
-                    allowed_domains=_CALENDAR_DOMAINS,
-                    verbatim_terms=verbatim_terms,
-                )
-                em_span["metadata"] = resolution["metadata"]
-    except Exception:
-        logger.warning("Entity resolution failed for '%s'", entity_query, exc_info=True)
-
-    entity_id = resolution["entity_id"]
-    friendly_name = resolution["friendly_name"]
-
-    if not entity_id:
-        # Alarm-like entities (e.g. "Wecker", "alarm") with valid RRULE are
-        # rerouted to the internal scheduler alarm flow instead of HA calendar.
-        is_alarm_like = any(term in entity_query.lower() for term in _ALARM_LIKE_TERMS)
-        if is_alarm_like:
-            alarm_action = {
-                "action": "set_datetime",
-                "entity": entity_query,
-                "parameters": {
-                    "datetime": start_time,
-                    "recurrence": recurrence,
-                    "label": summary,
-                },
-            }
-            return await _set_alarm(
-                alarm_action,
-                device_id=device_id,
-                area_id=area_id,
-                language=language,
-                timezone=timezone,
-            )
-        return {
-            "success": False,
-            "entity_id": None,
-            "new_state": None,
-            "speech": resolution["speech"] or f"Could not find a calendar entity matching '{entity_query}'.",
-        }
-
-    service_data: dict[str, str] = {
-        "summary": summary,
-        "start_date_time": start_time,
-        "rrule": rrule,
-    }
-    service_data["end_date_time"] = end_time or start_time
-
-    try:
-        await ha_client.call_service("calendar", "create_event", entity_id, service_data)
-    except Exception as exc:
-        logger.error("Failed to create recurring event on %s", entity_id, exc_info=True)
-        return {
-            "success": False,
-            "entity_id": entity_id,
-            "new_state": None,
-            "speech": f"Failed to create recurring reminder: {exc}",
-        }
-
-    freq_map = {"DAILY": "daily", "WEEKLY": "weekly", "MONTHLY": "monthly", "YEARLY": "yearly"}
-    freq = "recurring"
-    for key, val in freq_map.items():
-        if key in rrule.upper():
-            freq = val
-            break
-
-    return {
-        "success": True,
-        "entity_id": entity_id,
-        "new_state": None,
-        "speech": f'Created {freq} reminder "{summary}" at {start_time} on {friendly_name}.',
-    }
-
-
-# ---------------------------------------------------------------------------
 # Scheduler-routed action handlers
 # ---------------------------------------------------------------------------
 
@@ -1652,30 +1393,6 @@ async def execute_timer_action(
         return await _delayed_action(action, device_id=device_id, area_id=area_id, language=language)
     if action_name == "sleep_timer":
         return await _sleep_timer(action, device_id=device_id, area_id=area_id, language=language)
-    if action_name == "create_reminder":
-        return await _create_reminder(
-            action,
-            ha_client,
-            entity_index,
-            entity_matcher,
-            agent_id,
-            span_collector=span_collector,
-            verbatim_terms=verbatim_terms,
-        )
-    if action_name == "create_recurring_reminder":
-        return await _create_recurring_reminder(
-            action,
-            ha_client,
-            entity_index,
-            entity_matcher,
-            agent_id,
-            span_collector=span_collector,
-            device_id=device_id,
-            area_id=area_id,
-            language=language,
-            timezone=timezone,
-            verbatim_terms=verbatim_terms,
-        )
     if action_name == "set_datetime":
         return await _set_alarm(
             action,

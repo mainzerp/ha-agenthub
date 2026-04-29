@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 from app.a2a.orchestrator_gateway import OrchestratorGateway
 from app.agents.automation import AutomationAgent
 from app.agents.base import preload_prompt_cache
+from app.agents.calendar import CalendarAgent
 from app.agents.climate import ClimateAgent
 from app.agents.custom_loader import CustomAgentLoader
 from app.agents.filler import FillerAgent
@@ -494,6 +495,7 @@ def _create_phase2_agent(agent_id: str, app: FastAPI):
         "automation-agent": AutomationAgent,
         "security-agent": SecurityAgent,
         "send-agent": SendAgent,
+        "calendar-agent": CalendarAgent,
     }
     with_matcher = {
         "climate-agent",
@@ -502,6 +504,7 @@ def _create_phase2_agent(agent_id: str, app: FastAPI):
         "scene-agent",
         "automation-agent",
         "media-agent",
+        "calendar-agent",
     }
 
     cls = agent_map.get(agent_id)
@@ -692,6 +695,7 @@ async def _initialize_setup_dependent_services(app: FastAPI, *, source: str) -> 
         "automation-agent",
         "security-agent",
         "send-agent",
+        "calendar-agent",
     ]
     for agent_id in phase2_agents:
         config = await AgentConfigRepository.get(agent_id)

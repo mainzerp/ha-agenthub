@@ -82,12 +82,12 @@
             </div>
 
             <!-- Inline Details -->
-            <div class="flex-center flex-wrap mt-sm" style="font-size: 0.875rem;">
+            <div class="flex-center flex-wrap mt-sm text-sm">
                 <span class="text-muted">Model:</span>
                 <span x-text="agent.model_override || 'default'"></span>
-                <span class="text-muted" style="margin-left: 1rem;">Patterns:</span>
+                <span class="text-muted ml-md">Patterns:</span>
                 <span x-text="(agent.intent_patterns || []).length"></span>
-                <span class="text-muted" style="margin-left: 1rem;">MCP Tools:</span>
+                <span class="text-muted ml-md">MCP Tools:</span>
                 <span x-text="(agent.mcp_tools || []).length"></span>
             </div>
 

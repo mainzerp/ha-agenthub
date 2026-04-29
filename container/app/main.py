@@ -485,6 +485,11 @@ def create_app() -> FastAPI:
 
     app.include_router(plugins_api_routes.router, dependencies=[Depends(rate_limit_admin)])
 
+    # Calendar admin router
+    from app.api.routes.calendar_admin import router as calendar_admin_router
+
+    app.include_router(calendar_admin_router, dependencies=[Depends(rate_limit_admin)])
+
     # Redirect root to dashboard
     from starlette.responses import RedirectResponse
 

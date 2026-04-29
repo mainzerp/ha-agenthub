@@ -71,6 +71,23 @@ class RoutingCache(_BaseCache[RoutingCacheEntry]):
             return None, similarity
         return entry, similarity
 
+    def lookup_with_id(
+        self,
+        query_text: str,
+        *,
+        language: str = "en",
+    ) -> tuple[str | None, RoutingCacheEntry | None, float | None]:
+        """Like lookup() but also returns the computed entry_id."""
+        entry_id, entry, similarity = self._lookup_common(query_text, language=language)
+        if entry is None or similarity is None:
+            return entry_id, None, similarity
+        if similarity < self._semantic_threshold:
+            return entry_id, None, similarity
+        if _condensed_task_is_corrupted(entry.condensed_task):
+            logger.warning("Routing cache entry rejected due to corrupted condensed task: %r", entry.condensed_task)
+            return entry_id, None, similarity
+        return entry_id, entry, similarity
+
     def get_stats(self) -> dict[str, object]:
         stats = super().get_stats()
         stats["semantic_threshold"] = self._semantic_threshold

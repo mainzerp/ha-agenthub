@@ -40,7 +40,7 @@
                 <svg class="stat-card-icon text-sage" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
                 <span class="stat-card-label">Last Refresh</span>
             </div>
-            <div class="stat-card-value" style="font-size: 1rem;" x-text="stats.last_refresh || 'never'"></div>
+            <div class="stat-card-value text-base" x-text="stats.last_refresh || 'never'"></div>
         </div>
     </div>
 
@@ -52,7 +52,7 @@
                 <div class="stat-card-header">
                     <span class="stat-card-label">Last Sync</span>
                 </div>
-                <div class="stat-card-value" style="font-size: 1rem;" x-text="stats.sync?.last_sync || 'never'"></div>
+                <div class="stat-card-value text-base" x-text="stats.sync?.last_sync || 'never'"></div>
             </div>
             <div class="stat-card">
                 <div class="stat-card-header">
@@ -64,7 +64,7 @@
                 <div class="stat-card-header">
                     <span class="stat-card-label">Changes</span>
                 </div>
-                <div class="stat-card-value" style="font-size: 0.9rem;"
+                <div class="stat-card-value text-90"
                      x-text="'+' + (stats.sync?.added || 0) + ' ~' + (stats.sync?.updated || 0) + ' -' + (stats.sync?.removed || 0) + ' =' + (stats.sync?.unchanged || 0)">
                 </div>
             </div>
@@ -84,7 +84,7 @@
                 <div class="stat-card-header">
                     <span class="stat-card-label">Model</span>
                 </div>
-                <div class="stat-card-value" style="font-size: 0.95rem;" x-text="stats.embedding?.model || '-'"></div>
+                <div class="stat-card-value text-95" x-text="stats.embedding?.model || '-'"></div>
             </div>
             <div class="stat-card">
                 <div class="stat-card-header">
@@ -127,7 +127,7 @@
                         <div class="progress-fill" style="background: var(--soft-amber); transition: width 0.3s;"
                              :style="'width: ' + (stats.embedding.progress || 0) + '%'"></div>
                     </div>
-                    <div class="text-dim mt-xs" style="font-size: 0.75rem;"
+                    <div class="text-dim mt-xs text-xs"
                          x-text="stats.embedding.processed + ' / ' + stats.embedding.total + ' (' + stats.embedding.progress + '%)'"></div>
                 </div>
             </template>
@@ -149,15 +149,13 @@
             preview executor-side entity resolution. Pick an agent to apply its
             visibility and domain filters.
         </p>
-        <div class="flex-center gap-sm mb-md" style="flex-wrap: wrap;">
+        <div class="flex-center gap-sm mb-md flex-wrap">
             <input type="text"
-                   class="form-input"
-                   style="flex: 1; min-width: 220px;"
+                   class="form-input flex-1 min-w-220"
                    placeholder='e.g. "Keller", "schlafzimmer licht", "light.keller"'
                    x-model="previewQuery"
                    @keydown.enter.prevent="runPreview()">
-            <select class="form-input"
-                    style="width: auto; min-width: 180px;"
+            <select class="form-input w-auto min-w-180"
                     x-model="previewAgent">
                 <option value="">All (no agent filters)</option>
                 <template x-for="a in allAgents" :key="'preview-agent-' + a">
@@ -199,9 +197,9 @@
             <div>
                 <!-- Deterministic block (light-agent path) -->
                 <div class="mb-md">
-                    <h4 class="mb-sm" style="font-size: 0.95rem;">
+                    <h4 class="mb-sm text-95">
                         Deterministic Resolution
-                        <span class="text-dim" style="font-size: 0.75rem; font-weight: normal;">
+                        <span class="text-dim text-xs font-normal">
                             (light / switch / sensor executor path)
                         </span>
                     </h4>
@@ -210,7 +208,7 @@
                             <div class="stat-card-header">
                                 <span class="stat-card-label">Entity ID</span>
                             </div>
-                            <div class="stat-card-value" style="font-size: 0.9rem; word-break: break-all;">
+                            <div class="stat-card-value text-90 break-all">
                                 <template x-if="previewResult.deterministic.entity_id">
                                     <span class="badge badge-teal" x-text="previewResult.deterministic.entity_id"></span>
                                 </template>
@@ -223,18 +221,18 @@
                             <div class="stat-card-header">
                                 <span class="stat-card-label">Friendly Name</span>
                             </div>
-                            <div class="stat-card-value" style="font-size: 0.95rem;"
+                            <div class="stat-card-value text-95"
                                  x-text="previewResult.deterministic.friendly_name || '-'"></div>
                         </div>
                         <div class="stat-card">
                             <div class="stat-card-header">
                                 <span class="stat-card-label">Resolution Path</span>
                             </div>
-                            <div class="stat-card-value" style="font-size: 0.9rem;"
+                            <div class="stat-card-value text-90"
                                  x-text="previewResult.deterministic.metadata?.resolution_path || '-'"></div>
                         </div>
                     </div>
-                    <div class="flex-center gap-sm mt-sm" style="flex-wrap: wrap;">
+                    <div class="flex-center gap-sm mt-sm flex-wrap">
                         <span class="badge"
                               :class="previewResult.deterministic.domain_allowed ? 'badge-green' : 'badge-red'">
                             <span x-show="previewResult.deterministic.domain_allowed">domain gate: ok</span>
@@ -265,9 +263,9 @@
 
                 <!-- Hybrid matcher candidates -->
                 <div class="mb-md">
-                    <h4 class="mb-sm" style="font-size: 0.95rem;">
+                    <h4 class="mb-sm text-95">
                         Hybrid Matcher Candidates
-                        <span class="text-dim" style="font-size: 0.75rem; font-weight: normal;">
+                        <span class="text-dim text-xs font-normal">
                             (climate / media / security / … executor path)
                         </span>
                     </h4>
@@ -314,26 +312,25 @@
                                     <th>Friendly Name</th>
                                     <th>Domain</th>
                                     <th>Area</th>
-                                    <th style="text-align: right;">Score</th>
+                                    <th class="text-right">Score</th>
                                     <th>Signals</th>
                                 </tr>
                             </thead>
                             <tbody>
                                 <template x-for="(c, idx) in previewResult.hybrid" :key="'hc-' + idx + '-' + c.entity_id">
                                     <tr>
-                                        <td style="white-space: nowrap;">
+                                        <td class="text-nowrap">
                                             <span class="badge badge-teal" x-text="c.entity_id"></span>
                                         </td>
                                         <td x-text="c.friendly_name"></td>
                                         <td><span class="badge" x-text="c.domain || '-'"></span></td>
                                         <td x-text="c.area || '-'"></td>
-                                        <td style="text-align: right; font-variant-numeric: tabular-nums;"
+                                        <td class="text-right tabular-nums"
                                             x-text="c.score.toFixed(3)"></td>
                                         <td>
-                                            <div style="display: flex; flex-wrap: wrap; gap: 0.25rem;">
+                                            <div class="flex flex-wrap gap-xs">
                                                 <template x-for="(v, k) in c.signal_scores" :key="'sig-' + idx + '-' + k">
-                                                    <span class="badge"
-                                                          style="font-size: 0.7rem;"
+                                                    <span class="badge text-2xs"
                                                           x-text="k + ': ' + Number(v).toFixed(2)"></span>
                                                 </template>
                                             </div>
@@ -347,8 +344,8 @@
 
                 <!-- Visibility summary -->
                 <div>
-                    <h4 class="mb-sm" style="font-size: 0.95rem;">Visibility</h4>
-                    <div class="flex-center gap-sm" style="flex-wrap: wrap;">
+                    <h4 class="mb-sm text-95">Visibility</h4>
+                    <div class="flex-center gap-sm flex-wrap">
                         <template x-if="previewResult.agent_id">
                             <span class="badge badge-blue"
                                   x-text="'agent: ' + previewResult.agent_id"></span>
@@ -365,7 +362,7 @@
                         </template>
                     </div>
                     <template x-if="previewResult.agent_id && previewResult.visibility.rules.length > 0">
-                        <div class="mt-sm" style="display: flex; flex-wrap: wrap; gap: 0.25rem;">
+                        <div class="mt-sm flex flex-wrap gap-xs">
                             <template x-for="(r, ri) in previewResult.visibility.rules" :key="'vr-' + ri">
                                 <span class="badge"
                                       x-text="r.rule_type + ' = ' + r.rule_value"></span>
@@ -373,7 +370,7 @@
                         </div>
                     </template>
                     <template x-if="previewResult.agent_id && previewResult.visibility.rules.length === 0">
-                        <p class="text-dim mt-sm" style="font-size: 0.8rem;">
+                        <p class="text-dim mt-sm text-xs">
                             No visibility rules defined for this agent (full access).
                         </p>
                     </template>
@@ -401,21 +398,21 @@
                     <tr>
                         <th>Domain</th>
                         <th>Assigned Agents</th>
-                        <th style="width: 120px;"></th>
+                        <th class="w-120"></th>
                     </tr>
                 </thead>
                 <tbody>
                     <template x-for="item in domainAgentMap.filter(d => !['sensor', 'binary_sensor'].includes(d.domain))" :key="item.domain">
                         <tr>
-                            <td style="white-space: nowrap;">
+                            <td class="text-nowrap">
                                 <span class="badge badge-teal" x-text="item.domain"></span>
-                                <span class="text-dim" style="font-size: 0.75rem; margin-left: 0.375rem;" x-text="item.entity_count + ' entities'"></span>
+                                <span class="text-dim text-xs entity-count" x-text="item.entity_count + ' entities'"></span>
                             </td>
                             <td>
-                                <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 0.375rem;">
+                                <div class="agent-badges">
                                     <!-- Assigned agent badges -->
                                     <template x-for="agent in item.selected_agents" :key="item.domain + '-' + agent">
-                                        <span class="badge badge-blue" style="display: inline-flex; align-items: center; gap: 0.25rem;">
+                                        <span class="badge badge-blue badge-close">
                                             <span x-text="agent"></span>
                                             <button type="button"
                                                     style="background: none; border: none; color: inherit; cursor: pointer; padding: 0; margin: 0; line-height: 1; font-size: 0.85rem; opacity: 0.7;"
@@ -436,7 +433,7 @@
                                     </select>
                                 </div>
                             </td>
-                            <td style="text-align: right;">
+                            <td class="text-right">
                                 <button class="btn btn-sm btn-primary"
                                         @click="saveDomainAgent(item.domain, item.selected_agents)">
                                     Save
@@ -468,21 +465,21 @@
                     <tr>
                         <th>Device Class</th>
                         <th>Assigned Agents</th>
-                        <th style="width: 120px;"></th>
+                        <th class="w-120"></th>
                     </tr>
                 </thead>
                 <tbody>
                     <template x-for="item in deviceClassMap" :key="item.device_class">
                         <tr>
-                            <td style="white-space: nowrap;">
-                                <span class="badge" style="background:rgba(99,102,241,0.15); color:#818cf8;" x-text="item.device_class"></span>
-                                <span class="text-dim" style="font-size: 0.75rem; margin-left: 0.375rem;" x-text="item.entity_count + ' entities'"></span>
+                            <td class="text-nowrap">
+                                <span class="badge badge-indigo" x-text="item.device_class"></span>
+                                <span class="text-dim text-xs entity-count" x-text="item.entity_count + ' entities'"></span>
                             </td>
                             <td>
-                                <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 0.375rem;">
+                                <div class="agent-badges">
                                     <!-- Assigned agent badges -->
                                     <template x-for="agent in item.selected_agents" :key="item.device_class + '-' + agent">
-                                        <span class="badge badge-blue" style="display: inline-flex; align-items: center; gap: 0.25rem;">
+                                        <span class="badge badge-blue badge-close">
                                             <span x-text="agent"></span>
                                             <button type="button"
                                                     style="background: none; border: none; color: inherit; cursor: pointer; padding: 0; margin: 0; line-height: 1; font-size: 0.85rem; opacity: 0.7;"
@@ -503,7 +500,7 @@
                                     </select>
                                 </div>
                             </td>
-                            <td style="text-align: right;">
+                            <td class="text-right">
                                 <button class="btn btn-sm btn-primary"
                                         @click="saveDeviceClassAgent(item.device_class, item.selected_agents)">
                                     Save

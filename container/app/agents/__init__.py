@@ -2,6 +2,7 @@
 
 from app.agents.automation import AutomationAgent
 from app.agents.base import BaseAgent
+from app.agents.calendar import CalendarAgent
 from app.agents.climate import ClimateAgent
 from app.agents.custom_loader import CustomAgentLoader, DynamicAgent
 from app.agents.general import GeneralAgent
@@ -17,6 +18,7 @@ from app.agents.timer import TimerAgent
 __all__ = [
     "AutomationAgent",
     "BaseAgent",
+    "CalendarAgent",
     "ClimateAgent",
     "CustomAgentLoader",
     "DynamicAgent",

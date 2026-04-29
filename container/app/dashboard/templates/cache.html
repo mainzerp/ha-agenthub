@@ -13,19 +13,19 @@
 
     <!-- Backup card (global, above the tab strip) -->
     <div class="stat-grid-3 mb-lg">
-        <div class="stat-card" style="grid-column: span 3;">
+        <div class="stat-card col-span-full">
             <div class="stat-card-header">
-                <div class="stat-card-icon" style="background: rgba(96,165,250,0.10);">
+                <div class="stat-card-icon bg-blue-10">
                     <svg width="22" height="22" fill="none" stroke="var(--blue)" stroke-width="2" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
                 </div>
                 <span class="stat-card-label">Backup</span>
             </div>
 
             <div class="grid-2 mt-sm">
-                <div style="border-right: 1px solid rgba(255,255,255,0.06); padding-right: 1rem;">
-                    <div class="flex-center" style="gap: 0.5rem; justify-content: flex-start; margin-bottom: 0.5rem;">
+                <div class="border-right-subtle pr-md">
+                    <div class="flex-center justify-start mb-sm">
                         <svg width="16" height="16" fill="none" stroke="var(--teal)" stroke-width="2" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-                        <span class="text-teal" style="font-size: 0.875rem; font-weight: 600;">Export</span>
+                        <span class="text-teal text-sm fw-600">Export</span>
                     </div>
                     <div class="btn-group">
                         <select class="form-input" x-model="exportTier" style="max-width: 9rem;">
@@ -38,36 +38,36 @@
                 </div>
 
                 <div>
-                    <div class="flex-center" style="gap: 0.5rem; justify-content: flex-start; margin-bottom: 0.5rem;">
+                    <div class="flex-center justify-start mb-sm">
                         <svg width="16" height="16" fill="none" stroke="var(--sage)" stroke-width="2" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
-                        <span class="text-sage" style="font-size: 0.875rem; font-weight: 600;">Import</span>
+                        <span class="text-sage text-sm fw-600">Import</span>
                     </div>
-                    <div class="btn-group" style="align-items: center;">
-                        <label class="btn btn-sm btn-secondary" style="margin-bottom: 0;" :class="{ 'btn-disabled': importBusy }">
+                    <div class="btn-group">
+                        <label class="btn btn-sm btn-secondary mb-0" :class="{ 'btn-disabled': importBusy }">
                             Choose file
                             <input type="file" accept="application/json,.json"
                                    x-ref="importFile" @change="importCache($event)"
                                    :disabled="importBusy"
-                                   style="display: none;">
+                                   class="hidden">
                         </label>
-                        <span class="text-muted" style="font-size: 0.75rem;"
+                        <span class="text-muted text-xs"
                               x-text="importFileName || 'No file selected'"></span>
                     </div>
                     <div class="btn-group mt-sm">
-                        <label style="font-size: 0.75rem;">
+                        <label class="text-xs">
                             <input type="radio" name="importMode" value="merge" x-model="importMode"> Merge
                         </label>
-                        <label style="font-size: 0.75rem;">
+                        <label class="text-xs">
                             <input type="radio" name="importMode" value="replace" x-model="importMode"> Replace
                         </label>
-                        <label style="font-size: 0.75rem;">
+                        <label class="text-xs">
                             <input type="checkbox" x-model="importReembed"> Re-embed
                         </label>
                     </div>
                 </div>
             </div>
 
-            <div x-show="backupMessage" class="text-sage mt-sm" style="font-size: 0.75rem;" x-text="backupMessage"></div>
+            <div x-show="backupMessage" class="text-sage mt-sm text-xs" x-text="backupMessage"></div>
         </div>
     </div>
 
@@ -91,16 +91,16 @@
     <div class="flex-between mb-md">
         <span></span>
         <div class="btn-group">
-            <button class="btn btn-sm" style="background: var(--coral); color: white;" @click="flushCache(null)">Flush All</button>
+            <button class="btn btn-sm btn-coral" @click="flushCache(null)">Flush All</button>
         </div>
     </div>
 
     <!-- Routing tab -->
     <div x-show="activeTab === 'routing'" role="tabpanel" aria-label="Routing cache">
         <div class="stat-grid-3 mb-lg">
-            <div class="stat-card" style="grid-column: span 3;">
+            <div class="stat-card col-span-full">
                 <div class="stat-card-header">
-                    <div class="stat-card-icon" style="background: rgba(94,234,212,0.10);">
+                    <div class="stat-card-icon bg-teal-10">
                         <svg width="22" height="22" fill="none" stroke="var(--teal)" stroke-width="2" viewBox="0 0 24 24"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
                     </div>
                     <span class="stat-card-label">Routing Cache</span>
@@ -114,7 +114,7 @@
                 <div class="btn-group mt-sm">
                     <button class="btn btn-sm btn-secondary" @click="flushCache('routing')">Flush Routing</button>
                 </div>
-                <div x-show="flushMessage && activeTab === 'routing'" class="text-sage mt-sm" style="font-size: 0.75rem;" x-text="flushMessage"></div>
+                <div x-show="flushMessage && activeTab === 'routing'" class="text-sage mt-sm text-xs" x-text="flushMessage"></div>
             </div>
         </div>
 
@@ -122,16 +122,16 @@
             <div class="form-row mb-md">
                 <div class="form-group mb-0">
                     <label class="form-label">Search</label>
-                    <input type="text" class="form-input" x-model="search" placeholder="Search entries..." style="width: 200px;">
+                    <input type="text" class="form-input w-200" x-model="search" placeholder="Search entries...">
                 </div>
-                <button class="btn btn-primary btn-sm" @click="page = 1; loadEntries()" style="align-self: flex-end;">Search</button>
+                <button class="btn btn-primary btn-sm self-end" @click="page = 1; loadEntries()">Search</button>
             </div>
 
             <div class="flex-between mb-md">
-                <span class="text-muted" style="font-size: 0.875rem;" x-text="'Showing ' + entries.length + ' of ' + entryTotal"></span>
-                <div class="flex-center" style="gap: 0.5rem;">
+                <span class="text-muted text-sm" x-text="'Showing ' + entries.length + ' of ' + entryTotal"></span>
+                <div class="flex-center">
                     <button class="btn btn-sm btn-secondary" :disabled="page <= 1" @click="page--; loadEntries()">Prev</button>
-                    <span class="text-mono" style="font-size: 0.875rem;" x-text="page + ' / ' + entryPages"></span>
+                    <span class="text-mono text-sm" x-text="page + ' / ' + entryPages"></span>
                     <button class="btn btn-sm btn-secondary" :disabled="page >= entryPages" @click="page++; loadEntries()">Next</button>
                 </div>
             </div>
@@ -153,10 +153,10 @@
                     <tbody>
                         <template x-for="e in entries" :key="e.id">
                             <tr>
-                                <td class="truncate" style="max-width: 400px;" x-text="e.document"></td>
+                                <td class="truncate max-w-400" x-text="e.document"></td>
                                 <td><span class="badge badge-teal" x-text="e.agent_id || '-'"></span></td>
                                 <td class="text-mono" x-text="e.hit_count || '0'"></td>
-                                <td class="text-mono" style="font-size: 0.75rem;" x-text="e.last_accessed || '-'"></td>
+                                <td class="text-mono text-xs" x-text="e.last_accessed || '-'"></td>
                             </tr>
                         </template>
                     </tbody>
@@ -174,9 +174,9 @@
     <!-- Action tab -->
     <div x-show="activeTab === 'action'" role="tabpanel" aria-label="Action cache">
         <div class="stat-grid-3 mb-lg">
-            <div class="stat-card" style="grid-column: span 3;">
+            <div class="stat-card col-span-full">
                 <div class="stat-card-header">
-                    <div class="stat-card-icon" style="background: rgba(94,234,212,0.10);">
+                    <div class="stat-card-icon bg-teal-10">
                         <svg width="22" height="22" fill="none" stroke="var(--sage)" stroke-width="2" viewBox="0 0 24 24"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>
                     </div>
                     <span class="stat-card-label">Action Cache</span>
@@ -190,7 +190,7 @@
                 <div class="btn-group mt-sm">
                     <button class="btn btn-sm btn-secondary" @click="flushCache('action')">Flush Action</button>
                 </div>
-                <div x-show="flushMessage && activeTab === 'action'" class="text-sage mt-sm" style="font-size: 0.75rem;" x-text="flushMessage"></div>
+                <div x-show="flushMessage && activeTab === 'action'" class="text-sage mt-sm text-xs" x-text="flushMessage"></div>
             </div>
         </div>
 
@@ -198,16 +198,16 @@
             <div class="form-row mb-md">
                 <div class="form-group mb-0">
                     <label class="form-label">Search</label>
-                    <input type="text" class="form-input" x-model="search" placeholder="Search entries..." style="width: 200px;">
+                    <input type="text" class="form-input w-200" x-model="search" placeholder="Search entries...">
                 </div>
-                <button class="btn btn-primary btn-sm" @click="page = 1; loadEntries()" style="align-self: flex-end;">Search</button>
+                <button class="btn btn-primary btn-sm self-end" @click="page = 1; loadEntries()">Search</button>
             </div>
 
             <div class="flex-between mb-md">
-                <span class="text-muted" style="font-size: 0.875rem;" x-text="'Showing ' + entries.length + ' of ' + entryTotal"></span>
-                <div class="flex-center" style="gap: 0.5rem;">
+                <span class="text-muted text-sm" x-text="'Showing ' + entries.length + ' of ' + entryTotal"></span>
+                <div class="flex-center">
                     <button class="btn btn-sm btn-secondary" :disabled="page <= 1" @click="page--; loadEntries()">Prev</button>
-                    <span class="text-mono" style="font-size: 0.875rem;" x-text="page + ' / ' + entryPages"></span>
+                    <span class="text-mono text-sm" x-text="page + ' / ' + entryPages"></span>
                     <button class="btn btn-sm btn-secondary" :disabled="page >= entryPages" @click="page++; loadEntries()">Next</button>
                 </div>
             </div>
@@ -229,10 +229,10 @@
                     <tbody>
                         <template x-for="e in entries" :key="e.id">
                             <tr>
-                                <td class="truncate" style="max-width: 400px;" x-text="e.document"></td>
+                                <td class="truncate max-w-400" x-text="e.document"></td>
                                 <td><span class="badge badge-teal" x-text="e.agent_id || '-'"></span></td>
                                 <td class="text-mono" x-text="e.hit_count || '0'"></td>
-                                <td class="text-mono" style="font-size: 0.75rem;" x-text="e.last_accessed || '-'"></td>
+                                <td class="text-mono text-xs" x-text="e.last_accessed || '-'"></td>
                             </tr>
                         </template>
                     </tbody>

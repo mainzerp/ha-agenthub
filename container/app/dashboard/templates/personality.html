@@ -11,17 +11,16 @@
         </div>
     </div>
 
-    <div class="card card-narrow">
+    <div class="card card">
         <h3 class="card-title mb-md">Personality Prompt</h3>
 
         <div class="form-group">
             <label class="form-label">System Personality Prompt</label>
             <textarea
-                class="form-input"
+                class="form-input textarea-resize"
                 rows="10"
                 x-model="config.prompt"
                 placeholder="e.g. You are Lucia, a warm and friendly smart home assistant. You speak in a casual, helpful tone and occasionally use gentle humor."
-                style="resize: vertical; min-height: 120px;"
             ></textarea>
             <span class="form-hint">When this prompt is non-empty, all agent responses will be mediated through an LLM call that applies this personality. Leave empty to disable mediation.</span>
         </div>
@@ -30,12 +29,11 @@
             <label class="form-label">Mediation Temperature: <span x-text="config.mediation_temperature"></span></label>
             <input
                 type="range"
-                class="form-input"
+                class="form-input w-full"
                 min="0"
                 max="1"
                 step="0.1"
                 x-model.number="config.mediation_temperature"
-                style="width: 100%;"
             />
             <span class="form-hint">Controls creativity of personality rephrasing. Lower = more accurate, higher = more creative. Default: 0.3</span>
         </div>
@@ -43,28 +41,28 @@
         <div class="form-actions">
             <button class="btn btn-primary" @click="saveConfig()">Save Changes</button>
             <button class="btn btn-secondary" @click="clearPrompt()" x-show="config.prompt">Clear</button>
-            <span x-show="saved" class="text-sage" style="font-size: 0.875rem;">Saved</span>
-            <span x-show="error" class="text-coral" style="font-size: 0.875rem;" x-text="error"></span>
+            <span x-show="saved" class="text-sage text-sm">Saved</span>
+            <span x-show="error" class="text-coral text-sm" x-text="error"></span>
         </div>
     </div>
 
-    <div class="card card-narrow" style="margin-top: 1.5rem;">
+    <div class="card card mt-lg">
         <h3 class="card-title mb-md">Filler / Interim / Cancel Responses</h3>
-        <p class="text-muted mb-md" style="font-size: 0.875rem;">
+        <p class="text-muted mb-md text-sm">
             When enabled, the assistant speaks a short filler phrase while waiting for slow agents (e.g. web search; only for agents marked as high-latency) and uses the same lightweight LLM to generate a natural spoken acknowledgement when the user dismisses the turn (e.g. "never mind", "forget it"). A deterministic fallback is used if the LLM is slow or unavailable, so voice satellites never hang.
         </p>
 
         <div class="form-group">
-            <label class="form-label" style="display: flex; align-items: center; gap: 0.5rem;">
-                <input type="checkbox" x-model="config.filler_enabled" style="width: auto;">
+            <label class="form-label flex-center">
+                <input type="checkbox" x-model="config.filler_enabled" class="w-auto">
                 Enable
             </label>
         </div>
 
         <div class="form-group" x-show="config.filler_enabled">
             <label class="form-label">Threshold: <span x-text="config.filler_threshold_ms"></span> ms</label>
-            <input type="range" class="form-input" min="500" max="5000" step="100"
-                   x-model.number="config.filler_threshold_ms" style="width: 100%;">
+            <input type="range" class="form-input w-full" min="500" max="5000" step="100"
+                   x-model.number="config.filler_threshold_ms">
             <span class="form-hint">How long to wait (ms) before sending a filler. Default: 2000 ms.</span>
         </div>
 
@@ -75,8 +73,8 @@
         </div>
     </div>
 
-    <div class="card card-narrow" style="margin-top: 1.5rem;">
-        <p class="text-muted" style="font-size: 0.875rem;">
+    <div class="card card mt-lg">
+        <p class="text-muted text-sm">
             <template x-if="config.prompt && config.prompt.trim()">
                 <span class="text-sage">Active -- responses will be mediated with the personality prompt.</span>
             </template>

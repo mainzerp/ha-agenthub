@@ -8,7 +8,7 @@ shortlist stays at ``top_n * 2``.
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -16,7 +16,9 @@ from app.entity.matcher import EntityMatcher
 
 
 def _make_matcher() -> EntityMatcher:
-    matcher = EntityMatcher(entity_index=object(), alias_resolver=object())
+    entity_index = MagicMock()
+    entity_index.get_by_ids = MagicMock(return_value={})
+    matcher = EntityMatcher(entity_index=entity_index, alias_resolver=object())
     matcher._top_n = 3
     matcher._oversample_factor = 20
     matcher._apply_visibility_rules = AsyncMock(side_effect=lambda _agent, results: results)

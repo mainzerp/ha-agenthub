@@ -87,11 +87,17 @@ async def get_db_read() -> AsyncGenerator[aiosqlite.Connection, None]:
 async def get_db_write() -> AsyncGenerator[aiosqlite.Connection, None]:
     """Async context manager returning the write database connection.
 
-    Acquires _write_lock to serialize writes.
+    Acquires _write_lock to serialize writes and begins an explicit
+    transaction so that every block inside the context is atomic.
     """
     async with _write_lock:
         db = await _get_or_create_write_connection()
-        yield db
+        await db.execute("BEGIN")
+        try:
+            yield db
+        except Exception:
+            await db.rollback()
+            raise
 
 
 # Backward-compatible alias -- points to the write path (safe default).
@@ -366,10 +372,48 @@ async def _create_tables(db: aiosqlite.Connection) -> None:
         )
     """)
 
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS calendar_user_mappings (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            display_name TEXT NOT NULL,
+            normalized_name TEXT NOT NULL,
+            phonetic_key TEXT,
+            calendar_entity_ids_json TEXT NOT NULL DEFAULT '[]',
+            reminder_offsets_json TEXT NOT NULL DEFAULT '[1440, 60, 15]',
+            is_default_user INTEGER NOT NULL DEFAULT 0,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+        )
+    """)
+
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS calendar_entity_settings (
+            entity_id TEXT PRIMARY KEY,
+            friendly_name TEXT,
+            enabled INTEGER NOT NULL DEFAULT 1,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+        )
+    """)
+
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS calendar_reminder_state (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            event_uid TEXT NOT NULL,
+            calendar_entity_id TEXT NOT NULL,
+            user_mapping_id INTEGER NOT NULL,
+            offset_minutes INTEGER NOT NULL,
+            fired_at INTEGER NOT NULL,
+            UNIQUE(event_uid, calendar_entity_id, user_mapping_id, offset_minutes)
+        )
+    """)
+
 
 async def _create_indexes(db: aiosqlite.Connection) -> None:
     """Create indexes for query performance."""
     await db.execute("CREATE INDEX IF NOT EXISTS idx_settings_category ON settings(category)")
+    await db.execute("CREATE INDEX IF NOT EXISTS idx_agent_configs_enabled ON agent_configs(enabled)")
+    await db.execute("CREATE INDEX IF NOT EXISTS idx_custom_agents_enabled ON custom_agents(enabled)")
     await db.execute("CREATE INDEX IF NOT EXISTS idx_aliases_entity_id ON aliases(entity_id)")
     await db.execute("CREATE INDEX IF NOT EXISTS idx_conversations_conversation_id ON conversations(conversation_id)")
     await db.execute("CREATE INDEX IF NOT EXISTS idx_conversations_created_at ON conversations(created_at)")
@@ -623,6 +667,27 @@ async def _seed_defaults(db: aiosqlite.Connection) -> None:
             "agents",
             "System prompt for the wake-briefing composer LLM.",
         ),
+        (
+            "calendar.reminder_injection.enabled",
+            "true",
+            "bool",
+            "calendar",
+            "Enable proactive calendar reminder injection into orchestrator responses",
+        ),
+        (
+            "calendar.reminder_injection.offsets",
+            "[1440, 60, 15]",
+            "json",
+            "calendar",
+            "Reminder offset markers in minutes (comma-separated)",
+        ),
+        (
+            "calendar.reminder_injection.lookahead_hours",
+            "24",
+            "int",
+            "calendar",
+            "How many hours ahead to look for upcoming calendar events",
+        ),
         # Rewrite agent settings
         ("rewrite.model", "groq/llama-3.1-8b-instant", "string", "rewrite", "LLM model for rewrite agent"),
         ("rewrite.temperature", "0.8", "float", "rewrite", "Temperature for rewrite agent"),
@@ -691,6 +756,7 @@ async def _seed_defaults(db: aiosqlite.Connection) -> None:
             "LLM-composed wake briefings for internal alarms",
         ),
         ("timer-agent", 0, "openrouter/openai/gpt-4o-mini", 5, 3, 0.2, 1024, "Timers and alarms"),
+        ("calendar-agent", 0, "openrouter/openai/gpt-4o-mini", 5, 3, 0.2, 1024, "Calendar event management"),
         ("climate-agent", 0, "openrouter/openai/gpt-4o-mini", 5, 3, 0.2, 1024, "Climate and HVAC control"),
         ("media-agent", 0, "openrouter/openai/gpt-4o-mini", 5, 3, 0.2, 1024, "Media player control"),
         ("scene-agent", 0, "openrouter/openai/gpt-4o-mini", 5, 3, 0.2, 1024, "Scene activation"),
@@ -762,6 +828,7 @@ async def _seed_defaults(db: aiosqlite.Connection) -> None:
         ("timer-agent", "domain_include", "persistent_notification"),
         ("timer-agent", "domain_include", "media_player"),
         ("timer-agent", "domain_include", "calendar"),
+        ("calendar-agent", "domain_include", "calendar"),
         ("security-agent", "domain_include", "alarm_control_panel"),
         ("security-agent", "domain_include", "lock"),
         ("security-agent", "domain_include", "camera"),
@@ -1045,13 +1112,11 @@ async def _run_migrations(db: aiosqlite.Connection) -> None:
         # satellite + area on every trace_summary so the dashboard
         # can show "Kitchen Satellite / Kitchen" next to each
         # conversation instead of an opaque device_id UUID.
+        cursor = await db.execute("PRAGMA table_info(trace_summary)")
+        existing_columns = {row[1] for row in await cursor.fetchall()}
         for column in ("device_id", "area_id", "device_name", "area_name"):
-            try:
+            if column not in existing_columns:
                 await db.execute(f"ALTER TABLE trace_summary ADD COLUMN {column} TEXT")
-            except aiosqlite.OperationalError as e:
-                if "duplicate column name" not in str(e).lower():
-                    logger.error("Migration failed adding column %s: %s", column, e)
-                    raise
         await db.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (16)")
 
     if current_version < 17:
@@ -1332,3 +1397,45 @@ async def _run_migrations(db: aiosqlite.Connection) -> None:
             ],
         )
         await db.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (24)")
+
+    if current_version < 25:
+        # Migration 25: Calendar user mappings and reminder state tables
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS calendar_user_mappings (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                display_name TEXT NOT NULL,
+                normalized_name TEXT NOT NULL,
+                phonetic_key TEXT,
+                calendar_entity_ids_json TEXT NOT NULL DEFAULT '[]',
+                reminder_offsets_json TEXT NOT NULL DEFAULT '[1440, 60, 15]',
+                is_default_user INTEGER NOT NULL DEFAULT 0,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            )
+        """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS calendar_reminder_state (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                event_uid TEXT NOT NULL,
+                calendar_entity_id TEXT NOT NULL,
+                user_mapping_id INTEGER NOT NULL,
+                offset_minutes INTEGER NOT NULL,
+                fired_at INTEGER NOT NULL,
+                UNIQUE(event_uid, calendar_entity_id, user_mapping_id, offset_minutes)
+            )
+        """)
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_calendar_user_mappings_normalized ON calendar_user_mappings(normalized_name)")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_calendar_user_mappings_phonetic ON calendar_user_mappings(phonetic_key)")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_calendar_reminder_state_event ON calendar_reminder_state(event_uid, calendar_entity_id)")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_calendar_reminder_state_user ON calendar_reminder_state(user_mapping_id)")
+        await db.execute("INSERT OR IGNORE INTO agent_configs (agent_id, enabled, model, timeout, max_iterations, temperature, max_tokens, description) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", ("calendar-agent", 0, "openrouter/openai/gpt-4o-mini", 5, 3, 0.2, 1024, "Calendar event management"))
+        await db.execute("INSERT OR IGNORE INTO entity_visibility_rules (agent_id, rule_type, rule_value) VALUES (?, ?, ?)", ("calendar-agent", "domain_include", "calendar"))
+        await db.executemany(
+            "INSERT OR IGNORE INTO settings (key, value, value_type, category, description, updated_at) VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)",
+            [
+                ("calendar.reminder_injection.enabled", "true", "bool", "calendar", "Enable proactive calendar reminder injection into orchestrator responses"),
+                ("calendar.reminder_injection.offsets", "[1440, 60, 15]", "json", "calendar", "Reminder offset markers in minutes (comma-separated)"),
+                ("calendar.reminder_injection.lookahead_hours", "24", "int", "calendar", "How many hours ahead to look for upcoming calendar events"),
+            ],
+        )
+        await db.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (25)")

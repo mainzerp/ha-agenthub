@@ -434,7 +434,8 @@ class TestHAConfigFlow:
 
         assert result == {"type": "create_entry", "data": {}}
         mock_validate.assert_awaited_once_with("http://ha.local", "stored-token")
-        flow.hass.config_entries.async_update_entry.assert_called_once_with(
+        assert flow.hass.config_entries.async_update_entry.call_count == 2
+        flow.hass.config_entries.async_update_entry.assert_any_call(
             entry,
             title=entry.title,
             data={

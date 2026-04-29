@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json as _json
 import logging
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -666,10 +667,27 @@ async def _resolve_satellite_device(
     return None
 
 
+_HA_DEVICE_ID_RE = re.compile(r"^[a-zA-Z0-9_]+$")
+
+
+def _validate_ha_device_id(device_id: str | None) -> str | None:
+    """Validate a Home Assistant device_id to prevent Jinja2 injection.
+
+    Returns the device_id if safe, otherwise None.
+    """
+    if not device_id:
+        return None
+    if _HA_DEVICE_ID_RE.match(device_id):
+        return device_id
+    logger.warning("Rejected unsafe origin_device_id: %s", device_id)
+    return None
+
+
 async def _resolve_media_player_from_origin_device(
     ha_client: Any,
     origin_device_id: str | None,
 ) -> str | None:
+    origin_device_id = _validate_ha_device_id(origin_device_id)
     if not origin_device_id:
         return None
     template = "{{ expand(device_entities('" + origin_device_id + "')) | map(attribute='entity_id') | join(',') }}"
@@ -706,6 +724,7 @@ async def _resolve_satellite_from_origin_device(
     ha_client: Any,
     origin_device_id: str | None,
 ) -> str | None:
+    origin_device_id = _validate_ha_device_id(origin_device_id)
     if not origin_device_id:
         return None
     template = "{{ expand(device_entities('" + origin_device_id + "')) | map(attribute='entity_id') | join(',') }}"

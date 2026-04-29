@@ -71,7 +71,11 @@ class VectorStore:
         try:
             self._client.delete_collection(name=COLLECTION_RESPONSE_CACHE)
         except Exception as exc:
-            if "not" in str(exc).lower() and "found" in str(exc).lower():
+            # Accept both ChromaDB's NotFoundError and generic "does not exist" wording.
+            msg = str(exc).lower()
+            if (
+                "not" in msg and "found" in msg
+            ) or "does not exist" in msg or "no such collection" in msg:
                 return
             logger.debug("Ignoring legacy response_cache delete failure: %s", exc)
         else:
@@ -331,6 +335,7 @@ class VectorStore:
 
 
 _store: VectorStore | None = None
+_store_init_lock = asyncio.Lock()
 
 
 async def get_vector_store() -> VectorStore:
@@ -340,8 +345,10 @@ async def get_vector_store() -> VectorStore:
         logger.warning("VectorStore singleton has dead client, resetting")
         _store = None
     if _store is None:
-        _store = VectorStore()
-        await _store.initialize()
+        async with _store_init_lock:
+            if _store is None:
+                _store = VectorStore()
+                await _store.initialize()
     return _store
 
 
