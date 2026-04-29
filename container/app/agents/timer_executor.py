@@ -27,10 +27,6 @@ from datetime import datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from app.agents.action_executor import (
-    call_service_with_verification,
-    filter_matches_by_domain,
-)
 from app.analytics.tracer import _optional_span
 from app.entity.deterministic_resolver import resolve_entity_deterministic_first
 

@@ -73,10 +73,7 @@ def _vector_store_with_pages(pages_by_collection: dict[str, list[dict]]) -> Magi
         if ids is not None:
             return _empty_page()
         pages = pages_by_collection.get(collection_name, [])
-        if limit is None or limit <= 0:
-            index = 0
-        else:
-            index = (offset or 0) // limit
+        index = 0 if limit is None or limit <= 0 else (offset or 0) // limit
         if index >= len(pages):
             return _empty_page()
         return pages[index]
@@ -85,7 +82,9 @@ def _vector_store_with_pages(pages_by_collection: dict[str, list[dict]]) -> Magi
     return store
 
 
-def _make_envelope(*, action_entries=None, routing_entries=None, format_version=SUPPORTED_FORMAT_VERSION, schema_version=SCHEMA_VERSION) -> dict:
+def _make_envelope(
+    *, action_entries=None, routing_entries=None, format_version=SUPPORTED_FORMAT_VERSION, schema_version=SCHEMA_VERSION
+) -> dict:
     tiers: dict[str, list[dict]] = {}
     if action_entries is not None:
         tiers["action"] = [entry.model_dump() if hasattr(entry, "model_dump") else entry for entry in action_entries]
@@ -127,7 +126,9 @@ def test_iter_export_chunks_emits_v4_action_and_routing_tiers():
     )
     manager = _make_manager(store)
 
-    payload = json.loads(b"".join(iter_export_chunks(manager, ["action", "routing"], app_version="1.4.0")).decode("utf-8"))
+    payload = json.loads(
+        b"".join(iter_export_chunks(manager, ["action", "routing"], app_version="1.4.0")).decode("utf-8")
+    )
 
     assert payload["format_version"] == SUPPORTED_FORMAT_VERSION
     assert payload["schema_version"] == SCHEMA_VERSION
@@ -139,10 +140,7 @@ def test_iter_export_chunks_emits_v4_action_and_routing_tiers():
 
 def test_iter_export_chunks_paginates_until_short_page():
     bootstrap_manager = _make_manager()
-    entries = [
-        make_action_cache_entry(query_text=f"turn on light {index}")
-        for index in range(3)
-    ]
+    entries = [make_action_cache_entry(query_text=f"turn on light {index}") for index in range(3)]
     store = _vector_store_with_pages(
         {
             COLLECTION_ACTION_CACHE: [
@@ -209,8 +207,12 @@ async def test_import_envelope_merge_upserts_action_and_routing_entries():
     assert summary.tiers["action"].imported == 1
     assert summary.tiers["routing"].imported == 1
     assert [call.args[0] for call in store.upsert.call_args_list] == [COLLECTION_ACTION_CACHE, COLLECTION_ROUTING_CACHE]
-    assert store.upsert.call_args_list[0].kwargs["ids"] == [make_action_entry_id(action_entry.query_text, language=action_entry.language)]
-    assert store.upsert.call_args_list[1].kwargs["ids"] == [make_routing_entry_id(routing_entry.query_text, language=routing_entry.language)]
+    assert store.upsert.call_args_list[0].kwargs["ids"] == [
+        make_action_entry_id(action_entry.query_text, language=action_entry.language)
+    ]
+    assert store.upsert.call_args_list[1].kwargs["ids"] == [
+        make_routing_entry_id(routing_entry.query_text, language=routing_entry.language)
+    ]
 
 
 @pytest.mark.asyncio

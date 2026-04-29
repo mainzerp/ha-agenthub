@@ -104,6 +104,7 @@ def iter_export_chunks(
     embedding_model = "unknown"
     try:
         from app.config import settings as _runtime_settings
+
         embedding_model = (
             getattr(_runtime_settings, "embedding_local_model", None)
             or getattr(_runtime_settings, "embedding_model", None)
@@ -128,7 +129,7 @@ def iter_export_chunks(
     }
     for tier_index, tier in enumerate(requested):
         prefix = "," if tier_index else ""
-        yield (f'{prefix}"{tier}":[').encode("utf-8")
+        yield (f'{prefix}"{tier}":[').encode()
         first = True
         for entry in _export_tier_entries(cache_by_tier[tier]):
             sep = "" if first else ","
@@ -249,6 +250,7 @@ async def import_envelope(
     if source_model and source_model != "unknown":
         try:
             from app.config import settings as _runtime_settings
+
             local_model = getattr(_runtime_settings, "embedding_local_model", None)
             if local_model and local_model != source_model:
                 summary.warnings.append(

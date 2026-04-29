@@ -52,10 +52,8 @@ async def _initialize_registry_runtime(*, entity_entries=None, cache_counts=None
     ws_inst.on_event = MagicMock()
 
     def _fake_create_task(coro):
-        try:
+        with contextlib.suppress(Exception):
             coro.close()
-        except Exception:
-            pass
         return MagicMock()
 
     patches = [
@@ -69,7 +67,11 @@ async def _initialize_registry_runtime(*, entity_entries=None, cache_counts=None
         patch("app.runtime_setup.EntityMatcher"),
         patch("app.runtime_setup.RewriteAgent"),
         patch("app.runtime_setup.CacheManager", return_value=fake_cache),
-        patch("app.db.repository.McpServerRepository.get", new_callable=AsyncMock, return_value={"name": "duckduckgo-search"}),
+        patch(
+            "app.db.repository.McpServerRepository.get",
+            new_callable=AsyncMock,
+            return_value={"name": "duckduckgo-search"},
+        ),
         patch("app.runtime_setup.OrchestratorAgent"),
         patch("app.runtime_setup.GeneralAgent"),
         patch("app.runtime_setup.LightAgent"),
@@ -116,7 +118,9 @@ async def _initialize_registry_runtime(*, entity_entries=None, cache_counts=None
         mock_alias_cls.return_value = alias_inst
         mock_matcher_cls.return_value = matcher_inst
         mock_rewrite_cls.return_value = MagicMock(agent_card=SimpleNamespace(agent_id="rewrite-agent"))
-        mock_orch_cls.return_value = MagicMock(agent_card=SimpleNamespace(agent_id="orchestrator"), initialize=AsyncMock())
+        mock_orch_cls.return_value = MagicMock(
+            agent_card=SimpleNamespace(agent_id="orchestrator"), initialize=AsyncMock()
+        )
         mock_general_cls.return_value = MagicMock(agent_card=SimpleNamespace(agent_id="general-agent"))
         mock_light_cls.return_value = MagicMock(agent_card=SimpleNamespace(agent_id="light-agent"))
         mock_music_cls.return_value = MagicMock(agent_card=SimpleNamespace(agent_id="music-agent"))
@@ -221,9 +225,5 @@ async def test_invalidate_by_entity_id_returns_per_cache_counts():
     counts = await manager.invalidate_by_entity_id(["light.kitchen", "switch.garage"])
 
     assert counts == {"action": 3, "routing": 5}
-    manager._action_cache.invalidate_by_entity_id.assert_called_once_with(
-        ["light.kitchen", "switch.garage"]
-    )
-    manager._routing_cache.invalidate_by_entity_id.assert_called_once_with(
-        ["light.kitchen", "switch.garage"]
-    )
+    manager._action_cache.invalidate_by_entity_id.assert_called_once_with(["light.kitchen", "switch.garage"])
+    manager._routing_cache.invalidate_by_entity_id.assert_called_once_with(["light.kitchen", "switch.garage"])

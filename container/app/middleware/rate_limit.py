@@ -5,9 +5,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from typing import Callable
 
-from fastapi import HTTPException, Request, WebSocket
+from fastapi import HTTPException, Request
 
 logger = logging.getLogger(__name__)
 

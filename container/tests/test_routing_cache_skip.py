@@ -21,7 +21,6 @@ from app.agents.orchestrator import OrchestratorAgent
 from app.cache.cache_manager import CacheManager, RoutingSkipOutcome
 from app.cache.vector_store import VectorStore
 from app.models.agent import AgentCard, AgentTask, TaskContext
-from app.models.cache import ActionCacheEntry
 
 
 def _make_manager() -> CacheManager:

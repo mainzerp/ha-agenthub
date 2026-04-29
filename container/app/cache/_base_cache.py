@@ -10,7 +10,7 @@ import re
 from abc import ABC, abstractmethod
 from collections.abc import Iterable
 from datetime import UTC, datetime
-from typing import Generic, TypeVar
+from typing import TypeVar
 
 from pydantic import BaseModel
 
@@ -79,7 +79,7 @@ def _parse_entity_ids(raw: object) -> list[str]:
     return []
 
 
-class _BaseCache(ABC, Generic[TEntry]):
+class _BaseCache[TEntry](ABC):
     """Shared storage, LRU, and metadata-flush behavior for cache tiers."""
 
     def __init__(

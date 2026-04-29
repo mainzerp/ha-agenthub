@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Literal
-
 from pydantic import BaseModel, Field, model_validator
+
 
 class ConversationRequest(BaseModel):
     """Incoming conversation request from HA integration."""
@@ -25,6 +24,8 @@ class ConversationRequest(BaseModel):
         None, description="Human-readable name of the originating device/satellite", max_length=128
     )
     area_name: str | None = Field(None, description="Human-readable name of the originating area/room", max_length=128)
+
+
 class ConversationResponse(BaseModel):
     """Full conversation response sent back to HA integration."""
 

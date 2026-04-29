@@ -1890,6 +1890,7 @@ class TestTimerPromptSnapshot:
         prompt = self._read_prompt()
         assert "Weekday mapping guidance" in prompt
 
+
 class TestSceneAgent:
     @patch(
         "app.llm.client.complete",
@@ -3010,7 +3011,9 @@ class TestOrchestratorAgent:
 
         orch, dispatcher, _, cache_manager = self._make_orchestrator()
         mock_complete.return_value = "light-agent: Turn on light"
-        mock_settings.get_value = AsyncMock(side_effect=lambda key, default=None: "auto" if key == "language" else default)
+        mock_settings.get_value = AsyncMock(
+            side_effect=lambda key, default=None: "auto" if key == "language" else default
+        )
         cache_manager.try_replay_action = AsyncMock(return_value=None)
         cache_manager.try_routing_skip = AsyncMock(return_value=None)
         collector = SpanCollector("trace-fallthrough-test")
@@ -4698,7 +4701,7 @@ class TestOrchestratorFiller:
         filler_chunks = [c for c in chunks if "filler_push" in c]
         assert len(filler_chunks) == 0
         # Non-filler tokens are buffered until the terminal frame.
-        real_tokens = [c for c in chunks if c.get("token") and not "filler_push" in c and not c.get("done")]
+        real_tokens = [c for c in chunks if c.get("token") and "filler_push" not in c and not c.get("done")]
         assert real_tokens == []
         done_chunks = [c for c in chunks if c.get("done")]
         assert len(done_chunks) == 1
@@ -6310,7 +6313,7 @@ class TestStreamMediatedSpeech:
         chunks = [c async for c in orch.handle_task_stream(task)]
 
         intermediate = [c for c in chunks if not c["done"]]
-        non_filler_tokens = [c for c in intermediate if not "filler_push" in c and c.get("token")]
+        non_filler_tokens = [c for c in intermediate if "filler_push" not in c and c.get("token")]
         assert non_filler_tokens == []
 
         final = [c for c in chunks if c["done"]]

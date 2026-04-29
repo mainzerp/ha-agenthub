@@ -6,14 +6,13 @@ async methods for common operations.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import json
 import re
 import time
 from datetime import UTC, datetime
 from typing import Any, ClassVar
-
-import asyncio
 
 from app.db.schema import get_db_read, get_db_write
 
@@ -212,7 +211,7 @@ class AgentConfigRepository:
             return
         fields["updated_at"] = _now()
 
-        columns = ", ".join(["agent_id", *[_validate_column_name(k) for k in fields.keys()]])
+        columns = ", ".join(["agent_id", *[_validate_column_name(k) for k in fields]])
         placeholders = ", ".join(["?"] * (len(fields) + 1))
         updates = ", ".join(f"{_validate_column_name(k)}=excluded.{_validate_column_name(k)}" for k in fields)
 
@@ -727,7 +726,7 @@ class CustomAgentRepository:
             if field in data and isinstance(data[field], (list, dict)):
                 data[field] = json.dumps(data[field])
 
-        columns = ", ".join(["name", "system_prompt", *[_validate_column_name(k) for k in data.keys()]])
+        columns = ", ".join(["name", "system_prompt", *[_validate_column_name(k) for k in data]])
         placeholders = ", ".join(["?"] * (len(data) + 2))
         values = [name, system_prompt, *list(data.values())]
 

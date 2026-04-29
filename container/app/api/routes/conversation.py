@@ -13,9 +13,9 @@ from fastapi.responses import StreamingResponse
 
 from app.a2a.protocol import JsonRpcRequest
 from app.analytics.tracer import SpanCollector
+from app.middleware.rate_limit import WsMessageRateLimiter, rate_limit_conversation
 from app.models.agent import AgentTask, TaskContext
 from app.models.conversation import ConversationRequest, ConversationResponse, StreamToken
-from app.middleware.rate_limit import WsMessageRateLimiter, rate_limit_conversation
 from app.security.auth import require_api_key, require_api_key_ws
 from app.security.user_input import prepare_user_text
 
@@ -134,7 +134,9 @@ async def conversation_sse(
                     is_filler=chunk.result.get("is_filler", False),
                     error=chunk.result.get("error") if chunk.done else None,
                     voice_followup=bool(chunk.result.get("voice_followup")) if chunk.done else False,
-                    sanitized=bool(chunk.result.get("sanitized", True)) if chunk.done else not chunk.result.get("is_filler", False),
+                    sanitized=bool(chunk.result.get("sanitized", True))
+                    if chunk.done
+                    else not chunk.result.get("is_filler", False),
                     directive=chunk.result.get("directive") if chunk.done else None,
                     reason=chunk.result.get("reason") if chunk.done else None,
                     filler_push=chunk.result.get("filler_push") if not chunk.done else None,
@@ -211,7 +213,9 @@ async def ws_conversation(
                         is_filler=chunk.result.get("is_filler", False),
                         error=chunk.result.get("error") if chunk.done else None,
                         voice_followup=bool(chunk.result.get("voice_followup")) if chunk.done else False,
-                        sanitized=bool(chunk.result.get("sanitized", True)) if chunk.done else not chunk.result.get("is_filler", False),
+                        sanitized=bool(chunk.result.get("sanitized", True))
+                        if chunk.done
+                        else not chunk.result.get("is_filler", False),
                         directive=chunk.result.get("directive") if chunk.done else None,
                         reason=chunk.result.get("reason") if chunk.done else None,
                         filler_push=chunk.result.get("filler_push") if not chunk.done else None,

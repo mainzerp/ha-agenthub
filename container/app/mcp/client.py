@@ -19,7 +19,6 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
-import os
 import re
 import shlex
 from typing import Any
@@ -65,7 +64,7 @@ def _validate_mcp_command(command_or_url: str) -> None:
     if not command_or_url:
         raise ValueError("Invalid MCP command: empty command")
     parts = command_or_url.split()
-    command = parts[0]
+    _command = parts[0]
     # Allow simple PATH-resolved commands (e.g. "python", "python3")
     # as well as absolute paths. The shlex.split + shell-meta check
     # below is the real safety boundary.
@@ -290,7 +289,7 @@ class MCPClient:
                         _OWNER_TASK_DISCONNECT_TIMEOUT_SEC,
                     )
                     if self._owner_task is None:
-                        raise RuntimeError("MCP client not initialized")
+                        raise RuntimeError("MCP client not initialized") from None
                     self._owner_task.cancel()
                     with contextlib.suppress(asyncio.CancelledError, Exception):
                         await self._owner_task

@@ -5,13 +5,13 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from app.models.agent import AgentCard, AgentConfig, AgentTask, BackgroundEvent, TaskContext, TaskResult
+from app.models.agent import AgentCard, AgentConfig, AgentTask, BackgroundEvent, TaskContext
 from app.models.cache import ActionCacheEntry, CachedAction, RoutingCacheEntry
 from app.models.conversation import ActionResult, ConversationRequest, ConversationResponse, StreamToken
 from app.models.entity_index import EntityIndexEntry
 from tests.helpers import (
-    make_action_result,
     make_action_cache_entry,
+    make_action_result,
     make_agent_card,
     make_agent_config,
     make_agent_task,

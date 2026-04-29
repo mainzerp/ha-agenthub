@@ -34,7 +34,7 @@ from app.cache.vector_store import (
 )
 from app.defaults import DEFAULT_LOCAL_EMBEDDING_MODEL
 from app.models.cache import CachedAction
-from tests.helpers import make_action_cache_entry, make_response_cache_entry, make_routing_cache_entry
+from tests.helpers import make_action_cache_entry, make_routing_cache_entry
 
 
 def _empty_get_result() -> dict:
@@ -120,7 +120,11 @@ class TestActionCache:
         store.get.return_value = {
             "ids": ["a", "b", "c"],
             "metadatas": [
-                {"cached_action": CachedAction(service="light/query_state", entity_id="light.kitchen").model_dump_json()},
+                {
+                    "cached_action": CachedAction(
+                        service="light/query_state", entity_id="light.kitchen"
+                    ).model_dump_json()
+                },
                 {"cached_action": CachedAction(service="light/turn_on", entity_id="light.kitchen").model_dump_json()},
                 {"cached_action": ""},
             ],
@@ -291,12 +295,8 @@ class TestCacheManager:
         counts = await manager.invalidate_by_entity_id(["light.kitchen", "switch.garage"])
 
         assert counts == {"action": 3, "routing": 5}
-        manager._action_cache.invalidate_by_entity_id.assert_called_once_with(
-            ["light.kitchen", "switch.garage"]
-        )
-        manager._routing_cache.invalidate_by_entity_id.assert_called_once_with(
-            ["light.kitchen", "switch.garage"]
-        )
+        manager._action_cache.invalidate_by_entity_id.assert_called_once_with(["light.kitchen", "switch.garage"])
+        manager._routing_cache.invalidate_by_entity_id.assert_called_once_with(["light.kitchen", "switch.garage"])
 
     @pytest.mark.asyncio
     async def test_apply_rewrite_returns_original_when_disabled(self):
@@ -316,7 +316,9 @@ class TestCacheManager:
         manager._rewrite_agent = AsyncMock()
         manager._rewrite_agent.rewrite = AsyncMock(return_value="Rewritten text.")
         manager._rewrite_enabled = True
-        result = ActionReplayOutcome(kind="full_hit", entry_id="id-1", agent_id="light-agent", response_text="Cached text.")
+        result = ActionReplayOutcome(
+            kind="full_hit", entry_id="id-1", agent_id="light-agent", response_text="Cached text."
+        )
 
         with patch("app.cache.cache_manager.track_rewrite", new_callable=AsyncMock) as track:
             output = await manager.apply_rewrite(result)
@@ -563,7 +565,7 @@ class TestRoutingCacheExtended:
         manager.store_routing(query_text, "light-agent", 0.95, "Turn on kitchen light", language=language)
 
         # v4: use _routing_cache.lookup directly (no _process_inner)
-        entry, similarity = manager._routing_cache.lookup(query_text, language=language)
+        entry, _similarity = manager._routing_cache.lookup(query_text, language=language)
         assert entry is not None
         assert entry.agent_id == "light-agent"
 
@@ -700,7 +702,7 @@ class TestActionCacheExtended:
                 ]
             ],
         }
-        entry, similarity = cache.lookup("totally different")
+        entry, _similarity = cache.lookup("totally different")
         assert entry is None
 
     def test_lookup_empty_results(self):
@@ -1009,7 +1011,9 @@ class TestCacheManagerExtended:
         assert entry.condensed_task == "Turn on the light"
         assert similarity == pytest.approx(0.95)
 
-    @pytest.mark.skip(reason="Phase 1 rewrite: missing event-loop setup; condensed_task carry covered in test_routing_cache_skip.py")
+    @pytest.mark.skip(
+        reason="Phase 1 rewrite: missing event-loop setup; condensed_task carry covered in test_routing_cache_skip.py"
+    )
     def test_routing_skip_carries_condensed_task(self):
         # v4: process() returns CacheResult with condensed_task from routing hit
         manager, store = self._make_manager()
@@ -1755,21 +1759,10 @@ class TestActionCachePurgeReadonly:
 def test_is_readonly_action_helper():
     """Unit test for _is_readonly_action module function (v4: no longer a static method on ResponseCache)."""
     assert _is_readonly_action("") is True
-    assert (
-        _is_readonly_action('{"service":"sensor/query_status","entity_id":"x","service_data":{}}')
-        is True
-    )
-    assert (
-        _is_readonly_action('{"service":"media/list_sources","entity_id":"x","service_data":{}}')
-        is True
-    )
-    assert (
-        _is_readonly_action('{"service":"light/turn_on","entity_id":"x","service_data":{}}') is False
-    )
-    assert (
-        _is_readonly_action('{"service":"climate/set_temperature","entity_id":"x","service_data":{}}')
-        is False
-    )
+    assert _is_readonly_action('{"service":"sensor/query_status","entity_id":"x","service_data":{}}') is True
+    assert _is_readonly_action('{"service":"media/list_sources","entity_id":"x","service_data":{}}') is True
+    assert _is_readonly_action('{"service":"light/turn_on","entity_id":"x","service_data":{}}') is False
+    assert _is_readonly_action('{"service":"climate/set_temperature","entity_id":"x","service_data":{}}') is False
     assert _is_readonly_action("invalid json") is True
 
 
@@ -1787,9 +1780,7 @@ async def test_concurrent_cache_stress():
         for i in range(10):
             query_text = f"query {i % 3}"
             language = "en"
-            manager.store_routing(
-                query_text, "light-agent", 0.9, f"Task {task_id}", language=language
-            )
+            manager.store_routing(query_text, "light-agent", 0.9, f"Task {task_id}", language=language)
             manager._routing_cache.lookup(query_text, language=language)
             manager._routing_cache.invalidate_by_entity_id([f"light.kitchen_{task_id % 2}"])
 

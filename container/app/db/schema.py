@@ -12,10 +12,10 @@ from pathlib import Path
 
 import aiosqlite
 
-logger = logging.getLogger(__name__)
-
 from app.config import settings
 from app.defaults import CACHE_DEFAULTS, DEFAULT_LOCAL_EMBEDDING_MODEL
+
+logger = logging.getLogger(__name__)
 
 _write_conn: aiosqlite.Connection | None = None
 _write_lock = asyncio.Lock()

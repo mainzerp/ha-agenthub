@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Protocol, TypeVar
+from typing import Any, Protocol
 
 from app.db.repository import EntityVisibilityRepository
 from app.entity.index import EntityIndex
@@ -15,9 +15,6 @@ DEVICE_CLASS_DOMAINS = {"sensor", "binary_sensor", "cover", "number"}
 
 class VisibilityCandidate(Protocol):
     entity_id: str
-
-
-TVisibilityCandidate = TypeVar("TVisibilityCandidate", bound=VisibilityCandidate)
 
 
 @dataclass
@@ -118,7 +115,7 @@ async def _passes_visibility_filters(
     return True
 
 
-async def filter_visible_results(
+async def filter_visible_results[TVisibilityCandidate](
     agent_id: str,
     results: list[TVisibilityCandidate],
     entity_index: EntityIndex | None,

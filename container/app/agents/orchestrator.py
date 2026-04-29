@@ -13,6 +13,7 @@ import uuid
 from collections import OrderedDict
 from collections.abc import AsyncGenerator
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 from app.a2a.protocol import JsonRpcRequest
 from app.agents.base import BaseAgent
@@ -844,9 +845,7 @@ class OrchestratorAgent(BaseAgent):
                 known_agents = await self._get_known_agents()
                 if routing_hit.agent_id not in known_agents:
                     with contextlib.suppress(Exception):
-                        await asyncio.to_thread(
-                            self._cache_manager.invalidate_routing, routing_hit.entry_id
-                        )
+                        await asyncio.to_thread(self._cache_manager.invalidate_routing, routing_hit.entry_id)
                     cache_span["metadata"]["hit_type"] = "routing_stale_agent"
                     cache_span["metadata"]["cached_agent_id"] = routing_hit.agent_id
                     cache_span["metadata"]["cache_tier"] = "both_miss"
@@ -1054,7 +1053,9 @@ class OrchestratorAgent(BaseAgent):
                         response_text=speech,
                         cached_action=cached_action,
                         entity_ids=entity_ids,
-                        origin_area_id=(task.context.area_id if used_origin_context and task and task.context else None),
+                        origin_area_id=(
+                            task.context.area_id if used_origin_context and task and task.context else None
+                        ),
                         origin_device_id=(
                             task.context.device_id if used_origin_context and task and task.context else None
                         ),
@@ -1510,7 +1511,9 @@ class OrchestratorAgent(BaseAgent):
 
         pre_classified = _pre_classified
         synthetic_preclassified = False
-        allow_classify_cache_lookup = _allow_classify_cache_lookup if _allow_classify_cache_lookup is not None else False
+        allow_classify_cache_lookup = (
+            _allow_classify_cache_lookup if _allow_classify_cache_lookup is not None else False
+        )
         next_classify_extra: dict[str, object] = {}
         used_origin_context = False
         if task and task.context and (task.context.area_id or task.context.device_id):
@@ -1866,7 +1869,9 @@ class OrchestratorAgent(BaseAgent):
                         confidence,
                         routing_cached,
                         extended_metadata=False,
-                        extra_metadata={**classify_extra, "reason": "routing_cache_skip"} if classify_extra else {"reason": "routing_cache_skip"},
+                        extra_metadata={**classify_extra, "reason": "routing_cache_skip"}
+                        if classify_extra
+                        else {"reason": "routing_cache_skip"},
                     )
             else:
                 async with _optional_span(span_collector, "classify", agent_id="orchestrator") as span:
@@ -2800,18 +2805,20 @@ class OrchestratorAgent(BaseAgent):
             )
             if self._cache_manager and self._legacy_pipeline_enabled() and len(classifications) == 1:
                 target_agent, condensed, confidence = classifications[0]
-                if target_agent not in (_FALLBACK_AGENT, _CANCEL_INTERACTION_AGENT, "send-agent"):
-                    if confidence is not None:
-                        try:
-                            await self._cache_manager.store_routing_async(
-                                user_text,
-                                target_agent,
-                                confidence,
-                                condensed,
-                                language=language,
-                            )
-                        except Exception:
-                            logger.warning("Failed to store routing decision", exc_info=True)
+                if (
+                    target_agent not in (_FALLBACK_AGENT, _CANCEL_INTERACTION_AGENT, "send-agent")
+                    and confidence is not None
+                ):
+                    try:
+                        await self._cache_manager.store_routing_async(
+                            user_text,
+                            target_agent,
+                            confidence,
+                            condensed,
+                            language=language,
+                        )
+                    except Exception:
+                        logger.warning("Failed to store routing decision", exc_info=True)
             return classifications, False
         except _RecoverableClassificationError:
             raise

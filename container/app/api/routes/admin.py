@@ -25,7 +25,6 @@ from app.ha_client.auth import get_ha_token, set_ha_token
 from app.ha_client.rest import test_ha_connection
 from app.security.auth import API_KEY_SECRET_NAME, require_admin_session
 from app.security.encryption import delete_secret, retrieve_secret, store_secret
-from app.util import raise_api_error
 
 logger = logging.getLogger(__name__)
 
@@ -1300,9 +1299,9 @@ async def get_fernet_key_backup(payload: FernetKeyBackupPayload):
     import base64
     import os
 
+    from cryptography.hazmat.primitives import hashes
     from cryptography.hazmat.primitives.ciphers.aead import AESGCM
     from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
-    from cryptography.hazmat.primitives import hashes
 
     key_plaintext = export_fernet_key().encode("utf-8")
     salt = os.urandom(16)
