@@ -355,7 +355,9 @@ class EntityIndex:
                         metadatas=metadatas,
                     )
                     self._status["processed"] = min(unchanged + removed + start_idx + len(batch), total_entities)
-                    self._status["progress"] = int(self._status["processed"] / total_entities * 100) if total_entities else 0
+                    self._status["progress"] = (
+                        int(self._status["processed"] / total_entities * 100) if total_entities else 0
+                    )
 
             # Batch delete removed entities
             if to_remove:
