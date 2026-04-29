@@ -1,6 +1,6 @@
 # Version
 
-**Current Version:** 1.9.3
+**Current Version:** 1.9.4
 
 ## Recent Changes (since 1.8.0)
 
@@ -19,6 +19,12 @@
 - **UI:** Agents in Agent Configuration are now sorted alphabetically with `orchestrator` pinned to the top and visually highlighted.
 - **UI:** Fixed "All entities" badge incorrectly shown on `filler-agent` and `send-agent`; now correctly shows "No entity access".
 - **Cleanup:** Removed dead code (`migrations.py`, unused constants), added DB indexes for `enabled` columns, and pre-compiled regex patterns in `_strip_markdown`.
+- **Cache v1.9.1:** Fixed `allowed_domains` TypeError in `resolve_entity_deterministic_first` during cache replay.
+- **Cache v1.9.2:** Added missing `"action"` field to all executor success returns so `_store_after_dispatch` can create `CachedAction` entries.
+- **Cache v1.9.3:** Fixed action-cache invalidation on `None` resolver result. Now only invalidates when the resolver finds a *different* entity, not when it returns `None`.
+- **Cache v1.9.4:** Added `replace=True` to agent registry registration during setup initialization to prevent `filler-agent` double-registration from blocking HA-client wiring.
+- **Cache v1.9.4:** Removed entity re-resolution from action-cache replay. The cached `entity_id` is trusted directly, saving ~1.0s per cache hit.
+- **Cache v1.9.4:** Simplified `_execute_cached_action` to a direct REST call without WebSocket observer wait. Saves ~1.5s per cache hit. Action-cache hits now complete in ~250-500ms instead of ~2.6s.
 
 ## Recent Changes (since 1.7.0)
 

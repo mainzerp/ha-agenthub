@@ -19,7 +19,7 @@ async def _initialize_registry_runtime(*, entity_entries=None, cache_counts=None
     app.state = SimpleNamespace()
 
     class FakeRegistry:
-        async def register(self, _agent):
+        async def register(self, _agent, *, replace=False):
             return None
 
         async def list_agents(self):

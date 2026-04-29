@@ -549,8 +549,11 @@ async def test_initialize_setup_dependent_services_is_idempotent():
         def __init__(self):
             self.registered: list[str] = []
 
-        async def register(self, agent):
-            self.registered.append(getattr(agent.agent_card, "agent_id", "unknown"))
+        async def register(self, agent, *, replace=False):
+            agent_id = getattr(agent.agent_card, "agent_id", "unknown")
+            if replace and agent_id in self.registered:
+                self.registered.remove(agent_id)
+            self.registered.append(agent_id)
 
         async def list_agents(self):
             return list(self.registered)
@@ -703,7 +706,7 @@ async def test_initialize_setup_dependent_services_preloads_prompt_files():
     app.state = SimpleNamespace()
 
     class FakeRegistry:
-        async def register(self, agent):
+        async def register(self, agent, *, replace=False):
             return None
 
         async def list_agents(self):

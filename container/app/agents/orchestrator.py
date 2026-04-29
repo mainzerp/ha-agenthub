@@ -2475,25 +2475,11 @@ class OrchestratorAgent(BaseAgent):
             return None
 
     async def _execute_cached_action(self, cached_action) -> dict | None:
-        """Execute a cached action via HA client. Returns action result or None.
+        """Execute a cached action via HA client. Fast path: direct REST call only.
 
-        FLOW-CRIT-2 / FLOW-VERIFY-2:
-        HA's REST ``call_service`` returns the list of states it observed
-        changing. For async-bus aktors (KNX, ABB, Zigbee2MQTT…) the
-        ``state_changed`` event fires *after* the REST call returns, so
-        ``call_service`` responds with ``[]`` even on a successful
-        command. The previous implementation treated an empty response
-        as a silent no-op and fell through to live dispatch -- meaning
-        every repeated action on a slow bus still ran the full agent
-        pipeline, defeating the response cache.
-
-        We now mirror the live ``action_executor.execute_action`` path:
-        register a WebSocket state waiter *before* the REST call via
-        ``ha_client.expect_state``. When the REST response is empty we
-        consult the observer; if it saw the entity reach the expected
-        target state (or any state change, for toggles), the replay is
-        confirmed and we return the observed state. Only a true timeout
-        + no REST evidence counts as failure.
+        Skips the WebSocket observer used by the live executor path.
+        For idempotent actions (turn_on, turn_off, etc.) the REST call
+        itself is sufficient; we do not wait for state confirmation.
         """
         if not self._ha_client or not cached_action:
             return None
@@ -2509,97 +2495,23 @@ class OrchestratorAgent(BaseAgent):
         if not domain or not action or not entity_id:
             return None
 
-        # Import here to avoid a circular import at module load time
-        # (action_executor -> orchestrator via analytics/spans).
-        from app.agents.action_executor import (
-            _EXPECTED_STATE_BY_DOMAIN_ACTION,
-            _extract_state_from_call_result,
-            call_service_with_verification,
-        )
-
-        expected_state = _EXPECTED_STATE_BY_DOMAIN_ACTION.get((domain, action))
-
-        # FLOW-VERIFY-SHARED (0.18.5): delegate the REST+WS dance to the
-        # shared helper so the orchestrator and domain executors agree on
-        # how empty REST responses are treated.
-        verify = await call_service_with_verification(
-            self._ha_client,
-            domain,
-            action,
-            entity_id,
-            service_data=service_data,
-            expected_state=expected_state,
-        )
-        if not verify["success"]:
-            logger.warning(
-                "Cached action execution failed",
-                exc_info=verify.get("error") is not None,
-            )
-            return None
-
-        call_result = verify["call_result"]
-        if call_result is None:
-            return None
-
-        # Non-empty REST response is authoritative: success.
-        non_empty = bool(call_result) and not (isinstance(call_result, (list, dict)) and len(call_result) == 0)
-        if non_empty:
-            return {
-                "success": True,
-                "entity_id": entity_id,
-                "action": action,
-                "state": _extract_state_from_call_result(
-                    call_result,
-                    entity_id,
-                ),
-                "source": "call_service",
-            }
-
-        # Empty REST response -- consult the WS / poll observer. For
-        # async-bus aktors this is the common path.
-        observed_state = verify["observed_state"]
-        if expected_state:
-            # Targeted action (turn_on/turn_off/set_*): require the
-            # observed state to match the intent. A stale mismatch
-            # (observed=off after turn_on) means HA accepted but the
-            # bus did not follow through; fall through to live
-            # dispatch so the user gets a truthful response.
-            if observed_state == expected_state or (
-                isinstance(expected_state, frozenset) and observed_state in expected_state
-            ):
-                return {
-                    "success": True,
-                    "entity_id": entity_id,
-                    "action": action,
-                    "state": observed_state,
-                    "source": "ws_observer",
-                }
-            logger.info(
-                "Cached action %s on %s: empty REST, observer saw %r (expected %r); falling through to live dispatch",
-                service,
+        try:
+            await self._ha_client.call_service(
+                domain,
+                action,
                 entity_id,
-                observed_state,
-                expected_state,
+                service_data or None,
             )
-            return None
-
-        # Untargeted actions (toggle and similar): any observed state
-        # change after the call counts as confirmation.
-        if observed_state is not None:
             return {
                 "success": True,
                 "entity_id": entity_id,
                 "action": action,
-                "state": observed_state,
-                "source": "ws_observer",
+                "state": None,
+                "source": "cached_call",
             }
-
-        logger.info(
-            "Cached action %s on %s: empty REST, no observer evidence; falling through to live dispatch",
-            service,
-            entity_id,
-        )
-        return None
+        except Exception:
+            logger.warning("Cached action execution failed", exc_info=True)
+            return None
 
     @staticmethod
     def _cancel_interaction_description_line() -> str:

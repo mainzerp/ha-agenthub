@@ -7369,45 +7369,22 @@ class TestResponseCacheFallThrough:
 
 
 # ---------------------------------------------------------------------------
-# Cached action replay verification (FLOW-CRIT-2 / FLOW-VERIFY-2)
+# Cached action replay verification (fast path: direct REST call)
 # ---------------------------------------------------------------------------
 
 
 class TestExecuteCachedActionVerification:
-    """Covers the async-bus aktor fix: an empty ``call_service`` response
-    must NOT be treated as failure when the WebSocket observer confirms
-    the expected state change. Previously every KNX/ABB ``light.turn_on``
-    fell through to live dispatch because HA's REST returns ``[]`` before
-    the ``state_changed`` event fires.
+    """Covers the simplified cached action path: direct REST call without
+    WebSocket observer wait. The observer logic was removed because
+    idempotent actions (turn_on, turn_off) do not require state
+    confirmation for cache replay.
     """
 
     @staticmethod
-    def _make_ha_client(*, call_result, observer_state: str | None):
-        """Build an AsyncMock HA client whose ``expect_state`` CM yields
-        a dict pre-populated with ``observer_state``. The live
-        implementation mutates that dict from the WS handler; the shim
-        just pre-fills it because each test controls the outcome."""
-        from contextlib import asynccontextmanager
-
+    def _make_ha_client(*, call_result):
         client = AsyncMock()
         client.call_service = AsyncMock(return_value=call_result)
-
-        @asynccontextmanager
-        async def _expect_state(entity_id, *, expected, timeout, poll_interval, poll_max):
-            observer: dict = {}
-            if observer_state is not None:
-                observer["new_state"] = observer_state
-            yield observer
-
-        client.expect_state = _expect_state
         return client
-
-    @staticmethod
-    def _patch_settings():
-        return patch(
-            "app.agents.action_executor._settings_float",
-            new=AsyncMock(side_effect=lambda k, *, default: default),
-        )
 
     @staticmethod
     def _make_cached_action():
@@ -7419,99 +7396,30 @@ class TestExecuteCachedActionVerification:
             service_data={},
         )
 
-    async def test_non_empty_rest_response_is_authoritative(self):
-        ha = self._make_ha_client(
-            call_result=[{"entity_id": "light.keller", "state": "on"}],
-            observer_state=None,
-        )
+    async def test_successful_call_returns_success(self):
+        ha = self._make_ha_client(call_result=[{"entity_id": "light.keller", "state": "on"}])
         orch = OrchestratorAgent(dispatcher=AsyncMock(), registry=AsyncMock(), ha_client=ha)
-        with self._patch_settings():
-            result = await orch._execute_cached_action(self._make_cached_action())
+        result = await orch._execute_cached_action(self._make_cached_action())
         assert result is not None
         assert result["success"] is True
         assert result["entity_id"] == "light.keller"
-        assert result["state"] == "on"
-        assert result["source"] == "call_service"
+        assert result["source"] == "cached_call"
 
-    async def test_empty_rest_observer_confirms_expected_state(self):
-        """FLOW-CRIT-2 core: KNX/ABB path where call_service returns []
-        but the WS observer sees light.keller go to ``on``. Must succeed."""
-        ha = self._make_ha_client(call_result=[], observer_state="on")
+    async def test_call_service_exception_returns_none(self):
+        ha = self._make_ha_client(call_result=None)
+        ha.call_service = AsyncMock(side_effect=Exception("HA offline"))
         orch = OrchestratorAgent(dispatcher=AsyncMock(), registry=AsyncMock(), ha_client=ha)
-        with self._patch_settings():
-            result = await orch._execute_cached_action(self._make_cached_action())
-        assert result is not None
-        assert result["success"] is True
-        assert result["entity_id"] == "light.keller"
-        assert result["state"] == "on"
-        assert result["source"] == "ws_observer"
-
-    async def test_empty_rest_observer_saw_wrong_state_falls_through(self):
-        """Observer saw a mismatched state (stale ``off`` after turn_on):
-        treat as failure so live dispatch gives a truthful answer."""
-        ha = self._make_ha_client(call_result=[], observer_state="off")
-        orch = OrchestratorAgent(dispatcher=AsyncMock(), registry=AsyncMock(), ha_client=ha)
-        with self._patch_settings():
-            result = await orch._execute_cached_action(self._make_cached_action())
-        assert result is None
-
-    async def test_empty_rest_no_observer_evidence_falls_through(self):
-        """Empty REST + WS waiter timed out + no poll evidence -> failure."""
-        ha = self._make_ha_client(call_result=[], observer_state=None)
-        orch = OrchestratorAgent(dispatcher=AsyncMock(), registry=AsyncMock(), ha_client=ha)
-        with self._patch_settings():
-            result = await orch._execute_cached_action(self._make_cached_action())
-        assert result is None
-
-    async def test_call_service_returns_none_falls_through(self):
-        ha = self._make_ha_client(call_result=None, observer_state="on")
-        orch = OrchestratorAgent(dispatcher=AsyncMock(), registry=AsyncMock(), ha_client=ha)
-        with self._patch_settings():
-            result = await orch._execute_cached_action(self._make_cached_action())
-        assert result is None
-
-    async def test_toggle_accepts_any_observed_state_change(self):
-        """``toggle`` has no deterministic target; any observed change
-        after the call counts as confirmation."""
-        from app.models.cache import CachedAction
-
-        ha = self._make_ha_client(call_result=[], observer_state="off")
-        orch = OrchestratorAgent(dispatcher=AsyncMock(), registry=AsyncMock(), ha_client=ha)
-        toggle = CachedAction(
-            service="light/toggle",
-            entity_id="light.keller",
-            service_data={},
-        )
-        with self._patch_settings():
-            result = await orch._execute_cached_action(toggle)
-        assert result is not None
-        assert result["success"] is True
-        assert result["state"] == "off"
-        assert result["source"] == "ws_observer"
-
-    async def test_toggle_with_no_observer_evidence_falls_through(self):
-        from app.models.cache import CachedAction
-
-        ha = self._make_ha_client(call_result=[], observer_state=None)
-        orch = OrchestratorAgent(dispatcher=AsyncMock(), registry=AsyncMock(), ha_client=ha)
-        toggle = CachedAction(
-            service="light/toggle",
-            entity_id="light.keller",
-            service_data={},
-        )
-        with self._patch_settings():
-            result = await orch._execute_cached_action(toggle)
+        result = await orch._execute_cached_action(self._make_cached_action())
         assert result is None
 
     async def test_missing_entity_or_service_returns_none(self):
         from app.models.cache import CachedAction
 
-        ha = self._make_ha_client(call_result=[{"entity_id": "x", "state": "on"}], observer_state=None)
+        ha = self._make_ha_client(call_result=[])
         orch = OrchestratorAgent(dispatcher=AsyncMock(), registry=AsyncMock(), ha_client=ha)
         # Empty entity_id
         bad1 = CachedAction(service="light/turn_on", entity_id="", service_data={})
         # Missing slash / action
         bad2 = CachedAction(service="light", entity_id="light.keller", service_data={})
-        with self._patch_settings():
-            assert await orch._execute_cached_action(bad1) is None
-            assert await orch._execute_cached_action(bad2) is None
+        assert await orch._execute_cached_action(bad1) is None
+        assert await orch._execute_cached_action(bad2) is None

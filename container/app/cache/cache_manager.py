@@ -166,22 +166,8 @@ class CacheManager:
 
         entity_id = entry.cached_action.entity_id
         if entity_id:
-            # F12 split: distinguish entity-index outage (transient) from a real
-            # entity divergence. On outage we fall through to live orchestration
-            # WITHOUT invalidating, so a flaky index does not drain the cache.
-            resolution_failed = False
-            try:
-                resolved_entity = await resolve_entity(query_text, entry.agent_id)
-            except Exception:
-                logger.warning("Action cache entity re-resolution failed", exc_info=True)
-                resolved_entity = None
-                resolution_failed = True
-            if resolution_failed:
-                return None
-            if resolved_entity is not None and resolved_entity != entity_id:
-                with contextlib.suppress(Exception):
-                    await asyncio.to_thread(self._action_cache.invalidate_by_entry_id, entry_id)
-                return None
+            # Re-validation: only check visibility, skip re-resolution.
+            # The cached entity_id is already valid from the first run.
             try:
                 visible = await check_visibility(
                     entry.agent_id if entry.agent_id is not None else requesting_agent_id, entity_id

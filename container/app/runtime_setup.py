@@ -663,7 +663,7 @@ async def _initialize_setup_dependent_services(app: FastAPI, *, source: str) -> 
             )
 
     filler_agent = FillerAgent(ha_client=ha_client, entity_index=entity_index)
-    await registry.register(filler_agent)
+    await registry.register(filler_agent, replace=True)
     orchestrator_agent = OrchestratorAgent(
         dispatcher=dispatcher,
         registry=registry,
@@ -672,20 +672,20 @@ async def _initialize_setup_dependent_services(app: FastAPI, *, source: str) -> 
         entity_index=entity_index,
         filler_agent=filler_agent,
     )
-    await registry.register(orchestrator_agent)
+    await registry.register(orchestrator_agent, replace=True)
 
     general_agent = GeneralAgent(
         ha_client=ha_client,
         entity_index=entity_index,
         mcp_tool_manager=mcp_tool_manager,
     )
-    await registry.register(general_agent)
+    await registry.register(general_agent, replace=True)
 
     light_agent = LightAgent(ha_client=ha_client, entity_index=entity_index, entity_matcher=entity_matcher)
-    await registry.register(light_agent)
+    await registry.register(light_agent, replace=True)
 
     music_agent = MusicAgent(ha_client=ha_client, entity_index=entity_index, entity_matcher=entity_matcher)
-    await registry.register(music_agent)
+    await registry.register(music_agent, replace=True)
 
     phase2_agents = [
         "timer-agent",
@@ -702,9 +702,9 @@ async def _initialize_setup_dependent_services(app: FastAPI, *, source: str) -> 
         if config and config.get("enabled"):
             agent = _create_phase2_agent(agent_id, app)
             if agent is not None:
-                await registry.register(agent)
+                await registry.register(agent, replace=True)
 
-    await registry.register(rewrite_agent)
+    await registry.register(rewrite_agent, replace=True)
 
     custom_loader = getattr(app.state, "custom_loader", None)
     if custom_loader is None:

@@ -235,24 +235,6 @@ class TestCacheManager:
         track.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_try_replay_action_invalidates_on_entity_divergence(self):
-        manager, _store = self._make_manager()
-        entry = make_action_cache_entry(cached_action=CachedAction(service="light/turn_on", entity_id="light.kitchen"))
-        manager._action_cache.lookup_with_id = MagicMock(return_value=("test-id", entry, 0.99))
-        manager._action_cache.invalidate_by_entry_id = MagicMock()
-
-        result = await manager.try_replay_action(
-            query_text=entry.query_text,
-            language=entry.language,
-            resolve_entity=AsyncMock(return_value="light.other"),
-            check_visibility=AsyncMock(return_value=True),
-            execute_cached_action=AsyncMock(return_value={"success": True}),
-        )
-
-        assert result is None
-        manager._action_cache.invalidate_by_entry_id.assert_called_once()
-
-    @pytest.mark.asyncio
     async def test_try_replay_action_transient_replay_miss_does_not_invalidate(self):
         manager, _store = self._make_manager()
         entry = make_action_cache_entry(cached_action=CachedAction(service="light/turn_on", entity_id="light.kitchen"))

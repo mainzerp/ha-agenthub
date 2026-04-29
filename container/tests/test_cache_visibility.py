@@ -217,26 +217,34 @@ class TestCachedActionVisibility:
 
 
 class TestCachedActionEmptyResponse:
-    async def test_empty_list_response_returns_none(self):
+    """Simplified cached action path: direct REST call, no observer.
+    Empty responses are treated as success (idempotent actions).
+    """
+
+    async def test_empty_list_response_returns_success(self):
         orch, _dispatcher, _cache_manager, ha_client = _make_orchestrator()
         ha_client.call_service.return_value = []
         cached = make_cached_action(service="light/turn_on", entity_id="light.kitchen")
 
         result = await orch._execute_cached_action(cached)
 
-        assert result is None
+        assert result is not None
+        assert result["success"] is True
+        assert result["source"] == "cached_call"
         ha_client.call_service.assert_called_once()
 
-    async def test_empty_dict_response_returns_none(self):
+    async def test_empty_dict_response_returns_success(self):
         orch, _dispatcher, _cache_manager, ha_client = _make_orchestrator()
         ha_client.call_service.return_value = {}
         cached = make_cached_action(service="light/turn_on", entity_id="light.kitchen")
 
         result = await orch._execute_cached_action(cached)
 
-        assert result is None
+        assert result is not None
+        assert result["success"] is True
+        assert result["source"] == "cached_call"
 
-    async def test_non_empty_list_response_passes_through(self):
+    async def test_non_empty_list_response_returns_success(self):
         orch, _dispatcher, _cache_manager, ha_client = _make_orchestrator()
         payload = [{"entity_id": "light.kitchen", "state": "on"}]
         ha_client.call_service.return_value = payload
@@ -244,15 +252,11 @@ class TestCachedActionEmptyResponse:
 
         result = await orch._execute_cached_action(cached)
 
-        # ``_execute_cached_action`` wraps the REST reply into a
-        # result dict so the rest of the cache-replay pipeline can
-        # reason about ``success``/``state``/``source`` uniformly.
         assert result is not None
         assert result["success"] is True
         assert result["entity_id"] == "light.kitchen"
         assert result["action"] == "turn_on"
-        assert result["state"] == "on"
-        assert result["source"] == "call_service"
+        assert result["source"] == "cached_call"
 
 
 # ---------------------------------------------------------------------------

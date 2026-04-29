@@ -121,25 +121,6 @@ async def test_semantic_fallback_below_threshold_misses():
 
 
 @pytest.mark.asyncio
-async def test_entity_divergence_invalidates_row():
-    manager = _make_manager()
-    entry = make_action_cache_entry(query_text="turn on kitchen light")
-    manager._action_cache.lookup_with_id = MagicMock(return_value=("entry-1", entry, 1.0))
-    manager._action_cache.invalidate_by_entry_id = MagicMock()
-
-    result = await manager.try_replay_action(
-        query_text=entry.query_text,
-        language=entry.language,
-        resolve_entity=AsyncMock(return_value="light.different"),
-        check_visibility=AsyncMock(return_value=True),
-        execute_cached_action=AsyncMock(return_value={"success": True}),
-    )
-
-    assert result is None
-    manager._action_cache.invalidate_by_entry_id.assert_called_once()
-
-
-@pytest.mark.asyncio
 async def test_visibility_recheck_failure_invalidates_row():
     manager = _make_manager()
     entry = make_action_cache_entry(query_text="turn on kitchen light")
