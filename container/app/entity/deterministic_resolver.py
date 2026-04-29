@@ -192,7 +192,7 @@ async def resolve_entity_deterministic_first(
     entity_matcher: Any,
     agent_id: str | None,
     *,
-    allowed_domains: frozenset[str],
+    allowed_domains: frozenset[str] | None = None,
     preferred_area_id: str | None = None,
     verbatim_terms: list[str] | None = None,
     preferred_domains: tuple[str, ...] | None = None,
@@ -311,9 +311,11 @@ async def resolve_entity_deterministic_first(
             entity_query,
             agent_id=agent_id,
             verbatim_terms=verbatim_terms,
-            preferred_domains=preferred_domains or tuple(sorted(allowed_domains)),
+            preferred_domains=preferred_domains or (tuple(sorted(allowed_domains)) if allowed_domains else None),
         )
-        filtered_matches = filter_matches_by_domain(matches, allowed_domains)
+        filtered_matches = (
+            filter_matches_by_domain(matches, allowed_domains) if allowed_domains is not None else matches
+        )
         if len(filtered_matches) != len(matches):
             metadata["domain_filter_dropped"] = len(matches) - len(filtered_matches)
             metadata["domain_filter_allowed"] = sorted(allowed_domains)
