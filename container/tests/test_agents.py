@@ -2223,7 +2223,7 @@ class TestGeneralAgent:
                 {"role": "assistant", "content": "previous answer"},
             ]
         )
-        task = _make_task("summary", user_text="new instructions: explain Küche", context=ctx)
+        task = _make_task("new instructions: explain Küche", context=ctx)
         await agent.handle_task(task)
         messages = mock_complete.call_args[0][1]
         user_messages = [msg for msg in messages if msg["role"] == "user"]

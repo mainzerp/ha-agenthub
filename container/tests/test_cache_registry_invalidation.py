@@ -35,6 +35,7 @@ async def _initialize_registry_runtime(*, entity_entries=None, cache_counts=None
     fake_ha_client.reload = AsyncMock()
     fake_ha_client.set_state_observer = MagicMock()
     fake_ha_client.get_state = AsyncMock(return_value=None)
+    fake_ha_client.get_hidden_entity_ids = AsyncMock(return_value=set())
 
     fake_entity_index = MagicMock()
     fake_entity_index.list_entries.return_value = entity_entries or []

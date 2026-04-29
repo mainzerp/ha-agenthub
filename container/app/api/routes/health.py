@@ -14,4 +14,5 @@ async def health():
     """Return container health status."""
     return {
         "status": "ok",
+        "log_level": logging.getLevelName(logger.getEffectiveLevel()).lower(),
     }

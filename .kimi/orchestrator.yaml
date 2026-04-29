@@ -7,15 +7,19 @@ agent:
     research:
       path: ./agents/research.yaml
       description: >
-        Read-focused codebase analysis agent. Produces docs/SubAgent/<NAME>_ANALYSIS.md.
-        Use as the first phase of any non-trivial task.
+        Read-only codebase analysis agent. Given a topic, analyzes relevant files
+        and produces docs/SubAgent/<NAME>_ANALYSIS.md. Never asks questions or
+        requests approval. Use FIRST for any non-trivial task before planning.
     planner:
       path: ./agents/planner.yaml
       description: >
-        Produces a detailed implementation plan with checklist at docs/SubAgent/<NAME>_PLAN.md.
+        Read-only planning agent. Reads a research analysis and produces a
+        detailed step-by-step implementation plan with checklist at
+        docs/SubAgent/<NAME>_PLAN.md. Never asks questions or requests approval.
         Run after the research subagent returns.
     implementer:
       path: ./agents/implementer.yaml
       description: >
-        Implements an already-approved plan from docs/SubAgent/<NAME>_PLAN.md.
-        Only run after the user has explicitly approved the plan in chat.
+        Implementation agent. Reads an approved plan and executes it precisely.
+        Writes code, edits files, and runs commands as needed. Only run after
+        the user has explicitly approved the plan in chat.

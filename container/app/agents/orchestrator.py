@@ -2738,7 +2738,7 @@ class OrchestratorAgent(BaseAgent):
                 else:
                     # P3-10: per-request cache-hit log; debug.
                     logger.debug("Routing cache hit: %s for '%s'", cache_result.agent_id, user_text[:80])
-                    condensed = cache_result.condensed_task or user_text
+                    condensed = user_text
                     return [(cache_result.agent_id, condensed, 1.0)], True
         elif allow_cache_lookup and self._cache_manager:
             # Fallback: no pre-computed result (e.g. called without handle_task)
@@ -2757,7 +2757,7 @@ class OrchestratorAgent(BaseAgent):
                     else:
                         # P3-10: per-request cache-hit log; debug.
                         logger.debug("Routing cache hit: %s for '%s'", cache_result.agent_id, user_text[:80])
-                        condensed = cache_result.condensed_task or user_text
+                        condensed = user_text
                         return [(cache_result.agent_id, condensed, 1.0)], True
             except Exception:
                 logger.warning("Routing cache check failed, proceeding with LLM", exc_info=True)

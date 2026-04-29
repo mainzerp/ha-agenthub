@@ -32,6 +32,7 @@ def _make_ha_client() -> MagicMock:
     ha.get_areas = AsyncMock(return_value=[])
     ha.get_devices = AsyncMock(return_value=[])
     ha.get_entity_registry = AsyncMock(return_value=[])
+    ha.get_hidden_entity_ids = AsyncMock(return_value=set())
     return ha
 
 

@@ -1,4 +1,5 @@
 version: 1
 agent:
-  extend: ../orchestrator.yaml
+  extend: default
+  name: ha-agenthub-research
   system_prompt_path: ./research-prompt.md

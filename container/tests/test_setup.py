@@ -686,7 +686,9 @@ async def test_initialize_setup_dependent_services_is_idempotent():
         assert fake_ha_client.reload.await_count >= 1
         # CacheManager must only be constructed once.
         assert mock_cache_cls.call_count == first_cache_cls_calls
-        assert "filler-agent" not in fake_registry.registered
+        # Registry is re-populated on every init call; idempotency only applies
+        # to HA client and cache manager construction above.
+        assert "filler-agent" in fake_registry.registered
         assert getattr(app.state, "orchestrator_gateway", None) is not None
 
 

@@ -19,6 +19,7 @@ handler, and the expired-timer tracking deque are deleted.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import re
@@ -958,6 +959,29 @@ async def _create_reminder(
     }
 
 
+_ALARM_LIKE_TERMS: frozenset[str] = frozenset({"alarm", "wecker", "wake"})
+
+
+def _parse_rrule_to_recurrence(rrule: str) -> dict[str, Any] | None:
+    """Parse a simple RRULE string into a recurrence dict for _set_alarm."""
+    parts: dict[str, str] = {}
+    for part in rrule.split(";"):
+        if "=" in part:
+            key, value = part.split("=", 1)
+            parts[key.strip().upper()] = value.strip().upper()
+    freq_map = {"DAILY": "daily", "WEEKLY": "weekly"}
+    freq = freq_map.get(parts.get("FREQ", ""))
+    if not freq:
+        return None
+    result: dict[str, Any] = {"freq": freq}
+    if "INTERVAL" in parts:
+        with contextlib.suppress(ValueError):
+            result["interval"] = int(parts["INTERVAL"])
+    if "BYDAY" in parts:
+        result["byweekday"] = [d.strip().upper() for d in parts["BYDAY"].split(",")]
+    return result
+
+
 async def _create_recurring_reminder(
     action: dict,
     ha_client: Any,
@@ -1001,6 +1025,17 @@ async def _create_recurring_reminder(
             "speech": "rrule is required for create_recurring_reminder (e.g. 'FREQ=DAILY', 'FREQ=WEEKLY;BYDAY=MO,WE,FR').",
         }
 
+    # Validate RRULE frequency up-front so unsupported values fail before
+    # any entity lookup or side-effect (calendar create_event / scheduler).
+    recurrence = _parse_rrule_to_recurrence(rrule)
+    if recurrence is None:
+        return {
+            "success": False,
+            "entity_id": None,
+            "new_state": None,
+            "speech": "Unsupported RRULE frequency. Only DAILY and WEEKLY are supported.",
+        }
+
     resolution = {
         "entity_id": None,
         "friendly_name": entity_query,
@@ -1024,7 +1059,28 @@ async def _create_recurring_reminder(
 
     entity_id = resolution["entity_id"]
     friendly_name = resolution["friendly_name"]
+
     if not entity_id:
+        # Alarm-like entities (e.g. "Wecker", "alarm") with valid RRULE are
+        # rerouted to the internal scheduler alarm flow instead of HA calendar.
+        is_alarm_like = any(term in entity_query.lower() for term in _ALARM_LIKE_TERMS)
+        if is_alarm_like:
+            alarm_action = {
+                "action": "set_datetime",
+                "entity": entity_query,
+                "parameters": {
+                    "datetime": start_time,
+                    "recurrence": recurrence,
+                    "label": summary,
+                },
+            }
+            return await _set_alarm(
+                alarm_action,
+                device_id=device_id,
+                area_id=area_id,
+                language=language,
+                timezone=timezone,
+            )
         return {
             "success": False,
             "entity_id": None,

@@ -1,4 +1,5 @@
 version: 1
 agent:
-  extend: ../orchestrator.yaml
+  extend: default
+  name: ha-agenthub-implementer
   system_prompt_path: ./implementer-prompt.md
