@@ -8,6 +8,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_URL, CONF_API_KEY, Platform
 from homeassistant.core import HomeAssistant
 
+from .config_flow import async_migrate_entry
 from .const import DOMAIN, INTEGRATION_TITLE
 
 # Config entries created by the old ``agent_assist`` integration.

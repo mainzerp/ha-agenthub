@@ -6,6 +6,7 @@
         "title": "HA-AgentHub",
         "description": "Configure connection to the HA-AgentHub container.",
         "data": {
+          "name": "Name",
           "url": "Container URL",
           "api_key": "API Key"
         }
@@ -22,6 +23,7 @@
         "title": "HA-AgentHub settings",
         "description": "Update connection settings for the HA-AgentHub container. Leave API Key blank to keep the saved key.",
         "data": {
+          "name": "Name",
           "url": "Container URL",
           "api_key": "API Key"
         }

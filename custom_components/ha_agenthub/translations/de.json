@@ -6,6 +6,7 @@
         "title": "HA-AgentHub",
         "description": "Verbindung zum HA-AgentHub-Container einrichten.",
         "data": {
+          "name": "Name",
           "url": "Container-URL",
           "api_key": "API-Schlüssel"
         }
@@ -22,6 +23,7 @@
         "title": "HA-AgentHub Einstellungen",
         "description": "Verbindungseinstellungen zum HA-AgentHub-Container aktualisieren. API-Schlüssel leer lassen, um den gespeicherten Schlüssel zu behalten.",
         "data": {
+          "name": "Name",
           "url": "Container-URL",
           "api_key": "API-Schlüssel"
         }

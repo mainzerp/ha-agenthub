@@ -1,6 +1,10 @@
 # Version
 
-**Current Version:** 1.6.0
+**Current Version:** 1.6.1
+
+## Recent Changes (since 1.6.0)
+
+- **Integration (1.4.0):** Added support for configuring multiple AgentHub servers simultaneously. The config flow now uses the server URL as the unique identifier instead of the integration domain, allowing multiple entries (e.g., live and test environments). Added an optional "Name" field per entry so servers are distinguishable in the HA UI. Existing single entries are automatically migrated on first load.
 
 ## Recent Changes (since 1.5.5)
 

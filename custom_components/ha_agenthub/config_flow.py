@@ -14,6 +14,7 @@ from homeassistant.helpers.selector import TextSelector, TextSelectorConfig, Tex
 
 from .const import (
     DOMAIN,
+    CONF_NAME,
     DEFAULT_CONTAINER_URL,
     HEALTH_PATH,
     INTEGRATION_TITLE,
@@ -36,6 +37,7 @@ def _password_selector() -> TextSelector:
 def _build_user_schema() -> vol.Schema:
     return vol.Schema(
         {
+            vol.Optional(CONF_NAME, default=INTEGRATION_TITLE): TextSelector(),
             vol.Required(CONF_URL, default=DEFAULT_CONTAINER_URL): TextSelector(TextSelectorConfig(type=TextSelectorType.URL)),
             vol.Required(CONF_API_KEY): _password_selector(),
         }
@@ -45,6 +47,7 @@ def _build_user_schema() -> vol.Schema:
 def _build_options_schema(current: dict[str, Any]) -> vol.Schema:
     return vol.Schema(
         {
+            vol.Optional(CONF_NAME, default=current.get(CONF_NAME, "")): TextSelector(),
             vol.Required(CONF_URL, default=current.get(CONF_URL, DEFAULT_CONTAINER_URL)): TextSelector(TextSelectorConfig(type=TextSelectorType.URL)),
             vol.Optional(CONF_API_KEY, default=""): _password_selector(),
         }
@@ -78,10 +81,33 @@ async def _validate_connection(url: str, api_key: str) -> str | None:
     return None
 
 
+async def async_migrate_entry(hass, config_entry: ConfigEntry) -> bool:
+    """Migrate old config entries to the current version."""
+    if config_entry.version == 1:
+        # Migrate from version 1: unique_id was DOMAIN, now it should be the URL
+        url = _normalize_url(config_entry.data.get(CONF_URL, ""))
+        if url:
+            new_unique_id = url
+        else:
+            new_unique_id = config_entry.entry_id
+
+        hass.config_entries.async_update_entry(
+            config_entry,
+            unique_id=new_unique_id,
+            version=2,
+        )
+        logger.info(
+            "Migrated HA-AgentHub config entry from version 1 to 2 (unique_id: %s -> %s)",
+            DOMAIN,
+            new_unique_id,
+        )
+    return True
+
+
 class HaAgentHubConfigFlow(ConfigFlow, domain=DOMAIN):
     """Config flow for HA-AgentHub."""
 
-    VERSION = 1
+    VERSION = 2
 
     @staticmethod
     def async_get_options_flow(config_entry: ConfigEntry) -> HaAgentHubOptionsFlow:
@@ -96,16 +122,17 @@ class HaAgentHubConfigFlow(ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             url = _normalize_url(user_input[CONF_URL])
             api_key = (user_input[CONF_API_KEY] or "").strip()
+            name = (user_input.get(CONF_NAME) or INTEGRATION_TITLE).strip()
 
             error = await _validate_connection(url, api_key)
             if error:
                 errors["base"] = error
             else:
-                await self.async_set_unique_id(DOMAIN)
+                await self.async_set_unique_id(url)
                 self._abort_if_unique_id_configured()
                 return self.async_create_entry(
-                    title=INTEGRATION_TITLE,
-                    data={CONF_URL: url, CONF_API_KEY: api_key},
+                    title=name,
+                    data={CONF_NAME: name, CONF_URL: url, CONF_API_KEY: api_key},
                 )
 
         return self.async_show_form(
@@ -135,6 +162,8 @@ class HaAgentHubOptionsFlow(OptionsFlow):
             url = _normalize_url(user_input[CONF_URL])
             new_api_key = (user_input.get(CONF_API_KEY) or "").strip()
             api_key = new_api_key or current.get(CONF_API_KEY, "")
+            new_name = (user_input.get(CONF_NAME) or "").strip()
+            name = new_name or current.get(CONF_NAME, self._entry.title)
 
             error = await _validate_connection(url, api_key)
             if error:
@@ -142,7 +171,9 @@ class HaAgentHubOptionsFlow(OptionsFlow):
             else:
                 self.hass.config_entries.async_update_entry(
                     self._entry,
+                    title=name,
                     data={
+                        CONF_NAME: name,
                         CONF_URL: url,
                         CONF_API_KEY: api_key,
                     },
