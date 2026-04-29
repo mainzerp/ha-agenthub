@@ -171,6 +171,7 @@ async def execute_automation_action(
     new_state = verify["observed_state"]
     return {
         "success": True,
+        "action": action_name,
         "entity_id": entity_id,
         "new_state": new_state,
         "speech": build_verified_speech(

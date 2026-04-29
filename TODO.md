@@ -16,3 +16,6 @@ sentinel mode bleibt vorerst deferred. wenn ein/oder mehrere explizit dem securi
 Debug-Logging aktivieren
 
 Aktiviert ausfuehrliches Logging zur Fehlersuche.
+
+
+logs endpoint um system von remote debuggen zu können

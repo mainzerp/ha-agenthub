@@ -214,6 +214,7 @@ async def execute_music_action(
             speech = _format_search_results(results)
             return {
                 "success": True,
+                "action": action_name,
                 "entity_id": entity_id,
                 "new_state": None,
                 "speech": speech,
@@ -247,6 +248,7 @@ async def execute_music_action(
     new_state = verify["observed_state"]
     return {
         "success": True,
+        "action": action_name,
         "entity_id": entity_id,
         "new_state": new_state,
         "speech": build_verified_speech(

@@ -306,6 +306,7 @@ async def _create_event(
     verbatim_terms: list[str] | None = None,
     default_calendar_ids: list[str] | None = None,
 ) -> dict:
+    action_name = action.get("action", "").lower()
     params = action.get("parameters") or {}
     summary = str(params.get("summary", ""))
     start_time = str(params.get("start_date_time", ""))
@@ -364,6 +365,7 @@ async def _create_event(
 
     return {
         "success": True,
+        "action": action_name,
         "entity_id": entity_id,
         "new_state": None,
         "speech": f'Created event "{summary}" at {start_time} on {friendly_name}.',
@@ -380,6 +382,7 @@ async def _delete_event(
     verbatim_terms: list[str] | None = None,
     default_calendar_ids: list[str] | None = None,
 ) -> dict:
+    action_name = action.get("action", "").lower()
     params = action.get("parameters") or {}
     uid = str(params.get("uid", ""))
     summary = str(params.get("summary", ""))
@@ -419,6 +422,7 @@ async def _delete_event(
             }
         return {
             "success": True,
+            "action": action_name,
             "entity_id": entity_id,
             "new_state": None,
             "speech": f"Deleted event on {friendly_name}.",
@@ -478,6 +482,7 @@ async def _delete_event(
 
     return {
         "success": True,
+        "action": action_name,
         "entity_id": entity_id,
         "new_state": None,
         "speech": f"Deleted event on {friendly_name}.",
@@ -494,6 +499,7 @@ async def _update_event(
     verbatim_terms: list[str] | None = None,
     default_calendar_ids: list[str] | None = None,
 ) -> dict:
+    action_name = action.get("action", "").lower()
     params = action.get("parameters") or {}
     summary = str(params.get("summary", ""))
     start_time = str(params.get("start_date_time", ""))
@@ -579,6 +585,7 @@ async def _update_event(
 
     return {
         "success": True,
+        "action": action_name,
         "entity_id": entity_id,
         "new_state": None,
         "speech": f"Updated event on {friendly_name}.",

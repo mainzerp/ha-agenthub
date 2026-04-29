@@ -591,6 +591,7 @@ async def _set_alarm(
     language: str | None,
     timezone: str | None,
 ) -> dict:
+    action_name = action.get("action", "").lower()
     scheduler = _get_scheduler()
     if scheduler is None:
         return {
@@ -658,6 +659,7 @@ async def _set_alarm(
     local_time = _format_alarm_time_local(target_epoch, timezone=timezone)
     return {
         "success": True,
+        "action": action_name,
         "entity_id": None,
         "new_state": "scheduled",
         "speech": f"Scheduled alarm '{logical_name}' for {local_time}.",
@@ -671,6 +673,7 @@ async def _set_alarm(
 
 
 async def _cancel_alarm(action: dict, *, area_id: str | None, timezone: str | None) -> dict:
+    action_name = action.get("action", "").lower()
     scheduler = _get_scheduler()
     if scheduler is None:
         return {
@@ -706,6 +709,7 @@ async def _cancel_alarm(action: dict, *, area_id: str | None, timezone: str | No
         logical_name = by_id[0].get("logical_name") or "alarm"
         return {
             "success": True,
+            "action": action_name,
             "entity_id": None,
             "new_state": "cancelled",
             "speech": f"Cancelled alarm '{logical_name}' ({raw_id}).",
@@ -727,6 +731,7 @@ async def _cancel_alarm(action: dict, *, area_id: str | None, timezone: str | No
             await scheduler.cancel(id_=str(match.get("id")))
             return {
                 "success": True,
+                "action": action_name,
                 "entity_id": None,
                 "new_state": "cancelled",
                 "speech": f"Cancelled alarm '{match.get('logical_name') or 'alarm'}'.",
@@ -766,6 +771,7 @@ async def _cancel_alarm(action: dict, *, area_id: str | None, timezone: str | No
             await scheduler.cancel(id_=str(match.get("id")))
             return {
                 "success": True,
+                "action": action_name,
                 "entity_id": None,
                 "new_state": "cancelled",
                 "speech": f"Cancelled alarm '{match.get('logical_name') or 'alarm'}'.",
@@ -855,6 +861,7 @@ async def _cancel_alarm(action: dict, *, area_id: str | None, timezone: str | No
     await scheduler.cancel(id_=str(match.get("id")))
     return {
         "success": True,
+        "action": action_name,
         "entity_id": None,
         "new_state": "cancelled",
         "speech": f"Cancelled alarm '{match.get('logical_name') or 'alarm'}'.",
@@ -877,6 +884,7 @@ async def _start_timer(
     area_id: str | None,
     language: str | None,
 ) -> dict:
+    action_name = action.get("action", "").lower()
     entity_query = (action.get("entity") or "").strip()
     params = action.get("parameters") or {}
     duration = str(params.get("duration", ""))
@@ -908,6 +916,7 @@ async def _start_timer(
     human = _format_duration_human(seconds)
     return {
         "success": True,
+        "action": action_name,
         "entity_id": None,
         "new_state": "active",
         "speech": f"Started {logical_name} for {human}.",
@@ -920,6 +929,7 @@ async def _cancel_timer(
     *,
     area_id: str | None,
 ) -> dict:
+    action_name = action.get("action", "").lower()
     entity_query = (action.get("entity") or "").strip()
     scheduler = _get_scheduler()
     if scheduler is None:
@@ -954,6 +964,7 @@ async def _cancel_timer(
         }
     return {
         "success": True,
+        "action": action_name,
         "entity_id": None,
         "new_state": "idle",
         "speech": f"Cancelled {entity_query}.",
@@ -967,6 +978,7 @@ async def _snooze_timer(
     area_id: str | None,
     language: str | None,
 ) -> dict:
+    action_name = action.get("action", "").lower()
     entity_query = (action.get("entity") or "").strip()
     params = action.get("parameters") or {}
     snooze_duration = str(params.get("duration", _DEFAULT_SNOOZE_DURATION))
@@ -1000,6 +1012,7 @@ async def _snooze_timer(
     human = _format_duration_human(seconds)
     return {
         "success": True,
+        "action": action_name,
         "entity_id": None,
         "new_state": "active",
         "speech": f"Snoozed {logical_name} for {human}.",
@@ -1014,6 +1027,7 @@ async def _extend_timer(
     language: str | None,
 ) -> dict:
     """Extend an active scheduler timer by a delta duration."""
+    action_name = action.get("action", "").lower()
     generic_entities = {
         "timer",
         "current timer",
@@ -1109,6 +1123,7 @@ async def _extend_timer(
     human = _format_duration_human(new_duration_seconds)
     return {
         "success": True,
+        "action": action_name,
         "entity_id": None,
         "new_state": "active",
         "speech": f"Extended {logical_name}. New time remaining: {human}.",
@@ -1122,6 +1137,7 @@ async def _start_timer_with_notification(
     area_id: str | None,
     language: str | None,
 ) -> dict:
+    action_name = action.get("action", "").lower()
     entity_query = (action.get("entity") or "").strip()
     params = action.get("parameters") or {}
     duration = str(params.get("duration", ""))
@@ -1154,6 +1170,7 @@ async def _start_timer_with_notification(
     human = _format_duration_human(seconds)
     return {
         "success": True,
+        "action": action_name,
         "entity_id": None,
         "new_state": "active",
         "speech": f'Started timer for {human} with notification: "{notification_message}".',
@@ -1167,6 +1184,7 @@ async def _delayed_action(
     area_id: str | None,
     language: str | None,
 ) -> dict:
+    action_name = action.get("action", "").lower()
     entity_query = (action.get("entity") or "delay timer").strip() or "delay timer"
     params = action.get("parameters") or {}
     delay_duration = str(params.get("delay_duration", ""))
@@ -1221,6 +1239,7 @@ async def _delayed_action(
     human = _format_duration_human(seconds)
     return {
         "success": True,
+        "action": action_name,
         "entity_id": None,
         "new_state": "active",
         "speech": f"Scheduled {target_action.replace('/', ' ')} on {target_entity} in {human}.",
@@ -1234,6 +1253,7 @@ async def _sleep_timer(
     area_id: str | None,
     language: str | None,
 ) -> dict:
+    action_name = action.get("action", "").lower()
     entity_query = (action.get("entity") or "sleep timer").strip() or "sleep timer"
     params = action.get("parameters") or {}
     duration = str(params.get("duration", ""))
@@ -1272,6 +1292,7 @@ async def _sleep_timer(
     human = _format_duration_human(seconds)
     return {
         "success": True,
+        "action": action_name,
         "entity_id": None,
         "new_state": "active",
         "speech": (f"Sleep timer set for {human}. Media on {media_player_entity} will stop when the timer ends."),
@@ -1325,12 +1346,14 @@ async def _pause_or_resume_or_finish(
     if action_name == "finish_timer":
         return {
             "success": True,
+            "action": action_name,
             "entity_id": None,
             "new_state": "idle",
             "speech": f"Finished {entity_query}.",
         }
     return {
         "success": True,
+        "action": action_name,
         "entity_id": None,
         "new_state": "paused",
         "speech": f"Paused {entity_query}.",

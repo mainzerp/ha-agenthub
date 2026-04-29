@@ -149,6 +149,7 @@ async def execute_scene_action(
 
     return {
         "success": True,
+        "action": action_name,
         "entity_id": entity_id,
         "new_state": verify["observed_state"],
         "speech": f"Done, {friendly_name} has been activated.",
