@@ -140,7 +140,7 @@ class EmbeddingEngine:
                 return [item["embedding"] for item in response.data]
             except litellm.RateLimitError as exc:
                 last_exc = exc
-                time.sleep(2 ** attempt)
+                time.sleep(2**attempt)
             except Exception as exc:
                 last_exc = exc
                 raise RuntimeError(f"External embedding failed: {exc}") from exc

@@ -1424,18 +1424,50 @@ async def _run_migrations(db: aiosqlite.Connection) -> None:
                 UNIQUE(event_uid, calendar_entity_id, user_mapping_id, offset_minutes)
             )
         """)
-        await db.execute("CREATE INDEX IF NOT EXISTS idx_calendar_user_mappings_normalized ON calendar_user_mappings(normalized_name)")
-        await db.execute("CREATE INDEX IF NOT EXISTS idx_calendar_user_mappings_phonetic ON calendar_user_mappings(phonetic_key)")
-        await db.execute("CREATE INDEX IF NOT EXISTS idx_calendar_reminder_state_event ON calendar_reminder_state(event_uid, calendar_entity_id)")
-        await db.execute("CREATE INDEX IF NOT EXISTS idx_calendar_reminder_state_user ON calendar_reminder_state(user_mapping_id)")
-        await db.execute("INSERT OR IGNORE INTO agent_configs (agent_id, enabled, model, timeout, max_iterations, temperature, max_tokens, description) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", ("calendar-agent", 0, "openrouter/openai/gpt-4o-mini", 5, 3, 0.2, 1024, "Calendar event management"))
-        await db.execute("INSERT OR IGNORE INTO entity_visibility_rules (agent_id, rule_type, rule_value) VALUES (?, ?, ?)", ("calendar-agent", "domain_include", "calendar"))
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_calendar_user_mappings_normalized ON calendar_user_mappings(normalized_name)"
+        )
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_calendar_user_mappings_phonetic ON calendar_user_mappings(phonetic_key)"
+        )
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_calendar_reminder_state_event ON calendar_reminder_state(event_uid, calendar_entity_id)"
+        )
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_calendar_reminder_state_user ON calendar_reminder_state(user_mapping_id)"
+        )
+        await db.execute(
+            "INSERT OR IGNORE INTO agent_configs (agent_id, enabled, model, timeout, max_iterations, temperature, max_tokens, description) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            ("calendar-agent", 0, "openrouter/openai/gpt-4o-mini", 5, 3, 0.2, 1024, "Calendar event management"),
+        )
+        await db.execute(
+            "INSERT OR IGNORE INTO entity_visibility_rules (agent_id, rule_type, rule_value) VALUES (?, ?, ?)",
+            ("calendar-agent", "domain_include", "calendar"),
+        )
         await db.executemany(
             "INSERT OR IGNORE INTO settings (key, value, value_type, category, description, updated_at) VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)",
             [
-                ("calendar.reminder_injection.enabled", "true", "bool", "calendar", "Enable proactive calendar reminder injection into orchestrator responses"),
-                ("calendar.reminder_injection.offsets", "[1440, 60, 15]", "json", "calendar", "Reminder offset markers in minutes (comma-separated)"),
-                ("calendar.reminder_injection.lookahead_hours", "24", "int", "calendar", "How many hours ahead to look for upcoming calendar events"),
+                (
+                    "calendar.reminder_injection.enabled",
+                    "true",
+                    "bool",
+                    "calendar",
+                    "Enable proactive calendar reminder injection into orchestrator responses",
+                ),
+                (
+                    "calendar.reminder_injection.offsets",
+                    "[1440, 60, 15]",
+                    "json",
+                    "calendar",
+                    "Reminder offset markers in minutes (comma-separated)",
+                ),
+                (
+                    "calendar.reminder_injection.lookahead_hours",
+                    "24",
+                    "int",
+                    "calendar",
+                    "How many hours ahead to look for upcoming calendar events",
+                ),
             ],
         )
         await db.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (25)")

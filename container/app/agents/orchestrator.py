@@ -161,9 +161,8 @@ class OrchestratorAgent(BaseAgent):
         self._calendar_injector = None
         if ha_client is not None and entity_index is not None:
             from app.agents.calendar_injector import CalendarReminderInjector
-            self._calendar_injector = CalendarReminderInjector(
-                ha_client, entity_index, llm_call=self._call_llm
-            )
+
+            self._calendar_injector = CalendarReminderInjector(ha_client, entity_index, llm_call=self._call_llm)
 
     async def initialize(self) -> None:
         """Load reliability config from DB. Call during startup."""

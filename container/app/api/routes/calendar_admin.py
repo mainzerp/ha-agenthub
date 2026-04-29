@@ -208,11 +208,13 @@ async def list_calendars(request: Request):
         fname = getattr(e, "friendly_name", "") or eid
         # Default to enabled if no explicit DB row
         enabled = bool(db_settings.get(eid, 1))
-        result.append({
-            "entity_id": eid,
-            "friendly_name": fname,
-            "enabled": enabled,
-        })
+        result.append(
+            {
+                "entity_id": eid,
+                "friendly_name": fname,
+                "enabled": enabled,
+            }
+        )
     return result
 
 
@@ -310,5 +312,6 @@ async def update_calendar_settings(body: SettingsUpdatePayload):
 async def clear_reminder_state():
     """Clear all fired reminder state."""
     import time
+
     count = await CalendarReminderStateRepository.cleanup_old(int(time.time()) + 1)
     return {"cleared": count}

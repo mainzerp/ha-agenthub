@@ -1847,9 +1847,7 @@ class CalendarUserMappingRepository:
     @staticmethod
     async def get(mapping_id: int) -> dict[str, Any] | None:
         async with get_db_read() as db:
-            cursor = await db.execute(
-                "SELECT * FROM calendar_user_mappings WHERE id = ?", (mapping_id,)
-            )
+            cursor = await db.execute("SELECT * FROM calendar_user_mappings WHERE id = ?", (mapping_id,))
             row = await cursor.fetchone()
             return dict(row) if row else None
 
@@ -1897,9 +1895,7 @@ class CalendarUserMappingRepository:
     @staticmethod
     async def find_default_user() -> dict[str, Any] | None:
         async with get_db_read() as db:
-            cursor = await db.execute(
-                "SELECT * FROM calendar_user_mappings WHERE is_default_user = 1 LIMIT 1"
-            )
+            cursor = await db.execute("SELECT * FROM calendar_user_mappings WHERE is_default_user = 1 LIMIT 1")
             row = await cursor.fetchone()
             return dict(row) if row else None
 
@@ -1911,6 +1907,7 @@ class CalendarUserMappingRepository:
         is_default_user: int = 0,
     ) -> int:
         from app.agents.satellite_targeting import _normalize_name
+
         normalized = _normalize_name(display_name)
         phonetic = _phonetic_key(display_name)
         async with get_db_write() as db:
@@ -1919,9 +1916,14 @@ class CalendarUserMappingRepository:
                 "calendar_entity_ids_json, reminder_offsets_json, is_default_user, created_at, updated_at) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 (
-                    display_name.strip(), normalized, phonetic,
-                    calendar_entity_ids_json, reminder_offsets_json,
-                    is_default_user, _now(), _now(),
+                    display_name.strip(),
+                    normalized,
+                    phonetic,
+                    calendar_entity_ids_json,
+                    reminder_offsets_json,
+                    is_default_user,
+                    _now(),
+                    _now(),
                 ),
             )
             await db.commit()
@@ -1935,6 +1937,7 @@ class CalendarUserMappingRepository:
             return False
         if "display_name" in fields:
             from app.agents.satellite_targeting import _normalize_name
+
             fields["normalized_name"] = _normalize_name(fields["display_name"])
             fields["phonetic_key"] = _phonetic_key(fields["display_name"])
             fields["updated_at"] = _now()
@@ -1951,9 +1954,7 @@ class CalendarUserMappingRepository:
     @staticmethod
     async def delete(mapping_id: int) -> bool:
         async with get_db_write() as db:
-            cursor = await db.execute(
-                "DELETE FROM calendar_user_mappings WHERE id = ?", (mapping_id,)
-            )
+            cursor = await db.execute("DELETE FROM calendar_user_mappings WHERE id = ?", (mapping_id,))
             await db.commit()
             return cursor.rowcount > 0
 
@@ -1973,9 +1974,7 @@ class CalendarEntitySettingsRepository:
     @staticmethod
     async def get(entity_id: str) -> dict[str, Any] | None:
         async with get_db_read() as db:
-            cursor = await db.execute(
-                "SELECT * FROM calendar_entity_settings WHERE entity_id = ?", (entity_id,)
-            )
+            cursor = await db.execute("SELECT * FROM calendar_entity_settings WHERE entity_id = ?", (entity_id,))
             row = await cursor.fetchone()
             return dict(row) if row else None
 
@@ -2013,18 +2012,14 @@ class CalendarEntitySettingsRepository:
     @staticmethod
     async def is_enabled(entity_id: str) -> bool:
         async with get_db_read() as db:
-            cursor = await db.execute(
-                "SELECT enabled FROM calendar_entity_settings WHERE entity_id = ?", (entity_id,)
-            )
+            cursor = await db.execute("SELECT enabled FROM calendar_entity_settings WHERE entity_id = ?", (entity_id,))
             row = await cursor.fetchone()
             return row[0] == 1 if row else True  # Default: enabled if no explicit setting
 
     @staticmethod
     async def delete(entity_id: str) -> bool:
         async with get_db_write() as db:
-            cursor = await db.execute(
-                "DELETE FROM calendar_entity_settings WHERE entity_id = ?", (entity_id,)
-            )
+            cursor = await db.execute("DELETE FROM calendar_entity_settings WHERE entity_id = ?", (entity_id,))
             await db.commit()
             return cursor.rowcount > 0
 
@@ -2033,9 +2028,7 @@ class CalendarReminderStateRepository:
     """Tracks fired reminder offsets per event+user (one-time injection guarantee)."""
 
     @staticmethod
-    async def has_fired(
-        event_uid: str, calendar_entity_id: str, user_mapping_id: int, offset_minutes: int
-    ) -> bool:
+    async def has_fired(event_uid: str, calendar_entity_id: str, user_mapping_id: int, offset_minutes: int) -> bool:
         async with get_db_read() as db:
             cursor = await db.execute(
                 "SELECT 1 FROM calendar_reminder_state "
@@ -2045,9 +2038,7 @@ class CalendarReminderStateRepository:
             return (await cursor.fetchone()) is not None
 
     @staticmethod
-    async def mark_fired(
-        event_uid: str, calendar_entity_id: str, user_mapping_id: int, offset_minutes: int
-    ) -> None:
+    async def mark_fired(event_uid: str, calendar_entity_id: str, user_mapping_id: int, offset_minutes: int) -> None:
         async with get_db_write() as db:
             await db.execute(
                 "INSERT OR IGNORE INTO calendar_reminder_state "
@@ -2058,9 +2049,7 @@ class CalendarReminderStateRepository:
             await db.commit()
 
     @staticmethod
-    async def get_fired_for_event(
-        event_uid: str, calendar_entity_id: str, user_mapping_id: int
-    ) -> list[int]:
+    async def get_fired_for_event(event_uid: str, calendar_entity_id: str, user_mapping_id: int) -> list[int]:
         async with get_db_read() as db:
             cursor = await db.execute(
                 "SELECT offset_minutes FROM calendar_reminder_state "
@@ -2083,6 +2072,7 @@ class CalendarReminderStateRepository:
 def _phonetic_key(name: str) -> str | None:
     try:
         from pyphonetics import Metaphone
+
         meta = Metaphone()
         return meta.phonetics(name.strip())
     except Exception:

@@ -233,9 +233,7 @@ class CalendarReminderInjector:
             logger.debug("LLM reminder generation failed, using fallback", exc_info=True)
             return self._fallback_reminder_text(summary, offset, event_start, language)
 
-    def _fallback_reminder_text(
-        self, summary: str, offset: int, event_start: datetime, language: str
-    ) -> str | None:
+    def _fallback_reminder_text(self, summary: str, offset: int, event_start: datetime, language: str) -> str | None:
         """Simple fallback when LLM is not available."""
         lang = language.split("-")[0] if language else "en"
         time_str = event_start.strftime("%H:%M")

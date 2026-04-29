@@ -73,9 +73,7 @@ class VectorStore:
         except Exception as exc:
             # Accept both ChromaDB's NotFoundError and generic "does not exist" wording.
             msg = str(exc).lower()
-            if (
-                "not" in msg and "found" in msg
-            ) or "does not exist" in msg or "no such collection" in msg:
+            if ("not" in msg and "found" in msg) or "does not exist" in msg or "no such collection" in msg:
                 return
             logger.debug("Ignoring legacy response_cache delete failure: %s", exc)
         else:

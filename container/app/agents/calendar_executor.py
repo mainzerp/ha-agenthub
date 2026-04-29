@@ -33,15 +33,58 @@ async def execute_calendar_action(
     action_name = action.get("action", "").lower()
 
     if action_name == "list_events":
-        return await _list_events(action, ha_client, entity_index, entity_matcher, agent_id, span_collector, default_calendar_ids=default_calendar_ids)
+        return await _list_events(
+            action,
+            ha_client,
+            entity_index,
+            entity_matcher,
+            agent_id,
+            span_collector,
+            default_calendar_ids=default_calendar_ids,
+        )
     if action_name == "query_event":
-        return await _query_event(action, ha_client, entity_index, entity_matcher, agent_id, span_collector, default_calendar_ids=default_calendar_ids)
+        return await _query_event(
+            action,
+            ha_client,
+            entity_index,
+            entity_matcher,
+            agent_id,
+            span_collector,
+            default_calendar_ids=default_calendar_ids,
+        )
     if action_name == "create_event":
-        return await _create_event(action, ha_client, entity_index, entity_matcher, agent_id, span_collector, verbatim_terms=verbatim_terms, default_calendar_ids=default_calendar_ids)
+        return await _create_event(
+            action,
+            ha_client,
+            entity_index,
+            entity_matcher,
+            agent_id,
+            span_collector,
+            verbatim_terms=verbatim_terms,
+            default_calendar_ids=default_calendar_ids,
+        )
     if action_name == "delete_event":
-        return await _delete_event(action, ha_client, entity_index, entity_matcher, agent_id, span_collector, verbatim_terms=verbatim_terms, default_calendar_ids=default_calendar_ids)
+        return await _delete_event(
+            action,
+            ha_client,
+            entity_index,
+            entity_matcher,
+            agent_id,
+            span_collector,
+            verbatim_terms=verbatim_terms,
+            default_calendar_ids=default_calendar_ids,
+        )
     if action_name == "update_event":
-        return await _update_event(action, ha_client, entity_index, entity_matcher, agent_id, span_collector, verbatim_terms=verbatim_terms, default_calendar_ids=default_calendar_ids)
+        return await _update_event(
+            action,
+            ha_client,
+            entity_index,
+            entity_matcher,
+            agent_id,
+            span_collector,
+            verbatim_terms=verbatim_terms,
+            default_calendar_ids=default_calendar_ids,
+        )
 
     return {
         "success": False,
@@ -93,6 +136,7 @@ async def _resolve_calendar_entity(
     try:
         if entity_index or entity_matcher:
             from app.analytics.tracer import _optional_span
+
             async with _optional_span(span_collector, "entity_match", agent_id=agent_id) as em_span:
                 resolution = await resolve_entity_deterministic_first(
                     entity_query,
@@ -135,7 +179,13 @@ async def _list_events(
         }
 
     entity_id, friendly_name, error = await _resolve_calendar_entity(
-        action, ha_client, entity_index, entity_matcher, agent_id, span_collector, default_calendar_ids=default_calendar_ids
+        action,
+        ha_client,
+        entity_index,
+        entity_matcher,
+        agent_id,
+        span_collector,
+        default_calendar_ids=default_calendar_ids,
     )
     if error:
         return {"success": False, "entity_id": None, "new_state": None, "speech": error}
@@ -196,12 +246,19 @@ async def _query_event(
         }
 
     entity_id, friendly_name, error = await _resolve_calendar_entity(
-        action, ha_client, entity_index, entity_matcher, agent_id, span_collector, default_calendar_ids=default_calendar_ids
+        action,
+        ha_client,
+        entity_index,
+        entity_matcher,
+        agent_id,
+        span_collector,
+        default_calendar_ids=default_calendar_ids,
     )
     if error:
         return {"success": False, "entity_id": None, "new_state": None, "speech": error}
 
     import datetime as dt
+
     now = dt.datetime.now(dt.UTC)
     start = now.isoformat()
     end = (now + dt.timedelta(days=30)).isoformat()
@@ -273,7 +330,14 @@ async def _create_event(
         }
 
     entity_id, friendly_name, error = await _resolve_calendar_entity(
-        action, ha_client, entity_index, entity_matcher, agent_id, span_collector, verbatim_terms=verbatim_terms, default_calendar_ids=default_calendar_ids
+        action,
+        ha_client,
+        entity_index,
+        entity_matcher,
+        agent_id,
+        span_collector,
+        verbatim_terms=verbatim_terms,
+        default_calendar_ids=default_calendar_ids,
     )
     if error:
         return {"success": False, "entity_id": None, "new_state": None, "speech": error}
@@ -330,7 +394,14 @@ async def _delete_event(
         }
 
     entity_id, friendly_name, error = await _resolve_calendar_entity(
-        action, ha_client, entity_index, entity_matcher, agent_id, span_collector, verbatim_terms=verbatim_terms, default_calendar_ids=default_calendar_ids
+        action,
+        ha_client,
+        entity_index,
+        entity_matcher,
+        agent_id,
+        span_collector,
+        verbatim_terms=verbatim_terms,
+        default_calendar_ids=default_calendar_ids,
     )
     if error:
         return {"success": False, "entity_id": None, "new_state": None, "speech": error}
@@ -355,6 +426,7 @@ async def _delete_event(
 
     # Search by summary + start_time
     import datetime as dt
+
     now = dt.datetime.now(dt.UTC)
     start = now.isoformat()
     end = (now + dt.timedelta(days=365)).isoformat()
@@ -370,7 +442,8 @@ async def _delete_event(
 
     summary_lower = summary.lower()
     matches = [
-        ev for ev in (events or [])
+        ev
+        for ev in (events or [])
         if summary_lower in str(ev.get("summary", "")).lower()
         and (not start_time or start_time in str(ev.get("start", "")))
     ]
@@ -434,12 +507,20 @@ async def _update_event(
         }
 
     entity_id, friendly_name, error = await _resolve_calendar_entity(
-        action, ha_client, entity_index, entity_matcher, agent_id, span_collector, verbatim_terms=verbatim_terms, default_calendar_ids=default_calendar_ids
+        action,
+        ha_client,
+        entity_index,
+        entity_matcher,
+        agent_id,
+        span_collector,
+        verbatim_terms=verbatim_terms,
+        default_calendar_ids=default_calendar_ids,
     )
     if error:
         return {"success": False, "entity_id": None, "new_state": None, "speech": error}
 
     import datetime as dt
+
     now = dt.datetime.now(dt.UTC)
     start = now.isoformat()
     end = (now + dt.timedelta(days=365)).isoformat()
@@ -454,7 +535,7 @@ async def _update_event(
         }
 
     matches = []
-    for ev in (events or []):
+    for ev in events or []:
         match = True
         if summary and summary.lower() not in str(ev.get("summary", "")).lower():
             match = False

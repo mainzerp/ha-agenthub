@@ -960,6 +960,7 @@ class TestSharedDeterministicResolution:
     @pytest.mark.asyncio
     async def test_calendar_hidden_calendar_does_not_fall_back_to_raw_search(self, monkeypatch):
         from app.agents.calendar_executor import execute_calendar_action
+
         monkeypatch.setattr(
             "app.entity.visibility.EntityVisibilityRepository.get_rules",
             AsyncMock(return_value=[{"rule_type": "domain_include", "rule_value": "input_datetime"}]),

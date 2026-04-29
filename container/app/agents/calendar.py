@@ -29,13 +29,21 @@ class CalendarAgent(ActionableAgent):
         default_calendar_ids = None
         if user:
             import json
+
             default_calendar_ids = json.loads(user.get("calendar_entity_ids_json", "[]"))
 
         return await execute_calendar_action(
-            action, ha_client, entity_index, entity_matcher,
-            agent_id=agent_id, device_id=device_id, area_id=area_id,
-            language=language, timezone=timezone,
-            span_collector=span_collector, verbatim_terms=verbatim_terms,
+            action,
+            ha_client,
+            entity_index,
+            entity_matcher,
+            agent_id=agent_id,
+            device_id=device_id,
+            area_id=area_id,
+            language=language,
+            timezone=timezone,
+            span_collector=span_collector,
+            verbatim_terms=verbatim_terms,
             default_calendar_ids=default_calendar_ids,
         )
 
