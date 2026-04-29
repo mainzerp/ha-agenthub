@@ -178,7 +178,7 @@ class CacheManager:
                 resolution_failed = True
             if resolution_failed:
                 return None
-            if not resolved_entity or resolved_entity != entity_id:
+            if resolved_entity is not None and resolved_entity != entity_id:
                 with contextlib.suppress(Exception):
                     await asyncio.to_thread(self._action_cache.invalidate_by_entry_id, entry_id)
                 return None
