@@ -51,7 +51,7 @@ async def _initialize_registry_runtime(*, entity_entries=None, cache_counts=None
     ws_inst.run = AsyncMock(return_value=None)
     ws_inst.on_event = MagicMock()
 
-    def _fake_create_task(coro):
+    def _fake_create_task(coro, **kwargs):
         with contextlib.suppress(Exception):
             coro.close()
         return MagicMock()

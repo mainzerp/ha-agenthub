@@ -10,6 +10,17 @@ import httpx
 import pytest
 import respx
 
+
+@pytest.fixture(autouse=True)
+def _ensure_voluptuous_mock():
+    import sys
+    from unittest.mock import MagicMock
+
+    if "voluptuous" not in sys.modules:
+        sys.modules["voluptuous"] = MagicMock()
+    yield
+
+
 from app.ha_client.auth import (
     HA_TOKEN_SECRET_KEY,
     build_auth_headers,
@@ -288,6 +299,7 @@ class TestHAConfigFlow:
 
         class _FakeTextSelectorType:
             PASSWORD = "password"
+            URL = "url"
 
         class _FakeTextSelectorConfig:
             def __init__(self, *, type=None):
@@ -315,6 +327,8 @@ class TestHAConfigFlow:
         sys.modules["homeassistant.config_entries"].OptionsFlow = _FakeOptionsFlow
         sys.modules["homeassistant.const"].CONF_URL = "url"
         sys.modules["homeassistant.const"].CONF_API_KEY = "api_key"
+        sys.modules["homeassistant.const"].CONF_NAME = "name"
+        sys.modules["homeassistant.const"].CONF_NAME = "name"
         sys.modules["homeassistant.const"].Platform = type("Platform", (), {"CONVERSATION": "conversation"})
         sys.modules["homeassistant.core"].HomeAssistant = type("HomeAssistant", (), {})
         sys.modules["homeassistant.helpers.selector"].TextSelector = _FakeTextSelector
@@ -433,13 +447,13 @@ class TestHAConfigFlow:
         mock_validate.assert_awaited_once_with("http://ha.local", "stored-token")
         flow.hass.config_entries.async_update_entry.assert_called_once_with(
             entry,
+            title=entry.title,
             data={
+                "name": entry.title,
                 "url": "http://ha.local",
                 "api_key": "stored-token",
             },
-            options={
-                "enable_post_filler_push": True,
-            },
+            options={},
         )
 
     async def test_options_flow_schema_uses_blank_password_field(self):
@@ -694,6 +708,7 @@ class TestHAConversationWSCloseError:
             "homeassistant.helpers.intent",
             "homeassistant.helpers.entity_platform",
             "homeassistant.helpers.event",
+            "homeassistant.helpers.selector",
         ]
         for mod in ha_modules:
             if mod not in sys.modules:
@@ -705,6 +720,7 @@ class TestHAConversationWSCloseError:
         # Provide required constants/classes used at import time
         sys.modules["homeassistant.const"].CONF_URL = "url"
         sys.modules["homeassistant.const"].CONF_API_KEY = "api_key"
+        sys.modules["homeassistant.const"].CONF_NAME = "name"
         sys.modules["homeassistant.const"].MATCH_ALL = "*"
         conv_mod = sys.modules["homeassistant.components.conversation"]
         conv_mod.ConversationEntityFeature = MagicMock()
@@ -901,6 +917,7 @@ class TestHAConfigEntryLifecycle:
         sys.modules["homeassistant.core"].HomeAssistant = type("HomeAssistant", (), {})
         sys.modules["homeassistant.const"].CONF_URL = "url"
         sys.modules["homeassistant.const"].CONF_API_KEY = "api_key"
+        sys.modules["homeassistant.const"].CONF_NAME = "name"
         sys.modules["homeassistant.const"].Platform = type("Platform", (), {"CONVERSATION": "conversation"})
 
         yield
@@ -972,6 +989,7 @@ class TestHAConversationRestFallbackMessages:
             "homeassistant.helpers.intent",
             "homeassistant.helpers.entity_platform",
             "homeassistant.helpers.event",
+            "homeassistant.helpers.selector",
         ]
         for mod in ha_modules:
             if mod not in sys.modules:
@@ -982,6 +1000,7 @@ class TestHAConversationRestFallbackMessages:
 
         sys.modules["homeassistant.const"].CONF_URL = "url"
         sys.modules["homeassistant.const"].CONF_API_KEY = "api_key"
+        sys.modules["homeassistant.const"].CONF_NAME = "name"
         sys.modules["homeassistant.const"].MATCH_ALL = "*"
         conv_mod = sys.modules["homeassistant.components.conversation"]
         conv_mod.ConversationEntityFeature = MagicMock()
@@ -1135,6 +1154,7 @@ class TestHAConversationCoalesceWindow:
         sys.modules["homeassistant.helpers.event"].async_track_state_change_event = MagicMock()
         sys.modules["homeassistant.const"].CONF_URL = "url"
         sys.modules["homeassistant.const"].CONF_API_KEY = "api_key"
+        sys.modules["homeassistant.const"].CONF_NAME = "name"
         sys.modules["homeassistant.const"].MATCH_ALL = "*"
         conv_mod = sys.modules["homeassistant.components.conversation"]
         conv_mod.ConversationEntityFeature = MagicMock()

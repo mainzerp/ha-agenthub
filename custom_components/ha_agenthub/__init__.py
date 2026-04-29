@@ -8,7 +8,6 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_URL, CONF_API_KEY, Platform
 from homeassistant.core import HomeAssistant
 
-from .config_flow import async_migrate_entry as async_migrate_entry
 from .const import DOMAIN, INTEGRATION_TITLE
 
 # Config entries created by the old ``agent_assist`` integration.
@@ -17,6 +16,32 @@ _LEGACY_ENTRY_TITLES = frozenset({"Agent Assist"})
 logger = logging.getLogger(__name__)
 
 PLATFORMS: list[Platform] = [Platform.CONVERSATION]
+
+
+def _normalize_url(url: str) -> str:
+    normalized = (url or "").strip().rstrip("/")
+    if normalized and not normalized.startswith(("http://", "https://")):
+        raise ValueError("URL must start with http:// or https://")
+    return normalized
+
+
+async def async_migrate_entry(hass: HomeAssistant, config_entry: ConfigEntry) -> bool:
+    """Migrate old config entries to the current version."""
+    if config_entry.version == 1:
+        url = _normalize_url(config_entry.data.get(CONF_URL, ""))
+        new_unique_id = url if url else config_entry.entry_id
+
+        hass.config_entries.async_update_entry(
+            config_entry,
+            unique_id=new_unique_id,
+            version=2,
+        )
+        logger.info(
+            "Migrated HA-AgentHub config entry from version 1 to 2 (unique_id: %s -> %s)",
+            DOMAIN,
+            new_unique_id,
+        )
+    return True
 
 
 async def _async_reload_entry_on_update(
