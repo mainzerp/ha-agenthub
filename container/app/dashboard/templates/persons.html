@@ -1,0 +1,110 @@
+{% extends "dashboard_base.html" %}
+{% block page_title %}Persons{% endblock %}
+{% block nav_persons %}active{% endblock %}
+{% block header_title %}Persons{% endblock %}
+{% block page_content %}
+<div x-data="personsPage()" x-init="loadPersons()">
+
+    <div class="page-header">
+        <div class="page-header-text">
+            <p class="page-subtitle">Home Assistant person entities for user mapping.</p>
+        </div>
+        <div class="page-actions btn-group">
+            <button class="btn btn-sm btn-secondary" @click="loadPersons()" :disabled="loading">
+                <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+                Refresh
+            </button>
+        </div>
+    </div>
+
+    <div class="card">
+        <div class="form-row mb-md">
+            <div class="form-group mb-0">
+                <label class="form-label">Search</label>
+                <input type="text" class="form-input w-200" x-model="search" placeholder="Filter persons...">
+            </div>
+        </div>
+
+        <template x-if="loading">
+            <p class="text-muted">Loading...</p>
+        </template>
+
+        <div class="table-container-flush" x-show="!loading && filteredPersons.length > 0">
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>Name</th>
+                        <th>Entity ID</th>
+                        <th>State</th>
+                        <th>User ID</th>
+                        <th>Device Trackers</th>
+                        <th>Location</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <template x-for="p in filteredPersons" :key="p.entity_id">
+                        <tr>
+                            <td class="fw-600" x-text="p.friendly_name || p.entity_id"></td>
+                            <td><code class="mono text-xs" x-text="p.entity_id"></code></td>
+                            <td>
+                                <span class="badge"
+                                      :class="p.state === 'home' ? 'badge-teal' : (p.state === 'not_home' ? 'badge-coral' : 'badge-amber')"
+                                      x-text="p.state || 'unknown'"></span>
+                            </td>
+                            <td><code class="mono text-xs" x-text="p.user_id || '-'"></code></td>
+                            <td>
+                                <template x-for="dt in (p.device_trackers || [])" :key="dt">
+                                    <code class="badge badge-teal mr-xs" x-text="dt"></code>
+                                </template>
+                                <span x-show="!(p.device_trackers || []).length" class="text-muted text-xs">-</span>
+                            </td>
+                            <td class="text-xs text-muted">
+                                <span x-show="p.latitude && p.longitude" x-text="p.latitude?.toFixed(4) + ', ' + p.longitude?.toFixed(4)"></span>
+                                <span x-show="!p.latitude || !p.longitude">-</span>
+                            </td>
+                        </tr>
+                    </template>
+                </tbody>
+            </table>
+        </div>
+
+        <template x-if="!loading && filteredPersons.length === 0">
+            <div class="empty-state">
+                <p>No person entities found.</p>
+                <p class="text-muted text-sm">Make sure person entities are configured in Home Assistant.</p>
+            </div>
+        </template>
+    </div>
+</div>
+
+<script>
+function personsPage() {
+    return {
+        persons: [],
+        loading: false,
+        search: '',
+
+        get filteredPersons() {
+            if (!this.search) return this.persons;
+            const q = this.search.toLowerCase();
+            return this.persons.filter(p =>
+                (p.friendly_name || '').toLowerCase().includes(q) ||
+                (p.entity_id || '').toLowerCase().includes(q) ||
+                (p.user_id || '').toLowerCase().includes(q)
+            );
+        },
+
+        async loadPersons() {
+            this.loading = true;
+            try {
+                this.persons = await window.dashboardApi.json('/api/admin/persons');
+            } catch (e) {
+                if (e.code === 'auth_expired') return;
+                console.error('Failed to load persons', e);
+            }
+            this.loading = false;
+        }
+    };
+}
+</script>
+{% endblock %}

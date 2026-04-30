@@ -1443,3 +1443,23 @@ async def _run_migrations(db: aiosqlite.Connection) -> None:
             ],
         )
         await db.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (25)")
+
+    if current_version < 26:
+        # Migration 26: Add person_entity_id to send_device_mappings and calendar_user_mappings
+        await db.execute("ALTER TABLE send_device_mappings ADD COLUMN person_entity_id TEXT")
+        await db.execute("ALTER TABLE calendar_user_mappings ADD COLUMN person_entity_id TEXT")
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_send_device_mappings_person ON send_device_mappings(person_entity_id)"
+        )
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_calendar_user_mappings_person ON calendar_user_mappings(person_entity_id)"
+        )
+        await db.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (26)")
+
+    if current_version < 27:
+        # Migration 27: Add is_universal flag to calendar_entity_settings
+        await db.execute("ALTER TABLE calendar_entity_settings ADD COLUMN is_universal INTEGER NOT NULL DEFAULT 0")
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_calendar_entity_settings_universal ON calendar_entity_settings(is_universal)"
+        )
+        await db.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (27)")

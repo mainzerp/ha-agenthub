@@ -640,6 +640,23 @@ async def _set_alarm(
             "on",
         }
     )
+    raw_calendars = params.get("calendar_entity_ids")
+    calendar_entity_ids = None
+    if isinstance(raw_calendars, list):
+        calendar_entity_ids = [str(c).strip() for c in raw_calendars if str(c).strip()]
+
+    payload: dict[str, Any] = {
+        "alarm_label": logical_name,
+        "briefing": briefing,
+        "language": language,
+        "scheduled_for_epoch": int(target_epoch),
+        "timezone": timezone,
+    }
+    if recurrence_payload is not None:
+        payload["recurrence"] = recurrence_payload
+    if calendar_entity_ids:
+        payload["calendar_entity_ids"] = calendar_entity_ids
+
     timer_id = await scheduler.schedule(
         logical_name=logical_name,
         kind="alarm",
@@ -647,14 +664,7 @@ async def _set_alarm(
         origin_device_id=device_id,
         origin_area=area_id,
         briefing=briefing,
-        payload={
-            "alarm_label": logical_name,
-            "briefing": briefing,
-            "language": language,
-            "scheduled_for_epoch": int(target_epoch),
-            "timezone": timezone,
-            **({"recurrence": recurrence_payload} if recurrence_payload is not None else {}),
-        },
+        payload=payload,
     )
     local_time = _format_alarm_time_local(target_epoch, timezone=timezone)
     return {

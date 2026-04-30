@@ -920,6 +920,7 @@ class OrchestratorAgent(BaseAgent):
                     utterance=task.description if task else None,
                     device_id=task_context.device_id if task_context else None,
                     area_id=task_context.area_id if task_context else None,
+                    user_id=task_context.user_id if task_context else None,
                     language=(task_context.language if task_context else "en") or "en",
                 )
                 if reminder_text:
@@ -1332,6 +1333,7 @@ class OrchestratorAgent(BaseAgent):
                         utterance=task.description,
                         device_id=task.context.device_id if task.context else None,
                         area_id=task.context.area_id if task.context else None,
+                        user_id=task.context.user_id if task.context else None,
                         language=(task.context.language if task.context else "en") or "en",
                     )
                     if reminder_text:
@@ -1767,6 +1769,7 @@ class OrchestratorAgent(BaseAgent):
                             utterance=task.description if task else None,
                             device_id=incoming_context.device_id if incoming_context else None,
                             area_id=incoming_context.area_id if incoming_context else None,
+                            user_id=incoming_context.user_id if incoming_context else None,
                             language=detected_language or "en",
                         )
                         if reminder_text:

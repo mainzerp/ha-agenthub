@@ -24,6 +24,7 @@ class ConversationRequest(BaseModel):
         None, description="Human-readable name of the originating device/satellite", max_length=128
     )
     area_name: str | None = Field(None, description="Human-readable name of the originating area/room", max_length=128)
+    user_id: str | None = Field(None, description="Home Assistant user ID of the speaking user", max_length=64)
 
 
 class ConversationResponse(BaseModel):

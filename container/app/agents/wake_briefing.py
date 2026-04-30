@@ -133,36 +133,51 @@ async def _calendar_facts(
     *,
     start: datetime,
     end: datetime,
+    extra_calendar_ids: list[str] | None = None,
 ) -> list[dict[str, str]]:
-    if entity_index is None:
+    from app.db.repository import CalendarEntitySettingsRepository
+
+    # Base set: enabled + universal calendars
+    enabled_ids = set(await CalendarEntitySettingsRepository.get_enabled_entity_ids())
+    universal_ids = set(await CalendarEntitySettingsRepository.get_universal_entity_ids())
+    base_ids = enabled_ids | universal_ids
+
+    # Add user-requested extra calendars
+    if extra_calendar_ids:
+        base_ids |= set(extra_calendar_ids)
+
+    if not base_ids:
         return []
 
-    list_entries_async = getattr(entity_index, "list_entries_async", None)
-    list_entries = getattr(entity_index, "list_entries", None)
-    if callable(list_entries_async):
-        entries = await list_entries_async(domains={"calendar"})
-    elif callable(list_entries):
-        entries = list_entries(domains={"calendar"})
-    else:
-        return []
+    # Filter to visible calendars
+    visible_ids = base_ids
+    if entity_index is not None:
+        list_entries_async = getattr(entity_index, "list_entries_async", None)
+        list_entries = getattr(entity_index, "list_entries", None)
+        entries = []
+        if callable(list_entries_async):
+            entries = await list_entries_async(domains={"calendar"})
+        elif callable(list_entries):
+            entries = list_entries(domains={"calendar"})
 
-    visible = await filter_visible_results(
-        _WAKE_BRIEFING_AGENT_ID,
-        [
-            MatchResult(
-                entity_id=entry.entity_id,
-                friendly_name=entry.friendly_name or entry.entity_id,
-                score=1.0,
-            )
-            for entry in entries
-            if getattr(entry, "entity_id", "").startswith("calendar.")
-        ],
-        entity_index,
-    )
-    visible_ids = sorted({result.entity_id for result in visible}, key=str.casefold)
+        visible = await filter_visible_results(
+            _WAKE_BRIEFING_AGENT_ID,
+            [
+                MatchResult(
+                    entity_id=entry.entity_id,
+                    friendly_name=entry.friendly_name or entry.entity_id,
+                    score=1.0,
+                )
+                for entry in entries
+                if getattr(entry, "entity_id", "").startswith("calendar.")
+            ],
+            entity_index,
+        )
+        visible_ids = {result.entity_id for result in visible}
+        visible_ids = base_ids & visible_ids
 
     collected: list[dict[str, str]] = []
-    for entity_id in visible_ids:
+    for entity_id in sorted(visible_ids, key=str.casefold):
         events = await ha_client.get_calendar_events(entity_id, start.isoformat(), end.isoformat())
         for event in events:
             if not isinstance(event, dict):
@@ -276,9 +291,21 @@ async def _compose_wake_briefing_inner(
                 )
             )
 
+        extra_calendar_ids = None
+        raw_extra = alarm_payload.get("calendar_entity_ids")
+        if isinstance(raw_extra, list) and raw_extra:
+            extra_calendar_ids = [str(item).strip() for item in raw_extra if str(item).strip()]
+
         if await _get_setting_bool(settings_repo, "wake_briefing.sources.calendar", True):
             keys.append("calendar")
-            tasks.append(asyncio.wait_for(_calendar_facts(ha_client, entity_index, start=start, end=end), timeout=3.0))
+            tasks.append(
+                asyncio.wait_for(
+                    _calendar_facts(
+                        ha_client, entity_index, start=start, end=end, extra_calendar_ids=extra_calendar_ids
+                    ),
+                    timeout=3.0,
+                )
+            )
 
         if await _get_setting_bool(settings_repo, "wake_briefing.sources.sensors", False):
             sensor_entities = await _get_setting_json_list(settings_repo, "wake_briefing.sensor_entities", [])

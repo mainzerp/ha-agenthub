@@ -257,6 +257,15 @@ async def calendar_page(
     return _render_dashboard(request, "calendar.html")
 
 
+@router.get("/persons", response_class=HTMLResponse)
+async def persons_page(
+    request: Request,
+    _session: dict = Depends(require_admin_session_redirect),
+):
+    """Person entities page for HA user mapping."""
+    return _render_dashboard(request, "persons.html")
+
+
 @router.get("/settings", response_class=HTMLResponse)
 async def settings_page(
     request: Request,

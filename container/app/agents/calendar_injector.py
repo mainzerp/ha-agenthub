@@ -46,7 +46,7 @@ class CalendarReminderInjector:
     ) -> None:
         self._ha_client = ha_client
         self._entity_index = entity_index
-        self._user_resolver = UserIdentityResolver()
+        self._user_resolver = UserIdentityResolver(ha_client=ha_client)
         self._llm_call = llm_call
 
     async def inject_reminders(
@@ -54,21 +54,28 @@ class CalendarReminderInjector:
         utterance: str | None,
         device_id: str | None = None,
         area_id: str | None = None,
+        user_id: str | None = None,
         language: str = "en",
     ) -> str | None:
         enabled = await SettingsRepository.get_value("calendar.reminder_injection.enabled", "true")
         if str(enabled).lower() != "true":
             return None
 
-        user = await self._user_resolver.resolve_user(utterance, device_id, area_id)
+        user = await self._user_resolver.resolve_user(utterance, device_id, area_id, user_id=user_id)
         if user:
             calendar_ids = json.loads(user.get("calendar_entity_ids_json", "[]"))
             offsets = json.loads(user.get("reminder_offsets_json", str(_DEFAULT_OFFSETS)))
             user_mapping_id = user["id"]
         else:
-            calendar_ids = await self._get_enabled_calendar_entities()
+            calendar_ids = []
             offsets = _DEFAULT_OFFSETS
             user_mapping_id = 0
+
+        # Always include universal calendars (e.g. birthdays, holidays)
+        universal_ids = await CalendarEntitySettingsRepository.get_universal_entity_ids()
+        for uid in universal_ids:
+            if uid not in calendar_ids:
+                calendar_ids.append(uid)
 
         if not calendar_ids:
             return None

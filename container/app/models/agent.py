@@ -96,6 +96,7 @@ class TaskContext(BaseModel):
     # for any comparison / visibility logic.
     device_name: str | None = None
     area_name: str | None = None
+    user_id: str | None = None
     # FLOW-CTX-1 (0.18.6): request origin. "ha" = voice satellite via
     # HA integration, "chat" = dashboard chat UI, "api" = raw REST/WS
     # without the HA wrapper. Agents use this to disambiguate

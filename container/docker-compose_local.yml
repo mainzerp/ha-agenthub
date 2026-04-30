@@ -1,15 +1,15 @@
 services:
-  agent-assist:
+  ha-agenthub:
     # Local image name (not the old compose default "container-agent-assist").
     # Override tag: IMAGE_TAG=0.18.0 docker compose build
     image: ha-agenthub:${IMAGE_TAG:-latest}
     build: .
-    container_name: agent-assist
+    container_name: ha-agenthub
     restart: unless-stopped
     ports:
       - "${CONTAINER_PORT:-8080}:8080"
     volumes:
-      - agent-assist-data:/data
+      - agent-assist-data:/data #legacy volume name of local deployment, cant be changed without breaking existing data
     deploy:
       resources:
         limits:
@@ -32,5 +32,5 @@ services:
       retries: 3
 
 volumes:
-  agent-assist-data:
+  agent-assist-data: #legacy volume name of local deployment, cant be changed without breaking existing data
     driver: local

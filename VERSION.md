@@ -1,6 +1,17 @@
 # Version
 
-**Current Version:** 1.9.6
+**Current Version:** 1.10.0
+
+## Recent Changes (since 1.9.6)
+
+- **Persons:** New dashboard page `/dashboard/persons` displaying HA `person.*` entities (name, state, user_id, device trackers, location) fetched live from Home Assistant.
+- **Person Mapping:** Calendar user mappings and send device mappings now support linking to a HA person entity via `person_entity_id`. The UI shows a dropdown for person selection in both the Calendar and Send Devices pages.
+- **User Identity Resolution:** `UserIdentityResolver` now resolves users by HA `user_id` when provided in the conversation context. It looks up the matching `person.*` entity and finds the linked calendar/send-device mapping. Falls back to phonetic name matching and default user as before.
+- **Pipeline:** `user_id` field added to `ConversationRequest` and `TaskContext`. The conversation endpoint forwards it into the task context, and the orchestrator passes it to the calendar injector.
+- **Universal Calendars:** Calendar entity settings now have an `is_universal` flag. Universal calendars are always included in proactive reminder checks, regardless of which user is speaking. Use this for shared calendars like birthdays or holidays.
+- **Wake Briefing Calendar Filter:** Wake briefing now respects calendar settings. It only queries `enabled` and `universal` calendars instead of all visible calendars. Additionally, alarms can carry `calendar_entity_ids` in their payload, allowing users to request specific calendars for their wake briefing (e.g. "alarm at 7 with wake briefing and Laura's calendar").
+- **Dashboard Cache Page Redesign:** Cache overview cards for Routing and Action caches moved to the top row alongside the Export/Import backup card. Tab strip and Flush All button are now inline above the cache entry list.
+- **Dashboard Navigation:** Added missing Calendar and Persons links to the sidebar.
 
 ## Recent Changes (since 1.8.0)
 

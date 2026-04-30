@@ -20,11 +20,12 @@ class CalendarAgent(ActionableAgent):
         current_task = getattr(self, "_current_task", None)
         verbatim_terms = list(getattr(current_task, "verbatim_terms", []) or []) if current_task else []
 
-        resolver = UserIdentityResolver()
+        resolver = UserIdentityResolver(ha_client=ha_client)
         user = await resolver.resolve_user(
             getattr(current_task, "description", None) if current_task else None,
             device_id=device_id,
             area_id=area_id,
+            user_id=ctx.user_id if ctx else None,
         )
         default_calendar_ids = None
         if user:

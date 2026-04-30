@@ -52,6 +52,7 @@ def _build_a2a_request(
         area_id=conv_request.area_id,
         device_name=conv_request.device_name,
         area_name=conv_request.area_name,
+        user_id=conv_request.user_id,
         language=conv_request.language or "en",
         source=source,
         injection_detected=prepared_text.injection_detected,

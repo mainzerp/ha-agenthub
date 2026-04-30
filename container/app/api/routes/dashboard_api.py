@@ -752,6 +752,7 @@ class SendDeviceMappingCreate(BaseModel):
     display_name: str
     device_type: str
     ha_service_target: str
+    person_entity_id: str | None = None
 
 
 @router.get("/send-devices")
@@ -776,6 +777,7 @@ async def create_send_device(body: SendDeviceMappingCreate):
         body.display_name,
         body.device_type,
         body.ha_service_target,
+        person_entity_id=body.person_entity_id,
     )
     return {"id": row_id}
 
@@ -790,6 +792,7 @@ async def update_send_device(mapping_id: int, body: SendDeviceMappingCreate):
         display_name=body.display_name,
         device_type=body.device_type,
         ha_service_target=body.ha_service_target,
+        person_entity_id=body.person_entity_id,
     )
     if not ok:
         return JSONResponse({"detail": "Mapping not found"}, status_code=404)
@@ -833,3 +836,44 @@ async def list_available_send_targets(request: Request, type: str = "notify"):
             logger.warning("Failed to fetch media_player entities from HA", exc_info=True)
 
     return targets
+
+
+# --- Persons (HA person entities) ---
+
+
+@router.get("/persons")
+async def list_persons(request: Request):
+    """Fetch person.* entities from Home Assistant."""
+    ha_client = request.app.state.ha_client
+    if not ha_client:
+        return []
+
+    try:
+        states = await ha_client.get_states()
+    except Exception:
+        logger.warning("Failed to fetch states from HA", exc_info=True)
+        return []
+
+    persons = []
+    for state in states:
+        eid = state.get("entity_id", "")
+        if eid.startswith("person."):
+            attrs = state.get("attributes", {})
+            persons.append(
+                {
+                    "entity_id": eid,
+                    "state": state.get("state", "unknown"),
+                    "friendly_name": attrs.get("friendly_name", eid),
+                    "user_id": attrs.get("user_id"),
+                    "device_trackers": attrs.get("device_trackers", []),
+                    "source": attrs.get("source"),
+                    "id": attrs.get("id"),
+                    "latitude": attrs.get("latitude"),
+                    "longitude": attrs.get("longitude"),
+                    "gps_accuracy": attrs.get("gps_accuracy"),
+                }
+            )
+
+    # Sort by friendly name
+    persons.sort(key=lambda p: p["friendly_name"] or p["entity_id"])
+    return persons

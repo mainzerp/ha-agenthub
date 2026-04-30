@@ -34,6 +34,7 @@ class UserMappingCreate(BaseModel):
     calendar_entity_ids: list[str]
     reminder_offsets: list[int]
     is_default_user: bool = False
+    person_entity_id: str | None = None
 
 
 class UserMappingUpdate(BaseModel):
@@ -41,6 +42,7 @@ class UserMappingUpdate(BaseModel):
     calendar_entity_ids: list[str] | None = None
     reminder_offsets: list[int] | None = None
     is_default_user: bool | None = None
+    person_entity_id: str | None = None
 
 
 class EventDeletePayload(BaseModel):
@@ -66,6 +68,7 @@ class SettingsUpdatePayload(BaseModel):
 
 class EntitySettingPayload(BaseModel):
     enabled: bool
+    is_universal: bool = False
 
 
 # --- User Mappings ---
@@ -97,6 +100,7 @@ async def create_calendar_user(body: UserMappingCreate):
         calendar_entity_ids_json=json.dumps(body.calendar_entity_ids),
         reminder_offsets_json=json.dumps(body.reminder_offsets),
         is_default_user=1 if body.is_default_user else 0,
+        person_entity_id=body.person_entity_id,
     )
     return {"id": row_id}
 
@@ -113,6 +117,8 @@ async def update_calendar_user(mapping_id: int, body: UserMappingUpdate):
         fields["reminder_offsets_json"] = json.dumps(body.reminder_offsets)
     if body.is_default_user is not None:
         fields["is_default_user"] = 1 if body.is_default_user else 0
+    if body.person_entity_id is not None:
+        fields["person_entity_id"] = body.person_entity_id
     ok = await CalendarUserMappingRepository.update(mapping_id, **fields)
     if not ok:
         raise HTTPException(status_code=404, detail="Mapping not found")
@@ -199,20 +205,23 @@ async def list_calendars(request: Request):
     elif hasattr(entity_index, "list_entries"):
         entries = entity_index.list_entries(domains={"calendar"})
 
-    # Load enabled states from DB
-    db_settings = {s["entity_id"]: s["enabled"] for s in await CalendarEntitySettingsRepository.list_all()}
+    # Load settings from DB
+    db_rows = {s["entity_id"]: s for s in await CalendarEntitySettingsRepository.list_all()}
 
     result = []
     for e in entries:
         eid = getattr(e, "entity_id", "")
         fname = getattr(e, "friendly_name", "") or eid
+        row = db_rows.get(eid)
         # Default to enabled if no explicit DB row
-        enabled = bool(db_settings.get(eid, 1))
+        enabled = bool(row["enabled"]) if row else True
+        is_universal = bool(row["is_universal"]) if row else False
         result.append(
             {
                 "entity_id": eid,
                 "friendly_name": fname,
                 "enabled": enabled,
+                "is_universal": is_universal,
             }
         )
     return result
@@ -231,7 +240,8 @@ async def list_entity_settings():
 async def update_entity_setting(entity_id: str, body: EntitySettingPayload):
     """Enable or disable a specific calendar entity for reminders."""
     await CalendarEntitySettingsRepository.set_enabled(entity_id, 1 if body.enabled else 0)
-    return {"ok": True, "entity_id": entity_id, "enabled": body.enabled}
+    await CalendarEntitySettingsRepository.set_universal(entity_id, 1 if body.is_universal else 0)
+    return {"ok": True, "entity_id": entity_id, "enabled": body.enabled, "is_universal": body.is_universal}
 
 
 @router.post("/entity-settings/sync")

@@ -49,6 +49,15 @@
                         <label class="form-label" for="cal-user-offsets">Offsets (minutes)</label>
                         <input id="cal-user-offsets" type="text" x-model="newUser.offsets_text" placeholder="1440, 60, 15" class="form-input">
                     </div>
+                    <div class="form-group flex-1 min-w-180">
+                        <label class="form-label" for="cal-user-person">Linked Person</label>
+                        <select id="cal-user-person" x-model="newUser.person_entity_id" class="form-input">
+                            <option value="">-- none --</option>
+                            <template x-for="p in persons" :key="p.entity_id">
+                                <option :value="p.entity_id" x-text="p.friendly_name || p.entity_id"></option>
+                            </template>
+                        </select>
+                    </div>
                     <div class="form-group flex-none-w-120">
                         <label class="form-label" for="cal-user-default">Default User</label>
                         <label  class="toggle mt-sm">
@@ -71,6 +80,7 @@
                             <th>Display Name</th>
                             <th>Calendars</th>
                             <th>Offsets</th>
+                            <th>Linked Person</th>
                             <th>Default</th>
                             <th>Actions</th>
                         </tr>
@@ -85,6 +95,10 @@
                                     </template>
                                 </td>
                                 <td x-text="(u.reminder_offsets || []).join(', ')"></td>
+                                <td>
+                                    <span x-show="u.person_entity_id" class="badge badge-teal" x-text="(persons.find(p => p.entity_id === u.person_entity_id)?.friendly_name) || u.person_entity_id"></span>
+                                    <span x-show="!u.person_entity_id" class="text-muted text-xs">-</span>
+                                </td>
                                 <td>
                                     <span class="badge" :class="u.is_default_user ? 'badge-green' : 'badge-muted'" x-text="u.is_default_user ? 'Yes' : 'No'"></span>
                                 </td>
@@ -115,6 +129,7 @@
                             <th>Entity ID</th>
                             <th>Friendly Name</th>
                             <th class="w-80 text-center">Enabled</th>
+                            <th class="w-80 text-center">Universal</th>
                         </tr>
                     </thead>
                     <tbody>
@@ -125,6 +140,12 @@
                                 <td class="text-center">
                                     <label class="toggle va-middle">
                                         <input type="checkbox" :checked="c.enabled" @change="toggleCalendar(c.entity_id, $event.target.checked)">
+                                        <span class="toggle-slider"></span>
+                                    </label>
+                                </td>
+                                <td class="text-center">
+                                    <label class="toggle va-middle">
+                                        <input type="checkbox" :checked="c.is_universal" @change="toggleUniversal(c.entity_id, $event.target.checked)">
                                         <span class="toggle-slider"></span>
                                     </label>
                                 </td>
@@ -243,7 +264,8 @@ function calendarPage() {
         users: [],
         calendars: [],
         events: [],
-        newUser: { display_name: '', calendar_entity_ids: [], offsets_text: '1440, 60, 15', is_default_user: false },
+        newUser: { display_name: '', calendar_entity_ids: [], offsets_text: '1440, 60, 15', is_default_user: false, person_entity_id: '' },
+        persons: [],
         eventQuery: { calendar_id: '', start: '', end: '' },
         settings: { enabled: true, offsets_text: '1440, 60, 15', lookahead_hours: 24 },
 
@@ -261,6 +283,16 @@ function calendarPage() {
             await this.loadUsers();
             await this.loadCalendars();
             await this.loadSettings();
+            await this.loadPersons();
+        },
+
+        async loadPersons() {
+            try {
+                this.persons = await window.dashboardApi.json('/api/admin/persons');
+            } catch (e) {
+                if (e.code === 'auth_expired') return;
+                this.persons = [];
+            }
         },
 
         async loadUsers() {
@@ -303,6 +335,7 @@ function calendarPage() {
                 calendar_entity_ids: this.newUser.calendar_entity_ids,
                 reminder_offsets: offsets,
                 is_default_user: this.newUser.is_default_user,
+                person_entity_id: this.newUser.person_entity_id || null,
             };
             try {
                 await window.dashboardApi.request('/api/admin/calendar/users', {
@@ -312,7 +345,7 @@ function calendarPage() {
                 });
                 this.message = 'User mapping created';
                 this.messageType = 'success';
-                this.newUser = { display_name: '', calendar_entity_ids: [], offsets_text: '1440, 60, 15', is_default_user: false };
+                this.newUser = { display_name: '', calendar_entity_ids: [], offsets_text: '1440, 60, 15', is_default_user: false, person_entity_id: '' };
                 await this.loadUsers();
             } catch (e) {
                 if (e.code === 'auth_expired') return;
@@ -337,14 +370,33 @@ function calendarPage() {
 
         async toggleCalendar(entityId, enabled) {
             try {
+                const cal = this.calendars.find(c => c.entity_id === entityId);
                 await window.dashboardApi.request(`/api/admin/calendar/entity-settings/${encodeURIComponent(entityId)}`, {
                     method: 'PUT',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ enabled }),
+                    body: JSON.stringify({ enabled, is_universal: cal?.is_universal || false }),
                 });
-                const cal = this.calendars.find(c => c.entity_id === entityId);
                 if (cal) cal.enabled = enabled;
                 this.message = `Calendar ${enabled ? 'enabled' : 'disabled'}`;
+                this.messageType = 'success';
+            } catch (e) {
+                if (e.code === 'auth_expired') return;
+                this.message = e.detail || 'Failed to update calendar';
+                this.messageType = 'error';
+                await this.loadCalendars();
+            }
+        },
+
+        async toggleUniversal(entityId, isUniversal) {
+            try {
+                const cal = this.calendars.find(c => c.entity_id === entityId);
+                await window.dashboardApi.request(`/api/admin/calendar/entity-settings/${encodeURIComponent(entityId)}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ enabled: cal?.enabled !== false, is_universal: isUniversal }),
+                });
+                if (cal) cal.is_universal = isUniversal;
+                this.message = `Calendar ${isUniversal ? 'marked as universal' : 'removed from universal'}`;
                 this.messageType = 'success';
             } catch (e) {
                 if (e.code === 'auth_expired') return;

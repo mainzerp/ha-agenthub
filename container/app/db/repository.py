@@ -1749,7 +1749,7 @@ class SendDeviceMappingRepository:
         """Return all device mappings."""
         async with get_db_read() as db:
             cursor = await db.execute(
-                "SELECT id, display_name, device_type, ha_service_target, created_at "
+                "SELECT id, display_name, device_type, ha_service_target, person_entity_id, created_at "
                 "FROM send_device_mappings ORDER BY display_name"
             )
             return [dict(row) for row in await cursor.fetchall()]
@@ -1759,7 +1759,7 @@ class SendDeviceMappingRepository:
         """Get a single mapping by ID."""
         async with get_db_read() as db:
             cursor = await db.execute(
-                "SELECT id, display_name, device_type, ha_service_target, created_at "
+                "SELECT id, display_name, device_type, ha_service_target, person_entity_id, created_at "
                 "FROM send_device_mappings WHERE id = ?",
                 (mapping_id,),
             )
@@ -1771,7 +1771,7 @@ class SendDeviceMappingRepository:
         """Find a mapping by display_name (case-insensitive, with normalized fallback)."""
         async with get_db_read() as db:
             cursor = await db.execute(
-                "SELECT id, display_name, device_type, ha_service_target, created_at "
+                "SELECT id, display_name, device_type, ha_service_target, person_entity_id, created_at "
                 "FROM send_device_mappings WHERE display_name = ? COLLATE NOCASE",
                 (name.strip(),),
             )
@@ -1783,7 +1783,7 @@ class SendDeviceMappingRepository:
             if not normalized_input:
                 return None
             cursor = await db.execute(
-                "SELECT id, display_name, device_type, ha_service_target, created_at FROM send_device_mappings"
+                "SELECT id, display_name, device_type, ha_service_target, person_entity_id, created_at FROM send_device_mappings"
             )
             for row in await cursor.fetchall():
                 if _normalize_device_name(row["display_name"]) == normalized_input:
@@ -1791,13 +1791,15 @@ class SendDeviceMappingRepository:
             return None
 
     @staticmethod
-    async def create(display_name: str, device_type: str, ha_service_target: str) -> int:
+    async def create(
+        display_name: str, device_type: str, ha_service_target: str, person_entity_id: str | None = None
+    ) -> int:
         """Insert a new mapping. Returns the new row ID."""
         async with get_db_write() as db:
             cursor = await db.execute(
-                "INSERT INTO send_device_mappings (display_name, device_type, ha_service_target, created_at) "
-                "VALUES (?, ?, ?, ?)",
-                (display_name.strip(), device_type, ha_service_target, _now()),
+                "INSERT INTO send_device_mappings (display_name, device_type, ha_service_target, person_entity_id, created_at) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (display_name.strip(), device_type, ha_service_target, person_entity_id, _now()),
             )
             await db.commit()
             return cursor.lastrowid
@@ -1805,7 +1807,7 @@ class SendDeviceMappingRepository:
     @staticmethod
     async def update(mapping_id: int, **kwargs: Any) -> bool:
         """Update fields of an existing mapping. Returns True if row existed."""
-        allowed = {"display_name", "device_type", "ha_service_target"}
+        allowed = {"display_name", "device_type", "ha_service_target", "person_entity_id"}
         fields = {k: v for k, v in kwargs.items() if k in allowed}
         if not fields:
             return False
@@ -1839,7 +1841,7 @@ class CalendarUserMappingRepository:
         async with get_db_read() as db:
             cursor = await db.execute(
                 "SELECT id, display_name, normalized_name, phonetic_key, "
-                "calendar_entity_ids_json, reminder_offsets_json, is_default_user, created_at "
+                "calendar_entity_ids_json, reminder_offsets_json, is_default_user, person_entity_id, created_at "
                 "FROM calendar_user_mappings ORDER BY display_name"
             )
             return [dict(row) for row in await cursor.fetchall()]
@@ -1905,6 +1907,7 @@ class CalendarUserMappingRepository:
         calendar_entity_ids_json: str,
         reminder_offsets_json: str,
         is_default_user: int = 0,
+        person_entity_id: str | None = None,
     ) -> int:
         from app.agents.satellite_targeting import _normalize_name
 
@@ -1913,8 +1916,8 @@ class CalendarUserMappingRepository:
         async with get_db_write() as db:
             cursor = await db.execute(
                 "INSERT INTO calendar_user_mappings (display_name, normalized_name, phonetic_key, "
-                "calendar_entity_ids_json, reminder_offsets_json, is_default_user, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "calendar_entity_ids_json, reminder_offsets_json, is_default_user, person_entity_id, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     display_name.strip(),
                     normalized,
@@ -1922,6 +1925,7 @@ class CalendarUserMappingRepository:
                     calendar_entity_ids_json,
                     reminder_offsets_json,
                     is_default_user,
+                    person_entity_id,
                     _now(),
                     _now(),
                 ),
@@ -1931,7 +1935,13 @@ class CalendarUserMappingRepository:
 
     @staticmethod
     async def update(mapping_id: int, **kwargs: Any) -> bool:
-        allowed = {"display_name", "calendar_entity_ids_json", "reminder_offsets_json", "is_default_user"}
+        allowed = {
+            "display_name",
+            "calendar_entity_ids_json",
+            "reminder_offsets_json",
+            "is_default_user",
+            "person_entity_id",
+        }
         fields = {k: v for k, v in kwargs.items() if k in allowed}
         if not fields:
             return False
@@ -1940,7 +1950,7 @@ class CalendarUserMappingRepository:
 
             fields["normalized_name"] = _normalize_name(fields["display_name"])
             fields["phonetic_key"] = _phonetic_key(fields["display_name"])
-            fields["updated_at"] = _now()
+        fields["updated_at"] = _now()
         set_clause = ", ".join(f"{_validate_column_name(k)} = ?" for k in fields)
         values = [*list(fields.values()), mapping_id]
         async with get_db_write() as db:
@@ -1966,7 +1976,7 @@ class CalendarEntitySettingsRepository:
     async def list_all() -> list[dict[str, Any]]:
         async with get_db_read() as db:
             cursor = await db.execute(
-                "SELECT entity_id, friendly_name, enabled, created_at, updated_at "
+                "SELECT entity_id, friendly_name, enabled, is_universal, created_at, updated_at "
                 "FROM calendar_entity_settings ORDER BY friendly_name, entity_id"
             )
             return [dict(row) for row in await cursor.fetchall()]
@@ -1979,15 +1989,15 @@ class CalendarEntitySettingsRepository:
             return dict(row) if row else None
 
     @staticmethod
-    async def upsert(entity_id: str, friendly_name: str | None = None, enabled: int = 1) -> None:
+    async def upsert(entity_id: str, friendly_name: str | None = None, enabled: int = 1, is_universal: int = 0) -> None:
         async with get_db_write() as db:
             await db.execute(
-                "INSERT INTO calendar_entity_settings (entity_id, friendly_name, enabled, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?) "
+                "INSERT INTO calendar_entity_settings (entity_id, friendly_name, enabled, is_universal, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?) "
                 "ON CONFLICT(entity_id) DO UPDATE SET "
                 "friendly_name = COALESCE(EXCLUDED.friendly_name, calendar_entity_settings.friendly_name), "
-                "enabled = EXCLUDED.enabled, updated_at = EXCLUDED.updated_at",
-                (entity_id, friendly_name, enabled, _now(), _now()),
+                "enabled = EXCLUDED.enabled, is_universal = EXCLUDED.is_universal, updated_at = EXCLUDED.updated_at",
+                (entity_id, friendly_name, enabled, is_universal, _now(), _now()),
             )
             await db.commit()
 
@@ -2002,10 +2012,28 @@ class CalendarEntitySettingsRepository:
             return cursor.rowcount > 0
 
     @staticmethod
+    async def set_universal(entity_id: str, is_universal: int) -> bool:
+        async with get_db_write() as db:
+            cursor = await db.execute(
+                "UPDATE calendar_entity_settings SET is_universal = ?, updated_at = ? WHERE entity_id = ?",
+                (is_universal, _now(), entity_id),
+            )
+            await db.commit()
+            return cursor.rowcount > 0
+
+    @staticmethod
     async def get_enabled_entity_ids() -> list[str]:
         async with get_db_read() as db:
             cursor = await db.execute(
                 "SELECT entity_id FROM calendar_entity_settings WHERE enabled = 1 ORDER BY entity_id"
+            )
+            return [row[0] for row in await cursor.fetchall()]
+
+    @staticmethod
+    async def get_universal_entity_ids() -> list[str]:
+        async with get_db_read() as db:
+            cursor = await db.execute(
+                "SELECT entity_id FROM calendar_entity_settings WHERE enabled = 1 AND is_universal = 1 ORDER BY entity_id"
             )
             return [row[0] for row in await cursor.fetchall()]
 

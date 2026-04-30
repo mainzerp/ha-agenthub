@@ -48,6 +48,15 @@
                     <input id="send-device-target-manual" type="text" x-model="newMapping.ha_service_target"
                            placeholder="or type manually" class="form-input mt-sm">
                 </div>
+                <div class="form-group flex-1 min-w-180">
+                    <label class="form-label" for="send-device-person">Linked Person</label>
+                    <select id="send-device-person" x-model="newMapping.person_entity_id" class="form-input">
+                        <option value="">-- none --</option>
+                        <template x-for="p in persons" :key="p.entity_id">
+                            <option :value="p.entity_id" x-text="p.friendly_name || p.entity_id"></option>
+                        </template>
+                    </select>
+                </div>
             </div>
             <button type="submit" class="btn btn-primary">Add Mapping</button>
         </form>
@@ -63,6 +72,7 @@
                         <th>Display Name</th>
                         <th>Type</th>
                         <th>HA Target</th>
+                        <th>Linked Person</th>
                         <th>Created</th>
                         <th>Actions</th>
                     </tr>
@@ -73,6 +83,10 @@
                             <td x-text="m.display_name"></td>
                             <td><span class="badge" x-text="m.device_type"></span></td>
                             <td><code x-text="m.ha_service_target"></code></td>
+                            <td>
+                                <span x-show="m.person_entity_id" class="badge badge-teal" x-text="(persons.find(p => p.entity_id === m.person_entity_id)?.friendly_name) || m.person_entity_id"></span>
+                                <span x-show="!m.person_entity_id" class="text-muted text-xs">-</span>
+                            </td>
                             <td x-text="m.created_at"></td>
                             <td>
                                 <button class="btn btn-sm btn-danger" @click="deleteMapping(m.id)">Delete</button>
@@ -105,6 +119,16 @@ function sendDevicesPage() {
                 this.mappings = [];
             }
             await this.loadAvailableTargets();
+            await this.loadPersons();
+        },
+
+        async loadPersons() {
+            try {
+                this.persons = await window.dashboardApi.json('/api/admin/persons');
+            } catch (e) {
+                if (e.code === 'auth_expired') return;
+                this.persons = [];
+            }
         },
 
         async loadAvailableTargets() {
@@ -130,7 +154,7 @@ function sendDevicesPage() {
                 });
                 this.message = 'Mapping created';
                 this.messageType = 'success';
-                this.newMapping = { display_name: '', device_type: 'notify', ha_service_target: '' };
+                this.newMapping = { display_name: '', device_type: 'notify', ha_service_target: '', person_entity_id: '' };
                 await this.loadMappings();
             } catch (e) {
                 if (e.code === 'auth_expired') return;
