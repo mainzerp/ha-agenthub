@@ -64,6 +64,13 @@ async def _get_or_create_write_connection() -> aiosqlite.Connection:
     return _write_conn
 
 
+async def _column_exists(db: aiosqlite.Connection, table: str, column: str) -> bool:
+    """Check whether a column already exists on a table (SQLite)."""
+    async with db.execute(f"PRAGMA table_info({table})") as cursor:
+        rows = await cursor.fetchall()
+        return any(row["name"] == column for row in rows)
+
+
 @asynccontextmanager
 async def get_db_read() -> AsyncGenerator[aiosqlite.Connection, None]:
     """Async context manager returning a per-call read-only database connection.
@@ -346,6 +353,7 @@ async def _create_tables(db: aiosqlite.Connection) -> None:
             display_name TEXT NOT NULL UNIQUE COLLATE NOCASE,
             device_type TEXT NOT NULL CHECK(device_type IN ('notify', 'tts')),
             ha_service_target TEXT NOT NULL,
+            person_entity_id TEXT,
             created_at TEXT NOT NULL DEFAULT (datetime('now'))
         )
     """)
@@ -381,6 +389,7 @@ async def _create_tables(db: aiosqlite.Connection) -> None:
             calendar_entity_ids_json TEXT NOT NULL DEFAULT '[]',
             reminder_offsets_json TEXT NOT NULL DEFAULT '[1440, 60, 15]',
             is_default_user INTEGER NOT NULL DEFAULT 0,
+            person_entity_id TEXT,
             created_at INTEGER NOT NULL,
             updated_at INTEGER NOT NULL
         )
@@ -391,6 +400,7 @@ async def _create_tables(db: aiosqlite.Connection) -> None:
             entity_id TEXT PRIMARY KEY,
             friendly_name TEXT,
             enabled INTEGER NOT NULL DEFAULT 1,
+            is_universal INTEGER NOT NULL DEFAULT 0,
             created_at INTEGER NOT NULL,
             updated_at INTEGER NOT NULL
         )
@@ -1446,8 +1456,10 @@ async def _run_migrations(db: aiosqlite.Connection) -> None:
 
     if current_version < 26:
         # Migration 26: Add person_entity_id to send_device_mappings and calendar_user_mappings
-        await db.execute("ALTER TABLE send_device_mappings ADD COLUMN person_entity_id TEXT")
-        await db.execute("ALTER TABLE calendar_user_mappings ADD COLUMN person_entity_id TEXT")
+        if not await _column_exists(db, "send_device_mappings", "person_entity_id"):
+            await db.execute("ALTER TABLE send_device_mappings ADD COLUMN person_entity_id TEXT")
+        if not await _column_exists(db, "calendar_user_mappings", "person_entity_id"):
+            await db.execute("ALTER TABLE calendar_user_mappings ADD COLUMN person_entity_id TEXT")
         await db.execute(
             "CREATE INDEX IF NOT EXISTS idx_send_device_mappings_person ON send_device_mappings(person_entity_id)"
         )
@@ -1458,7 +1470,8 @@ async def _run_migrations(db: aiosqlite.Connection) -> None:
 
     if current_version < 27:
         # Migration 27: Add is_universal flag to calendar_entity_settings
-        await db.execute("ALTER TABLE calendar_entity_settings ADD COLUMN is_universal INTEGER NOT NULL DEFAULT 0")
+        if not await _column_exists(db, "calendar_entity_settings", "is_universal"):
+            await db.execute("ALTER TABLE calendar_entity_settings ADD COLUMN is_universal INTEGER NOT NULL DEFAULT 0")
         await db.execute(
             "CREATE INDEX IF NOT EXISTS idx_calendar_entity_settings_universal ON calendar_entity_settings(is_universal)"
         )
