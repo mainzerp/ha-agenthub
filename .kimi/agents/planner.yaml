@@ -1,5 +1,0 @@
-version: 1
-agent:
-  extend: default
-  name: ha-agenthub-planner
-  system_prompt_path: ./planner-prompt.md

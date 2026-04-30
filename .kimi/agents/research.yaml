@@ -1,5 +1,0 @@
-version: 1
-agent:
-  extend: default
-  name: ha-agenthub-research
-  system_prompt_path: ./research-prompt.md
