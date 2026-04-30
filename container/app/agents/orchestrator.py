@@ -453,8 +453,8 @@ class OrchestratorAgent(BaseAgent):
                 span["metadata"]["latency_ms"] = round(latency_ms, 1)
                 span["metadata"]["dispatch_timeout_sec"] = dispatch_timeout
                 result_data = self._normalize_agent_result(response.result)
-                span["metadata"]["agent_response"] = (result_data.get("speech") or "")[:500]
-                span["metadata"]["condensed_task"] = condensed_task[:500]
+                span["metadata"]["agent_response"] = result_data.get("speech") or ""
+                span["metadata"]["condensed_task"] = condensed_task
             # P3-10: per-request hot-path log; debug.
             logger.debug("Agent %s responded in %.1fms", target_agent, latency_ms)
             await track_request(target_agent, cache_hit=False, latency_ms=latency_ms)
@@ -489,7 +489,7 @@ class OrchestratorAgent(BaseAgent):
                         fb_span["metadata"]["reason"] = "timeout"
                         fb_span["metadata"]["dispatch_timeout_sec"] = fb_timeout
                         fb_result_data = self._normalize_agent_result(response.result)
-                        fb_span["metadata"]["agent_response"] = (fb_result_data.get("speech") or "")[:500]
+                        fb_span["metadata"]["agent_response"] = fb_result_data.get("speech") or ""
                     await track_request(_FALLBACK_AGENT, cache_hit=False, latency_ms=fb_latency_ms)
                     target_agent = _FALLBACK_AGENT
                 except TimeoutError:
@@ -528,7 +528,7 @@ class OrchestratorAgent(BaseAgent):
                         fb_span["metadata"]["reason"] = "agent_error"
                         fb_span["metadata"]["dispatch_timeout_sec"] = fb_timeout
                         fb_result_data = self._normalize_agent_result(response.result)
-                        fb_span["metadata"]["agent_response"] = (fb_result_data.get("speech") or "")[:500]
+                        fb_span["metadata"]["agent_response"] = fb_result_data.get("speech") or ""
                     await track_request(_FALLBACK_AGENT, cache_hit=False, latency_ms=fb_latency_ms)
                     target_agent = _FALLBACK_AGENT
                 except TimeoutError:
@@ -652,8 +652,8 @@ class OrchestratorAgent(BaseAgent):
                 )
                 span["metadata"]["content_agent"] = content_agent_id
                 span["metadata"]["content_length"] = len(content_speech or "")
-                span["metadata"]["agent_response"] = (content_speech or "")[:500]
-                span["metadata"]["condensed_task"] = content_task[:500]
+                span["metadata"]["agent_response"] = content_speech or ""
+                span["metadata"]["condensed_task"] = content_task
         else:
             content_speech = turns[-1].get("content", "") if turns else ""
             content_agent_id = "conversation-history"
@@ -715,8 +715,8 @@ class OrchestratorAgent(BaseAgent):
             )
             span["metadata"]["send_target"] = send_task_text
             span["metadata"]["content_from"] = content_agent_id
-            span["metadata"]["agent_response"] = (send_speech or "")[:500]
-            span["metadata"]["condensed_task"] = augmented_task[:500]
+            span["metadata"]["agent_response"] = send_speech or ""
+            span["metadata"]["condensed_task"] = augmented_task
 
         routed_to = f"{content_agent_id}, send-agent"
 
@@ -937,8 +937,8 @@ class OrchestratorAgent(BaseAgent):
                 ha_span["metadata"]["cached"] = True
         if hit.rewrite_applied:
             async with _optional_span(span_collector, "rewrite", agent_id="rewrite-agent") as rw_span:
-                rw_span["metadata"]["original_text"] = (hit.original_response_text or "")[:500]
-                rw_span["metadata"]["rewritten_text"] = speech[:500]
+                rw_span["metadata"]["original_text"] = hit.original_response_text or ""
+                rw_span["metadata"]["rewritten_text"] = speech
                 rw_span["metadata"]["latency_ms"] = hit.rewrite_latency_ms
                 rw_span["metadata"]["success"] = True
                 if hit.rewrite_latency_ms is not None:
@@ -946,8 +946,8 @@ class OrchestratorAgent(BaseAgent):
 
         async with _optional_span(span_collector, "return", agent_id="orchestrator") as ret_span:
             ret_span["metadata"]["from_agent"] = target_agent
-            ret_span["metadata"]["agent_response"] = speech[:500]
-            ret_span["metadata"]["final_response"] = speech[:500]
+            ret_span["metadata"]["agent_response"] = speech
+            ret_span["metadata"]["final_response"] = speech
             ret_span["metadata"]["mediated"] = bool(hit.rewrite_applied)
             ret_span["metadata"]["action_cache_hit"] = True
             ret_span["metadata"]["response_cache_hit"] = False
@@ -1264,8 +1264,8 @@ class OrchestratorAgent(BaseAgent):
         helper extracted in P1-1 iter 3.
         """
         span["metadata"]["target_agent"] = ", ".join(a for a, _, _ in classifications)
-        span["metadata"]["user_input"] = user_text[:500]
-        span["metadata"]["condensed_task"] = condensed_task[:500]
+        span["metadata"]["user_input"] = user_text
+        span["metadata"]["condensed_task"] = condensed_task
         span["metadata"]["confidence"] = confidence
         span["metadata"]["routing_cached"] = routing_cached
         span["metadata"]["multi_agent"] = len(classifications) > 1
@@ -1325,7 +1325,7 @@ class OrchestratorAgent(BaseAgent):
         cache_stored_routing = False
         async with _optional_span(span_collector, "return", agent_id="orchestrator") as ret_span:
             ret_span["metadata"]["from_agent"] = routed_to
-            ret_span["metadata"]["agent_response"] = speech[:500]
+            ret_span["metadata"]["agent_response"] = speech
             # Inject proactive calendar reminders before mediation
             if self._calendar_injector is not None and not has_error:
                 try:
@@ -1360,7 +1360,7 @@ class OrchestratorAgent(BaseAgent):
                 language=language,
                 has_error=has_error,
             )
-            ret_span["metadata"]["final_response"] = speech[:500]
+            ret_span["metadata"]["final_response"] = speech
             ret_span["metadata"]["mediated"] = speech != original_speech
             ret_span["metadata"]["voice_followup"] = voice_followup_effective
             if not skip_response_cache and target_agent != _CANCEL_INTERACTION_AGENT:
@@ -1779,7 +1779,7 @@ class OrchestratorAgent(BaseAgent):
                         logger.debug("Calendar reminder injection failed", exc_info=True)
 
                 result = {"speech": speech}
-                ret_span["metadata"]["agent_response"] = speech[:500]
+                ret_span["metadata"]["agent_response"] = speech
                 speech, voice_followup_effective = await self._merge_voice_followup_and_organic(
                     speech,
                     agent_requested=agent_voice_followup,
@@ -1787,7 +1787,7 @@ class OrchestratorAgent(BaseAgent):
                     language=detected_language,
                     has_error=has_error,
                 )
-                ret_span["metadata"]["final_response"] = speech[:500]
+                ret_span["metadata"]["final_response"] = speech
                 ret_span["metadata"]["mediated"] = (speech != original_speech) or len(classifications) > 1
                 ret_span["metadata"]["voice_followup"] = voice_followup_effective
                 ret_span["metadata"]["cache_stored_response"] = False
@@ -1983,7 +1983,7 @@ class OrchestratorAgent(BaseAgent):
                     language=detected_language,
                     has_error=False,
                 )
-                ret_span["metadata"]["final_response"] = full_speech[:500]
+                ret_span["metadata"]["final_response"] = full_speech
                 ret_span["metadata"]["mediated"] = False
                 ret_span["metadata"]["voice_followup"] = vf_eff
                 ret_span["metadata"]["cache_stored_response"] = False
@@ -2337,7 +2337,7 @@ class OrchestratorAgent(BaseAgent):
             async for token_dict in _stream_with_filler(self._dispatcher.dispatch_stream(request), span):
                 yield token_dict
             span["metadata"]["token_count"] = len(collected_speech)
-            span["metadata"]["agent_response"] = "".join(collected_speech)[:500]
+            span["metadata"]["agent_response"] = "".join(collected_speech)
             if filler_sent:
                 span["metadata"]["filler_sent"] = True
             span["metadata"]["non_filler_tokens_buffered_until_terminal"] = True
