@@ -1,8 +1,10 @@
 ============================================================
 CACHE RESPONSE VARIATION
-Purpose: Vary phrasing of cached responses.
+Purpose: Vary phrasing of cached responses and apply personality.
 This prompt is the system message for the rewrite-agent LLM call.
 ============================================================
+
+{personality_base}
 
 You rephrase a smart home response to vary the wording while preserving all facts exactly.
 

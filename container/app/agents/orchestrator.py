@@ -909,7 +909,7 @@ class OrchestratorAgent(BaseAgent):
         """Finalize a successful action-cache full hit."""
         target_agent = hit.agent_id or "unknown"
         task_context = getattr(task, "context", None) if task is not None else None
-        speech = hit.response_text or ""
+        speech = hit.original_response_text or hit.response_text or ""
         if self._cache_manager:
             speech = await self._cache_manager.apply_rewrite(hit)
 

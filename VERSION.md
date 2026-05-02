@@ -1,6 +1,11 @@
 # Version
 
-**Current Version:** 1.12.5
+**Current Version:** 1.13.0
+
+## Recent Changes (since 1.12.5)
+
+- **Rewrite + Personality:** The RewriteAgent now applies both personality mediation and rewrite variation in a single LLM call. On action-cache hits, the rewrite agent receives the unmediated (raw) agent response and applies the live personality prompt together with phrasing variation. This fixes cases where the rewrite agent previously struggled with already-mediated cached text. The cached mediated `response_text` is no longer used for replay output; only `original_response_text` feeds the rewrite path.
+- **Cache Fallback:** Action-cache replay now falls back to `original_response_text` (raw agent output) instead of the stale mediated `response_text` when rewrite is disabled or fails.
 
 ## Recent Changes (since 1.12.4)
 

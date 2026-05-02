@@ -85,10 +85,10 @@ class CacheManager:
         """Load config for both cache tiers."""
         await self._routing_cache.load_config()
         await self._action_cache.load_config()
-        from app.db.repository import SettingsRepository
 
-        personality = await SettingsRepository.get_value("personality.prompt", "")
-        self._rewrite_enabled = bool(personality.strip())
+        # Rewrite is enabled whenever the rewrite agent is present.
+        # Personality injection is now handled inside RewriteAgent itself.
+        self._rewrite_enabled = self._rewrite_agent is not None
         try:
             await asyncio.to_thread(
                 self._routing_cache.purge_entries_without_language,
@@ -114,11 +114,8 @@ class CacheManager:
         """Hot-reload thresholds and rewrite setting from DB."""
         await self._routing_cache.reload_config()
         await self._action_cache.reload_config()
-        from app.db.repository import SettingsRepository
 
-        if self._rewrite_agent:
-            personality = await SettingsRepository.get_value("personality.prompt", "")
-            self._rewrite_enabled = bool(personality.strip())
+        self._rewrite_enabled = self._rewrite_agent is not None
 
     async def process(
         self,
@@ -246,21 +243,23 @@ class CacheManager:
         *,
         conversation=None,
     ) -> str:
-        """Apply rewrite to an action-cache full hit and return final speech.
+        """Apply rewrite + personality to an action-cache full hit and return final speech.
 
-        Uses the original agent response (before any prior rewrite) as input
-        so the rewrite agent re-variates from the raw text on every hit
-        instead of rewriting an already-rewritten phrase.
+        Uses the original agent response (unmediated raw output) as input so
+        the rewrite agent applies both personality and phrasing variation in
+        a single LLM call. The cached mediated response_text is no longer used
+        for replay.
         """
-        if not self._rewrite_agent or not self._rewrite_enabled or not result.response_text:
-            return result.response_text or ""
-        # 1.12.4: prefer the original agent response so we do not feed the
-        # rewrite agent an already-rewritten phrase.
+        fallback_text = result.original_response_text or result.response_text or ""
+        if not self._rewrite_agent or not self._rewrite_enabled:
+            return fallback_text
         source_text = result.original_response_text or result.response_text
-        original_text = result.response_text
+        if not source_text:
+            return ""
+        language = getattr(result, "language", "en")
         t0 = time.perf_counter()
         try:
-            rewritten = await self._rewrite_agent.rewrite(source_text)
+            rewritten = await self._rewrite_agent.rewrite(source_text, language=language)
             rewrite_ms = (time.perf_counter() - t0) * 1000
             if rewritten:
                 result.response_text = rewritten
@@ -271,13 +270,13 @@ class CacheManager:
                 return rewritten
             result.rewrite_latency_ms = rewrite_ms
             await track_rewrite(latency_ms=rewrite_ms, success=False)
-            return original_text
+            return fallback_text
         except Exception:
             rewrite_ms = (time.perf_counter() - t0) * 1000
             result.rewrite_latency_ms = rewrite_ms
             await track_rewrite(latency_ms=rewrite_ms, success=False)
-            logger.warning("Rewrite failed, using original cached text", exc_info=True)
-            return original_text
+            logger.warning("Rewrite failed, using original agent text", exc_info=True)
+            return fallback_text
 
     def store_routing(
         self,

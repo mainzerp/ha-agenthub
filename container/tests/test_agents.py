@@ -2239,20 +2239,23 @@ class TestBaseAgentStream:
 
 
 class TestRewriteAgent:
+    @patch("app.agents.rewrite.SettingsRepository.get_value", new_callable=AsyncMock, return_value="")
     @patch("app.llm.client.complete", new_callable=AsyncMock, return_value="I've turned on the light for you.")
-    async def test_rewrite_returns_rephrased_text(self, mock_complete):
+    async def test_rewrite_returns_rephrased_text(self, mock_complete, mock_settings):
         agent = RewriteAgent()
         result = await agent.rewrite("Done, kitchen light is on.")
         assert result == "I've turned on the light for you."
 
+    @patch("app.agents.rewrite.SettingsRepository.get_value", new_callable=AsyncMock, return_value="")
     @patch("app.llm.client.complete", new_callable=AsyncMock, side_effect=Exception("LLM failure"))
-    async def test_rewrite_fallback_on_failure(self, mock_complete):
+    async def test_rewrite_fallback_on_failure(self, mock_complete, mock_settings):
         agent = RewriteAgent()
         result = await agent.rewrite("Done, kitchen light is on.")
         assert result == "Done, kitchen light is on."
 
+    @patch("app.agents.rewrite.SettingsRepository.get_value", new_callable=AsyncMock, return_value="")
     @patch("app.llm.client.complete", new_callable=AsyncMock, return_value="Rephrased text.")
-    async def test_handle_task_a2a_interface(self, mock_complete):
+    async def test_handle_task_a2a_interface(self, mock_complete, mock_settings):
         agent = RewriteAgent()
         result = await agent.handle_task(_make_task("Original cached text"))
         assert result.speech == "Rephrased text."
@@ -2262,25 +2265,44 @@ class TestRewriteAgent:
         assert agent.agent_card.agent_id == "rewrite-agent"
         assert "rewrite" in agent.agent_card.skills
 
+    @patch("app.agents.rewrite.SettingsRepository.get_value", new_callable=AsyncMock, return_value="")
     @patch("app.llm.client.complete", new_callable=AsyncMock, return_value="")
-    async def test_rewrite_fallback_on_empty_response(self, mock_complete):
+    async def test_rewrite_fallback_on_empty_response(self, mock_complete, mock_settings):
         agent = RewriteAgent()
         result = await agent.rewrite("Done, kitchen light is on.")
         assert result == "Done, kitchen light is on."
 
+    @patch("app.agents.rewrite.SettingsRepository.get_value", new_callable=AsyncMock, return_value="")
     @patch("app.llm.client.complete", new_callable=AsyncMock, return_value=None)
-    async def test_rewrite_fallback_on_none_response(self, mock_complete):
+    async def test_rewrite_fallback_on_none_response(self, mock_complete, mock_settings):
         agent = RewriteAgent()
         result = await agent.rewrite("Done, kitchen light is on.")
         assert result == "Done, kitchen light is on."
 
+    @patch("app.agents.rewrite.SettingsRepository.get_value", new_callable=AsyncMock, return_value="")
     @patch("app.llm.client.complete", new_callable=AsyncMock, return_value="Rephrased text.")
-    async def test_rewrite_wraps_input_for_llm(self, mock_complete):
+    async def test_rewrite_wraps_input_for_llm(self, mock_complete, mock_settings):
         agent = RewriteAgent()
         await agent.rewrite("Done, Küche light is on.")
         messages = mock_complete.call_args[0][1]
         assert USER_INPUT_START in messages[1]["content"]
         assert USER_INPUT_END in messages[1]["content"]
+
+    @patch("app.agents.rewrite.SettingsRepository.get_value", new_callable=AsyncMock, return_value="pirate")
+    @patch("app.llm.client.complete", new_callable=AsyncMock, return_value="Rephrased text.")
+    async def test_rewrite_injects_personality_into_prompt(self, mock_complete, mock_settings):
+        agent = RewriteAgent()
+        await agent.rewrite("Done, kitchen light is on.")
+        messages = mock_complete.call_args[0][1]
+        assert "pirate" in messages[0]["content"]
+
+    @patch("app.agents.rewrite.SettingsRepository.get_value", new_callable=AsyncMock, return_value="")
+    @patch("app.llm.client.complete", new_callable=AsyncMock, return_value="Rephrased text.")
+    async def test_rewrite_injects_language_into_prompt(self, mock_complete, mock_settings):
+        agent = RewriteAgent()
+        await agent.rewrite("Done, kitchen light is on.", language="de")
+        messages = mock_complete.call_args[0][1]
+        assert "de" in messages[0]["content"]
 
 
 # ---------------------------------------------------------------------------

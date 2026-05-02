@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 
 from app.agents.base import BaseAgent
+from app.db.repository import SettingsRepository
 from app.models.agent import AgentCard, AgentTask, TaskResult
 
 logger = logging.getLogger(__name__)
@@ -27,13 +28,21 @@ class RewriteAgent(BaseAgent):
             endpoint="local://rewrite-agent",
         )
 
-    async def rewrite(self, cached_text: str) -> str:
-        """Rephrase a cached response. Returns the rewritten text.
+    async def rewrite(self, cached_text: str, language: str = "en") -> str:
+        """Rephrase a cached response and apply personality. Returns the rewritten text.
 
         Falls back to returning cached_text verbatim on any failure.
-        The input is already personality-mediated, so no personality injection needed.
+        Uses the unmediated (raw) agent response as input so personality
+        and rewrite variation are applied in a single LLM call.
         """
         system_prompt = await self._load_prompt_async("rewrite")
+        try:
+            personality = await SettingsRepository.get_value("personality.prompt", "")
+        except Exception:
+            personality = ""
+        personality_text = personality.strip() if personality else ""
+        system_prompt = system_prompt.replace("{personality}", personality_text)
+        system_prompt = system_prompt.replace("{language}", language or "en").strip()
         messages = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": self._wrap_user_input(cached_text)},

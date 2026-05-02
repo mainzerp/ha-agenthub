@@ -279,11 +279,11 @@ class TestCacheManager:
         manager, _store = self._make_manager()
         manager._rewrite_agent = AsyncMock()
         manager._rewrite_enabled = False
-        result = CacheResult(hit_type="action_hit", response_text="Cached text.")
+        result = CacheResult(hit_type="action_hit", response_text="Cached text.", original_response_text="Original.")
 
         output = await manager.apply_rewrite(result)
 
-        assert output == "Cached text."
+        assert output == "Original."
         manager._rewrite_agent.rewrite.assert_not_called()
 
     @pytest.mark.asyncio
@@ -293,7 +293,11 @@ class TestCacheManager:
         manager._rewrite_agent.rewrite = AsyncMock(return_value="Rewritten text.")
         manager._rewrite_enabled = True
         result = ActionReplayOutcome(
-            kind="full_hit", entry_id="id-1", agent_id="light-agent", response_text="Cached text."
+            kind="full_hit",
+            entry_id="id-1",
+            agent_id="light-agent",
+            response_text="Cached text.",
+            original_response_text="Original.",
         )
 
         with patch("app.cache.cache_manager.track_rewrite", new_callable=AsyncMock) as track:
@@ -301,7 +305,7 @@ class TestCacheManager:
 
         assert output == "Rewritten text."
         assert result.rewrite_applied is True
-        assert result.original_response_text == "Cached text."
+        assert result.original_response_text == "Original."
         assert result.rewrite_latency_ms is not None
         track.assert_awaited_once()
 
@@ -987,10 +991,15 @@ class TestCacheManagerExtended:
         rewrite_agent.rewrite = AsyncMock(return_value="")
         manager._rewrite_agent = rewrite_agent
         manager._rewrite_enabled = True
-        result = CacheResult(hit_type="action_hit", agent_id="light-agent", response_text="Original cached text.")
+        result = CacheResult(
+            hit_type="action_hit",
+            agent_id="light-agent",
+            response_text="Original cached text.",
+            original_response_text="Original raw text.",
+        )
         with patch("app.cache.cache_manager.track_rewrite", new_callable=AsyncMock):
             output = await manager.apply_rewrite(result)
-        assert output == "Original cached text."
+        assert output == "Original raw text."
 
     @pytest.mark.asyncio
     async def test_action_hit_applies_rewrite(self):
@@ -999,11 +1008,17 @@ class TestCacheManagerExtended:
         rewrite_agent.rewrite = AsyncMock(return_value="Rephrased text.")
         manager._rewrite_agent = rewrite_agent
         manager._rewrite_enabled = True
-        result = CacheResult(hit_type="action_hit", agent_id="light-agent", response_text="Original text.")
+        result = CacheResult(
+            hit_type="action_hit",
+            agent_id="light-agent",
+            response_text="Original text.",
+            original_response_text="Original raw.",
+        )
         with patch("app.cache.cache_manager.track_rewrite", new_callable=AsyncMock):
             output = await manager.apply_rewrite(result)
         assert output == "Rephrased text."
         assert result.response_text == "Rephrased text."
+        rewrite_agent.rewrite.assert_awaited_once_with("Original raw.", language="en")
 
     @pytest.mark.asyncio
     async def test_action_hit_sets_rewrite_metadata(self):
@@ -1012,7 +1027,9 @@ class TestCacheManagerExtended:
         rewrite_agent.rewrite = AsyncMock(return_value="Rephrased.")
         manager._rewrite_agent = rewrite_agent
         manager._rewrite_enabled = True
-        result = CacheResult(hit_type="action_hit", agent_id="light-agent", response_text="Original.")
+        result = CacheResult(
+            hit_type="action_hit", agent_id="light-agent", response_text="Original.", original_response_text="Original."
+        )
         with patch("app.cache.cache_manager.track_rewrite", new_callable=AsyncMock):
             await manager.apply_rewrite(result)
         assert result.rewrite_applied is True
@@ -1028,11 +1045,17 @@ class TestCacheManagerExtended:
         rewrite_agent.rewrite = AsyncMock(return_value="")
         manager._rewrite_agent = rewrite_agent
         manager._rewrite_enabled = True
-        result = CacheResult(hit_type="action_hit", agent_id="light-agent", response_text="Original.")
+        result = CacheResult(
+            hit_type="action_hit",
+            agent_id="light-agent",
+            response_text="Original.",
+            original_response_text="Original raw.",
+        )
         with patch("app.cache.cache_manager.track_rewrite", new_callable=AsyncMock):
-            await manager.apply_rewrite(result)
+            output = await manager.apply_rewrite(result)
+        assert output == "Original raw."
         assert result.rewrite_applied is False
-        assert result.original_response_text is None
+        assert result.original_response_text == "Original raw."
         assert result.response_text == "Original."
 
     @pytest.mark.asyncio
@@ -1042,11 +1065,17 @@ class TestCacheManagerExtended:
         rewrite_agent.rewrite = AsyncMock(side_effect=RuntimeError("LLM error"))
         manager._rewrite_agent = rewrite_agent
         manager._rewrite_enabled = True
-        result = CacheResult(hit_type="action_hit", agent_id="light-agent", response_text="Original.")
+        result = CacheResult(
+            hit_type="action_hit",
+            agent_id="light-agent",
+            response_text="Original.",
+            original_response_text="Original raw.",
+        )
         with patch("app.cache.cache_manager.track_rewrite", new_callable=AsyncMock):
-            await manager.apply_rewrite(result)
+            output = await manager.apply_rewrite(result)
+        assert output == "Original raw."
         assert result.rewrite_applied is False
-        assert result.original_response_text is None
+        assert result.original_response_text == "Original raw."
         assert result.rewrite_latency_ms is not None
         assert result.response_text == "Original."
 
