@@ -100,6 +100,8 @@ async def _overview_ticker(app) -> None:
             # Minimal metadata-only payload (no entity-level data)
             payload = {"t": "overview", "ts": asyncio.get_event_loop().time()}
             await _publish("overview", payload)
+        except asyncio.CancelledError:
+            raise
         except Exception:
             logger.exception("overview ticker error")
 
@@ -111,6 +113,8 @@ async def _health_ticker(app) -> None:
         try:
             payload = {"t": "health", "ts": asyncio.get_event_loop().time()}
             await _publish("health", payload)
+        except asyncio.CancelledError:
+            raise
         except Exception:
             logger.exception("health ticker error")
 
@@ -122,6 +126,8 @@ async def _timers_ticker(app) -> None:
         try:
             payload = {"t": "timers", "ts": asyncio.get_event_loop().time()}
             await _publish("timers", payload)
+        except asyncio.CancelledError:
+            raise
         except Exception:
             logger.exception("timers ticker error")
 
@@ -133,19 +139,35 @@ async def _traces_ticker(app) -> None:
         try:
             payload = {"t": "traces", "ts": asyncio.get_event_loop().time()}
             await _publish("traces", payload)
+        except asyncio.CancelledError:
+            raise
         except Exception:
             logger.exception("traces ticker error")
 
 
+def _log_task_exception(task: asyncio.Task) -> None:
+    """Done callback that logs unhandled exceptions from SSE ticker tasks."""
+    exc = task.exception()
+    if exc is not None and not isinstance(exc, asyncio.CancelledError):
+        logger.error("SSE ticker task %r raised an exception", task.get_name(), exc_info=exc)
+
+
 def register_sse_tickers(app) -> None:
     """Register SSE background tickers at application startup."""
+    existing = getattr(app.state, "sse_ticker_tasks", [])
+    for task in existing:
+        if not task.done():
+            task.cancel()
+    app.state.sse_ticker_tasks = []
     tasks = [
         asyncio.create_task(_overview_ticker(app)),
         asyncio.create_task(_health_ticker(app)),
         asyncio.create_task(_timers_ticker(app)),
         asyncio.create_task(_traces_ticker(app)),
     ]
-    app.state.sse_ticker_tasks = tasks
+    for task in tasks:
+        task.add_done_callback(_log_task_exception)
+    app.state.sse_ticker_tasks.extend(tasks)
 
 
 # ---------------------------------------------------------------------------

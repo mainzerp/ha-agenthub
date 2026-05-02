@@ -267,6 +267,16 @@ async def lifespan(app: FastAPI):
 
         await orchestrator_agent.initialize()
 
+    # Populate allowed WebSocket origins from HA URL
+    ha_client = getattr(app.state, "ha_client", None)
+    if ha_client is not None and getattr(ha_client, "_base_url", None):
+        from urllib.parse import urlparse
+
+        parsed = urlparse(ha_client._base_url)
+        app.state.allowed_ws_origins = {f"{parsed.scheme}://{parsed.netloc}"}
+    else:
+        app.state.allowed_ws_origins = set()
+
     # Register default notification profile if not set
     existing_notif = await SettingsRepository.get_value("notification.profile")
     if existing_notif is None:
@@ -400,6 +410,17 @@ async def lifespan(app: FastAPI):
         tasks_to_cancel.append(entity_index_init_task)
     if tasks_to_cancel:
         await asyncio.gather(*tasks_to_cancel, return_exceptions=True)
+
+    # Cancel SSE ticker tasks with timeout
+    sse_ticker_tasks = getattr(app.state, "sse_ticker_tasks", [])
+    for task in sse_ticker_tasks:
+        if not task.done():
+            task.cancel()
+    if sse_ticker_tasks:
+        try:
+            await asyncio.wait_for(asyncio.gather(*sse_ticker_tasks, return_exceptions=True), timeout=5.0)
+        except TimeoutError:
+            logger.warning("SSE ticker tasks did not shut down within 5 seconds")
 
     # Flush buffered cache hit-count updates before closing stores
     try:

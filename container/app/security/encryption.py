@@ -105,7 +105,7 @@ async def retrieve_secret(key: str) -> str | None:
         return decrypt(encrypted)
     except ValueError:
         logger.error("Failed to decrypt secret '%s' -- Fernet key may have been rotated", key)
-        return None
+        raise RuntimeError(f"Failed to decrypt secret '{key}'") from None
 
 
 async def delete_secret(key: str) -> None:

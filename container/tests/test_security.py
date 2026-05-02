@@ -68,6 +68,19 @@ class TestEncryption:
             with pytest.raises(ValueError, match="Decryption failed"):
                 decrypt(ciphertext)
 
+    @pytest.mark.asyncio
+    async def test_retrieve_secret_raises_on_bad_decryption(self):
+        from app.security.encryption import retrieve_secret
+
+        with (
+            patch(
+                "app.security.encryption.SecretsRepository.get", new_callable=AsyncMock, return_value=b"bad-ciphertext"
+            ),
+            patch("app.security.encryption.decrypt", side_effect=ValueError("Decryption failed")),
+            pytest.raises(RuntimeError, match="Failed to decrypt secret"),
+        ):
+            await retrieve_secret("test-key")
+
 
 class TestSessionSigningKey:
     """SEC-6: signing key for admin sessions must be derived via HKDF and
@@ -500,3 +513,14 @@ class TestWebSocketAuth:
         result = await require_api_key_ws(ws)
         assert result == "header-key"
         mock_logger.warning.assert_not_called()
+
+    def test_sanitize_input_logs_warning_on_truncation(self, caplog):
+        """CONT-2.6: sanitize_input must log a warning when truncating long input."""
+        from app.security.sanitization import MAX_INPUT_LENGTH, sanitize_input
+
+        long_text = "x" * (MAX_INPUT_LENGTH + 50)
+        with caplog.at_level("WARNING", logger="app.security.sanitization"):
+            result = sanitize_input(long_text)
+
+        assert len(result) == MAX_INPUT_LENGTH
+        assert any("truncated" in rec.message for rec in caplog.records)

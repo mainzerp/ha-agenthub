@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
+from urllib.parse import urlparse
 
 import aiohttp
 import voluptuous as vol
@@ -34,7 +36,14 @@ logger = logging.getLogger(__name__)
 
 def _normalize_url(url: str) -> str:
     normalized = (url or "").strip().rstrip("/")
-    if normalized and not normalized.startswith(("http://", "https://")):
+    if not normalized:
+        raise ValueError("URL is required")
+    if " " in normalized or "\t" in normalized or "\n" in normalized:
+        raise ValueError("URL must not contain whitespace")
+    parsed = urlparse(normalized)
+    if not parsed.scheme or not parsed.netloc:
+        raise ValueError("URL must start with http:// or https://")
+    if parsed.scheme not in ("http", "https"):
         raise ValueError("URL must start with http:// or https://")
     return normalized
 
@@ -92,7 +101,7 @@ async def _validate_connection(url: str, api_key: str) -> str | None:
                 data = await resp.json()
                 if data.get("status") != "ok":
                     return "cannot_connect"
-    except (aiohttp.ClientError, TimeoutError):
+    except (aiohttp.ClientError, asyncio.TimeoutError):
         return "cannot_connect"
     return None
 
@@ -147,7 +156,9 @@ class HaAgentHubConfigFlow(ConfigFlow, domain=DOMAIN):
 
         if user_input is not None:
             try:
-                url = _normalize_url(user_input.get(CONF_URL, entry.data.get(CONF_URL, "")))
+                url = _normalize_url(
+                    user_input.get(CONF_URL, entry.data.get(CONF_URL, ""))
+                )
             except ValueError:
                 errors["base"] = "invalid_url"
             else:
@@ -207,18 +218,32 @@ class HaAgentHubOptionsFlow(OptionsFlow):
                 else:
                     # Update unique_id when URL changes to keep deduplication correct.
                     if url != self._entry.unique_id:
-                        self.hass.config_entries.async_update_entry(
-                            self._entry, unique_id=url
-                        )
+                        for existing in self.hass.config_entries.async_entries(DOMAIN):
+                            if (
+                                existing.unique_id == url
+                                and existing.entry_id != self._entry.entry_id
+                            ):
+                                errors["base"] = "already_configured"
+                                break
+                        else:
+                            self.hass.config_entries.async_update_entry(
+                                self._entry, unique_id=url
+                            )
+                        if errors:
+                            return self.async_show_form(
+                                step_id="init",
+                                data_schema=_build_options_schema(current),
+                                errors=errors,
+                            )
                     self.hass.config_entries.async_update_entry(
                         self._entry,
                         title=name,
-                        data={
+                        data=self._entry.data,
+                        options={
                             CONF_NAME: name,
                             CONF_URL: url,
                             CONF_API_KEY: api_key,
                         },
-                        options={},
                     )
                     return self.async_create_entry(data={})
 

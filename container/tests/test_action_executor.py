@@ -54,7 +54,17 @@ class _AuthenticationError(Exception):
     pass
 
 
+class _APIError(Exception):
+    pass
+
+
+class _RateLimitError(Exception):
+    pass
+
+
 _litellm_mock.exceptions.AuthenticationError = _AuthenticationError
+_litellm_mock.exceptions.APIError = _APIError
+_litellm_mock.RateLimitError = _RateLimitError
 sys.modules.setdefault("litellm", _litellm_mock)
 
 from app.agents.action_executor import execute_action, filter_matches_by_domain, parse_action  # noqa: E402

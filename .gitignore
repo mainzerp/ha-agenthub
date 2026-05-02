@@ -62,7 +62,8 @@ htmlcov/
 CLAUDE.local.md
 .claude/settings.local.json
 
-# Docs/SubAgent working files
+# Docs/SubAgent working files (intentionally excluded: SubAgent docs are ephemeral
+# and force-added when needed. See AGENTS.md.)
 docs/SubAgent/
 kimi.exe
 

@@ -1,5 +1,5 @@
 # ---- Builder stage: compile native wheels ----
-FROM python:3.12-slim AS builder
+FROM python:3.12-slim-bookworm AS builder
 
 WORKDIR /build
 
@@ -23,7 +23,7 @@ ENV PYTHONPATH=/install/lib/python3.12/site-packages
 RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
 
 # ---- Final stage: slim runtime ----
-FROM python:3.12-slim
+FROM python:3.12-slim-bookworm
 
 WORKDIR /app
 
@@ -42,9 +42,15 @@ RUN addgroup --system app && adduser --system --ingroup app app \
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
-# Install gosu for privilege drop
-RUN apt-get update && apt-get install -y --no-install-recommends gosu \
-    && rm -rf /var/lib/apt/lists/*
+# Install gosu for privilege drop (verified binary)
+ENV GOSU_VERSION=1.17
+ENV GOSU_SHA256=bbc4136d03ab138b1ad66fa4fc051bafc6cc7ffae632b069a53657279a450de3
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates wget \
+    && rm -rf /var/lib/apt/lists/* \
+    && wget -qO /usr/local/bin/gosu "https://github.com/tianon/gosu/releases/download/${GOSU_VERSION}/gosu-amd64" \
+    && echo "${GOSU_SHA256}  /usr/local/bin/gosu" | sha256sum -c - \
+    && chmod +x /usr/local/bin/gosu \
+    && gosu nobody true
 
 # Default environment variables
 ENV CONTAINER_HOST=0.0.0.0

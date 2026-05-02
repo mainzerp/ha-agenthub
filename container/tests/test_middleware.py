@@ -101,8 +101,8 @@ class TestSetupRedirectMiddleware:
         client.get("/")
         # Second request should use cache
         client.get("/")
-        # is_complete called once (then cached since True)
-        assert mock_repo.is_complete.await_count >= 1
+        # is_complete called exactly once (then cached since True)
+        assert mock_repo.is_complete.await_count == 1
 
 
 # ---------------------------------------------------------------------------
@@ -167,11 +167,62 @@ class TestTracingMiddleware:
 # ---------------------------------------------------------------------------
 
 
+class TestRateLimitClientIp:
+    def test_get_client_ip_uses_direct_when_no_forwarded(self):
+        from app.middleware.rate_limit import _get_client_ip
+
+        request = MagicMock()
+        request.client.host = "192.168.1.1"
+        request.headers = {}
+        assert _get_client_ip(request) == "192.168.1.1"
+
+    def test_get_client_ip_ignores_forwarded_when_direct_not_trusted(self):
+        from app.middleware.rate_limit import _get_client_ip
+
+        request = MagicMock()
+        request.client.host = "192.168.1.1"
+        request.headers = {"x-forwarded-for": "10.0.0.1, 10.0.0.2"}
+        assert _get_client_ip(request) == "192.168.1.1"
+
+    @patch("app.middleware.rate_limit._TRUSTED_PROXIES", {"10.0.0.1", "10.0.0.2"})
+    def test_get_client_ip_walks_rightmost_non_trusted(self):
+        from app.middleware.rate_limit import _get_client_ip
+
+        request = MagicMock()
+        request.client.host = "10.0.0.2"
+        request.headers = {"x-forwarded-for": "spoofed, 192.168.1.1, 10.0.0.1"}
+        assert _get_client_ip(request) == "192.168.1.1"
+
+    @patch("app.middleware.rate_limit._TRUSTED_PROXIES", {"10.0.0.1", "10.0.0.2"})
+    def test_get_client_ip_skips_all_trusted_proxies(self):
+        from app.middleware.rate_limit import _get_client_ip
+
+        request = MagicMock()
+        request.client.host = "10.0.0.2"
+        request.headers = {"x-forwarded-for": "10.0.0.1"}
+        assert _get_client_ip(request) == "10.0.0.1"
+
+
 class TestApplyAuthDependencies:
     def test_registers_exception_handlers(self):
-        from fastapi import FastAPI
+        from fastapi import FastAPI, HTTPException
+        from starlette.testclient import TestClient
 
         app = FastAPI()
         apply_auth_dependencies(app)
         # HTTPException and generic Exception should be registered
         assert len(app.exception_handlers) >= 2
+
+        @app.get("/raise-http")
+        async def raise_http():
+            raise HTTPException(status_code=418)
+
+        @app.get("/raise-value")
+        async def raise_value():
+            raise ValueError("oops")
+
+        client = TestClient(app, raise_server_exceptions=False)
+        r1 = client.get("/raise-http")
+        assert r1.status_code == 418
+        r2 = client.get("/raise-value")
+        assert r2.status_code == 500

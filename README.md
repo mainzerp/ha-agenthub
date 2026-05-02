@@ -6,6 +6,7 @@ A multi-agent AI assistant for Home Assistant with container-based A2A orchestra
 ![Lint](https://github.com/mainzerp/ha-agenthub/actions/workflows/lint.yml/badge.svg?branch=main)
 ![Docker Build](https://github.com/mainzerp/ha-agenthub/actions/workflows/docker-build.yml/badge.svg?branch=main)
 ![HACS Validation](https://github.com/mainzerp/ha-agenthub/actions/workflows/hacs-validation.yml/badge.svg?branch=main)
+![Release](https://github.com/mainzerp/ha-agenthub/actions/workflows/release.yml/badge.svg)
 
 ## Features
 

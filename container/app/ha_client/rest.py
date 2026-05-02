@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from collections.abc import Iterator
 from contextlib import asynccontextmanager, contextmanager
 from contextvars import ContextVar
 from datetime import UTC, datetime
@@ -26,7 +27,7 @@ _direct_ha_write_warning_count = 0
 
 
 @contextmanager
-def allow_internal_ha_service_calls(source: str):
+def allow_internal_ha_service_calls(source: str) -> Iterator[None]:
     token = _ha_service_call_context.set(f"internal:{source}")
     try:
         yield
@@ -35,7 +36,7 @@ def allow_internal_ha_service_calls(source: str):
 
 
 @contextmanager
-def mark_verified_ha_service_call(source: str):
+def mark_verified_ha_service_call(source: str) -> Iterator[None]:
     token = _ha_service_call_context.set(f"verified:{source}")
     try:
         yield
@@ -263,7 +264,7 @@ class HARestClient:
             logger.warning("Failed to fetch HA config", exc_info=True)
             return {}
 
-    async def render_template(self, template: str) -> str | None:
+    async def render_template(self, template: str, variables: dict[str, Any] | None = None) -> str | None:
         """POST /api/template -- render a Jinja2 template server-side.
 
         Returns the rendered text on success or ``None`` on any error.
@@ -276,7 +277,7 @@ class HARestClient:
         try:
             resp = await self._client.post(
                 "/api/template",
-                json={"template": template},
+                json={"template": template, "variables": variables or {}},
             )
             resp.raise_for_status()
             rendered = (resp.text or "").strip()

@@ -36,7 +36,8 @@
     },
     "error": {
       "cannot_connect": "Keine Verbindung zum Container. URL prüfen und ob der Container läuft.",
-      "invalid_auth": "Ungültiger API-Schlüssel. Bitte prüfen und erneut versuchen."
+      "invalid_auth": "Ungültiger API-Schlüssel. Bitte prüfen und erneut versuchen.",
+      "invalid_url": "Ungültige URL. Muss mit http:// oder https:// beginnen."
     }
   }
 }

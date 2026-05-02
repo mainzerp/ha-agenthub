@@ -30,7 +30,7 @@ class _FakeHaClient:
         self.calls: list[tuple] = []
         self.template_calls: list[str] = []
 
-    async def render_template(self, template: str) -> str | None:
+    async def render_template(self, template: str, variables: dict | None = None) -> str | None:
         self.template_calls.append(template)
         if self._device_id_text == "":
             return None

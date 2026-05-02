@@ -7,6 +7,7 @@ import contextlib
 import logging
 import time
 from dataclasses import dataclass
+from typing import Any
 
 from app.analytics.collector import track_cache_event, track_rewrite
 from app.cache.action_cache import ActionCache
@@ -39,7 +40,7 @@ class ActionReplayOutcome:
     entry_id: str
     agent_id: str
     response_text: str
-    replay_result: dict | None = None
+    replay_result: dict[str, Any] | None = None
     similarity: float | None = None
     language: str = "en"
     cached_action: CachedAction | None = None
@@ -415,7 +416,7 @@ class CacheManager:
         self._routing_cache.flush_pending()
         self._action_cache.flush_pending()
 
-    def get_stats(self) -> dict:
+    def get_stats(self) -> dict[str, Any]:
         """Return combined stats for both tiers."""
         return {
             "routing": self._routing_cache.get_stats(),

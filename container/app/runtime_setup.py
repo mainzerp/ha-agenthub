@@ -7,6 +7,8 @@ import inspect
 import logging
 from typing import TYPE_CHECKING
 
+import aiosqlite
+
 from app.a2a.orchestrator_gateway import OrchestratorGateway
 from app.agents.automation import AutomationAgent
 from app.agents.base import preload_prompt_cache
@@ -203,7 +205,7 @@ async def _prime_entity_index(app: FastAPI, ha_client: HARestClient, entity_inde
             stored_version = await SettingsRepository.get_value("entity_index.schema_version", "0")
             if int(stored_version or 0) != INDEX_SCHEMA_VERSION:
                 force_rebuild = True
-        except Exception:
+        except (ImportError, ValueError, aiosqlite.OperationalError):
             INDEX_SCHEMA_VERSION = 0  # type: ignore[assignment]  # noqa: N806
 
         active_model = await _resolve_active_embedding_model()
@@ -737,7 +739,7 @@ async def _initialize_setup_dependent_services(app: FastAPI, *, source: str) -> 
             while True:
                 await asyncio.sleep(_ENTITY_UPDATE_FLUSH_INTERVAL_SEC)
                 batch = []
-                while not entity_update_queue.empty():
+                while True:
                     try:
                         batch.append(entity_update_queue.get_nowait())
                     except asyncio.QueueEmpty:

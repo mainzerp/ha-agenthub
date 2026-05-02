@@ -243,6 +243,9 @@ async def test_ws_conversation_mints_per_turn_trace(mock_summary):
                 '{"text": "turn two"}',
             ]
             self.accepted = False
+            self.headers = {}
+            self.app = MagicMock()
+            self.app.state.allowed_ws_origins = set()
 
         async def accept(self):
             self.accepted = True

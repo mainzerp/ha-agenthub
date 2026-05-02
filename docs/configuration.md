@@ -34,7 +34,8 @@ All runtime settings are stored in the `settings` table, organized by category. 
 
 The action cache was named "response cache" in 0.20.x and earlier.
 The v4 schema migration renamed the keys to canonical `cache.action.*`
-form. The export and import API surface uses the `action` tier name.
+form and migrated legacy `cache.response.*` rows (schema migration 23).
+The export and import API surface uses the `action` tier name.
 
 | Key | Default | Type | Description |
 |-----|---------|------|-------------|

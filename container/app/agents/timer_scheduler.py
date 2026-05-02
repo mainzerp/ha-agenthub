@@ -208,12 +208,20 @@ class TimerScheduler:
             if not task.done():
                 task.cancel()
         if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            for result in results:
+                if isinstance(result, BaseException):
+                    logger.error("Timer task raised exception during stop", exc_info=(type(result), result, None))
         startup_recovery = self._startup_recovery_task
         self._startup_recovery_task = None
         if startup_recovery and not startup_recovery.done():
             startup_recovery.cancel()
-            await asyncio.gather(startup_recovery, return_exceptions=True)
+            results = await asyncio.gather(startup_recovery, return_exceptions=True)
+            for result in results:
+                if isinstance(result, BaseException):
+                    logger.error(
+                        "Startup recovery task raised exception during stop", exc_info=(type(result), result, None)
+                    )
         self._tasks.clear()
         self._by_logical.clear()
         self._started = False
@@ -466,7 +474,7 @@ class TimerScheduler:
         task = self._tasks.pop(timer_id, None)
         if task and not task.done():
             task.cancel()
-        for ids in self._by_logical.values():
+        for ids in list(self._by_logical.values()):
             if timer_id in ids:
                 ids.remove(timer_id)
 
@@ -488,7 +496,7 @@ class TimerScheduler:
                 logger.error("Timer %s mark_fired failed", timer_id, exc_info=True)
         finally:
             self._tasks.pop(timer_id, None)
-            for ids in self._by_logical.values():
+            for ids in list(self._by_logical.values()):
                 if timer_id in ids:
                     ids.remove(timer_id)
 

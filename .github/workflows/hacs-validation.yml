@@ -25,7 +25,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: HACS validation
-        uses: hacs/action@main
+        uses: hacs/action@22.0.0
         with:
           category: integration
           # GitHub repository description and topics are org-level metadata, not files in this repo.

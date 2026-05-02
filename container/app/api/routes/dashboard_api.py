@@ -14,6 +14,7 @@ import time
 import uuid
 from datetime import UTC
 from pathlib import Path
+from typing import Any
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -137,7 +138,7 @@ class PersonalityConfigUpdate(BaseModel):
 
 
 @router.get("/overview")
-async def get_overview(request: Request):
+async def get_overview(request: Request) -> dict[str, Any]:
     """Aggregated overview metrics for the dashboard home page."""
     await ensure_setup_runtime_initialized(request.app)
     registry = request.app.state.registry
@@ -211,7 +212,7 @@ async def get_overview(request: Request):
 
 
 @router.get("/overview/extended")
-async def get_overview_extended(request: Request):
+async def get_overview_extended(request: Request) -> dict[str, Any]:
     """Aggregated overview data for the redesigned dashboard home page.
 
     Returns all data the overview needs in a single call: metrics, agent
@@ -385,7 +386,7 @@ async def get_overview_extended(request: Request):
 
 
 @router.get("/agents/{agent_id}")
-async def get_agent_config(agent_id: str):
+async def get_agent_config(agent_id: str) -> dict[str, Any]:
     """Get a single agent configuration."""
     config = await AgentConfigRepository.get(agent_id)
     if config is None:
@@ -394,7 +395,7 @@ async def get_agent_config(agent_id: str):
 
 
 @router.put("/agents/{agent_id}")
-async def update_agent_config(agent_id: str, payload: AgentConfigUpdate, request: Request):
+async def update_agent_config(agent_id: str, payload: AgentConfigUpdate, request: Request) -> dict[str, Any]:
     """Update agent configuration fields."""
     updates = payload.model_dump(exclude_none=True)
     # Allow clearing reasoning_effort by sending empty string -> store as None
@@ -431,7 +432,7 @@ async def update_agent_config(agent_id: str, payload: AgentConfigUpdate, request
 
 
 @router.get("/agents/{agent_id}/prompt")
-async def get_agent_prompt(agent_id: str):
+async def get_agent_prompt(agent_id: str) -> dict[str, Any]:
     """Read the prompt file for an agent."""
     try:
         prompt_path = _validate_agent_path(agent_id)
@@ -445,7 +446,7 @@ async def get_agent_prompt(agent_id: str):
 
 
 @router.put("/agents/{agent_id}/prompt")
-async def update_agent_prompt(agent_id: str, payload: PromptUpdate):
+async def update_agent_prompt(agent_id: str, payload: PromptUpdate) -> dict[str, Any]:
     """Write prompt file content for an agent."""
     try:
         prompt_path = _validate_agent_path(agent_id)
@@ -465,7 +466,7 @@ async def update_agent_prompt(agent_id: str, payload: PromptUpdate):
 
 
 @router.get("/health/extended")
-async def get_extended_health(request: Request):
+async def get_extended_health(request: Request) -> dict[str, Any]:
     """Extended health check for all subsystems."""
     await ensure_setup_runtime_initialized(request.app)
     ha_client = request.app.state.ha_client
@@ -550,7 +551,7 @@ async def get_extended_health(request: Request):
 
 
 @router.get("/rewrite/config")
-async def get_rewrite_config():
+async def get_rewrite_config() -> dict[str, Any]:
     """Get current rewrite agent settings."""
     model = await SettingsRepository.get_value("rewrite.model", "")
     temperature = await SettingsRepository.get_value("rewrite.temperature", "0.7")
@@ -561,7 +562,7 @@ async def get_rewrite_config():
 
 
 @router.put("/rewrite/config")
-async def update_rewrite_config(payload: RewriteConfigUpdate):
+async def update_rewrite_config(payload: RewriteConfigUpdate) -> dict[str, Any]:
     """Update rewrite agent settings."""
     if payload.model is not None:
         await SettingsRepository.set(
@@ -586,7 +587,7 @@ async def update_rewrite_config(payload: RewriteConfigUpdate):
 
 
 @router.get("/personality/config")
-async def get_personality_config():
+async def get_personality_config() -> dict[str, Any]:
     """Get current personality prompt, mediation temperature, and filler settings."""
     prompt = await SettingsRepository.get_value("personality.prompt", "")
     temperature = await SettingsRepository.get_value("mediation.temperature", "0.3")
@@ -601,7 +602,7 @@ async def get_personality_config():
 
 
 @router.put("/personality/config")
-async def update_personality_config(payload: PersonalityConfigUpdate):
+async def update_personality_config(payload: PersonalityConfigUpdate) -> dict[str, Any]:
     """Save personality prompt, mediation temperature, and filler settings."""
     if payload.prompt is not None:
         await SettingsRepository.set(
@@ -648,7 +649,7 @@ class ChatRequest(BaseModel):
 
 
 @router.post("/chat")
-async def admin_chat(request: Request, payload: ChatRequest):
+async def admin_chat(request: Request, payload: ChatRequest) -> dict[str, Any]:
     """Bridge: session-auth chat -> internal conversation pipeline."""
     if _dispatcher is None:
         return JSONResponse(status_code=503, content={"detail": "Dispatcher not ready"})

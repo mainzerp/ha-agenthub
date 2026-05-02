@@ -438,12 +438,12 @@ class TestHAConfigFlow:
         flow.hass.config_entries.async_update_entry.assert_any_call(
             entry,
             title=entry.title,
-            data={
+            data={"url": "http://old.local", "api_key": "stored-token"},
+            options={
                 "name": entry.title,
                 "url": "http://ha.local",
                 "api_key": "stored-token",
             },
-            options={},
         )
 
     async def test_options_flow_schema_uses_blank_password_field(self):
@@ -1042,6 +1042,8 @@ class TestHAConversationRestFallbackMessages:
                 return self._payload
 
         class _FakeSession:
+            closed = False
+
             def __init__(self, response_obj, raised_error):
                 self._response_obj = response_obj
                 self._raised_error = raised_error
@@ -1078,7 +1080,9 @@ class TestHAConversationRestFallbackMessages:
     async def test_rest_fallback_reports_auth_failures(self, status_code):
         conversation_entity = self._import_conversation_module()
         entity, response_type = self._build_rest_entity(response=None)
-        entity._session = type("_FakeSession", (), {"post": lambda self, *args, **kwargs: response_type(status_code)})()
+        entity._session = type(
+            "_FakeSession", (), {"post": lambda self, *args, **kwargs: response_type(status_code), "closed": False}
+        )()
 
         result = await conversation_entity._process_via_rest(entity, self._build_user_input())
 
@@ -1088,7 +1092,9 @@ class TestHAConversationRestFallbackMessages:
     async def test_rest_fallback_reports_backend_errors(self):
         conversation_entity = self._import_conversation_module()
         entity, response_type = self._build_rest_entity(response=None)
-        entity._session = type("_FakeSession", (), {"post": lambda self, *args, **kwargs: response_type(503)})()
+        entity._session = type(
+            "_FakeSession", (), {"post": lambda self, *args, **kwargs: response_type(503), "closed": False}
+        )()
 
         result = await conversation_entity._process_via_rest(entity, self._build_user_input())
 
@@ -1245,3 +1251,16 @@ class TestHAConversationCoalesceWindow:
 
         assert bridge_calls == 1
         assert r1 == r2 == "result"
+
+    async def test_receive_loop_propagates_cancelled_error(self):
+        """CONT-5.2: _receive_loop must propagate asyncio.CancelledError."""
+        ws = HAWebSocketClient()
+        ws._running = True
+
+        mock_ws = MagicMock()
+        mock_ws.closed = False
+        mock_ws.receive = AsyncMock(side_effect=asyncio.CancelledError("stop"))
+        ws._ws = mock_ws
+
+        with pytest.raises(asyncio.CancelledError):
+            await ws._receive_loop()

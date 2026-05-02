@@ -88,7 +88,8 @@ class HAWebSocketClient:
 
         try:
             async with self._ws_lock:
-                self._session = aiohttp.ClientSession()
+                connector = aiohttp.TCPConnector(limit=10, limit_per_host=5, enable_cleanup_closed=True)
+                self._session = aiohttp.ClientSession(connector=connector)
                 self._ws = await self._session.ws_connect(ws_url, heartbeat=HEARTBEAT_INTERVAL)
                 self._ws_last_active = time.monotonic()
 
@@ -247,6 +248,8 @@ class HAWebSocketClient:
         while self._running and self._ws and not self._ws.closed:
             try:
                 msg = await asyncio.wait_for(self._ws.receive(), timeout=IDLE_TIMEOUT)
+            except asyncio.CancelledError:
+                raise
             except TimeoutError:
                 self._logger.warning(
                     "HA WebSocket idle for >%.0fs, forcing reconnect",
@@ -268,6 +271,8 @@ class HAWebSocketClient:
                                 result = callback(event)
                                 if asyncio.iscoroutine(result):
                                     await result
+                            except asyncio.CancelledError:
+                                raise
                             except Exception:
                                 self._logger.error("Event callback error", exc_info=True)
                     elif event_type == "result":

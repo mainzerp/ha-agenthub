@@ -195,6 +195,12 @@ async def ws_conversation(
 ):
     """WebSocket streaming endpoint."""
     await websocket.accept()
+    # Validate Origin header against allowed WS origins
+    origin = websocket.headers.get("origin")
+    allowed = getattr(websocket.app.state, "allowed_ws_origins", set())
+    if origin and allowed and origin not in allowed:
+        await websocket.close(code=1008, reason="Invalid origin")
+        return
     # FLOW-WS-TURN-1: ``/ws/conversation`` is a persistent socket
     # carrying many independent HA conversation turns. The
     # TracingMiddleware deliberately does NOT create a connection-

@@ -1,0 +1,11 @@
+# Default owners for everything in the repo
+* @mainzerp
+
+# Container / backend code
+/container/ @mainzerp
+
+# Home Assistant custom integration
+custom_components/ @mainzerp
+
+# CI/CD workflows
+.github/workflows/ @mainzerp

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import json
 import logging
 import re
@@ -10,6 +12,7 @@ from datetime import datetime
 from typing import Any
 from zoneinfo import ZoneInfo
 
+import litellm
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, ValidationError, field_validator, model_validator
 
@@ -37,7 +40,6 @@ PROVIDER_SECRET_KEYS = {
 _ENTITY_ID_LOOKS_VALID_RE = re.compile(r"^[a-zA-Z0-9_]+\.[a-zA-Z0-9_]+$")
 _ENTITY_ID_SAFE_RE = re.compile(r"^[a-z_]+\.[a-z0-9_]+$")
 _WEEKDAY_CODES = ("MO", "TU", "WE", "TH", "FR", "SA", "SU")
-_JINJA2_META_RE = re.compile(r"\{\{|\}\}|\{%|%\}|\{#|#\}|\|")
 
 
 class ProviderKeyUpdate(BaseModel):
@@ -301,13 +303,17 @@ async def _reload_ha_clients_after_settings_change(request: Request) -> None:
     if ha_client is not None:
         try:
             await ha_client.reload()
-        except Exception:
+        except asyncio.CancelledError:
+            raise
+        except (OSError, RuntimeError, ValueError):  # legitimate fail-soft: reload failure is non-fatal
             logger.warning("HARestClient.reload() after HA settings change failed", exc_info=True)
     ws_client = getattr(request.app.state, "ws_client", None)
     if ws_client is not None:
         try:
             await ws_client.drop_connection()
-        except Exception:
+        except asyncio.CancelledError:
+            raise
+        except (OSError, RuntimeError, ValueError):  # legitimate fail-soft: drop_connection failure is non-fatal
             logger.warning("HA WebSocket drop_connection() failed", exc_info=True)
 
 
@@ -323,12 +329,6 @@ def set_registry(reg) -> None:
     _registry = reg
 
 
-def _validate_no_template_metacharacters(value: str | None) -> None:
-    """Reject strings that contain Jinja2 template metacharacters."""
-    if value and _JINJA2_META_RE.search(value):
-        raise HTTPException(status_code=400, detail="Invalid device ID: contains template metacharacters")
-
-
 async def _resolve_origin_label(
     ha_client: Any,
     area_registry: dict[str, str],
@@ -338,20 +338,15 @@ async def _resolve_origin_label(
     if not ha_client:
         return origin_device_id or origin_area
     if origin_device_id:
-        _validate_no_template_metacharacters(origin_device_id)
-        try:
+        # legitimate fail-soft: template rendering failure falls back to raw device_id
+        with contextlib.suppress((OSError, ValueError, KeyError)):
             raw = await ha_client.render_template(
-                "{{ device_attr('"
-                + str(origin_device_id)
-                + "', 'name_by_user') or device_attr('"
-                + str(origin_device_id)
-                + "', 'name') or '' }}"
+                "{{ device_attr(origin_device_id, 'name_by_user') or device_attr(origin_device_id, 'name') or '' }}",
+                variables={"origin_device_id": str(origin_device_id)},
             )
             name = (str(raw or "")).strip()
             if name and name.lower() != "none":
                 return name
-        except Exception:
-            logger.debug("Failed to resolve timer origin device label for %s", origin_device_id, exc_info=True)
         return origin_device_id
     if origin_area:
         return area_registry.get(origin_area) or origin_area
@@ -359,10 +354,8 @@ async def _resolve_origin_label(
 
 
 def _validate_entity_id_safe(entity_id: str) -> bool:
-    """Reject entity IDs that do not match the safe regex or contain Jinja2 metacharacters."""
+    """Reject entity IDs that do not match the safe regex."""
     if not entity_id:
-        return False
-    if _JINJA2_META_RE.search(entity_id):
         return False
     return bool(_ENTITY_ID_SAFE_RE.match(entity_id))
 
@@ -373,15 +366,13 @@ async def _resolve_ha_device_id(
 ) -> str | None:
     if not ha_client or not entity_id:
         return None
-    _validate_no_template_metacharacters(entity_id)
-    template = "{{ device_id('" + entity_id + "') }}"
-    rendered: str | None = None
-    try:
-        rendered = await ha_client.render_template(template)
-    except Exception:
-        logger.debug("Failed to resolve device_id for %s", entity_id, exc_info=True)
-        return None
-
+    rendered = None
+    # legitimate fail-soft: template rendering failure falls back to None
+    with contextlib.suppress((OSError, ValueError, KeyError)):
+        rendered = await ha_client.render_template(
+            "{{ device_id(entity_id) }}",
+            variables={"entity_id": entity_id},
+        )
     if not rendered:
         return None
     cleaned = str(rendered).strip()
@@ -391,7 +382,7 @@ async def _resolve_ha_device_id(
 
 
 @router.get("/agents")
-async def list_agents():
+async def list_agents() -> dict[str, Any]:
     """List all agents (registered + disabled from DB)."""
     agents = await _registry.list_agents()
     seen_ids = set()
@@ -440,7 +431,7 @@ async def list_agents():
 
 
 @router.get("/settings")
-async def get_settings():
+async def get_settings() -> dict[str, Any]:
     """Get all settings grouped by category."""
     rows = await SettingsRepository.get_all()
     grouped: dict[str, list] = {}
@@ -485,7 +476,7 @@ async def _load_wake_briefing_settings() -> dict[str, Any]:
         sensor_entities = json.loads(
             (await SettingsRepository.get_value("wake_briefing.sensor_entities", "[]")) or "[]"
         )
-    except Exception:
+    except json.JSONDecodeError:
         sensor_entities = []
     if not isinstance(sensor_entities, list):
         sensor_entities = []
@@ -585,7 +576,7 @@ async def _build_alarm_recurrence_patch(
 
     try:
         payload_dict = json.loads(row.get("payload_json") or "{}")
-    except Exception:
+    except json.JSONDecodeError:
         payload_dict = {}
 
     current_recurrence = payload_dict.get("recurrence") if isinstance(payload_dict.get("recurrence"), dict) else {}
@@ -594,18 +585,17 @@ async def _build_alarm_recurrence_patch(
         timezone_name = "UTC"
         ha_client = getattr(request.app.state, "ha_client", None)
         if ha_client is not None:
-            try:
+            # legitimate fail-soft: home context failure falls back to UTC
+            with contextlib.suppress((OSError, ValueError, KeyError)):
                 from app.ha_client.home_context import home_context_provider
 
                 home_context = await home_context_provider.get(ha_client)
                 timezone_name = getattr(home_context, "timezone", "UTC") or "UTC"
-            except Exception:
-                logger.debug("Failed to resolve HomeContext while patching alarm recurrence", exc_info=True)
 
     tzinfo = None
     try:
         tzinfo = ZoneInfo(timezone_name)
-    except Exception:
+    except (KeyError, TypeError):
         timezone_name = "UTC"
 
     fires_at_epoch = int(payload.fires_at or row.get("fires_at") or 0)
@@ -624,7 +614,7 @@ async def _build_alarm_recurrence_patch(
 
 
 @router.put("/settings")
-async def update_settings(payload: SettingsUpdatePayload):
+async def update_settings(payload: SettingsUpdatePayload) -> dict[str, str]:
     """Update multiple settings. Payload: {"items": {key: value, ...}}."""
     for key, value in payload.items.items():
         existing = await SettingsRepository.get(key)
@@ -644,13 +634,13 @@ async def update_settings(payload: SettingsUpdatePayload):
 
 
 @router.get("/settings/wake-briefing")
-async def get_wake_briefing_settings():
+async def get_wake_briefing_settings() -> dict[str, Any]:
     """Return structured wake-briefing settings for the timers dashboard."""
     return await _load_wake_briefing_settings()
 
 
 @router.put("/settings/wake-briefing")
-async def update_wake_briefing_settings(payload: WakeBriefingSettingsPayload):
+async def update_wake_briefing_settings(payload: WakeBriefingSettingsPayload) -> dict[str, Any]:
     """Persist wake-briefing settings from the timers dashboard."""
     updates = _wake_briefing_updates_from_payload(payload)
 
@@ -670,7 +660,7 @@ async def update_wake_briefing_settings(payload: WakeBriefingSettingsPayload):
 
 
 @router.post("/settings/wake-briefing/test")
-async def test_wake_briefing_settings(payload: WakeBriefingSettingsPayload, request: Request):
+async def test_wake_briefing_settings(payload: WakeBriefingSettingsPayload, request: Request) -> dict[str, Any]:
     """Compose a wake briefing preview from unsaved dashboard values."""
     gateway = getattr(request.app.state, "orchestrator_gateway", None)
     ha_client = getattr(request.app.state, "ha_client", None)
@@ -684,11 +674,9 @@ async def test_wake_briefing_settings(payload: WakeBriefingSettingsPayload, requ
     from app.ha_client.home_context import home_context_provider
 
     timezone_name = "UTC"
-    try:
+    with contextlib.suppress(Exception):
         home_context = await home_context_provider.get(ha_client)
         timezone_name = getattr(home_context, "timezone", "UTC") or "UTC"
-    except Exception:
-        logger.debug("Failed to resolve HomeContext for wake briefing preview", exc_info=True)
 
     language = str(await SettingsRepository.get_value("language", "en") or "en").strip() or "en"
     if language == "auto":
@@ -716,7 +704,7 @@ async def test_wake_briefing_settings(payload: WakeBriefingSettingsPayload, requ
 
 
 @router.put("/settings/{key}")
-async def update_single_setting(key: str, payload: dict):
+async def update_single_setting(key: str, payload: dict) -> dict[str, Any]:
     """Update a single setting by key."""
     value = payload.get("value")
     if value is None:
@@ -740,7 +728,7 @@ async def update_single_setting(key: str, payload: dict):
 
 
 @router.get("/ha-connection")
-async def get_ha_connection():
+async def get_ha_connection() -> dict[str, Any]:
     """Return HA base URL and whether a long-lived token is stored."""
     url = await SettingsRepository.get_value("ha_url") or ""
     token = await get_ha_token()
@@ -751,7 +739,7 @@ async def get_ha_connection():
 
 
 @router.put("/ha-connection")
-async def update_ha_connection(request: Request, payload: HaConnectionUpdate):
+async def update_ha_connection(request: Request, payload: HaConnectionUpdate) -> dict[str, Any]:
     """Persist HA URL and optionally replace the long-lived access token.
 
     Empty or omitted ``ha_token`` leaves the existing encrypted token
@@ -772,7 +760,7 @@ async def update_ha_connection(request: Request, payload: HaConnectionUpdate):
 
 
 @router.post("/ha-connection/test")
-async def test_ha_connection_admin(payload: HaConnectionTestRequest):
+async def test_ha_connection_admin(payload: HaConnectionTestRequest) -> dict[str, Any]:
     """Probe ``GET {ha_url}/api/`` with a bearer token (wizard parity)."""
     url = (payload.ha_url or "").strip().rstrip("/")
     if not url:
@@ -799,14 +787,14 @@ async def test_ha_connection_admin(payload: HaConnectionTestRequest):
 
 
 @router.get("/container-api-key")
-async def get_container_api_key_status():
+async def get_container_api_key_status() -> dict[str, Any]:
     """Return whether the HA integration key is configured."""
     raw = await retrieve_secret(API_KEY_SECRET_NAME)
     return {"configured": bool(raw)}
 
 
 @router.post("/container-api-key/rotate")
-async def rotate_container_api_key():
+async def rotate_container_api_key() -> dict[str, Any]:
     """Generate a new random key, replace the stored secret, return it once for the UI.
 
     After rotation, update the **HA-AgentHub** integration in Home Assistant
@@ -819,7 +807,7 @@ async def rotate_container_api_key():
 
 
 @router.put("/container-api-key")
-async def set_container_api_key(payload: ContainerApiKeySetPayload):
+async def set_container_api_key(payload: ContainerApiKeySetPayload) -> dict[str, Any]:
     """Persist a user-supplied API key (same auth semantics as setup wizard)."""
     await store_secret(API_KEY_SECRET_NAME, payload.api_key)
     logger.info("Container API key set manually from admin dashboard")
@@ -827,7 +815,7 @@ async def set_container_api_key(payload: ContainerApiKeySetPayload):
 
 
 @router.get("/entity-matching-weights")
-async def get_entity_matching_weights():
+async def get_entity_matching_weights() -> dict[str, Any]:
     """Get all entity matching signal weights."""
     rows = await EntityMatchingConfigRepository.get_all()
     return {"weights": {row["key"]: row["value"] for row in rows}}
@@ -933,9 +921,7 @@ async def test_llm_provider(payload: ProviderTestRequest):
             return {"status": "error", "detail": "No API key configured for " + provider}
 
     try:
-        import litellm
-
-        kwargs: dict = {
+        kwargs: dict[str, Any] = {
             "model": test_models[provider],
             "messages": [{"role": "user", "content": "Say hello"}],
             "api_key": api_key,
@@ -945,7 +931,9 @@ async def test_llm_provider(payload: ProviderTestRequest):
             kwargs["api_base"] = base_url
         await litellm.acompletion(**kwargs)
         return {"status": "ok", "provider": provider}
-    except Exception:
+    except asyncio.CancelledError:
+        raise
+    except (litellm.exceptions.APIError, litellm.exceptions.AuthenticationError, OSError):
         logger.warning("LLM provider test failed for %s", provider, exc_info=True)
         return {"status": "error", "detail": "Provider test failed. Check server logs."}
 
@@ -1032,11 +1020,10 @@ async def get_timers_info(request: Request):
         except Exception:
             area_registry = {}
 
+    rows = []
     if scheduler is not None:
-        try:
+        with contextlib.suppress(Exception):
             rows = await scheduler.list()
-        except Exception:
-            rows = []
         import time as _time
 
         now = int(_time.time())
@@ -1045,7 +1032,7 @@ async def get_timers_info(request: Request):
                 fires_at = int(row.get("fires_at") or 0)
                 try:
                     alarm_payload = json.loads(row.get("payload_json") or "{}")
-                except Exception:
+                except json.JSONDecodeError:
                     alarm_payload = {}
                 recurrence = _normalize_alarm_recurrence_for_response(alarm_payload.get("recurrence"))
                 alarms.append(

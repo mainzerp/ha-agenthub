@@ -79,7 +79,7 @@ Navigate to `http://<host>:8080/setup/` and use the "Test" button for each provi
 
 - ChromaDB directory not writable: Check that the volume mount for `/data/chromadb` exists and is writable.
 - Embedding engine not initialized: Check container startup logs for embedding-related errors.
-- Thresholds too high: Lower the routing cache threshold (default: 0.92) or action cache threshold (default: 0.95) in the admin dashboard. (The action cache was named "response cache" in 0.20.x and earlier; settings keys remain `cache.response.*` for backward compatibility.)
+- Thresholds too high: Lower the routing cache threshold (default: 0.92) or action cache threshold (default: 0.95) in the admin dashboard.
 
 **Verify ChromaDB:**
 

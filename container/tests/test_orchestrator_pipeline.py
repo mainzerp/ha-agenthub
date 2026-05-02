@@ -26,7 +26,17 @@ class _AuthenticationError(Exception):
     pass
 
 
+class _APIError(Exception):
+    pass
+
+
+class _RateLimitError(Exception):
+    pass
+
+
 _litellm_mock.exceptions.AuthenticationError = _AuthenticationError
+_litellm_mock.exceptions.APIError = _APIError
+_litellm_mock.RateLimitError = _RateLimitError
 sys.modules.setdefault("litellm", _litellm_mock)
 
 import app.llm.client  # noqa: E402,F401 -- force module load for patch targets
@@ -218,3 +228,54 @@ async def test_streaming_mediation_buffers_tokens_until_terminal_frame(mock_comp
     final = [c for c in chunks if c["done"]]
     assert len(final) == 1
     assert final[0].get("mediated_speech")
+
+
+@pytest.mark.asyncio
+@patch("app.agents.orchestrator.SettingsRepository")
+@patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
+@patch("app.llm.client.complete", new_callable=AsyncMock)
+async def test_stream_with_filler_cancels_reader_on_timeout(mock_complete, mock_track, mock_settings):
+    """CONT-6.3: When filler threshold is exceeded, the reader task must be cancelled in finally."""
+    import asyncio
+
+    mock_settings.get_value = AsyncMock(return_value="")
+    mock_complete.return_value = "light-agent (95%): Turn on light"
+    orch, dispatcher = _make_orchestrator()
+
+    async def _slow_stream(_request):
+        await asyncio.sleep(0.2)
+        yield MagicMock(result={"token": "late", "done": True})
+
+    dispatcher.dispatch_stream = _slow_stream
+    task = _make_task("turn on light", conversation_id="conv-slow")
+
+    # Force filler to be used with a very short threshold
+    orch._should_send_filler = AsyncMock(return_value=True)
+    orch._get_filler_threshold_ms = AsyncMock(return_value=50)
+    orch._invoke_filler_agent = AsyncMock(return_value="One moment please.")
+
+    chunks = []
+    async for chunk in orch.handle_task_stream(task):
+        chunks.append(chunk)
+
+    # Should have received filler and then terminal chunk without hanging
+    assert any(c.get("filler_push") for c in chunks)
+
+
+@pytest.mark.asyncio
+async def test_conversation_cache_max_size():
+    """CONT-8.3: The conversation cache must enforce a max size of 1000 entries."""
+    import time
+
+    orch, _dispatcher = _make_orchestrator()
+
+    now = time.monotonic()
+    for i in range(1002):
+        orch._conversations[f"conv-{i}"] = (now, [{"role": "user", "content": "hi"}])
+
+    orch._evict_stale_conversations()
+
+    assert len(orch._conversations) == 1000
+    # Oldest entries should have been evicted
+    assert "conv-0" not in orch._conversations
+    assert "conv-1" not in orch._conversations

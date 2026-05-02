@@ -11,6 +11,8 @@ import pytest
 # ``@patch("app.llm.client.complete")`` resolves (matches test_agents.py).
 _litellm_mock = MagicMock()
 _litellm_mock.exceptions.AuthenticationError = type("AuthenticationError", (Exception,), {})
+_litellm_mock.exceptions.APIError = type("APIError", (Exception,), {})
+_litellm_mock.RateLimitError = type("RateLimitError", (Exception,), {})
 sys.modules.setdefault("litellm", _litellm_mock)
 
 import app.llm.client  # noqa: E402,F401

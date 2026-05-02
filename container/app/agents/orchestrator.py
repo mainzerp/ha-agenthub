@@ -147,7 +147,7 @@ class OrchestratorAgent(BaseAgent):
         self._registry = registry
         self._cache_manager = cache_manager
         self._filler_agent = filler_agent
-        self._conversations: OrderedDict[str, tuple[float, list[dict]]] = OrderedDict()
+        self._conversations: OrderedDict[str, tuple[float, list[dict[str, Any]]]] = OrderedDict()
         self._default_timeout: int = 5
         self._max_iterations: int = 3
         self._mediation_model: str | None = None
@@ -308,7 +308,7 @@ class OrchestratorAgent(BaseAgent):
         return agents
 
     async def _resolve_language(
-        self, user_text: str, context_language: str | None = None, turns: list[dict] | None = None
+        self, user_text: str, context_language: str | None = None, turns: list[dict[str, Any]] | None = None
     ) -> str:
         """Resolve effective language: DB setting > auto-detect > turns-detect > fallback."""
         setting = await SettingsRepository.get_value("language", "auto")
@@ -359,13 +359,13 @@ class OrchestratorAgent(BaseAgent):
         condensed_task: str,
         user_text: str,
         conversation_id: str | None,
-        turns: list[dict],
+        turns: list[dict[str, Any]],
         span_collector,
         incoming_context: TaskContext | None = None,
         skip_dispatch_span: bool = False,
         *,
         resolved_language: str | None = None,
-    ) -> tuple[str, str, dict | None]:
+    ) -> tuple[str, str, dict[str, Any] | None]:
         """Dispatch a single task to one agent and return (agent_id, speech, result_dict)."""
         t_dispatch = time.perf_counter()
         context = TaskContext(conversation_turns=turns)
@@ -575,12 +575,12 @@ class OrchestratorAgent(BaseAgent):
         classifications: list[tuple[str, str, float]],
         user_text: str,
         conversation_id: str,
-        turns: list[dict],
+        turns: list[dict[str, Any]],
         span_collector,
         incoming_context,
         *,
         resolved_language: str | None = None,
-    ) -> tuple[str, str, dict | None]:
+    ) -> tuple[str, str, dict[str, Any] | None]:
         """Handle sequential dispatch: content agent -> send agent.
 
         Returns (routed_to, speech, result_dict) like _dispatch_single.
@@ -604,7 +604,7 @@ class OrchestratorAgent(BaseAgent):
         _send_agent_id, send_task_text, _send_confidence = send_classification
 
         # Step 1: Dispatch content agent(s)
-        _content_result: dict | None = None
+        _content_result: dict[str, Any] | None = None
         content_dispatched = False
         if content_agents:
             content_aid, content_task, _ = content_agents[0]
@@ -905,7 +905,7 @@ class OrchestratorAgent(BaseAgent):
         span_collector,
         *,
         task: AgentTask | None = None,
-    ) -> dict:
+    ) -> dict[str, Any]:
         """Finalize a successful action-cache full hit."""
         target_agent = hit.agent_id or "unknown"
         task_context = getattr(task, "context", None) if task is not None else None
@@ -1055,7 +1055,7 @@ class OrchestratorAgent(BaseAgent):
                 action_name = str(action_executed.get("action") or "").strip().lower()
                 if entity_id and action_name:
                     raw_service_data = action_executed.get("service_data") or {}
-                    cached_service_data: dict = {}
+                    cached_service_data: dict[str, Any] = {}
                     if isinstance(raw_service_data, dict):
                         for key in _CACHED_SERVICE_DATA_KEYS:
                             if key in raw_service_data:
@@ -1153,7 +1153,7 @@ class OrchestratorAgent(BaseAgent):
         confidence: float | None,
         condensed_task: str,
         classifications: list[tuple[str, str, float | None]],
-        turns: list[dict],
+        turns: list[dict[str, Any]],
         *,
         task_context: TaskContext | None = None,
     ) -> None:
@@ -1254,7 +1254,7 @@ class OrchestratorAgent(BaseAgent):
         routing_cached: bool,
         *,
         extended_metadata: bool = False,
-        extra_metadata: dict | None = None,
+        extra_metadata: dict[str, Any] | None = None,
     ) -> None:
         """Populate the ``classify`` span metadata block.
 
@@ -1407,7 +1407,7 @@ class OrchestratorAgent(BaseAgent):
         _pre_classified: tuple[list[tuple[str, str, float]], bool] | None = None,
         _classify_reason: str | None = None,
         _allow_classify_cache_lookup: bool | None = None,
-    ) -> AsyncGenerator[dict, None]:
+    ) -> AsyncGenerator[dict[str, Any], None]:
         """Unified pipeline entry.
 
         When ``streaming`` is ``True`` this yields the same
@@ -1450,7 +1450,7 @@ class OrchestratorAgent(BaseAgent):
         _pre_classified: tuple[list[tuple[str, str, float]], bool] | None = None,
         _classify_reason: str | None = None,
         _allow_classify_cache_lookup: bool | None = None,
-    ) -> dict:
+    ) -> dict[str, Any]:
         """Public non-streaming entry point.
 
         Wraps :meth:`_run_pipeline` and unpacks the terminal chunk.
@@ -1464,7 +1464,7 @@ class OrchestratorAgent(BaseAgent):
                 _classify_reason=_classify_reason,
                 _allow_classify_cache_lookup=_allow_classify_cache_lookup,
             )
-        final: dict | None = None
+        final: dict[str, Any] | None = None
         async for chunk in self._run_pipeline(
             task,
             streaming=False,
@@ -1487,7 +1487,7 @@ class OrchestratorAgent(BaseAgent):
             )
         return final["payload"]
 
-    def handle_task_stream(self, task: AgentTask) -> AsyncGenerator[dict, None]:
+    def handle_task_stream(self, task: AgentTask) -> AsyncGenerator[dict[str, Any], None]:
         """Public streaming entry point.
 
         Returns the unified pipeline iterator directly. Honors
@@ -1504,7 +1504,7 @@ class OrchestratorAgent(BaseAgent):
         _pre_classified: tuple[list[tuple[str, str, float]], bool] | None = None,
         _classify_reason: str | None = None,
         _allow_classify_cache_lookup: bool | None = None,
-    ) -> dict:
+    ) -> dict[str, Any]:
         user_text = task.user_text or task.description
         conversation_id, detected_language, _lang_turns = await self._pipeline_resolve_conversation_and_language(task)
 
@@ -1852,7 +1852,7 @@ class OrchestratorAgent(BaseAgent):
         self._schedule_ha_voice_followup_if_requested(task, voice_followup_effective)
         return response
 
-    async def _handle_task_stream_impl(self, task: AgentTask) -> AsyncGenerator[dict, None]:
+    async def _handle_task_stream_impl(self, task: AgentTask) -> AsyncGenerator[dict[str, Any], None]:
         user_text = task.user_text or task.description
         conversation_id, detected_language, lang_turns = await self._pipeline_resolve_conversation_and_language(task)
 
@@ -2338,7 +2338,9 @@ class OrchestratorAgent(BaseAgent):
                         break
                     await _process_chunk(item)
             finally:
-                await reader_task
+                reader_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await asyncio.wait_for(reader_task, timeout=5.0)
 
         async with _optional_span(span_collector, "dispatch", agent_id=target_agent) as span:
             async for token_dict in _stream_with_filler(self._dispatcher.dispatch_stream(request), span):
@@ -2488,7 +2490,7 @@ class OrchestratorAgent(BaseAgent):
             logger.warning("Filler agent invocation failed", exc_info=True)
             return None
 
-    async def _execute_cached_action(self, cached_action) -> dict | None:
+    async def _execute_cached_action(self, cached_action) -> dict[str, Any] | None:
         """Execute a cached action via HA client. Fast path: direct REST call only.
 
         Skips the WebSocket observer used by the live executor path.
@@ -2542,7 +2544,7 @@ class OrchestratorAgent(BaseAgent):
         ctx = task.context
         return bool(ctx and ctx.source == "background" and ctx.background_event is not None)
 
-    async def _handle_background_turn(self, task: AgentTask) -> dict:
+    async def _handle_background_turn(self, task: AgentTask) -> dict[str, Any]:
         ctx = task.context
         event = ctx.background_event if ctx else None
         if event is None:
@@ -2936,7 +2938,7 @@ class OrchestratorAgent(BaseAgent):
             min(_MAX_CONVERSATION_CONTEXT_TURNS, parsed),
         )
 
-    async def _get_turns(self, conversation_id: str | None) -> list[dict]:
+    async def _get_turns(self, conversation_id: str | None) -> list[dict[str, Any]]:
         """Get recent conversation turns for context.
 
         FLOW-MED-7: on in-memory miss, fall back to the DB so
@@ -2955,6 +2957,7 @@ class OrchestratorAgent(BaseAgent):
                 trimmed_turns = list(turns[-max_messages:]) if len(turns) > max_messages else list(turns)
                 if len(trimmed_turns) != len(turns):
                     self._conversations[conversation_id] = (ts, trimmed_turns)
+                    self._evict_stale_conversations()
                 return trimmed_turns
             self._conversations.pop(conversation_id, None)
 
@@ -2973,14 +2976,14 @@ class OrchestratorAgent(BaseAgent):
         if not rows:
             return []
 
-        turns: list[dict] = []
+        turns: list[dict[str, Any]] = []
         for row in rows[-turn_limit:]:
             user_text = row.get("user_text") or ""
             if user_text:
                 turns.append({"role": "user", "content": user_text})
             resp_text = row.get("response_text") or ""
             if resp_text:
-                assistant_turn: dict = {"role": "assistant", "content": resp_text}
+                assistant_turn: dict[str, Any] = {"role": "assistant", "content": resp_text}
                 agent_id = row.get("agent_id")
                 if agent_id:
                     assistant_turn["agent_id"] = agent_id

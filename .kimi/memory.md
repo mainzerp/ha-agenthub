@@ -48,6 +48,28 @@
 - Internal `ActionExecuted` shapes may differ from public `ActionResult` model; a `_normalize_action_executed()` adapter helper in routes is useful.
 - Bridge tests that assert ONLY on API responses (no `app.state` poking) are cleaner and survive refactors better, but require the API to expose the necessary metadata.
 
+## Lessons Learned (2026-05-02) -- Deep Code Review
+
+- `time.sleep()` inside `async def` blocks the entire asyncio event loop. Always use `await asyncio.sleep()` in async code. If the function must remain sync (e.g., called from sync context), split into sync core + async wrapper.
+- CPU-bound work like `SentenceTransformer.encode()` must be offloaded with `asyncio.to_thread()` or `loop.run_in_executor()` when called from async code.
+- Never concatenate user input into Jinja2 templates, even with regex validation. Always pass user data as template variables.
+- `X-Forwarded-For` parsing must walk from the rightmost IP (closest to the server) to find the first non-trusted IP. The leftmost IP is trivially spoofable.
+- `except Exception:` in bridge/transport code swallows programming errors and causes duplicate work or silent failures. Narrow to specific transport exceptions (`aiohttp.ClientError`, `asyncio.TimeoutError`, `OSError`).
+- `while not queue.empty(): queue.get_nowait()` is a race condition in async code. Loop on `get_nowait()` and catch `QueueEmpty`.
+- SSE ticker / background task registration needs deduplication guards and proper lifespan cleanup to prevent unbounded task leaks.
+- Secret decryption should fail loudly (raise) rather than silently returning `None`, so callers know a key rotation occurred.
+- Docker base images and external binaries should be pinned to exact versions with checksum verification. `apt-get install` without pinning is a supply-chain risk.
+- `.dockerignore` must exclude sensitive files (`.github/`, `.vscode/`, `.kimi/`, docs, keys, credentials) from the build context.
+- CI should run lint and at least smoke tests for ALL modules, including `custom_components/`.
+
+## Lessons Learned (2026-05-02) -- Low-Priority Fixes
+
+- When changing `ha_client.render_template` to accept `variables` kwarg, ALL test fixtures that create a default `ha_client` must be updated. `MagicMock()` cannot be awaited; use `AsyncMock()` with `render_template = AsyncMock(return_value="")` as default.
+- Changing an options flow from writing to `data` to writing to `options` breaks container tests that assert on `async_update_entry` kwargs. Update both the integration AND the container-side tests.
+- `pytest-xdist` (`-n auto`) can mask or expose different test failures than sequential runs due to test-order effects and shared state. Always verify with sequential run before declaring failure.
+- Top-level `dict` → `dict[str, Any]` sweeps in `orchestrator.py` affect many public method signatures. `ruff check` catches missing imports, but type-checkers may need `from __future__ import annotations` or `typing.Any`.
+- `asyncio.CancelledError` must be explicitly re-raised before general exception handlers in long-running loops (WS receive, task runners) to prevent cancellation swallowing.
+
 ## Meta-Workflow Fixes
 
 - 2026-05-02: Plan subagent was consistently hanging in refinement loops, producing 50-80 KB plans with 30+ heading levels and endless "V1 vs V2" comparison tables. Fixed by adding hard anti-loop rules to AGENTS.md: 300-line/20 KB max plan size, no recursive file reading, no design-alternative sections, max 3 heading levels, max 5 acceptance criteria per item, one-pass output only.

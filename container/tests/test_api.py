@@ -126,17 +126,19 @@ async def timer_admin_client(db_repository):
     ha_client = AsyncMock()
     ha_client.get_area_registry = AsyncMock(return_value={})
 
-    async def _render_template_side_effect(template: str):
-        text = str(template or "")
-        if "device_id('assist_satellite.kitchen_a')" in text:
+    async def _render_template_side_effect(template: str, variables: dict | None = None):
+        vars = variables or {}
+        entity_id = vars.get("entity_id", "")
+        origin_device_id = vars.get("origin_device_id", "")
+        if entity_id == "assist_satellite.kitchen_a":
             return "device-dup"
-        if "device_id('assist_satellite.kitchen_b')" in text:
+        if entity_id == "assist_satellite.kitchen_b":
             return "device-dup"
-        if "device_id('assist_satellite.office')" in text:
+        if entity_id == "assist_satellite.office":
             return "device-unique"
-        if "device_attr('device-dup'" in text:
+        if origin_device_id == "device-dup":
             return "Kitchen Satellite"
-        if "device_attr('device-unique'" in text:
+        if origin_device_id == "device-unique":
             return "Office Satellite"
         return ""
 
@@ -435,6 +437,53 @@ class TestConversationEndpoints:
         data = token.model_dump()
         assert data["error"] == "Agent error: test"
         assert data["done"] is True
+
+    async def test_ws_conversation_rejects_invalid_origin(self):
+        from unittest.mock import AsyncMock, MagicMock
+
+        from app.api.routes.conversation import ws_conversation
+
+        ws = MagicMock()
+        ws.headers = {"origin": "https://evil.com"}
+        ws.app.state.allowed_ws_origins = {"https://ha.local:8123"}
+        ws.accept = AsyncMock()
+        ws.close = AsyncMock()
+
+        await ws_conversation(ws)
+        ws.close.assert_awaited_once_with(code=1008, reason="Invalid origin")
+
+    async def test_ws_conversation_accepts_allowed_origin(self):
+        from contextlib import suppress
+        from unittest.mock import AsyncMock, MagicMock
+
+        from app.api.routes.conversation import ws_conversation
+
+        ws = MagicMock()
+        ws.headers = {"origin": "https://ha.local:8123"}
+        ws.app.state.allowed_ws_origins = {"https://ha.local:8123"}
+        ws.accept = AsyncMock()
+        ws.close = AsyncMock()
+        ws.receive_text = AsyncMock(side_effect=Exception("stop test"))
+
+        with suppress(Exception):
+            await ws_conversation(ws)
+        ws.close.assert_not_awaited()
+
+    def test_register_sse_tickers_cancels_existing_tasks(self):
+        from unittest.mock import MagicMock, patch
+
+        from app.api.routes.sse import register_sse_tickers
+
+        app = MagicMock()
+        old_task = MagicMock()
+        old_task.done.return_value = False
+        app.state.sse_ticker_tasks = [old_task]
+
+        with patch("app.api.routes.sse.asyncio.create_task", side_effect=lambda coro: MagicMock()) as mock_create:
+            register_sse_tickers(app)
+
+        old_task.cancel.assert_called_once()
+        assert mock_create.call_count == 4
 
 
 # ===================================================================

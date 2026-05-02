@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import time
 from contextlib import contextmanager
 
 import chromadb
@@ -110,15 +109,15 @@ class EmbeddingEngine:
             "is_multilingual": is_multilingual,
         }
 
-    def embed(self, text: str) -> list[float]:
+    async def embed(self, text: str) -> list[float]:
         """Embed a single text string. Returns 384-dim float list for local model."""
-        return self.embed_batch([text])[0]
+        return (await self.embed_batch([text]))[0]
 
-    def embed_batch(self, texts: list[str]) -> list[list[float]]:
+    async def embed_batch(self, texts: list[str]) -> list[list[float]]:
         """Embed a batch of texts."""
         if self._provider == "local":
-            return self._embed_local(texts)
-        return self._embed_external(texts)
+            return await asyncio.to_thread(self._embed_local, texts)
+        return await self._embed_external(texts)
 
     def _embed_local(self, texts: list[str]) -> list[list[float]]:
         """Use sentence-transformers for local embedding."""
@@ -129,19 +128,21 @@ class EmbeddingEngine:
         embeddings = model.encode(texts, convert_to_numpy=True, show_progress_bar=False)
         return [emb.tolist() for emb in embeddings]
 
-    def _embed_external(self, texts: list[str]) -> list[list[float]]:
+    async def _embed_external(self, texts: list[str]) -> list[list[float]]:
         """Use litellm for external provider embedding with retry."""
         import litellm
 
         last_exc: Exception | None = None
         for attempt in range(3):
             try:
-                response = litellm.embedding(model=self._model_name, input=texts)
+                response = await asyncio.to_thread(litellm.embedding, model=self._model_name, input=texts)
                 return [item["embedding"] for item in response.data]
             except litellm.RateLimitError as exc:
                 last_exc = exc
-                time.sleep(2**attempt)
-            except Exception as exc:
+                await asyncio.sleep(2**attempt)
+            except asyncio.CancelledError:
+                raise
+            except litellm.exceptions.APIError as exc:
                 last_exc = exc
                 raise RuntimeError(f"External embedding failed: {exc}") from exc
         raise RuntimeError(f"External embedding rate-limited after retries: {last_exc}") from last_exc
@@ -154,7 +155,12 @@ class ChromaEmbeddingFunction(chromadb.EmbeddingFunction[list[str]]):
         self._engine = engine
 
     def __call__(self, input: list[str]) -> list[list[float]]:
-        return self._engine.embed_batch(input)
+        coro = self._engine.embed_batch(input)
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(coro)
+        return asyncio.run_coroutine_threadsafe(coro, loop).result()
 
 
 _engine: EmbeddingEngine | None = None

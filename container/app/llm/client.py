@@ -116,7 +116,7 @@ async def complete(
     except litellm.exceptions.AuthenticationError:
         logger.error("Authentication failed for agent=%s model=%s -- check API key", agent_id, model)
         raise
-    except Exception:
+    except litellm.exceptions.APIError:
         logger.exception("LLM call failed for agent=%s model=%s", agent_id, model)
         raise
 
@@ -234,7 +234,9 @@ async def complete_with_tools(
 
             try:
                 result_str = await tool_executor(fn_name, fn_args)
-            except Exception as e:
+            except asyncio.CancelledError:
+                raise
+            except (ValueError, TypeError, RuntimeError, OSError, KeyError, AttributeError) as e:
                 logger.warning("Tool executor '%s' raised: %s", fn_name, e)
                 result_str = f"Tool error: {e}"
             return tc.id, result_str

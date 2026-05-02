@@ -56,6 +56,7 @@ async def _get_or_create_write_connection() -> aiosqlite.Connection:
             await _write_conn.execute("SELECT 1")
         except aiosqlite.OperationalError:
             logger.warning("DB write connection stale, recreating")
+            # legitimate fail-soft: close() may raise on a broken connection
             with suppress(Exception):
                 await _write_conn.close()
             _write_conn = None
@@ -102,7 +103,8 @@ async def get_db_write() -> AsyncGenerator[aiosqlite.Connection, None]:
         await db.execute("BEGIN")
         try:
             yield db
-        except Exception:
+        except BaseException:
+            # BaseException ensures rollback on KeyboardInterrupt / SystemExit
             await db.rollback()
             raise
 

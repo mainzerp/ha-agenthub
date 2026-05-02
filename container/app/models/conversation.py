@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field, model_validator
 class ConversationRequest(BaseModel):
     """Incoming conversation request from HA integration."""
 
-    text: str = Field(..., description="User input text", max_length=5000)
+    text: str = Field(..., description="User input text", max_length=500)
     conversation_id: str | None = Field(None, description="Conversation ID for multi-turn", max_length=64)
     language: str = Field("en", description="User language code", max_length=10)
     device_id: str | None = Field(

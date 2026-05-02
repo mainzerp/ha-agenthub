@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -612,3 +612,42 @@ class TestRecurringRecovery:
             assert gateway.dispatch_background_event.await_args.args[0] == "alarm_notification"
         finally:
             await sched.stop()
+
+
+class TestConcurrency:
+    async def test_cancel_task_during_iteration(self, db_repository):
+        """CONT-1.3: _cancel_task must not mutate _by_logical while iterating without a copy."""
+        sched, _gateway = _make_scheduler()
+        try:
+            # Populate multiple logical names so _by_logical has values to iterate
+            for i in range(5):
+                await sched.schedule(
+                    logical_name=f"timer-{i}",
+                    kind="notification",
+                    duration_seconds=3600,
+                    payload={"notification_message": "x"},
+                )
+            # Cancel one timer; this should not raise RuntimeError for dict size change
+            cancelled = await sched.cancel(logical_name="timer-2")
+            assert cancelled == 1
+        finally:
+            await sched.stop()
+
+    async def test_stop_logs_cancellation_errors(self, db_repository):
+        """CONT-6.2: stop() must log exceptions from tasks that raise during gather."""
+        sched, _gateway = _make_scheduler()
+
+        async def _explode():
+            raise RuntimeError("boom")
+
+        # Inject a task that raises RuntimeError (not CancelledError)
+        bad_task = asyncio.create_task(_explode())
+        sched._tasks["bad-id"] = bad_task
+        # Wait for it to finish so stop() sees it as done and does not cancel it
+        await asyncio.sleep(0)
+
+        with patch("app.agents.timer_scheduler.logger") as mock_logger:
+            await sched.stop()
+
+        # The stop method logs exceptions from gather results
+        assert any("raised exception during stop" in str(call) for call in mock_logger.error.call_args_list)

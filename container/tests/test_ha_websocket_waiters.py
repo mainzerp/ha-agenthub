@@ -153,3 +153,64 @@ class TestStateWaiterReconnectCleanup:
         # against a finished future.
         assert client._state_waiters == {}
         del WebSocketResetError  # silence unused-import lint when assertion above hits
+
+
+class TestReceiveLoop:
+    @pytest.mark.asyncio
+    async def test_receive_loop_propagates_cancelled_error(self):
+        """CONT-5.2: _receive_loop must propagate asyncio.CancelledError."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        client = HAWebSocketClient()
+        client._running = True
+
+        mock_ws = MagicMock()
+        mock_ws.closed = False
+        mock_ws.receive = AsyncMock(side_effect=asyncio.CancelledError("stop"))
+        client._ws = mock_ws
+
+        with pytest.raises(asyncio.CancelledError):
+            await client._receive_loop()
+
+    @pytest.mark.asyncio
+    async def test_websocket_connector_limits(self):
+        """CONT-4.4: connect() must create ClientSession with bounded TCPConnector."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        client = HAWebSocketClient()
+
+        mock_settings = AsyncMock(return_value="http://homeassistant:8123")
+        mock_token = AsyncMock(return_value="fake-token")
+
+        captured_connector = None
+        captured_session = None
+
+        def _capture_session(*, connector, **kwargs):
+            nonlocal captured_connector, captured_session
+            captured_connector = connector
+            mock_ws = MagicMock()
+            mock_ws.closed = False
+            mock_ws.receive_json = AsyncMock(
+                side_effect=[
+                    {"type": "auth_required"},
+                    {"type": "auth_ok"},
+                ]
+            )
+            mock_ws.send_json = AsyncMock()
+            mock_ws.close = AsyncMock()
+            mock_session = MagicMock()
+            mock_session.ws_connect = AsyncMock(return_value=mock_ws)
+            captured_session = mock_session
+            return mock_session
+
+        with (
+            patch("app.ha_client.websocket.SettingsRepository.get_value", mock_settings),
+            patch("app.ha_client.websocket.get_ha_token", mock_token),
+            patch("aiohttp.ClientSession", side_effect=_capture_session),
+            patch("aiohttp.TCPConnector") as mock_connector_cls,
+        ):
+            mock_connector_cls.return_value = MagicMock()
+            result = await client.connect()
+
+        assert result is True
+        mock_connector_cls.assert_called_once_with(limit=10, limit_per_host=5, enable_cleanup_closed=True)

@@ -24,6 +24,8 @@ _ALLOWED_FORMAT = {"\u200d", "\u200c"}
 
 
 def sanitize_input(text: str) -> str:
+    if len(text) > MAX_INPUT_LENGTH:
+        logger.warning("Input truncated from %d to %d chars", len(text), MAX_INPUT_LENGTH)
     text = text[:MAX_INPUT_LENGTH]
     text = text.replace("\x00", "")
     cleaned = []

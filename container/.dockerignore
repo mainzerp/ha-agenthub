@@ -10,3 +10,11 @@ conftest.py
 pyproject.toml
 requirements-dev.txt
 check_config.py
+.github/
+.vscode/
+.kimi/
+docs/SubAgent/
+live_deployment.md
+*.key
+*.pem
+*.crt

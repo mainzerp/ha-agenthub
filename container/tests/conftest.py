@@ -73,7 +73,11 @@ def build_integration_test_app(
     if dispatcher is None:
         dispatcher = MagicMock()
     if ha_client is None:
-        ha_client = MagicMock()
+        ha_client = AsyncMock()
+        ha_client.render_template = AsyncMock(return_value="")
+        ha_client.get_states = AsyncMock(return_value=[])
+        ha_client.get_area_registry = AsyncMock(return_value={})
+        ha_client.get_config = AsyncMock(return_value={})
     if mcp_registry is None:
         mcp_registry = MagicMock()
         mcp_registry.list_servers.return_value = []

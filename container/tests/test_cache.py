@@ -20,7 +20,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.cache._base_cache import make_text_id, normalize_text
+from app.cache._base_cache import _LRU_PAGE_SIZE, make_text_id, normalize_text
 from app.cache.action_cache import ActionCache, _is_readonly_action, make_action_entry_id
 from app.cache.cache_manager import ActionReplayOutcome, CacheManager, CacheResult
 from app.cache.embedding import ChromaEmbeddingFunction, EmbeddingEngine
@@ -418,6 +418,25 @@ class TestRoutingCacheExtended:
         store.count.return_value = 5
         cache._enforce_lru()
         store.delete.assert_not_called()
+
+    def test_enforce_lru_memory_bounded(self):
+        """_enforce_lru must paginate the collection via _LRU_PAGE_SIZE."""
+        cache, store = self._make_cache()
+        cache._max_entries = 1000
+        store.count.return_value = 1500
+        store.get.side_effect = [
+            {
+                "ids": [f"id-{i}" for i in range(1000)],
+                "metadatas": [{"last_accessed": f"2025-01-{i + 1:02d}T00:00:00"} for i in range(1000)],
+            },
+            {
+                "ids": [f"id-{i}" for i in range(1000, 1500)],
+                "metadatas": [{"last_accessed": f"2025-01-{i + 1:02d}T00:00:00"} for i in range(1000, 1500)],
+            },
+        ]
+        cache._enforce_lru()
+        for call in store.get.call_args_list:
+            assert call.kwargs.get("limit") == _LRU_PAGE_SIZE
 
     def test_get_stats(self):
         # v4: stat key is semantic_threshold, not threshold
@@ -1118,7 +1137,8 @@ class TestEmbeddingEngine:
         "sentence_transformers.base.model": logging.WARNING,
     }
 
-    def test_embed_local_via_sentence_transformer(self):
+    @pytest.mark.asyncio
+    async def test_embed_local_via_sentence_transformer(self):
         engine = EmbeddingEngine()
         engine._provider = "local"
         engine._model_name = "all-MiniLM-L6-v2"
@@ -1129,10 +1149,11 @@ class TestEmbeddingEngine:
         mock_model.encode.return_value = np.zeros((1, 384))
         engine._local_model = mock_model
 
-        result = engine.embed("test")
+        result = await engine.embed("test")
         assert len(result) == 384
 
-    def test_embed_batch_local(self):
+    @pytest.mark.asyncio
+    async def test_embed_batch_local(self):
         engine = EmbeddingEngine()
         engine._provider = "local"
         mock_model = MagicMock()
@@ -1141,11 +1162,12 @@ class TestEmbeddingEngine:
         mock_model.encode.return_value = np.zeros((2, 384))
         engine._local_model = mock_model
 
-        results = engine.embed_batch(["text1", "text2"])
+        results = await engine.embed_batch(["text1", "text2"])
         assert len(results) == 2
         assert len(results[0]) == 384
 
-    def test_embed_external_via_litellm(self):
+    @pytest.mark.asyncio
+    async def test_embed_external_via_litellm(self):
         engine = EmbeddingEngine()
         engine._provider = "external"
         engine._model_name = "openai/text-embedding-3-small"
@@ -1157,9 +1179,38 @@ class TestEmbeddingEngine:
 
         mock_litellm = MagicMock()
         mock_litellm.embedding.return_value = mock_response
-        with patch.dict(sys.modules, {"litellm": mock_litellm}):
-            results = engine.embed_batch(["text1", "text2"])
+        with (
+            patch.dict(sys.modules, {"litellm": mock_litellm}),
+            patch("app.cache.embedding.asyncio.to_thread", side_effect=lambda f, *a, **k: f(*a, **k)),
+        ):
+            results = await engine.embed_batch(["text1", "text2"])
         assert len(results) == 2
+
+    @pytest.mark.asyncio
+    async def test_embed_external_retries_on_rate_limit(self):
+        engine = EmbeddingEngine()
+        engine._provider = "external"
+        engine._model_name = "openai/text-embedding-3-small"
+
+        import sys
+
+        mock_litellm = MagicMock()
+        mock_litellm.RateLimitError = type("RateLimitError", (Exception,), {})
+        mock_litellm.embedding.side_effect = [
+            mock_litellm.RateLimitError("rate limited"),
+            mock_litellm.RateLimitError("rate limited"),
+            MagicMock(data=[{"embedding": [0.1] * 384}]),
+        ]
+        with (
+            patch.dict(sys.modules, {"litellm": mock_litellm}),
+            patch("app.cache.embedding.asyncio.to_thread", side_effect=lambda f, *a, **k: f(*a, **k)),
+            patch("app.cache.embedding.asyncio.sleep", new_callable=AsyncMock) as mock_sleep,
+        ):
+            results = await engine.embed_batch(["text1"])
+        assert len(results) == 1
+        assert mock_sleep.await_count == 2
+        mock_sleep.assert_any_await(1)
+        mock_sleep.assert_any_await(2)
 
     async def test_initialize_loads_config(self):
         engine = EmbeddingEngine()
@@ -1290,12 +1341,12 @@ class TestEmbeddingEngine:
 class TestChromaEmbeddingFunction:
     def test_calls_engine(self):
         mock_engine = MagicMock(spec=EmbeddingEngine)
-        mock_engine.embed_batch.return_value = [[0.0] * 384]
+        mock_engine.embed_batch = AsyncMock(return_value=[[0.0] * 384])
 
         fn = ChromaEmbeddingFunction(mock_engine)
         result = fn(["test text"])
         assert len(result) == 1
-        mock_engine.embed_batch.assert_called_once_with(["test text"])
+        mock_engine.embed_batch.assert_awaited_once_with(["test text"])
 
 
 # ---------------------------------------------------------------------------
@@ -1729,3 +1780,85 @@ async def test_concurrent_cache_stress():
     # 20 workers * 10 iterations = 200 stores.
     # eviction_interval defaults to 100, so store_count should be 0.
     assert manager._routing_cache._state._store_count == 0
+
+
+class TestLruMemoryBounded:
+    """CONT-8.2: LRU enforcement must paginate through the store instead of loading everything into memory."""
+
+    def test_enforce_lru_memory_bounded(self):
+        from app.cache._base_cache import _LRU_PAGE_SIZE
+        from app.cache.routing_cache import RoutingCache
+
+        store = MagicMock(spec=VectorStore)
+        cache = RoutingCache(store)
+        cache._max_entries = 100
+        cache._lru_trigger_fraction = 0.95
+
+        # Simulate 1500 entries so eviction is triggered
+        store.count.return_value = 1500
+
+        def _paged_get(_collection, *, include, limit, offset):
+            total = 1500
+            start = offset or 0
+            end = min(start + limit, total)
+            return {
+                "ids": [f"id-{i}" for i in range(start, end)],
+                "metadatas": [{"last_accessed": f"2025-01-{(i % 31) + 1:02d}T00:00:00"} for i in range(start, end)],
+            }
+
+        store.get.side_effect = _paged_get
+
+        cache._enforce_lru()
+
+        # Every get call must use the pagination limit
+        for call in store.get.call_args_list:
+            assert call.kwargs.get("limit") == _LRU_PAGE_SIZE
+
+    def test_enforce_lru_respects_max_entries(self):
+        """CONT-8.2: Create cache with limit 100, insert 150 entries, call _enforce_lru, assert size stays <= 100."""
+        from app.cache.routing_cache import RoutingCache
+
+        class _SimpleStore:
+            def __init__(self):
+                self._entries: dict[str, tuple[str, dict]] = {}
+
+            def upsert(self, _collection, ids, documents, metadatas):
+                for entry_id, document, metadata in zip(ids, documents, metadatas, strict=False):
+                    self._entries[entry_id] = (document, metadata)
+
+            def count(self, _collection):
+                return len(self._entries)
+
+            def get(self, _collection, *, include, limit=None, offset=None):
+                items = list(self._entries.items())
+                if offset:
+                    items = items[offset:]
+                if limit is not None:
+                    items = items[:limit]
+                return {
+                    "ids": [entry_id for entry_id, _ in items],
+                    "metadatas": [metadata for _, (_, metadata) in items],
+                }
+
+            def delete(self, _collection, ids):
+                for entry_id in ids:
+                    self._entries.pop(entry_id, None)
+
+        store = _SimpleStore()
+        cache = RoutingCache(store)
+        cache._max_entries = 100
+        cache._lru_trigger_fraction = 0.95
+        cache._eviction_interval = 1000  # prevent auto-eviction during insert
+
+        for i in range(150):
+            entry = make_routing_cache_entry(
+                query_text=f"query {i}",
+                agent_id="light-agent",
+                confidence=0.95,
+                condensed_task=f"Task {i}",
+            )
+            cache.store(entry)
+
+        assert store.count(None) == 150
+        cache._enforce_lru()
+        assert store.count(None) <= 100

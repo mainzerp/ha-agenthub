@@ -80,7 +80,7 @@ class RecordingHaClient:
     async def fire_event(self, event_type: str, event_data: dict | None = None) -> dict[str, Any]:
         return {"success": True}
 
-    async def render_template(self, template: str) -> str | None:
+    async def render_template(self, template: str, variables: dict | None = None) -> str | None:
         return None
 
     async def get_history_period(self, *_args, **_kwargs) -> list[list[dict[str, Any]]]:

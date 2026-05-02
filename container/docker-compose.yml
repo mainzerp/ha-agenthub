@@ -1,7 +1,7 @@
 # HA-AgentHub container stack (default compose).
 # Legacy stack (service agent-assist, volume agent-assist-data): docker-compose_local.yml
 #
-# Pre-built image (CI pushes from main): ghcr.io/mainzerp/ha-agenthub:main (and :latest).
+# Pre-built image (CI pushes from main): ghcr.io/mainzerp/ha-agenthub:latest.
 # Build:   docker compose build
 # Run:     docker compose up -d
 # Tag:     IMAGE_TAG=0.18.14 docker compose build
@@ -11,12 +11,15 @@
 
 services:
   ha-agenthub:
-    # Use :main or :latest (both set on push to main). :latest alone used to 404 before CI tagged it.
-    image: ghcr.io/mainzerp/ha-agenthub:${HA_AGENTHUB_TAG:-main}
+    # Use :latest (set on push to main).
+    image: ghcr.io/mainzerp/ha-agenthub:${HA_AGENTHUB_TAG:-latest}
     container_name: ha-agenthub
     restart: unless-stopped
     ports:
       - "${CONTAINER_PORT:-8080}:${CONTAINER_PORT:-8080}"
+    tmpfs:
+      - /tmp:noexec,nosuid,size=100m
+      - /var/tmp:noexec,nosuid,size=50m
     volumes:
       - ha-agenthub-data:/data
     deploy:
@@ -34,6 +37,15 @@ services:
       - SQLITE_DB_PATH=${SQLITE_DB_PATH:-/data/agent_assist.db}
       - HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-0}
       - COOKIE_SECURE=false # For local development without HTTPS. In production, set to true and ensure HTTPS is used.
+    read_only: true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETGID
+      - SETUID
+    security_opt:
+      - no-new-privileges:true
     healthcheck:
       test:
         [

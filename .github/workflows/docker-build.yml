@@ -15,6 +15,7 @@ permissions:
   contents: read
   packages: write
   actions: write
+  security-events: write
 
 jobs:
   docker:
@@ -71,6 +72,21 @@ jobs:
           docker pull ${{ steps.ghcr.outputs.image }}:main
           docker run --rm ${{ steps.ghcr.outputs.image }}:main python -c "from app.main import app; print('OK')"
 
+      - name: Scan image with Trivy
+        if: env.PUSH_TO_GHCR == 'true'
+        uses: aquasecurity/trivy-action@0.29.0
+        continue-on-error: true
+        with:
+          image-ref: ${{ steps.ghcr.outputs.image }}:main
+          format: sarif
+          output: trivy-results.sarif
+
+      - name: Upload Trivy SARIF
+        if: env.PUSH_TO_GHCR == 'true'
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-results.sarif
+
       - name: Build (PR)
         if: github.event_name == 'pull_request'
         uses: docker/build-push-action@v6
@@ -85,3 +101,18 @@ jobs:
       - name: Smoke test
         if: github.event_name == 'pull_request'
         run: docker run --rm agent-assist:ci python -c "from app.main import app; print('OK')"
+
+      - name: Scan PR image with Trivy
+        if: github.event_name == 'pull_request'
+        uses: aquasecurity/trivy-action@0.29.0
+        continue-on-error: true
+        with:
+          image-ref: agent-assist:ci
+          format: sarif
+          output: trivy-results.sarif
+
+      - name: Upload Trivy SARIF (PR)
+        if: github.event_name == 'pull_request'
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-results.sarif

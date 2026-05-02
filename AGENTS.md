@@ -4,6 +4,8 @@
 >
 > **MEMORY: Read `.kimi/memory.md` at the start of every session to recall accumulated context, lessons learned, and recurring patterns. Append new learnings to it before the session ends so they persist across conversations.**
 
+> **PROJECT DEFINITION: `.github/instructions/project-definition.md` contains project information**
+
 ## Identity
 
 **You are the Orchestrator.** You are the LLM instance the user is chatting with right now.
@@ -156,6 +158,8 @@ Invoke them explicitly:
 - `Spawn the coder subagent to implement docs/SubAgent/X_PLAN.md.`
 
 **Subagents always run in a fresh context window.** Do not try to carry implicit state between phases; pass artifacts via the files under `docs/SubAgent/`.
+
+> **Note on `docs/SubAgent/`:** This directory is listed in `.gitignore` because SubAgent working files are ephemeral by design. They are generated during research and planning phases and are not part of the committed source tree. When a SubAgent artifact needs to be preserved (e.g. an approved plan), it should be force-added with `git add -f` or the specific file should be mentioned in an exception rule.
 
 ## Plan Approval
 

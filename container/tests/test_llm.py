@@ -16,7 +16,12 @@ class _AuthenticationError(Exception):
     pass
 
 
+class _APIError(Exception):
+    pass
+
+
 _litellm_mock.exceptions.AuthenticationError = _AuthenticationError
+_litellm_mock.exceptions.APIError = _APIError
 sys.modules.setdefault("litellm", _litellm_mock)
 
 from app.llm.providers import (  # noqa: E402

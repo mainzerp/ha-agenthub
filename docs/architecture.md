@@ -181,8 +181,7 @@ matrix.
 
 The action cache was named "response cache" in 0.20.x and earlier.
 The legacy term still appears in the on-disk Chroma collection name
-and in the `cache.response.*` settings keys for backward
-compatibility.
+for backward compatibility.
 
 The cache system uses ChromaDB vector embeddings for semantic similarity matching:
 

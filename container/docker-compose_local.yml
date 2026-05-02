@@ -8,6 +8,9 @@ services:
     restart: unless-stopped
     ports:
       - "${CONTAINER_PORT:-8080}:8080"
+    tmpfs:
+      - /tmp:noexec,nosuid,size=100m
+      - /var/tmp:noexec,nosuid,size=50m
     volumes:
       - agent-assist-data:/data #legacy volume name of local deployment, cant be changed without breaking existing data
     deploy:
@@ -24,6 +27,18 @@ services:
       - CHROMADB_PERSIST_DIR=${CHROMADB_PERSIST_DIR:-/data/chromadb}
       - SQLITE_DB_PATH=${SQLITE_DB_PATH:-/data/agent_assist.db}
       - HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-0}
+      # When serving behind HTTPS, set COOKIE_SECURE=true so admin session
+      # and CSRF cookies are restricted to TLS. See docs/configuration.md.
+      - COOKIE_SECURE=${COOKIE_SECURE:-false}
+    read_only: true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETGID
+      - SETUID
+    security_opt:
+      - no-new-privileges:true
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/api/health')"]
       interval: 30s

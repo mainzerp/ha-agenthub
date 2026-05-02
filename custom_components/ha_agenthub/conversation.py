@@ -7,6 +7,7 @@ import json
 import logging
 import re
 import time
+from collections.abc import Callable
 from typing import Any, Literal
 
 import aiohttp
@@ -179,8 +180,8 @@ class HaAgentHubConversationEntity(
         self._coalesce_window_sec: float = 0.25
         # V4: at most one in-flight post-filler push task per satellite.
         self._inflight_pushes: dict[str, asyncio.Task] = {}
-        # V4 reentrancy guard for assist_satellite.announce echo loops.
-        self._push_in_progress_satellites: set[str] = set()
+        self._reconnect_immediate_task: asyncio.Task | None = None
+        # (removed dead reentrancy guard -- was _push_in_progress_satellites)
         self._attr_device_info = dr.DeviceInfo(
             identifiers={(DOMAIN, entry.entry_id)},
             name=entry.title,
@@ -209,7 +210,7 @@ class HaAgentHubConversationEntity(
             assist_pipeline.async_migrate_engine(
                 self.hass, "conversation", self._entry.entry_id, self.entity_id
             )
-        except Exception:
+        except (ValueError, KeyError):
             logger.debug("Pipeline engine migration skipped (not critical)")
         self._reconnect_task = self._entry.async_create_background_task(
             self.hass,
@@ -222,9 +223,19 @@ class HaAgentHubConversationEntity(
         if hasattr(self, "_reconnect_task") and self._reconnect_task:
             self._reconnect_task.cancel()
             self._reconnect_task = None
+        if (
+            hasattr(self, "_reconnect_immediate_task")
+            and self._reconnect_immediate_task
+        ):
+            self._reconnect_immediate_task.cancel()
+            self._reconnect_immediate_task = None
         for sat_id, task in list(self._inflight_pushes.items()):
             task.cancel()
         self._inflight_pushes.clear()
+        for key, (_, task) in list(self._inflight_bridge.items()):
+            if not task.done():
+                task.cancel()
+        self._inflight_bridge.clear()
         await self._disconnect_ws()
         await super().async_will_remove_from_hass()
 
@@ -239,7 +250,7 @@ class HaAgentHubConversationEntity(
         if self._ws is not None and not self._ws.closed:
             return True
         try:
-            if self._session is None:
+            if self._session is None or self._session.closed:
                 self._session = aiohttp.ClientSession()
 
             parsed = urlparse(self._url)
@@ -255,12 +266,12 @@ class HaAgentHubConversationEntity(
             self._ws_last_active = time.monotonic()
             logger.info("Connected to HA-AgentHub container at %s", self._url)
             return True
-        except (aiohttp.ClientError, asyncio.TimeoutError):
+        except (aiohttp.ClientError, asyncio.TimeoutError, OSError):
             logger.warning("Failed to connect to container at %s", self._url)
             if self._session:
                 try:
                     await self._session.close()
-                except Exception:
+                except (aiohttp.ClientError, OSError):
                     pass
                 self._session = None
             self._ws = None
@@ -323,7 +334,7 @@ class HaAgentHubConversationEntity(
                     pong = self._ws.ping()
                     await asyncio.wait_for(pong, timeout=2.0)
                     self._ws_last_active = time.monotonic()
-                except (asyncio.TimeoutError, Exception):
+                except (asyncio.TimeoutError, aiohttp.ClientError, OSError):
                     logger.warning("WebSocket idle ping failed, reconnecting")
                     await self._disconnect_ws_locked()
                     return await self._connect_ws_locked()
@@ -336,7 +347,9 @@ class HaAgentHubConversationEntity(
     def _schedule_reconnect(self) -> None:
         """Schedule an immediate background WS reconnect."""
         self._reconnect_delay = RECONNECT_BASE_DELAY
-        self._entry.async_create_background_task(
+        if self._reconnect_immediate_task is not None:
+            self._reconnect_immediate_task.cancel()
+        self._reconnect_immediate_task = self._entry.async_create_background_task(
             self.hass,
             self._connect_ws(),
             name="ha_agenthub_ws_immediate_reconnect",
@@ -428,7 +441,7 @@ class HaAgentHubConversationEntity(
                     except (aiohttp.ClientError, asyncio.TimeoutError):
                         logger.warning("WebSocket error, falling back to REST")
                         await self._disconnect_ws_locked()
-        except Exception:
+        except (aiohttp.ClientError, asyncio.TimeoutError, OSError):
             logger.warning(
                 "Unexpected WS dispatch failure, falling back to REST", exc_info=True
             )
@@ -487,7 +500,7 @@ class HaAgentHubConversationEntity(
             logger.warning(
                 "filler_push: no assist_satellite entity found for device %s", device_id
             )
-        except Exception:
+        except (aiohttp.ClientError, asyncio.TimeoutError, OSError):
             logger.warning(
                 "filler_push: failed to resolve satellite entity for device %s",
                 device_id,
@@ -537,7 +550,7 @@ class HaAgentHubConversationEntity(
         final_parts: list[str] = []
         observed_idle = asyncio.Event()
         aborted_new_turn = False
-        unsub = None
+        unsub: Callable[[], None] | None = None
 
         def _on_state(event) -> None:
             nonlocal aborted_new_turn
@@ -560,7 +573,7 @@ class HaAgentHubConversationEntity(
                     current = self.hass.states.get(satellite_entity_id)
                     if current is not None and current.state in _SAT_IDLE_STATES:
                         observed_idle.set()
-                except Exception:
+                except (ValueError, KeyError):
                     logger.debug("ha-agenthub: state seed lookup failed", exc_info=True)
 
             deadline_final = time.monotonic() + PUSH_FINAL_WAIT_SECONDS
@@ -582,7 +595,10 @@ class HaAgentHubConversationEntity(
                     try:
                         data = json.loads(msg.data)
                     except json.JSONDecodeError:
-                        logger.warning("ha-agenthub: ignoring malformed WS message in push key=%s", gate_key)
+                        logger.warning(
+                            "ha-agenthub: ignoring malformed WS message in push key=%s",
+                            gate_key,
+                        )
                         continue
                     if data.get("filler_push") is not None:
                         logger.info(
@@ -658,7 +674,6 @@ class HaAgentHubConversationEntity(
                 )
                 return
 
-            self._push_in_progress_satellites.add(satellite_entity_id)
             try:
                 logger.info(
                     "ha-agenthub: post-filler push dispatching announce key=%s sat=%s final_chars=%d",
@@ -676,15 +691,13 @@ class HaAgentHubConversationEntity(
                     },
                     blocking=False,
                 )
-            except Exception:
+            except (aiohttp.ClientError, OSError):
                 logger.warning(
                     "ha-agenthub: assist_satellite.announce failed in push key=%s sat=%s",
                     gate_key,
                     satellite_entity_id,
                     exc_info=True,
                 )
-            finally:
-                self._push_in_progress_satellites.discard(satellite_entity_id)
         except asyncio.CancelledError:
             logger.info(
                 "ha-agenthub: post-filler push cancelled key=%s sat=%s",
@@ -692,7 +705,7 @@ class HaAgentHubConversationEntity(
                 satellite_entity_id,
             )
             raise
-        except Exception:
+        except (aiohttp.ClientError, asyncio.TimeoutError, OSError):
             logger.warning(
                 "ha-agenthub: post-filler push raised unexpectedly key=%s sat=%s",
                 gate_key,
@@ -703,15 +716,15 @@ class HaAgentHubConversationEntity(
             if unsub is not None:
                 try:
                     unsub()
-                except Exception:
+                except (ValueError, KeyError):
                     logger.debug(
                         "ha-agenthub: state listener unsub raised", exc_info=True
                     )
             try:
                 if local_ws is not None and not local_ws.closed:
                     await local_ws.close()
-            except Exception:
-                logger.debug("ha-agenthub: local_ws close raised", exc_info=True)
+            except (aiohttp.ClientError, OSError):
+                logger.exception("ha-agenthub: local_ws close raised")
             current = self._inflight_pushes.get(key)
             if current is asyncio.current_task():
                 self._inflight_pushes.pop(key, None)
@@ -750,7 +763,13 @@ class HaAgentHubConversationEntity(
             while True:
                 msg = await asyncio.wait_for(self._ws.receive(), timeout=30.0)
                 if msg.type == aiohttp.WSMsgType.TEXT:
-                    data = json.loads(msg.data)
+                    try:
+                        data = json.loads(msg.data)
+                    except json.JSONDecodeError:
+                        logger.warning(
+                            "ha-agenthub: ignoring malformed WS message in stream"
+                        )
+                        continue
 
                     # V4 filler-first return: when the container sends a
                     # filler_push, hand the WebSocket off to a background
@@ -835,7 +854,7 @@ class HaAgentHubConversationEntity(
                 user_input.language,
                 sanitized=stream_sanitized,
             )
-        except (aiohttp.ClientError, asyncio.TimeoutError, json.JSONDecodeError) as err:
+        except (aiohttp.ClientError, asyncio.TimeoutError) as err:
             raise _WsDroppedAfterSendError() from err
 
     async def _process_via_rest(
@@ -843,7 +862,7 @@ class HaAgentHubConversationEntity(
     ) -> conversation.ConversationResult:
         """Fallback: send request via REST and get full response."""
         try:
-            if self._session is None:
+            if self._session is None or self._session.closed:
                 self._session = aiohttp.ClientSession()
             headers = {"Authorization": f"Bearer {self._api_key}"}
             payload: dict[str, Any] = {
@@ -883,7 +902,7 @@ class HaAgentHubConversationEntity(
 
     def _build_result(
         self,
-        speech: str,
+        speech: str | None,
         conversation_id: str | None,
         language: str | None,
         *,
@@ -897,6 +916,7 @@ class HaAgentHubConversationEntity(
         backends that do not advertise the flag default to False so the
         defensive fallback still runs.
         """
+        speech = speech or ""
         response = intent.IntentResponse(language=language or "en")
         response.async_set_speech(speech if sanitized else _strip_markdown(speech))
         return conversation.ConversationResult(

@@ -35,7 +35,10 @@ async def async_migrate_entry(hass: HomeAssistant, config_entry: ConfigEntry) ->
         )
         return False
     if config_entry.version == 1:
-        url = _normalize_url(config_entry.data.get(CONF_URL, ""))
+        try:
+            url = _normalize_url(config_entry.data.get(CONF_URL, ""))
+        except ValueError:
+            url = ""
         new_unique_id = url if url else config_entry.entry_id
 
         hass.config_entries.async_update_entry(
@@ -66,10 +69,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     entry.async_on_unload(entry.add_update_listener(_async_reload_entry_on_update))
 
+    url = entry.options.get(CONF_URL, entry.data.get(CONF_URL, ""))
+    api_key = entry.options.get(CONF_API_KEY, entry.data.get(CONF_API_KEY, ""))
+    if not url:
+        logger.error("HA-AgentHub config entry missing required URL")
+        return False
+
     hass.data.setdefault(DOMAIN, {})
     hass.data[DOMAIN][entry.entry_id] = {
-        "url": entry.data[CONF_URL],
-        "api_key": entry.data[CONF_API_KEY],
+        "url": url,
+        "api_key": api_key,
     }
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
