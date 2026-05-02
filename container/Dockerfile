@@ -1,5 +1,5 @@
 # ---- Builder stage: compile native wheels ----
-FROM python:3.12-slim-bookworm AS builder
+FROM python:3.14-slim-bookworm AS builder
 
 WORKDIR /build
 
@@ -23,7 +23,7 @@ ENV PYTHONPATH=/install/lib/python3.12/site-packages
 RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
 
 # ---- Final stage: slim runtime ----
-FROM python:3.12-slim-bookworm
+FROM python:3.14-slim-bookworm
 
 WORKDIR /app
 
