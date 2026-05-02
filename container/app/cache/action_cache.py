@@ -191,6 +191,9 @@ class ActionCache(_BaseCache[ActionCacheEntry]):
             "executed_at": entry.executed_at or created_at,
             "hit_count": str(entry.hit_count),
             "schema_version": str(_ACTION_CACHE_SCHEMA_VERSION),
+            "original_response_text": entry.original_response_text or "",
+            "rewrite_applied": str(entry.rewrite_applied).lower(),
+            "rewrite_latency_ms": str(entry.rewrite_latency_ms or ""),
         }
 
     def _deserialize_entry(self, document: str, metadata: dict, *, similarity: float) -> ActionCacheEntry | None:
@@ -213,4 +216,7 @@ class ActionCache(_BaseCache[ActionCacheEntry]):
             executed_at=metadata.get("executed_at") or None,
             hit_count=self._coerce_int(metadata.get("hit_count"), 0),
             schema_version=self._coerce_int(metadata.get("schema_version"), _ACTION_CACHE_SCHEMA_VERSION),
+            original_response_text=metadata.get("original_response_text") or None,
+            rewrite_applied=self._coerce_bool(metadata.get("rewrite_applied"), False),
+            rewrite_latency_ms=self._coerce_float(metadata.get("rewrite_latency_ms"), None),
         )

@@ -222,6 +222,9 @@ def make_action_cache_entry(
     entity_ids: list[str] | None = None,
     language: str = "en",
     condensed_task: str | None = None,
+    original_response_text: str | None = None,
+    rewrite_applied: bool = False,
+    rewrite_latency_ms: float | None = None,
 ) -> ActionCacheEntry:
     """Build an ActionCacheEntry."""
     action = cached_action or make_cached_action()
@@ -234,6 +237,9 @@ def make_action_cache_entry(
         confidence=confidence,
         cached_action=action,
         entity_ids=entity_ids or [action.entity_id],
+        original_response_text=original_response_text,
+        rewrite_applied=rewrite_applied,
+        rewrite_latency_ms=rewrite_latency_ms,
     )
 
 

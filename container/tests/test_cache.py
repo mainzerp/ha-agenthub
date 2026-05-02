@@ -748,6 +748,35 @@ class TestActionCacheExtended:
         store.upsert.assert_not_called()
         assert not cache._state.has_pending()
 
+    def test_action_cache_roundtrips_original_response_text(self):
+        """Store and lookup must preserve original_response_text, rewrite_applied, and rewrite_latency_ms."""
+        cache, store = self._make_cache()
+        store.count.return_value = 0
+        entry = make_action_cache_entry(
+            query_text="turn on kitchen light",
+            response_text="Final rewritten output.",
+            original_response_text="Raw agent output.",
+            rewrite_applied=True,
+            rewrite_latency_ms=42.0,
+        )
+        cache.store(entry)
+        # Simulate what the real vector store would return on lookup
+        stored_metadata = cache._serialize_metadata(entry)
+        exact_id = cache.make_entry_id(entry.query_text, language=entry.language)
+        store.get.return_value = {
+            "ids": [exact_id],
+            "documents": [entry.query_text],
+            "metadatas": [stored_metadata],
+        }
+
+        hit, _similarity = cache.lookup(entry.query_text, language=entry.language)
+
+        assert hit is not None
+        assert hit.original_response_text == "Raw agent output."
+        assert hit.response_text == "Final rewritten output."
+        assert hit.rewrite_applied is True
+        assert hit.rewrite_latency_ms == 42.0
+
 
 # ---------------------------------------------------------------------------
 # Cache manager extended tests (recovered from dead block)

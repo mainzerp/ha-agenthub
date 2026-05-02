@@ -909,7 +909,8 @@ class OrchestratorAgent(BaseAgent):
         """Finalize a successful action-cache full hit."""
         target_agent = hit.agent_id or "unknown"
         task_context = getattr(task, "context", None) if task is not None else None
-        speech = hit.original_response_text or hit.response_text or ""
+        raw_speech = hit.original_response_text or hit.response_text or ""
+        speech = raw_speech
         if self._cache_manager:
             speech = await self._cache_manager.apply_rewrite(hit)
 
@@ -942,11 +943,11 @@ class OrchestratorAgent(BaseAgent):
                 rw_span["metadata"]["latency_ms"] = hit.rewrite_latency_ms
                 rw_span["metadata"]["success"] = True
                 if hit.rewrite_latency_ms is not None:
-                    rw_span["duration_ms"] = round(hit.rewrite_latency_ms, 2)
+                    rw_span["_override_duration_ms"] = round(hit.rewrite_latency_ms, 2)
 
         async with _optional_span(span_collector, "return", agent_id="orchestrator") as ret_span:
             ret_span["metadata"]["from_agent"] = target_agent
-            ret_span["metadata"]["agent_response"] = speech
+            ret_span["metadata"]["agent_response"] = raw_speech
             ret_span["metadata"]["final_response"] = speech
             ret_span["metadata"]["mediated"] = bool(hit.rewrite_applied)
             ret_span["metadata"]["action_cache_hit"] = True

@@ -1,8 +1,17 @@
 # Version
 
-**Current Version:** 1.14.1
+**Current Version:** 1.14.2
 
-## Recent Changes (since 1.14.0)
+## Recent Changes (since 1.14.1)
+
+- **Cache System Fixes:**
+  - Fixed action cache serialization to persist `original_response_text`, `rewrite_applied`, and `rewrite_latency_ms` (fields introduced in v1.12.5 were silently dropped on vector-store round-trip).
+  - Aligned cache-hit replay trace span metadata with live-dispatch path: `agent_response` now records the raw agent text and `final_response` records the post-rewrite text.
+  - Fixed rewrite-agent span duration override key (`_override_duration_ms`) so the span is no longer collapsed to ~0 ms in the Gantt timeline and Agent Executions table.
+
+## Version History
+
+### 1.14.1 (PATCH) -- Security & Safety Hardening
 
 - **Security & Safety Hardening (Deep Code Review):**
   - Removed `live_deployment.md` which contained hardcoded production credentials.
