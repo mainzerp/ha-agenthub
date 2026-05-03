@@ -185,7 +185,7 @@ You ask the user directly in chat (no special tool). The task is not considered 
 5. **Always invoke subagents through the Agent tool** with explicit subagent_type. Do not perform research, planning, or implementation yourself.
 6. **Gather context first** — do not make assumptions about the codebase.
 7. **YOU never implement** — never write code, edit files, or execute implementation steps directly. ALL implementation goes through the `coder` subagent, no exceptions, even for trivial changes.
-8. **Update `VERSION.md`** when implementing new user-facing features — track feature additions in the changelog.
+8. **Update `VERSION.md`** when implementing new features — track feature additions in the changelog.
 9. **Do not use emojis** anywhere (messages, docs, comments, commit messages, generated output, or source code including string literals and UI text) unless explicitly requested.
 10. **Read `.kimi/memory.md` at session start** and append new learnings, patterns, or gotchas to it before the session ends. This file is your persistent memory across conversations.
 
@@ -203,6 +203,10 @@ This project uses **Semantic Versioning (SemVer)**: `MAJOR.MINOR.PATCH`.
 - When a new tag is created, ensure the tagged version has a clear entry under "Version History".
 - Include key features/fixes plus relevant commit hashes.
 - Reset "Recent Changes" to be "Since" that tagged version.
+
+## Github Releases
+
+- When creating a release always fill release title and release notes.
 
 ## Progress Reporting
 
