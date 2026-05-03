@@ -180,3 +180,33 @@ async def test_full_hit_skips_both_classify_and_dispatch():
     orch._finalize_action_replay_hit.assert_awaited_once()
     orch._classify.assert_not_awaited()
     orch._dispatch_single.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_full_hit_rewrite_receives_user_text():
+    cache_manager = MagicMock()
+    cache_manager.apply_rewrite = AsyncMock(return_value="German speech")
+    orch = _make_orchestrator(cache_manager)
+    action_hit = ActionReplayOutcome(
+        kind="full_hit",
+        entry_id="action-1",
+        agent_id="light-agent",
+        response_text="Done, Keller is on.",
+        replay_result={"success": True},
+        similarity=1.0,
+    )
+    orch._store_turn = AsyncMock()
+    orch._get_turns = AsyncMock(return_value=[])
+
+    result = await orch._finalize_action_replay_hit(
+        hit=action_hit,
+        conversation_id="conv-1",
+        user_text="Keller einschalten",
+        span_collector=None,
+    )
+
+    cache_manager.apply_rewrite.assert_awaited_once()
+    call_args = cache_manager.apply_rewrite.call_args
+    assert call_args[0][0] is action_hit
+    assert call_args[1]["user_text"] == "Keller einschalten"
+    assert result["speech"] == "German speech"

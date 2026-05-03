@@ -912,7 +912,7 @@ class OrchestratorAgent(BaseAgent):
         raw_speech = hit.original_response_text or hit.response_text or ""
         speech = raw_speech
         if self._cache_manager:
-            speech = await self._cache_manager.apply_rewrite(hit)
+            speech = await self._cache_manager.apply_rewrite(hit, user_text=user_text)
 
         # Inject proactive calendar reminders even on cache hits
         if self._calendar_injector is not None:

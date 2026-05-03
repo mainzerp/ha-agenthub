@@ -28,7 +28,7 @@ class RewriteAgent(BaseAgent):
             endpoint="local://rewrite-agent",
         )
 
-    async def rewrite(self, cached_text: str, language: str = "en") -> str:
+    async def rewrite(self, cached_text: str, language: str = "en", user_text: str | None = None) -> str:
         """Rephrase a cached response and apply personality. Returns the rewritten text.
 
         Falls back to returning cached_text verbatim on any failure.
@@ -43,9 +43,17 @@ class RewriteAgent(BaseAgent):
         personality_text = personality.strip() if personality else ""
         system_prompt = system_prompt.replace("{personality}", personality_text)
         system_prompt = system_prompt.replace("{language}", language or "en").strip()
+        if user_text:
+            user_content = (
+                f"User asked:\n{self._wrap_user_input(user_text)}\n"
+                f"Agent responded: {cached_text}\n\n"
+                f"Rephrase in {language}:"
+            )
+        else:
+            user_content = self._wrap_user_input(cached_text)
         messages = [
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": self._wrap_user_input(cached_text)},
+            {"role": "user", "content": user_content},
         ]
         try:
             result = await self._call_llm(messages)
