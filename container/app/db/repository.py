@@ -57,6 +57,8 @@ _BUILTIN_AGENT_IDS = {
     "send-agent",
     "rewrite-agent",
     "filler-agent",
+    "calendar-agent",
+    "lists-agent",
 }
 
 

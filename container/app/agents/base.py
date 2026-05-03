@@ -27,6 +27,7 @@ _KNOWN_PROMPT_NAMES = (
     "filler",
     "general",
     "light",
+    "lists",
     "media",
     "mediate",
     "merge",

@@ -18,6 +18,7 @@ from app.agents.custom_loader import CustomAgentLoader
 from app.agents.filler import FillerAgent
 from app.agents.general import GeneralAgent
 from app.agents.light import LightAgent
+from app.agents.lists import ListsAgent
 from app.agents.media import MediaAgent
 from app.agents.music import MusicAgent
 from app.agents.orchestrator import OrchestratorAgent
@@ -498,6 +499,7 @@ def _create_phase2_agent(agent_id: str, app: FastAPI):
         "security-agent": SecurityAgent,
         "send-agent": SendAgent,
         "calendar-agent": CalendarAgent,
+        "lists-agent": ListsAgent,
     }
     with_matcher = {
         "climate-agent",
@@ -507,6 +509,7 @@ def _create_phase2_agent(agent_id: str, app: FastAPI):
         "automation-agent",
         "media-agent",
         "calendar-agent",
+        "lists-agent",
     }
 
     cls = agent_map.get(agent_id)
@@ -728,6 +731,7 @@ async def _initialize_setup_dependent_services(app: FastAPI, *, source: str) -> 
         "security-agent",
         "send-agent",
         "calendar-agent",
+        "lists-agent",
     ]
     for agent_id in phase2_agents:
         config = await AgentConfigRepository.get(agent_id)

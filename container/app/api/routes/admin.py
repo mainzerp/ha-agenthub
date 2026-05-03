@@ -409,6 +409,8 @@ async def list_agents() -> dict[str, Any]:
         "security-agent",
         "rewrite-agent",
         "send-agent",
+        "calendar-agent",
+        "lists-agent",
     }
 
     # Include disabled built-in agents from DB that are not yet registered

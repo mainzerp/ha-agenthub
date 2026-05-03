@@ -76,6 +76,8 @@ _ACTIONS_WITHOUT_ENTITY: frozenset[str] = frozenset(
         # Timer agent list/query paths that aggregate across entities
         "list_timers",
         "list_alarms",
+        # Lists agent list/query paths
+        "list_lists",
     }
 )
 

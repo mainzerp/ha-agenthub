@@ -63,6 +63,7 @@ def _create_phase2_agent(agent_id: str, app):
     """Instantiate a Phase 2 agent by ID for hot-registration."""
     from app.agents.automation import AutomationAgent
     from app.agents.climate import ClimateAgent
+    from app.agents.lists import ListsAgent
     from app.agents.media import MediaAgent
     from app.agents.scene import SceneAgent
     from app.agents.security import SecurityAgent
@@ -77,8 +78,17 @@ def _create_phase2_agent(agent_id: str, app):
         "automation-agent": AutomationAgent,
         "security-agent": SecurityAgent,
         "send-agent": SendAgent,
+        "lists-agent": ListsAgent,
     }
-    with_matcher = {"climate-agent", "security-agent", "timer-agent", "scene-agent", "automation-agent", "media-agent"}
+    with_matcher = {
+        "climate-agent",
+        "security-agent",
+        "timer-agent",
+        "scene-agent",
+        "automation-agent",
+        "media-agent",
+        "lists-agent",
+    }
 
     cls = agent_map.get(agent_id)
     if cls is None:

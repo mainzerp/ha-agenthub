@@ -29,6 +29,7 @@ BUILT_IN_AGENTS = [
     "scene-agent",
     "automation-agent",
     "security-agent",
+    "lists-agent",
 ]
 
 

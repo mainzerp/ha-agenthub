@@ -228,12 +228,17 @@ class TestParseAction:
 
     def test_parse_action_allows_entityless_list_actions(self):
         """P2-6 (FLOW-PARSE-1): aggregation actions (``list_lights``,
-        ``list_timers`` etc.) legitimately omit an entity; they must
+        ``list_timers``, ``list_lists`` etc.) legitimately omit an entity; they must
         still parse."""
         response = '```json\n{"action": "list_lights", "parameters": {}}\n```'
         result = parse_action(response)
         assert result is not None
         assert result["action"] == "list_lights"
+
+        response = '```json\n{"action": "list_lists", "parameters": {}}\n```'
+        result = parse_action(response)
+        assert result is not None
+        assert result["action"] == "list_lists"
 
     def test_parse_action_allows_entityless_weather_query(self):
         response = '```json\n{"action": "query_weather"}\n```'

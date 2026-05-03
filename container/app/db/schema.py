@@ -760,6 +760,7 @@ async def _seed_defaults(db: aiosqlite.Connection) -> None:
         ("scene-agent", 0, "openrouter/openai/gpt-4o-mini", 5, 3, 0.2, 1024, "Scene activation"),
         ("automation-agent", 0, "openrouter/openai/gpt-4o-mini", 5, 3, 0.2, 1024, "Automation management"),
         ("security-agent", 0, "openrouter/openai/gpt-4o-mini", 5, 3, 0.2, 1024, "Security system control"),
+        ("lists-agent", 0, "openrouter/openai/gpt-4o-mini", 5, 3, 0.2, 1024, "Todo and shopping list management"),
         (
             "send-agent",
             0,
@@ -827,6 +828,7 @@ async def _seed_defaults(db: aiosqlite.Connection) -> None:
         ("timer-agent", "domain_include", "media_player"),
         ("timer-agent", "domain_include", "calendar"),
         ("calendar-agent", "domain_include", "calendar"),
+        ("lists-agent", "domain_include", "todo"),
         ("security-agent", "domain_include", "alarm_control_panel"),
         ("security-agent", "domain_include", "lock"),
         ("security-agent", "domain_include", "camera"),
@@ -1478,3 +1480,15 @@ async def _run_migrations(db: aiosqlite.Connection) -> None:
             "CREATE INDEX IF NOT EXISTS idx_calendar_entity_settings_universal ON calendar_entity_settings(is_universal)"
         )
         await db.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (27)")
+
+    if current_version < 28:
+        # Migration 28: Add lists-agent config and visibility rules
+        await db.execute(
+            "INSERT OR IGNORE INTO agent_configs (agent_id, enabled, model, timeout, max_iterations, temperature, max_tokens, description) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            ("lists-agent", 0, "openrouter/openai/gpt-4o-mini", 5, 3, 0.2, 1024, "Todo and shopping list management"),
+        )
+        await db.execute(
+            "INSERT OR IGNORE INTO entity_visibility_rules (agent_id, rule_type, rule_value) VALUES (?, ?, ?)",
+            ("lists-agent", "domain_include", "todo"),
+        )
+        await db.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (28)")

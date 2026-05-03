@@ -1,8 +1,19 @@
 # Version
 
-**Current Version:** 1.15.3
+**Current Version:** 1.16.0
 
 ## Recent Changes
+
+### 1.16.0 (MINOR) -- Lists Agent for HA todo list management
+
+- Added `lists-agent` for managing Home Assistant todo and shopping lists.
+  - Supports `list_lists`, `list_items`, `add_item`, `complete_item`, `remove_item`, and `clear_completed` actions.
+  - Uses HA `todo` domain services (`todo.get_items`, `todo.add_item`, `todo.update_item`, `todo.remove_item`).
+  - Handles multiple comma-separated items for add/complete/remove operations.
+  - Includes entity resolution via deterministic + hybrid matching for `todo.*` entities.
+- New files: `container/app/agents/lists.py`, `lists_executor.py`, `prompts/lists.txt`.
+- New tests: `container/tests/test_lists_executor.py` (26 tests, all passing).
+- Wired into runtime setup, agent registry, domain-agent map API, DB schema seeds, and prompt cache.
 
 ### 1.15.3 (PATCH) -- Pylance and linter fixes
 

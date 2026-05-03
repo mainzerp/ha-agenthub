@@ -43,6 +43,7 @@ from app.agents.custom_loader import CustomAgentLoader, DynamicAgent  # noqa: E4
 from app.agents.filler import FillerAgent  # noqa: E402
 from app.agents.general import GeneralAgent  # noqa: E402
 from app.agents.light import LightAgent  # noqa: E402
+from app.agents.lists import ListsAgent  # noqa: E402
 from app.agents.media import MediaAgent  # noqa: E402
 from app.agents.media_executor import execute_media_action  # noqa: E402
 from app.agents.music import MusicAgent  # noqa: E402
@@ -198,6 +199,7 @@ class TestAgentCards:
             (SecurityAgent, "security-agent"),
             (GeneralAgent, "general-agent"),
             (RewriteAgent, "rewrite-agent"),
+            (ListsAgent, "lists-agent"),
         ],
     )
     def test_agent_card_has_correct_id(self, agent_cls, expected_id):
@@ -219,6 +221,7 @@ class TestAgentCards:
             SecurityAgent,
             GeneralAgent,
             RewriteAgent,
+            ListsAgent,
         ],
     )
     def test_agent_card_has_skills(self, agent_cls):
@@ -239,6 +242,7 @@ class TestAgentCards:
             SecurityAgent,
             GeneralAgent,
             RewriteAgent,
+            ListsAgent,
         ],
     )
     def test_agent_card_has_endpoint(self, agent_cls):
@@ -6609,6 +6613,16 @@ class TestHotRegistration:
 
         agent = _create_phase2_agent("climate-agent", mock_app)
         assert agent is not None
+        assert agent._entity_matcher is mock_app.state.entity_matcher
+
+    @pytest.mark.asyncio
+    async def test_create_phase2_agent_lists_agent(self, mock_app):
+        """lists-agent is created with entity_matcher."""
+        from app.api.routes.dashboard_api import _create_phase2_agent
+
+        agent = _create_phase2_agent("lists-agent", mock_app)
+        assert agent is not None
+        assert agent.agent_card.agent_id == "lists-agent"
         assert agent._entity_matcher is mock_app.state.entity_matcher
 
     @pytest.mark.asyncio

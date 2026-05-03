@@ -206,9 +206,11 @@ _AGENT_FACTORIES = {}
 def _build_agent_classes():
     """Lazy import of agent classes to avoid heavy imports at module load."""
     from app.agents.automation import AutomationAgent
+    from app.agents.calendar import CalendarAgent
     from app.agents.climate import ClimateAgent
     from app.agents.general import GeneralAgent
     from app.agents.light import LightAgent
+    from app.agents.lists import ListsAgent
     from app.agents.media import MediaAgent
     from app.agents.music import MusicAgent
     from app.agents.scene import SceneAgent
@@ -227,6 +229,8 @@ def _build_agent_classes():
         "timer-agent": TimerAgent,
         "general-agent": GeneralAgent,
         "send-agent": SendAgent,
+        "calendar-agent": CalendarAgent,
+        "lists-agent": ListsAgent,
     }
 
 
