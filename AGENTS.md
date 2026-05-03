@@ -203,10 +203,12 @@ This project uses **Semantic Versioning (SemVer)**: `MAJOR.MINOR.PATCH`.
 - When a new tag is created, ensure the tagged version has a clear entry under "Version History".
 - Include key features/fixes plus relevant commit hashes.
 - Reset "Recent Changes" to be "Since" that tagged version.
+- **Also update `container/app/__init__.py`** — the `__version__` string there must match the released version. Failing to do this causes runtime version skew and confused debugging.
 
 ## Github Releases
 
 - When creating a release always fill release title and release notes.
+- Release notes must be explicit: list every new feature, changed behavior, added agent, or removed capability. Auto-generated notes are a starting point, not a substitute.
 
 ## Progress Reporting
 
