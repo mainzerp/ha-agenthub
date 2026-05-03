@@ -1,15 +1,16 @@
 # Version
 
-**Current Version:** 1.15.1
+**Current Version:** 1.15.2
 
-## Recent Changes (since 1.15.0)
-
-- **Cache System Fixes:**
-  - Fixed action cache serialization to persist `original_response_text`, `rewrite_applied`, and `rewrite_latency_ms` (fields introduced in v1.12.5 were silently dropped on vector-store round-trip).
-  - Aligned cache-hit replay trace span metadata with live-dispatch path: `agent_response` now records the raw agent text and `final_response` records the post-rewrite text.
-  - Fixed rewrite-agent span duration override key (`_override_duration_ms`) so the span is no longer collapsed to ~0 ms in the Gantt timeline and Agent Executions table.
+## Recent Changes
 
 ## Version History
+
+### 1.15.2 (PATCH) -- Trace span fix for cache-hit path
+
+- Fixed rewrite span to wrap actual `apply_rewrite` call instead of being created retroactively.
+- Added `calendar_inject` span around calendar reminder injection.
+- Removed obsolete `_override_duration_ms` workaround.
 
 ### 1.15.1 (PATCH) -- Rewrite-agent language bug fix
 
