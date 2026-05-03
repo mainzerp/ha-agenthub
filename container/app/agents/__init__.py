@@ -7,6 +7,7 @@ from app.agents.climate import ClimateAgent
 from app.agents.custom_loader import CustomAgentLoader, DynamicAgent
 from app.agents.general import GeneralAgent
 from app.agents.light import LightAgent
+from app.agents.lists import ListsAgent
 from app.agents.media import MediaAgent
 from app.agents.music import MusicAgent
 from app.agents.orchestrator import OrchestratorAgent
@@ -24,6 +25,7 @@ __all__ = [
     "DynamicAgent",
     "GeneralAgent",
     "LightAgent",
+    "ListsAgent",
     "MediaAgent",
     "MusicAgent",
     "OrchestratorAgent",
