@@ -1,8 +1,13 @@
 # Version
 
-**Current Version:** 1.15.2
+**Current Version:** 1.15.3
 
 ## Recent Changes
+
+### 1.15.3 (PATCH) -- Pylance and linter fixes
+
+- Fixed Pylance `reportCallIssue` errors in `rewrite.py` by explicitly passing default values for `AgentCard` fields (`expected_latency`, `timeout_sec`) and `TaskResult` fields (`action_executed`, `error`, `voice_followup`, `directive`, `reason`).
+- Resolved ruff TRY300 and D102 warnings in `rewrite.py`.
 
 ## Version History
 

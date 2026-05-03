@@ -20,12 +20,15 @@ class RewriteAgent(BaseAgent):
 
     @property
     def agent_card(self) -> AgentCard:
+        """Return the agent card for the rewrite agent."""
         return AgentCard(
             agent_id="rewrite-agent",
             name="Rewrite Agent",
             description="Rephrases cached responses to vary wording while preserving meaning.",
             skills=["rewrite"],
             endpoint="local://rewrite-agent",
+            expected_latency="low",
+            timeout_sec=None,
         )
 
     async def rewrite(self, cached_text: str, language: str = "en", user_text: str | None = None) -> str:
@@ -57,15 +60,22 @@ class RewriteAgent(BaseAgent):
         ]
         try:
             result = await self._call_llm(messages)
-            if not result:
-                logger.warning("Rewrite LLM returned empty, using cached text")
-                return cached_text
-            return result
         except Exception:
             logger.warning("Rewrite failed, returning cached text verbatim", exc_info=True)
             return cached_text
+        if not result:
+            logger.warning("Rewrite LLM returned empty, using cached text")
+            return cached_text
+        return result
 
     async def handle_task(self, task: AgentTask) -> TaskResult:
         """A2A-compatible interface. Rewrites task.description."""
         result = await self.rewrite(task.description)
-        return TaskResult(speech=result)
+        return TaskResult(
+            speech=result,
+            action_executed=None,
+            error=None,
+            voice_followup=False,
+            directive=None,
+            reason=None,
+        )
