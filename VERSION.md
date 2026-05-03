@@ -1,8 +1,8 @@
 # Version
 
-**Current Version:** 1.15.0
+**Current Version:** 1.15.1
 
-## Recent Changes (since 1.14.2)
+## Recent Changes (since 1.15.0)
 
 - **Cache System Fixes:**
   - Fixed action cache serialization to persist `original_response_text`, `rewrite_applied`, and `rewrite_latency_ms` (fields introduced in v1.12.5 were silently dropped on vector-store round-trip).
@@ -10,6 +10,13 @@
   - Fixed rewrite-agent span duration override key (`_override_duration_ms`) so the span is no longer collapsed to ~0 ms in the Gantt timeline and Agent Executions table.
 
 ## Version History
+
+### 1.15.1 (PATCH) -- Rewrite-agent language bug fix
+
+- Fixed rewrite-agent so non-English utterances produce rewritten output in the correct language during action-cache hits.
+- Added `{language}` placeholder to `rewrite.txt` prompt.
+- Threaded `user_text` through cache-hit path (`rewrite.py`, `cache_manager.py`, `orchestrator.py`).
+- Added regression tests for rewrite language injection, user-text formatting, and cache-hit forwarding.
 
 ### 1.15.0 (MINOR) -- Wikipedia search tool for general-agent
 

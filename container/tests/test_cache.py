@@ -1066,7 +1066,7 @@ class TestCacheManagerExtended:
             output = await manager.apply_rewrite(result)
         assert output == "Rephrased text."
         assert result.response_text == "Rephrased text."
-        rewrite_agent.rewrite.assert_awaited_once_with("Original raw.", language="en")
+        rewrite_agent.rewrite.assert_awaited_once_with("Original raw.", language="en", user_text=None)
 
     @pytest.mark.asyncio
     async def test_action_hit_sets_rewrite_metadata(self):
@@ -1126,6 +1126,25 @@ class TestCacheManagerExtended:
         assert result.original_response_text == "Original raw."
         assert result.rewrite_latency_ms is not None
         assert result.response_text == "Original."
+
+    @pytest.mark.asyncio
+    async def test_apply_rewrite_forwards_user_text_to_agent(self):
+        manager, _store = self._make_manager()
+        rewrite_agent = AsyncMock()
+        rewrite_agent.rewrite = AsyncMock(return_value="Rewritten text.")
+        manager._rewrite_agent = rewrite_agent
+        manager._rewrite_enabled = True
+        result = ActionReplayOutcome(
+            kind="full_hit",
+            entry_id="id-1",
+            agent_id="light-agent",
+            response_text="Cached text.",
+            original_response_text="Original.",
+        )
+        with patch("app.cache.cache_manager.track_rewrite", new_callable=AsyncMock):
+            output = await manager.apply_rewrite(result, user_text="Keller einschalten")
+        assert output == "Rewritten text."
+        rewrite_agent.rewrite.assert_awaited_once_with("Original.", language="en", user_text="Keller einschalten")
 
     @pytest.mark.skip(reason="Phase 1 rewrite: SettingsRepository mock path needs revisit")
     @pytest.mark.asyncio

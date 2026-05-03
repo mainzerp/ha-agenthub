@@ -2314,6 +2314,35 @@ class TestRewriteAgent:
         messages = mock_complete.call_args[0][1]
         assert "de" in messages[0]["content"]
 
+    @patch("app.agents.rewrite.SettingsRepository.get_value", new_callable=AsyncMock, return_value="")
+    @patch("app.llm.client.complete", new_callable=AsyncMock, return_value="Rephrased text.")
+    async def test_rewrite_with_user_text_formats_message_like_mediation(self, mock_complete, mock_settings):
+        agent = RewriteAgent()
+        await agent.rewrite("Done, Keller is now on.", language="de", user_text="Keller einschalten")
+        messages = mock_complete.call_args[0][1]
+        assert "User asked:" in messages[1]["content"]
+        assert "Keller einschalten" in messages[1]["content"]
+        assert "Agent responded:" in messages[1]["content"]
+        assert "Rephrase in de:" in messages[1]["content"]
+
+    @patch("app.agents.rewrite.SettingsRepository.get_value", new_callable=AsyncMock, return_value="")
+    @patch("app.llm.client.complete", new_callable=AsyncMock, return_value="Rephrased text.")
+    async def test_rewrite_without_user_text_uses_wrapped_cached_text(self, mock_complete, mock_settings):
+        agent = RewriteAgent()
+        await agent.rewrite("Done, kitchen light is on.", language="en")
+        messages = mock_complete.call_args[0][1]
+        assert USER_INPUT_START in messages[1]["content"]
+        assert "Done, kitchen light is on." in messages[1]["content"]
+        assert "User asked:" not in messages[1]["content"]
+
+    @patch("app.agents.rewrite.SettingsRepository.get_value", new_callable=AsyncMock, return_value="")
+    @patch("app.llm.client.complete", new_callable=AsyncMock, return_value="Rephrased text.")
+    async def test_rewrite_prompt_contains_language_placeholder(self, mock_complete, mock_settings):
+        agent = RewriteAgent()
+        await agent.rewrite("...", language="de")
+        messages = mock_complete.call_args[0][1]
+        assert "respond in de" in messages[0]["content"] or "in de" in messages[0]["content"]
+
 
 # ---------------------------------------------------------------------------
 # OrchestratorAgent

@@ -243,6 +243,7 @@ class CacheManager:
         result: ActionReplayOutcome | CacheResult,
         *,
         conversation=None,
+        user_text: str | None = None,
     ) -> str:
         """Apply rewrite + personality to an action-cache full hit and return final speech.
 
@@ -260,7 +261,7 @@ class CacheManager:
         language = getattr(result, "language", "en")
         t0 = time.perf_counter()
         try:
-            rewritten = await self._rewrite_agent.rewrite(source_text, language=language)
+            rewritten = await self._rewrite_agent.rewrite(source_text, language=language, user_text=user_text)
             rewrite_ms = (time.perf_counter() - t0) * 1000
             if rewritten:
                 result.response_text = rewritten
