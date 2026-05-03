@@ -912,21 +912,30 @@ class OrchestratorAgent(BaseAgent):
         raw_speech = hit.original_response_text or hit.response_text or ""
         speech = raw_speech
         if self._cache_manager:
-            speech = await self._cache_manager.apply_rewrite(hit, user_text=user_text)
+            async with _optional_span(span_collector, "rewrite", agent_id="rewrite-agent") as rw_span:
+                speech = await self._cache_manager.apply_rewrite(hit, user_text=user_text)
+                if hit.rewrite_applied:
+                    rw_span["metadata"]["original_text"] = hit.original_response_text or ""
+                    rw_span["metadata"]["rewritten_text"] = speech
+                    rw_span["metadata"]["latency_ms"] = hit.rewrite_latency_ms
+                    rw_span["metadata"]["success"] = True
 
         # Inject proactive calendar reminders even on cache hits
         if self._calendar_injector is not None:
             try:
-                reminder_text = await self._calendar_injector.inject_reminders(
-                    utterance=task.description if task else None,
-                    device_id=task_context.device_id if task_context else None,
-                    area_id=task_context.area_id if task_context else None,
-                    user_id=task_context.user_id if task_context else None,
-                    language=(task_context.language if task_context else "en") or "en",
-                )
-                if reminder_text:
-                    separator = " " if speech and speech[-1] in ".!?" else ". "
-                    speech = f"{speech}{separator}{reminder_text}" if speech else reminder_text
+                async with _optional_span(span_collector, "calendar_inject", agent_id="orchestrator") as cal_span:
+                    reminder_text = await self._calendar_injector.inject_reminders(
+                        utterance=task.description if task else None,
+                        device_id=task_context.device_id if task_context else None,
+                        area_id=task_context.area_id if task_context else None,
+                        user_id=task_context.user_id if task_context else None,
+                        language=(task_context.language if task_context else "en") or "en",
+                    )
+                    if reminder_text:
+                        separator = " " if speech and speech[-1] in ".!?" else ". "
+                        speech = f"{speech}{separator}{reminder_text}" if speech else reminder_text
+                    cal_span["metadata"]["reminder_injected"] = bool(reminder_text)
+                    cal_span["metadata"]["reminder_length"] = len(reminder_text or "")
             except Exception:
                 logger.debug("Calendar reminder injection failed", exc_info=True)
 
@@ -936,14 +945,6 @@ class OrchestratorAgent(BaseAgent):
                 ha_span["metadata"]["entity"] = hit.cached_action.entity_id
                 ha_span["metadata"]["success"] = hit.replay_result is not None
                 ha_span["metadata"]["cached"] = True
-        if hit.rewrite_applied:
-            async with _optional_span(span_collector, "rewrite", agent_id="rewrite-agent") as rw_span:
-                rw_span["metadata"]["original_text"] = hit.original_response_text or ""
-                rw_span["metadata"]["rewritten_text"] = speech
-                rw_span["metadata"]["latency_ms"] = hit.rewrite_latency_ms
-                rw_span["metadata"]["success"] = True
-                if hit.rewrite_latency_ms is not None:
-                    rw_span["_override_duration_ms"] = round(hit.rewrite_latency_ms, 2)
 
         async with _optional_span(span_collector, "return", agent_id="orchestrator") as ret_span:
             ret_span["metadata"]["from_agent"] = target_agent

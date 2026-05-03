@@ -3530,7 +3530,7 @@ class TestOrchestratorAgent:
     @patch("app.agents.orchestrator.SettingsRepository")
     @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
     async def test_handle_task_action_hit_no_rewrite_span_when_not_applied(self, mock_track, mock_settings):
-        """action_hit without rewrite_applied should NOT create a rewrite span."""
+        """action_hit without rewrite_applied creates a rewrite span with empty metadata."""
         from app.analytics.tracer import SpanCollector
         from app.cache.cache_manager import ActionReplayOutcome
 
@@ -3555,7 +3555,12 @@ class TestOrchestratorAgent:
         with patch("app.analytics.tracer.create_trace_summary", new_callable=AsyncMock):
             await orch.handle_task(task)
         span_names = [s["span_name"] for s in collector._spans]
-        assert "rewrite" not in span_names
+        assert "rewrite" in span_names
+        rw_span = next(s for s in collector._spans if s["span_name"] == "rewrite")
+        assert "original_text" not in rw_span.get("metadata", {})
+        assert "rewritten_text" not in rw_span.get("metadata", {})
+        assert "latency_ms" not in rw_span.get("metadata", {})
+        assert "success" not in rw_span.get("metadata", {})
 
     @patch("app.agents.orchestrator.SettingsRepository")
     @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
