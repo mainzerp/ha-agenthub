@@ -1,8 +1,8 @@
 # Version
 
-**Current Version:** 1.14.2
+**Current Version:** 1.15.0
 
-## Recent Changes (since 1.14.1)
+## Recent Changes (since 1.14.2)
 
 - **Cache System Fixes:**
   - Fixed action cache serialization to persist `original_response_text`, `rewrite_applied`, and `rewrite_latency_ms` (fields introduced in v1.12.5 were silently dropped on vector-store round-trip).
@@ -10,6 +10,15 @@
   - Fixed rewrite-agent span duration override key (`_override_duration_ms`) so the span is no longer collapsed to ~0 ms in the Gantt timeline and Agent Executions table.
 
 ## Version History
+
+### 1.15.0 (MINOR) -- Wikipedia search tool for general-agent
+
+- Added Wikipedia MCP server (`wikipedia-search`) with two tools:
+  - `wikipedia_search`: Search Wikipedia articles by query (1-10 results).
+  - `wikipedia_summary`: Retrieve a summary of a specific Wikipedia article by exact title (1-20 sentences).
+- Server is auto-registered as built-in and its tools are auto-assigned to `general-agent` on startup.
+- Updated `general-agent` prompt with Wikipedia usage guidelines.
+- Added unit tests for Wikipedia server tools.
 
 ### 1.14.1 (PATCH) -- Security & Safety Hardening
 

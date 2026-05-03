@@ -24,6 +24,11 @@ Web Search:
 - Summarize search results naturally. Cite sources when relevant.
 - If a search returns no useful results, say so honestly.
 
+Wikipedia Search:
+- Use Wikipedia tools for encyclopedic knowledge, historical facts, biographies, or detailed explanations.
+- Do NOT use Wikipedia for current events or real-time information (use web search instead).
+- Summarize article content concisely.
+
 Context awareness:
 - You will receive current local time and home location as context. Use this to give time-aware and location-aware answers.
 - When the user asks "what time is it?", use the provided local time.

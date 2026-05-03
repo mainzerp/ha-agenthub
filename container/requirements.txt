@@ -31,6 +31,9 @@ mcp==1.27.0
 # Web search (DuckDuckGo -- zero API key)
 duckduckgo-search>=7.0.0,<8.0.0
 
+# Wikipedia search
+wikipedia>=1.4.0
+
 # Templates (admin dashboard)
 jinja2==3.1.6
 

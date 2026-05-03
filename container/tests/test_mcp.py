@@ -382,6 +382,49 @@ class TestDuckDuckGoServerTools:
         assert "query" in search_tool.inputSchema["required"]
 
 
+class TestWikipediaServerTools:
+    def test_server_module_importable(self):
+        """The Wikipedia MCP server module can be imported."""
+        pytest.importorskip("mcp")
+        pytest.importorskip("wikipedia")
+        from app.mcp.servers import wikipedia_server
+
+        assert hasattr(wikipedia_server, "server")
+
+    async def test_list_tools_returns_expected_tools(self):
+        """Server exposes wikipedia_search and wikipedia_summary tools."""
+        pytest.importorskip("mcp")
+        pytest.importorskip("wikipedia")
+        from app.mcp.servers.wikipedia_server import list_tools
+
+        tools = await list_tools()
+        names = {t.name for t in tools}
+        assert "wikipedia_search" in names
+        assert "wikipedia_summary" in names
+
+    async def test_wikipedia_search_tool_has_query_param(self):
+        """wikipedia_search tool requires a 'query' parameter."""
+        pytest.importorskip("mcp")
+        pytest.importorskip("wikipedia")
+        from app.mcp.servers.wikipedia_server import list_tools
+
+        tools = await list_tools()
+        search_tool = next(t for t in tools if t.name == "wikipedia_search")
+        assert "query" in search_tool.inputSchema["properties"]
+        assert "query" in search_tool.inputSchema["required"]
+
+    async def test_wikipedia_summary_tool_has_title_param(self):
+        """wikipedia_summary tool requires a 'title' parameter."""
+        pytest.importorskip("mcp")
+        pytest.importorskip("wikipedia")
+        from app.mcp.servers.wikipedia_server import list_tools
+
+        tools = await list_tools()
+        summary_tool = next(t for t in tools if t.name == "wikipedia_summary")
+        assert "title" in summary_tool.inputSchema["properties"]
+        assert "title" in summary_tool.inputSchema["required"]
+
+
 # ---------------------------------------------------------------------------
 # MCP Tool Assignment for Built-in Agents
 # ---------------------------------------------------------------------------

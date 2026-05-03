@@ -14,7 +14,7 @@ from app.security.auth import require_admin_session
 
 logger = logging.getLogger(__name__)
 
-BUILTIN_MCP_SERVERS = {"duckduckgo-search"}
+BUILTIN_MCP_SERVERS = {"duckduckgo-search", "wikipedia-search"}
 SUPPORTED_MCP_TRANSPORTS = frozenset({"stdio", "sse"})
 
 router = APIRouter(

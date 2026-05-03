@@ -664,6 +664,36 @@ async def _initialize_setup_dependent_services(app: FastAPI, *, source: str) -> 
                 source,
             )
 
+    wiki_server = await McpServerRepository.get("wikipedia-search")
+    if wiki_server is None:
+        logger.info("Setup init (%s): registering built-in Wikipedia MCP server", source)
+        connected = await mcp_registry.add_server(
+            name="wikipedia-search",
+            transport="stdio",
+            command_or_url="python -m app.mcp.servers.wikipedia_server",
+        )
+        if connected:
+            try:
+                tools = await mcp_tool_manager.refresh_server("wikipedia-search")
+                for tool in tools:
+                    await AgentMcpToolsRepository.assign_tool(
+                        "general-agent",
+                        "wikipedia-search",
+                        tool["name"],
+                    )
+                logger.info("Assigned %d Wikipedia tools to general-agent", len(tools))
+            except Exception:
+                logger.warning(
+                    "Setup init (%s): failed to auto-assign Wikipedia tools",
+                    source,
+                    exc_info=True,
+                )
+        else:
+            logger.warning(
+                "Setup init (%s): Wikipedia MCP server registered but failed to connect",
+                source,
+            )
+
     filler_agent = FillerAgent(ha_client=ha_client, entity_index=entity_index)
     await registry.register(filler_agent, replace=True)
     orchestrator_agent = OrchestratorAgent(
