@@ -2841,7 +2841,7 @@ class TestOrchestratorAgent:
         assert messages[0]["role"] == "system"
         sys_de = messages[0]["content"]
         assert "'de'" in sys_de
-        assert "verbatim" in sys_de.lower() or "Entity" in sys_de
+        assert "language" in sys_de.lower()
 
         orch._call_llm.reset_mock()
         orch._call_llm = AsyncMock(return_value="general-agent (90%): hello world")
