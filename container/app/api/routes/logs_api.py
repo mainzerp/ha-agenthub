@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from app.security.auth import require_admin_session
-from app.util.log_buffer import _log_buffer
+from app.util.log_buffer import get_log_buffer
 
 router = APIRouter(
     prefix="/api/admin/logs",
@@ -56,11 +56,32 @@ class LogLevelsResponse(BaseModel):
 _VALID_LEVELS = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
 
 
+# Known noisy third-party libraries whose explicit levels are not
+# user-configurable and clutter the UI.
+_NOISE_LOGGER_PREFIXES = (
+    "apscheduler",
+    "c10d",
+    "httpx",
+    "huggingface_hub",
+    "numba",
+    "strobelight",
+    "torch",
+    "transformers",
+    "triton",
+)
+
+
 def _get_all_logger_levels() -> dict[str, str]:
-    """Collect explicit levels for all loggers that differ from NOTSET."""
+    """Collect explicit levels for relevant loggers.
+
+    Filters out noisy third-party libraries that set explicit levels at
+    import time but are never tuned by the admin.
+    """
     loggers: dict[str, str] = {}
     root = logging.getLogger()
     for name in sorted(logging.root.manager.loggerDict):
+        if any(name.startswith(p) or name.startswith(p + ".") for p in _NOISE_LOGGER_PREFIXES):
+            continue
         logger = logging.getLogger(name)
         if logger.level != logging.NOTSET:
             loggers[name] = logging.getLevelName(logger.level)
@@ -85,13 +106,14 @@ async def list_logs(
     search: str | None = Query(None),
 ) -> LogsListResponse:
     """List recent log entries with optional filtering and pagination."""
-    if _log_buffer is None:
+    buf = get_log_buffer()
+    if buf is None:
         return LogsListResponse(entries=[], total=0)
 
     if level is not None and level.upper() not in _VALID_LEVELS:
         raise HTTPException(status_code=400, detail=f"Invalid level: {level}")
 
-    result = _log_buffer.get_entries(
+    result = buf.get_entries(
         level=level.upper() if level else None,
         logger_name=logger,
         since=since,

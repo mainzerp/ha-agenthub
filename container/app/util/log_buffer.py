@@ -106,3 +106,8 @@ def set_log_buffer(buf: LogBuffer) -> None:
     """Inject the global log buffer."""
     global _log_buffer
     _log_buffer = buf
+
+
+def get_log_buffer() -> LogBuffer | None:
+    """Return the current global log buffer."""
+    return _log_buffer

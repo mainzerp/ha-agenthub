@@ -92,7 +92,14 @@
         </div>
         <div class="flex flex-wrap gap-xs" x-show="Object.keys(loggers).length > 0">
             <template x-for="(lvl, name) in loggers" :key="name">
-                <span class="badge text-2xs" :class="levelBadgeClass(lvl)" x-text="name + ':' + lvl"></span>
+                <button
+                    type="button"
+                    class="badge text-2xs cursor-pointer hover:opacity-80"
+                    :class="levelBadgeClass(lvl)"
+                    x-text="name + ':' + lvl"
+                    @click="newLoggerName = name; newLoggerLevel = lvl"
+                    :title="'Click to edit ' + name"
+                ></button>
             </template>
         </div>
     </div>
@@ -218,7 +225,10 @@ function logsPage() {
         },
 
         async loadLogs() {
-            this.loading = true;
+            // Only show loading spinner on first load; background polls
+            // should update silently to avoid table flicker.
+            var isFirstLoad = this.entries.length === 0;
+            if (isFirstLoad) this.loading = true;
             try {
                 var params = new URLSearchParams();
                 params.set('limit', String(this.limit));
@@ -229,15 +239,33 @@ function logsPage() {
                 if (this.filterSince) params.set('since', this.filterSince);
 
                 var data = await window.dashboardApi.json('/api/admin/logs?' + params.toString());
-                this.entries = data.entries || [];
-                this.total = data.total || 0;
+                var newEntries = data.entries || [];
+                var newTotal = data.total || 0;
+
+                // Only assign if data changed -- prevents unnecessary DOM churn
+                // and cursor jumps when the user is interacting with the table.
+                if (this.total !== newTotal || this.entries.length !== newEntries.length) {
+                    this.entries = newEntries;
+                    this.total = newTotal;
+                } else if (newEntries.length > 0) {
+                    var lastOld = this.entries[this.entries.length - 1];
+                    var lastNew = newEntries[newEntries.length - 1];
+                    if (
+                        lastOld.timestamp !== lastNew.timestamp ||
+                        lastOld.message !== lastNew.message ||
+                        lastOld.name !== lastNew.name
+                    ) {
+                        this.entries = newEntries;
+                        this.total = newTotal;
+                    }
+                }
                 this.error = '';
             } catch (e) {
                 if (e.code === 'auth_expired') return;
                 this.error = 'Failed to load logs';
                 console.error('Failed to load logs', e);
             }
-            this.loading = false;
+            if (isFirstLoad) this.loading = false;
         },
 
         async loadLevels() {

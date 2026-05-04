@@ -65,13 +65,11 @@ def _add_entries(log_buffer: Any) -> None:
 
 @pytest_asyncio.fixture()
 async def authed_client():
-    from app.api.routes import logs_api as logs_routes
-    from app.util.log_buffer import LogBuffer, set_log_buffer
+    from app.util.log_buffer import LogBuffer, get_log_buffer, set_log_buffer
 
+    old_buffer = get_log_buffer()
     log_buffer = LogBuffer(capacity=100)
     set_log_buffer(log_buffer)
-    old_buffer = logs_routes._log_buffer
-    logs_routes._log_buffer = log_buffer
 
     _add_entries(log_buffer)
 
@@ -89,18 +87,16 @@ async def authed_client():
         async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
             yield client
 
-    logs_routes._log_buffer = old_buffer
+    set_log_buffer(old_buffer)
 
 
 @pytest_asyncio.fixture()
 async def unauthed_client():
-    from app.api.routes import logs_api as logs_routes
-    from app.util.log_buffer import LogBuffer, set_log_buffer
+    from app.util.log_buffer import LogBuffer, get_log_buffer, set_log_buffer
 
+    old_buffer = get_log_buffer()
     log_buffer = LogBuffer(capacity=100)
     set_log_buffer(log_buffer)
-    old_buffer = logs_routes._log_buffer
-    logs_routes._log_buffer = log_buffer
 
     _add_entries(log_buffer)
 
@@ -118,7 +114,7 @@ async def unauthed_client():
         async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
             yield client
 
-    logs_routes._log_buffer = old_buffer
+    set_log_buffer(old_buffer)
 
 
 # ---------------------------------------------------------------------------

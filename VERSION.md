@@ -1,8 +1,17 @@
 # Version
 
-**Current Version:** 1.17.0
+**Current Version:** 1.17.1
 
 ## Recent Changes
+
+### 1.17.1 (PATCH) -- Remote logs bug fixes and UI polish
+
+- Fixed `LogBufferHandler` disappearing in Docker containers caused by uvicorn resetting root logger handlers after lifespan startup. The `_log_buffer_guard` background task now re-attaches the handler, and `logs_api.py` uses `get_log_buffer()` at runtime instead of a stale module-import reference.
+- Added `get_log_buffer()` accessor to `app.util.log_buffer` to prevent stale reference issues across modules.
+- Log Level Manager badges are now filtered to exclude noisy third-party libraries (torch, transformers, apscheduler, strobelight, c10d, httpx, huggingface_hub, numba, triton).
+- Log Level Manager badges are now clickable buttons: click copies the logger name into the edit field for quick level adjustment.
+- Eliminated table flicker on the logs page by suppressing the loading spinner during background auto-refresh polls and only updating the entries array when data actually changes.
+- Updated tests to use `get_log_buffer()` / `set_log_buffer()` instead of direct module attribute access.
 
 ### 1.17.0 (MINOR) -- Remote logs API
 

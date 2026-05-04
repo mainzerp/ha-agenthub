@@ -37,7 +37,7 @@ from app.middleware.rate_limit import rate_limit_admin
 from app.middleware.tracing import TracingMiddleware
 from app.models.entity_index import EntityIndexEntry
 from app.setup.routes import router as setup_router
-from app.util.log_buffer import LogBuffer, LogBufferHandler, set_log_buffer
+from app.util.log_buffer import LogBuffer, LogBufferHandler, get_log_buffer, set_log_buffer
 
 logger = logging.getLogger(__name__)
 
@@ -49,18 +49,46 @@ _ENTITY_SYNC_DEFAULT_INTERVAL_MIN = 30
 _ENTITY_SYNC_DISABLED_RECHECK_SEC = 300
 
 
+def _ensure_log_buffer_handler() -> None:
+    """Ensure root logger has the correct level and log buffer handler.
+
+    Uvicorn or other libraries may reconfigure logging after our lifespan
+    starts, wiping handlers or changing the root level.  This helper re-
+    attaches the buffer handler and restores the configured level whenever
+    it is called.
+    """
+    level = getattr(logging, settings.log_level.upper(), logging.INFO)
+    root = logging.getLogger()
+
+    root.setLevel(level)
+
+    # Re-attach buffer handler if missing.
+    has_buffer = any(isinstance(h, LogBufferHandler) for h in root.handlers)
+    if not has_buffer:
+        log_buffer = get_log_buffer()
+        if log_buffer is None:
+            log_buffer = LogBuffer(capacity=10000)
+            set_log_buffer(log_buffer)
+        buffer_handler = LogBufferHandler(log_buffer)
+        root.addHandler(buffer_handler)
+
+
 def _configure_logging() -> None:
     """Configure structured logging based on settings."""
     log_format = "%(asctime)s %(levelname)s [%(name)s] %(message)s"
-    logging.basicConfig(
-        level=getattr(logging, settings.log_level.upper(), logging.INFO),
-        format=log_format,
-        force=True,
-    )
-    log_buffer = LogBuffer(capacity=10000)
-    handler = LogBufferHandler(log_buffer)
-    logging.getLogger().addHandler(handler)
-    set_log_buffer(log_buffer)
+    level = getattr(logging, settings.log_level.upper(), logging.INFO)
+    root = logging.getLogger()
+    root.setLevel(level)
+
+    # Only add StreamHandler if root has no handlers yet.
+    # Avoid force=True which wipes handlers that uvicorn or other
+    # libraries may have already configured.
+    if not any(isinstance(h, logging.StreamHandler) for h in root.handlers):
+        stream_handler = logging.StreamHandler()
+        stream_handler.setFormatter(logging.Formatter(log_format))
+        root.addHandler(stream_handler)
+
+    _ensure_log_buffer_handler()
 
 
 def _parse_ha_states(states: list[dict[str, Any]]) -> list[EntityIndexEntry]:
@@ -356,6 +384,20 @@ async def lifespan(app: FastAPI):
             "will be sent over plain HTTP. Enable COOKIE_SECURE for production."
         )
     logger.info("Startup complete (setup_complete=%s)", setup_complete)
+
+    # Re-ensure log buffer handler after all startup code -- uvicorn or
+    # other libraries may have reconfigured logging during startup.
+    _ensure_log_buffer_handler()
+
+    # Start a lightweight guard task that re-attaches the buffer handler
+    # if something removes it at runtime (e.g. a library calling
+    # logging.config.dictConfig).
+    async def _log_buffer_guard() -> None:
+        while True:
+            await asyncio.sleep(10)
+            _ensure_log_buffer_handler()
+
+    app.state.log_buffer_guard_task = asyncio.create_task(_log_buffer_guard(), name="log_buffer_guard")
 
     # Start SSE tickers for live dashboard updates
     from app.api.routes.sse import register_sse_tickers
