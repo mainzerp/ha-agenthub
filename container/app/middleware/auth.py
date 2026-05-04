@@ -42,6 +42,9 @@ class SetupRedirectMiddleware:
         self.app = app
         self._setup_complete: bool | None = None
 
+    def invalidate_setup_cache(self) -> None:
+        self._setup_complete = None
+
     async def __call__(self, scope, receive, send) -> None:
         if scope["type"] != "http":
             await self.app(scope, receive, send)

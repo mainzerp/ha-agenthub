@@ -107,6 +107,8 @@ async def get_db_write() -> AsyncGenerator[aiosqlite.Connection, None]:
             # BaseException ensures rollback on KeyboardInterrupt / SystemExit
             await db.rollback()
             raise
+        else:
+            await db.commit()
 
 
 # Backward-compatible alias -- points to the write path (safe default).

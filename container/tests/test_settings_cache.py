@@ -84,5 +84,5 @@ class TestSettingsValueCache:
         assert await SettingsRepository.get_value("p36.cache.k1") == "a"
         assert await SettingsRepository.get_value("p36.cache.k2") == "b"
 
-        SettingsRepository._cache_invalidate()
+        await SettingsRepository._cache_invalidate()
         assert SettingsRepository._value_cache == {}

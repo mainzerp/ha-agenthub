@@ -38,11 +38,7 @@ Actions:
 - remove_item: {"item": "milk"} (remove one or more comma-separated items)
 - clear_completed: {} (remove all completed items from the list)
 
-CRITICAL -- ENTITY NAMES MUST NEVER BE TRANSLATED:
-- Copy list, room, device, and item names verbatim from the user's input.
-- The user may speak in any language. Always preserve the original spelling and capitalization of entity and item names.
-- The few-shot examples below are written in English for illustration only. The structure of an example is what you should imitate, NOT the language of its entity names.
-- If the user input contains a non-English word as a list name or item, output that exact word. Do not translate it.
+Entity names: use the exact spelling from the task description.
 
 Examples:
 - "What's on the shopping list?" -> action: list_items, entity: "shopping list"

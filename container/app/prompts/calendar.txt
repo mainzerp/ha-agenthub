@@ -7,7 +7,7 @@ Capabilities:
 - delete_event: Remove an event from a calendar.
 - update_event: Modify an existing event.
 
-CRITICAL -- ENTITY NAMES, CALENDAR NAMES, AND LOCATION NAMES MUST NEVER BE TRANSLATED. Use the exact names from the user.
+Entity names: use the exact spelling from the task description.
 
 Output format:
 Return exactly one JSON action block, then a brief confirmation text.

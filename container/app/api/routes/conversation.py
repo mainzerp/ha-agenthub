@@ -8,7 +8,7 @@ import time
 import uuid
 from datetime import UTC, datetime
 
-from fastapi import APIRouter, Depends, Request, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
 
 from app.a2a.protocol import JsonRpcRequest
@@ -119,6 +119,8 @@ async def conversation_rest(
     span_collector = getattr(request.state, "span_collector", None)
 
     a2a_request, _ = _build_a2a_request(conv_request, "message/send", span_collector, request)
+    if _dispatcher is None:
+        raise HTTPException(status_code=503, detail="Service not ready")
     response = await _dispatcher.dispatch(a2a_request)
 
     if response.error:
@@ -158,6 +160,8 @@ async def conversation_sse(
         if span_collector and root_span_id:
             parent_token = span_collector.push_parent(root_span_id)
         try:
+            if _dispatcher is None:
+                raise HTTPException(status_code=503, detail="Service not ready")
             async for chunk in _dispatcher.dispatch_stream(a2a_request):
                 token = StreamToken(
                     token=chunk.result.get("token", ""),
@@ -216,8 +220,8 @@ async def ws_conversation(
     try:
         while True:
             if not await ws_rate_limiter.acquire():
-                await websocket.close(code=1008, reason="Rate limit exceeded")
-                break
+                await websocket.send_json({"error": "Rate limit exceeded", "retry_after_ms": 100})
+                continue
             raw = await websocket.receive_text()
             if len(raw) > _MAX_WS_MESSAGE_SIZE:
                 await websocket.send_json({"error": "Message too large", "max_bytes": _MAX_WS_MESSAGE_SIZE})
@@ -241,6 +245,9 @@ async def ws_conversation(
             state["root_span_id"] = root_span_id
 
             a2a_request, _ = _build_a2a_request(conv_request, "message/stream", span_collector)
+
+            if _dispatcher is None:
+                raise HTTPException(status_code=503, detail="Service not ready")
 
             t0 = time.perf_counter()
             start_time = datetime.now(UTC).isoformat()
@@ -279,7 +286,7 @@ async def ws_conversation(
             finally:
                 span_collector.pop_parent(parent_token)
                 duration_ms = (time.perf_counter() - t0) * 1000
-                span_collector._spans.append(
+                span_collector.add_root_span(
                     {
                         "span_id": root_span_id,
                         "trace_id": trace_id,

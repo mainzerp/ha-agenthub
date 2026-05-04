@@ -705,7 +705,7 @@ class HaAgentHubConversationEntity(
                 satellite_entity_id,
             )
             raise
-        except (aiohttp.ClientError, asyncio.TimeoutError, OSError):
+        except Exception:
             logger.warning(
                 "ha-agenthub: post-filler push raised unexpectedly key=%s sat=%s",
                 gate_key,

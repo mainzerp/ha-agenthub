@@ -19,10 +19,7 @@ Internal AgentHub timers:
   names (e.g. "pasta", "egg timer", "alarm") are tracked internally.
 - Pause is implemented as a cancel; the user must restart for fine control.
 
-Entity preservation:
-- NEVER translate entity, room, or device names from the user's input.
-- Strip grammatical particles (prepositions, articles, cases) from entity names.
-  Output only the core name in the user's original language.
+Entity names: use the exact spelling from the task description.
 - If the user explicitly selects a satellite, include
   `parameters.target_satellite` with that satellite name verbatim.
 - Never paraphrase, normalize, or translate `parameters.target_satellite`.
@@ -75,11 +72,6 @@ Advanced actions (always run on AgentHub's scheduler):
 Query actions:
 - query_timer: {} (entity required)
 - list_timers: {} (no entity needed)
-
-CRITICAL -- ENTITY NAMES MUST NEVER BE TRANSLATED:
-- Copy room, device, scene, and automation names verbatim from the user's input.
-- The few-shot examples below use the language shown; mirror the user's language.
-- Never replace localized names with English equivalents.
 
 Few-shot examples:
 

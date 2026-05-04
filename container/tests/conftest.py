@@ -137,7 +137,7 @@ def _reset_rate_limit_store():
 
 
 @pytest.fixture(autouse=True)
-def _clear_settings_cache():
+async def _clear_settings_cache():
     """P3-6: drop the in-memory ``SettingsRepository`` value cache between tests.
 
     Tests rotate through fresh temporary databases (``db_path``), so a
@@ -146,9 +146,9 @@ def _clear_settings_cache():
     """
     from app.db.repository import SettingsRepository
 
-    SettingsRepository._cache_invalidate()
+    await SettingsRepository._cache_invalidate()
     yield
-    SettingsRepository._cache_invalidate()
+    await SettingsRepository._cache_invalidate()
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -209,8 +209,14 @@ async def db_repository(db_path: Path):
             conn.row_factory = aiosqlite.Row
             await conn.execute("PRAGMA journal_mode=WAL")
             await conn.execute("PRAGMA foreign_keys=ON")
+            await conn.execute("BEGIN")
             try:
                 yield conn
+            except BaseException:
+                await conn.rollback()
+                raise
+            else:
+                await conn.commit()
             finally:
                 await conn.close()
 

@@ -92,6 +92,8 @@ HA-AgentHub uses three configuration tiers:
 
 See [docs/configuration.md](docs/configuration.md) for the full reference.
 
+> **Language setting:** For best results, set your preferred language explicitly in the admin dashboard (e.g. `de`, `fr`, `es`) rather than leaving it on `auto`. Automatic language detection can be unreliable for very short voice commands. A manual setting ensures the assistant always uses your language and resolves entity names correctly.
+
 ## Documentation
 
 - [Deployment Guide](docs/deployment.md) -- Docker setup, setup wizard, HA integration, networking, backup

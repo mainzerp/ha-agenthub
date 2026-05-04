@@ -321,7 +321,7 @@ async def update_calendar_settings(body: SettingsUpdatePayload):
 @router.delete("/reminder-state")
 async def clear_reminder_state():
     """Clear all fired reminder state."""
-    import time
+    from app.db.repository import _now
 
-    count = await CalendarReminderStateRepository.cleanup_old(int(time.time()) + 1)
+    count = await CalendarReminderStateRepository.cleanup_old(_now())
     return {"cleared": count}

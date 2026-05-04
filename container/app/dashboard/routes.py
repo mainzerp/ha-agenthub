@@ -3,7 +3,7 @@
 import logging
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, Form, Request
+from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
@@ -83,6 +83,8 @@ async def login_submit(
     password: str = Form(...),
 ):
     """Handle login form submission."""
+    if not username or not password:
+        raise HTTPException(status_code=401, detail="Invalid credentials")
     session_data = await authenticate_admin(username, password)
     if session_data is None:
         token = ensure_csrf_token(request)

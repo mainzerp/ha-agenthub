@@ -177,7 +177,7 @@ class TracingMiddleware:
             span_collector.pop_parent(parent_token)
 
             duration_ms = (time.perf_counter() - t0) * 1000
-            span_collector._spans.append(
+            span_collector.add_root_span(
                 {
                     "span_id": root_span_id,
                     "trace_id": trace_id,

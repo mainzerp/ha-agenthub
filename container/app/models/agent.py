@@ -70,13 +70,13 @@ class AgentTask(BaseModel):
     user_text: str = Field(..., description="Original unmodified user input")
     conversation_id: str | None = None
     context: TaskContext | None = None
-    # 0.23.0: original-language entity / room tokens preserved by the
-    # orchestrator. Tried verbatim by the entity matcher before any
-    # translated query so a German "Schlafzimmer" never gets flattened
-    # into an English "bedroom" before lookup.
+    # Optional entity/room tokens for the entity matcher to try before fuzzy
+    # matching. The orchestrator no longer populates this (the condensed task
+    # is now written in the user's language so no translation correction is
+    # needed). Sub-agents or plugins may still set it if they have extra hints.
     verbatim_terms: list[str] = Field(
         default_factory=list,
-        description="Original-language entity/room tokens preserved from user_text",
+        description="Optional entity/room tokens for the entity matcher to try first",
     )
 
     # Runtime-only: not serialized, not included in model_dump()

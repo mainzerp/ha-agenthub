@@ -87,11 +87,17 @@ class SettingsRepository:
     # Class-level on purpose: ``SettingsRepository`` is a stateless
     # collection of staticmethods used as a namespace.
     _value_cache: ClassVar[dict[str, tuple[Any, float]]] = {}
-    _value_cache_lock: ClassVar[asyncio.Lock] = asyncio.Lock()
+    _value_cache_lock: ClassVar[asyncio.Lock | None] = None
+
+    @classmethod
+    def _get_lock(cls) -> asyncio.Lock:
+        if cls._value_cache_lock is None:
+            cls._value_cache_lock = asyncio.Lock()
+        return cls._value_cache_lock
 
     @classmethod
     async def _cache_get(cls, key: str) -> tuple[bool, Any]:
-        async with cls._value_cache_lock:
+        async with cls._get_lock():
             entry = cls._value_cache.get(key)
             if entry is None:
                 return False, None
@@ -103,16 +109,17 @@ class SettingsRepository:
 
     @classmethod
     async def _cache_put(cls, key: str, value: Any) -> None:
-        async with cls._value_cache_lock:
+        async with cls._get_lock():
             cls._value_cache[key] = (value, time.monotonic() + _SETTINGS_VALUE_CACHE_TTL_SEC)
 
     @classmethod
-    def _cache_invalidate(cls, key: str | None = None) -> None:
+    async def _cache_invalidate(cls, key: str | None = None) -> None:
         """Drop a single key (or the whole cache when ``key`` is ``None``)."""
-        if key is None:
-            cls._value_cache.clear()
-        else:
-            cls._value_cache.pop(key, None)
+        async with cls._get_lock():
+            if key is None:
+                cls._value_cache.clear()
+            else:
+                cls._value_cache.pop(key, None)
 
     @staticmethod
     async def get(key: str) -> dict[str, Any] | None:
@@ -157,9 +164,8 @@ class SettingsRepository:
                 "ON CONFLICT(key) DO UPDATE SET value=?, updated_at=?",
                 (key, value, value_type, category, description, _now(), value, _now()),
             )
-            await db.commit()
         # P3-6: invalidate so subsequent ``get_value`` reflects the write.
-        SettingsRepository._cache_invalidate(key)
+        await SettingsRepository._cache_invalidate(key)
 
     @staticmethod
     async def get_by_category(category: str) -> list[dict[str, Any]]:
@@ -227,13 +233,11 @@ class AgentConfigRepository:
                 f"ON CONFLICT(agent_id) DO UPDATE SET {updates}",
                 values,
             )
-            await db.commit()
 
     @staticmethod
     async def delete(agent_id: str) -> None:
         async with get_db_write() as db:
             await db.execute("DELETE FROM agent_configs WHERE agent_id = ?", (agent_id,))
-            await db.commit()
 
 
 class SecretsRepository:
@@ -254,13 +258,11 @@ class SecretsRepository:
                 "VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET encrypted_value=?, updated_at=?",
                 (key, encrypted_value, _now(), encrypted_value, _now()),
             )
-            await db.commit()
 
     @staticmethod
     async def delete(key: str) -> None:
         async with get_db_write() as db:
             await db.execute("DELETE FROM secrets WHERE key = ?", (key,))
-            await db.commit()
 
     @staticmethod
     async def list_keys() -> list[str]:
@@ -292,7 +294,6 @@ class AdminAccountRepository:
                 f"{verb} INTO admin_accounts (username, password_hash, created_at) VALUES (?, ?, ?)",
                 (username, password_hash, _now()),
             )
-            await db.commit()
 
     @staticmethod
     async def update_password(username: str, password_hash: str) -> None:
@@ -301,7 +302,6 @@ class AdminAccountRepository:
                 "UPDATE admin_accounts SET password_hash = ? WHERE username = ?",
                 (password_hash, username),
             )
-            await db.commit()
 
     @staticmethod
     async def get(username: str) -> dict[str, Any] | None:
@@ -317,7 +317,6 @@ class AdminAccountRepository:
                 "UPDATE admin_accounts SET last_login = ? WHERE username = ?",
                 (_now(), username),
             )
-            await db.commit()
 
     @staticmethod
     async def list_all() -> list[dict[str, Any]]:
@@ -343,7 +342,6 @@ class SetupStateRepository:
                 "UPDATE setup_state SET completed = 1, completed_at = ? WHERE step = ?",
                 (_now(), step),
             )
-            await db.commit()
 
     @staticmethod
     async def is_complete() -> bool:
@@ -377,13 +375,11 @@ class AliasRepository:
                 "ON CONFLICT(alias) DO UPDATE SET entity_id=?",
                 (alias, entity_id, _now(), entity_id),
             )
-            await db.commit()
 
     @staticmethod
     async def delete(alias: str) -> None:
         async with get_db_write() as db:
             await db.execute("DELETE FROM aliases WHERE alias = ?", (alias,))
-            await db.commit()
 
     @staticmethod
     async def list_all() -> list[dict[str, Any]]:
@@ -443,7 +439,6 @@ class QuerySynonymCacheRepository:
                 """,
                 (token, language, payload, now, now),
             )
-            await db.commit()
 
     @staticmethod
     async def touch(token: str, language: str) -> None:
@@ -461,7 +456,6 @@ class QuerySynonymCacheRepository:
                 """,
                 (now, token, language),
             )
-            await db.commit()
 
     @staticmethod
     async def evict_lru(max_rows: int = 5000) -> int:
@@ -483,7 +477,6 @@ class QuerySynonymCacheRepository:
                 """,
                 (to_drop,),
             )
-            await db.commit()
             return to_drop
 
     @staticmethod
@@ -496,14 +489,12 @@ class QuerySynonymCacheRepository:
                 "DELETE FROM query_synonym_cache WHERE last_used_at < ?",
                 (cutoff,),
             )
-            await db.commit()
             return cur.rowcount or 0
 
     @staticmethod
     async def clear_all() -> int:
         async with get_db_write() as db:
             cur = await db.execute("DELETE FROM query_synonym_cache")
-            await db.commit()
             return cur.rowcount or 0
 
     @staticmethod
@@ -755,7 +746,6 @@ class CustomAgentRepository:
                 f"INSERT INTO custom_agents ({columns}) VALUES ({placeholders})",
                 values,
             )
-            await db.commit()
 
     @staticmethod
     async def update(name: str, **kwargs: Any) -> None:
@@ -785,14 +775,12 @@ class CustomAgentRepository:
                 f"UPDATE custom_agents SET {set_clause} WHERE name = ?",
                 values,
             )
-            await db.commit()
 
     @staticmethod
     async def delete(name: str) -> None:
         name = CustomAgentRepository.normalize_name(name)
         async with get_db_write() as db:
             await db.execute("DELETE FROM custom_agents WHERE name = ?", (name,))
-            await db.commit()
 
     @classmethod
     async def create_with_runtime(
@@ -836,7 +824,6 @@ class CustomAgentRepository:
                 ),
             )
             await cls._sync_runtime_state_in_tx(db, row)
-            await db.commit()
         return name
 
     @classmethod
@@ -880,7 +867,6 @@ class CustomAgentRepository:
                 return False
             decoded = cls._decode_row(row)
             await cls._sync_runtime_state_in_tx(db, decoded)
-            await db.commit()
             return True
 
     @classmethod
@@ -892,14 +878,12 @@ class CustomAgentRepository:
             await db.execute("DELETE FROM agent_configs WHERE agent_id = ?", (agent_id,))
             await db.execute("DELETE FROM agent_mcp_tools WHERE agent_id = ?", (agent_id,))
             await db.execute("DELETE FROM entity_visibility_rules WHERE agent_id = ?", (agent_id,))
-            await db.commit()
             return (cursor.rowcount or 0) > 0
 
     @classmethod
     async def ensure_runtime_state(cls, row: dict[str, Any]) -> None:
         async with get_db_write() as db:
             await cls._sync_runtime_state_in_tx(db, row)
-            await db.commit()
 
 
 class McpServerRepository:
@@ -946,13 +930,11 @@ class McpServerRepository:
                 "INSERT INTO mcp_servers (name, transport, command_or_url, env_vars, timeout) VALUES (?, ?, ?, ?, ?)",
                 (name, transport, command_or_url, json.dumps(env_vars) if env_vars else None, timeout),
             )
-            await db.commit()
 
     @staticmethod
     async def delete(name: str) -> None:
         async with get_db_write() as db:
             await db.execute("DELETE FROM mcp_servers WHERE name = ?", (name,))
-            await db.commit()
 
     @staticmethod
     async def list_enabled() -> list[dict[str, Any]]:
@@ -987,7 +969,6 @@ class McpServerRepository:
                     _now(),
                 ),
             )
-            await db.commit()
 
     @staticmethod
     async def set_enabled(name: str, enabled: bool) -> None:
@@ -996,7 +977,6 @@ class McpServerRepository:
                 "UPDATE mcp_servers SET enabled = ?, updated_at = ? WHERE name = ?",
                 (1 if enabled else 0, _now(), name),
             )
-            await db.commit()
 
 
 class AgentMcpToolsRepository:
@@ -1021,7 +1001,6 @@ class AgentMcpToolsRepository:
                 "INSERT OR IGNORE INTO agent_mcp_tools (agent_id, server_name, tool_name) VALUES (?, ?, ?)",
                 (agent_id, server_name, tool_name),
             )
-            await db.commit()
 
     @staticmethod
     async def unassign_tool(agent_id: str, server_name: str, tool_name: str) -> None:
@@ -1030,7 +1009,6 @@ class AgentMcpToolsRepository:
                 "DELETE FROM agent_mcp_tools WHERE agent_id = ? AND server_name = ? AND tool_name = ?",
                 (agent_id, server_name, tool_name),
             )
-            await db.commit()
 
     @staticmethod
     async def replace_tools(agent_id: str, tools: list[dict[str, str]] | None) -> None:
@@ -1045,7 +1023,6 @@ class AgentMcpToolsRepository:
                     "INSERT OR IGNORE INTO agent_mcp_tools (agent_id, server_name, tool_name) VALUES (?, ?, ?)",
                     (agent_id, server_name, tool_name),
                 )
-            await db.commit()
 
     @staticmethod
     async def clear_agent(agent_id: str) -> None:
@@ -1082,7 +1059,6 @@ class EntityVisibilityRepository:
                     "INSERT INTO entity_visibility_rules (agent_id, rule_type, rule_value) VALUES (?, ?, ?)",
                     (agent_id, rule["rule_type"], rule["rule_value"]),
                 )
-            await db.commit()
 
     @staticmethod
     async def add_rule(agent_id: str, rule_type: str, rule_value: str) -> None:
@@ -1091,7 +1067,6 @@ class EntityVisibilityRepository:
                 "INSERT OR IGNORE INTO entity_visibility_rules (agent_id, rule_type, rule_value) VALUES (?, ?, ?)",
                 (agent_id, rule_type, rule_value),
             )
-            await db.commit()
 
     @staticmethod
     async def remove_rule(agent_id: str, rule_type: str, rule_value: str) -> None:
@@ -1100,7 +1075,6 @@ class EntityVisibilityRepository:
                 "DELETE FROM entity_visibility_rules WHERE agent_id = ? AND rule_type = ? AND rule_value = ?",
                 (agent_id, rule_type, rule_value),
             )
-            await db.commit()
 
     @staticmethod
     async def list_all() -> list[dict[str, Any]]:
@@ -1140,7 +1114,6 @@ class EntityVisibilityRepository:
                     "(agent_id, rule_type, rule_value) VALUES (?, 'domain_include', ?)",
                     (agent_id, domain),
                 )
-            await db.commit()
 
     @staticmethod
     async def set_device_class_agents(device_class: str, agent_ids: list[str]) -> None:
@@ -1166,7 +1139,6 @@ class EntityVisibilityRepository:
                     "(agent_id, rule_type, rule_value) VALUES (?, 'domain_include', 'sensor')",
                     (agent_id,),
                 )
-            await db.commit()
 
 
 class PluginRepository:
@@ -1206,7 +1178,6 @@ class PluginRepository:
                     _now(),
                 ),
             )
-            await db.commit()
 
 
 class ConversationRepository:
@@ -1230,7 +1201,6 @@ class ConversationRepository:
                 "VALUES (?, ?, ?, ?, ?, ?, ?)",
                 (conversation_id, user_text, agent_id, response_text, action_executed, cache_hit, latency_ms),
             )
-            await db.commit()
             return cursor.lastrowid
 
     @staticmethod
@@ -1330,7 +1300,6 @@ class AnalyticsRepository:
                 "INSERT INTO analytics (event_type, agent_id, data) VALUES (?, ?, ?)",
                 (event_type, agent_id, json.dumps(data) if data else None),
             )
-            await db.commit()
 
     @staticmethod
     async def query_by_range(
@@ -1382,7 +1351,6 @@ class EntityMatchingConfigRepository:
                 "ON CONFLICT(key) DO UPDATE SET value=?, updated_at=?",
                 (key, value, description, _now(), value, _now()),
             )
-            await db.commit()
 
     @staticmethod
     async def get_all() -> list[dict[str, Any]]:
@@ -1423,7 +1391,6 @@ class TraceSpanRepository:
                     json.dumps(metadata) if metadata else None,
                 ),
             )
-            await db.commit()
             return cursor.lastrowid
 
     @staticmethod
@@ -1449,7 +1416,6 @@ class TraceSpanRepository:
                         json.dumps(meta) if meta else None,
                     ),
                 )
-            await db.commit()
 
     @staticmethod
     async def list_traces(page: int = 1, per_page: int = 50) -> list[dict[str, Any]]:
@@ -1493,7 +1459,6 @@ class TraceSpanRepository:
                 "DELETE FROM trace_spans WHERE created_at < datetime('now', ?)",
                 (f"-{days} days",),
             )
-            await db.commit()
             return cursor.rowcount
 
 
@@ -1541,7 +1506,6 @@ class TraceSummaryRepository:
                     data.get("area_name"),
                 ),
             )
-            await db.commit()
 
     @staticmethod
     async def list_filtered(
@@ -1651,7 +1615,6 @@ class TraceSummaryRepository:
                 "UPDATE trace_summary SET label = ? WHERE trace_id = ?",
                 (label, trace_id),
             )
-            await db.commit()
 
     @staticmethod
     async def list_labels() -> list[str]:
@@ -1725,7 +1688,6 @@ class TraceSummaryRepository:
                 "DELETE FROM trace_summary WHERE created_at < datetime('now', ?)",
                 (f"-{days} days",),
             )
-            await db.commit()
             return cursor.rowcount
 
     @staticmethod
@@ -1735,7 +1697,6 @@ class TraceSummaryRepository:
                 "UPDATE trace_summary SET total_duration_ms = ? WHERE trace_id = ?",
                 (duration_ms, trace_id),
             )
-            await db.commit()
 
 
 def _normalize_device_name(name: str) -> str:
@@ -1803,7 +1764,6 @@ class SendDeviceMappingRepository:
                 "VALUES (?, ?, ?, ?, ?)",
                 (display_name.strip(), device_type, ha_service_target, person_entity_id, _now()),
             )
-            await db.commit()
             return cursor.lastrowid
 
     @staticmethod
@@ -1820,7 +1780,6 @@ class SendDeviceMappingRepository:
                 f"UPDATE send_device_mappings SET {set_clause} WHERE id = ?",
                 values,
             )
-            await db.commit()
             return cursor.rowcount > 0
 
     @staticmethod
@@ -1831,7 +1790,6 @@ class SendDeviceMappingRepository:
                 "DELETE FROM send_device_mappings WHERE id = ?",
                 (mapping_id,),
             )
-            await db.commit()
             return cursor.rowcount > 0
 
 
@@ -1932,7 +1890,6 @@ class CalendarUserMappingRepository:
                     _now(),
                 ),
             )
-            await db.commit()
             return cursor.lastrowid
 
     @staticmethod
@@ -1960,14 +1917,12 @@ class CalendarUserMappingRepository:
                 f"UPDATE calendar_user_mappings SET {set_clause} WHERE id = ?",
                 values,
             )
-            await db.commit()
             return cursor.rowcount > 0
 
     @staticmethod
     async def delete(mapping_id: int) -> bool:
         async with get_db_write() as db:
             cursor = await db.execute("DELETE FROM calendar_user_mappings WHERE id = ?", (mapping_id,))
-            await db.commit()
             return cursor.rowcount > 0
 
 
@@ -2001,7 +1956,6 @@ class CalendarEntitySettingsRepository:
                 "enabled = EXCLUDED.enabled, is_universal = EXCLUDED.is_universal, updated_at = EXCLUDED.updated_at",
                 (entity_id, friendly_name, enabled, is_universal, _now(), _now()),
             )
-            await db.commit()
 
     @staticmethod
     async def set_enabled(entity_id: str, enabled: int) -> bool:
@@ -2010,7 +1964,6 @@ class CalendarEntitySettingsRepository:
                 "UPDATE calendar_entity_settings SET enabled = ?, updated_at = ? WHERE entity_id = ?",
                 (enabled, _now(), entity_id),
             )
-            await db.commit()
             return cursor.rowcount > 0
 
     @staticmethod
@@ -2020,7 +1973,6 @@ class CalendarEntitySettingsRepository:
                 "UPDATE calendar_entity_settings SET is_universal = ?, updated_at = ? WHERE entity_id = ?",
                 (is_universal, _now(), entity_id),
             )
-            await db.commit()
             return cursor.rowcount > 0
 
     @staticmethod
@@ -2050,7 +2002,6 @@ class CalendarEntitySettingsRepository:
     async def delete(entity_id: str) -> bool:
         async with get_db_write() as db:
             cursor = await db.execute("DELETE FROM calendar_entity_settings WHERE entity_id = ?", (entity_id,))
-            await db.commit()
             return cursor.rowcount > 0
 
 
@@ -2076,7 +2027,6 @@ class CalendarReminderStateRepository:
                 "VALUES (?, ?, ?, ?, ?)",
                 (event_uid, calendar_entity_id, user_mapping_id, offset_minutes, _now()),
             )
-            await db.commit()
 
     @staticmethod
     async def get_fired_for_event(event_uid: str, calendar_entity_id: str, user_mapping_id: int) -> list[int]:
@@ -2095,7 +2045,6 @@ class CalendarReminderStateRepository:
                 "DELETE FROM calendar_reminder_state WHERE fired_at < ?",
                 (before_timestamp,),
             )
-            await db.commit()
             return cursor.rowcount
 
 
@@ -2149,7 +2098,6 @@ class ScheduledTimersRepository:
                     payload_json,
                 ),
             )
-            await db.commit()
 
     @staticmethod
     async def list_pending(*, kinds: set[str] | frozenset[str] | None = None) -> list[dict]:
@@ -2205,7 +2153,6 @@ class ScheduledTimersRepository:
                 "UPDATE scheduled_timers SET state = 'fired', fired_at = ? WHERE id = ?",
                 (int(fired_at), id_),
             )
-            await db.commit()
 
     @staticmethod
     async def mark_cancelled(id_: str, cancelled_at: int) -> None:
@@ -2214,7 +2161,6 @@ class ScheduledTimersRepository:
                 "UPDATE scheduled_timers SET state = 'cancelled', cancelled_at = ? WHERE id = ? AND state = 'pending'",
                 (int(cancelled_at), id_),
             )
-            await db.commit()
 
     @staticmethod
     async def cancel_by_logical_name(logical_name: str, cancelled_at: int) -> int:
@@ -2224,7 +2170,6 @@ class ScheduledTimersRepository:
                 "WHERE state = 'pending' AND LOWER(logical_name) = LOWER(?)",
                 (int(cancelled_at), logical_name),
             )
-            await db.commit()
             return cursor.rowcount
 
     @staticmethod
@@ -2236,7 +2181,6 @@ class ScheduledTimersRepository:
                 "AND COALESCE(fired_at, cancelled_at, created_at) < ?",
                 (int(cutoff_epoch),),
             )
-            await db.commit()
             return cursor.rowcount
 
     @staticmethod
@@ -2279,5 +2223,4 @@ class ScheduledTimersRepository:
         sql = "UPDATE scheduled_timers SET " + ", ".join(clauses) + " WHERE id = ? AND state = 'pending'"
         async with get_db_write() as db:
             cursor = await db.execute(sql, tuple(params))
-            await db.commit()
             return cursor.rowcount > 0

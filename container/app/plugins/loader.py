@@ -33,6 +33,7 @@ class PluginLoader:
         self._file_map: dict[str, Path] = {}
         self.event_bus = EventBus()
         self._context.event_bus = self.event_bus
+        self._enable_lock = asyncio.Lock()
 
     @property
     def loaded_plugins(self) -> dict[str, BasePlugin]:
@@ -173,53 +174,57 @@ class PluginLoader:
         if name in self._loaded:
             return True
 
-        file_path = self._file_map.get(name)
-        if not file_path:
-            db_record = await PluginRepository.get(name)
-            if db_record and db_record.get("file_path"):
-                file_path = Path(db_record["file_path"])
-            if not file_path or not file_path.exists():
-                logger.error("Cannot enable plugin '%s': file not found", name)
+        async with self._enable_lock:
+            if name in self._loaded:
+                return True
+
+            file_path = self._file_map.get(name)
+            if not file_path:
+                db_record = await PluginRepository.get(name)
+                if db_record and db_record.get("file_path"):
+                    file_path = Path(db_record["file_path"])
+                if not file_path or not file_path.exists():
+                    logger.error("Cannot enable plugin '%s': file not found", name)
+                    return False
+
+            # Validate path is strictly inside the plugin directory
+            resolved = file_path.resolve()
+            plugin_dir = self._plugin_dir.resolve()
+            if not resolved.is_relative_to(plugin_dir):
+                logger.error("Plugin file %s must reside in %s", resolved, plugin_dir)
+                raise ValueError(f"Plugin file {resolved} must reside in {plugin_dir}")
+
+            try:
+                plugin_cls = await self._import_plugin_class(file_path)
+                if plugin_cls is None:
+                    return False
+                instance = plugin_cls()
+                self._loaded[name] = instance
+
+                await PluginRepository.upsert(
+                    name=name,
+                    file_path=str(file_path),
+                    version=instance.version,
+                    description=instance.description,
+                    enabled=1,
+                )
+
+                # Run lifecycle phases for the newly enabled plugin
+                for phase in (LifecyclePhase.CONFIGURE, LifecyclePhase.STARTUP, LifecyclePhase.READY):
+                    try:
+                        handler = getattr(instance, phase.value)
+                        await asyncio.wait_for(handler(self._context), timeout=30.0)
+                    except TimeoutError:
+                        logger.warning("Plugin '%s' %s hook timed out after 30s", name, phase.value)
+                    except Exception:
+                        logger.exception("Plugin '%s' failed during %s on enable", name, phase.value)
+
+                logger.info("Enabled plugin '%s'", name)
+                return True
+
+            except Exception:
+                logger.exception("Failed to enable plugin '%s'", name)
                 return False
-
-        # Validate path is strictly inside the plugin directory
-        resolved = file_path.resolve()
-        plugin_dir = self._plugin_dir.resolve()
-        if not resolved.is_relative_to(plugin_dir):
-            logger.error("Plugin file %s must reside in %s", resolved, plugin_dir)
-            raise ValueError(f"Plugin file {resolved} must reside in {plugin_dir}")
-
-        try:
-            plugin_cls = await self._import_plugin_class(file_path)
-            if plugin_cls is None:
-                return False
-            instance = plugin_cls()
-            self._loaded[name] = instance
-
-            await PluginRepository.upsert(
-                name=name,
-                file_path=str(file_path),
-                version=instance.version,
-                description=instance.description,
-                enabled=1,
-            )
-
-            # Run lifecycle phases for the newly enabled plugin
-            for phase in (LifecyclePhase.CONFIGURE, LifecyclePhase.STARTUP, LifecyclePhase.READY):
-                try:
-                    handler = getattr(instance, phase.value)
-                    await asyncio.wait_for(handler(self._context), timeout=30.0)
-                except TimeoutError:
-                    logger.warning("Plugin '%s' %s hook timed out after 30s", name, phase.value)
-                except Exception:
-                    logger.exception("Plugin '%s' failed during %s on enable", name, phase.value)
-
-            logger.info("Enabled plugin '%s'", name)
-            return True
-
-        except Exception:
-            logger.exception("Failed to enable plugin '%s'", name)
-            return False
 
     async def disable_plugin(self, name: str) -> bool:
         """Disable a plugin. Calls shutdown, then removes from loaded."""

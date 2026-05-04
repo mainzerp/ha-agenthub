@@ -1,8 +1,40 @@
 # Version
 
-**Current Version:** 1.17.1
+**Current Version:** 1.18.0
 
 ## Recent Changes
+
+### 1.18.0 (MINOR) -- Multilingual orchestrator & code-review hardening
+
+- **Multilingual orchestrator output:**
+  - The orchestrator now writes condensed tasks directly in the user's language instead of translating to English and preserving verbatim terms.
+  - Removed `_extract_verbatim_terms` and `_append_original_suffix` heuristic pipeline from `orchestrator.py`.
+  - Simplified all agent prompts: replaced lengthy "ENTITY NAMES MUST NEVER BE TRANSLATED" blocks with concise "Entity names: use the exact spelling from the task description."
+  - `AgentTask.verbatim_terms` is now optional and unused by the orchestrator; sub-agents or plugins may still populate it if needed.
+  - Added README note recommending explicit language configuration for best voice-command results.
+
+- **Code-review security and robustness fixes:**
+  - `get_db_write()` now auto-commits on success; prevents silent data loss from forgotten manual commits.
+  - `SettingsRepository._value_cache_lock` is now lazily initialized to avoid event-loop conflicts during tests or uvicorn reload.
+  - `_cache_invalidate()` is now async and holds the cache lock.
+  - Server-side password minimum length (8 chars) enforced in setup wizard and dashboard login.
+  - `_dispatcher` null-check returns 503 if the service is not yet ready.
+  - `LogBuffer.get_entries()` timezone-aware datetime comparison fixes 500 errors on naive `since` parameters.
+  - `complete_with_tools()` catches all exceptions from tool executors instead of a narrow allow-list.
+  - WebSocket rate-limit no longer kills the connection; it sends a JSON error and keeps the socket open.
+  - `SpanCollector._spans` access is now encapsulated via `add_root_span()`.
+  - `McpServerRepository.list_enabled()` now handles malformed JSON gracefully.
+  - Conversation search properly escapes `LIKE` wildcards (`%`, `_`).
+  - `CalendarReminderStateRepository.cleanup_old()` uses consistent ISO-string timestamps.
+  - `PluginLoader.enable_plugin()` is now protected by an asyncio lock against race conditions.
+  - `SetupRedirectMiddleware` gained `invalidate_setup_cache()` for future setup-reset support.
+  - `AnalyticsRepository.query_by_range()` caps `limit` at 5000 rows.
+  - CSRF token rotates when an admin session is active.
+  - `_phonetic_key()` logs failures instead of swallowing them silently.
+  - `_post_filler_push` in HA integration catches all exceptions broadly.
+  - `get_fernet()` deadlock avoided by not nesting the non-reentrant lock.
+  - `log_buffer_guard_task` is now cancelled cleanly on shutdown.
+  - Migration 16 uses `_column_exists()` consistently.
 
 ### 1.17.1 (PATCH) -- Remote logs bug fixes and UI polish
 
