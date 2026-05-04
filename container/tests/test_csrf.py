@@ -110,7 +110,7 @@ class TestCsrfSetupForm:
                 "/setup/step/1",
                 data={
                     "username": "admin",
-                    "password": "pw",
+                    "password": "password123",
                     "csrf_token": cookie_token,
                 },
             )

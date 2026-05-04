@@ -71,6 +71,8 @@ class LogBuffer:
                 continue
 
             if since_dt is not None:
+                if since_dt.tzinfo is None:
+                    since_dt = since_dt.replace(tzinfo=UTC)
                 entry_ts = datetime.fromisoformat(entry["timestamp"])
                 if entry_ts <= since_dt:
                     continue

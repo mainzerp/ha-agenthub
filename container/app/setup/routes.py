@@ -7,7 +7,7 @@ import logging
 import secrets
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, Form, Request
+from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
@@ -90,6 +90,8 @@ async def save_admin_password(
     password: str = Form(...),
 ):
     """Step 1: Create admin account with bcrypt-hashed password."""
+    if len(password) < 8:
+        raise HTTPException(status_code=422, detail="Password must be at least 8 characters")
     hashed = hash_password(password)
     await AdminAccountRepository.create(username, hashed, force_overwrite=True)
     await SetupStateRepository.set_step_completed("admin_password")

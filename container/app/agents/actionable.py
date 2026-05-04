@@ -102,10 +102,9 @@ class ActionableAgent(BaseAgent):
         if task.context and task.context.conversation_turns:
             self._append_conversation_turn_messages(messages, task.context.conversation_turns)
 
-        # Prime Directive: the orchestrator owns intent classification and
-        # condensation.  Agents MUST NOT see the raw user_text — they receive
-        # only the distilled description (which already carries verbatim
-        # entity tokens via _append_original_suffix when needed).
+        # The orchestrator condenses the user's request into a task written in
+        # the user's own language. Agents receive only the distilled description,
+        # not the raw user_text.
         user_content = self._wrap_user_input(task.description)
 
         messages.append({"role": "user", "content": user_content})

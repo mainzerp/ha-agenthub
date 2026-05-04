@@ -75,7 +75,7 @@ class TestSetupRoutesOpenWhileIncomplete:
             resp = await csrf_post(
                 incomplete_client,
                 "/setup/step/1",
-                {"username": "admin", "password": "pw"},
+                {"username": "admin", "password": "password123"},
                 get_url="/setup/step/1",
             )
             assert resp.status_code == 303

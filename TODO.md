@@ -11,3 +11,4 @@
 - [ ] **P2 -- Security agent sentinel mode**: Deferred. If one or more sensors explicitly assigned to the security agent should automatically trigger a security-agent run, that requires a separate trigger contract and likely a dedicated UI page.
 
 - [x] **Remote logs API** -- API + Dashboard UI for reading and filtering live container logs
+            - liste der logs, latest at first

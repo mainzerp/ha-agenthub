@@ -352,8 +352,14 @@ async def _temp_db(db_path):
         conn.row_factory = aiosqlite.Row
         await conn.execute("PRAGMA journal_mode=WAL")
         await conn.execute("PRAGMA foreign_keys=ON")
+        await conn.execute("BEGIN")
         try:
             yield conn
+        except BaseException:
+            await conn.rollback()
+            raise
+        else:
+            await conn.commit()
         finally:
             await conn.close()
 
@@ -390,7 +396,7 @@ async def run_scenario(scenario: Scenario, db_path) -> None:
     """Build the pipeline and run the scenario; raise on assertion failure."""
     from app.db.repository import SettingsRepository
 
-    SettingsRepository._cache_invalidate()
+    await SettingsRepository._cache_invalidate()
     async with _temp_db(db_path):
         # Apply settings overrides
         if scenario.preconditions.settings:

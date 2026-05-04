@@ -43,8 +43,8 @@ class TestWsAdvanced:
             tokens2 = await client.send_turn("turn on the kitchen light")
             assert tokens2[-1].get("done") is True
 
-    async def test_ws_rate_limit_closes_connection(self, light_scenario_app, _reset_rate_limit_store):
-        """Exceed 20 burst messages; expect close code 1008."""
+    async def test_ws_rate_limit_returns_error(self, light_scenario_app, _reset_rate_limit_store):
+        """Exceed 20 burst messages; expect rate-limit error JSON."""
         from fastapi.testclient import TestClient
 
         from app.api.routes import conversation as conv_routes
@@ -69,22 +69,18 @@ class TestWsAdvanced:
                         headers={"Authorization": "Bearer test-api-key"},
                     ) as ws:
                         for _ in range(100):
-                            try:
-                                ws.send_json({"text": "x"})
-                                ws.receive_json()
-                            except Exception as exc:
-                                code = getattr(exc, "code", None)
-                                reason = getattr(exc, "reason", "")
-                                if code is not None:
-                                    return f"{code}: {reason}"
-                                return str(exc) or type(exc).__name__
+                            ws.send_json({"text": "x"})
+                            msg = ws.receive_json()
+                            if msg.get("error") == "Rate limit exceeded":
+                                return msg
                 finally:
                     conv_routes._dispatcher = old_dispatcher
             return None
 
         result = await asyncio.to_thread(_flood)
         assert result is not None
-        assert "1008" in result or "Rate limit exceeded" in result
+        assert result.get("error") == "Rate limit exceeded"
+        assert "retry_after_ms" in result
 
     async def test_ws_filler_push_flow(self, light_scenario_app):
         """Mock dispatcher yields a filler token with filler_push; assert mid-stream shape."""

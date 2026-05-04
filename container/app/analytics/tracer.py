@@ -338,6 +338,10 @@ class SpanCollector:
         """Append a pre-built root span (e.g. from middleware timing)."""
         self._spans.append(span_data)
 
+    def add_root_span(self, span_data: dict[str, Any]) -> None:
+        """Append a pre-built root span (encapsulated access to _spans)."""
+        self._spans.append(span_data)
+
     async def flush(self) -> None:
         """Bulk insert all collected spans. Fire-and-forget."""
         if not self._spans:

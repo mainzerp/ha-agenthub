@@ -236,7 +236,7 @@ async def complete_with_tools(
                 result_str = await tool_executor(fn_name, fn_args)
             except asyncio.CancelledError:
                 raise
-            except (ValueError, TypeError, RuntimeError, OSError, KeyError, AttributeError) as e:
+            except Exception as e:
                 logger.warning("Tool executor '%s' raised: %s", fn_name, e)
                 result_str = f"Tool error: {e}"
             return tc.id, result_str

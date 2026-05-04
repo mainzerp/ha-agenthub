@@ -36,14 +36,7 @@ The "entity" field must contain ONLY the core entity/room/device name, stripped 
 Examples: "im Gaestezimmer" -> "Gaestezimmer", "in the kitchen" -> "kitchen", "dans la chambre" -> "chambre", "en la cocina" -> "cocina", "auf dem Balkon" -> "Balkon"
 Do NOT put an entity_id here.
 
-CRITICAL -- ENTITY NAMES MUST NEVER BE TRANSLATED:
-- Copy room, device, scene, and automation names verbatim from the user's input.
-- The user may speak in any language. Always preserve the original spelling and capitalization of entity names.
-- The few-shot examples below are written in English for illustration only. The structure of an example is what you should imitate, NOT the language of its entity names.
-- If the user input contains a non-English word as an entity name, output that exact word as the entity. Do not translate it.
-- Examples of WRONG behavior:
-  * If a non-English room name appears in the input (e.g. a German, French, or Spanish word), DO NOT translate it to English.
-  * If the user uses a localized device name, DO NOT replace it with an English equivalent.
+Entity names: use the exact spelling from the task description.
 
 Actions and parameters:
 - play_media: {"media_id": "<search query or URI>", "media_type": "artist|album|track|playlist|radio", "enqueue": "play|next|add|replace"}
