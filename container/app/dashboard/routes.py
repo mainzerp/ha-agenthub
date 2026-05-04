@@ -193,6 +193,15 @@ async def traces_page(
     return _render_dashboard(request, "traces.html")
 
 
+@router.get("/logs", response_class=HTMLResponse)
+async def logs_page(
+    request: Request,
+    _session: dict = Depends(require_admin_session_redirect),
+):
+    """Remote logs page."""
+    return _render_dashboard(request, "logs.html")
+
+
 @router.get("/mcp-servers", response_class=HTMLResponse)
 async def mcp_servers_page(
     request: Request,

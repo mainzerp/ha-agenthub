@@ -37,6 +37,7 @@ from app.middleware.rate_limit import rate_limit_admin
 from app.middleware.tracing import TracingMiddleware
 from app.models.entity_index import EntityIndexEntry
 from app.setup.routes import router as setup_router
+from app.util.log_buffer import LogBuffer, LogBufferHandler, set_log_buffer
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +57,10 @@ def _configure_logging() -> None:
         format=log_format,
         force=True,
     )
+    log_buffer = LogBuffer(capacity=10000)
+    handler = LogBufferHandler(log_buffer)
+    logging.getLogger().addHandler(handler)
+    set_log_buffer(log_buffer)
 
 
 def _parse_ha_states(states: list[dict[str, Any]]) -> list[EntityIndexEntry]:
@@ -521,6 +526,11 @@ def create_app() -> FastAPI:
     from app.api.routes.calendar_admin import router as calendar_admin_router
 
     app.include_router(calendar_admin_router, dependencies=[Depends(rate_limit_admin)])
+
+    # Logs admin router
+    from app.api.routes import logs_api as logs_api_routes
+
+    app.include_router(logs_api_routes.router, dependencies=[Depends(rate_limit_admin)])
 
     # Redirect root to dashboard
     from starlette.responses import RedirectResponse

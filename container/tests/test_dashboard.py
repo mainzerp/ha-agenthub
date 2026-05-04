@@ -89,6 +89,10 @@ class TestDashboardLoginRequired:
         resp = await no_session_client.get("/dashboard/agents")
         assert resp.status_code == 303
 
+    async def test_logs_page_requires_auth(self, no_session_client: httpx.AsyncClient):
+        resp = await no_session_client.get("/dashboard/logs")
+        assert resp.status_code == 303
+
     async def test_login_page_accessible_without_session(self, no_session_client: httpx.AsyncClient):
         resp = await no_session_client.get("/dashboard/login")
         assert resp.status_code == 200
@@ -155,6 +159,11 @@ class TestDashboardPageAccessibility:
 
     async def test_timers_page(self, dashboard_client: httpx.AsyncClient):
         resp = await dashboard_client.get("/dashboard/timers")
+        assert resp.status_code == 200
+        assert "text/html" in resp.headers.get("content-type", "")
+
+    async def test_logs_page(self, dashboard_client: httpx.AsyncClient):
+        resp = await dashboard_client.get("/dashboard/logs")
         assert resp.status_code == 200
         assert "text/html" in resp.headers.get("content-type", "")
 
@@ -338,6 +347,24 @@ class TestDashboardTemplateRendering:
         assert "logical_name" in html
         assert "Timer Pool" not in html
         assert "Pending Delayed Tasks" not in html
+
+    async def test_logs_page_contains_alpine_component(self, dashboard_client: httpx.AsyncClient):
+        resp = await dashboard_client.get("/dashboard/logs")
+        html = resp.text
+        assert "Remote Logs" in html
+        assert 'x-data="logsPage()"' in html
+
+    async def test_logs_page_uses_dashboard_api_helper(self, dashboard_client: httpx.AsyncClient):
+        resp = await dashboard_client.get("/dashboard/logs")
+        html = resp.text
+        assert "window.dashboardApi.json('/api/admin/logs?'" in html
+        assert "window.dashboardApi.request('/api/admin/logs/levels'" in html
+        assert "await fetch('/api/admin/logs'" not in html
+
+    async def test_logs_page_has_refresh_interval_cleanup(self, dashboard_client: httpx.AsyncClient):
+        resp = await dashboard_client.get("/dashboard/logs")
+        html = resp.text
+        assert "clearInterval(this.refreshInterval)" in html
 
     async def test_timers_page_origin_display_prefers_origin_label_then_fallbacks(
         self, dashboard_client: httpx.AsyncClient

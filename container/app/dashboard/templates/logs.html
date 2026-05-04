@@ -1,0 +1,295 @@
+{% extends "dashboard_base.html" %}
+{% block page_title %}Logs{% endblock %}
+{% block header_title %}Remote Logs{% endblock %}
+{% block page_content %}
+<div x-data="logsPage()" x-init="init()">
+
+    <!-- Controls -->
+    <div class="card mb-md p-md">
+        <div class="form-row items-end">
+            <div class="form-group mb-0">
+                <label class="form-label">Level</label>
+                <select class="form-input w-auto min-w-120" x-model="filterLevel" @change="applyFilters()">
+                    <option value="">All</option>
+                    <option value="DEBUG">DEBUG</option>
+                    <option value="INFO">INFO</option>
+                    <option value="WARNING">WARNING</option>
+                    <option value="ERROR">ERROR</option>
+                    <option value="CRITICAL">CRITICAL</option>
+                </select>
+            </div>
+
+            <div class="form-group mb-0 flex-1 min-w-200">
+                <label class="form-label">Logger</label>
+                <input type="text" class="form-input" placeholder="Logger name..."
+                       x-model="filterLogger"
+                       @keyup.enter="applyFilters()"
+                       @input.debounce.500ms="applyFilters()">
+            </div>
+
+            <div class="form-group mb-0 flex-1 min-w-200">
+                <label class="form-label">Search</label>
+                <input type="text" class="form-input" placeholder="Search message..."
+                       x-model="filterSearch"
+                       @keyup.enter="applyFilters()"
+                       @input.debounce.500ms="applyFilters()">
+            </div>
+
+            <div class="form-group mb-0">
+                <label class="form-label">Since</label>
+                <input type="datetime-local" class="form-input w-auto"
+                       x-model="filterSince" @change="applyFilters()">
+            </div>
+
+            <div class="form-group mb-0">
+                <label class="form-label">Limit</label>
+                <select class="form-input w-auto min-w-100" x-model.number="limit">
+                    <option value="25">25</option>
+                    <option value="50">50</option>
+                    <option value="100">100</option>
+                    <option value="250">250</option>
+                    <option value="500">500</option>
+                </select>
+            </div>
+
+            <button class="btn btn-sm btn-secondary self-end" @click="loadLogs()">Refresh</button>
+        </div>
+    </div>
+
+    <!-- Stats bar -->
+    <div class="flex-between mb-md">
+        <span class="text-muted text-sm">
+            Total: <span x-text="total"></span> entries
+            <template x-if="rootLevel">
+                <span class="ml-sm">Root level: <span class="badge" :class="levelBadgeClass(rootLevel)" x-text="rootLevel"></span></span>
+            </template>
+        </span>
+    </div>
+
+    <!-- Log Level Manager -->
+    <div class="card mb-md p-md">
+        <div class="flex-between mb-sm">
+            <strong>Log Level Manager</strong>
+            <span class="badge" :class="levelBadgeClass(rootLevel)" x-text="rootLevel || 'INFO'"></span>
+        </div>
+        <div class="form-row items-end mb-sm">
+            <div class="form-group mb-0 flex-1 min-w-200">
+                <label class="form-label">Logger name</label>
+                <input type="text" class="form-input" placeholder="Logger name (e.g. app.api)"
+                       x-model="newLoggerName">
+            </div>
+            <div class="form-group mb-0">
+                <label class="form-label">Level</label>
+                <select class="form-input w-auto min-w-120" x-model="newLoggerLevel">
+                    <option value="DEBUG">DEBUG</option>
+                    <option value="INFO">INFO</option>
+                    <option value="WARNING">WARNING</option>
+                    <option value="ERROR">ERROR</option>
+                    <option value="CRITICAL">CRITICAL</option>
+                </select>
+            </div>
+            <button class="btn btn-sm btn-primary self-end" @click="updateLevel()">Update</button>
+        </div>
+        <div class="flex flex-wrap gap-xs" x-show="Object.keys(loggers).length > 0">
+            <template x-for="(lvl, name) in loggers" :key="name">
+                <span class="badge text-2xs" :class="levelBadgeClass(lvl)" x-text="name + ':' + lvl"></span>
+            </template>
+        </div>
+    </div>
+
+    <!-- Table -->
+    <div class="card mb-lg">
+        <template x-if="loading">
+            <p class="text-muted p-md">Loading logs...</p>
+        </template>
+
+        <div class="table-container-flush" x-show="!loading && entries.length > 0">
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>Timestamp</th>
+                        <th>Level</th>
+                        <th>Logger</th>
+                        <th>Message</th>
+                        <th>Module</th>
+                        <th>Function</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <template x-for="entry in entries" :key="entry.timestamp + entry.name + entry.lineno">
+                        <tr>
+                            <td class="text-mono text-xs text-nowrap" x-text="formatTimestamp(entry.timestamp)"></td>
+                            <td>
+                                <span class="badge text-2xs" :class="levelBadgeClass(entry.level)" x-text="entry.level"></span>
+                            </td>
+                            <td class="text-mono text-xs" x-text="entry.name"></td>
+                            <td class="truncate max-w-400" x-text="entry.message"></td>
+                            <td class="text-mono text-xs" x-text="entry.module"></td>
+                            <td class="text-mono text-xs" x-text="entry.funcName"></td>
+                        </tr>
+                    </template>
+                </tbody>
+            </table>
+        </div>
+
+        <template x-if="!loading && entries.length === 0">
+            <div class="empty-state">
+                <p>No log entries found.</p>
+            </div>
+        </template>
+    </div>
+
+    <!-- Pagination -->
+    <div class="flex-between mb-lg" x-show="total > 0">
+        <span class="text-muted text-sm" x-text="paginationText()"></span>
+        <div class="flex-center gap-sm">
+            <button class="btn btn-sm btn-secondary" :disabled="offset <= 0" @click="prevPage()">Prev</button>
+            <button class="btn btn-sm btn-secondary" :disabled="offset + entries.length >= total" @click="nextPage()">Next</button>
+        </div>
+    </div>
+
+</div>
+
+<script>
+function logsPage() {
+    return {
+        entries: [],
+        total: 0,
+        loading: false,
+        error: '',
+        filterLevel: '',
+        filterLogger: '',
+        filterSearch: '',
+        filterSince: '',
+        limit: 100,
+        offset: 0,
+        rootLevel: '',
+        loggers: {},
+        newLoggerName: '',
+        newLoggerLevel: 'INFO',
+        refreshInterval: null,
+
+        async init() {
+            var self = this;
+            await this.loadLogs();
+            await this.loadLevels();
+
+            this.refreshInterval = setInterval(function() {
+                self.loadLogs();
+            }, 5000);
+
+            this.$watch('limit', function() {
+                self.offset = 0;
+                self.loadLogs();
+            });
+        },
+
+        destroy() {
+            if (this.refreshInterval) {
+                clearInterval(this.refreshInterval);
+                this.refreshInterval = null;
+            }
+        },
+
+        levelBadgeClass(level) {
+            var map = {
+                'DEBUG': 'badge-muted',
+                'INFO': 'badge-teal',
+                'WARNING': 'badge-yellow',
+                'ERROR': 'badge-red',
+                'CRITICAL': 'badge-danger'
+            };
+            return map[level] || 'badge-muted';
+        },
+
+        formatTimestamp(ts) {
+            if (!ts) return '-';
+            try {
+                var d = new Date(ts);
+                return d.toLocaleString();
+            } catch (e) { return ts; }
+        },
+
+        paginationText() {
+            if (this.total === 0) return 'No entries';
+            var start = this.offset + 1;
+            var end = this.offset + this.entries.length;
+            return 'Showing ' + start + ' - ' + end + ' of ' + this.total + ' entries';
+        },
+
+        async loadLogs() {
+            this.loading = true;
+            try {
+                var params = new URLSearchParams();
+                params.set('limit', String(this.limit));
+                params.set('offset', String(this.offset));
+                if (this.filterLevel) params.set('level', this.filterLevel);
+                if (this.filterLogger) params.set('logger', this.filterLogger);
+                if (this.filterSearch) params.set('search', this.filterSearch);
+                if (this.filterSince) params.set('since', this.filterSince);
+
+                var data = await window.dashboardApi.json('/api/admin/logs?' + params.toString());
+                this.entries = data.entries || [];
+                this.total = data.total || 0;
+                this.error = '';
+            } catch (e) {
+                if (e.code === 'auth_expired') return;
+                this.error = 'Failed to load logs';
+                console.error('Failed to load logs', e);
+            }
+            this.loading = false;
+        },
+
+        async loadLevels() {
+            try {
+                var data = await window.dashboardApi.json('/api/admin/logs/levels');
+                this.rootLevel = data.root_level || '';
+                this.loggers = data.loggers || {};
+            } catch (e) {
+                if (e.code === 'auth_expired') return;
+                console.error('Failed to load log levels', e);
+            }
+        },
+
+        async updateLevel() {
+            if (!this.newLoggerName) {
+                window.toast('Logger name is required', 'error');
+                return;
+            }
+            try {
+                await window.dashboardApi.request('/api/admin/logs/levels', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ logger_name: this.newLoggerName, level: this.newLoggerLevel })
+                });
+                window.toast('Level updated', 'success');
+                await this.loadLevels();
+            } catch (e) {
+                if (e.code === 'auth_expired') return;
+                window.toast('Failed to update level', 'error');
+                console.error('Failed to update level', e);
+            }
+        },
+
+        applyFilters() {
+            this.offset = 0;
+            this.loadLogs();
+        },
+
+        nextPage() {
+            if (this.offset + this.entries.length < this.total) {
+                this.offset += this.limit;
+                this.loadLogs();
+            }
+        },
+
+        prevPage() {
+            if (this.offset > 0) {
+                this.offset = Math.max(0, this.offset - this.limit);
+                this.loadLogs();
+            }
+        }
+    };
+}
+</script>
+{% endblock %}

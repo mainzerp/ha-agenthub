@@ -1,8 +1,18 @@
 # Version
 
-**Current Version:** 1.16.0
+**Current Version:** 1.17.0
 
 ## Recent Changes
+
+### 1.17.0 (MINOR) -- Remote logs API
+
+- Added in-memory ring buffer (`LogBuffer`) and custom `LogBufferHandler` for capturing application logs at runtime.
+- New admin endpoints under `/api/admin/logs`:
+  - `GET /api/admin/logs` -- paginated, filterable log query (level, logger, since, search, limit, offset).
+  - `GET /api/admin/logs/levels` -- read root and per-logger levels.
+  - `POST /api/admin/logs/levels` -- runtime log level adjustment.
+- All endpoints require admin session auth and rate limiting.
+- New files: `container/app/util/log_buffer.py`, `container/app/api/routes/logs_api.py`, `container/tests/test_logs_api.py`.
 
 ### 1.16.0 (MINOR) -- Lists Agent for HA todo list management
 

@@ -699,6 +699,72 @@ Get all spans for a specific trace (for Gantt visualization).
 
 ---
 
+## Admin -- Logs
+
+### GET /api/admin/logs
+
+List recent log entries with optional filtering and pagination.
+
+**Query parameters:**
+- `level` -- Minimum level: `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`
+- `logger` -- Substring match on logger name
+- `since` -- ISO 8601 timestamp; only entries after this time are returned
+- `search` -- Substring search in the log message
+- `limit` -- Max entries to return (default: 100, max: 1000)
+- `offset` -- Pagination offset (default: 0)
+
+**Response:**
+
+```json
+{
+  "entries": [
+    {
+      "timestamp": "2026-01-01T12:00:00+00:00",
+      "level": "INFO",
+      "name": "app.core",
+      "message": "Startup complete",
+      "module": "main",
+      "funcName": "lifespan",
+      "lineno": 123
+    }
+  ],
+  "total": 42
+}
+```
+
+### GET /api/admin/logs/levels
+
+Return the current root log level and all explicitly-set logger levels.
+
+**Response:**
+
+```json
+{
+  "root_level": "INFO",
+  "loggers": {
+    "root": "INFO",
+    "app.api": "DEBUG"
+  }
+}
+```
+
+### POST /api/admin/logs/levels
+
+Update a logger's level at runtime.
+
+**Request body:**
+
+```json
+{
+  "logger_name": "app.api",
+  "level": "DEBUG"
+}
+```
+
+Accepted levels: `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`.
+
+---
+
 ## Admin -- Plugins
 
 ### GET /api/admin/plugins
