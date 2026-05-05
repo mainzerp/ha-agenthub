@@ -729,6 +729,21 @@ async def _seed_defaults(db: aiosqlite.Connection) -> None:
             "home",
             "Manual home location name override. Empty = auto-detect from HA.",
         ),
+        # Orchestrator settings
+        (
+            "orchestrator.organic_followup_enabled",
+            "false",
+            "bool",
+            "orchestrator",
+            "Offer a follow-up prompt after successful voice responses",
+        ),
+        (
+            "orchestrator.organic_followup_probability",
+            "0.08",
+            "float",
+            "orchestrator",
+            "Probability (0.0-1.0) of appending a follow-up offer to successful responses",
+        ),
         # HA URL is normally set in setup; seed empty so admin UI can upsert
         # before first run and ``GET /api/admin/settings`` stays consistent.
         ("ha_url", "", "string", "ha", "Home Assistant base URL (http/https)"),

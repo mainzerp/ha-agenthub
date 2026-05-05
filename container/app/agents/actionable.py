@@ -42,6 +42,36 @@ class ActionableAgent(BaseAgent):
         """Execute the parsed action. Subclasses must override."""
         raise NotImplementedError
 
+    async def _generate_not_found_speech(self, entity_query: str, task: AgentTask, span_collector=None) -> str:
+        """Ask the LLM to generate a language-appropriate clarifying question when an entity is not found."""
+        language = (task.context.language if task.context else None) or "en"
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    f"You are a smart home assistant. Respond in {language}. Keep your response to one short sentence."
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    f'The user asked: "{task.description}"\n'
+                    f'No device named "{entity_query}" was found. '
+                    "Generate a brief clarifying question asking the user to specify which device they mean."
+                ),
+            },
+        ]
+        try:
+            result = await self._call_llm(messages, span_collector=span_collector)
+            return (
+                result.strip()
+                if result and result.strip()
+                else f"I could not find '{entity_query}'. Which device did you mean?"
+            )
+        except Exception:
+            logger.warning("Not-found clarification LLM call failed", exc_info=True)
+            return f"I could not find '{entity_query}'. Which device did you mean?"
+
     def _handle_parse_miss(self, task: AgentTask, response: str) -> TaskResult:
         """Return the fallback result when the LLM response has no valid action."""
         return TaskResult(speech=strip_json_blocks(response))
@@ -164,6 +194,14 @@ class ActionableAgent(BaseAgent):
                         agent_id=agent_id,
                         span_collector=span_collector,
                     )
+                # Entity not found: replace hardcoded speech with LLM-generated clarifying question
+                if not result.get("success") and result.get("entity_id") is None and not result.get("error"):
+                    entity_query = action.get("entity", "")
+                    result = {
+                        **result,
+                        "speech": await self._generate_not_found_speech(entity_query, task, span_collector),
+                    }
+
                 metadata = result.get("metadata") or {}
                 if result.get("directive"):
                     return TaskResult(
