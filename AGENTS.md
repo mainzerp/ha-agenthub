@@ -54,7 +54,7 @@ SUBAGENT #1-Synth: Synthesis (coder, synthesis mode)
     - Does NOT add new research — only synthesizes existing findings.
     - Returns summary
     |
-YOU (Orchestrator): Receive results, spawn Planning subagent (no EnterPlanMode)
+YOU (Orchestrator): Receive results, spawn Planning subagent (NEVER use /plan or EnterPlanMode)
     |
 SUBAGENT #2: Planning (coder, planning mode)
     - Prompt enforces: ReadFile/Grep/Glob/WriteFile ONLY. You may write ONLY
@@ -100,6 +100,17 @@ YOU (Orchestrator): Final Confirmation
     - Repeat clarifications as needed until the user confirms.
 ```
 
+## Quick-Fix Path
+
+For tasks that meet **all** of the following criteria, Research and Planning phases may be skipped:
+
+- Change is confined to a single file
+- Fewer than 10 lines affected
+- No API, interface, or schema change
+- Trivially reversible (no database writes, no external calls)
+
+**Even on the Quick-Fix path, Plan Approval is mandatory.** The Orchestrator presents a one-sentence description of the change and waits for `yes / cancel` before spawning the Implementation subagent.
+
 ## Parallel Agent Execution
 
 The Orchestrator MAY spawn multiple subagents in parallel during Research and Implementation if the criteria below are met. Planning MUST always remain a single sequential agent.
@@ -138,6 +149,16 @@ The Orchestrator MAY spawn multiple subagents in parallel during Research and Im
    - Returns the final verification summary
 6. **Fallback:** If the Merge & Verify agent finds unresolvable conflicts, the Orchestrator MUST abort parallel execution, discard the parallel changes, and re-run Implementation sequentially with a single agent.
 
+## Subagent Error Handling
+
+If a subagent returns an empty result, crashes, or produces clearly incomplete output:
+
+1. **Retry once** — re-spawn the same subagent with an identical prompt.
+2. **If the retry fails** — report the failure to the user in chat, including the phase name and the expected artifact path. Do not proceed to the next phase.
+3. **Merge & Verify failure** — abort parallel execution, discard all parallel changes, and re-run Implementation sequentially with a single agent (see "Implementation Parallelization" fallback rule).
+
+Never silently skip a phase or substitute a failed subagent result with your own output.
+
 ## Invoking Subagents
 
 Subagents launched via the Agent tool run in an isolated context and return results when complete.
@@ -149,34 +170,107 @@ For this project's workflow, use these built-in subagent types:
 | Research | `coder` | Fast codebase exploration | Read, search, WriteFile (docs/SubAgent only), NO Shell, NO StrReplaceFile. |
 | Synthesis | `coder` | Combine parallel research findings | Read, WriteFile (docs/SubAgent only), NO Shell, NO StrReplaceFile, NO source edits, NO new research. |
 | Planning | `coder` | Implementation planning and architecture design | Read, search, WriteFile (docs/SubAgent only). NO Shell, NO StrReplaceFile, NO source edits. |
-| Implementation | `coder` | General software engineering: read/write files, run commands, search code | Full toolset |
+| Implementation | `coder` | Senior software engineering: read/write files, run commands, search code | Full toolset |
 | Merge & Verify | `coder` | Merge parallel implementations, run tests and lint | Full toolset |
 
 Invoke them explicitly:
-- `Spawn the coder subagent in read-only research mode to investigate <topic>.`
-- `Spawn the coder subagent in planning mode to plan based on docs/SubAgent/X_ANALYSIS.md.`
-- `Spawn the coder subagent to implement docs/SubAgent/X_PLAN.md.`
+
+- `Spawn the coder subagent in research mode to investigate <topic>. Write findings to docs/SubAgent/[NAME]_[TOPIC]_ANALYSIS.md.`
+- `Spawn the coder subagent in planning mode. Read docs/SubAgent/[NAME]_ANALYSIS.md and write the plan to docs/SubAgent/[NAME]_PLAN.md.`
+- `Spawn the coder subagent to implement docs/SubAgent/[NAME]_PLAN.md.`
 
 **Subagents always run in a fresh context window.** Do not try to carry implicit state between phases; pass artifacts via the files under `docs/SubAgent/`.
 
-> **Note on `docs/SubAgent/`:** This directory is listed in `.gitignore` because SubAgent working files are ephemeral by design. They are generated during research and planning phases and are not part of the committed source tree. When a SubAgent artifact needs to be preserved (e.g. an approved plan), it should be force-added with `git add -f` or the specific file should be mentioned in an exception rule.
+### SubAgent File Naming
+
+All SubAgent artifacts follow this pattern: `docs/SubAgent/[NAME]_[SUFFIX].md`
+
+- `[NAME]` — short, descriptive task identifier in `UPPER_SNAKE_CASE` chosen by the Orchestrator at the start of each task (e.g. `ADD_UPS_PROTOCOL`, `FIX_AUTH_BUG`).
+- `[SUFFIX]` — phase suffix: `ANALYSIS`, `TOPIC_ANALYSIS`, `PLAN`, `PART1_PLAN`, etc.
+
+The same `[NAME]` is used across all phases of a single task so artifacts are easy to trace.
+
+### Required Prompt Blocks
+
+These blocks are **mandatory** in every subagent prompt for the respective phase. The Orchestrator adds task-specific context (topic, scope, file names) around them — but these lines must always be present verbatim.
+
+#### Research
+
+```text
+You are a read-only research agent. Investigate ONLY: [TOPIC].
+Write your findings to: docs/SubAgent/[NAME]_[TOPIC]_ANALYSIS.md
+Allowed tools: Read, Grep, Glob, Write (docs/SubAgent/ only).
+FORBIDDEN: Shell, Edit, any source code modification.
+Do NOT ask the user questions. Do NOT request plan approval.
+Return a short summary and the artifact path when done.
+```
+
+#### Synthesis
+
+```text
+You are a synthesis agent. Do NOT conduct new research.
+Read all files matching: docs/SubAgent/[NAME]_*_ANALYSIS.md
+Write a single combined analysis to: docs/SubAgent/[NAME]_ANALYSIS.md
+Remove duplicates, resolve contradictions, add cross-references between topics.
+Allowed tools: Read, Write (docs/SubAgent/ only).
+FORBIDDEN: Shell, Edit, any source code modification, any new research.
+Return a short summary when done.
+```
+
+#### Planning
+
+```text
+You are a planning agent. Do NOT implement anything.
+Read the analysis from: docs/SubAgent/[NAME]_ANALYSIS.md
+Write a concise step-by-step implementation plan with a checklist to: docs/SubAgent/[NAME]_PLAN.md
+Allowed tools: Read, Grep, Glob, Write (docs/SubAgent/ only).
+FORBIDDEN: Shell, Edit, any source code modification.
+Do NOT ask the user questions. Do NOT request plan approval.
+Return a short summary and the artifact path when done.
+```
+
+#### Implementation
+
+```text
+You are an implementation agent. Full toolset available.
+Read your assigned plan from: docs/SubAgent/[NAME]_PLAN.md
+Implement ONLY the work described in that plan. Do NOT touch files outside your assigned scope.
+Run tests and lint after completing your changes.
+Return a completion summary listing every file modified and every command run.
+```
+
+#### Merge & Verify
+
+```text
+You are a merge and verification agent. Full toolset available.
+Parallel implementation has just completed. Your job:
+1. Run the full test suite (pytest or equivalent) and report results.
+2. Run lint checks (ruff check, ruff format) and fix any issues.
+3. Resolve any merge conflicts, broken imports, or integration issues caused by parallel edits.
+Return a final verification summary: tests passed/failed, lint status, conflicts resolved.
+If you encounter unresolvable conflicts, report them explicitly — do NOT guess at a resolution.
+```
+
+---
+
+## Artifact Management
+
+`docs/SubAgent/` is listed in `.gitignore` — SubAgent working files are ephemeral and not part of the committed source tree. When an artifact needs to be preserved (e.g. an approved plan promoted to a ticket), force-add it with `git add -f docs/SubAgent/[NAME]_PLAN.md` or add a specific exception rule to `.gitignore`.
 
 ## Plan Approval
 
 You (the Orchestrator) MUST:
 
 1. Output the absolute path of `docs/SubAgent/[NAME]_PLAN.md`.
-2. Output a brief (<= 5 line) summary of the plan.
+2. Output a brief (<= 15 line) summary of the plan.
 3. Ask exactly: `Approve plan? Reply: yes / request changes / cancel`
 4. Wait for the user's next message before doing anything else.
-
-Optional reinforcement: use EnterPlanMode before spawning the planner and ExitPlanMode after presenting the plan for approval; this prevents any write tool from running until the user accepts.
 
 ## Final Confirmation
 
 You ask the user directly in chat (no special tool). The task is not considered complete until the user confirms.
 
-## Important Rules
+## Important Orchestrator Rules
 
 1. **YOU ALWAYS confirm tasks with the user in chat** before declaring completion.
 2. **YOU ALWAYS present plans in chat for approval** before implementation starts. You (not the planner) do this after the Planning subagent returns.
@@ -199,16 +293,37 @@ This project uses **Semantic Versioning (SemVer)**: `MAJOR.MINOR.PATCH`.
 | **MINOR** (1.X.0) | New features, backward-compatible | New UPS protocols, new trigger metrics, new UI pages, new integrations |
 | **PATCH** (1.0.X) | Bug fixes, small improvements | Bug fixes, performance optimizations, documentation updates, translation fixes |
 
-- Keep `VERSION.md` consistent with tags.
-- When a new tag is created, ensure the tagged version has a clear entry under "Version History".
-- Include key features/fixes plus relevant commit hashes.
-- Reset "Recent Changes" to be "Since" that tagged version.
-- **Also update `container/app/__init__.py`** — the `__version__` string there must match the released version. Failing to do this causes runtime version skew and confused debugging.
+When releasing a version, complete **all** of the following:
+
+- [ ] Bump the version in `VERSION.md`.
+- [ ] Update `container/app/__init__.py` — `__version__` must match. Omitting this causes runtime version skew.
+- [ ] Add a clear entry under "Version History" in `VERSION.md` with key features/fixes and relevant commit hashes.
+- [ ] Reset "Recent Changes" to track changes since the new tag.
+- [ ] Ensure the git tag matches the version in both files.
 
 ## Github Releases
 
 - When creating a release always fill release title and release notes.
 - Release notes must be explicit: list every new feature, changed behavior, added agent, or removed capability. Auto-generated notes are a starting point, not a substitute.
+
+## Commit Messages
+
+This project uses **Conventional Commits**: `<type>(<scope>): <short summary>`
+
+| Type | When to use |
+| ---- | ----------- |
+| `feat` | New feature (triggers MINOR bump) |
+| `fix` | Bug fix (triggers PATCH bump) |
+| `chore` | Maintenance, dependency updates |
+| `docs` | Documentation only |
+| `refactor` | Code restructuring without behavior change |
+| `test` | Adding or updating tests |
+| `release` | Version bump commit |
+
+- Keep the summary under 72 characters.
+- Use imperative mood: "add X", not "added X".
+- Reference issue numbers where applicable: `fix(auth): correct token expiry (#42)`.
+- Do not use emojis in commit messages.
 
 ## Progress Reporting
 
