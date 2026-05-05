@@ -301,7 +301,27 @@
                 </div>
             </section>
 
-            <!-- Section 7: MCP -->
+            <!-- Section 7: Orchestrator -->
+            <section data-category="orchestrator" x-show="activeCategory === 'orchestrator'" x-cloak>
+                <h3 class="section-title">Orchestrator</h3>
+                <h4 class="section-header mb-sm text-sm">Organic Follow-up</h4>
+                <p class="text-muted mb-md text-80">Nach einer erfolgreichen Sprachantwort wird mit einer bestimmten Wahrscheinlichkeit eine Abschlussfrage angehängt und das Mikrofon offen gehalten.</p>
+                <div class="form-grid-2">
+                    <div class="form-group">
+                        <label class="form-label">Organic Follow-up aktiviert</label>
+                        <input type="checkbox" x-model="s['orchestrator.organic_followup_enabled']">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Wahrscheinlichkeit: <span class="text-mono" x-text="s['orchestrator.organic_followup_probability']"></span></label>
+                        <input type="range" min="0" max="1" step="0.01" x-model.number="s['orchestrator.organic_followup_probability']">
+                    </div>
+                </div>
+                <div class="form-actions">
+                    <button class="btn btn-primary btn-sm" @click="saveSection('orchestrator')">Save Orchestrator</button>
+                </div>
+            </section>
+
+            <!-- Section 8: MCP -->
             <section data-category="mcp" x-show="activeCategory === 'mcp'" x-cloak>
                 <h3 class="section-title">MCP Servers</h3>
                 <p class="text-muted text-sm">MCP server configuration is managed on the <a href="{{ root_url(request, '/dashboard/mcp-servers') }}" class="section-link">MCP Servers</a> page.</p>
@@ -359,6 +379,7 @@ function settingsPage() {
             { key: 'communication', label: 'Communication', count: 0 },
             { key: 'agents', label: 'Agents', count: 0 },
             { key: 'home_context', label: 'Home Context', count: 0 },
+            { key: 'orchestrator', label: 'Orchestrator', count: 0 },
             { key: 'mcp', label: 'MCP', count: 0 },
             { key: 'plugins', label: 'Plugins', count: 0 },
         ],

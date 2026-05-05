@@ -833,7 +833,7 @@ async def execute_action(
             "entity_id": None,
             "new_state": None,
             "speech": resolution["speech"] or f"Could not find an entity matching '{entity_query}'.",
-            "voice_followup": bool(resolution.get("speech")),
+            "voice_followup": True,
         }
 
     # Extract domain from entity_id
@@ -958,7 +958,7 @@ async def _query_light_state(
             "new_state": None,
             "speech": resolution["speech"] or f"Could not find an entity matching '{entity_query}'.",
             "cacheable": False,
-            "voice_followup": bool(resolution.get("speech")),
+            "voice_followup": True,
         }
 
     try:
@@ -1037,7 +1037,7 @@ async def _query_light_entity_history(
             "new_state": None,
             "speech": resolution["speech"] or f"Could not find a visible entity matching '{entity_query}'.",
             "cacheable": False,
-            "voice_followup": bool(resolution.get("speech")),
+            "voice_followup": True,
         }
 
     return await execute_recorder_history_query(
