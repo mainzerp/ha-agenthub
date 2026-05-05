@@ -305,14 +305,14 @@
             <section data-category="orchestrator" x-show="activeCategory === 'orchestrator'" x-cloak>
                 <h3 class="section-title">Orchestrator</h3>
                 <h4 class="section-header mb-sm text-sm">Organic Follow-up</h4>
-                <p class="text-muted mb-md text-80">Nach einer erfolgreichen Sprachantwort wird mit einer bestimmten Wahrscheinlichkeit eine Abschlussfrage angehängt und das Mikrofon offen gehalten.</p>
+                <p class="text-muted mb-md text-80">After a successful voice response, a short closing question is appended with a configurable probability and the microphone is kept open for a follow-up.</p>
                 <div class="form-grid-2">
                     <div class="form-group">
-                        <label class="form-label">Organic Follow-up aktiviert</label>
+                        <label class="form-label">Organic Follow-up Enabled</label>
                         <input type="checkbox" x-model="s['orchestrator.organic_followup_enabled']">
                     </div>
                     <div class="form-group">
-                        <label class="form-label">Wahrscheinlichkeit: <span class="text-mono" x-text="s['orchestrator.organic_followup_probability']"></span></label>
+                        <label class="form-label">Probability: <span class="text-mono" x-text="s['orchestrator.organic_followup_probability']"></span></label>
                         <input type="range" min="0" max="1" step="0.01" x-model.number="s['orchestrator.organic_followup_probability']">
                     </div>
                 </div>
