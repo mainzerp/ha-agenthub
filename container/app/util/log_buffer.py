@@ -83,6 +83,7 @@ class LogBuffer:
             filtered.append(entry)
 
         total = len(filtered)
+        filtered.reverse()
         paginated = filtered[offset : offset + limit]
         return {"entries": paginated, "total": total}
 
