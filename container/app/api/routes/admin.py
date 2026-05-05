@@ -625,9 +625,10 @@ async def update_settings(payload: SettingsUpdatePayload) -> dict[str, str]:
         # Validate value type against stored type
         value_type = existing.get("value_type", "str")
         _validate_setting_value(key, str(value), value_type)
+        stored_value = str(value).lower() if value_type == "bool" else str(value)
         await SettingsRepository.set(
             key,
-            str(value),
+            stored_value,
             value_type=existing["value_type"],
             category=existing.get("category", "general"),
             description=existing.get("description"),
