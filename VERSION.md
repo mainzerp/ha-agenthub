@@ -1,8 +1,39 @@
 # Version
 
-**Current Version:** 1.18.0
+**Current Version:** 1.19.1
 
 ## Recent Changes
+
+### 1.19.1 (PATCH) -- Timer-agent dead domain cleanup
+
+- Removed dead `calendar` and `input_datetime` domain associations from `AGENT_ALLOWED_DOMAINS`.
+- Deleted obsolete `_ALLOWED_DOMAINS`, `_INPUT_DATETIME_DOMAINS`, `_validate_domain`, `_list_visible_input_datetime_targets`, and `_should_attempt_set_datetime_fallback` code from `timer_executor.py`.
+- Updated docstrings to reflect that all timer and alarm operations route exclusively to the internal `TimerScheduler`.
+- Added schema migration v29 to clean up dead visibility rules from existing databases.
+
+### 1.19.0 (MINOR) -- Entity not-found follow-up
+
+- **Voice follow-up on entity not found:**
+  - When an agent reports that an entity was not found, the orchestrator now dispatches a follow-up clarification turn through the LLM instead of a hardcoded message.
+  - Timer-agent skips not-found clarification because it manages internal scheduler entries, not HA entities.
+  - Organic follow-up is also applied on action-cache replay hits.
+
+- **Timer-agent domain cleanup:**
+  - Removed dead `calendar` and `input_datetime` domain associations from `AGENT_ALLOWED_DOMAINS`.
+  - Deleted obsolete `_ALLOWED_DOMAINS`, `_INPUT_DATETIME_DOMAINS`, `_validate_domain`, `_list_visible_input_datetime_targets`, and `_should_attempt_set_datetime_fallback` code from `timer_executor.py`.
+  - Updated docstrings to reflect that `set_datetime` and alarms route exclusively to the internal `TimerScheduler`.
+  - Added schema migration v29 to clean up dead visibility rules from existing databases.
+
+- **Settings dashboard fixes:**
+  - Normalized boolean values to lowercase before storing to prevent truthy-string mismatches.
+  - Translated Orchestrator section labels to English for consistency.
+
+- **HA integration hardening:**
+  - Catches `AttributeError` for removed `async_migrate_engine` during integration setup.
+
+- **Logging improvements:**
+  - `LogBufferHandler` now captures `exc_info` traceback correctly.
+  - Fixed reversed filtered log entries in `get_entries` method.
 
 ### 1.18.0 (MINOR) -- Multilingual orchestrator & code-review hardening
 

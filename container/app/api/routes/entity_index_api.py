@@ -42,7 +42,7 @@ AGENT_ALLOWED_DOMAINS: dict[str, frozenset[str]] = {
     "music-agent": frozenset({"media_player"}),
     "scene-agent": frozenset({"scene"}),
     "security-agent": frozenset({"alarm_control_panel", "lock", "camera", "binary_sensor", "sensor"}),
-    "timer-agent": frozenset({"calendar", "input_datetime"}),
+    "timer-agent": frozenset(),
 }
 
 # Agents whose execute path runs `_resolve_light_entity` upstream; for

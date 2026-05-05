@@ -840,10 +840,8 @@ async def _seed_defaults(db: aiosqlite.Connection) -> None:
         ("media-agent", "domain_include", "media_player"),
         ("scene-agent", "domain_include", "scene"),
         ("automation-agent", "domain_include", "automation"),
-        ("timer-agent", "domain_include", "input_datetime"),
         ("timer-agent", "domain_include", "persistent_notification"),
         ("timer-agent", "domain_include", "media_player"),
-        ("timer-agent", "domain_include", "calendar"),
         ("calendar-agent", "domain_include", "calendar"),
         ("lists-agent", "domain_include", "todo"),
         ("security-agent", "domain_include", "alarm_control_panel"),
@@ -1509,3 +1507,11 @@ async def _run_migrations(db: aiosqlite.Connection) -> None:
             ("lists-agent", "domain_include", "todo"),
         )
         await db.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (28)")
+
+    if current_version < 29:
+        # Migration 29: Remove dead timer-agent visibility rules for input_datetime and calendar
+        await db.execute(
+            "DELETE FROM entity_visibility_rules WHERE agent_id = ? AND rule_type = ? AND rule_value IN (?, ?)",
+            ("timer-agent", "domain_include", "input_datetime", "calendar"),
+        )
+        await db.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (29)")
