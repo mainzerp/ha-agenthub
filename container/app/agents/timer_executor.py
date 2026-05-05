@@ -9,8 +9,6 @@ This module retains:
     scheduler; ``list_alarms`` against internal scheduler alarms)
 - ``set_datetime`` (internal scheduler-backed alarm create)
 - ``cancel_alarm`` (internal scheduler-backed alarm cancel)
-- ``create_reminder`` / ``create_recurring_reminder`` (HA
-  ``calendar.create_event``)
 
 All HA ``timer.*`` service calls, the ``_TimerPool`` class, the
 ``_find_idle_timer`` allocator, the ``on_timer_finished`` WebSocket
@@ -32,15 +30,7 @@ logger = logging.getLogger(__name__)
 
 _ACTION_PHRASES: dict[str, str] = {}
 
-_ALLOWED_DOMAINS: frozenset[str] = frozenset({"input_datetime"})
-
-_INPUT_DATETIME_DOMAINS: frozenset[str] = frozenset({"input_datetime"})
 _ALARM_WEEKDAY_CODES: frozenset[str] = frozenset({"MO", "TU", "WE", "TH", "FR", "SA", "SU"})
-
-
-def _validate_domain(entity_id: str) -> bool:
-    domain = entity_id.split(".")[0] if "." in entity_id else ""
-    return domain in _ALLOWED_DOMAINS
 
 
 def _supports_method(obj: Any, method_name: str) -> bool:
@@ -49,59 +39,6 @@ def _supports_method(obj: Any, method_name: str) -> bool:
     if spec_class and hasattr(spec_class, method_name):
         return callable(getattr(obj, method_name, None))
     return callable(getattr(obj, method_name, None))
-
-
-async def _list_visible_input_datetime_targets(
-    entity_index: Any,
-    entity_matcher: Any,
-    agent_id: str | None,
-) -> list[tuple[str, str]]:
-    """Return visible input_datetime targets as (entity_id, friendly_name)."""
-    if not entity_index:
-        return []
-
-    entries: list[Any] = []
-    if _supports_method(entity_index, "list_entries_async"):
-        entries = await entity_index.list_entries_async(domains=_INPUT_DATETIME_DOMAINS)
-    elif _supports_method(entity_index, "list_entries"):
-        entries = entity_index.list_entries(domains=_INPUT_DATETIME_DOMAINS)
-
-    if not entries:
-        return []
-
-    visible_entries = entries
-    if agent_id and entity_matcher and _supports_method(entity_matcher, "filter_visible_results"):
-        from app.entity.matcher import MatchResult
-
-        visible = await entity_matcher.filter_visible_results(
-            agent_id,
-            [
-                MatchResult(
-                    entity_id=entry.entity_id,
-                    friendly_name=entry.friendly_name,
-                    score=1.0,
-                )
-                for entry in entries
-            ],
-        )
-        visible_ids = {result.entity_id for result in visible}
-        visible_entries = [entry for entry in entries if entry.entity_id in visible_ids]
-
-    targets = [
-        (
-            entry.entity_id,
-            (entry.friendly_name or entry.entity_id),
-        )
-        for entry in visible_entries
-        if getattr(entry, "entity_id", "").startswith("input_datetime.")
-    ]
-    targets.sort(key=lambda item: (item[1].casefold(), item[0]))
-    return targets
-
-
-def _should_attempt_set_datetime_fallback(action_name: str, action: dict) -> bool:
-    """Gate unresolved set_datetime fallback without keyword heuristics."""
-    return False
 
 
 # ---------------------------------------------------------------------------
@@ -1390,9 +1327,8 @@ async def execute_timer_action(
 ) -> dict:
     """Dispatch a parsed timer action.
 
-    All non-plain timer-shaped flows route to ``TimerScheduler``; HA
-    ``timer.*`` services are no longer used. ``set_datetime``,
-    ``list_alarms``, and the calendar reminders still go to HA.
+    All timer and alarm operations route to the internal ``TimerScheduler``;
+    HA ``timer.*`` services are no longer used.
     """
     action_name = action.get("action", "").lower()
     entity_query = action.get("entity", "")
