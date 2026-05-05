@@ -978,12 +978,20 @@ class OrchestratorAgent(BaseAgent):
                 except Exception:
                     logger.warning("Failed to create trace summary", exc_info=True)
 
+        language = (task_context.language if task_context else None) or "en"
+        speech, vf_effective = await self._merge_voice_followup_and_organic(
+            speech,
+            agent_requested=False,
+            ctx=task_context,
+            language=language,
+            has_error=False,
+        )
         return {
             "speech": speech,
             "routed_to": target_agent,
             "action_executed": hit.replay_result,
             "sanitized": False,
-            "voice_followup": False,
+            "voice_followup": vf_effective,
         }
 
     @staticmethod
@@ -1546,7 +1554,7 @@ class OrchestratorAgent(BaseAgent):
                 task=task,
             )
             replay["conversation_id"] = conversation_id
-            self._schedule_ha_voice_followup_if_requested(task, False)
+            self._schedule_ha_voice_followup_if_requested(task, bool(replay.get("voice_followup")))
             return replay
 
         pre_classified = _pre_classified
