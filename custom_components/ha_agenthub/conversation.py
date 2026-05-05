@@ -210,7 +210,7 @@ class HaAgentHubConversationEntity(
             assist_pipeline.async_migrate_engine(
                 self.hass, "conversation", self._entry.entry_id, self.entity_id
             )
-        except (ValueError, KeyError):
+        except (AttributeError, ValueError, KeyError):
             logger.debug("Pipeline engine migration skipped (not critical)")
         self._reconnect_task = self._entry.async_create_background_task(
             self.hass,
