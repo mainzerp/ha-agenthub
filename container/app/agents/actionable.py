@@ -33,6 +33,7 @@ class ActionableAgent(BaseAgent):
     """
 
     _prompt_name: str = ""
+    _clarify_on_not_found: bool = True
 
     def __init__(self, ha_client=None, entity_index=None, entity_matcher=None) -> None:
         super().__init__(ha_client=ha_client, entity_index=entity_index)
@@ -195,7 +196,12 @@ class ActionableAgent(BaseAgent):
                         span_collector=span_collector,
                     )
                 # Entity not found: replace hardcoded speech with LLM-generated clarifying question
-                if not result.get("success") and result.get("entity_id") is None and not result.get("error"):
+                if (
+                    self._clarify_on_not_found
+                    and not result.get("success")
+                    and result.get("entity_id") is None
+                    and not result.get("error")
+                ):
                     entity_query = action.get("entity", "")
                     result = {
                         **result,
