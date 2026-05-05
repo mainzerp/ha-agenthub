@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import traceback
 from collections import deque
 from datetime import UTC, datetime
 from threading import Lock
@@ -19,7 +20,7 @@ class LogBuffer:
 
     def add(self, record: logging.LogRecord) -> None:
         """Store a formatted log record."""
-        entry = {
+        entry: dict[str, Any] = {
             "timestamp": datetime.fromtimestamp(record.created, tz=UTC).isoformat(),
             "level": record.levelname,
             "name": record.name,
@@ -28,6 +29,8 @@ class LogBuffer:
             "funcName": record.funcName,
             "lineno": record.lineno,
         }
+        if record.exc_info:
+            entry["exception"] = "".join(traceback.format_exception(*record.exc_info))
         with self._lock:
             self._buffer.append(entry)
 
