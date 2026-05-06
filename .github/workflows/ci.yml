@@ -1,0 +1,375 @@
+name: CI
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+on:
+  push:
+    branches: [main]
+    tags:
+      - "v*"
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install ruff
+        run: pip install ruff==0.15.11
+
+      - name: Run linter
+        run: cd container && ruff check .
+
+      - name: Check formatting
+        run: cd container && ruff format --check .
+
+  lint-ha:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install ruff
+        run: pip install ruff==0.15.11
+
+      - name: Run linter on custom_components
+        run: ruff check custom_components/
+
+      - name: Check formatting on custom_components
+        run: ruff format --check custom_components/
+
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: container/requirements-dev.txt
+
+      - name: Install dependencies
+        run: pip install -r container/requirements-dev.txt
+
+      - name: Run tests
+        run: cd container && python -m pytest tests/ -n auto -q --tb=short --cov=app --cov-report=xml --cov-report=term-missing
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: container/coverage.xml
+          retention-days: 14
+
+  test-ha:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install pytest
+        run: pip install pytest
+
+      - name: Run HA smoke tests
+        run: python -m pytest custom_components/tests/ -v --tb=short
+
+  security-scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    continue-on-error: true
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install security tools
+        run: pip install bandit pip-audit
+
+      - name: Run Bandit
+        run: bandit -r container/app -f json -o bandit-report.json || true
+
+      - name: Run pip-audit
+        run: |
+          pip-audit -r container/requirements.txt --format=json --output=pip-audit-report.json || true
+          pip-audit -r container/requirements-dev.txt --format=json --output=pip-audit-dev-report.json || true
+
+      - name: Upload security scan artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-scan-reports
+          path: |
+            bandit-report.json
+            pip-audit-report.json
+            pip-audit-dev-report.json
+          retention-days: 14
+
+  changes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    outputs:
+      hacs: ${{ steps.filter.outputs.hacs }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Detect HACS-relevant changes
+        id: filter
+        run: |
+          if [ "${{ github.event_name }}" == "pull_request" ]; then
+            BASE="${{ github.event.pull_request.base.sha }}"
+          else
+            BASE="${{ github.event.before }}"
+          fi
+          if [ "$BASE" == "0000000000000000000000000000000000000000" ] || [ -z "$BASE" ]; then
+            BASE=$(git hash-object -t tree /dev/null)
+          fi
+          if git diff --name-only "$BASE" HEAD | grep -qE '^custom_components/|^hacs\.json$'; then
+            echo "hacs=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "hacs=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  hacs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: [changes]
+    if: needs.changes.outputs.hacs == 'true'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: HACS validation
+        uses: hacs/action@22.5.0
+        with:
+          category: integration
+          ignore: topics description
+
+  docker:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    needs: [lint, lint-ha, test, test-ha, security-scan, changes, hacs]
+
+    permissions:
+      contents: read
+      packages: write
+      actions: write
+      security-events: write
+
+    concurrency:
+      group: docker-${{ github.workflow }}-${{ github.ref }}
+      cancel-in-progress: true
+
+    env:
+      PUSH_TO_GHCR: ${{ github.ref == 'refs/heads/main' && github.event_name != 'pull_request' }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: GHCR image name (lowercase)
+        id: ghcr
+        run: echo "image=ghcr.io/$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GitHub Container Registry
+        if: env.PUSH_TO_GHCR == 'true'
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Docker metadata (GHCR)
+        id: meta
+        if: env.PUSH_TO_GHCR == 'true'
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ steps.ghcr.outputs.image }}
+          tags: |
+            type=ref,event=branch
+            type=sha,format=short,prefix=sha-
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' && github.event_name != 'pull_request' }}
+
+      - name: Build and push to GHCR
+        if: env.PUSH_TO_GHCR == 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: ./container
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Smoke test (pulled from GHCR)
+        if: env.PUSH_TO_GHCR == 'true'
+        run: |
+          docker pull ${{ steps.ghcr.outputs.image }}:main
+          docker run --rm ${{ steps.ghcr.outputs.image }}:main python -c "from app.main import app; print('OK')"
+
+      - name: Scan image with Trivy
+        if: env.PUSH_TO_GHCR == 'true'
+        uses: aquasecurity/trivy-action@v0.36.0
+        continue-on-error: true
+        with:
+          image-ref: ${{ steps.ghcr.outputs.image }}:main
+          format: sarif
+          output: trivy-results.sarif
+
+      - name: Upload Trivy SARIF
+        if: env.PUSH_TO_GHCR == 'true'
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: trivy-results.sarif
+
+      - name: Build local (PR/tag)
+        if: env.PUSH_TO_GHCR != 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: ./container
+          push: false
+          load: true
+          tags: agent-assist:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Local smoke test
+        if: env.PUSH_TO_GHCR != 'true'
+        run: docker run --rm agent-assist:ci python -c "from app.main import app; print('OK')"
+
+      - name: Scan local image with Trivy
+        if: env.PUSH_TO_GHCR != 'true'
+        uses: aquasecurity/trivy-action@v0.36.0
+        continue-on-error: true
+        with:
+          image-ref: agent-assist:ci
+          format: sarif
+          output: trivy-results.sarif
+
+      - name: Upload Trivy SARIF (local)
+        if: env.PUSH_TO_GHCR != 'true'
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: trivy-results.sarif
+
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: [docker]
+    if: startsWith(github.ref, 'refs/tags/v')
+
+    permissions:
+      contents: write
+      packages: write
+      actions: write
+      security-events: write
+      id-token: write
+      attestations: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: GHCR image name (lowercase)
+        id: ghcr
+        run: echo "image=ghcr.io/$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract version from tag
+        id: version
+        run: echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push Docker image
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: ./container
+          push: true
+          tags: |
+            ${{ steps.ghcr.outputs.image }}:${{ steps.version.outputs.VERSION }}
+            ${{ steps.ghcr.outputs.image }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v1
+        with:
+          subject-name: ${{ steps.ghcr.outputs.image }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+
+      - name: Scan image with Trivy
+        uses: aquasecurity/trivy-action@v0.36.0
+        continue-on-error: true
+        with:
+          image-ref: ${{ steps.ghcr.outputs.image }}:latest
+          format: sarif
+          output: trivy-results.sarif
+
+      - name: Upload Trivy SARIF
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: trivy-results.sarif
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          generate_release_notes: true
