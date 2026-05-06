@@ -138,6 +138,42 @@ docker compose restart ha-agenthub
 - Agent timeout: Increase agent timeout values in the admin dashboard (Agent Configuration).
 - Entity index size: A very large entity index (10,000+ entities) may slow down entity matching. Consider using entity visibility rules to limit which entities each agent can see.
 
+## Remote Logs Not Visible
+
+**Symptoms:** The Logs page in the admin dashboard is empty or shows only old entries.
+
+**Fix:** The remote logs endpoint reads from an in-memory ring buffer. Restarting the container clears the buffer. To adjust logger levels at runtime, use the admin dashboard Logs page or call `POST /api/admin/logs/levels` with the desired logger name and level (`DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`).
+
+## Multilingual Orchestrator Behavior
+
+**Symptoms:** The orchestrator writes condensed task descriptions in a language different from what you expect.
+
+**Fix:** Since 1.18.0, the orchestrator writes condensed tasks in the user's detected language instead of English. Set your preferred language explicitly in the admin dashboard (e.g., `de`, `fr`, `es`) rather than leaving it on `auto` for the most consistent behavior.
+
+## Cache Per-Entry Deletion
+
+**Symptoms:** You want to remove a single incorrect cache entry without flushing the entire tier.
+
+**Fix:** Use the admin dashboard Cache page. Each entry has a delete button. Alternatively, call `DELETE /api/admin/cache/entries/{entry_id}`.
+
+## Voice Follow-Up Not Working
+
+**Symptoms:** After a turn, the microphone does not stay open for follow-up.
+
+**Fix:** Check the `voice_followup` field in the conversation response. The orchestrator sets `ConversationResult.continue_conversation` based on the turn context. Since 1.19.2, this behavior has been refined; ensure your HA integration is up to date.
+
+## Timer-Agent Domain Issues
+
+**Symptoms:** Timer-related commands for `calendar` or `input_datetime` entities no longer work.
+
+**Fix:** Since 1.19.0/1.19.1, the `calendar` and `input_datetime` domains were removed from the timer-agent. These entities are now handled by the calendar-agent and automation-agent respectively. If you had custom visibility rules targeting these domains for the timer-agent, update them or run schema migration v29 if available.
+
+## Entity Not Found with LLM Clarification
+
+**Symptoms:** The assistant asks clarifying questions instead of acting when an entity is not found.
+
+**Fix:** Since 1.19.0, the orchestrator dispatches LLM clarification turns when entity resolution fails. This is expected behavior. If you prefer the old silent failure mode, there is no toggle; ensure entity aliases and visibility rules are correct to minimize not-found cases.
+
 ## Log Inspection
 
 **View container logs:**
@@ -175,7 +211,7 @@ but the dashboard "Conversations" or "Traces" page shows the turn was
 processed end-to-end.
 
 **Likely cause:** A streamed turn produced no final speech token
-and the integration's defensive fallback (added in 0.18.24/0.18.25)
+and the integration's defensive fallback (handled by the integration's REST fallback)
 should have spoken the REST equivalent. Check the HA Core log for the
 integration falling back to REST and whether the REST call succeeded.
 If the REST fallback also returned empty speech, look at the
@@ -184,13 +220,11 @@ orchestrator's terminal span.
 
 ## Per-Turn Duration Shows Whole Connection Lifetime
 
-**Symptoms:** Every turn delivered over `/ws/conversation` shows the
-same, ever-growing `total_duration_ms` on the dashboard waterfall.
+**Symptoms:** Every turn delivered over `/ws/conversation` shows the same, ever-growing `total_duration_ms` on the dashboard waterfall.
 
-**Cause:** Pre-0.20.1 containers wrote the connection-level WS
-trace duration over each turn's value. Upgrade to 0.20.1+ and reload
-the Traces page; cached browser state may keep showing the old
-values until the page is hard-refreshed and the trace list reloaded.
+**Cause:** This was a bug in legacy versions where the connection-level WebSocket trace duration overwrote each turn's value. It has been fixed since version 1.0.0.
+
+**Fix:** Ensure you are running the latest container image. Reload the Traces page; cached browser state may keep showing old values until the page is hard-refreshed and the trace list reloaded.
 
 ## Cache Import Rejected: format_version Mismatch
 
@@ -200,7 +234,7 @@ values until the page is hard-refreshed and the trace list reloaded.
 **Cause and remediation:** The importer accepts `format_version: 1`
 (legacy `tiers.response.entries`) and `format_version: 2`
 (canonical `tiers.action.entries`). A higher value is rejected
-because it was produced by a newer container. Re-export from a
+because it was produced by a newer format than supported. Re-export from a
 container at the same or older minor version. See
 [API reference](api-reference.md) (`Admin -- Cache` section) for
 the envelope shape.
@@ -221,14 +255,14 @@ slate, `mode=merge` to additively top up). See
 typing a value into the API key field, the integration appears to
 have been re-saved but conversations still authenticate.
 
-**Cause:** This is intentional behaviour added in 0.18.39. Leaving
+**Cause:** This is intentional behaviour since version 1.0.0. Leaving
 the API key field blank in the options dialog keeps the previously
 stored key. Only enter a value when you want to replace it.
 
 ## REST Error Messages: 401/403 vs 5xx vs Unreachable
 
 The HA integration's REST fallback distinguishes the most common
-failure modes (added in 0.18.39):
+failure modes (since version 1.0.0):
 
 | Symptom | Likely cause | Remediation |
 |---------|--------------|-------------|

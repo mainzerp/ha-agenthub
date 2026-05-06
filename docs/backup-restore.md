@@ -58,7 +58,7 @@ Store this key in a secure location (password manager, vault).
 
 The routing cache and action cache can be backed up and restored
 independently of the SQLite database via the cache export/import
-admin endpoints (added in 0.20.0). The exported envelope is a
+admin endpoints. The exported envelope is a
 portable JSON document, not an encrypted secret, and can be stored
 in version control or shared between environments.
 
@@ -85,8 +85,8 @@ Notes:
 
 - New exports use `format_version: 2` and the `tiers.action.entries`
   shape. Imports still accept `format_version: 1` envelopes that
-  carry `tiers.response.entries`, so backups produced on 0.20.x
-  remain importable on 0.21.0.
+  carry `tiers.response.entries`, so backups produced with the
+  legacy response-cache naming remain importable on current versions.
 - `mode=replace` clears the targeted tiers before importing.
   `mode=merge` keeps existing entries.
 - `re_embed=true` recomputes embeddings on import; useful when
@@ -119,4 +119,3 @@ checklist:
    `POST /api/admin/container-api-key/rotate` from an authenticated
    admin session and update the integration with the returned
    value.
-

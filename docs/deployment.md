@@ -27,7 +27,7 @@ prebuilt image from GHCR rather than building locally:
 ```yaml
 services:
   ha-agenthub:
-    image: ghcr.io/mainzerp/ha-agenthub:${HA_AGENTHUB_TAG:-main}
+    image: ghcr.io/mainzerp/ha-agenthub:${HA_AGENTHUB_TAG:-latest}
     container_name: ha-agenthub
     restart: unless-stopped
     ports:
@@ -67,17 +67,15 @@ volumes:
 Key points:
 
 - The image source of truth is GHCR
-  (`ghcr.io/mainzerp/ha-agenthub`); CI publishes both `:main` and
-  `:latest` on every push to `main`.
+  (`ghcr.io/mainzerp/ha-agenthub`); CI publishes `:latest` on every
+  push to `main`.
 - Pin a release by setting `HA_AGENTHUB_TAG` (for example,
-  `HA_AGENTHUB_TAG=0.21.0 docker compose up -d`).
+  `HA_AGENTHUB_TAG=1.19.4 docker compose up -d`).
 - The `ha-agenthub-data` named volume persists the SQLite database,
   the Fernet key, and ChromaDB across container restarts.
 - `start_period: 120s` accommodates the local embedding model warm-up
   and entity-index priming on first start.
-- `HF_HUB_OFFLINE=1` disables Hugging Face network calls so the
-  embedding model is loaded strictly from the cached weights baked
-  into the image; recommended for air-gapped HA installs.
+- `HF_HUB_OFFLINE=1` disables Hugging Face network calls so the embedding model loads strictly from cached weights baked into the image. The compose default is `0` (online). Set to `1` for air-gapped installs.
 - Only infrastructure environment variables are set here. All other
   configuration (HA connection, LLM keys, agent settings) is done
   through the setup wizard and stored in SQLite.
@@ -87,12 +85,22 @@ Key points:
 If you want to build the image locally instead of pulling from GHCR
 (for development or air-gapped registries), use
 `container/docker-compose_local.yml`. That file keeps the legacy
-`agent-assist` service name and `agent-assist-data` volume name so
-you can run both stacks side by side.
+`agent-assist-data` volume name so you can run both stacks side by
+side. The service name is `ha-agenthub` in both compose files.
 
 ```bash
 docker compose -f docker-compose_local.yml up -d --build
 ```
+
+#### Security Hardening
+
+The production compose file applies container hardening that may cause permission errors if undocumented:
+
+- `read_only: true` -- The root filesystem is read-only.
+- `cap_drop: [ALL]` -- All Linux capabilities are dropped.
+- `cap_add: [CHOWN, SETGID, SETUID]` -- Minimal capabilities for file ownership changes.
+- `security_opt: [no-new-privileges:true]` -- Prevents privilege escalation.
+- `tmpfs` mounts -- `/tmp` (100 MB) and `/var/tmp` (50 MB) are ephemeral in-memory filesystems.
 
 ### 3. Optional: Create `.env` File
 
@@ -107,6 +115,15 @@ LOG_LEVEL=INFO
 # enabling it on HTTP will silently break login because the browser
 # drops the cookie.
 COOKIE_SECURE=false
+
+# Comma-separated list of allowed CORS origins (e.g., "https://ha-agenthub.example.com")
+# CORS_ORIGINS=
+
+# Comma-separated list of trusted proxy IPs for correct client-IP extraction behind a reverse proxy
+# TRUSTED_PROXIES=
+
+# Path to Fernet encryption key (default: /data/.fernet_key)
+# FERNET_KEY_PATH=/data/.fernet_key
 ```
 
 ### 4. Start the Container
@@ -122,6 +139,8 @@ docker compose logs -f ha-agenthub
 ```
 
 The health check endpoint is available at `http://<host>:8080/api/health`.
+
+> Note: `docker-compose_local.yml` uses a simpler `CMD` healthcheck style, and the `Dockerfile` defines its own `HEALTHCHECK` with `start-period: 15s` (vs 120s in compose). These differences are normal and do not affect operation.
 
 ## First-Launch Setup Wizard
 
@@ -151,6 +170,10 @@ Enter API keys for one or more LLM providers:
 - **OpenRouter API Key** -- For access to GPT-4o-mini, Claude, and other models via a unified API.
 - **Groq API Key** -- For fast inference with Llama models (used by default for the orchestrator).
 - **Ollama URL** -- For local model inference (e.g., `http://localhost:11434`).
+
+> **Recommended models:**
+> - All agents: `openai/gpt-oss-120b` with reasoning effort set to `Low`.
+> - Filler and rewrite agents: `llama-3.1-8b-instant` (fast, low-cost).
 
 Use the "Test" button for each provider to verify the key works. Keys are stored encrypted in SQLite.
 
@@ -183,7 +206,7 @@ Review your configuration and complete the setup. The container initializes all 
 
 The options flow re-uses the same form. Leaving the API key field
 **blank** in the options dialog keeps the previously stored key; only
-enter a value when you want to replace it (added in 0.18.39).
+enter a value when you want to replace it.
 
 #### Legacy entry-title migration
 
@@ -226,7 +249,7 @@ docker compose up -d
 ```
 
 Pin a release by exporting `HA_AGENTHUB_TAG` before pulling (for
-example `HA_AGENTHUB_TAG=0.21.0`).
+example `HA_AGENTHUB_TAG=1.19.4`).
 
 For the local-build stack (`docker-compose_local.yml`):
 
@@ -283,7 +306,7 @@ For production use, you should run HA-AgentHub behind a reverse proxy with TLS t
 ```nginx
 server {
     listen 443 ssl;
-    server_name agent-assist.example.com;
+    server_name ha-agenthub.example.com;
 
     ssl_certificate /etc/ssl/certs/your-cert.pem;
     ssl_certificate_key /etc/ssl/private/your-key.pem;
@@ -301,17 +324,16 @@ server {
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 86400;
+        proxy_send_timeout 86400;
     }
 }
 ```
 
 ### Enable Secure Cookies
 
-When running behind HTTPS, set the environment variable:
-
-```yaml
-environment:
-  - COOKIE_SECURE=true
-```
-
-This ensures session cookies are only sent over HTTPS.
+When running behind HTTPS, set `COOKIE_SECURE=true`. In the local-build stack (`docker-compose_local.yml`) you can set this in `.env`. In the production stack (`docker-compose.yml`) you must edit the compose file directly because the variable is not substituted.

@@ -41,7 +41,7 @@ Returns container health status. No authentication required.
 ```json
 {
   "status": "ok",
-  "version": "0.21.0",
+  "version": "1.19.4",
   "log_level": "INFO"
 }
 ```
@@ -126,7 +126,8 @@ data: {"token": "", "done": true, "conversation_id": "abc123"}
 | `is_filler` | bool | Marks tokens emitted by the filler agent (interim TTS while the real answer is being computed). |
 | `error` | string \| null | Set when the stream is terminating due to an error. |
 | `voice_followup` | bool | Mirrors the REST `voice_followup` flag on the terminal event. |
-| `sanitized` | bool | When true, the integration must skip its defensive markdown stripper because the container already sanitised the speech (added in 0.18.35). |
+| `sanitized` | bool | When true, the integration must skip its defensive markdown stripper because the container already sanitised the speech. |
+| `filler_push` | bool | When true, the integration should push filler tokens immediately rather than buffering them. |
 
 ### WS /ws/conversation
 
@@ -222,12 +223,28 @@ List all registered agents with their configuration.
       "enabled": true,
       "model": "openrouter/openai/gpt-4o-mini",
       "timeout": 5,
-      "temperature": 0.7,
-      "max_tokens": 256
+      "temperature": 0.2,
+      "max_tokens": 1024
     }
   ]
 }
 ```
+
+### GET /api/admin/persons
+
+List Home Assistant persons.
+
+Auth: admin session.
+
+### GET /api/admin/agents/{agent_id}/prompt
+
+Get the compiled system prompt for a built-in or custom agent.
+
+### PUT /api/admin/agents/{agent_id}/prompt
+
+Update the system prompt for a custom agent.
+
+Auth: admin session.
 
 ---
 
@@ -314,6 +331,17 @@ Remove an MCP server.
 
 List discovered tools for a specific MCP server.
 
+## Admin -- MCP Agent Tools
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET | `/api/admin/mcp/agent-tools-summary` | Summary of MCP tool assignments across all agents. |
+| GET | `/api/admin/mcp/agent-tools/{agent_id}` | List MCP tools assigned to a specific agent. |
+| POST | `/api/admin/mcp/agent-tools/{agent_id}` | Assign an MCP tool to an agent. |
+| DELETE | `/api/admin/mcp/agent-tools/{agent_id}/{server_name}/{tool_name}` | Remove an MCP tool assignment from an agent. |
+
+Auth: admin session.
+
 ---
 
 ## Admin -- Entity Index
@@ -371,9 +399,7 @@ The action cache was named "response cache" in 0.20.x and earlier.
 Every cache endpoint accepts both the canonical `action` value and
 the legacy `response` alias for the `tier` parameter (URL query, JSON
 body, or multipart form). New responses emit `action` as the
-canonical key. The export envelope `format_version` was bumped to `2`
-in 0.21.0 to reflect the rename; `parse_envelope` still accepts a
-`format_version: 1` envelope with `tiers.response`.
+canonical key. The export envelope uses format_version 2; parse_envelope still accepts format_version 1 envelopes with tiers.response.
 
 ### GET /api/admin/cache/stats
 
@@ -429,6 +455,12 @@ still accepts `format_version: 1` envelopes that carry
 `tiers.response.entries` so backups produced on 0.20.x remain
 importable.
 
+### DELETE /api/admin/cache/entries/{entry_id}
+
+Delete a single cache entry by its ID.
+
+Auth: admin session. Added in 1.19.4.
+
 ---
 
 ## Admin -- Home Assistant connection
@@ -470,6 +502,7 @@ Auth: admin session.
 | DELETE | `/api/admin/llm-providers/{id}` | Remove a provider. |
 | POST | `/api/admin/llm-providers/test` | Validate a candidate provider config without persisting. |
 | GET | `/api/admin/llm-providers/configured` | List provider ids that have stored credentials. |
+| PUT | `/api/admin/llm-providers/ollama` | Update Ollama provider config (special endpoint for local inference). |
 
 Auth: admin session.
 
@@ -487,7 +520,32 @@ Auth: admin session. See also `/api/admin/agents` (above) and
 | Method | Path | Purpose |
 |--------|------|---------|
 | GET | `/api/admin/timers` | List active and scheduled timers. |
-| GET | `/api/admin/timers/recently-expired` | Compatibility endpoint. Recently expired timers are no longer tracked separately; this route returns an empty list. |
+| GET | `/api/admin/timers/recently-expired` | Compatibility endpoint (returns empty list). |
+| GET | `/api/admin/timers/satellites` | List timer satellite devices. |
+| PATCH | `/api/admin/timers/{timer_id}` | Update a timer. |
+| DELETE | `/api/admin/timers/{timer_id}` | Delete a timer. |
+
+Auth: admin session.
+
+## Admin -- Calendar
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET | `/api/admin/calendar/users` | List calendar users. |
+| POST | `/api/admin/calendar/users` | Create a calendar user. |
+| GET | `/api/admin/calendar/users/{user_id}` | Get a single calendar user. |
+| PUT | `/api/admin/calendar/users/{user_id}` | Update a calendar user. |
+| DELETE | `/api/admin/calendar/users/{user_id}` | Delete a calendar user. |
+| GET | `/api/admin/calendar/events` | List calendar events. |
+| POST | `/api/admin/calendar/events` | Create a calendar event. |
+| GET | `/api/admin/calendar/events/{event_id}` | Get a single event. |
+| PUT | `/api/admin/calendar/events/{event_id}` | Update an event. |
+| DELETE | `/api/admin/calendar/events/{event_id}` | Delete an event. |
+| GET | `/api/admin/calendar/calendars` | List available calendars. |
+| GET | `/api/admin/calendar/entity-settings` | Get calendar entity settings. |
+| GET | `/api/admin/calendar/settings` | Get calendar settings. |
+| PUT | `/api/admin/calendar/settings` | Update calendar settings. |
+| DELETE | `/api/admin/calendar/reminder-state` | Clear reminder state. |
 
 Auth: admin session.
 
@@ -533,6 +591,16 @@ Auth: admin session. The rewrite agent runs only when
 |--------|------|---------|
 | GET | `/api/admin/personality/config` | Read the personality prompt and mediation parameters. |
 | PUT | `/api/admin/personality/config` | Update the personality prompt and mediation parameters. |
+
+Auth: admin session.
+
+## Admin -- Wake Briefing
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET | `/api/admin/settings/wake-briefing` | Read wake briefing configuration. |
+| PUT | `/api/admin/settings/wake-briefing` | Update wake briefing configuration. |
+| POST | `/api/admin/settings/wake-briefing/test` | Test the wake briefing composer. |
 
 Auth: admin session.
 
@@ -626,7 +694,7 @@ Admin endpoints distinguish missing-credential (`401`) from
 credential-rejected (`403`) so the dashboard and the HA integration
 can show different remediation messages. The HA integration's REST
 fallback uses these codes to surface the distinct user-facing
-error messages added in 0.18.39.
+error messages.
 
 ## WebSocket close-error contract
 
