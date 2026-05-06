@@ -22,7 +22,9 @@ These are the only settings that use environment variables. All other configurat
 | `FERNET_KEY_PATH` | `/data/.fernet_key` | Path to the Fernet encryption key. Backup target. |
 | `COOKIE_SECURE` | `false` | Set to `true` when serving the dashboard behind HTTPS so the admin session and CSRF cookies are restricted to TLS. Setting it on plain HTTP silently breaks login (browser drops the cookie). |
 | `HF_HUB_OFFLINE` | `0` | When `1`, disables Hugging Face Hub network calls so the local embedding model loads strictly from the cached weights baked into the image. |
-| `HA_AGENTHUB_TAG` | `main` | Tag used by `container/docker-compose.yml` when pulling `ghcr.io/mainzerp/ha-agenthub`. Override to pin a release. |
+| `HA_AGENTHUB_TAG` | `latest` | Tag used by `container/docker-compose.yml` when pulling `ghcr.io/mainzerp/ha-agenthub`. Override to pin a release. |
+| `CORS_ORIGINS` | `""` | Comma-separated list of allowed CORS origins. |
+| `TRUSTED_PROXIES` | `""` | Comma-separated list of trusted proxy IPs for correct client-IP extraction behind a reverse proxy. |
 
 Environment variables are loaded by Pydantic `BaseSettings` in `app/config.py` and support `.env` file loading. `HF_HUB_OFFLINE` and `HA_AGENTHUB_TAG` are read by the compose file rather than by the application.
 
@@ -40,10 +42,10 @@ The export and import API surface uses the `action` tier name.
 | Key | Default | Type | Description |
 |-----|---------|------|-------------|
 | `cache.routing.enabled` | `true` | bool | Enable the routing cache tier |
-| `cache.routing.semantic_threshold` | `0.92` | float | Cosine similarity threshold for routing cache hits |
+| `cache.routing.semantic_threshold` | `0.92` | float | Legacy threshold setting; the routing cache uses exact SHA-256 hash match lookup. This value is retained for backward compatibility. |
 | `cache.routing.max_entries` | `50000` | int | Maximum routing cache entries (LRU eviction) |
 | `cache.action.enabled` | `true` | bool | Enable the action cache tier |
-| `cache.action.semantic_threshold` | `0.95` | float | Cosine similarity threshold for action cache hits |
+| `cache.action.semantic_threshold` | `0.95` | float | Legacy threshold setting; the action cache uses exact SHA-256 hash match lookup. This value is retained for backward compatibility. |
 | `cache.action.max_entries` | `50000` | int | Maximum action cache entries (LRU eviction) |
 | `cache.lru.trigger_fraction` | `0.95` | float | Early-eviction trigger fraction of `max_entries` |
 | `cache.lru.eviction_interval` | `100` | int | Operations between LRU eviction sweeps |
@@ -79,12 +81,16 @@ control model selection and sampling for the rewrite call itself.
 Managed via `GET/PUT /api/admin/rewrite/config` and the dashboard
 "Rewrite" page.
 
+> **Recommendation:** Use `llama-3.1-8b-instant` for fast, low-cost rewrite passes.
+
 ### Communication Settings
 
 These keys remain in the settings table; most live streaming controls
 have moved to per-route logic in `container/app/api/routes/conversation.py`
 and are no longer the canonical knob. Verify behaviour against the
 relevant route before tuning.
+
+> **Note:** `communication.streaming_mode` is deprecated. Streaming behavior is now controlled per-route in the conversation handlers. This setting remains in the database for backward compatibility but no longer affects routing.
 
 | Key | Default | Type | Description |
 |-----|---------|------|-------------|
@@ -98,8 +104,8 @@ relevant route before tuning.
 |-----|---------|------|-------------|
 | `a2a.default_timeout` | `5` | int | Default agent timeout in seconds |
 | `a2a.max_iterations` | `3` | int | Max iterations per agent to prevent loops |
-| `a2a.max_dispatch_timeout` | `60` | int | Hard upper bound (seconds) on a single A2A dispatch, regardless of per-agent overrides. Added in 0.18.31. |
-| `agent.dispatch_timeout.<agent_id>` | (unset) | int | Per-agent dispatch timeout override; falls back to the agent's `AgentCard.timeout_sec` and then to `a2a.default_timeout`. Capped by `a2a.max_dispatch_timeout`. Added in 0.18.31. |
+| `a2a.max_dispatch_timeout` | `60` | int | Hard upper bound (seconds) on a single A2A dispatch, regardless of per-agent overrides. |
+| `agent.dispatch_timeout.<agent_id>` | (unset) | int | Per-agent dispatch timeout override; falls back to the agent's `AgentCard.timeout_sec` and then to `a2a.default_timeout`. Capped by `a2a.max_dispatch_timeout`. |
 
 ### Entity Sync Settings
 
@@ -113,6 +119,8 @@ relevant route before tuning.
 |-----|---------|------|-------------|
 | `filler.enabled` | `false` | bool | Emit interim TTS "thinking" tokens (`StreamToken.is_filler=true`) while the real answer is being generated. |
 | `filler.threshold_ms` | `1000` | int | Minimum elapsed milliseconds before the filler agent is allowed to emit. |
+
+> **Recommendation:** Use `llama-3.1-8b-instant` for fast, low-cost filler generation.
 
 ### Mediation Settings
 
@@ -160,17 +168,18 @@ Each agent has per-agent settings stored in the `agent_configs` table:
 | `model` | Varies per agent | LLM model identifier (e.g., `groq/llama-3.1-8b-instant`, `openrouter/openai/gpt-4o-mini`) |
 | `timeout` | `5` | Maximum response time in seconds |
 | `max_iterations` | `3` | Maximum processing iterations |
-| `temperature` | `0.7` | LLM sampling temperature |
-| `max_tokens` | `256` | Maximum tokens per LLM response |
-| `reasoning_effort` | (empty) | Optional reasoning-effort hint forwarded to providers that accept it (`Low`, `Medium`, `High`). Added in 0.11.0. |
+| `temperature` | `0.2` | LLM sampling temperature |
+| `max_tokens` | `1024` | Maximum tokens per LLM response |
+| `reasoning_effort` | (empty) | Optional reasoning-effort hint forwarded to providers that accept it (`Low`, `Medium`, `High`). |
+
+> **Model recommendation:** For routable agents, use `openai/gpt-oss-120b` and set `reasoning_effort` to `Low`. For the filler and rewrite agents, use `llama-3.1-8b-instant`.
 
 Default routable agents: `orchestrator`, `light-agent`, `music-agent`,
 `timer-agent`, `climate-agent`, `media-agent`, `scene-agent`,
 `automation-agent`, `security-agent`, `general-agent`, `send-agent`
-(added in 0.12.0; delivers messages to phones, satellites, and
-notification targets).
+(delivers messages to phones, satellites, and notification targets).
 
-### Native Assist plain timers vs AgentHub timer features (0.25.0+)
+### Native Assist plain timers vs AgentHub timer features
 
 The HA-AgentHub conversation entity supports an opt-in delegation that
 allows eligible **plain timer** start/cancel turns to be delegated to
@@ -185,7 +194,7 @@ delegation directive.
 - Frozen native verb set: timer **start** (with a relative duration)
   and **cancel** only. Pause, resume, status queries, list, and
   increase/decrease still go to AgentHub.
-- Routing decision (0.25.1+): the integration no longer applies any
+- Routing decision: the integration no longer applies any
   hardcoded keyword or regex list to the utterance. When the opt-in is
   enabled, the integration marks each turn as eligible (additive JSON
   field plus REST header), the timer-agent sees that hint in its normal
@@ -205,7 +214,7 @@ delegation directive.
   timers, and any compound or multi-intent timer request. These always
   stay on the AgentHub path even when the native option is enabled.
 
-### Wake briefing for internal alarms (1.0.0)
+### Wake briefing for internal alarms
 
 Internal AgentHub alarms created through `set_datetime` can now opt into
 an additional spoken wake briefing by including

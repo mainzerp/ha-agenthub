@@ -101,10 +101,12 @@ hooks. It provides access to:
 | `agent_catalog`        | `AgentCatalog`        | Read-only discovery of registered agents      |
 | `orchestrator_gateway` | `OrchestratorGateway` | Dispatch text or background work to the orchestrator |
 | `mcp_registry`         | `MCPServerRegistry`   | Access MCP server connections                 |
-| `settings`             | `SettingsRepository`  | Read/write system settings                    |
+| `settings`             | `SettingsRepository` (class) | Read/write system settings. The attribute holds the SettingsRepository class; methods such as get_value are classmethods, so await ctx.settings.get_value(...) works as documented. |
 | `event_bus`            | `EventBus`            | Subscribe/publish plugin events               |
 
-To add API routes, use the `add_api_route(path, endpoint, **kwargs)` or
+> **Note:** `event_bus` is initialized to `None` in `PluginContext.__init__` and assigned by the `PluginLoader` after construction. It is always available by the time the `configure`, `startup`, or `ready` hooks run.
+>
+> To add API routes, use the `add_api_route(path, endpoint, **kwargs)` or
 `include_router(router, **kwargs)` methods on `PluginContext`. Direct access
 to the FastAPI application object is not supported. Legacy direct registry
 access is also no longer supported and now raises `AttributeError`.

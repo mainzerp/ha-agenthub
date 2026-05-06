@@ -13,7 +13,7 @@ A multi-agent AI assistant for Home Assistant with container-based A2A orchestra
 - **Multi-agent orchestration** -- Specialized agents for lights, music, climate, media, timers, scenes, automation, security, a general assistant, and `send` (delivery to phones, satellites, and notification targets), coordinated by a central orchestrator via the A2A protocol
 - **A2A protocol** -- JSON-RPC 2.0-based agent-to-agent communication with registry, dispatcher, and in-process transport
 - **Two-tier vector cache** -- Routing cache (skip intent classification) and action cache, formerly response cache (skip entire agent pipeline) using ChromaDB embeddings with configurable similarity thresholds
-- **Cache backup and restore** -- Export and import the routing and action caches as a portable JSON envelope via `/api/admin/cache/export` and `/api/admin/cache/import` (added in 0.20.0)
+- **Cache backup and restore** -- Export and import the routing and action caches as a portable JSON envelope via `/api/admin/cache/export` and `/api/admin/cache/import`
 - **Hybrid entity matching** -- Five-signal weighted matcher (Levenshtein, Jaro-Winkler, phonetic, embedding similarity, alias lookup) with LLM disambiguation fallback
 - **MCP tool integration** -- Connect external tool servers via Model Context Protocol (stdio and SSE transports) and assign tools to agents
 - **Plugin system** -- Extend functionality with Python plugins that inspect registered agents, dispatch work back through the orchestrator, add routes, subscribe to events, and access settings/MCP integrations
@@ -21,9 +21,17 @@ A multi-agent AI assistant for Home Assistant with container-based A2A orchestra
 - **Custom agents** -- Create LLM-powered agents via the dashboard with custom system prompts, model selection, MCP tools, and intent patterns
 - **Rewrite agent** -- Optional response variation for cached responses (driven by the personality prompt) to avoid repetitive answers
 - **Setup wizard** -- Guided 5-step first-launch configuration (admin account, HA connection, API key, LLM providers, review)
-- **Analytics and tracing** -- Request counts, cache hit rates, latency tracking, token usage, and per-request trace span Gantt visualization, with per-turn tracing on `/ws/conversation` (added in 0.20.1)
+- **Analytics and tracing** -- Request counts, cache hit rates, latency tracking, token usage, and per-request trace span Gantt visualization, with per-turn tracing on `/ws/conversation`
 - **Voice experience** -- Filler / interim TTS, voice-followup, cancel-intent ("never mind"), and repeat-turn coalescing in the HA integration
 - **Real-pipeline scenario tests** -- YAML-driven end-to-end test framework under `container/tests/scenarios/` exercising the full orchestrator pipeline against a curated HA snapshot
+- **Lists Agent** -- Shopping and todo list management (create, add, remove, check off items)
+- **Calendar Agent** -- Query and manage calendar events, reminders, and schedules
+- **Wake Briefing** -- Spoken morning briefing with weather, calendar, news, and optional sensor facts for internal alarms
+- **Cancel Speech** -- LLM-generated cancel acknowledgement for dismiss intents ("never mind", "stop")
+- **Alarm Monitor** -- Monitors internal alarms and triggers wake briefings
+- **Wikipedia Search Tool** -- MCP server integration for encyclopedic lookups
+- **Remote Logs API** -- In-memory ring-buffer log inspection with runtime level adjustment via admin endpoints
+- **Cache Management UI Enhancements** -- Per-entry cache deletion from the admin dashboard
 
 ## Architecture
 
@@ -50,7 +58,7 @@ docker compose up -d
 ```
 
 The production `container/docker-compose.yml` pulls the prebuilt
-image from `ghcr.io/mainzerp/ha-agenthub:${HA_AGENTHUB_TAG:-main}`.
+image from `ghcr.io/mainzerp/ha-agenthub:${HA_AGENTHUB_TAG:-latest}`.
 For a local development build (sources from this checkout):
 
 ```bash
@@ -99,7 +107,7 @@ See [docs/configuration.md](docs/configuration.md) for the full reference.
 - [Deployment Guide](docs/deployment.md) -- Docker setup, setup wizard, HA integration, networking, backup
 - [Configuration Reference](docs/configuration.md) -- Environment variables, SQLite settings, agent config
 - [Architecture Overview](docs/architecture.md) -- Components, A2A protocol, request flow, cache, entity matching
-- [API Reference](docs/api-reference.md) -- All REST, SSE, and WebSocket endpoints
+- [API Reference](docs/api-reference.md) -- All REST, SSE, and WebSocket endpoints covering conversation, admin settings, agents, custom agents, MCP servers, entity index/visibility, cache, calendar, timers, send devices, analytics, traces, logs, plugins, and setup wizard
 - [Backup and Restore](docs/backup-restore.md) -- Volume backup, Fernet key export, cache export/import
 - [Plugin Development](docs/plugin-development.md) -- Writing plugins, lifecycle hooks, event bus
 - [Troubleshooting](docs/troubleshooting.md) -- Common issues and solutions
@@ -149,7 +157,7 @@ pre-commit install
 ```
 
 Hooks are scoped to `container/` and pinned to the same ruff version
-CI uses (`v0.15.11`), so passing the hook locally guarantees a green
+CI uses (`v0.15.12`), so passing the hook locally guarantees a green
 `Lint` workflow.
 
 ### Project Structure
@@ -177,8 +185,12 @@ container/          Docker container (FastAPI backend)
     util/           Shared helpers
   plugins/          User plugins directory
   tests/            Test suite (incl. real-pipeline scenarios)
+    scenarios/        YAML-driven real-pipeline end-to-end tests
+    data/             Test fixtures and curated HA snapshots
 custom_components/  HA custom integration
   ha_agenthub/      HA bridge and native plain-timer delegation seam
+    brand/            Brand icons and images for HACS
+    translations/     UI translation files (en.json, de.json, etc.)
 ```
 
 ## Plugin Development

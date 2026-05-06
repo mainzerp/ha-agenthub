@@ -121,28 +121,6 @@ Tokens are defined in `tokens.css`.
 | `--font-display` | `'Outfit', -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif` |
 | `--font-mono` | `"SF Mono", "Fira Code", "Fira Mono", Menlo, Consolas, monospace` |
 
-### Elevation
-
-| Token | Value |
-|-------|-------|
-| `--elev-0` | `none` |
-| `--elev-1` | `0 1px 3px rgba(0,0,0,0.3)` |
-| `--elev-2` | `0 4px 12px rgba(0,0,0,0.4)` |
-
-### Motion
-
-| Token | Value |
-|-------|-------|
-| `--motion-fast` | `120ms` |
-| `--motion-base` | `200ms` |
-| `--motion-slow` | `320ms` |
-
-### Focus Ring
-
-| Token | Value |
-|-------|-------|
-| `--ring-focus` | `0 0 0 2px var(--teal), 0 0 0 4px rgba(45,212,191,0.25)` |
-
 ## Component Classes
 
 ### Card
@@ -472,7 +450,7 @@ All shared Alpine.js factories live in `components.js` and are registered on `wi
 2. **Do not introduce CSS variables with fallback values** (e.g. `var(--token, #fallback)`). All tokens are defined in `tokens.css`.
 3. **Do not introduce raw hex colours in templates.** Always use `var(--token)`.
 4. **Do not introduce a CSS framework or bundler** in this project.
-5. **Do not add light-mode styling** without a roadmap entry in `docs/roadmap.md`.
+5. **Do not add light-mode styling** without a roadmap entry in `TODO.md`.
 6. **Do not use `:style="..."` in Alpine.js templates.** Compute classes with `:class="..."` instead, or move the style to a reusable CSS class.
 
 ## Adding a New Token

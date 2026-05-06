@@ -36,7 +36,7 @@ services:
       - CHROMADB_PERSIST_DIR=${CHROMADB_PERSIST_DIR:-/data/chromadb}
       - SQLITE_DB_PATH=${SQLITE_DB_PATH:-/data/agent_assist.db}
       - HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-0}
-      - COOKIE_SECURE=false # For local development without HTTPS. In production, set to true and ensure HTTPS is used.
+      - COOKIE_SECURE=${COOKIE_SECURE:-false} # For local development without HTTPS. In production, set to true and ensure HTTPS is used.
     read_only: true
     cap_drop:
       - ALL

@@ -69,16 +69,12 @@ Each agent publishes an **Agent Card** containing its ID, capabilities, and supp
 
 ### Agent Inventory
 
-Ten routable domain agents are reachable from intent classification:
+Twelve routable domain agents are reachable from intent classification:
 `orchestrator` plus `light`, `music`, `climate`, `media`, `timer`,
-`scene`, `automation`, `security`, `general`, and `send` (delivery to
-phones, satellites, and notify targets; added in 0.12.0).
+`scene`, `automation`, `security`, `general`, `calendar`, `lists`,
+and `send` (delivery to phones, satellites, and notify targets).
 
-Internal helper agents participate in the pipeline but are not
-user-routable: `filler`, `rewrite`, `mediation`, `language_detect`,
-`sanitize`, `cancel_speech`, `delayed_tasks`, and
-`notification_dispatcher`. Runtime services include `custom_loader`,
-`timer_scheduler`, and `alarm_monitor`.
+Internal A2A-registered helper agents: filler-agent and rewrite-agent. The mediation pass is baked into the orchestrator agent. Runtime services and utility modules (not A2A agents) include language detection, input sanitization, cancel-speech detection, notification dispatch, timer scheduling, and alarm monitoring.
 
 Custom agents created through the admin API are also registered as A2A
 agents with IDs shaped as `custom-{name}`. Their prompt, model config,
@@ -92,7 +88,7 @@ route to them through the same dispatcher boundary as built-in agents.
 2. The HA custom integration sends the text to the container via `POST /api/conversation` (or SSE/WebSocket).
 3. The API layer authenticates the request (Bearer token) and builds an A2A `message/send` request targeting the orchestrator.
 4. **Orchestrator agent** receives the request:
-   a. Checks the **routing cache** -- if a similar request was recently routed, reuses the cached routing decision (threshold: 0.92 cosine similarity).
+   a. Checks the **routing cache** -- if an identical request was recently routed, reuses the cached routing decision (exact SHA-256 hash match).
    b. If cache miss, calls the LLM for **intent classification** to select the target agent.
    c. Condenses the task description, preserving entity names.
    d. Dispatches via A2A to the selected specialist agent.
@@ -100,7 +96,7 @@ route to them through the same dispatcher boundary as built-in agents.
    a. Uses the **entity matcher** to resolve "bedroom light" to `light.bedroom_main`.
    b. Calls the HA REST API (`ha_client/rest.py`) to execute `light/turn_on`.
    c. Returns a response with speech text and action details.
-6. The orchestrator checks the **action cache** for reuse opportunities and stores the new result.
+6. The orchestrator checks the **action cache** for an exact hash match and stores the new result on miss.
 7. The response flows back through the API layer to the HA integration, which speaks it to the user.
 
 For eligible plain timer start/cancel turns, the timer-agent may instead return a delegation directive, which the HA integration honors by calling Home Assistant's built-in conversation agent once.
@@ -129,7 +125,7 @@ in the bedroom today") are sequenced by the orchestrator: each step
 is dispatched as its own A2A `message/send` against the chosen
 domain agent, with subsequent steps receiving the previous step's
 result as context. Per-action domain filtering in the executors
-(0.19.2/0.19.3) ensures, for example, that a `camera_turn_on` step
+ensures, for example, that a `camera_turn_on` step
 cannot land on a same-named `lock` or `switch` entity.
 
 ### Filler / Interim TTS
@@ -159,7 +155,7 @@ the ASGI scope. The route handler mints a fresh `trace_id`,
 `SpanCollector`, and root span per inbound message, hands the
 collector to the orchestrator dispatch, and flushes a synthesised
 `ws_turn` root span at the end of each turn. This avoids the
-0.20.0-and-earlier bug where every per-turn duration was overwritten
+legacy bug where every per-turn duration was overwritten
 with the entire connection lifetime.
 
 ### Recorder-History Tool
@@ -179,18 +175,19 @@ matrix.
 
 ## Two-Tier Cache
 
-The action cache was named "response cache" in 0.20.x and earlier.
+The action cache was named "response cache" in earlier versions.
 The legacy term still appears in the on-disk Chroma collection name
 for backward compatibility.
 
-The cache system uses ChromaDB vector embeddings for semantic similarity matching:
+The cache system uses ChromaDB to store SHA-256 hash keys of
+incoming requests. Lookup is by exact hash match (not semantic
+similarity):
 
-- **Routing Cache** -- Caches the mapping from user intent to target agent. A hit (cosine similarity >= 0.92) skips LLM-based intent classification entirely. Max entries: 50,000 with LRU eviction.
+- **Routing Cache** -- Caches the mapping from user intent to target agent. A hit (exact SHA-256 hash match) skips LLM-based intent classification entirely. Max entries: 50,000 with LRU eviction.
 - **Action Cache** -- Caches full agent responses including executed actions.
-  - **Full hit** (>= 0.95): Returns the cached response directly (optionally rewritten by the rewrite agent for variety).
-  - **Partial hit** (0.80-0.95): Provides the cached response as context to the agent for faster processing.
-  - **Miss** (< 0.80): No cache involvement.
-  - Max entries: 20,000 with LRU eviction.
+  - **Hit** (exact hash match): Returns the cached response directly (optionally rewritten by the rewrite agent for variety).
+  - **Miss**: No cache involvement; the request proceeds through the full agent pipeline.
+  - Max entries: 50,000 with LRU eviction.
 
 Cache entries are reactively invalidated when an executed action fails.
 

@@ -7,7 +7,7 @@ services:
     container_name: ha-agenthub
     restart: unless-stopped
     ports:
-      - "${CONTAINER_PORT:-8080}:8080"
+      - "${CONTAINER_PORT:-8080}:${CONTAINER_PORT:-8080}"
     tmpfs:
       - /tmp:noexec,nosuid,size=100m
       - /var/tmp:noexec,nosuid,size=50m
