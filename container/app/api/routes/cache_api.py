@@ -144,6 +144,28 @@ async def browse_cache_entries(
         return {"entries": [], "total": 0, "status": "error", "detail": "Cache operation failed"}
 
 
+@router.delete("/entries/{entry_id}")
+async def delete_cache_entry(
+    request: Request,
+    entry_id: str,
+    tier: str = Query("routing", pattern="^(routing|action)$"),
+):
+    """Delete a single cache entry by ID and tier."""
+    cache_manager = request.app.state.cache_manager
+    if not cache_manager:
+        return {"status": "error", "detail": "Cache not initialized"}
+
+    try:
+        if tier == "routing":
+            await asyncio.to_thread(cache_manager.invalidate_routing, entry_id)
+        else:
+            await asyncio.to_thread(cache_manager.invalidate_action, entry_id)
+        return {"status": "ok", "deleted": entry_id}
+    except Exception:
+        logger.warning("Failed to delete cache entry %s", entry_id, exc_info=True)
+        return {"status": "error", "detail": "Failed to delete cache entry"}
+
+
 @router.post("/flush")
 async def flush_cache(request: Request, payload: FlushRequest):
     """Flush cache tier(s)."""
