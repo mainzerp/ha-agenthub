@@ -83,3 +83,18 @@
 ## Live Environment Access
 
 - 2026-05-04: Live deployment credentials are stored in `.env.local` (ignored by git). I can use these to authenticate against the live container at `http://192.168.120.200:6081` and obtain a session cookie for inspecting live logs via `/api/admin/logs`.
+
+## Lessons Learned (2026-05-05) -- Timer-Agent Domain Cleanup
+
+- The timer-agent's `AGENT_ALLOWED_DOMAINS` included `calendar` and `input_datetime` as historical artifacts. The `calendar` domain was from removed `create_reminder`/`create_recurring_reminder` functionality (now in `calendar-agent`). The `input_datetime` domain was from pre-v0.26.0 HA `timer.*` helper usage; `set_datetime` now routes exclusively to the internal `TimerScheduler`.
+- The Wake Briefing (`wake_briefing.py`) is a completely separate background process triggered by the orchestrator when an alarm fires. The timer-agent is NOT involved at alarm-fire time and does NOT need calendar domain access for the briefing. The `calendar_entity_ids` in alarm payloads are opaque strings passed through from LLM parameters — the timer-agent never resolves calendar entities.
+- Dead code in `timer_executor.py` (`_ALLOWED_DOMAINS`, `_INPUT_DATETIME_DOMAINS`, `_validate_domain`, `_list_visible_input_datetime_targets`, `_should_attempt_set_datetime_fallback`) was confirmed unused via grep and safely removed.
+- **Release workflow check:** Always verify existing local tags (`git tag -l`) before creating a new release tag. In this session `v1.19.0` already existed locally (pointing to an earlier commit) while `VERSION.md` still showed `1.18.0`, indicating a prior partial release. We resolved by bumping to `1.19.1` instead of force-moving the existing tag.
+
+## Live Environment Access -- CSRF Token
+
+- 2026-05-06: Live deployment credentials in `.env.local` are stored as **JSON**, not traditional `KEY=VALUE` env format. Structure: `{"live": {"url": "...", "username": "...", "password": "..."}}`.
+- URL: `http://192.168.120.200:6081`
+- To obtain a valid CSRF token, make a GET request to `/dashboard/login` (or `/setup/step/1` if setup is incomplete). The token is returned in the `agent_assist_csrf` cookie.
+- On subsequent POST requests, the token must be provided **both** as the `agent_assist_csrf` cookie **and** as the form field `csrf_token`. The server compares them with `hmac.compare_digest()`.
+- One-liner to fetch token: `requests.get(f"{url}/dashboard/login").cookies.get("agent_assist_csrf")`

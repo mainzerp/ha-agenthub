@@ -36,7 +36,7 @@ YOU (Orchestrator): Receive request, spawn 1-3 Research subagents
     - Spawn multiple agents IN PARALLEL only if the request touches
       clearly separated modules/domains (see "Parallel Agent Execution")
     |
-SUBAGENT #1a...#1n: Research & Analysis (coder, research mode)
+SUBAGENT #1a...#1n: Research & Analysis (subagent_type="coder", research mode)
     - Prompt enforces: ReadFile/Grep/Glob/WriteFile, NO Shell,
       NO StrReplaceFile, NO source code edits.
     - Each agent investigates ONE distinct topic only.
@@ -46,7 +46,7 @@ SUBAGENT #1a...#1n: Research & Analysis (coder, research mode)
     |
 YOU (Orchestrator): Spawn Synthesis subagent (only if parallel research was used)
     |
-SUBAGENT #1-Synth: Synthesis (coder, synthesis mode)
+SUBAGENT #1-Synth: Synthesis (subagent_type="coder", synthesis mode)
     - Prompt enforces: ReadFile/WriteFile ONLY. Reads all
       docs/SubAgent/[NAME]_*_ANALYSIS.md files.
     - Writes a single combined docs/SubAgent/[NAME]_ANALYSIS.md
@@ -56,7 +56,7 @@ SUBAGENT #1-Synth: Synthesis (coder, synthesis mode)
     |
 YOU (Orchestrator): Receive results, spawn Planning subagent (NEVER use /plan or EnterPlanMode)
     |
-SUBAGENT #2: Planning (coder, planning mode)
+SUBAGENT #2: Planning (subagent_type="coder", planning mode)
     - Prompt enforces: ReadFile/Grep/Glob/WriteFile ONLY. You may write ONLY
       to docs/SubAgent/[NAME]_PLAN.md. NO Shell, NO StrReplaceFile,
       NO source code edits.
@@ -80,14 +80,14 @@ YOU (Orchestrator): Plan Approval (in-chat)
     - YOU never write code, edit files, or run implementation commands.
       ALL implementation goes through the implementer subagent.
     |
-SUBAGENT #3a...#3n: Implementation (coder, implement mode, fresh context)
+SUBAGENT #3a...#3n: Implementation (subagent_type="coder", implement mode, fresh context)
     - Reads the approved plan (or assigned partial plan)
     - Implements ONLY the assigned work stream
     - Returns completion summary
     |
 YOU (Orchestrator): Spawn Merge & Verify subagent (only if parallel implementation was used)
     |
-SUBAGENT #3-Merge: Merge & Verify (coder, full toolset)
+SUBAGENT #3-Merge: Merge & Verify (subagent_type="coder", full toolset)
     - Runs the full test suite (`pytest` or equivalent)
     - Runs lint checks (`ruff check`, `ruff format`)
     - Fixes any merge conflicts, import breaks, or integration issues
@@ -167,17 +167,13 @@ For this project's workflow, use these built-in subagent types:
 
 | Phase | Subagent Type | Purpose | Tool Restrictions (enforced via prompt) |
 |-------|---------------|---------|------------------------------------------|
-| Research | `coder` | Fast codebase exploration | Read, search, WriteFile (docs/SubAgent only), NO Shell, NO StrReplaceFile. |
+| Research | `coder` | Fast codebase analysis | Read, search, WriteFile (docs/SubAgent only), NO Shell, NO StrReplaceFile. |
 | Synthesis | `coder` | Combine parallel research findings | Read, WriteFile (docs/SubAgent only), NO Shell, NO StrReplaceFile, NO source edits, NO new research. |
 | Planning | `coder` | Implementation planning and architecture design | Read, search, WriteFile (docs/SubAgent only). NO Shell, NO StrReplaceFile, NO source edits. |
 | Implementation | `coder` | Senior software engineering: read/write files, run commands, search code | Full toolset |
 | Merge & Verify | `coder` | Merge parallel implementations, run tests and lint | Full toolset |
 
-Invoke them explicitly:
-
-- `Spawn the coder subagent in research mode to investigate <topic>. Write findings to docs/SubAgent/[NAME]_[TOPIC]_ANALYSIS.md.`
-- `Spawn the coder subagent in planning mode. Read docs/SubAgent/[NAME]_ANALYSIS.md and write the plan to docs/SubAgent/[NAME]_PLAN.md.`
-- `Spawn the coder subagent to implement docs/SubAgent/[NAME]_PLAN.md.`
+**MANDATORY: Always set `subagent_type="coder"` for every subagent invocation. The `explore` built-in type (or any other type) must NEVER be used. Read-only behavior is enforced exclusively through prompt restrictions, not through the subagent type.**
 
 **Subagents always run in a fresh context window.** Do not try to carry implicit state between phases; pass artifacts via the files under `docs/SubAgent/`.
 
@@ -197,7 +193,7 @@ These blocks are **mandatory** in every subagent prompt for the respective phase
 #### Research
 
 ```text
-You are a read-only research agent. Investigate ONLY: [TOPIC].
+You are a research agent using subagent_type="coder". Investigate ONLY: [TOPIC].
 Write your findings to: docs/SubAgent/[NAME]_[TOPIC]_ANALYSIS.md
 Allowed tools: Read, Grep, Glob, Write (docs/SubAgent/ only).
 FORBIDDEN: Shell, Edit, any source code modification.
@@ -208,7 +204,7 @@ Return a short summary and the artifact path when done.
 #### Synthesis
 
 ```text
-You are a synthesis agent. Do NOT conduct new research.
+You are a synthesis agent using subagent_type="coder". Do NOT conduct new research.
 Read all files matching: docs/SubAgent/[NAME]_*_ANALYSIS.md
 Write a single combined analysis to: docs/SubAgent/[NAME]_ANALYSIS.md
 Remove duplicates, resolve contradictions, add cross-references between topics.
@@ -220,7 +216,7 @@ Return a short summary when done.
 #### Planning
 
 ```text
-You are a planning agent. Do NOT implement anything.
+You are a planning agent using subagent_type="coder". Do NOT implement anything.
 Read the analysis from: docs/SubAgent/[NAME]_ANALYSIS.md
 Write a concise step-by-step implementation plan with a checklist to: docs/SubAgent/[NAME]_PLAN.md
 Allowed tools: Read, Grep, Glob, Write (docs/SubAgent/ only).
@@ -232,7 +228,7 @@ Return a short summary and the artifact path when done.
 #### Implementation
 
 ```text
-You are an implementation agent. Full toolset available.
+You are an implementation agent using subagent_type="coder". Full toolset available.
 Read your assigned plan from: docs/SubAgent/[NAME]_PLAN.md
 Implement ONLY the work described in that plan. Do NOT touch files outside your assigned scope.
 Run tests and lint after completing your changes.
@@ -242,7 +238,7 @@ Return a completion summary listing every file modified and every command run.
 #### Merge & Verify
 
 ```text
-You are a merge and verification agent. Full toolset available.
+You are a merge and verification agent using subagent_type="coder". Full toolset available.
 Parallel implementation has just completed. Your job:
 1. Run the full test suite (pytest or equivalent) and report results.
 2. Run lint checks (ruff check, ruff format) and fix any issues.
