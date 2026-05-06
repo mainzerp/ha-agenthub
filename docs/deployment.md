@@ -172,7 +172,7 @@ Enter API keys for one or more LLM providers:
 - **Ollama URL** -- For local model inference (e.g., `http://localhost:11434`).
 
 > **Recommended models:**
-> - All agents: `openai/gpt-oss-120b` with reasoning effort set to `Low`.
+> - All agents: `openai/gpt-oss-20b` with reasoning effort set to `Low`.
 > - Filler and rewrite agents: `llama-3.1-8b-instant` (fast, low-cost).
 
 Use the "Test" button for each provider to verify the key works. Keys are stored encrypted in SQLite.
