@@ -162,7 +162,13 @@ function tracesListPage() {
         formatTimestamp(ts) {
             if (!ts) return '-';
             try {
-                const d = new Date(ts);
+                var clean = ts.trim();
+                // SQLite datetime('now') returns "YYYY-MM-DD HH:MM:SS" without timezone.
+                // If no timezone indicator is present, treat it as UTC.
+                if (!clean.match(/[Zz]|[+-]\d{2}:\d{2}$/)) {
+                    clean = clean.replace(' ', 'T') + 'Z';
+                }
+                const d = new Date(clean);
                 return d.toLocaleString();
             } catch { return ts; }
         },

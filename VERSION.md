@@ -1,8 +1,14 @@
 # Version
 
-**Current Version:** 1.19.2
+**Current Version:** 1.19.3
 
 ## Recent Changes
+
+### 1.19.3 (PATCH) -- Trace timezone display fix
+
+- Fixed timestamps in Request Traces and Trace Detail UI to display in the browser's local timezone instead of UTC.
+- SQLite `datetime('now')` strings lack timezone info; the frontend `formatTimestamp()` helper now detects timezone-less timestamps and treats them as UTC before converting via `toLocaleString()`.
+- Aligns trace timestamp display with the existing correct behavior in Remote Logs UI.
 
 ### 1.19.2 (PATCH) -- HA integration voice follow-up fix
 
