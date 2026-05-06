@@ -39,7 +39,8 @@ from .const import (
 logger = logging.getLogger(__name__)
 
 _RESULT_SUPPORTS_CONTINUE_CONVERSATION = (
-    "continue_conversation" in inspect.signature(conversation.ConversationResult).parameters
+    "continue_conversation"
+    in inspect.signature(conversation.ConversationResult).parameters
 )
 
 # V4: satellite states that indicate the device is busy or idle
