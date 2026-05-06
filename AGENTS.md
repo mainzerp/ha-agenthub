@@ -2,7 +2,7 @@
 
 > **CRITICAL: `.github/instructions/prime-directives.md` contains project-specific architectural and correctness rules. They define what the codebase must enforce at runtime. Read and respect them when analyzing, changing, or implementing any part of this project. They are non-negotiable and override all other guidance.**
 >
-> **MEMORY: Read `.kimi/memory.md` at the start of every session to recall accumulated context, lessons learned, and recurring patterns. Append new learnings to it before the session ends so they persist across conversations.**
+> **LEARNINGS: Read `.kimi/lessons.md` at the start of every session to recall accumulated context, lessons learned, and recurring patterns. Append new learnings to it before the session ends so they persist across conversations.**
 
 > **PROJECT DEFINITION: `.github/instructions/project-definition.md` contains project information**
 
@@ -266,7 +266,6 @@ You ask the user directly in chat (no special tool). The task is not considered 
 7. **YOU never implement** — never write code, edit files, or execute implementation steps directly. ALL implementation goes through the `coder` subagent, no exceptions, even for trivial changes.
 8. **Update `VERSION.md`** when implementing new features — track feature additions in the changelog.
 9. **Do not use emojis** anywhere (messages, docs, comments, commit messages, generated output, or source code including string literals and UI text) unless explicitly requested.
-10. **Read `.kimi/memory.md` at session start** and append new learnings, patterns, or gotchas to it before the session ends. This file is your persistent memory across conversations. You can consult `.kimi/memory.md` at any point in a session again.
 
 ## Version Tracking
 
