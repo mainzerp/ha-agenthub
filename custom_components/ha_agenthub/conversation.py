@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import logging
 import re
@@ -36,6 +37,10 @@ from .const import (
 )
 
 logger = logging.getLogger(__name__)
+
+_RESULT_SUPPORTS_CONTINUE_CONVERSATION = (
+    "continue_conversation" in inspect.signature(conversation.ConversationResult).parameters
+)
 
 # V4: satellite states that indicate the device is busy or idle
 _SAT_BUSY_STATES = frozenset({"listening", "processing", "responding"})
@@ -823,6 +828,7 @@ class HaAgentHubConversationEntity(
                         # and accumulated tokens (the orchestrator
                         # strips both before emitting).
                         stream_sanitized = bool(data.get("sanitized", False))
+                        voice_followup = bool(data.get("voice_followup", False))
                         if stream_err:
                             # Application-level error from the container (done chunk), not a
                             # transport failure — do not raise (would become _WsDroppedAfterSend).
@@ -853,6 +859,7 @@ class HaAgentHubConversationEntity(
                 final_conversation_id,
                 user_input.language,
                 sanitized=stream_sanitized,
+                continue_conversation=voice_followup,
             )
         except (aiohttp.ClientError, asyncio.TimeoutError) as err:
             raise _WsDroppedAfterSendError() from err
@@ -884,11 +891,13 @@ class HaAgentHubConversationEntity(
                         user_input.language,
                     )
                 data = await resp.json()
+                voice_followup = bool(data.get("voice_followup", False))
                 return self._build_result(
                     data.get("speech", ""),
                     data.get("conversation_id", user_input.conversation_id),
                     user_input.language,
                     sanitized=bool(data.get("sanitized", False)),
+                    continue_conversation=voice_followup,
                 )
         except (aiohttp.ClientError, asyncio.TimeoutError, json.JSONDecodeError):
             return self._build_result(
@@ -907,6 +916,7 @@ class HaAgentHubConversationEntity(
         language: str | None,
         *,
         sanitized: bool = False,
+        continue_conversation: bool = False,
     ) -> conversation.ConversationResult:
         """Assemble a ConversationResult from the response.
 
@@ -919,6 +929,9 @@ class HaAgentHubConversationEntity(
         speech = speech or ""
         response = intent.IntentResponse(language=language or "en")
         response.async_set_speech(speech if sanitized else _strip_markdown(speech))
+        kwargs: dict[str, Any] = {}
+        if _RESULT_SUPPORTS_CONTINUE_CONVERSATION and continue_conversation:
+            kwargs["continue_conversation"] = True
         return conversation.ConversationResult(
-            response=response, conversation_id=conversation_id
+            response=response, conversation_id=conversation_id, **kwargs
         )

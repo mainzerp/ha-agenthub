@@ -100,17 +100,6 @@ YOU (Orchestrator): Final Confirmation
     - Repeat clarifications as needed until the user confirms.
 ```
 
-## Quick-Fix Path
-
-For tasks that meet **all** of the following criteria, Research and Planning phases may be skipped:
-
-- Change is confined to a single file
-- Fewer than 10 lines affected
-- No API, interface, or schema change
-- Trivially reversible (no database writes, no external calls)
-
-**Even on the Quick-Fix path, Plan Approval is mandatory.** The Orchestrator presents a one-sentence description of the change and waits for `yes / cancel` before spawning the Implementation subagent.
-
 ## Parallel Agent Execution
 
 The Orchestrator MAY spawn multiple subagents in parallel during Research and Implementation if the criteria below are met. Planning MUST always remain a single sequential agent.
@@ -277,7 +266,7 @@ You ask the user directly in chat (no special tool). The task is not considered 
 7. **YOU never implement** — never write code, edit files, or execute implementation steps directly. ALL implementation goes through the `coder` subagent, no exceptions, even for trivial changes.
 8. **Update `VERSION.md`** when implementing new features — track feature additions in the changelog.
 9. **Do not use emojis** anywhere (messages, docs, comments, commit messages, generated output, or source code including string literals and UI text) unless explicitly requested.
-10. **Read `.kimi/memory.md` at session start** and append new learnings, patterns, or gotchas to it before the session ends. This file is your persistent memory across conversations.
+10. **Read `.kimi/memory.md` at session start** and append new learnings, patterns, or gotchas to it before the session ends. This file is your persistent memory across conversations. You can consult `.kimi/memory.md` at any point in a session again.
 
 ## Version Tracking
 
