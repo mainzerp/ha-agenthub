@@ -254,7 +254,7 @@ _GENERIC_FALLBACK_MESSAGES = {
     "de": "Der Timer ist abgelaufen",
     "en": "The timer has finished",
 }
-_TTS_TO_LISTEN_DELAY = 4.0
+_TTS_TO_LISTEN_DELAY = 10.0
 _DEFAULT_CHIME_URL = "media-source://media_source/local/notification.mp3"
 _CHIME_TO_TTS_DELAY = 1.5
 
@@ -573,7 +573,7 @@ async def _notify_persistent(
             "persistent_notification",
             "create",
             None,
-            {"message": message, "title": f"Timer: {timer_name}"},
+            {"message": message, "title": timer_name},
         )
     except Exception:
         logger.error("persistent_notification failed for %s", timer_name, exc_info=True)
@@ -593,7 +593,7 @@ async def _notify_push(
                 None,
                 {
                     "message": message,
-                    "title": f"Timer: {timer_name}",
+                    "title": timer_name,
                     "data": {
                         "actions": [
                             {"action": "SNOOZE_5", "title": "Snooze 5 min"},
@@ -615,7 +615,7 @@ async def _load_notification_profile() -> dict:
         "push_enabled": False,
         "push_targets": [],
         "voice_followup_enabled": True,
-        "tts_to_listen_delay": 4.0,
+        "tts_to_listen_delay": 10.0,
         "chime_enabled": True,
         "chime_url": _DEFAULT_CHIME_URL,
     }

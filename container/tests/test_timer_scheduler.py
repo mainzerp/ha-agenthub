@@ -651,3 +651,57 @@ class TestConcurrency:
 
         # The stop method logs exceptions from gather results
         assert any("raised exception during stop" in str(call) for call in mock_logger.error.call_args_list)
+
+
+class TestTimerNameDisplay:
+    async def test_fire_omits_generic_logical_name_from_timer_name(self, db_repository):
+        """Generic logical names like 'Timer' or 'Timer 1' should not prefix the message."""
+        sched, gateway = _make_scheduler()
+        try:
+            for generic_name in ("Timer", "timer", "Timer 1", "TIMER 2", "timer 3"):
+                tid = await sched.schedule(
+                    logical_name=generic_name,
+                    kind="notification",
+                    duration_seconds=0,
+                    origin_device_id="device-123",
+                    origin_area="kitchen",
+                    payload={"notification_message": "Eggs done!", "language": "en"},
+                )
+                for _ in range(20):
+                    await asyncio.sleep(0.02)
+                    row = await ScheduledTimersRepository.get(tid)
+                    if row and row["state"] == "fired":
+                        break
+
+                calls = [
+                    call
+                    for call in gateway.dispatch_background_event.await_args_list
+                    if call.args[0] == "timer_notification"
+                ]
+                payload = calls[-1].args[1]
+                assert payload["timer_name"] == "Eggs done!"
+        finally:
+            await sched.stop()
+
+    async def test_fire_preserves_meaningful_logical_name_with_message(self, db_repository):
+        """Non-generic logical names should be preserved as 'name: message'."""
+        sched, gateway = _make_scheduler()
+        try:
+            tid = await sched.schedule(
+                logical_name="egg timer",
+                kind="notification",
+                duration_seconds=0,
+                origin_device_id="device-123",
+                origin_area="kitchen",
+                payload={"notification_message": "Eggs done!", "language": "en"},
+            )
+            for _ in range(20):
+                await asyncio.sleep(0.02)
+                row = await ScheduledTimersRepository.get(tid)
+                if row and row["state"] == "fired":
+                    break
+            gateway.dispatch_background_event.assert_awaited_once()
+            payload = gateway.dispatch_background_event.await_args.args[1]
+            assert payload["timer_name"] == "egg timer: Eggs done!"
+        finally:
+            await sched.stop()

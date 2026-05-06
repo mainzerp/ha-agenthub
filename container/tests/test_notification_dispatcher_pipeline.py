@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.agents import background_actions as nd
+from app.agents import notification_dispatcher as ndisp
 from app.models.agent import BackgroundEvent, TaskContext
 from app.security.sanitization import USER_INPUT_END, USER_INPUT_START
 
@@ -824,3 +825,39 @@ async def test_resolve_timer_playback_target_uses_area_when_device_resolution_fa
     assert got == "media_player.area"
     from_device.assert_awaited_once()
     from_area.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# notification_dispatcher tests (Part 2 — kept in sync with background_actions)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_persistent_notification_title_has_no_hardcoded_timer_prefix() -> None:
+    client = _FakeHaClient()
+    await ndisp._notify_persistent(client, "Pasta", "Timer done")
+    assert len(client.calls) == 1
+    _, _, _, data = client.calls[0]
+    assert data["title"] == "Pasta"
+    assert "Timer: " not in data["title"]
+
+
+@pytest.mark.asyncio
+async def test_push_notification_title_has_no_hardcoded_timer_prefix() -> None:
+    client = _FakeHaClient()
+    await ndisp._notify_push(client, ["mobile_app_phone"], "Pasta", "Timer done")
+    assert len(client.calls) == 1
+    _, _, _, data = client.calls[0]
+    assert data["title"] == "Pasta"
+    assert "Timer: " not in data["title"]
+
+
+def test_tts_to_listen_delay_constant_is_sufficient() -> None:
+    assert ndisp._TTS_TO_LISTEN_DELAY >= 10.0
+
+
+@pytest.mark.asyncio
+async def test_notification_profile_default_delay_is_sufficient() -> None:
+    with patch.object(ndisp.SettingsRepository, "get_value", new=AsyncMock(return_value=None)):
+        profile = await ndisp._load_notification_profile()
+    assert profile["tts_to_listen_delay"] >= 10.0

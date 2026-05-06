@@ -1,8 +1,13 @@
 # Version
 
-**Current Version:** 1.19.4
+**Current Version:** 1.19.5
 
 ## Recent Changes
+
+### 1.19.5 (PATCH) -- Timer TTS bug fixes
+
+- Fixed duplicate/triple "Timer" prefix in timer-expiration TTS and notifications.
+- Fixed audio cutoff on satellite devices by increasing TTS-to-listen delay from 4.0s to 10.0s.
 
 ### 1.19.4 (PATCH) -- Cache management UI enhancements
 
@@ -53,6 +58,8 @@
 - **Logging improvements:**
   - `LogBufferHandler` now captures `exc_info` traceback correctly.
   - Fixed reversed filtered log entries in `get_entries` method.
+
+## Version History
 
 ### 1.18.0 (MINOR) -- Multilingual orchestrator & code-review hardening
 
@@ -120,8 +127,6 @@
 
 - Fixed Pylance `reportCallIssue` errors in `rewrite.py` by explicitly passing default values for `AgentCard` fields (`expected_latency`, `timeout_sec`) and `TaskResult` fields (`action_executed`, `error`, `voice_followup`, `directive`, `reason`).
 - Resolved ruff TRY300 and D102 warnings in `rewrite.py`.
-
-## Version History
 
 ### 1.15.2 (PATCH) -- Trace span fix for cache-hit path
 

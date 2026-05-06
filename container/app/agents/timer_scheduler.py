@@ -528,7 +528,10 @@ class TimerScheduler:
             synthetic_entity_id = f"agenthub_internal:{row['id']}"
             display_name = logical_name
             if message:
-                display_name = f"{logical_name}: {message}" if logical_name else message
+                if logical_name and logical_name.lower() not in ("timer", "timer 1", "timer 2", "timer 3"):
+                    display_name = f"{logical_name}: {message}"
+                else:
+                    display_name = message
             await gateway.dispatch_background_event(
                 "timer_notification",
                 {
