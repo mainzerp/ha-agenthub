@@ -1,8 +1,14 @@
 # Version
 
-**Current Version:** 1.19.1
+**Current Version:** 1.19.2
 
 ## Recent Changes
+
+### 1.19.2 (PATCH) -- HA integration voice follow-up fix
+
+- Fixed HA integration ignoring the backend's `voice_followup` flag.
+- `ConversationResult` now correctly sets `continue_conversation=True` when the backend signals a voice follow-up, keeping the satellite microphone open after organic follow-up prompts (e.g. "Darf es noch etwas sein?").
+- Backward-compatible: introspects `conversation.ConversationResult` signature so older HA versions that lack `continue_conversation` are not affected.
 
 ### 1.19.1 (PATCH) -- Timer-agent dead domain cleanup
 
