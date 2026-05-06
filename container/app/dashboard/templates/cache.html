@@ -162,7 +162,9 @@
                             <th>Document</th>
                             <th>Agent</th>
                             <th>Hits</th>
+                            <th>Created</th>
                             <th>Last Accessed</th>
+                            <th>Actions</th>
                         </tr>
                     </thead>
                     <tbody>
@@ -171,7 +173,11 @@
                                 <td class="truncate max-w-400" x-text="e.document"></td>
                                 <td><span class="badge badge-teal" x-text="e.agent_id || '-'"></span></td>
                                 <td class="text-mono" x-text="e.hit_count || '0'"></td>
-                                <td class="text-mono text-xs" x-text="e.last_accessed || '-'"></td>
+                                <td class="text-mono text-xs" x-text="formatTimestamp(e.created_at)"></td>
+                                <td class="text-mono text-xs" x-text="formatTimestamp(e.last_accessed)"></td>
+                                <td>
+                                    <button class="btn btn-sm btn-coral" @click="deleteEntry(e.id)">Delete</button>
+                                </td>
                             </tr>
                         </template>
                     </tbody>
@@ -217,7 +223,9 @@
                             <th>Document</th>
                             <th>Agent</th>
                             <th>Hits</th>
+                            <th>Created</th>
                             <th>Last Accessed</th>
+                            <th>Actions</th>
                         </tr>
                     </thead>
                     <tbody>
@@ -226,7 +234,11 @@
                                 <td class="truncate max-w-400" x-text="e.document"></td>
                                 <td><span class="badge badge-teal" x-text="e.agent_id || '-'"></span></td>
                                 <td class="text-mono" x-text="e.hit_count || '0'"></td>
-                                <td class="text-mono text-xs" x-text="e.last_accessed || '-'"></td>
+                                <td class="text-mono text-xs" x-text="formatTimestamp(e.created_at)"></td>
+                                <td class="text-mono text-xs" x-text="formatTimestamp(e.last_accessed)"></td>
+                                <td>
+                                    <button class="btn btn-sm btn-coral" @click="deleteEntry(e.id)">Delete</button>
+                                </td>
                             </tr>
                         </template>
                     </tbody>
@@ -261,6 +273,18 @@ function cachePage() {
         importFileName: '',
         importBusy: false,
         backupMessage: '',
+
+        formatTimestamp(ts) {
+            if (!ts) return '-';
+            try {
+                var clean = ts.trim();
+                if (!clean.match(/[Zz]|[+-]\d{2}:\d{2}$/)) {
+                    clean = clean.replace(' ', 'T') + 'Z';
+                }
+                var d = new Date(clean);
+                return d.toLocaleString();
+            } catch (e) { return ts; }
+        },
 
         setActiveTab(name) {
             this.activeTab = name;
@@ -301,6 +325,25 @@ function cachePage() {
                 console.error('Failed to load cache entries', e);
             }
             this.loadingEntries = false;
+        },
+
+        async deleteEntry(entryId) {
+            if (!confirm('Delete this cache entry?')) return;
+            try {
+                var data = await window.dashboardApi.json(
+                    '/api/admin/cache/entries/' + encodeURIComponent(entryId) + '?tier=' + this.tier,
+                    { method: 'DELETE' }
+                );
+                if (data.status === 'ok') {
+                    this.loadEntries();
+                    this.loadStats();
+                } else {
+                    alert('Failed to delete: ' + (data.detail || 'unknown'));
+                }
+            } catch (e) {
+                console.error('Failed to delete cache entry', e);
+                alert('Failed to delete cache entry');
+            }
         },
 
         async flushCache(tier) {

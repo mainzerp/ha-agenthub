@@ -1,8 +1,15 @@
 # Version
 
-**Current Version:** 1.19.3
+**Current Version:** 1.19.4
 
 ## Recent Changes
+
+### 1.19.4 (PATCH) -- Cache management UI enhancements
+
+- Added per-entry deletion to the Cache Management dashboard.
+- New `DELETE /api/admin/cache/entries/{entry_id}` endpoint supports deleting individual routing or action cache entries.
+- Cache entry tables now show a "Created" column and display timestamps in the browser's local timezone via the shared `formatTimestamp()` helper.
+- Added delete buttons to each row in both routing and action cache tables.
 
 ### 1.19.3 (PATCH) -- Trace timezone display fix
 
