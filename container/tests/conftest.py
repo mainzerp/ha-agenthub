@@ -2,17 +2,17 @@
 
 from __future__ import annotations
 
-import asyncio
 import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import aiosqlite
 import pytest
 import pytest_asyncio
 
-from tests.helpers import make_entity_state
+from tests.helpers import make_entity_state, shutdown_aiosqlite
 
 # Writable paths before any ``app.*`` import (CI runners have no ``/data``).
 _test_root = Path(__file__).resolve().parent / ".pytest_runtime"
@@ -151,6 +151,45 @@ async def _clear_settings_cache():
     await SettingsRepository._cache_invalidate()
 
 
+@pytest.fixture(autouse=True)
+async def _reset_write_conn():
+    """Close the shared global write connection so it never leaks across loops."""
+    yield
+    try:
+        import app.db.schema as _schema
+        from tests.helpers import shutdown_aiosqlite
+
+        if _schema._write_conn is not None:
+            await shutdown_aiosqlite(_schema._write_conn)
+            _schema._write_conn = None
+    except Exception:
+        pass
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _patch_aiosqlite_close():
+    """Monkey-patch aiosqlite.Connection.close so it always joins the worker thread.
+
+    This prevents pytest-asyncio from closing the event loop while aiosqlite
+    background threads are still alive, which was causing hundreds of
+    ``RuntimeError: Event loop is closed`` warnings across the test suite.
+    """
+    _original_close = aiosqlite.Connection.close
+
+    async def _patched_close(self) -> None:
+        await _original_close(self)
+        try:
+            thread = self._thread
+            if thread.is_alive():
+                thread.join(timeout=1.0)
+        except Exception:
+            pass
+
+    aiosqlite.Connection.close = _patched_close
+    yield
+    aiosqlite.Connection.close = _original_close
+
+
 @pytest.fixture(scope="session", autouse=True)
 def _close_vector_store_on_session_end():
     """Close the Chroma singleton explicitly so pytest does not hang on shutdown."""
@@ -159,12 +198,6 @@ def _close_vector_store_on_session_end():
         from app.cache.vector_store import close_vector_store
 
         close_vector_store()
-    except Exception:
-        pass
-    try:
-        from app.db.schema import close_db
-
-        asyncio.run(close_db())
     except Exception:
         pass
 
@@ -198,7 +231,7 @@ async def db_repository(db_path: Path):
         await _create_indexes(db)
         await _seed_defaults(db)
         await db.commit()
-        await db.close()
+        await shutdown_aiosqlite(db)
 
         # Patch get_db so repository classes use the temp db
         from contextlib import asynccontextmanager
@@ -218,7 +251,7 @@ async def db_repository(db_path: Path):
             else:
                 await conn.commit()
             finally:
-                await conn.close()
+                await shutdown_aiosqlite(conn)
 
         with (
             patch("app.db.repository.get_db_read", _temp_get_db),

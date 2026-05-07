@@ -24,6 +24,8 @@ from unittest.mock import AsyncMock, patch
 
 import aiosqlite
 
+from tests.helpers import shutdown_aiosqlite
+
 from .deterministic_llm import DeterministicLlmStub
 from .embedding_stub import deterministic_embedding
 from .loader import load_snapshot
@@ -344,7 +346,7 @@ async def _temp_db(db_path):
     await _create_indexes(db)
     await _seed_defaults(db)
     await db.commit()
-    await db.close()
+    await shutdown_aiosqlite(db)
 
     @asynccontextmanager
     async def _get_db():
@@ -361,7 +363,7 @@ async def _temp_db(db_path):
         else:
             await conn.commit()
         finally:
-            await conn.close()
+            await shutdown_aiosqlite(conn)
 
     with (
         patch("app.db.repository.get_db_read", _get_db),
