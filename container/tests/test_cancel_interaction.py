@@ -75,27 +75,40 @@ def _make_orch():
 
 class TestCancelInteractionAck:
     def test_english(self):
-        assert cancel_interaction_ack("en") == "Okay."
-        assert cancel_interaction_ack(None) == "Okay."
+        assert cancel_interaction_ack("en") == "Okay, got it."
+        assert cancel_interaction_ack(None) == "Okay, got it."
 
     def test_german(self):
-        assert cancel_interaction_ack("de") == "Alles klar."
-        assert cancel_interaction_ack("de-DE") == "Alles klar."
+        assert cancel_interaction_ack("de") == "Alles klar, verstanden."
+        assert cancel_interaction_ack("de-DE") == "Alles klar, verstanden."
+
+    def test_fallbacks_meet_minimum_word_count(self):
+        for lang in ("en", "de", None):
+            ack = cancel_interaction_ack(lang)
+            assert len(ack.split()) >= 3, f"Fallback for {lang!r} too short: {ack!r}"
 
 
 class TestGenerateCancelSpeech:
     @patch("app.agents.cancel_speech.complete", new_callable=AsyncMock)
     async def test_generate_cancel_speech_uses_llm(self, mock_complete):
-        mock_complete.return_value = "Verstanden."
+        mock_complete.return_value = "Klar, kein Problem."
 
         result = await generate_cancel_speech("de", "Vergiss es")
 
-        assert result == "Verstanden."
+        assert result == "Klar, kein Problem."
         mock_complete.assert_awaited_once()
         kwargs = mock_complete.await_args.kwargs
         assert kwargs["agent_id"] == "filler-agent"
         assert kwargs["max_tokens"] == 30
         assert kwargs["temperature"] == 0.6
+
+    @patch("app.agents.cancel_speech.complete", new_callable=AsyncMock)
+    async def test_generate_cancel_speech_falls_back_on_short_response(self, mock_complete):
+        mock_complete.return_value = "Verstanden."  # only 1 word — rejected
+
+        result = await generate_cancel_speech("de", "Vergiss es")
+
+        assert result == cancel_interaction_ack("de")
 
     @patch("app.agents.cancel_speech.complete", new_callable=AsyncMock)
     async def test_generate_cancel_speech_falls_back_on_timeout(self, mock_complete):

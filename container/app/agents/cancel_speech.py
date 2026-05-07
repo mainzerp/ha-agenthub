@@ -23,13 +23,15 @@ def cancel_interaction_ack(language: str | None) -> str:
     """Return a brief TTS-safe line after cancel-interaction classification."""
     lang = (language or "en").lower()
     if lang.startswith("de"):
-        return "Alles klar."
-    return "Okay."
+        return "Alles klar, verstanden."
+    return "Okay, got it."
 
 
 def _is_acceptable(text: str) -> bool:
     stripped = text.strip()
     if not stripped:
+        return False
+    if len(stripped.split()) < 3:
         return False
     if len(stripped) > _CANCEL_MAX_CHARS:
         return False

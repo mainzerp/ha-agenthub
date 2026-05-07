@@ -1,8 +1,15 @@
 # Version
 
-**Current Version:** 1.19.9
+**Current Version:** 1.19.10
 
 ## Recent Changes
+
+### 1.19.10 (PATCH) -- Enforce 3-word minimum on cancel-interaction TTS responses
+
+- Deterministic fallbacks changed: "Alles klar." → "Alles klar, verstanden." and "Okay." → "Okay, got it."
+- `_is_acceptable()` now rejects LLM-generated responses shorter than 3 words (falls back to longer deterministic phrase).
+- Cancel speech prompt updated to require at least 3 words and at most 10.
+- Ensures cancel-interaction TTS audio is always ≥ ~1 second.
 
 ### 1.19.9 (PATCH) -- Show follow-up indicator in trace list and detail view
 
