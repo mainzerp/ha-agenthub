@@ -50,6 +50,15 @@
                               :title="traceDetail.area_id || ''"
                               x-text="traceDetail.area_name || traceDetail.area_id || '-'"></span>
                     </div>
+                    <div x-show="traceDetail.conversation_turns && traceDetail.conversation_turns.length > 0">
+                        <span class="text-muted text-xs">Context</span><br>
+                        <span class="badge badge-teal text-2xs"
+                              :title="'Follow-up with ' + (traceDetail.conversation_turns ? traceDetail.conversation_turns.length : 0) + ' prior messages in this session'">
+                            FOLLOW-UP
+                        </span>
+                        <span class="text-3xs text-silver ml-xs"
+                              x-text="(traceDetail.conversation_turns ? traceDetail.conversation_turns.length : 0) + ' prior msgs'"></span>
+                    </div>
                     <div>
                         <span class="text-muted text-xs">Label</span><br>
                         <template x-if="!editingLabel">

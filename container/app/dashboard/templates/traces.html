@@ -104,8 +104,15 @@
                             </td>
                             <td class="text-mono" x-text="t.total_duration_ms ? Math.round(t.total_duration_ms) + 'ms' : '-'"></td>
                             <td>
-                                <span x-show="t.label" class="badge badge-blue text-2xs"
-                                      x-text="t.label"></span>
+                                <div class="flex flex-wrap gap-xs">
+                                    <span x-show="t.label" class="badge badge-blue text-2xs"
+                                          x-text="t.label"></span>
+                                    <span x-show="t.conversation_turns && t.conversation_turns.length > 0"
+                                          class="badge badge-teal text-2xs"
+                                          :title="'Follow-up — ' + (t.conversation_turns ? t.conversation_turns.length : 0) + ' prior messages in session'">
+                                        FOLLOW-UP
+                                    </span>
+                                </div>
                             </td>
                             <td>
                                 <a class="btn btn-sm btn-primary" :href="dashUrl('/dashboard/traces/' + t.trace_id)">View</a>
