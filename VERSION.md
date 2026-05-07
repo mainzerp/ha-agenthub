@@ -1,8 +1,14 @@
 # Version
 
-**Current Version:** 1.19.7
+**Current Version:** 1.19.8
 
 ## Recent Changes
+
+### 1.19.8 (PATCH) -- Fix agent communication flow in trace detail view
+
+- Agent Communication now shows the full 4-step flow for single-agent traces: user → orchestrator → subagent → orchestrator → user.
+- Previously the orchestrator→subagent dispatch and raw subagent response were collapsed into one entry, and the mediated final response was incorrectly attributed to the subagent.
+- Unaffected paths (action cache hit, filler, sequential send, multi-agent) are unchanged.
 
 ### 1.19.7 (PATCH) -- Fix mojibake encoding in user input pipeline
 

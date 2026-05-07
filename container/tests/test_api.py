@@ -1138,8 +1138,8 @@ class TestTracesAPI:
         )
         assert resp.status_code == 404
 
-    async def test_trace_detail_returns_three_communication_entries(self, authed_client: httpx.AsyncClient):
-        """Trace detail should build 3 agent_communication entries for the full round-trip."""
+    async def test_trace_detail_returns_four_communication_entries(self, authed_client: httpx.AsyncClient):
+        """Trace detail should build 4 agent_communication entries for the full round-trip."""
         summary = {
             "trace_id": "t-comm-3",
             "conversation_id": "conv-1",
@@ -1188,19 +1188,27 @@ class TestTracesAPI:
         assert resp.status_code == 200
         data = resp.json()
         comms = data["agent_communication"]
-        assert len(comms) == 3
+        assert len(comms) == 4
+        # Step 1: user → orchestrator
         assert comms[0]["from_agent"] == "user"
         assert comms[0]["to_agent"] == "orchestrator"
         assert comms[0]["task"] == "turn on the light"
+        # Step 2: orchestrator → subagent (dispatch, no response yet)
         assert comms[1]["from_agent"] == "orchestrator"
         assert comms[1]["to_agent"] == "light-agent"
         assert comms[1]["task"] == "Turn on the light"
-        assert comms[1]["response"] == "Light turned on."
+        assert comms[1]["response"] == ""
+        # Step 3: subagent → orchestrator (raw response)
         assert comms[2]["from_agent"] == "light-agent"
         assert comms[2]["to_agent"] == "orchestrator"
         assert comms[2]["task"] == ""
-        assert comms[2]["response"] == "Done, light is on."
-        assert comms[2]["response_unchanged"] is False
+        assert comms[2]["response"] == "Light turned on."
+        # Step 4: orchestrator → user (final/mediated response)
+        assert comms[3]["from_agent"] == "orchestrator"
+        assert comms[3]["to_agent"] == "user"
+        assert comms[3]["task"] == ""
+        assert comms[3]["response"] == "Done, light is on."
+        assert comms[3]["response_unchanged"] is False
 
     async def test_trace_communication_task_pass_through(self, authed_client: httpx.AsyncClient):
         """When condensed_task == user_input, step 2 should have task_pass_through=True."""
@@ -1260,8 +1268,8 @@ class TestTracesAPI:
         assert resp.status_code == 200
         data = resp.json()
         comms = data["agent_communication"]
-        assert comms[1]["task_pass_through"] is True
-        assert comms[2]["response_unchanged"] is True
+        assert comms[1]["task_pass_through"] is True  # orchestrator→agent dispatch
+        assert comms[3]["response_unchanged"] is True  # orchestrator→user (no mediation)
 
 
 # ===================================================================

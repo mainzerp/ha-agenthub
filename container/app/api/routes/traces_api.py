@@ -525,22 +525,34 @@ async def get_trace_detail(trace_id: str):
                     }
                 )
             else:
-                # Without filler: compact format (backward compatible)
-                step2 = {
+                # Without filler: full 4-step flow matching the filler path
+                # Step 2: orchestrator dispatches task to target agent
+                step_dispatch = {
                     "from_agent": "orchestrator",
                     "to_agent": target,
                     "task": condensed,
-                    "response": agent_resp,
+                    "response": "",
                 }
                 if condensed == user_input:
-                    step2["task_pass_through"] = True
-                agent_communication.append(step2)
+                    step_dispatch["task_pass_through"] = True
+                agent_communication.append(step_dispatch)
                 _append_tool_calls(target)
 
+                # Step 3: target agent returns raw response to orchestrator
                 agent_communication.append(
                     {
                         "from_agent": target,
                         "to_agent": "orchestrator",
+                        "task": "",
+                        "response": agent_resp,
+                    }
+                )
+
+                # Step 4: orchestrator delivers final response to user
+                agent_communication.append(
+                    {
+                        "from_agent": "orchestrator",
+                        "to_agent": "user",
                         "task": "",
                         "response": final_response,
                         "response_unchanged": (agent_resp == final_response and not mediated),
