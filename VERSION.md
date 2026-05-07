@@ -1,8 +1,13 @@
 # Version
 
-**Current Version:** 1.19.8
+**Current Version:** 1.19.9
 
 ## Recent Changes
+
+### 1.19.9 (PATCH) -- Show follow-up indicator in trace list and detail view
+
+- Trace list now shows a `FOLLOW-UP` badge (teal) for traces that are part of a multi-turn session (conversation_turns non-empty).
+- Trace detail header shows a `FOLLOW-UP` badge with prior message count in the summary bar.
 
 ### 1.19.8 (PATCH) -- Fix agent communication flow in trace detail view
 
