@@ -1,8 +1,14 @@
 # Version
 
-**Current Version:** 1.19.6
+**Current Version:** 1.19.7
 
 ## Recent Changes
+
+### 1.19.7 (PATCH) -- Fix mojibake encoding in user input pipeline
+
+- German umlauts arriving double-encoded (UTF-8 bytes read as Latin-1, e.g. `KÃ¼che` instead of `Küche`) now get corrected in `prepare_user_text()` before sanitization and cache key generation.
+- Cache hits now work universally across all input sources (satellites, chat, companion app) regardless of encoding at the sender side.
+- Added `test_user_input.py` covering the fix and cross-source cache key consistency.
 
 ### 1.19.6 (PATCH) -- Fix event-loop-closed warnings in test suite
 
