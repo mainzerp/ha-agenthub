@@ -1,8 +1,14 @@
 # Version
 
-**Current Version:** 1.19.5
+**Current Version:** 1.19.6
 
 ## Recent Changes
+
+### 1.19.6 (PATCH) -- Fix event-loop-closed warnings in test suite
+
+- Replaced `asyncio.get_event_loop().run_until_complete()` calls with proper `async/await` in tests.
+- Added `shutdown_aiosqlite()` helper to join aiosqlite worker threads before the event loop closes, eliminating hundreds of `RuntimeError: Event loop is closed` warnings.
+- Added `_patch_aiosqlite_close` session fixture and `_reset_write_conn` autouse fixture for reliable teardown across parallel test workers.
 
 ### 1.19.5 (PATCH) -- Timer TTS bug fixes
 

@@ -637,3 +637,24 @@ class HAMimicClient:
 
             await asyncio.to_thread(_exit)
             self._client = None
+
+
+# ---------------------------------------------------------------------------
+# aiosqlite shutdown helper
+# ---------------------------------------------------------------------------
+
+
+async def shutdown_aiosqlite(conn) -> None:
+    """Close an aiosqlite connection and block until its worker thread exits.
+
+    aiosqlite's background thread may still be draining its queue after
+    ``await conn.close()`` returns.  Joining prevents pytest-asyncio from
+    closing the event loop while the thread is alive.
+    """
+    await conn.close()
+    try:
+        thread = conn._thread
+        if thread.is_alive():
+            thread.join(timeout=1.0)
+    except Exception:
+        pass

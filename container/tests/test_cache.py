@@ -1002,7 +1002,8 @@ class TestCacheManagerExtended:
     @pytest.mark.skip(
         reason="Phase 1 rewrite: missing event-loop setup; condensed_task carry covered in test_routing_cache_skip.py"
     )
-    def test_routing_skip_carries_condensed_task(self):
+    @pytest.mark.asyncio
+    async def test_routing_skip_carries_condensed_task(self):
         # v4: process() returns CacheResult with condensed_task from routing hit
         manager, store = self._make_manager()
         store.get.return_value = {"ids": [], "documents": [], "metadatas": []}
@@ -1025,9 +1026,7 @@ class TestCacheManagerExtended:
             ],
         }
         with patch("app.cache.cache_manager.track_cache_event", new_callable=AsyncMock):
-            import asyncio
-
-            result = asyncio.get_event_loop().run_until_complete(manager.process("turn on light"))
+            result = await manager.process("turn on light")
         assert result.hit_type == "routing_hit"
         assert result.condensed_task == "Turn on the light"
 
