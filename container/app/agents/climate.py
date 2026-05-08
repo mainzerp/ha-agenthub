@@ -37,7 +37,7 @@ class ClimateAgent(ActionableAgent):
         return AgentCard(
             agent_id="climate-agent",
             name="Climate Agent",
-            description="Controls climate, HVAC, fans, and humidifiers. Set temperature, mode, fan speed, humidity, and turn on/off. Reads environmental sensors and weather forecasts.",
+            description="Controls and queries climate/HVAC devices, fans, humidifiers, environmental sensors, and local weather conditions/forecasts. Set temperature, HVAC mode, fan speed, humidity, turn on/off. Control fans: speed, preset mode, oscillation, direction. Control humidifiers: target humidity, mode. Reads sensors: temperature, humidity, pressure, dew point, wind, precipitation. Queries weather entities for current conditions and forecasts.",
             skills=[
                 "temperature",
                 "hvac_mode",
