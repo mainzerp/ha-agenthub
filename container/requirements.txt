@@ -45,6 +45,7 @@ cryptography==46.0.7
 bcrypt==5.0.0
 python-multipart==0.0.27
 itsdangerous==2.2.0
+python-dotenv>=1.2.2  # CVE-2026-28684
 
 # Language detection
 langdetect==1.0.9
