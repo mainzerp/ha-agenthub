@@ -77,7 +77,7 @@ async def get_domain_agent_map(request: Request) -> dict[str, Any]:
         for c in custom:
             all_agents.append("custom-" + c["name"])
     except Exception:
-        pass
+        logger.debug("Failed to load custom agents for domain map", exc_info=True)
 
     # Merge: every domain from entity index + any domain that has rules
     all_domains = set(domains_counts.keys()) | set(domain_agents.keys())

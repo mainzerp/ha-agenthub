@@ -1,0 +1,16 @@
+# Bandit configuration for HA-AgentHub
+# Skips rules that produce excessive false positives in this codebase
+
+skips:
+  # B105: hardcoded_password_string - triggers on JSON empty strings ("token": "")
+  # and constant names like "ha_token", "container_api_key". These are not passwords.
+  - B105
+  # B311: random - triggers on random.random() for non-cryptographic uses
+  # (filler probability, reconnection jitter). Not a security issue.
+  - B311
+  # B608: hardcoded_sql_expressions - triggers on f-string SQL with validated
+  # column names and ? placeholders. All user input is parameterized.
+  - B608
+  # B104: hardcoded_bind_all_interfaces - default bind to 0.0.0.0 is intentional
+  # for containerized deployment and configurable at runtime.
+  - B104

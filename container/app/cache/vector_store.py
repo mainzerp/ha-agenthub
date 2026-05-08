@@ -101,7 +101,7 @@ class VectorStore:
                     self._client.heartbeat()
                     return
                 except Exception:
-                    pass
+                    logger.debug("ChromaDB heartbeat failed, will reinitialize", exc_info=True)
             logger.warning("ChromaDB client dead, reinitializing VectorStore")
             self._client = chromadb.PersistentClient(path=settings.chromadb_persist_dir)
             for name in (COLLECTION_ENTITY_INDEX, COLLECTION_ROUTING_CACHE, COLLECTION_ACTION_CACHE):

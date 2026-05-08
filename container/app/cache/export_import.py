@@ -120,7 +120,8 @@ def iter_export_chunks(
         "embedding_model": embedding_model,
     }
     header_json = json.dumps(header)
-    assert header_json.endswith("}")
+    if not header_json.endswith("}"):
+        raise ValueError("Expected header_json to end with '}'")
     yield (header_json[:-1] + ',"tiers":{').encode("utf-8")
 
     cache_by_tier = {
