@@ -958,29 +958,6 @@ class OrchestratorAgent(BaseAgent):
             ret_span["metadata"]["sanitized"] = False
             prior_turns = await self._get_turns(conversation_id)
             await self._store_turn(conversation_id, user_text, speech, agent_id=target_agent)
-            if span_collector:
-                try:
-                    from app.analytics.tracer import create_trace_summary
-
-                    await create_trace_summary(
-                        trace_id=span_collector.trace_id,
-                        conversation_id=conversation_id,
-                        user_input=user_text,
-                        final_response=speech,
-                        routing_agent=target_agent,
-                        routing_confidence=1.0,
-                        routing_duration_ms=None,
-                        condensed_task=user_text,
-                        agents=["orchestrator", target_agent],
-                        source=getattr(span_collector, "source", "api"),
-                        conversation_turns=prior_turns,
-                        device_id=getattr(task_context, "device_id", None),
-                        area_id=getattr(task_context, "area_id", None),
-                        device_name=getattr(task_context, "device_name", None),
-                        area_name=getattr(task_context, "area_name", None),
-                    )
-                except Exception:
-                    logger.warning("Failed to create trace summary", exc_info=True)
 
         language = (task_context.language if task_context else None) or "en"
         speech, vf_effective = await self._merge_voice_followup_and_organic(
@@ -990,6 +967,32 @@ class OrchestratorAgent(BaseAgent):
             language=language,
             has_error=False,
         )
+
+        if span_collector:
+            try:
+                from app.analytics.tracer import create_trace_summary
+
+                await create_trace_summary(
+                    trace_id=span_collector.trace_id,
+                    conversation_id=conversation_id,
+                    user_input=user_text,
+                    final_response=speech,
+                    routing_agent=target_agent,
+                    routing_confidence=1.0,
+                    routing_duration_ms=None,
+                    condensed_task=user_text,
+                    agents=["orchestrator", target_agent],
+                    source=getattr(span_collector, "source", "api"),
+                    conversation_turns=prior_turns,
+                    device_id=getattr(task_context, "device_id", None),
+                    area_id=getattr(task_context, "area_id", None),
+                    device_name=getattr(task_context, "device_name", None),
+                    area_name=getattr(task_context, "area_name", None),
+                    voice_followup=vf_effective,
+                )
+            except Exception:
+                logger.warning("Failed to create trace summary", exc_info=True)
+
         return {
             "speech": speech,
             "routed_to": target_agent,
@@ -1169,6 +1172,7 @@ class OrchestratorAgent(BaseAgent):
         turns: list[dict[str, Any]],
         *,
         task_context: TaskContext | None = None,
+        voice_followup: bool = False,
     ) -> None:
         """Create a trace summary from span data.
 
@@ -1205,6 +1209,7 @@ class OrchestratorAgent(BaseAgent):
                 area_id=getattr(task_context, "area_id", None),
                 device_name=getattr(task_context, "device_name", None),
                 area_name=getattr(task_context, "area_name", None),
+                voice_followup=voice_followup,
             )
         except Exception:
             logger.warning("Failed to create trace summary", exc_info=True)
@@ -1409,6 +1414,7 @@ class OrchestratorAgent(BaseAgent):
                     classifications,
                     turns,
                     task_context=task.context,
+                    voice_followup=voice_followup_effective,
                 )
         return speech, voice_followup_effective
 
@@ -1821,6 +1827,7 @@ class OrchestratorAgent(BaseAgent):
                         classifications,
                         turns,
                         task_context=task.context,
+                        voice_followup=voice_followup_effective,
                     )
         else:
             mediation_agent = "send-agent" if is_sequential_send else target_agent
@@ -2021,6 +2028,7 @@ class OrchestratorAgent(BaseAgent):
                         clf,
                         lang_turns,
                         task_context=task.context,
+                        voice_followup=vf_eff,
                     )
             mediated_text = strip_markdown(full_speech)
             final_chunk = {

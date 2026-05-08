@@ -107,9 +107,9 @@
                                 <div class="flex flex-wrap gap-xs">
                                     <span x-show="t.label" class="badge badge-blue text-2xs"
                                           x-text="t.label"></span>
-                                    <span x-show="t.conversation_turns && t.conversation_turns.length > 0"
+                                    <span x-show="t.voice_followup"
                                           class="badge badge-teal text-2xs"
-                                          :title="'Follow-up — ' + (t.conversation_turns ? t.conversation_turns.length : 0) + ' prior messages in session'">
+                                          title="AgentHub kept the microphone open for a follow-up">
                                         FOLLOW-UP
                                     </span>
                                 </div>

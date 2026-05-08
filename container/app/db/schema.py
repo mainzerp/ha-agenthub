@@ -345,6 +345,7 @@ async def _create_tables(db: aiosqlite.Connection) -> None:
             area_id TEXT,
             device_name TEXT,
             area_name TEXT,
+            voice_followup INTEGER DEFAULT 0,
             created_at TEXT NOT NULL DEFAULT (datetime('now'))
         )
     """)
@@ -1513,3 +1514,13 @@ async def _run_migrations(db: aiosqlite.Connection) -> None:
             ("timer-agent", "domain_include", "input_datetime", "calendar"),
         )
         await db.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (29)")
+
+    if current_version < 30:
+        # Migration 30: Add voice_followup column to trace_summary
+        try:
+            await db.execute("ALTER TABLE trace_summary ADD COLUMN voice_followup INTEGER DEFAULT 0")
+        except aiosqlite.OperationalError as e:
+            if "duplicate column name" not in str(e).lower():
+                logger.error("Migration failed adding column voice_followup: %s", e)
+                raise
+        await db.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (30)")

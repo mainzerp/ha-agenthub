@@ -418,6 +418,7 @@ async def create_trace_summary(
     area_id: str | None = None,
     device_name: str | None = None,
     area_name: str | None = None,
+    voice_followup: bool | None = None,
 ) -> None:
     """Create a trace_summary record. Fire-and-forget.
 
@@ -452,6 +453,7 @@ async def create_trace_summary(
                 "area_id": area_id,
                 "device_name": device_name,
                 "area_name": area_name,
+                "voice_followup": voice_followup,
             }
         )
     except Exception:

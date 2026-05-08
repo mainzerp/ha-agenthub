@@ -1,8 +1,17 @@
 # Version
 
-**Current Version:** 1.19.13
+**Current Version:** 1.19.14
 
 ## Recent Changes
+
+### 1.19.14 (PATCH) -- Fix follow-up badge to only show on voice follow-up
+
+- fix(traces): FOLLOW-UP badge now only appears when `voice_followup === true` (AgentHub actively keeps microphone open), not for every multi-turn session.
+- feat(db): Migration 30 adds `voice_followup INTEGER DEFAULT 0` column to `trace_summary`.
+- feat(tracer): `create_trace_summary` accepts new `voice_followup` parameter.
+- feat(repository): `TraceSummaryRepository` persists and returns `voice_followup`.
+- fix(orchestrator): `voice_followup_effective` is now passed through to trace creation in both normal and action-cache-hit paths.
+- fix(frontend): Badge logic in `traces.html` and `trace_detail.html` now uses `voice_followup` instead of `conversation_turns.length > 0`.
 
 ### 1.19.13 (PATCH) -- Fix follow-up badge showing for all traces in list view
 
