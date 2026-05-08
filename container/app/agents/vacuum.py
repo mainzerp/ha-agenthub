@@ -36,7 +36,7 @@ class VacuumAgent(ActionableAgent):
         return AgentCard(
             agent_id="vacuum-agent",
             name="Vacuum Agent",
-            description="Controls robot vacuums: start, pause, stop, return to base, clean spot, and set fan speed.",
+            description="Controls and queries robot vacuum cleaners: start cleaning, pause, stop, return to base, clean spot, locate, and set fan speed. Reports vacuum state including battery level, fan speed, and status. Lists all vacuum entities.",
             skills=[
                 "vacuum_control",
                 "start",

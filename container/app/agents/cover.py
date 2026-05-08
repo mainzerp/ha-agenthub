@@ -37,7 +37,7 @@ class CoverAgent(ActionableAgent):
         return AgentCard(
             agent_id="cover-agent",
             name="Cover Agent",
-            description="Controls covers, blinds, shutters, and garage doors: open, close, stop, set position, and tilt.",
+            description="Controls and queries covers, blinds, curtains, shutters, garage doors, gates, awnings, and windows: open, close, stop, set position, and tilt control. Reports cover status including current position and tilt position. Lists all cover entities.",
             skills=[
                 "cover_control",
                 "open",
