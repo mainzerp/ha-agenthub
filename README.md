@@ -9,7 +9,7 @@ A multi-agent AI assistant for Home Assistant with container-based A2A orchestra
 
 ## Features
 
-- **Multi-agent orchestration** -- Specialized agents for lights, music, climate, media, timers, scenes, automation, security, a general assistant, and `send` (delivery to phones, satellites, and notification targets), coordinated by a central orchestrator via the A2A protocol
+- **Multi-agent orchestration** -- 15+ specialized domain agents coordinated by a central orchestrator via the A2A protocol
 - **A2A protocol** -- JSON-RPC 2.0-based agent-to-agent communication with registry, dispatcher, and in-process transport
 - **Two-tier vector cache** -- Routing cache (skip intent classification) and action cache, formerly response cache (skip entire agent pipeline) using ChromaDB embeddings with configurable similarity thresholds
 - **Cache backup and restore** -- Export and import the routing and action caches as a portable JSON envelope via `/api/admin/cache/export` and `/api/admin/cache/import`
@@ -31,6 +31,38 @@ A multi-agent AI assistant for Home Assistant with container-based A2A orchestra
 - **Wikipedia Search Tool** -- MCP server integration for encyclopedic lookups
 - **Remote Logs API** -- In-memory ring-buffer log inspection with runtime level adjustment via admin endpoints
 - **Cache Management UI Enhancements** -- Per-entry cache deletion from the admin dashboard
+
+## Agents
+
+### Domain Agents (control HA entities)
+
+| Agent | HA Domains | Capabilities |
+|-------|-----------|-------------|
+| **Light Agent** | `light`, `switch`, `sensor` (illuminance) | On/off, toggle, brightness, color, color temperature |
+| **Climate Agent** | `climate`, `fan`, `humidifier`, `sensor`, `weather` | Temperature, HVAC mode, fan speed, humidity, weather queries |
+| **Media Agent** | `media_player` | Playback, volume, source selection |
+| **Music Agent** | `media_player` | Music-focused playback (radio, playlists) |
+| **Cover Agent** | `cover` | Open, close, stop, set position, tilt control |
+| **Vacuum Agent** | `vacuum` | Start, pause, stop, return to base, clean spot, set fan speed |
+| **Scene Agent** | `scene` | Scene activation |
+| **Timer Agent** | `timer`, `persistent_notification` | Timers, alarms, reminders |
+| **Automation Agent** | `automation` | Trigger automations |
+| **Security Agent** | `alarm_control_panel`, `lock`, `camera`, `sensor`, `binary_sensor` | Arm/disarm, lock/unlock, camera status |
+| **Calendar Agent** | `calendar` | Query events, add reminders |
+| **Lists Agent** | `todo` | Shopping and todo list management |
+| **Send Agent** | — | Deliver content to phones, satellites, and notification targets |
+
+### Infrastructure Agents
+
+| Agent | Purpose |
+|-------|---------|
+| **Orchestrator** | Intent classification, agent routing, mediation, and sequential dispatch |
+| **General Agent** | Fallback for general questions, web search, and unroutable requests |
+| **Rewrite Agent** | Response variation for cached hits to avoid repetitive answers |
+| **Filler Agent** | Generate interim TTS filler phrases while agents compute |
+| **Cancel Speech** | LLM-generated acknowledgement for dismiss intents ("never mind") |
+| **Wake Briefing Composer** | Compose spoken morning briefings for internal alarms |
+| **Alarm Monitor** | Monitor internal alarms and trigger wake briefings |
 
 ## Architecture
 
