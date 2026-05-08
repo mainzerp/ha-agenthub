@@ -1,5 +1,3 @@
-"""Agent implementations for agent-assist."""
-
 from app.agents.automation import AutomationAgent
 from app.agents.base import BaseAgent
 from app.agents.calendar import CalendarAgent

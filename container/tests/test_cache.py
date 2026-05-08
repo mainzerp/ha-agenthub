@@ -1,15 +1,4 @@
-"""Focused unit tests for the two-cache implementation.
-
-# Phase 1 triage (F1) — dead-block recovery (test_cache.py)
-# The triple-quoted block that wrapped lines 316-2044 has been removed.
-# Promoted (valid against v4 API, no changes needed): 24
-# Rewritten (ported from pre-v4 ResponseCache / _process_inner / old field names /
-#            _threshold / positional cache.store args): 25
-# Deleted (target removed surfaces: StructuredActionKey, _process_inner,
-#          _store_response_cache, rewrite_template_module, _make_replay_context,
-#          partial-threshold triplet, ResponseCache class, old eviction store signature,
-#          TestStoreResponseCacheCacheable entirely): 19
-"""
+"""Focused unit tests for the two-cache implementation."""
 
 from __future__ import annotations
 
@@ -619,12 +608,7 @@ class TestRoutingCacheExtended:
 
 
 # ---------------------------------------------------------------------------
-# Action cache extended tests (ported from dead block; ResponseCache -> ActionCache)
-# Deleted: test_lookup_partial_match, test_lookup_miss_below_partial (partial-threshold
-#          concept removed in v4); test_invalidate_deletes_entry (ActionCache has no
-#          public invalidate() method, uses invalidate_by_entry_id); test_get_stats
-#          hit_threshold/partial_threshold (v4 uses semantic_threshold only);
-#          test_load_config_from_db (response_cache module gone).
+# Action cache extended tests
 # ---------------------------------------------------------------------------
 
 
@@ -779,17 +763,7 @@ class TestActionCacheExtended:
 
 
 # ---------------------------------------------------------------------------
-# Cache manager extended tests (recovered from dead block)
-# Deleted: test_build_replay_context_returns_neutral_dict (undefined _make_replay_context)
-#          test_replay_context_has_no_language_strings (undefined rewrite_template_module + inspect)
-#          test_lookup_action_by_key_* (lookup_by_structured_key / StructuredActionKey removed)
-#          test_structured_key_hash_stable_across_field_order (StructuredActionKey removed)
-#          test_legacy_schema_v2_row_is_ignored_on_read (StructuredActionKey removed)
-#          test_store_response_disabled_skips_store (_response_cache_enabled field removed)
-#          test_store_response_enabled_delegates (store_response removed from manager)
-#          test_invalidate_response_delegates (invalidate_response removed from manager)
-#          test_action_hit_*_structured (structured= kwarg removed from apply_rewrite v4)
-#          test_cache_hit_with_rewrite_*_structured (same)
+# Cache manager extended tests
 # ---------------------------------------------------------------------------
 
 
@@ -1495,11 +1469,6 @@ class TestVectorStore:
 
 # ---------------------------------------------------------------------------
 # Cache trace visibility -- similarity propagation tests
-# Deleted: test_cache_result_includes_similarity_on_routing_hit (used _process_inner,
-#          removed in v4; rewritten below using process() async)
-#          test_cache_result_includes_similarity_on_miss (same)
-#          test_response_cache_lookup_returns_similarity_tuple (ResponseCache removed;
-#          covered by TestActionCache.test_lookup_hit_above_threshold above)
 # ---------------------------------------------------------------------------
 
 

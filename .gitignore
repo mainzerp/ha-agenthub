@@ -57,6 +57,7 @@ htmlcov/
 # Local environment overrides
 .env.local
 .env.*.local
+secrets/
 
 # Claude Code per-developer overrides
 CLAUDE.local.md

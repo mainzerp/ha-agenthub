@@ -178,13 +178,6 @@ def _matches_where(meta: dict, where: dict) -> bool:
     return True
 
 
-def _cosine(a: list[float], b: list[float]) -> float:
-    s = 0.0
-    for x, y in zip(a, b, strict=False):
-        s += x * y
-    return s
-
-
 # ---------------------------------------------------------------------------
 # Pipeline construction
 # ---------------------------------------------------------------------------

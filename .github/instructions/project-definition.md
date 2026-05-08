@@ -2,7 +2,7 @@
 
 HA-AgentHub is a multi-agent Home Assistant assistant built around a container execution engine and a thin Home Assistant bridge.
 
-This document describes the repository as it exists today. Planned or partial work is tracked in [docs/roadmap.md](../../docs/roadmap.md) instead of being described as current behavior.
+This document describes the repository as it exists today. Planned or partial work is tracked in [TODO.md](TODO.md) instead of being described as current behavior.
 
 > Naming note: the public product name is `HA-AgentHub`. Some internal and runtime identifiers still use legacy `agent-assist` naming for backward compatibility, including local compose service names, database and cookie prefixes, and cache export tags.
 
@@ -355,7 +355,6 @@ The current deployment target is a standalone Docker container connecting back t
 
 ```text
 .github/
-  copilot-instructions.md
   instructions/
     project-definition.md
 
@@ -363,8 +362,6 @@ container/
   Dockerfile
   docker-compose.yml               # Published-image / deployment compose file
   docker-compose_local.yml         # Local-build compose file with legacy runtime naming
-  check_config.py
-  check_spans.py
   requirements.txt
   requirements-dev.txt
   app/
@@ -540,6 +537,6 @@ Entity-index maintenance is currently described by startup priming, Home Assista
 
 ## Roadmap / Not Yet Implemented
 
-Planned and not-yet-implemented work is tracked in [docs/roadmap.md](../../docs/roadmap.md).
+Planned and not-yet-implemented work is tracked in [TODO.md](TODO.md).
 
 This document stays focused on current shipped behavior.

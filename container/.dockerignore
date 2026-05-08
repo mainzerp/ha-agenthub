@@ -9,7 +9,6 @@ __pycache__/
 conftest.py
 pyproject.toml
 requirements-dev.txt
-check_config.py
 .github/
 .vscode/
 .kimi/

@@ -1,8 +1,3 @@
-"""Database access layer for agent-assist.
-
-Provides async SQLite operations for all structured data.
-"""
-
 from app.db.repository import (
     AdminAccountRepository,
     AgentConfigRepository,

@@ -2,11 +2,10 @@
 
 A multi-agent AI assistant for Home Assistant with container-based A2A orchestration, two-tier vector caching, hybrid entity matching, MCP tool integration, and a plugin system.
 
-![Test](https://github.com/mainzerp/ha-agenthub/actions/workflows/test.yml/badge.svg?branch=main)
-![Lint](https://github.com/mainzerp/ha-agenthub/actions/workflows/lint.yml/badge.svg?branch=main)
-![Docker Build](https://github.com/mainzerp/ha-agenthub/actions/workflows/docker-build.yml/badge.svg?branch=main)
-![HACS Validation](https://github.com/mainzerp/ha-agenthub/actions/workflows/hacs-validation.yml/badge.svg?branch=main)
-![Release](https://github.com/mainzerp/ha-agenthub/actions/workflows/release.yml/badge.svg)
+![Test](https://github.com/mainzerp/ha-agenthub/actions/workflows/ci.yml/badge.svg?branch=main&job=quality)
+![Lint](https://github.com/mainzerp/ha-agenthub/actions/workflows/ci.yml/badge.svg?branch=main&job=quality)
+![Docker Build](https://github.com/mainzerp/ha-agenthub/actions/workflows/ci.yml/badge.svg?branch=main&job=docker)
+![Release](https://github.com/mainzerp/ha-agenthub/actions/workflows/ci.yml/badge.svg?branch=main&job=release)
 
 ## Features
 
