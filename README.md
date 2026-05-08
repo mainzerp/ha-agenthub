@@ -23,12 +23,6 @@ A multi-agent AI assistant for Home Assistant with container-based A2A orchestra
 - **Analytics and tracing** -- Request counts, cache hit rates, latency tracking, token usage, and per-request trace span Gantt visualization, with per-turn tracing on `/ws/conversation`
 - **Voice experience** -- Filler / interim TTS, voice-followup, cancel-intent ("never mind"), and repeat-turn coalescing in the HA integration
 - **Real-pipeline scenario tests** -- YAML-driven end-to-end test framework under `container/tests/scenarios/` exercising the full orchestrator pipeline against a curated HA snapshot
-- **Lists Agent** -- Shopping and todo list management (create, add, remove, check off items)
-- **Calendar Agent** -- Query and manage calendar events, reminders, and schedules
-- **Wake Briefing** -- Spoken morning briefing with weather, calendar, news, and optional sensor facts for internal alarms
-- **Cancel Speech** -- LLM-generated cancel acknowledgement for dismiss intents ("never mind", "stop")
-- **Alarm Monitor** -- Monitors internal alarms and triggers wake briefings
-- **Wikipedia Search Tool** -- MCP server integration for encyclopedic lookups
 - **Remote Logs API** -- In-memory ring-buffer log inspection with runtime level adjustment via admin endpoints
 - **Cache Management UI Enhancements** -- Per-entry cache deletion from the admin dashboard
 
@@ -63,6 +57,17 @@ A multi-agent AI assistant for Home Assistant with container-based A2A orchestra
 | **Cancel Speech** | LLM-generated acknowledgement for dismiss intents ("never mind") |
 | **Wake Briefing Composer** | Compose spoken morning briefings for internal alarms |
 | **Alarm Monitor** | Monitor internal alarms and trigger wake briefings |
+
+### MCP Tools
+
+Tools are external capabilities connected via the Model Context Protocol (MCP) and can be assigned to any agent.
+
+| Tool | Transport | Description |
+|------|-----------|-------------|
+| **Wikipedia Search** | stdio | Search Wikipedia articles (`wikipedia_search`) and retrieve summaries (`wikipedia_summary`) |
+| **DuckDuckGo Search** | stdio | Web search via DuckDuckGo |
+
+Custom MCP servers can be added through the admin dashboard (stdio or SSE transports).
 
 ## Architecture
 
