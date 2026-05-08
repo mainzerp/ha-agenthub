@@ -26,7 +26,7 @@ def _params():
         try:
             sc = load_scenario(p)
             if sc.xfail:
-                marks.append(pytest.mark.xfail(strict=False, reason=sc.xfail))
+                marks.append(pytest.mark.xfail(reason=sc.xfail))
         except Exception:
             pass
         out.append(pytest.param(p, id=_scenario_id(p), marks=marks))

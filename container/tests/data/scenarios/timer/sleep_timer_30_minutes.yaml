@@ -4,7 +4,6 @@ description: Start a 30 minute sleep timer for the bedroom speaker
 snapshot: home_default
 language: en
 context: {source: ha, area_id: bedroom, device_id: satellite_bedroom}
-xfail: "sleep_timer needs media_player presence + DelayedTaskManager hookup"
 preconditions:
   entity_overrides:
     - {entity_id: timer.bedroom_sleep, state: "idle"}

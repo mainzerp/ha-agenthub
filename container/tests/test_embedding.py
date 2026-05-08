@@ -41,3 +41,56 @@ async def test_embed_batch_rate_limit_retries_with_asyncio_sleep():
     assert call_count == 2
     mock_sleep.assert_awaited_once()
     assert result == [[0.1, 0.2, 0.3]]
+
+
+class TestChromaEmbeddingFunction:
+    """CRIT-3: ChromaEmbeddingFunction must not deadlock when called from the event loop."""
+
+    def test_call_from_event_loop_does_not_deadlock(self):
+        """Calling __call__ from the event loop thread must complete without deadlock."""
+        import asyncio
+
+        from app.cache.embedding import ChromaEmbeddingFunction, EmbeddingEngine
+
+        engine = EmbeddingEngine()
+        engine._provider = "local"
+
+        async def _fake_embed(texts):
+            return [[0.1, 0.2, 0.3]]
+
+        engine.embed_batch = _fake_embed
+        fn = ChromaEmbeddingFunction(engine)
+
+        async def _run():
+            return fn(["hello"])
+
+        result = asyncio.run(_run())
+        assert len(result) == 1
+        assert list(result[0]) == [0.1, 0.2, 0.3]
+
+    def test_call_from_thread_does_not_deadlock(self):
+        """Calling __call__ from a non-event-loop thread must complete without deadlock."""
+        import threading
+
+        from app.cache.embedding import ChromaEmbeddingFunction, EmbeddingEngine
+
+        engine = EmbeddingEngine()
+        engine._provider = "local"
+
+        async def _fake_embed(texts):
+            return [[0.4, 0.5, 0.6]]
+
+        engine.embed_batch = _fake_embed
+        fn = ChromaEmbeddingFunction(engine)
+
+        results = []
+
+        def _target():
+            results.append(fn(["world"]))
+
+        t = threading.Thread(target=_target)
+        t.start()
+        t.join(timeout=5)
+        assert not t.is_alive(), "Thread deadlocked"
+        assert len(results) == 1
+        assert list(results[0][0]) == [0.4, 0.5, 0.6]

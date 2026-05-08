@@ -166,3 +166,24 @@ class TestCsrfDashboardLogin:
             # Reaches the handler (renders error page) instead of CSRF 401.
             assert resp.status_code == 200
             assert "Invalid credentials" in resp.text
+
+
+class TestCsrfTokenRotation:
+    def test_ensure_csrf_token_returns_existing_when_session_present(self):
+        """CRIT-2: calling ensure_csrf_token twice with the same request must return the same token."""
+        from unittest.mock import MagicMock
+
+        from app.security.auth import CSRF_COOKIE_NAME, SESSION_COOKIE_NAME, ensure_csrf_token
+
+        token = "existing-token-value"
+        request = MagicMock()
+        request.cookies = {
+            CSRF_COOKIE_NAME: token,
+            SESSION_COOKIE_NAME: "session-value",
+        }
+
+        first = ensure_csrf_token(request)
+        second = ensure_csrf_token(request)
+        assert first == token
+        assert second == token
+        assert first == second
