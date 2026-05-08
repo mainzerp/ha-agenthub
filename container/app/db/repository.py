@@ -1552,6 +1552,9 @@ class TraceSummaryRepository:
                 if row.get("agent_instructions"):
                     with contextlib.suppress(json.JSONDecodeError, TypeError):
                         row["agent_instructions"] = json.loads(row["agent_instructions"])
+                if row.get("conversation_turns"):
+                    with contextlib.suppress(json.JSONDecodeError, TypeError):
+                        row["conversation_turns"] = json.loads(row["conversation_turns"])
             return rows
 
     @staticmethod

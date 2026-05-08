@@ -1,8 +1,12 @@
 # Version
 
-**Current Version:** 1.19.12
+**Current Version:** 1.19.13
 
 ## Recent Changes
+
+### 1.19.13 (PATCH) -- Fix follow-up badge showing for all traces in list view
+
+- fix(traces): deserialize `conversation_turns` in `TraceSummaryRepository.list_filtered()` so the FOLLOW-UP badge only appears for actual multi-turn sessions.
 
 ### 1.19.12 (PATCH) -- Simplify CI workflow and bump version
 
