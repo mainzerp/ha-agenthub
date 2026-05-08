@@ -43,12 +43,11 @@ jobs:
       - name: Check formatting
         run: ruff format --check container/ custom_components/
 
-      - name: Run tests
-        run: |
-          cd container
-          pytest tests/ -n auto -q --tb=short --cov=app --cov-report=xml
-          cd ..
-          pytest custom_components/tests/ -v --tb=short
+      - name: Run container tests
+        run: cd container && python -m pytest tests/ -n auto -q --tb=short --cov=app --cov-report=xml --cov-report=term-missing --cov-fail-under=72
+
+      - name: Run HA tests
+        run: python -m pytest custom_components/tests/ -v --tb=short
 
       - name: Upload coverage report
         if: always()
