@@ -1,8 +1,16 @@
 # Version
 
-**Current Version:** 1.19.11
+**Current Version:** 1.19.12
 
 ## Recent Changes
+
+### 1.19.12 (PATCH) -- Simplify CI workflow and bump version
+
+- ci: simplify workflow from 10 jobs to 4 jobs (quality, security, docker, release)
+- ci: remove typecheck, changes, and hacs jobs
+- ci: quality job combines lint, format check, test, and coverage upload
+- ci: security job combines bandit and pip-audit
+- ci: docker job only builds/pushes on main branch and tags
 
 ### 1.19.11 (PATCH) -- Deep code review: critical fixes, security hardening, exception handling, test quality
 

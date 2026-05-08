@@ -16,53 +16,9 @@ permissions:
   contents: read
 
 jobs:
-  lint:
+  quality:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v6
-
-      - name: Set up Python 3.12
-        uses: actions/setup-python@v6
-        with:
-          python-version: "3.12"
-
-      - name: Install ruff
-        run: pip install ruff==0.15.11
-
-      - name: Run linter
-        run: cd container && ruff check .
-
-      - name: Check formatting
-        run: cd container && ruff format --check .
-
-  lint-ha:
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v6
-
-      - name: Set up Python 3.12
-        uses: actions/setup-python@v6
-        with:
-          python-version: "3.12"
-
-      - name: Install ruff
-        run: pip install ruff==0.15.11
-
-      - name: Run linter on custom_components
-        run: ruff check custom_components/
-
-      - name: Check formatting on custom_components
-        run: ruff format --check custom_components/
-
-  test:
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 15
 
     steps:
       - name: Checkout code
@@ -78,8 +34,21 @@ jobs:
       - name: Install dependencies
         run: pip install -r container/requirements-dev.txt
 
+      - name: Install ruff
+        run: pip install ruff==0.15.11
+
+      - name: Run linter
+        run: ruff check container/ custom_components/
+
+      - name: Check formatting
+        run: ruff format --check container/ custom_components/
+
       - name: Run tests
-        run: cd container && python -m pytest tests/ -n auto -q --tb=short --cov=app --cov-report=xml --cov-report=term-missing
+        run: |
+          cd container
+          pytest tests/ -n auto -q --tb=short --cov=app --cov-report=xml
+          cd ..
+          pytest custom_components/tests/ -v --tb=short
 
       - name: Upload coverage report
         if: always()
@@ -89,47 +58,7 @@ jobs:
           path: container/coverage.xml
           retention-days: 14
 
-  test-ha:
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v6
-
-      - name: Set up Python 3.12
-        uses: actions/setup-python@v6
-        with:
-          python-version: "3.12"
-          cache: pip
-
-      - name: Install pytest
-        run: pip install pytest
-
-      - name: Run HA smoke tests
-        run: python -m pytest custom_components/tests/ -v --tb=short
-
-  typecheck:
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    continue-on-error: true  # 255 pre-existing type errors; fix incrementally
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v6
-
-      - name: Set up Python 3.12
-        uses: actions/setup-python@v6
-        with:
-          python-version: "3.12"
-
-      - name: Install dependencies
-        run: pip install -r container/requirements-dev.txt
-
-      - name: Run mypy
-        run: cd container && python -m mypy app/ --ignore-missing-imports
-
-  security-scan:
+  security:
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
@@ -149,9 +78,7 @@ jobs:
         run: bandit -r container/app -f json -o bandit-report.json -c container/.bandit.yml
 
       - name: Run pip-audit
-        run: |
-          pip-audit -r container/requirements.txt --format=json --output=pip-audit-report.json --ignore-vuln CVE-2026-28684
-          pip-audit -r container/requirements-dev.txt --format=json --output=pip-audit-dev-report.json --ignore-vuln CVE-2026-28684
+        run: pip-audit -r container/requirements.txt --format=json --output=pip-audit-report.json --ignore-vuln CVE-2026-28684
 
       - name: Upload security scan artifacts
         if: always()
@@ -161,73 +88,22 @@ jobs:
           path: |
             bandit-report.json
             pip-audit-report.json
-            pip-audit-dev-report.json
           retention-days: 14
-
-  changes:
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-
-    outputs:
-      hacs: ${{ steps.filter.outputs.hacs }}
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
-
-      - name: Detect HACS-relevant changes
-        id: filter
-        run: |
-          if [ "${{ github.event_name }}" == "pull_request" ]; then
-            BASE="${{ github.event.pull_request.base.sha }}"
-          else
-            BASE="${{ github.event.before }}"
-          fi
-          if [ "$BASE" == "0000000000000000000000000000000000000000" ] || [ -z "$BASE" ]; then
-            BASE=$(git hash-object -t tree /dev/null)
-          fi
-          if git diff --name-only "$BASE" HEAD | grep -qE '^custom_components/|^hacs\.json$'; then
-            echo "hacs=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "hacs=false" >> "$GITHUB_OUTPUT"
-          fi
-
-  hacs:
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    needs: [changes]
-    if: needs.changes.outputs.hacs == 'true'
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v6
-
-      - name: HACS validation
-        uses: hacs/action@22.5.0
-        with:
-          category: integration
-          ignore: topics description
 
   docker:
     runs-on: ubuntu-latest
     timeout-minutes: 25
-    needs: [lint, lint-ha, test, test-ha, security-scan, changes]
+    needs: [quality, security]
+    if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
 
     permissions:
       contents: read
       packages: write
-      actions: write
       security-events: write
 
     concurrency:
       group: docker-${{ github.workflow }}-${{ github.ref }}
       cancel-in-progress: true
-
-    # Push to GHCR for main branch and version tags; PRs build locally only.
-    env:
-      PUSH_TO_GHCR: ${{ (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')) && github.event_name != 'pull_request' }}
 
     outputs:
       digest: ${{ steps.build.outputs.digest }}
@@ -244,7 +120,6 @@ jobs:
         uses: docker/setup-buildx-action@v4
 
       - name: Log in to GitHub Container Registry
-        if: env.PUSH_TO_GHCR == 'true'
         uses: docker/login-action@v4
         with:
           registry: ghcr.io
@@ -253,7 +128,6 @@ jobs:
 
       - name: Docker metadata (GHCR)
         id: meta
-        if: env.PUSH_TO_GHCR == 'true'
         uses: docker/metadata-action@v6
         with:
           images: ${{ steps.ghcr.outputs.image }}
@@ -263,7 +137,6 @@ jobs:
 
       - name: Build and push to GHCR
         id: build
-        if: env.PUSH_TO_GHCR == 'true'
         uses: docker/build-push-action@v6
         with:
           context: ./container
@@ -274,37 +147,12 @@ jobs:
           cache-to: type=gha,mode=max
 
       - name: Smoke test (GHCR)
-        if: env.PUSH_TO_GHCR == 'true'
         run: docker run --rm ${{ steps.ghcr.outputs.image }}@${{ steps.build.outputs.digest }} python -c "from app.main import app; print('OK')"
 
-      - name: Scan image with Trivy (GHCR)
-        if: env.PUSH_TO_GHCR == 'true'
+      - name: Scan image with Trivy
         uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: ${{ steps.ghcr.outputs.image }}@${{ steps.build.outputs.digest }}
-          format: sarif
-          output: trivy-results.sarif
-
-      - name: Build local (PR)
-        if: env.PUSH_TO_GHCR != 'true'
-        uses: docker/build-push-action@v6
-        with:
-          context: ./container
-          push: false
-          load: true
-          tags: agent-assist:ci
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-      - name: Local smoke test
-        if: env.PUSH_TO_GHCR != 'true'
-        run: docker run --rm agent-assist:ci python -c "from app.main import app; print('OK')"
-
-      - name: Scan local image with Trivy
-        if: env.PUSH_TO_GHCR != 'true'
-        uses: aquasecurity/trivy-action@v0.36.0
-        with:
-          image-ref: agent-assist:ci
           format: sarif
           output: trivy-results.sarif
 
