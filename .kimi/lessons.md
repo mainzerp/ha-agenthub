@@ -62,7 +62,7 @@
 - **When to use:** Every planning phase.
 
 ### Architecture — Subagent Type Discipline
-- **Pattern:** Always set `subagent_type="coder"` for every subagent invocation. Use prompt-enforced tool restrictions (not built-in types) to control access: Research = Read/Grep/Glob/WriteFile (docs only); Planning = Read/Grep/Glob/WriteFile (docs only); Implementation = full toolset.
+- **Pattern:** Always set `subagent_type="general"` for every subagent invocation. Use prompt-enforced tool restrictions (not built-in types) to control access: Research = Read/Grep/Glob/Write (docs only); Planning = Read/Grep/Glob/Write (docs only); Implementation = full toolset.
 - **When to use:** Every subagent spawn.
 
 ### Architecture — Parallel Agent Execution
@@ -178,7 +178,7 @@
 - Run `pytest tests/ -n auto` before pushing container changes, but verify unexpected failures with a sequential run.
 - Never delete Docker volumes without explicit user consent; prefer container recreation or targeted file cleanup.
 - The orchestrator's `_classify` must return `user_text` on cache hits, and streaming done-chunks must carry `routed_to` / `action_executed` for bridge tests.
-- All subagent invocations must use `subagent_type="coder"` with prompt-enforced tool restrictions.
+- All subagent invocations must use `subagent_type="general"` with prompt-enforced tool restrictions.
 
 ## Session Log
 
@@ -221,7 +221,7 @@
 
 ### 2026-05-02 — Meta-Workflow Fixes
 - Plan subagent was consistently hanging in refinement loops, producing 50-80 KB plans with 30+ heading levels. Fixed by adding hard anti-loop rules to AGENTS.md.
-- `explore` and `plan` subagent types have NO write access. Fixed AGENTS.md: all phases now use `coder` subagent_type with prompt-enforced tool restrictions.
+- `explore` and `plan` subagent types have NO write access. Fixed AGENTS.md: all phases now use `general` subagent_type with prompt-enforced tool restrictions.
 - Added parallel agent execution rules to AGENTS.md: up to 3 parallel research agents + Synthesis; up to 3 parallel implementation agents + Merge & Verify; Planning remains sequential.
 
 ### 2026-05-04

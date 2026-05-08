@@ -166,7 +166,7 @@ def ensure_csrf_token(request: Request) -> str:
     """
     existing = request.cookies.get(CSRF_COOKIE_NAME)
     if existing and request.cookies.get(SESSION_COOKIE_NAME):
-        return secrets.token_urlsafe(32)
+        return existing
     if existing:
         return existing
     return secrets.token_urlsafe(32)

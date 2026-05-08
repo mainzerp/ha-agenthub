@@ -71,3 +71,6 @@ kimi.exe
 node_modules/
 package.json
 package-lock.json
+
+# Kilo config with secrets
+.kilo/kilo.json

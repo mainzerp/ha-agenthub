@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import logging
 import os
 from contextlib import contextmanager
@@ -72,7 +73,7 @@ class EmbeddingEngine:
 
                     hf_logging.disable_progress_bars()
             except Exception:
-                pass
+                logger.debug("Failed to disable HuggingFace progress bars", exc_info=True)
 
             with _suppress_model_load_startup_logs():
                 self._local_model = SentenceTransformer(self._model_name)
@@ -157,10 +158,13 @@ class ChromaEmbeddingFunction(chromadb.EmbeddingFunction[list[str]]):
     def __call__(self, input: list[str]) -> list[list[float]]:
         coro = self._engine.embed_batch(input)
         try:
-            loop = asyncio.get_running_loop()
+            asyncio.get_running_loop()
         except RuntimeError:
             return asyncio.run(coro)
-        return asyncio.run_coroutine_threadsafe(coro, loop).result()
+        # Avoid blocking the event loop thread with .result() (deadlock).
+        # Run the coroutine in a fresh background thread instead.
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            return pool.submit(asyncio.run, coro).result()
 
 
 _engine: EmbeddingEngine | None = None

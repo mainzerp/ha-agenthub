@@ -312,7 +312,7 @@ class EntityMatcher:
                 result.signal_scores["phonetic"] = ph_score
 
         # Compute weighted score for each candidate
-        query.lower().strip()
+        query = query.lower().strip()
         query_containment = _normalize_for_containment(query)
 
         # Batch-fetch metadata for all candidates to avoid N+1 ChromaDB calls.

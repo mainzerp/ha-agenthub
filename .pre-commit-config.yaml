@@ -25,6 +25,6 @@ repos:
     rev: 1.7.9
     hooks:
       - id: bandit
-        args: ["-r", "container/app", "-ll"]
-        files: ^container/
+        args: ["-r", "container/app", "container/tests", "custom_components", "-ll"]
+        files: ^(container/|custom_components/)
         pass_filenames: false
