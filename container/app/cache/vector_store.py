@@ -79,10 +79,10 @@ class VectorStore:
         else:
             logger.info("Dropped legacy Chroma collection %s", COLLECTION_RESPONSE_CACHE)
 
-    def _is_alive(self) -> bool:
+    async def _is_alive(self) -> bool:
         """Check if the ChromaDB client is still responsive."""
         try:
-            self._client.heartbeat()
+            await asyncio.to_thread(self._client.heartbeat)
             return True
         except Exception:
             return False
@@ -92,12 +92,16 @@ class VectorStore:
 
         P3-3: guarded by ``_reinit_lock`` so parallel ``add`` / ``upsert``
         retries cannot both rebuild the client. The double-checked
-        ``_is_alive`` guard inside the lock makes the second waiter a
+        heartbeat guard inside the lock makes the second waiter a
         no-op when the first reinit already restored a working client.
         """
         with self._reinit_lock:
-            if self._client is not None and self._is_alive():
-                return
+            if self._client is not None:
+                try:
+                    self._client.heartbeat()
+                    return
+                except Exception:
+                    pass
             logger.warning("ChromaDB client dead, reinitializing VectorStore")
             self._client = chromadb.PersistentClient(path=settings.chromadb_persist_dir)
             for name in (COLLECTION_ENTITY_INDEX, COLLECTION_ROUTING_CACHE, COLLECTION_ACTION_CACHE):
@@ -339,7 +343,7 @@ _store_init_lock = asyncio.Lock()
 async def get_vector_store() -> VectorStore:
     """Return the singleton VectorStore, initializing on first call."""
     global _store
-    if _store is not None and not _store._is_alive():
+    if _store is not None and not await _store._is_alive():
         logger.warning("VectorStore singleton has dead client, resetting")
         _store = None
     if _store is None:
