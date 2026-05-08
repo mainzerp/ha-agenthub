@@ -4,6 +4,26 @@
 
 ## Recent Changes
 
+Track changes since `v1.20.0` here.
+
+## Version History
+
+### 1.20.0 (MINOR) -- Cover Agent, Vacuum Agent, and Climate Agent fan/humidifier support
+
+- feat(agent): New Cover Agent (`cover-agent`) controls blinds, curtains, shutters, garage doors, gates, awnings, and windows via HA `cover` domain services: open, close, stop, set position, and tilt actions.
+- feat(agent): New Vacuum Agent (`vacuum-agent`) controls robot vacuums via HA `vacuum` domain services: start, pause, stop, return to base, clean spot, set fan speed, locate, and send custom commands.
+- feat(agent): Climate Agent extended with `fan` and `humidifier` domain support. Generic `turn_on`/`turn_off` actions resolve the correct HA service domain at runtime based on the matched entity.
+- feat(agent): New fan actions: `set_fan_percentage`, `set_fan_preset_mode`, `fan_oscillate`, `set_fan_direction`.
+- feat(agent): New humidifier actions: `set_humidifier_humidity`, `set_humidifier_mode`.
+- feat(db): Migration 31 adds default entity visibility rules for `cover-agent` -> `cover`, `vacuum-agent` -> `vacuum`, and `climate-agent` -> `fan`/`humidifier`.
+- feat(db): Migration 32 adds `cover-agent` and `vacuum-agent` to `agent_configs`, updates `climate-agent` description.
+- feat(api): `domain_agent_map_api.py` includes `cover-agent` and `vacuum-agent` in `BUILT_IN_AGENTS`.
+- fix(readme): Updated README workflow badges to use shields.io with labeled CI jobs.
+- fix(agent): Corrected Vacuum Agent registration in `runtime_setup.py` (was in `phase2_agents` requiring DB config, now directly registered like other domain agents).
+- fix(agent): Restored detailed AgentCard descriptions for orchestrator routing after accidental shortening.
+- chore(repo): Removed unused diagnostic scripts (`check_config.py`, `check_spans.py`), stale `.github/copilot-instructions.md`, dead legacy comments from `__init__.py` files, and cleaned up SubAgent artifacts.
+- ci(docker): Only build image on tagged releases.
+
 ### 1.19.14 (PATCH) -- Fix follow-up badge to only show on voice follow-up
 
 - fix(traces): FOLLOW-UP badge now only appears when `voice_followup === true` (AgentHub actively keeps microphone open), not for every multi-turn session.
@@ -29,10 +49,10 @@
 
 - fix(entity): assign result of query.lower().strip() in matcher (containment scoring bug)
 - fix(auth): stop regenerating CSRF token on every request (multi-tab race condition)
-- fix(cache): avoid blocking .result() in ChromaEmbeddingFunction async bridge (deadlock risk)
+- fix(cache): avoid blocking `.result()` in ChromaEmbeddingFunction async bridge (deadlock risk)
 - fix(cache): run ChromaDB heartbeat off event loop (Prime Directive 9 compliance)
 - fix(security): eager-load Fernet key during startup lifespan (blocking I/O remediation)
-- fix(db): create SQLite directory off event loop via asyncio.to_thread
+- fix(db): create SQLite directory off event loop via `asyncio.to_thread`
 - fix(api): do not leak exception details over WebSocket (information disclosure)
 - fix(admin): remove API key substring disclosure from LLM providers endpoint
 - refactor: narrow 321+ bare `except Exception` handlers and remove 30+ silent `pass` in except blocks
@@ -41,10 +61,10 @@
 
 ### 1.19.10 (PATCH) -- Enforce 3-word minimum on cancel-interaction TTS responses
 
-- Deterministic fallbacks changed: "Alles klar." → "Alles klar, verstanden." and "Okay." → "Okay, got it."
+- Deterministic fallbacks changed: "Alles klar." -> "Alles klar, verstanden." and "Okay." -> "Okay, got it."
 - `_is_acceptable()` now rejects LLM-generated responses shorter than 3 words (falls back to longer deterministic phrase).
 - Cancel speech prompt updated to require at least 3 words and at most 10.
-- Ensures cancel-interaction TTS audio is always ≥ ~1 second.
+- Ensures cancel-interaction TTS audio is always >= ~1 second.
 
 ### 1.19.9 (PATCH) -- Show follow-up indicator in trace list and detail view
 
@@ -53,8 +73,8 @@
 
 ### 1.19.8 (PATCH) -- Fix agent communication flow in trace detail view
 
-- Agent Communication now shows the full 4-step flow for single-agent traces: user → orchestrator → subagent → orchestrator → user.
-- Previously the orchestrator→subagent dispatch and raw subagent response were collapsed into one entry, and the mediated final response was incorrectly attributed to the subagent.
+- Agent Communication now shows the full 4-step flow for single-agent traces: user -> orchestrator -> subagent -> orchestrator -> user.
+- Previously the orchestrator->subagent dispatch and raw subagent response were collapsed into one entry, and the mediated final response was incorrectly attributed to the subagent.
 - Unaffected paths (action cache hit, filler, sequential send, multi-agent) are unchanged.
 
 ### 1.19.7 (PATCH) -- Fix mojibake encoding in user input pipeline
@@ -123,8 +143,6 @@
 - **Logging improvements:**
   - `LogBufferHandler` now captures `exc_info` traceback correctly.
   - Fixed reversed filtered log entries in `get_entries` method.
-
-## Version History
 
 ### 1.18.0 (MINOR) -- Multilingual orchestrator & code-review hardening
 
@@ -280,10 +298,10 @@
 
 - HA bridge: fixed satellite stuck in "processing" with no audio after a filler-then-final response, and now audibly bridges the agent compute time. The integration ends the originating satellite's active assist_pipeline run with the filler text as the spoken result, so the user hears the verbal acknowledgement within ~1 s of finishing speaking and the satellite's LEDs return to `idle` cleanly. The actual final answer is then pushed via a separate `assist_satellite.announce` call once the satellite is observed back in `idle`, so the announce no longer collides with the active pipeline.
 - HA bridge: WebSocket ownership transfers from the foreground conversation call to a background "push" task when a filler frame arrives first; the foreground returns the filler ConversationResult immediately and the background continues reading the WS for the final, watches the satellite state, and dispatches the announce only after the satellite is idle. Push tasks are tracked per satellite (one in-flight per satellite; supersession cancels the previous task) and are registered as HA background tasks so they are cancelled on integration reload.
-- HA bridge: push aborts cleanly if the user starts a new turn before the announce fires (satellite re-enters `listening`/`processing` after the filler's `responding`→`idle` cycle), preventing audio overlap with the new turn.
+- HA bridge: push aborts cleanly if the user starts a new turn before the announce fires (satellite re-enters `listening`/`processing` after the filler's `responding`->`idle` cycle), preventing audio overlap with the new turn.
 - HA bridge: removed the dead FillerGate machinery (`_arm_filler_gate`, `_await_filler_gate`, the `_filler_gate.py` module, the media_player state-listener callbacks, the old `MAX_FILLER_WAIT_SECONDS` constant, and the `_speak_filler` / sibling-`tts.speak` / `_resolve_tts_engine_entity` / `_resolve_tts_entity` helpers if exclusively used by the deleted path) since the V4 filler-first design has no awaitable gate and no in-pipeline announce branch.
 - HA bridge: filler-path diagnostics promoted from DEBUG to INFO/WARNING with a `"ha-agenthub:"` log prefix so future stalls leave a visible trail at the default INFO level. New lines: filler-first return (INFO), push received final (INFO), push dispatching announce (INFO), push cancelled / superseded / abandoned (INFO), push WS-closed / final-timeout / idle-timeout / no-satellite / announce-failed (WARNING).
-- HA bridge: added `enable_post_filler_push` config option (default `True`) as a kill switch — set to `False` to revert to a V3-style "buffer fillers, return combined string at end of stream" behaviour without code rollback.
+- HA bridge: added `enable_post_filler_push` config option (default `True`) as a kill switch -- set to `False` to revert to a V3-style "buffer fillers, return combined string at end of stream" behaviour without code rollback.
 
 ### 1.3.1 (PATCH) -- Filler playback waits for real completion signals only
 
@@ -310,18 +328,6 @@
 - Translated remaining German empty-state strings on the entity-index diagnostics block to English.
 - Removed orphaned `conversations.html` and `rewrite_config.html` templates.
 - New `dashUrl()` helper plus `root_path`-aware redirects make the dashboard work behind a reverse-proxy subpath.
-
-### 1.20.0 (MINOR) -- Cover Agent, Vacuum Agent, and Climate Agent fan/humidifier support
-
-- feat(agent): New Cover Agent (`cover-agent`) controls blinds, curtains, shutters, garage doors, gates, awnings, and windows via HA `cover` domain services: open, close, stop, set position, and tilt actions.
-- feat(agent): New Vacuum Agent (`vacuum-agent`) controls robot vacuums via HA `vacuum` domain services: start, pause, stop, return to base, clean spot, set fan speed, locate, and send custom commands.
-- feat(agent): Climate Agent extended with `fan` and `humidifier` domain support. Generic `turn_on`/`turn_off` actions resolve the correct HA service domain at runtime based on the matched entity.
-- feat(agent): New fan actions: `set_fan_percentage`, `set_fan_preset_mode`, `fan_oscillate`, `set_fan_direction`.
-- feat(agent): New humidifier actions: `set_humidifier_humidity`, `set_humidifier_mode`.
-- feat(db): Migration 31 adds default entity visibility rules for `cover-agent` → `cover`, `vacuum-agent` → `vacuum`, and `climate-agent` → `fan`/`humidifier`.
-- feat(api): `domain_agent_map_api.py` includes `cover-agent` and `vacuum-agent` in `BUILT_IN_AGENTS`.
-- fix(repo): Updated README workflow badges to use shields.io with labeled CI jobs.
-- chore(repo): Removed unused diagnostic scripts (`check_config.py`, `check_spans.py`), stale `.github/copilot-instructions.md`, dead legacy comments from `__init__.py` files, and cleaned up SubAgent artifacts.
 
 ### 1.1.0 (MINOR) -- LLM-generated cancel-interaction acknowledgement
 
