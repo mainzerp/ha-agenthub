@@ -7,7 +7,7 @@ secrets, user accounts, conversation history, and analytics.
 import asyncio
 import logging
 from collections.abc import AsyncGenerator
-from contextlib import asynccontextmanager, suppress
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 import aiosqlite
@@ -24,10 +24,11 @@ _DB_WRITE_MAX_RETRIES = 3
 _DB_WRITE_BASE_DELAY = 0.5
 
 
-def _db_path() -> Path:
+async def _db_path() -> Path:
     """Resolve the SQLite database path and ensure the parent directory exists."""
     p = Path(settings.sqlite_db_path)
-    p.parent.mkdir(parents=True, exist_ok=True)
+    # Off-load directory creation to a thread to avoid blocking the event loop.
+    await asyncio.to_thread(p.parent.mkdir, parents=True, exist_ok=True)
     return p
 
 
@@ -35,7 +36,7 @@ async def _open_write_connection() -> aiosqlite.Connection:
     """Open a fresh write connection with retry on OperationalError."""
     for attempt in range(1, _DB_WRITE_MAX_RETRIES + 1):
         try:
-            conn = await aiosqlite.connect(str(_db_path()), isolation_level=None)
+            conn = await aiosqlite.connect(str(await _db_path()), isolation_level=None)
             conn.row_factory = aiosqlite.Row
             await conn.execute("PRAGMA journal_mode=WAL")
             await conn.execute("PRAGMA foreign_keys=ON")
@@ -48,6 +49,13 @@ async def _open_write_connection() -> aiosqlite.Connection:
                 raise
 
 
+async def _column_exists(db: aiosqlite.Connection, table: str, column: str) -> bool:
+    """Check whether a column exists in a given table."""
+    cursor = await db.execute(f"PRAGMA table_info({table})")
+    rows = await cursor.fetchall()
+    return any(row[1] == column for row in rows)
+
+
 async def _get_or_create_write_connection() -> aiosqlite.Connection:
     """Get or create the shared write connection."""
     global _write_conn
@@ -56,20 +64,10 @@ async def _get_or_create_write_connection() -> aiosqlite.Connection:
             await _write_conn.execute("SELECT 1")
         except aiosqlite.OperationalError:
             logger.warning("DB write connection stale, recreating")
-            # legitimate fail-soft: close() may raise on a broken connection
-            with suppress(Exception):
-                await _write_conn.close()
             _write_conn = None
     if _write_conn is None:
         _write_conn = await _open_write_connection()
     return _write_conn
-
-
-async def _column_exists(db: aiosqlite.Connection, table: str, column: str) -> bool:
-    """Check whether a column already exists on a table (SQLite)."""
-    async with db.execute(f"PRAGMA table_info({table})") as cursor:
-        rows = await cursor.fetchall()
-        return any(row["name"] == column for row in rows)
 
 
 @asynccontextmanager
@@ -82,7 +80,7 @@ async def get_db_read() -> AsyncGenerator[aiosqlite.Connection, None]:
     each other and do not block writers. ``PRAGMA query_only=ON`` enforces
     read-only access at the connection level.
     """
-    db = await aiosqlite.connect(str(_db_path()))
+    db = await aiosqlite.connect(str(await _db_path()))
     db.row_factory = aiosqlite.Row
     await db.execute("PRAGMA query_only=ON")
     try:

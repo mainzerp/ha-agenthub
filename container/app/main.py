@@ -156,13 +156,17 @@ async def lifespan(app: FastAPI):
     logger.info("Starting agent-assist container")
     await init_db()
 
-    from app.security.encryption import is_fernet_key_present
+    from app.security.encryption import get_fernet, is_fernet_key_present
 
     if is_fernet_key_present():
         logger.warning(
             "IMPORTANT: Back up your Fernet key at /data/.fernet_key. "
             "Loss of this file makes all encrypted secrets (HA token, LLM keys, API key) unrecoverable."
         )
+
+    # Eager-load Fernet key off the event loop so the cold-path sync
+    # file I/O happens during startup instead of on the first request.
+    await asyncio.to_thread(get_fernet)
 
     # Register default sync interval setting if not already set
     existing = await SettingsRepository.get_value("entity_sync.interval_minutes")
