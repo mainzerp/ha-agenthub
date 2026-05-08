@@ -74,3 +74,4 @@ package-lock.json
 
 # Kilo config with secrets
 .kilo/kilo.json
+.kilo/
