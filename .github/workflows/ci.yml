@@ -213,7 +213,7 @@ jobs:
   docker:
     runs-on: ubuntu-latest
     timeout-minutes: 25
-    needs: [lint, lint-ha, test, test-ha, security-scan, changes, hacs]
+    needs: [lint, lint-ha, test, test-ha, security-scan, changes]
 
     permissions:
       contents: read
