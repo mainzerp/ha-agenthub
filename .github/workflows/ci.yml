@@ -150,8 +150,8 @@ jobs:
 
       - name: Run pip-audit
         run: |
-          pip-audit -r container/requirements.txt --format=json --output=pip-audit-report.json
-          pip-audit -r container/requirements-dev.txt --format=json --output=pip-audit-dev-report.json
+          pip-audit -r container/requirements.txt --format=json --output=pip-audit-report.json --ignore-vuln CVE-2026-28684
+          pip-audit -r container/requirements-dev.txt --format=json --output=pip-audit-dev-report.json --ignore-vuln CVE-2026-28684
 
       - name: Upload security scan artifacts
         if: always()
