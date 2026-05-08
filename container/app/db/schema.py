@@ -771,8 +771,10 @@ async def _seed_defaults(db: aiosqlite.Connection) -> None:
         ),
         ("timer-agent", 0, "openrouter/openai/gpt-4o-mini", 5, 3, 0.2, 1024, "Timers and alarms"),
         ("calendar-agent", 0, "openrouter/openai/gpt-4o-mini", 5, 3, 0.2, 1024, "Calendar event management"),
-        ("climate-agent", 0, "openrouter/openai/gpt-4o-mini", 5, 3, 0.2, 1024, "Climate and HVAC control"),
+        ("climate-agent", 0, "openrouter/openai/gpt-4o-mini", 5, 3, 0.2, 1024, "Climate, HVAC, fans, and humidifiers"),
         ("media-agent", 0, "openrouter/openai/gpt-4o-mini", 5, 3, 0.2, 1024, "Media player control"),
+        ("cover-agent", 0, "openrouter/openai/gpt-4o-mini", 5, 3, 0.2, 1024, "Cover and blind control"),
+        ("vacuum-agent", 0, "openrouter/openai/gpt-4o-mini", 5, 3, 0.2, 1024, "Robot vacuum control"),
         ("scene-agent", 0, "openrouter/openai/gpt-4o-mini", 5, 3, 0.2, 1024, "Scene activation"),
         ("automation-agent", 0, "openrouter/openai/gpt-4o-mini", 5, 3, 0.2, 1024, "Automation management"),
         ("security-agent", 0, "openrouter/openai/gpt-4o-mini", 5, 3, 0.2, 1024, "Security system control"),
@@ -1543,3 +1545,20 @@ async def _run_migrations(db: aiosqlite.Connection) -> None:
             new_rules,
         )
         await db.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (31)")
+
+    if current_version < 32:
+        # Migration 32: Add agent configs for cover-agent and vacuum-agent,
+        # and update climate-agent description to include fans and humidifiers.
+        new_configs = [
+            ("cover-agent", 0, "openrouter/openai/gpt-4o-mini", 5, 3, 0.2, 1024, "Cover and blind control"),
+            ("vacuum-agent", 0, "openrouter/openai/gpt-4o-mini", 5, 3, 0.2, 1024, "Robot vacuum control"),
+        ]
+        await db.executemany(
+            "INSERT OR IGNORE INTO agent_configs (agent_id, enabled, model, timeout, max_iterations, temperature, max_tokens, description) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            new_configs,
+        )
+        await db.execute(
+            "UPDATE agent_configs SET description = ? WHERE agent_id = ?",
+            ("Climate, HVAC, fans, and humidifiers", "climate-agent"),
+        )
+        await db.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (32)")
