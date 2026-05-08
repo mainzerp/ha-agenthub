@@ -854,14 +854,7 @@ async def get_llm_provider_status():
     providers: dict = {}
     for provider, secret_key in PROVIDER_SECRET_KEYS.items():
         configured = secret_key in stored_keys
-        masked_key = None
-        if configured:
-            raw = await retrieve_secret(secret_key)
-            if raw and len(raw) >= 4:
-                masked_key = raw[-4:]
-            elif raw:
-                masked_key = "****"
-        providers[provider] = {"configured": configured, "masked_key": masked_key}
+        providers[provider] = {"configured": configured}
     # Ollama
     ollama_url = await SettingsRepository.get_value("ollama_base_url")
     providers["ollama"] = {
@@ -1021,6 +1014,7 @@ async def get_timers_info(request: Request):
         try:
             area_registry = await ha_client.get_area_registry()
         except Exception:
+            logger.debug("Failed to load area registry", exc_info=True)
             area_registry = {}
 
     rows = []
@@ -1087,6 +1081,7 @@ async def get_timers_info(request: Request):
         try:
             states = await ha_client.get_states()
         except Exception:
+            logger.debug("Failed to load HA states", exc_info=True)
             states = []
 
         for s in states:
@@ -1126,6 +1121,7 @@ async def get_timer_satellites(request: Request):
         try:
             area_registry = await ha_client.get_area_registry()
         except Exception:
+            logger.debug("Failed to load area registry for satellites", exc_info=True)
             area_registry = {}
 
     satellite_entities: set[str] = set()
@@ -1144,6 +1140,7 @@ async def get_timer_satellites(request: Request):
         try:
             states = await ha_client.get_states()
         except Exception:
+            logger.debug("Failed to load HA states for satellites", exc_info=True)
             states = []
         for state in states:
             entity_id = str(state.get("entity_id", "") or "").strip()

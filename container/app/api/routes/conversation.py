@@ -230,7 +230,8 @@ async def ws_conversation(
                 data = json.loads(raw)
                 conv_request = ConversationRequest(**data)
             except Exception as exc:
-                await websocket.send_json({"error": f"Invalid request: {exc}"})
+                logger.warning("Invalid WebSocket request: %s", exc, exc_info=True)
+                await websocket.send_json({"error": "Invalid request"})
                 continue
 
             # Per-turn trace boundary.
