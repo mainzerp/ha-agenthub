@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import logging
 import os
 import random
@@ -14,6 +15,8 @@ from collections import OrderedDict
 from collections.abc import AsyncGenerator
 from datetime import UTC, datetime, timedelta
 from typing import Any
+
+import litellm
 
 from app.a2a.protocol import JsonRpcRequest
 from app.agents.base import BaseAgent
@@ -28,6 +31,7 @@ from app.db.repository import ConversationRepository, SettingsRepository
 from app.entity.deterministic_resolver import resolve_entity_deterministic_first
 from app.entity.visibility import entity_is_visible
 from app.ha_client.home_context import home_context_provider
+from app.llm.client import LLMError
 from app.models.agent import AgentCard, AgentTask, TaskContext
 from app.models.cache import ActionCacheEntry, CachedAction
 
@@ -175,17 +179,17 @@ class OrchestratorAgent(BaseAgent):
             val = await SettingsRepository.get_value("a2a.default_timeout", "5")
             self._default_timeout = int(val)
         except (ValueError, TypeError):
-            pass
+            logger.debug("Invalid a2a.default_timeout value, using default", exc_info=True)
         try:
             val = await SettingsRepository.get_value("a2a.max_iterations", "3")
             self._max_iterations = int(val)
         except (ValueError, TypeError):
-            pass
+            logger.debug("Invalid a2a.max_iterations value, using default", exc_info=True)
         try:
             val = await SettingsRepository.get_value("a2a.max_dispatch_timeout", "60")
             self._max_dispatch_timeout = float(val)
         except (ValueError, TypeError):
-            pass
+            logger.debug("Invalid a2a.max_dispatch_timeout value, using default", exc_info=True)
         # P2-2: invalidate per-agent cache so changes to settings or
         # AgentCard.timeout_sec are picked up on the next dispatch.
         self._per_agent_timeout_cache.clear()
@@ -1139,6 +1143,7 @@ class OrchestratorAgent(BaseAgent):
             if raw is None and legacy_key is not None:
                 raw = await SettingsRepository.get_value(legacy_key, None)
         except Exception:
+            logger.debug("Failed to read setting %s, using default %s", key, default, exc_info=True)
             return default
         if raw is None:
             return default
@@ -2801,6 +2806,20 @@ class OrchestratorAgent(BaseAgent):
             return classifications, False
         except _RecoverableClassificationError:
             raise
+        except (
+            ValueError,
+            json.JSONDecodeError,
+            LLMError,
+            litellm.exceptions.APIError,
+            litellm.exceptions.AuthenticationError,
+        ) as exc:
+            logger.error(
+                "Intent classification failed (%s), falling back to %s",
+                type(exc).__name__,
+                _FALLBACK_AGENT,
+                exc_info=True,
+            )
+            return [(_FALLBACK_AGENT, user_text, 0.0)], False
         except Exception:
             logger.exception("Intent classification failed, falling back to %s", _FALLBACK_AGENT)
             return [(_FALLBACK_AGENT, user_text, 0.0)], False
@@ -3120,6 +3139,7 @@ class OrchestratorAgent(BaseAgent):
             if not personality.strip():
                 return agent_speech
         except Exception:
+            logger.debug("Failed to load personality prompt, using original speech", exc_info=True)
             return agent_speech
 
         if not agent_speech or not agent_speech.strip():

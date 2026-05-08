@@ -96,7 +96,7 @@ async def _run_voice_followup_after_conversation(
         if raw_delay not in (None, ""):
             profile["tts_to_listen_delay"] = float(raw_delay)
     except (TypeError, ValueError):
-        pass
+        logger.debug("Invalid voice_followup_delay value, using default", exc_info=True)
 
     if area_id:
         satellite = await _resolve_satellite_device(ha_client, area_id, entity_index=entity_index)

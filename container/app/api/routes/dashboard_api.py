@@ -168,7 +168,7 @@ async def get_overview(request: Request) -> dict[str, Any]:
             stats = entity_index.get_stats()
             entity_count = stats.get("count", 0)
         except Exception:
-            pass
+            logger.debug("Failed to get entity index stats", exc_info=True)
 
     mcp_count = 0
     if mcp_registry:
@@ -176,7 +176,7 @@ async def get_overview(request: Request) -> dict[str, Any]:
             servers = mcp_registry.list_servers()
             mcp_count = len(servers)
         except Exception:
-            pass
+            logger.debug("Failed to list MCP servers", exc_info=True)
 
     # Count recent requests from analytics (last 24h)
     recent_requests = 0
@@ -191,7 +191,7 @@ async def get_overview(request: Request) -> dict[str, Any]:
         )
         recent_requests = len(events)
     except Exception:
-        pass
+        logger.debug("Failed to query recent requests", exc_info=True)
 
     # Compute cache hit rate from analytics DB (cache tier stats don't track hits/queries)
     cache_hit_rate = 0
@@ -209,7 +209,7 @@ async def get_overview(request: Request) -> dict[str, Any]:
             hits = sum(1 for e in cache_events if e.get("hit_type", "") in ("routing_hit", "action_hit"))
             cache_hit_rate = round(hits / total_lookups * 100, 1)
     except Exception:
-        pass
+        logger.debug("Failed to compute cache hit rate", exc_info=True)
     hit_rate = cache_hit_rate
 
     return {
@@ -247,7 +247,7 @@ async def get_overview_extended(request: Request) -> dict[str, Any]:
             stats = entity_index.get_stats()
             entity_count = stats.get("count", 0)
         except Exception:
-            pass
+            logger.debug("Failed to get entity index stats", exc_info=True)
 
     mcp_count = 0
     if mcp_registry:
@@ -255,7 +255,7 @@ async def get_overview_extended(request: Request) -> dict[str, Any]:
             servers = mcp_registry.list_servers()
             mcp_count = len(servers)
         except Exception:
-            pass
+            logger.debug("Failed to list MCP servers", exc_info=True)
 
     # --- Analytics: requests, latency ---
     requests = []
@@ -333,7 +333,7 @@ async def get_overview_extended(request: Request) -> dict[str, Any]:
             bucket_label = datetime.fromtimestamp(bucket_start, tz=UTC).strftime("%H:%M")
             request_buckets[bucket_label] += 1
         except (ValueError, TypeError):
-            pass
+            logger.debug("Failed to parse request timestamp %s", ts, exc_info=True)
 
     request_labels = sorted(request_buckets.keys())
     request_data = [request_buckets[lb] for lb in request_labels]
@@ -358,7 +358,7 @@ async def get_overview_extended(request: Request) -> dict[str, Any]:
                 }
             )
     except Exception:
-        pass
+        logger.debug("Failed to load recent traces", exc_info=True)
 
     # --- Errors/warnings ---
     agent_timeouts = sum(1 for e in all_events if e.get("event_type") == "agent_timeout")

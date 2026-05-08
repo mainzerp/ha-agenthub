@@ -201,6 +201,6 @@ class TracingMiddleware:
 
                 await TraceSummaryRepository.update_duration(trace_id, round(duration_ms, 2))
             except Exception:
-                pass
+                logger.debug("Failed to update trace duration for %s", trace_id, exc_info=True)
 
             logger.info("[%s] WS %s closed (%.1fms)", trace_id, path, duration_ms)

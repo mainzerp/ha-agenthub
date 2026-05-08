@@ -205,8 +205,8 @@ class HAWebSocketClient:
             val = await SettingsRepository.get_value("communication.ws_reconnect_interval")
             if val is not None:
                 max_delay = float(val)
-        except (ValueError, TypeError, Exception):
-            pass
+        except Exception:
+            self._logger.debug("Failed to read ws_reconnect_interval, using default", exc_info=True)
         while self._running:
             delay = min(BASE_DELAY * (2**attempt), max_delay) + random.uniform(0, MAX_JITTER)
             self._logger.info("Reconnecting in %.1fs (attempt %d)", delay, attempt + 1)

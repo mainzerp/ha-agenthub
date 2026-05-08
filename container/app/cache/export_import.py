@@ -111,7 +111,7 @@ def iter_export_chunks(
             or "unknown"
         )
     except Exception:
-        pass
+        logger.debug("Failed to read embedding model from settings", exc_info=True)
     header = {
         "format_version": SUPPORTED_FORMAT_VERSION,
         "exported_at": datetime.now(UTC).isoformat(),
@@ -257,7 +257,7 @@ async def import_envelope(
                     f"embedding model mismatch: export={source_model!r} runtime={local_model!r} (entries will be re-embedded)"
                 )
         except Exception:
-            pass
+            logger.debug("Failed to read embedding model for mismatch check", exc_info=True)
     tiers_block = envelope.get("tiers") or {}
 
     for tier in requested:

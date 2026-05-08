@@ -324,6 +324,7 @@ class SpanCollector:
                     st = datetime.fromisoformat(span["start_time"])
                     span["end_time"] = (st + timedelta(milliseconds=span["duration_ms"])).isoformat()
                 except Exception:
+                    logger.debug("Failed to compute end_time from overridden duration", exc_info=True)
                     span["end_time"] = datetime.now(UTC).isoformat()
             else:
                 span["duration_ms"] = round((time.perf_counter() - t0) * 1000, 2)

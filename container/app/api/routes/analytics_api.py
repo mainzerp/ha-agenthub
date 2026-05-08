@@ -107,7 +107,7 @@ async def analytics_requests(
             bucket_label = datetime.fromtimestamp(bucket_start, tz=UTC).strftime("%H:%M")
             buckets[bucket_label] += 1
         except (ValueError, TypeError):
-            pass
+            logger.debug("Failed to parse event timestamp %s", ts, exc_info=True)
 
     labels = sorted(buckets.keys())
     data = [buckets[lb] for lb in labels]
@@ -186,7 +186,7 @@ async def analytics_cache(
             if et in hit_types:
                 hits_per_bucket[bucket_label] += 1
         except (ValueError, TypeError):
-            pass
+            logger.debug("Failed to parse cache event timestamp %s", ts, exc_info=True)
 
     labels = sorted(total_per_bucket.keys())
     data = [

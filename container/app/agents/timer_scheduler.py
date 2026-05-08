@@ -82,6 +82,7 @@ def _load_recurrence(payload: dict[str, Any]) -> dict[str, Any] | None:
             normalized["_tz"] = ZoneInfo(timezone_name)
             normalized["timezone"] = timezone_name
         except Exception:
+            logger.debug("Invalid timezone %s, clearing", timezone_name, exc_info=True)
             normalized["_tz"] = None
     else:
         normalized["_tz"] = None
@@ -354,7 +355,8 @@ class TimerScheduler:
         if row.get("kind") == "alarm":
             try:
                 payload_dict = json.loads(row.get("payload_json") or "{}")
-            except Exception:
+            except (json.JSONDecodeError, TypeError):
+                logger.debug("Invalid alarm payload JSON for timer %s", id_, exc_info=True)
                 payload_dict = {}
             if logical_name is not None:
                 payload_dict["alarm_label"] = logical_name

@@ -624,7 +624,7 @@ async def get_trace_detail(trace_id: str):
                 )
                 total_duration_ms = round((max_end - min_start).total_seconds() * 1000, 2)
         except Exception:
-            pass
+            logger.debug("Failed to compute total duration for trace %s", trace_id, exc_info=True)
 
     return {
         "trace_id": trace_id,

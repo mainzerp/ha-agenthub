@@ -148,13 +148,13 @@ class QueryExpansionService:
                     if ttl > 0:
                         await self._cache.purge_expired(ttl)
                 except Exception:
-                    pass
+                    logger.debug("Failed to purge expired cache entries", exc_info=True)
                 try:
                     cap = int(await SettingsRepository.get_value("entity_matching.expansion.max_cache_rows", "5000"))
                     if cap > 0:
                         await self._cache.evict_lru(cap)
                 except Exception:
-                    pass
+                    logger.debug("Failed to evict LRU cache entries", exc_info=True)
                 return expansions
             finally:
                 async with self._lock_guard:

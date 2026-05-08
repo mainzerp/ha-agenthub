@@ -82,6 +82,7 @@ def _count_allowed_domain_entries(
                 include=["metadatas"],
             )
         except Exception:
+            logger.debug("Vector store `where` query failed, falling back to full scan", exc_info=True)
             # Backend may not support this `where` shape -- fall back to a
             # full scan and filter client-side.
             data = vector_store.get(
@@ -308,6 +309,7 @@ async def match_preview(
                     if entity_index is not None and hasattr(entity_index, "get_by_id"):
                         entry = entity_index.get_by_id(entity_id)
                 except Exception:
+                    logger.debug("Failed to get entity by id %s", entity_id, exc_info=True)
                     entry = None
                 hybrid.append(
                     {
