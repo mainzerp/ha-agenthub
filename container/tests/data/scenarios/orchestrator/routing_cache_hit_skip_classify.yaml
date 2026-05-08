@@ -3,7 +3,6 @@ agent: orchestrator
 description: Routing cache hit skips classify (skipped; pipeline runs without cache_manager)
 snapshot: home_default
 language: en
-xfail: "runner constructs orchestrator with cache_manager=None; routing cache needs a wired CacheManager"
 context: {source: ha, area_id: kitchen, device_id: satellite_kitchen}
 llm:
   classify: |

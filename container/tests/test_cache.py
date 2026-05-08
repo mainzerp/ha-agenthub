@@ -999,36 +999,8 @@ class TestCacheManagerExtended:
         assert entry.condensed_task == "Turn on the light"
         assert similarity == pytest.approx(1.0)
 
-    @pytest.mark.skip(
-        reason="Phase 1 rewrite: missing event-loop setup; condensed_task carry covered in test_routing_cache_skip.py"
-    )
-    @pytest.mark.asyncio
-    async def test_routing_skip_carries_condensed_task(self):
-        # v4: process() returns CacheResult with condensed_task from routing hit
-        manager, store = self._make_manager()
-        store.get.return_value = {"ids": [], "documents": [], "metadatas": []}
-        store.query.return_value = {
-            "ids": [["r-1"]],
-            "distances": [[0.03]],
-            "documents": [["turn on light"]],
-            "metadatas": [
-                [
-                    {
-                        "agent_id": "light-agent",
-                        "confidence": "0.95",
-                        "hit_count": "0",
-                        "condensed_task": "Turn on the light",
-                        "created_at": "2025-01-01T00:00:00",
-                        "last_accessed": "2025-01-01T00:00:00",
-                        "language": "en",
-                    }
-                ]
-            ],
-        }
-        with patch("app.cache.cache_manager.track_cache_event", new_callable=AsyncMock):
-            result = await manager.process("turn on light")
-        assert result.hit_type == "routing_hit"
-        assert result.condensed_task == "Turn on the light"
+    # Removed: test_routing_skip_carries_condensed_task was permanently skipped
+    # because condensed_task carry is already covered in test_routing_cache_skip.py.
 
     @pytest.mark.asyncio
     async def test_action_hit_preserves_cached_text_on_empty_rewrite(self):
@@ -1145,30 +1117,10 @@ class TestCacheManagerExtended:
         assert output == "Rewritten text."
         rewrite_agent.rewrite.assert_awaited_once_with("Original.", language="en", user_text="Keller einschalten")
 
-    @pytest.mark.skip(reason="Phase 1 rewrite: SettingsRepository mock path needs revisit")
-    @pytest.mark.asyncio
-    async def test_purge_legacy_schema_entries_runs_on_initialize(self):
-        # v4: initialize() calls purge_legacy_schema_entries on both tiers
-        manager, _store = self._make_manager()
-
-        async def _get_value(key, default=None):
-            return {"personality.prompt": ""}.get(key, default)
-
-        with (
-            patch("app.cache._base_cache.SettingsRepository") as mock_base,
-            patch("app.cache.routing_cache.SettingsRepository") as mock_rs,
-            patch("app.cache.action_cache.SettingsRepository") as mock_ac,
-            patch("app.db.repository.SettingsRepository") as mock_cms,
-            patch.object(manager._action_cache, "purge_legacy_schema_entries", return_value=3) as purge_action,
-            patch.object(manager._routing_cache, "purge_legacy_schema_entries", return_value=1) as purge_routing,
-        ):
-            mock_base.get_value = AsyncMock(side_effect=_get_value)
-            mock_rs.get_value = AsyncMock(side_effect=_get_value)
-            mock_ac.get_value = AsyncMock(side_effect=_get_value)
-            mock_cms.get_value = AsyncMock(side_effect=_get_value)
-            await manager.initialize()
-        purge_action.assert_called_once()
-        purge_routing.assert_called_once()
+    # Removed: test_purge_legacy_schema_entries_runs_on_initialize was permanently
+    # skipped because the SettingsRepository mock path was broken after v4 refactor.
+    # purge_legacy_schema_entries behavior is implicitly validated by
+    # test_initialize_loads_config and the integration test suite.
 
 
 # ---------------------------------------------------------------------------
@@ -1516,6 +1468,29 @@ class TestVectorStore:
         assert store._client is None
         assert store._embedding_fn is None
         assert store._collections == {}
+
+    @pytest.mark.asyncio
+    async def test_is_alive_runs_heartbeat_off_event_loop(self):
+        """HIGH-1: _is_alive must be async and run heartbeat in a thread."""
+        store = VectorStore()
+        mock_client = MagicMock()
+        mock_client.heartbeat = MagicMock(return_value=1)
+        store._client = mock_client
+
+        result = await store._is_alive()
+        assert result is True
+        mock_client.heartbeat.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_is_alive_returns_false_on_exception(self):
+        """HIGH-1: _is_alive must return False when heartbeat raises."""
+        store = VectorStore()
+        mock_client = MagicMock()
+        mock_client.heartbeat = MagicMock(side_effect=RuntimeError("dead"))
+        store._client = mock_client
+
+        result = await store._is_alive()
+        assert result is False
 
 
 # ---------------------------------------------------------------------------

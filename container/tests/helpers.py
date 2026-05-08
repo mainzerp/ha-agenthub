@@ -324,9 +324,12 @@ def make_mock_llm_response(
     return response
 
 
+_EMBEDDING_RNG = random.Random(42)
+
+
 def make_mock_embedding(dim: int = 384) -> list[float]:
-    """Return a random embedding vector of the given dimension."""
-    return [random.uniform(-1.0, 1.0) for _ in range(dim)]
+    """Return a deterministic embedding vector of the given dimension."""
+    return [_EMBEDDING_RNG.uniform(-1.0, 1.0) for _ in range(dim)]
 
 
 # ---------------------------------------------------------------------------

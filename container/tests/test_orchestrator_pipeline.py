@@ -243,7 +243,7 @@ async def test_stream_with_filler_cancels_reader_on_timeout(mock_complete, mock_
     orch, dispatcher = _make_orchestrator()
 
     async def _slow_stream(_request):
-        await asyncio.sleep(0.2)
+        await asyncio.sleep(0.06)
         yield MagicMock(result={"token": "late", "done": True})
 
     dispatcher.dispatch_stream = _slow_stream

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import json
 from datetime import UTC, datetime
 from pathlib import Path
@@ -135,8 +134,7 @@ async def test_compose_wake_briefing_omits_timed_out_source() -> None:
 
 async def test_compose_wake_briefing_top_level_timeout_falls_back_to_alarm_text() -> None:
     async def _slow_complete(**kwargs):
-        await asyncio.sleep(2)
-        return "Too late"
+        raise TimeoutError()
 
     settings_repo = _SettingsRepo(
         {

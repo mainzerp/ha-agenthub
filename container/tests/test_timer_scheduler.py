@@ -68,7 +68,7 @@ class TestFireOnDeadline:
                 payload={"notification_message": "boom"},
             )
             for _ in range(20):
-                await asyncio.sleep(0.02)
+                await asyncio.sleep(0)
                 row = await ScheduledTimersRepository.get(timer_id)
                 if row and row["state"] == "fired":
                     break
@@ -417,7 +417,7 @@ class TestKindDispatch:
                 payload={"language": "de"},
             )
             for _ in range(20):
-                await asyncio.sleep(0.02)
+                await asyncio.sleep(0)
                 row = await ScheduledTimersRepository.get(tid)
                 if row and row["state"] == "fired":
                     break
@@ -443,7 +443,7 @@ class TestKindDispatch:
                 },
             )
             for _ in range(20):
-                await asyncio.sleep(0.02)
+                await asyncio.sleep(0)
                 row = await ScheduledTimersRepository.get(tid)
                 if row and row["state"] == "fired":
                     break
@@ -463,7 +463,7 @@ class TestKindDispatch:
                 payload={"media_player": "media_player.bedroom"},
             )
             for _ in range(20):
-                await asyncio.sleep(0.02)
+                await asyncio.sleep(0)
                 row = await ScheduledTimersRepository.get(tid)
                 if row and row["state"] == "fired":
                     break
@@ -492,7 +492,7 @@ class TestKindDispatch:
                 },
             )
             for _ in range(20):
-                await asyncio.sleep(0.02)
+                await asyncio.sleep(0)
                 row = await ScheduledTimersRepository.get(tid)
                 if row and row["state"] == "fired":
                     break
@@ -541,7 +541,7 @@ class TestKindDispatch:
                 )
 
                 for _ in range(30):
-                    await asyncio.sleep(0.02)
+                    await asyncio.sleep(0)
                     row = await ScheduledTimersRepository.get(tid)
                     if row and row["state"] == "fired":
                         break
@@ -668,7 +668,7 @@ class TestTimerNameDisplay:
                     payload={"notification_message": "Eggs done!", "language": "en"},
                 )
                 for _ in range(20):
-                    await asyncio.sleep(0.02)
+                    await asyncio.sleep(0)
                     row = await ScheduledTimersRepository.get(tid)
                     if row and row["state"] == "fired":
                         break
@@ -696,7 +696,7 @@ class TestTimerNameDisplay:
                 payload={"notification_message": "Eggs done!", "language": "en"},
             )
             for _ in range(20):
-                await asyncio.sleep(0.02)
+                await asyncio.sleep(0)
                 row = await ScheduledTimersRepository.get(tid)
                 if row and row["state"] == "fired":
                     break

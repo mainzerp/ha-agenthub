@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import sys
 import time as _time
 from datetime import UTC, datetime
@@ -2668,6 +2669,30 @@ class TestOrchestratorAgent:
         assert classifications[0][0] == "light-agent"
         assert routing_cached is False
 
+    @patch("app.agents.orchestrator.SettingsRepository")
+    @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
+    async def test_classify_fallback_on_json_decode_error(self, mock_track, mock_settings):
+        """HIGH-5: JSONDecodeError in classification should trigger fallback routing."""
+        orch, *_ = self._make_orchestrator()
+        orch._call_llm = AsyncMock(side_effect=json.JSONDecodeError("test", "doc", 0))
+        classifications, routing_cached = await orch._classify("turn on kitchen light")
+        assert classifications[0][0] == "general-agent"
+        assert classifications[0][1] == "turn on kitchen light"
+        assert classifications[0][2] == 0.0
+        assert routing_cached is False
+
+    @patch("app.agents.orchestrator.SettingsRepository")
+    @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
+    async def test_classify_fallback_on_unexpected_runtime_error(self, mock_track, mock_settings):
+        """HIGH-5: Unexpected RuntimeError in classification should be logged and fallback."""
+        orch, *_ = self._make_orchestrator()
+        orch._call_llm = AsyncMock(side_effect=RuntimeError("unexpected"))
+        classifications, routing_cached = await orch._classify("turn on kitchen light")
+        assert classifications[0][0] == "general-agent"
+        assert classifications[0][1] == "turn on kitchen light"
+        assert classifications[0][2] == 0.0
+        assert routing_cached is False
+
     def test_orchestrator_agent_card(self):
         orch = OrchestratorAgent(dispatcher=AsyncMock())
         card = orch.agent_card
@@ -4675,9 +4700,9 @@ class TestOrchestratorFiller:
         # Mock filler agent invocation
         orch._invoke_filler_agent = AsyncMock(return_value="Let me look that up for you.")
 
-        # Dispatcher streams tokens with a delay exceeding threshold
+        # Dispatcher delays just enough to exceed the 50ms threshold
         async def _slow_stream(req):
-            await asyncio.sleep(0.2)  # 200ms delay, exceeds 50ms threshold
+            await asyncio.sleep(0.06)
             chunk = MagicMock()
             chunk.result = {"token": "Here is the answer", "done": False}
             chunk.done = False
@@ -4719,7 +4744,6 @@ class TestOrchestratorFiller:
         mock_complete.return_value = "light-agent: Turn on kitchen light"
 
         async def _stream(req):
-            await asyncio.sleep(0.1)  # Slow, but agent is not "high" latency
             chunk = MagicMock()
             chunk.result = {"token": "Done", "done": True}
             chunk.done = True
@@ -4765,7 +4789,7 @@ class TestOrchestratorFiller:
         orch._invoke_filler_agent = AsyncMock(return_value=None)
 
         async def _slow_stream(req):
-            await asyncio.sleep(0.2)
+            await asyncio.sleep(0.06)
             chunk = MagicMock()
             chunk.result = {"token": "Real answer", "done": False}
             chunk.done = False
@@ -4879,7 +4903,7 @@ class TestOrchestratorFiller:
         orch._invoke_filler_agent = AsyncMock(return_value="Let me look that up for you.")
 
         async def _slow_stream(req):
-            await asyncio.sleep(0.2)
+            await asyncio.sleep(0.06)
             chunk = MagicMock()
             chunk.result = {"token": "Here is the answer", "done": False}
             chunk.done = False
@@ -4971,7 +4995,7 @@ class TestFillerAgent:
         mock_settings.get_value = AsyncMock(return_value="")
 
         async def _slow(*args, **kwargs):
-            await asyncio.sleep(0.1)
+            await asyncio.Event().wait()
             return "too late"
 
         mock_complete.side_effect = _slow
@@ -6749,10 +6773,10 @@ class TestSequentialSendFiller:
         # Mock _invoke_filler_agent -> filler text
         orch._invoke_filler_agent = AsyncMock(return_value="One moment please.")
 
-        # Mock handle_task to be slow (exceeds 50ms threshold)
+        # Mock handle_task to delay just enough to exceed the 50ms threshold.
 
         async def _slow_handle(task, _pre_classified=None):
-            await asyncio.sleep(0.3)
+            await asyncio.sleep(0.06)
             return {"speech": "Here is the recipe. Sent to Laura Handy."}
 
         orch.handle_task = AsyncMock(side_effect=_slow_handle)
@@ -6819,11 +6843,7 @@ class TestSequentialSendFiller:
         orch._should_send_filler = AsyncMock(return_value=False)
         orch._invoke_filler_agent = AsyncMock(return_value="One moment please.")
 
-        async def _slow_handle(task, _pre_classified=None):
-            await asyncio.sleep(0.3)
-            return {"speech": "Done."}
-
-        orch.handle_task = AsyncMock(side_effect=_slow_handle)
+        orch.handle_task = AsyncMock(return_value={"speech": "Done."})
 
         task = _make_task("find recipe and send", user_text="find recipe and send")
         task.conversation_id = "conv-seq-disabled"
@@ -6854,15 +6874,18 @@ class TestSequentialSendFiller:
 
         orch._should_send_filler = AsyncMock(return_value=True)
 
-        # Filler gen is slow (200ms), but handle_task finishes in 100ms (during filler gen)
+        # Use an event to deterministically race filler generation against handle_task.
+        handle_done = asyncio.Event()
+
         async def _slow_filler(user_text, agent_id, language):
-            await asyncio.sleep(0.2)
+            handle_done.set()
+            await asyncio.sleep(0)
             return "Thinking..."
 
         orch._invoke_filler_agent = AsyncMock(side_effect=_slow_filler)
 
         async def _medium_handle(task, _pre_classified=None):
-            await asyncio.sleep(0.1)
+            await handle_done.wait()
             return {"speech": "Done."}
 
         orch.handle_task = AsyncMock(side_effect=_medium_handle)
@@ -6900,7 +6923,7 @@ class TestSequentialSendFiller:
         orch._invoke_filler_agent = AsyncMock(return_value="Hold on.")
 
         async def _slow_handle(task, _pre_classified=None):
-            await asyncio.sleep(0.3)
+            await asyncio.sleep(0.06)
             return {"speech": "Done."}
 
         orch.handle_task = AsyncMock(side_effect=_slow_handle)
@@ -7093,9 +7116,9 @@ class TestSpanEndTime:
 
         collector = SpanCollector(trace_id="t-seq")
         async with collector.start_span("first"):
-            await asyncio.sleep(0.01)
+            pass
         async with collector.start_span("second"):
-            await asyncio.sleep(0.01)
+            pass
         first = collector._spans[0]
         second = collector._spans[1]
         end1 = datetime.fromisoformat(first["end_time"])
@@ -7126,7 +7149,7 @@ class TestSpanEndTime:
 
         collector = SpanCollector(trace_id="t-flush")
         async with collector.start_span("a"):
-            await asyncio.sleep(0.01)
+            pass
         # Manually set a later end_time to verify flush picks it up
         et = datetime.fromisoformat(collector._spans[0]["end_time"])
         later_end = (et + timedelta(seconds=1)).isoformat()

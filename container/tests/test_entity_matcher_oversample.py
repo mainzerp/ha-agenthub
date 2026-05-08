@@ -161,3 +161,24 @@ async def test_oversample_factor_default_is_20():
     ):
         await matcher.load_config()
     assert matcher._oversample_factor == 20
+
+
+@pytest.mark.asyncio
+async def test_query_normalization_regression():
+    """CRIT-1: query must be lowercased and stripped before _normalize_for_containment."""
+    matcher = _make_matcher()
+    captured = []
+
+    def _capture_normalize(text: str) -> str:
+        captured.append(text)
+        return text.lower().strip()
+
+    with (
+        patch("app.entity.matcher.AliasSignal.score", new=AsyncMock(return_value=None)),
+        patch("app.entity.matcher.EmbeddingSignal.score", new=AsyncMock(return_value=[])),
+        patch("app.entity.matcher._normalize_for_containment", side_effect=_capture_normalize),
+    ):
+        await matcher._match_query("  KiTcHeN  ")
+
+    assert captured, "_normalize_for_containment was not called"
+    assert captured[0] == "kitchen", f"expected 'kitchen', got {captured[0]!r}"

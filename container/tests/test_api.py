@@ -469,6 +469,32 @@ class TestConversationEndpoints:
             await ws_conversation(ws)
         ws.close.assert_not_awaited()
 
+    async def test_ws_conversation_does_not_leak_exception_details(self):
+        """HIGH-10: malformed JSON must return a generic error without exception details."""
+        from contextlib import suppress
+        from unittest.mock import AsyncMock, MagicMock
+
+        from app.api.routes.conversation import ws_conversation
+
+        ws = MagicMock()
+        ws.headers = {"origin": "https://ha.local:8123"}
+        ws.app.state.allowed_ws_origins = {"https://ha.local:8123"}
+        ws.accept = AsyncMock()
+        ws.close = AsyncMock()
+        ws.send_json = AsyncMock()
+        ws.receive_text = AsyncMock(side_effect=["not-json", Exception("stop test")])
+
+        with suppress(Exception):
+            await ws_conversation(ws)
+
+        # Find the send_json call with the error
+        error_calls = [call for call in ws.send_json.await_args_list if "error" in str(call)]
+        assert error_calls, "No error sent over WebSocket"
+        payload = error_calls[0].args[0]
+        assert payload["error"] == "Invalid request"
+        assert "Traceback" not in str(payload)
+        assert "not-json" not in str(payload)
+
     def test_register_sse_tickers_cancels_existing_tasks(self):
         from unittest.mock import MagicMock, patch
 
@@ -1329,7 +1355,7 @@ class TestLLMProviderAPI:
         resp = await authed_client.get("/api/admin/llm-providers")
         data = resp.json()
         assert data["providers"]["groq"]["configured"] is True
-        assert data["providers"]["groq"]["masked_key"] == "5678"
+        assert "masked_key" not in data["providers"]["groq"]
 
     async def test_put_llm_provider_unknown_returns_400(self, authed_client: httpx.AsyncClient):
         resp = await authed_client.put(
