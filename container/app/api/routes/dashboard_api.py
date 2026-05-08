@@ -63,31 +63,37 @@ def _create_phase2_agent(agent_id: str, app):
     """Instantiate a Phase 2 agent by ID for hot-registration."""
     from app.agents.automation import AutomationAgent
     from app.agents.climate import ClimateAgent
+    from app.agents.cover import CoverAgent
     from app.agents.lists import ListsAgent
     from app.agents.media import MediaAgent
     from app.agents.scene import SceneAgent
     from app.agents.security import SecurityAgent
     from app.agents.send import SendAgent
     from app.agents.timer import TimerAgent
+    from app.agents.vacuum import VacuumAgent
 
     agent_map = {
         "timer-agent": TimerAgent,
         "climate-agent": ClimateAgent,
+        "cover-agent": CoverAgent,
         "media-agent": MediaAgent,
         "scene-agent": SceneAgent,
         "automation-agent": AutomationAgent,
         "security-agent": SecurityAgent,
         "send-agent": SendAgent,
         "lists-agent": ListsAgent,
+        "vacuum-agent": VacuumAgent,
     }
     with_matcher = {
         "climate-agent",
+        "cover-agent",
         "security-agent",
         "timer-agent",
         "scene-agent",
         "automation-agent",
         "media-agent",
         "lists-agent",
+        "vacuum-agent",
     }
 
     cls = agent_map.get(agent_id)

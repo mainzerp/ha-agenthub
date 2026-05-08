@@ -1,6 +1,6 @@
 # Version
 
-**Current Version:** 1.19.14
+**Current Version:** 1.20.0
 
 ## Recent Changes
 
@@ -310,6 +310,18 @@
 - Translated remaining German empty-state strings on the entity-index diagnostics block to English.
 - Removed orphaned `conversations.html` and `rewrite_config.html` templates.
 - New `dashUrl()` helper plus `root_path`-aware redirects make the dashboard work behind a reverse-proxy subpath.
+
+### 1.20.0 (MINOR) -- Cover Agent, Vacuum Agent, and Climate Agent fan/humidifier support
+
+- feat(agent): New Cover Agent (`cover-agent`) controls blinds, curtains, shutters, garage doors, gates, awnings, and windows via HA `cover` domain services: open, close, stop, set position, and tilt actions.
+- feat(agent): New Vacuum Agent (`vacuum-agent`) controls robot vacuums via HA `vacuum` domain services: start, pause, stop, return to base, clean spot, set fan speed, locate, and send custom commands.
+- feat(agent): Climate Agent extended with `fan` and `humidifier` domain support. Generic `turn_on`/`turn_off` actions resolve the correct HA service domain at runtime based on the matched entity.
+- feat(agent): New fan actions: `set_fan_percentage`, `set_fan_preset_mode`, `fan_oscillate`, `set_fan_direction`.
+- feat(agent): New humidifier actions: `set_humidifier_humidity`, `set_humidifier_mode`.
+- feat(db): Migration 31 adds default entity visibility rules for `cover-agent` → `cover`, `vacuum-agent` → `vacuum`, and `climate-agent` → `fan`/`humidifier`.
+- feat(api): `domain_agent_map_api.py` includes `cover-agent` and `vacuum-agent` in `BUILT_IN_AGENTS`.
+- fix(repo): Updated README workflow badges to use shields.io with labeled CI jobs.
+- chore(repo): Removed unused diagnostic scripts (`check_config.py`, `check_spans.py`), stale `.github/copilot-instructions.md`, dead legacy comments from `__init__.py` files, and cleaned up SubAgent artifacts.
 
 ### 1.1.0 (MINOR) -- LLM-generated cancel-interaction acknowledgement
 

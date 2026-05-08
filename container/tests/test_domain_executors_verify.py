@@ -292,6 +292,59 @@ async def _assert_verified_action(
     assert call_args.args[1] == expected_service
 
 
+# ---- cover -----------------------------------------------------------------
+
+
+class TestCoverExecutorVerification:
+    @pytest.mark.asyncio
+    async def test_cover_open_cover_empty_rest_ws_confirms(self):
+        from app.agents.cover_executor import execute_cover_action
+
+        await _assert_verified_action(
+            execute_cover_action,
+            action={"action": "open_cover", "entity": "living room blind"},
+            entity_id="cover.living_room_blind",
+            friendly_name="Living Room Blind",
+            observed_state="open",
+            expected_domain="cover",
+            expected_service="open_cover",
+            expected_new_state="open",
+            speech_assertions=["Living Room Blind", "open"],
+        )
+
+    @pytest.mark.asyncio
+    async def test_cover_close_cover_empty_rest_ws_confirms(self):
+        from app.agents.cover_executor import execute_cover_action
+
+        await _assert_verified_action(
+            execute_cover_action,
+            action={"action": "close_cover", "entity": "bedroom curtain"},
+            entity_id="cover.bedroom_curtain",
+            friendly_name="Bedroom Curtain",
+            observed_state="closed",
+            expected_domain="cover",
+            expected_service="close_cover",
+            expected_new_state="closed",
+            speech_assertions=["Bedroom Curtain", "closed"],
+        )
+
+    @pytest.mark.asyncio
+    async def test_cover_set_position_empty_rest_ws_confirms(self):
+        from app.agents.cover_executor import execute_cover_action
+
+        await _assert_verified_action(
+            execute_cover_action,
+            action={"action": "set_cover_position", "entity": "office blind", "parameters": {"position": 50}},
+            entity_id="cover.office_blind",
+            friendly_name="Office Blind",
+            observed_state="open",
+            expected_domain="cover",
+            expected_service="set_cover_position",
+            expected_new_state="open",
+            speech_assertions=["Office Blind"],
+        )
+
+
 # ---- climate ---------------------------------------------------------------
 
 
@@ -354,6 +407,74 @@ class TestClimateExecutorVerification:
         )
         assert result["success"] is True
         assert "is now cool" not in result["speech"]
+
+    @pytest.mark.asyncio
+    async def test_fan_turn_off_empty_rest_ws_confirms(self):
+        from app.agents.climate_executor import execute_climate_action
+
+        await _assert_verified_action(
+            execute_climate_action,
+            action={"action": "turn_off", "entity": "living room fan"},
+            entity_id="fan.living_room",
+            friendly_name="Living Room Fan",
+            observed_state="off",
+            expected_domain="fan",
+            expected_service="turn_off",
+            expected_new_state="off",
+            speech_assertions=["Living Room Fan", "off"],
+        )
+
+    @pytest.mark.asyncio
+    async def test_fan_set_percentage_empty_rest_ws_confirms(self):
+        from app.agents.climate_executor import execute_climate_action
+
+        await _assert_verified_action(
+            execute_climate_action,
+            action={"action": "set_fan_percentage", "entity": "office fan", "parameters": {"percentage": 75}},
+            entity_id="fan.office",
+            friendly_name="Office Fan",
+            observed_state="on",
+            expected_domain="fan",
+            expected_service="set_percentage",
+            expected_new_state="on",
+            speech_assertions=["Office Fan", "fan speed updated"],
+        )
+
+    @pytest.mark.asyncio
+    async def test_humidifier_turn_off_empty_rest_ws_confirms(self):
+        from app.agents.climate_executor import execute_climate_action
+
+        await _assert_verified_action(
+            execute_climate_action,
+            action={"action": "turn_off", "entity": "bedroom humidifier"},
+            entity_id="humidifier.bedroom",
+            friendly_name="Bedroom Humidifier",
+            observed_state="off",
+            expected_domain="humidifier",
+            expected_service="turn_off",
+            expected_new_state="off",
+            speech_assertions=["Bedroom Humidifier", "off"],
+        )
+
+    @pytest.mark.asyncio
+    async def test_humidifier_set_humidity_empty_rest_ws_confirms(self):
+        from app.agents.climate_executor import execute_climate_action
+
+        await _assert_verified_action(
+            execute_climate_action,
+            action={
+                "action": "set_humidifier_humidity",
+                "entity": "bedroom humidifier",
+                "parameters": {"humidity": 45},
+            },
+            entity_id="humidifier.bedroom",
+            friendly_name="Bedroom Humidifier",
+            observed_state="on",
+            expected_domain="humidifier",
+            expected_service="set_humidity",
+            expected_new_state="on",
+            speech_assertions=["Bedroom Humidifier", "humidity target updated"],
+        )
 
 
 # ---- media -----------------------------------------------------------------
@@ -471,6 +592,59 @@ class TestSceneExecutorVerification:
             expected_service="turn_on",
             expected_new_state="2026-04-19T12:00:00Z",
             speech_assertions=["Movie Night", "activated"],
+        )
+
+
+# ---- vacuum ----------------------------------------------------------------
+
+
+class TestVacuumExecutorVerification:
+    @pytest.mark.asyncio
+    async def test_vacuum_start_empty_rest_ws_confirms(self):
+        from app.agents.vacuum_executor import execute_vacuum_action
+
+        await _assert_verified_action(
+            execute_vacuum_action,
+            action={"action": "start", "entity": "robot vacuum"},
+            entity_id="vacuum.robot",
+            friendly_name="Robot Vacuum",
+            observed_state="cleaning",
+            expected_domain="vacuum",
+            expected_service="start",
+            expected_new_state="cleaning",
+            speech_assertions=["Robot Vacuum", "cleaning"],
+        )
+
+    @pytest.mark.asyncio
+    async def test_vacuum_return_to_base_empty_rest_ws_confirms(self):
+        from app.agents.vacuum_executor import execute_vacuum_action
+
+        await _assert_verified_action(
+            execute_vacuum_action,
+            action={"action": "return_to_base", "entity": "robot vacuum"},
+            entity_id="vacuum.robot",
+            friendly_name="Robot Vacuum",
+            observed_state="returning",
+            expected_domain="vacuum",
+            expected_service="return_to_base",
+            expected_new_state="returning",
+            speech_assertions=["Robot Vacuum", "returning"],
+        )
+
+    @pytest.mark.asyncio
+    async def test_vacuum_set_fan_speed_empty_rest_ws_confirms(self):
+        from app.agents.vacuum_executor import execute_vacuum_action
+
+        await _assert_verified_action(
+            execute_vacuum_action,
+            action={"action": "set_fan_speed", "entity": "robot vacuum", "parameters": {"fan_speed": "turbo"}},
+            entity_id="vacuum.robot",
+            friendly_name="Robot Vacuum",
+            observed_state=None,
+            expected_domain="vacuum",
+            expected_service="set_fan_speed",
+            expected_new_state=None,
+            speech_assertions=["Robot Vacuum", "fan speed updated"],
         )
 
 

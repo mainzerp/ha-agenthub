@@ -24,6 +24,7 @@ _KNOWN_PROMPT_NAMES = (
     "automation",
     "cancel_speech",
     "climate",
+    "cover",
     "filler",
     "general",
     "light",
@@ -38,6 +39,7 @@ _KNOWN_PROMPT_NAMES = (
     "security",
     "send",
     "timer",
+    "vacuum",
 )
 
 

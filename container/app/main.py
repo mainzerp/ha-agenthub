@@ -17,12 +17,14 @@ from app.a2a.dispatcher import Dispatcher
 from app.a2a.orchestrator_gateway import AgentCatalog, OrchestratorGateway
 from app.a2a.registry import registry
 from app.a2a.transport import InProcessTransport
+from app.agents.cover import CoverAgent
 from app.agents.custom_loader import CustomAgentLoader
 from app.agents.filler import FillerAgent
 from app.agents.general import GeneralAgent
 from app.agents.light import LightAgent
 from app.agents.music import MusicAgent
 from app.agents.orchestrator import OrchestratorAgent
+from app.agents.vacuum import VacuumAgent
 from app.api.routes import admin as admin_routes
 from app.api.routes import conversation as conversation_routes
 from app.api.routes import dashboard_api as dashboard_api_routes
@@ -292,6 +294,12 @@ async def lifespan(app: FastAPI):
 
         music_agent = MusicAgent(ha_client=None, entity_index=None, entity_matcher=None)
         await registry.register(music_agent)
+
+        cover_agent = CoverAgent(ha_client=None, entity_index=None, entity_matcher=None)
+        await registry.register(cover_agent)
+
+        vacuum_agent = VacuumAgent(ha_client=None, entity_index=None, entity_matcher=None)
+        await registry.register(vacuum_agent)
 
         custom_loader = CustomAgentLoader(
             registry,
