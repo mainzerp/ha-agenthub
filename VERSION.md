@@ -1,8 +1,22 @@
 # Version
 
-**Current Version:** 1.19.10
+**Current Version:** 1.19.11
 
 ## Recent Changes
+
+### 1.19.11 (PATCH) -- Deep code review: critical fixes, security hardening, exception handling, test quality
+
+- fix(entity): assign result of query.lower().strip() in matcher (containment scoring bug)
+- fix(auth): stop regenerating CSRF token on every request (multi-tab race condition)
+- fix(cache): avoid blocking .result() in ChromaEmbeddingFunction async bridge (deadlock risk)
+- fix(cache): run ChromaDB heartbeat off event loop (Prime Directive 9 compliance)
+- fix(security): eager-load Fernet key during startup lifespan (blocking I/O remediation)
+- fix(db): create SQLite directory off event loop via asyncio.to_thread
+- fix(api): do not leak exception details over WebSocket (information disclosure)
+- fix(admin): remove API key substring disclosure from LLM providers endpoint
+- refactor: narrow 321+ bare `except Exception` handlers and remove 30+ silent `pass` in except blocks
+- test: remove flaky asyncio.sleep calls, use deterministic embeddings, re-enable skipped tests
+- ci: fail build on security scan findings (bandit, pip-audit, trivy), add pytest-timeout, extend bandit to tests
 
 ### 1.19.10 (PATCH) -- Enforce 3-word minimum on cancel-interaction TTS responses
 
