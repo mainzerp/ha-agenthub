@@ -109,10 +109,28 @@ jobs:
       - name: Run HA smoke tests
         run: python -m pytest custom_components/tests/ -v --tb=short
 
+  typecheck:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r container/requirements-dev.txt
+
+      - name: Run mypy
+        run: cd container && python -m mypy app/ --ignore-missing-imports
+
   security-scan:
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    continue-on-error: true
 
     steps:
       - name: Checkout code
@@ -127,12 +145,12 @@ jobs:
         run: pip install bandit pip-audit
 
       - name: Run Bandit
-        run: bandit -r container/app -f json -o bandit-report.json || true
+        run: bandit -r container/app -f json -o bandit-report.json
 
       - name: Run pip-audit
         run: |
-          pip-audit -r container/requirements.txt --format=json --output=pip-audit-report.json || true
-          pip-audit -r container/requirements-dev.txt --format=json --output=pip-audit-dev-report.json || true
+          pip-audit -r container/requirements.txt --format=json --output=pip-audit-report.json
+          pip-audit -r container/requirements-dev.txt --format=json --output=pip-audit-dev-report.json
 
       - name: Upload security scan artifacts
         if: always()
@@ -194,7 +212,7 @@ jobs:
   docker:
     runs-on: ubuntu-latest
     timeout-minutes: 25
-    needs: [lint, lint-ha, test, test-ha, security-scan, changes, hacs]
+    needs: [lint, lint-ha, test, test-ha, typecheck, security-scan, changes, hacs]
 
     permissions:
       contents: read
@@ -261,7 +279,6 @@ jobs:
       - name: Scan image with Trivy (GHCR)
         if: env.PUSH_TO_GHCR == 'true'
         uses: aquasecurity/trivy-action@v0.36.0
-        continue-on-error: true
         with:
           image-ref: ${{ steps.ghcr.outputs.image }}@${{ steps.build.outputs.digest }}
           format: sarif
@@ -285,7 +302,6 @@ jobs:
       - name: Scan local image with Trivy
         if: env.PUSH_TO_GHCR != 'true'
         uses: aquasecurity/trivy-action@v0.36.0
-        continue-on-error: true
         with:
           image-ref: agent-assist:ci
           format: sarif
@@ -354,7 +370,6 @@ jobs:
 
       - name: Scan image with Trivy
         uses: aquasecurity/trivy-action@v0.36.0
-        continue-on-error: true
         with:
           image-ref: ${{ steps.ghcr.outputs.image }}:latest
           format: sarif
