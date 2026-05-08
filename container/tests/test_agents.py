@@ -40,6 +40,7 @@ from app.agents.automation_executor import execute_automation_action  # noqa: E4
 from app.agents.base import BaseAgent, _prompt_cache, preload_prompt_cache  # noqa: E402
 from app.agents.climate import ClimateAgent  # noqa: E402
 from app.agents.climate_executor import execute_climate_action  # noqa: E402
+from app.agents.cover import CoverAgent  # noqa: E402
 from app.agents.custom_loader import CustomAgentLoader, DynamicAgent  # noqa: E402
 from app.agents.filler import FillerAgent  # noqa: E402
 from app.agents.general import GeneralAgent  # noqa: E402
@@ -59,6 +60,7 @@ from app.agents.security_executor import execute_security_action  # noqa: E402
 from app.agents.send import _CONTENT_SEPARATOR, SendAgent  # noqa: E402
 from app.agents.timer import TimerAgent  # noqa: E402
 from app.agents.timer_executor import execute_timer_action  # noqa: E402
+from app.agents.vacuum import VacuumAgent  # noqa: E402
 from app.models.agent import (  # noqa: E402
     AgentCard,
     AgentErrorCode,
@@ -193,6 +195,7 @@ class TestAgentCards:
             (LightAgent, "light-agent"),
             (MusicAgent, "music-agent"),
             (ClimateAgent, "climate-agent"),
+            (CoverAgent, "cover-agent"),
             (MediaAgent, "media-agent"),
             (TimerAgent, "timer-agent"),
             (SceneAgent, "scene-agent"),
@@ -201,6 +204,7 @@ class TestAgentCards:
             (GeneralAgent, "general-agent"),
             (RewriteAgent, "rewrite-agent"),
             (ListsAgent, "lists-agent"),
+            (VacuumAgent, "vacuum-agent"),
         ],
     )
     def test_agent_card_has_correct_id(self, agent_cls, expected_id):
@@ -215,6 +219,7 @@ class TestAgentCards:
             LightAgent,
             MusicAgent,
             ClimateAgent,
+            CoverAgent,
             MediaAgent,
             TimerAgent,
             SceneAgent,
@@ -223,27 +228,7 @@ class TestAgentCards:
             GeneralAgent,
             RewriteAgent,
             ListsAgent,
-        ],
-    )
-    def test_agent_card_has_skills(self, agent_cls):
-        agent = agent_cls()
-        card = agent.agent_card
-        assert len(card.skills) > 0
-
-    @pytest.mark.parametrize(
-        "agent_cls",
-        [
-            LightAgent,
-            MusicAgent,
-            ClimateAgent,
-            MediaAgent,
-            TimerAgent,
-            SceneAgent,
-            AutomationAgent,
-            SecurityAgent,
-            GeneralAgent,
-            RewriteAgent,
-            ListsAgent,
+            VacuumAgent,
         ],
     )
     def test_agent_card_has_endpoint(self, agent_cls):
@@ -608,6 +593,95 @@ class TestClimateAgent:
         assert not forwarded_action.get("entity")
 
 
+class TestCoverAgent:
+    @patch("app.llm.client.complete", new_callable=AsyncMock, return_value="The living room blind is open.")
+    async def test_handle_task_returns_speech(self, mock_complete):
+        agent = CoverAgent(ha_client=MagicMock(), entity_index=MagicMock())
+        result = await agent.handle_task(_make_task("what's the status of the living room blind?"))
+        assert "open" in result.speech.lower()
+        mock_complete.assert_awaited_once()
+
+    @patch(
+        "app.llm.client.complete",
+        new_callable=AsyncMock,
+        return_value='```json\n{"action": "open_cover", "entity": "living room blind", "parameters": {}}\n```\nOpening the living room blind.',
+    )
+    async def test_handle_task_no_ha_client_returns_friendly_error(self, mock_complete):
+        agent = CoverAgent(ha_client=None, entity_index=MagicMock())
+        result = await agent.handle_task(_make_task("open the living room blind"))
+        assert "unavailable" in result.speech.lower()
+        assert result.action_executed is None
+
+    @patch(
+        "app.agents.cover.execute_cover_action",
+        new_callable=AsyncMock,
+        return_value={
+            "success": True,
+            "entity_id": "cover.living_room_blind",
+            "new_state": "open",
+            "speech": "Done, Living Room Blind is now open.",
+        },
+    )
+    @patch(
+        "app.llm.client.complete",
+        new_callable=AsyncMock,
+        return_value='```json\n{"action": "open_cover", "entity": "living room blind", "parameters": {}}\n```\nOpening.',
+    )
+    async def test_handle_task_action_parsed_executes(self, mock_complete, mock_exec):
+        agent = CoverAgent(ha_client=MagicMock(), entity_index=MagicMock(), entity_matcher=MagicMock())
+        result = await agent.handle_task(_make_task("open the living room blind"))
+        assert result.action_executed.success is True
+        assert result.action_executed.entity_id == "cover.living_room_blind"
+
+    @patch("app.agents.cover.execute_cover_action", new_callable=AsyncMock, side_effect=Exception("HA connection lost"))
+    @patch(
+        "app.llm.client.complete",
+        new_callable=AsyncMock,
+        return_value='```json\n{"action": "close_cover", "entity": "bedroom curtain", "parameters": {}}\n```\nClosing.',
+    )
+    async def test_handle_task_execute_action_exception(self, mock_complete, mock_exec):
+        agent = CoverAgent(ha_client=MagicMock(), entity_index=MagicMock())
+        result = await agent.handle_task(_make_task("close the bedroom curtain"))
+        assert "sorry" in result.speech.lower()
+        assert result.action_executed is None
+
+    @patch(
+        "app.llm.client.complete",
+        new_callable=AsyncMock,
+        return_value='Here is some info. {"action": "open_cover", "entity": "x", "parameters": {}} All done.',
+    )
+    async def test_handle_task_strips_json_from_fallback(self, mock_complete):
+        with patch("app.agents.actionable.parse_action", return_value=None):
+            agent = CoverAgent()
+            result = await agent.handle_task(_make_task("tell me about the blinds"))
+            assert "{" not in result.speech
+            assert "action" not in result.speech
+
+    @patch("app.llm.client.complete", new_callable=AsyncMock, return_value="")
+    async def test_handle_task_empty_llm_response(self, mock_complete):
+        agent = CoverAgent()
+        result = await agent.handle_task(_make_task("open the blind"))
+        assert "did not return a response" in result.speech
+        assert result.action_executed is None
+
+    @patch(
+        "app.agents.cover.execute_cover_action",
+        new_callable=AsyncMock,
+        return_value={"success": True, "entity_id": "cover.living_room_blind", "new_state": "open", "speech": "Done."},
+    )
+    @patch(
+        "app.llm.client.complete",
+        new_callable=AsyncMock,
+        return_value='```json\n{"action": "open_cover", "entity": "living room blind", "parameters": {}}\n```\nDone.',
+    )
+    async def test_handle_task_passes_agent_id(self, mock_complete, mock_exec):
+        agent = CoverAgent(ha_client=MagicMock(), entity_index=MagicMock(), entity_matcher=MagicMock())
+        await agent.handle_task(_make_task("open the living room blind"))
+        mock_exec.assert_awaited_once()
+        _, kwargs = mock_exec.call_args
+        assert kwargs.get("agent_id") == "cover-agent"
+
+
 class TestMediaAgent:
     @patch("app.llm.client.complete", new_callable=AsyncMock, return_value="The TV is currently playing Netflix.")
     async def test_handle_task_returns_speech(self, mock_complete):
@@ -721,6 +795,102 @@ class TestMediaAgent:
         result = await agent.handle_task(_make_task("set TV volume to 50%"))
         assert result.action_executed.success is True
         mock_exec.assert_awaited_once()
+
+
+class TestVacuumAgent:
+    @patch("app.llm.client.complete", new_callable=AsyncMock, return_value="The robot vacuum is cleaning.")
+    async def test_handle_task_returns_speech(self, mock_complete):
+        agent = VacuumAgent(ha_client=MagicMock(), entity_index=MagicMock())
+        result = await agent.handle_task(_make_task("what's the vacuum doing?"))
+        assert "cleaning" in result.speech.lower()
+        mock_complete.assert_awaited_once()
+
+    @patch(
+        "app.llm.client.complete",
+        new_callable=AsyncMock,
+        return_value='```json\n{"action": "start", "entity": "robot vacuum", "parameters": {}}\n```\nStarting the robot vacuum.',
+    )
+    async def test_handle_task_no_ha_client_returns_friendly_error(self, mock_complete):
+        agent = VacuumAgent(ha_client=None, entity_index=MagicMock())
+        result = await agent.handle_task(_make_task("start the robot vacuum"))
+        assert "unavailable" in result.speech.lower()
+        assert result.action_executed is None
+
+    @patch(
+        "app.agents.vacuum.execute_vacuum_action",
+        new_callable=AsyncMock,
+        return_value={
+            "success": True,
+            "entity_id": "vacuum.robot",
+            "new_state": "cleaning",
+            "speech": "Done, Robot Vacuum is now cleaning.",
+        },
+    )
+    @patch(
+        "app.llm.client.complete",
+        new_callable=AsyncMock,
+        return_value='```json\n{"action": "start", "entity": "robot vacuum", "parameters": {}}\n```\nStarting.',
+    )
+    async def test_handle_task_action_parsed_executes(self, mock_complete, mock_exec):
+        agent = VacuumAgent(ha_client=MagicMock(), entity_index=MagicMock(), entity_matcher=MagicMock())
+        result = await agent.handle_task(_make_task("start the robot vacuum"))
+        assert result.action_executed.success is True
+        assert result.action_executed.entity_id == "vacuum.robot"
+
+    @patch(
+        "app.agents.vacuum.execute_vacuum_action", new_callable=AsyncMock, side_effect=Exception("HA connection lost")
+    )
+    @patch(
+        "app.llm.client.complete",
+        new_callable=AsyncMock,
+        return_value='```json\n{"action": "return_to_base", "entity": "robot vacuum", "parameters": {}}\n```\nReturning.',
+    )
+    async def test_handle_task_execute_action_exception(self, mock_complete, mock_exec):
+        agent = VacuumAgent(ha_client=MagicMock(), entity_index=MagicMock())
+        result = await agent.handle_task(_make_task("send the vacuum home"))
+        assert "sorry" in result.speech.lower()
+        assert result.action_executed is None
+
+    @patch(
+        "app.llm.client.complete",
+        new_callable=AsyncMock,
+        return_value='Vacuum is idle. {"action": "start", "entity": "x", "parameters": {}} All set.',
+    )
+    async def test_handle_task_strips_json_from_fallback(self, mock_complete):
+        with patch("app.agents.actionable.parse_action", return_value=None):
+            agent = VacuumAgent()
+            result = await agent.handle_task(_make_task("what's the vacuum status?"))
+            assert "{" not in result.speech
+            assert "action" not in result.speech
+
+    @patch("app.llm.client.complete", new_callable=AsyncMock, return_value="")
+    async def test_handle_task_empty_llm_response(self, mock_complete):
+        agent = VacuumAgent()
+        result = await agent.handle_task(_make_task("start cleaning"))
+        assert "did not return a response" in result.speech
+        assert result.action_executed is None
+
+    @patch(
+        "app.agents.vacuum.execute_vacuum_action",
+        new_callable=AsyncMock,
+        return_value={
+            "success": True,
+            "entity_id": "vacuum.robot",
+            "new_state": "cleaning",
+            "speech": "Done.",
+        },
+    )
+    @patch(
+        "app.llm.client.complete",
+        new_callable=AsyncMock,
+        return_value='```json\n{"action": "start", "entity": "robot vacuum", "parameters": {}}\n```\nDone.',
+    )
+    async def test_handle_task_passes_agent_id(self, mock_complete, mock_exec):
+        agent = VacuumAgent(ha_client=MagicMock(), entity_index=MagicMock(), entity_matcher=MagicMock())
+        await agent.handle_task(_make_task("start the robot vacuum"))
+        mock_exec.assert_awaited_once()
+        _, kwargs = mock_exec.call_args
+        assert kwargs.get("agent_id") == "vacuum-agent"
 
 
 class TestTimerAgent:

@@ -18,6 +18,18 @@ from app.models.agent import TaskContext
 
 logger = logging.getLogger(__name__)
 
+
+def _resolve_turn_on_off_domain(entity_id: str, action_name: str) -> tuple[str, str]:
+    """Derive the HA service domain for turn_on/turn_off from the entity_id."""
+    if entity_id.startswith("climate."):
+        return ("climate", action_name)
+    if entity_id.startswith("fan."):
+        return ("fan", action_name)
+    if entity_id.startswith("humidifier."):
+        return ("humidifier", action_name)
+    return ("climate", action_name)
+
+
 _CLIMATE_ACTION_MAP: dict[str, tuple[str, str]] = {
     "set_temperature": ("climate", "set_temperature"),
     "set_hvac_mode": ("climate", "set_hvac_mode"),
@@ -25,6 +37,12 @@ _CLIMATE_ACTION_MAP: dict[str, tuple[str, str]] = {
     "set_humidity": ("climate", "set_humidity"),
     "turn_on": ("climate", "turn_on"),
     "turn_off": ("climate", "turn_off"),
+    "set_fan_percentage": ("fan", "set_percentage"),
+    "set_fan_preset_mode": ("fan", "set_preset_mode"),
+    "fan_oscillate": ("fan", "oscillate"),
+    "set_fan_direction": ("fan", "set_direction"),
+    "set_humidifier_humidity": ("humidifier", "set_humidity"),
+    "set_humidifier_mode": ("humidifier", "set_mode"),
 }
 
 # FLOW-VERIFY-SHARED (0.18.5): climate entities have several meaningful
@@ -34,6 +52,10 @@ _CLIMATE_ACTION_MAP: dict[str, tuple[str, str]] = {
 # dynamically below because the target is the user-supplied mode.
 _EXPECTED_STATE_BY_ACTION: dict[str, str] = {
     "turn_off": "off",
+    "fan_turn_on": "on",
+    "fan_turn_off": "off",
+    "humidifier_turn_on": "on",
+    "humidifier_turn_off": "off",
 }
 
 # Intent-first phrasing when verification is inconclusive or ambiguous.
@@ -41,20 +63,27 @@ _ACTION_PHRASES: dict[str, str] = {
     "set_temperature": "temperature updated",
     "set_fan_mode": "fan mode updated",
     "set_humidity": "humidity target updated",
+    "set_fan_percentage": "fan speed updated",
+    "set_fan_preset_mode": "preset mode updated",
+    "fan_oscillate": "oscillation updated",
+    "set_fan_direction": "direction updated",
+    "set_humidifier_humidity": "humidity target updated",
+    "set_humidifier_mode": "mode updated",
 }
 
-_ALLOWED_DOMAINS: frozenset[str] = frozenset({"climate", "sensor", "weather"})
+_ALLOWED_DOMAINS: frozenset[str] = frozenset({"climate", "sensor", "weather", "fan", "humidifier"})
 
 # FLOW-DOMAIN-1 (0.19.2): per-action HA-domain allow-set used to filter
 # the hybrid matcher before picking matches[0]. All write actions target
-# climate.* entities; weather and read paths get their own constants.
-_CLIMATE_WRITE_DOMAINS: frozenset[str] = frozenset({"climate"})
-# Read path explicitly spans climate + sensor: "what's the temperature
-# in the living room?" should resolve to a sensor.* entity even when a
-# climate.* exists in the same area. Do NOT tighten this to {"climate"}.
-_CLIMATE_READ_DOMAINS: frozenset[str] = frozenset({"climate", "sensor"})
+# climate.*, fan.*, and humidifier.* entities; weather and read paths get
+# their own constants.
+_CLIMATE_WRITE_DOMAINS: frozenset[str] = frozenset({"climate", "fan", "humidifier"})
+# Read path explicitly spans climate + sensor + fan + humidifier: "what's
+# the temperature in the living room?" should resolve to a sensor.* entity
+# even when a climate.* exists in the same area. Do NOT tighten this.
+_CLIMATE_READ_DOMAINS: frozenset[str] = frozenset({"climate", "sensor", "fan", "humidifier"})
 _WEATHER_DOMAINS: frozenset[str] = frozenset({"weather"})
-_HISTORY_DOMAINS: frozenset[str] = frozenset({"climate", "sensor", "weather"})
+_HISTORY_DOMAINS: frozenset[str] = frozenset({"climate", "sensor", "weather", "fan", "humidifier"})
 
 
 def _validate_domain(entity_id: str) -> bool:
@@ -80,6 +109,18 @@ def _build_climate_service_data(action: dict) -> dict[str, Any]:
         data["fan_mode"] = params["fan_mode"]
     if "humidity" in params:
         data["humidity"] = int(params["humidity"])
+    # Fan parameters
+    if "percentage" in params:
+        data["percentage"] = int(params["percentage"])
+    if "preset_mode" in params:
+        data["preset_mode"] = params["preset_mode"]
+    if "oscillating" in params:
+        data["oscillating"] = bool(params["oscillating"])
+    if "direction" in params:
+        data["direction"] = params["direction"]
+    # Humidifier parameters
+    if "mode" in params:
+        data["mode"] = params["mode"]
 
     return data
 
@@ -144,6 +185,9 @@ async def execute_climate_action(
         }
 
     domain, service = mapping
+    # Generic turn_on/turn_off: resolve domain from matched entity_id at runtime
+    if action_name in ("turn_on", "turn_off") and domain == "climate":
+        pass  # will re-resolve after entity_id is known
 
     resolution = {
         "entity_id": None,
@@ -180,6 +224,10 @@ async def execute_climate_action(
             "new_state": None,
             "speech": resolution["speech"] or f"Could not find an entity matching '{entity_query}'.",
         }
+
+    # Generic turn_on/turn_off: derive HA service domain from matched entity_id
+    if action_name in ("turn_on", "turn_off"):
+        domain, service = _resolve_turn_on_off_domain(entity_id, action_name)
 
     # Build service data
     service_data = _build_climate_service_data(action)
@@ -238,6 +286,35 @@ def _format_climate_state(entity_id: str, state_resp: dict) -> str:
     if entity_id.startswith("sensor."):
         unit = attrs.get("unit_of_measurement", "")
         return f"{friendly_name}: {state} {unit}".strip() + "."
+
+    if entity_id.startswith("fan."):
+        parts = [f"{friendly_name} is {state}"]
+        percentage = attrs.get("percentage")
+        if percentage is not None:
+            parts.append(f"speed {percentage}%")
+        preset_mode = attrs.get("preset_mode")
+        if preset_mode:
+            parts.append(f"preset {preset_mode}")
+        oscillating = attrs.get("oscillating")
+        if oscillating is not None:
+            parts.append("oscillating" if oscillating else "not oscillating")
+        direction = attrs.get("direction")
+        if direction:
+            parts.append(f"direction {direction}")
+        return ", ".join(parts) + "."
+
+    if entity_id.startswith("humidifier."):
+        parts = [f"{friendly_name} is {state}"]
+        target_humidity = attrs.get("humidity")
+        if target_humidity is not None:
+            parts.append(f"target humidity {target_humidity}%")
+        current_humidity = attrs.get("current_humidity")
+        if current_humidity is not None:
+            parts.append(f"current humidity {current_humidity}%")
+        mode = attrs.get("mode")
+        if mode:
+            parts.append(f"mode {mode}")
+        return ", ".join(parts) + "."
 
     # climate.* entity
     parts = [f"{friendly_name} is in {state} mode"]
@@ -350,16 +427,22 @@ async def _list_climate(ha_client: Any) -> dict:
         }
 
     climate_entities = []
+    fan_entities = []
+    humidifier_entities = []
     sensors = []
     _sensor_keywords = ("temperature", "humidity", "pressure", "dew_point")
     for s in states:
         eid = s.get("entity_id", "")
         if eid.startswith("climate."):
             climate_entities.append(s)
+        elif eid.startswith("fan."):
+            fan_entities.append(s)
+        elif eid.startswith("humidifier."):
+            humidifier_entities.append(s)
         elif eid.startswith("sensor.") and any(k in eid for k in _sensor_keywords):
             sensors.append(s)
 
-    if not climate_entities and not sensors:
+    if not climate_entities and not fan_entities and not humidifier_entities and not sensors:
         return {"success": True, "entity_id": "", "new_state": None, "speech": "No climate devices or sensors found."}
 
     parts = []
@@ -378,6 +461,30 @@ async def _list_climate(ha_client: Any) -> dict:
                 info += f", target {target_temp}"
             lines.append(info)
         parts.append("Climate devices: " + "; ".join(lines))
+    if fan_entities:
+        lines = []
+        for f in fan_entities:
+            attrs = f.get("attributes", {})
+            name = attrs.get("friendly_name", f.get("entity_id", ""))
+            state = f.get("state", "unknown")
+            percentage = attrs.get("percentage")
+            info = f"{name}: {state}"
+            if percentage is not None:
+                info += f", speed {percentage}%"
+            lines.append(info)
+        parts.append("Fans: " + "; ".join(lines))
+    if humidifier_entities:
+        lines = []
+        for h in humidifier_entities:
+            attrs = h.get("attributes", {})
+            name = attrs.get("friendly_name", h.get("entity_id", ""))
+            state = h.get("state", "unknown")
+            target_humidity = attrs.get("humidity")
+            info = f"{name}: {state}"
+            if target_humidity is not None:
+                info += f", target {target_humidity}%"
+            lines.append(info)
+        parts.append("Humidifiers: " + "; ".join(lines))
     if sensors:
         lines = []
         for s in sensors:

@@ -30,6 +30,8 @@ BUILT_IN_AGENTS = [
     "automation-agent",
     "security-agent",
     "lists-agent",
+    "cover-agent",
+    "vacuum-agent",
 ]
 
 

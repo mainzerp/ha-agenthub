@@ -836,6 +836,8 @@ async def _seed_defaults(db: aiosqlite.Connection) -> None:
         ("music-agent", "domain_include", "media_player"),
         ("climate-agent", "domain_include", "climate"),
         ("climate-agent", "domain_include", "weather"),
+        ("climate-agent", "domain_include", "fan"),
+        ("climate-agent", "domain_include", "humidifier"),
         ("media-agent", "domain_include", "media_player"),
         ("scene-agent", "domain_include", "scene"),
         ("automation-agent", "domain_include", "automation"),
@@ -843,6 +845,8 @@ async def _seed_defaults(db: aiosqlite.Connection) -> None:
         ("timer-agent", "domain_include", "media_player"),
         ("calendar-agent", "domain_include", "calendar"),
         ("lists-agent", "domain_include", "todo"),
+        ("cover-agent", "domain_include", "cover"),
+        ("vacuum-agent", "domain_include", "vacuum"),
         ("security-agent", "domain_include", "alarm_control_panel"),
         ("security-agent", "domain_include", "lock"),
         ("security-agent", "domain_include", "camera"),
@@ -1524,3 +1528,18 @@ async def _run_migrations(db: aiosqlite.Connection) -> None:
                 logger.error("Migration failed adding column voice_followup: %s", e)
                 raise
         await db.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (30)")
+
+    if current_version < 31:
+        # Migration 31: Add visibility rules for new cover-agent, vacuum-agent,
+        # and extend climate-agent with fan and humidifier domains.
+        new_rules = [
+            ("cover-agent", "domain_include", "cover"),
+            ("vacuum-agent", "domain_include", "vacuum"),
+            ("climate-agent", "domain_include", "fan"),
+            ("climate-agent", "domain_include", "humidifier"),
+        ]
+        await db.executemany(
+            "INSERT OR IGNORE INTO entity_visibility_rules (agent_id, rule_type, rule_value) VALUES (?, ?, ?)",
+            new_rules,
+        )
+        await db.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (31)")

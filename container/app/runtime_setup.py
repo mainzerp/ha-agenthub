@@ -14,6 +14,7 @@ from app.agents.automation import AutomationAgent
 from app.agents.base import preload_prompt_cache
 from app.agents.calendar import CalendarAgent
 from app.agents.climate import ClimateAgent
+from app.agents.cover import CoverAgent
 from app.agents.custom_loader import CustomAgentLoader
 from app.agents.filler import FillerAgent
 from app.agents.general import GeneralAgent
@@ -27,6 +28,7 @@ from app.agents.scene import SceneAgent
 from app.agents.security import SecurityAgent
 from app.agents.send import SendAgent
 from app.agents.timer import TimerAgent
+from app.agents.vacuum import VacuumAgent
 from app.cache.cache_manager import CacheManager
 from app.cache.embedding import get_embedding_engine
 from app.cache.vector_store import COLLECTION_ENTITY_INDEX, get_vector_store
@@ -500,9 +502,11 @@ def _create_phase2_agent(agent_id: str, app: FastAPI):
         "send-agent": SendAgent,
         "calendar-agent": CalendarAgent,
         "lists-agent": ListsAgent,
+        "vacuum-agent": VacuumAgent,
     }
     with_matcher = {
         "climate-agent",
+        "cover-agent",
         "security-agent",
         "timer-agent",
         "scene-agent",
@@ -510,6 +514,7 @@ def _create_phase2_agent(agent_id: str, app: FastAPI):
         "media-agent",
         "calendar-agent",
         "lists-agent",
+        "vacuum-agent",
     }
 
     cls = agent_map.get(agent_id)
@@ -721,6 +726,12 @@ async def _initialize_setup_dependent_services(app: FastAPI, *, source: str) -> 
 
     music_agent = MusicAgent(ha_client=ha_client, entity_index=entity_index, entity_matcher=entity_matcher)
     await registry.register(music_agent, replace=True)
+
+    cover_agent = CoverAgent(ha_client=ha_client, entity_index=entity_index, entity_matcher=entity_matcher)
+    await registry.register(cover_agent, replace=True)
+
+    vacuum_agent = VacuumAgent(ha_client=ha_client, entity_index=entity_index, entity_matcher=entity_matcher)
+    await registry.register(vacuum_agent, replace=True)
 
     phase2_agents = [
         "timer-agent",

@@ -29,6 +29,7 @@ _ALLOWED_INTERNAL_HA_SCOPE: frozenset[str] = frozenset(
     {
         "AutomationAgent",
         "ClimateAgent",
+        "CoverAgent",
         "FillerAgent",
         "GeneralAgent",
         "LightAgent",
@@ -40,6 +41,7 @@ _ALLOWED_INTERNAL_HA_SCOPE: frozenset[str] = frozenset(
         "SecurityAgent",
         "SendAgent",
         "TimerAgent",
+        "VacuumAgent",
     }
 )
 
