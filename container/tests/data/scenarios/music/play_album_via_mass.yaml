@@ -18,7 +18,7 @@ request:
 expected:
   routed_agent: music-agent
   service_calls:
-    - domain: mass
+    - domain: music_assistant
       service: play_media
       target_entity: media_player.mass_living_room
       service_data: {media_id: "Abbey Road", media_type: album}

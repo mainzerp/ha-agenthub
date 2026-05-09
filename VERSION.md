@@ -1,12 +1,21 @@
 # Version
 
-**Current Version:** 1.20.1
+**Current Version:** 1.21.0
 
 ## Recent Changes
 
-Track changes since `v1.20.1` here.
+Track changes since `v1.21.0` here.
 
 ## Version History
+
+### 1.21.0 (MINOR) -- Music Agent official music_assistant integration
+
+- feat(agent): Migrated Music Agent from legacy HACS `mass.*` service namespace to official Home Assistant core `music_assistant.*` services (available since HA 2024.12).
+- feat(agent): `play_media` action now supports `artist`, `album`, and `radio_mode` parameters.
+- feat(agent): `search` action now supports `artist`, `album`, and `library_only` parameters.
+- feat(prompt): Updated `music.txt` prompt documentation to reflect new `music_assistant` services and expanded `enqueue` values (`play|replace|next|replace_next|add`).
+- test(agent): Updated and expanded `test_action_executor.py` Music Agent tests for the new service namespace and parameters.
+- **Breaking change:** Users still on the legacy HACS `mass` integration must migrate to the official `music_assistant` integration before upgrading.
 
 ### 1.20.1 (PATCH) -- Dependency updates
 

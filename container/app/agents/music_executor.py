@@ -15,8 +15,8 @@ from app.entity.deterministic_resolver import resolve_entity_deterministic_first
 logger = logging.getLogger(__name__)
 
 _MUSIC_ACTION_MAP: dict[str, tuple[str, str]] = {
-    "play_media": ("mass", "play_media"),
-    "search": ("mass", "search"),
+    "play_media": ("music_assistant", "play_media"),
+    "search": ("music_assistant", "search"),
     "volume_set": ("media_player", "volume_set"),
     "media_play": ("media_player", "media_play"),
     "media_pause": ("media_player", "media_pause"),
@@ -44,7 +44,7 @@ _ACTION_PHRASES: dict[str, str] = {
 
 _ALLOWED_DOMAINS: frozenset[str] = frozenset({"media_player"})
 
-# FLOW-DOMAIN-1 (0.19.2): mass.* services still target a media_player.*
+# FLOW-DOMAIN-1 (0.19.2): music_assistant.* services still target a media_player.*
 # entity_id, so all music actions resolve into the media_player domain.
 _ACTION_DOMAINS: frozenset[str] = frozenset({"media_player"})
 
@@ -68,6 +68,12 @@ def _build_music_service_data(action: dict) -> dict[str, Any]:
             data["media_type"] = params["media_type"]
         if "enqueue" in params:
             data["enqueue"] = params["enqueue"]
+        if "artist" in params:
+            data["artist"] = params["artist"]
+        if "album" in params:
+            data["album"] = params["album"]
+        if "radio_mode" in params:
+            data["radio_mode"] = bool(params["radio_mode"])
     elif action_name == "search":
         if "name" in params:
             data["name"] = params["name"]
@@ -75,6 +81,12 @@ def _build_music_service_data(action: dict) -> dict[str, Any]:
             data["media_type"] = params["media_type"]
         if "limit" in params:
             data["limit"] = int(params["limit"])
+        if "artist" in params:
+            data["artist"] = params["artist"]
+        if "album" in params:
+            data["album"] = params["album"]
+        if "library_only" in params:
+            data["library_only"] = bool(params["library_only"])
     elif action_name == "volume_set":
         if "volume_level" in params:
             data["volume_level"] = float(params["volume_level"])
@@ -89,7 +101,7 @@ def _build_music_service_data(action: dict) -> dict[str, Any]:
 
 
 def _format_search_results(results: Any) -> str:
-    """Format search results from mass.search into readable speech."""
+    """Format search results from music_assistant.search into readable speech."""
     if not results:
         return "No results found for that search."
 
