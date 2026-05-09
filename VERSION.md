@@ -1,12 +1,22 @@
 # Version
 
-**Current Version:** 1.20.0
+**Current Version:** 1.20.1
 
 ## Recent Changes
 
-Track changes since `v1.20.0` here.
+Track changes since `v1.20.1` here.
 
 ## Version History
+
+### 1.20.1 (PATCH) -- Dependency updates
+
+- ci: bump cryptography from 46.0.7 to 48.0.0
+- ci: bump uvicorn from 0.44.0 to 0.46.0
+- ci: bump pydantic-settings from 2.13.1 to 2.14.1
+- ci: update pytest-cov requirement from >=5.0.0 to >=7.1.0
+- ci: update pytest-xdist requirement from >=3.5.0 to >=3.8.0
+- ci: bump actions/upload-artifact from 4 to 7
+- ci: bump actions/attest-build-provenance from 1 to 4
 
 ### 1.20.0 (MINOR) -- Cover Agent, Vacuum Agent, and Climate Agent fan/humidifier support
 
