@@ -210,7 +210,7 @@ jobs:
           echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
 
       - name: Attest build provenance
-        uses: actions/attest-build-provenance@v1
+        uses: actions/attest-build-provenance@v4
         with:
           subject-name: ${{ steps.ghcr.outputs.image }}
           subject-digest: ${{ steps.retag.outputs.digest }}
