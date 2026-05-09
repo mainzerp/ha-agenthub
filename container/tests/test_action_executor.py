@@ -1055,10 +1055,62 @@ class TestMusicExecutor:
         assert result["success"] is True
         assert result["entity_id"] == "media_player.ma_kitchen"
         ha_client.call_service.assert_awaited_once_with(
-            "mass",
+            "music_assistant",
             "play_media",
             "media_player.ma_kitchen",
             {"media_id": "jazz", "media_type": "track", "enqueue": "play"},
+        )
+
+    @pytest.mark.asyncio
+    async def test_execute_play_media_with_artist_and_album(self, ha_client, entity_matcher, entity_index):
+        action = {
+            "action": "play_media",
+            "entity": "kitchen speaker",
+            "parameters": {
+                "media_id": "jazz",
+                "media_type": "track",
+                "enqueue": "play",
+                "artist": "Dave Brubeck",
+                "album": "Time Out",
+            },
+        }
+        result = await execute_music_action(action, ha_client, entity_index, entity_matcher)
+
+        assert result["success"] is True
+        assert result["entity_id"] == "media_player.ma_kitchen"
+        ha_client.call_service.assert_awaited_once_with(
+            "music_assistant",
+            "play_media",
+            "media_player.ma_kitchen",
+            {
+                "media_id": "jazz",
+                "media_type": "track",
+                "enqueue": "play",
+                "artist": "Dave Brubeck",
+                "album": "Time Out",
+            },
+        )
+
+    @pytest.mark.asyncio
+    async def test_execute_play_media_with_radio_mode(self, ha_client, entity_matcher, entity_index):
+        action = {
+            "action": "play_media",
+            "entity": "kitchen speaker",
+            "parameters": {
+                "media_id": "jazz",
+                "media_type": "radio",
+                "radio_mode": 1,
+            },
+        }
+        result = await execute_music_action(action, ha_client, entity_index, entity_matcher)
+
+        assert result["success"] is True
+        assert result["entity_id"] == "media_player.ma_kitchen"
+        ha_client.call_service.assert_awaited_once_with(
+            "music_assistant",
+            "play_media",
+            "media_player.ma_kitchen",
+            {"media_id": "jazz", "media_type": "radio", "radio_mode": True},
         )
 
     @pytest.mark.asyncio
@@ -1133,6 +1185,31 @@ class TestMusicExecutor:
         assert result["new_state"] is None
         assert "Jazz Suite" in result["speech"]
         assert "Dave Brubeck" in result["speech"]
+        ha_client.call_service.assert_awaited_once_with(
+            "music_assistant",
+            "search",
+            "media_player.ma_kitchen",
+            {"name": "jazz", "media_type": "track"},
+        )
+
+    @pytest.mark.asyncio
+    async def test_execute_search_with_library_only(self, ha_client, entity_matcher, entity_index):
+        ha_client.call_service = AsyncMock(return_value=[])
+        action = {
+            "action": "search",
+            "entity": "kitchen speaker",
+            "parameters": {"name": "jazz", "media_type": "track", "library_only": 1},
+        }
+        result = await execute_music_action(action, ha_client, entity_index, entity_matcher)
+
+        assert result["success"] is True
+        assert result["new_state"] is None
+        ha_client.call_service.assert_awaited_once_with(
+            "music_assistant",
+            "search",
+            "media_player.ma_kitchen",
+            {"name": "jazz", "media_type": "track", "library_only": True},
+        )
 
     @pytest.mark.asyncio
     async def test_execute_unknown_action(self, ha_client, entity_matcher, entity_index):

@@ -9,7 +9,7 @@ class MusicAgent(ActionableAgent):
     """Controls music playback via Music Assistant (HA integration).
 
     Targets Music Assistant media_player entities and MA-specific services
-    (mass.play_media, mass.search) for library search, queue management,
+    (music_assistant.play_media, music_assistant.search) for library search, queue management,
     and multi-room audio. Falls back to standard media_player services
     for basic transport controls (play/pause/skip/volume).
     """

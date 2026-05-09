@@ -18,7 +18,7 @@ request:
 expected:
   routed_agent: music-agent
   service_calls:
-    - domain: mass
+    - domain: music_assistant
       service: search
       target_entity: media_player.mass_living_room
       service_data: {name: jazz, media_type: track, limit: 5}

@@ -39,8 +39,8 @@ Do NOT put an entity_id here.
 Entity names: use the exact spelling from the task description.
 
 Actions and parameters:
-- play_media: {"media_id": "<search query or URI>", "media_type": "artist|album|track|playlist|radio", "enqueue": "play|next|add|replace"}
-- search: {"name": "<search query>", "media_type": "artist|album|track|playlist|radio", "limit": 10}
+- play_media: {"media_id": "<search query or URI or list>", "media_type": "artist|album|track|playlist|radio", "enqueue": "play|replace|next|replace_next|add", "artist": "<artist name>", "album": "<album name>", "radio_mode": true}
+- search: {"name": "<search query>", "media_type": "artist|album|track|playlist|radio", "artist": "<artist name>", "album": "<album name>", "limit": 10, "library_only": false}
 - volume_set: {"volume_level": 0.5} (range 0.0-1.0)
 - media_play: {} (resumes playback)
 - media_pause: {} (pauses playback)
