@@ -22,7 +22,7 @@
                 <template x-if="data.warnings.rewrite_failures > 0">
                     <span x-text="data.warnings.rewrite_failures + ' rewrite failure(s)'"></span>
                 </template>
-                <span> in the last 24h</span>
+                <span x-text="' in the ' + (data && data.time_range_hours > 24 ? 'last 7 days' : 'last 24h')"> in the last 24h</span>
             </span>
         </div>
     </template>
@@ -39,7 +39,7 @@
     <!-- Page header -->
     <div class="page-header">
         <div class="page-header-text">
-            <p class="page-subtitle">Key metrics from the last 24 hours. Auto-refreshes every 30s.</p>
+            <p class="page-subtitle" x-text="data && data.time_range_hours > 24 ? 'No recent data — showing last 7 days. Auto-refreshes every 30s.' : 'Key metrics from the last 24 hours. Auto-refreshes every 30s.'">Key metrics from the last 24 hours. Auto-refreshes every 30s.</p>
         </div>
     </div>
 
@@ -48,7 +48,7 @@
         <div class="stat-card">
             <div class="stat-card-header">
                 <svg class="stat-card-icon text-teal" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
-                <span class="stat-card-label">Total Requests (24h)</span>
+                <span class="stat-card-label" x-text="'Total Requests (' + (data && data.time_range_hours > 24 ? '7d' : '24h') + ')'">Total Requests (24h)</span>
             </div>
             <div class="stat-card-value" x-text="data ? data.recent_requests : '--'">--</div>
         </div>
@@ -107,7 +107,7 @@
     <!-- Charts row: Request Trend + Agent Distribution -->
     <div class="grid-2 mb-lg">
         <div class="chart-card">
-            <h3 class="chart-card-title">Requests (24h)</h3>
+            <h3 class="chart-card-title" x-text="'Requests (' + (data && data.time_range_hours > 24 ? '7d' : '24h') + ')'">Requests (24h)</h3>
             <div class="chart-wrap-sm">
                 <canvas id="requestTrendChart"></canvas>
             </div>

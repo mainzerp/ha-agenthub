@@ -184,17 +184,27 @@ async def get_overview(request: Request) -> dict[str, Any]:
         except Exception:
             logger.debug("Failed to list MCP servers", exc_info=True)
 
-    # Count recent requests from analytics (last 24h)
+    from datetime import datetime, timedelta
+
+    time_range_hours = 24
+    start_time = (datetime.now(UTC) - timedelta(hours=24)).isoformat()
+
+    # Count recent requests from analytics; auto-fallback to 7 days if last 24h is empty
     recent_requests = 0
     try:
-        from datetime import datetime, timedelta
-
-        start = (datetime.now(UTC) - timedelta(hours=24)).isoformat()
         events = await AnalyticsRepository.query_by_range(
             event_type="request",
-            start=start,
+            start=start_time,
             limit=10000,
         )
+        if not events:
+            time_range_hours = 168
+            start_time = (datetime.now(UTC) - timedelta(hours=168)).isoformat()
+            events = await AnalyticsRepository.query_by_range(
+                event_type="request",
+                start=start_time,
+                limit=10000,
+            )
         recent_requests = len(events)
     except Exception:
         logger.debug("Failed to query recent requests", exc_info=True)
@@ -202,12 +212,9 @@ async def get_overview(request: Request) -> dict[str, Any]:
     # Compute cache hit rate from analytics DB (cache tier stats don't track hits/queries)
     cache_hit_rate = 0
     try:
-        from datetime import datetime, timedelta
-
-        start_cache = (datetime.now(UTC) - timedelta(hours=24)).isoformat()
         cache_events = await AnalyticsRepository.query_by_range(
             event_type="cache",
-            start=start_cache,
+            start=start_time,
             limit=10000,
         )
         if cache_events:
@@ -224,6 +231,7 @@ async def get_overview(request: Request) -> dict[str, Any]:
         "agent_count": len(agents),
         "entity_count": entity_count,
         "mcp_server_count": mcp_count,
+        "time_range_hours": time_range_hours,
     }
 
 
@@ -242,7 +250,8 @@ async def get_overview_extended(request: Request) -> dict[str, Any]:
     from collections import defaultdict
     from datetime import datetime, timedelta
 
-    start_24h = (datetime.now(UTC) - timedelta(hours=24)).isoformat()
+    time_range_hours = 24
+    start_time = (datetime.now(UTC) - timedelta(hours=24)).isoformat()
 
     # --- Basic counts (reuse existing overview logic) ---
     agents = await registry.list_agents() if registry else []
@@ -263,14 +272,23 @@ async def get_overview_extended(request: Request) -> dict[str, Any]:
         except Exception:
             logger.debug("Failed to list MCP servers", exc_info=True)
 
-    # --- Analytics: requests, latency ---
+    # --- Analytics: requests, latency (auto-fallback to 7d if last 24h is empty) ---
     requests = []
     with contextlib.suppress(Exception):
         requests = await AnalyticsRepository.query_by_range(
             event_type="request",
-            start=start_24h,
+            start=start_time,
             limit=10000,
         )
+    if not requests:
+        time_range_hours = 168
+        start_time = (datetime.now(UTC) - timedelta(hours=168)).isoformat()
+        with contextlib.suppress(Exception):
+            requests = await AnalyticsRepository.query_by_range(
+                event_type="request",
+                start=start_time,
+                limit=10000,
+            )
 
     recent_requests = len(requests)
     latencies = [
@@ -284,7 +302,7 @@ async def get_overview_extended(request: Request) -> dict[str, Any]:
     all_events = []
     with contextlib.suppress(Exception):
         all_events = await AnalyticsRepository.query_by_range(
-            start=start_24h,
+            start=start_time,
             limit=10000,
         )
 
@@ -326,7 +344,7 @@ async def get_overview_extended(request: Request) -> dict[str, Any]:
             }
         )
 
-    # --- Request time-series (hourly buckets, last 24h) ---
+    # --- Request time-series (hourly buckets) ---
     request_buckets: dict[str, int] = defaultdict(int)
     bucket_minutes = 60
     for e in requests:
@@ -395,6 +413,7 @@ async def get_overview_extended(request: Request) -> dict[str, Any]:
             "agent_timeouts": agent_timeouts,
             "rewrite_failures": rewrite_failures,
         },
+        "time_range_hours": time_range_hours,
     }
 
 
