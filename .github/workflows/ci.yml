@@ -34,9 +34,6 @@ jobs:
       - name: Install dependencies
         run: pip install -r container/requirements-dev.txt
 
-      - name: Install ruff
-        run: pip install ruff==0.15.11
-
       - name: Run linter
         run: ruff check container/ custom_components/
 
@@ -77,6 +74,7 @@ jobs:
         run: bandit -r container/app -f json -o bandit-report.json -c container/.bandit.yml
 
       - name: Run pip-audit
+        # TODO: Re-evaluate if CVE-2026-28684 ignore is still needed after dependency updates
         run: pip-audit -r container/requirements.txt --format=json --output=pip-audit-report.json --ignore-vuln CVE-2026-28684
 
       - name: Upload security scan artifacts
@@ -148,16 +146,32 @@ jobs:
       - name: Smoke test (GHCR)
         run: docker run --rm ${{ steps.ghcr.outputs.image }}@${{ steps.build.outputs.digest }} python -c "from app.main import app; print('OK')"
 
-      - name: Scan image with Trivy
+      - name: Scan image with Trivy (SARIF)
         uses: aquasecurity/trivy-action@v0.36.0
         with:
-          image-ref: ${{ steps.ghcr.outputs.image }}@${{ steps.build.outputs.digest }}
+          image-ref: ${{ steps.meta.outputs.tags }}
           format: sarif
           output: trivy-results.sarif
+          exit-code: 0
+          severity: HIGH,CRITICAL
+          scanners: vuln
+          vuln-type: os,library
+          limit-severities-for-sarif: true
+
+      - name: Scan image with Trivy (gate)
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: ${{ steps.meta.outputs.tags }}
+          format: table
+          exit-code: 1
+          ignore-unfixed: true
+          severity: HIGH,CRITICAL
+          scanners: vuln
+          vuln-type: os,library
 
       - name: Upload Trivy SARIF
         if: always()
-        uses: github/codeql-action/upload-sarif@v4
+        uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: trivy-results.sarif
 
@@ -216,15 +230,32 @@ jobs:
           subject-digest: ${{ steps.retag.outputs.digest }}
           push-to-registry: true
 
-      - name: Scan image with Trivy
+      - name: Scan image with Trivy (SARIF)
         uses: aquasecurity/trivy-action@v0.36.0
         with:
-          image-ref: ${{ steps.ghcr.outputs.image }}:latest
+          image-ref: ${{ steps.ghcr.outputs.image }}:${{ steps.version.outputs.VERSION }}
           format: sarif
           output: trivy-results.sarif
+          exit-code: 0
+          severity: HIGH,CRITICAL
+          scanners: vuln
+          vuln-type: os,library
+          limit-severities-for-sarif: true
+
+      - name: Scan image with Trivy (gate)
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: ${{ steps.ghcr.outputs.image }}:${{ steps.version.outputs.VERSION }}
+          format: table
+          exit-code: 1
+          ignore-unfixed: true
+          severity: HIGH,CRITICAL
+          scanners: vuln
+          vuln-type: os,library
 
       - name: Upload Trivy SARIF
-        uses: github/codeql-action/upload-sarif@v4
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: trivy-results.sarif
 

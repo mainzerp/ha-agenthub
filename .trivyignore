@@ -1,0 +1,4 @@
+# CVE-2023-45853 is marked will_not_fix by Debian upstream.
+# zlib1g has no available patch in Bookworm; ignoring to prevent
+# permanent blocking of releases for an unfixable OS vulnerability.
+CVE-2023-45853

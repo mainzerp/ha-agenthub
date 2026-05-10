@@ -1,11 +1,13 @@
 # ---- Builder stage: compile native wheels ----
-FROM python:3.12-slim-bookworm AS builder
+FROM python:3.12-slim-bookworm@sha256:d193c6f51a7dbd10395d6328de3a7edb0516fb0608ca138036576f574c3e07d2 AS builder
 
 WORKDIR /build
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
     build-essential \
     && rm -rf /var/lib/apt/lists/*
+
+RUN pip install --upgrade pip "setuptools>=78.1.1"
 
 COPY requirements.txt .
 
@@ -17,13 +19,16 @@ RUN pip install --no-cache-dir --prefix=/install \
     torch torchaudio torchvision \
     --index-url https://download.pytorch.org/whl/cpu
 
+# torchvision pulls in Pillow; force-upgrade to a secure version afterward
+RUN pip install --upgrade --no-cache-dir --prefix=/install "Pillow>=12.2.0"
+
 # Make pre-installed packages visible so pip skips torch on the next install
 ENV PYTHONPATH=/install/lib/python3.12/site-packages
 
 RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
 
 # ---- Final stage: slim runtime ----
-FROM python:3.12-slim-bookworm
+FROM python:3.12-slim-bookworm@sha256:d193c6f51a7dbd10395d6328de3a7edb0516fb0608ca138036576f574c3e07d2
 
 WORKDIR /app
 
@@ -42,15 +47,9 @@ RUN addgroup --system app && adduser --system --ingroup app app \
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
-# Install gosu for privilege drop (verified binary)
-ENV GOSU_VERSION=1.17
-ENV GOSU_SHA256=bbc4136d03ab138b1ad66fa4fc051bafc6cc7ffae632b069a53657279a450de3
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates wget \
-    && rm -rf /var/lib/apt/lists/* \
-    && wget -qO /usr/local/bin/gosu "https://github.com/tianon/gosu/releases/download/${GOSU_VERSION}/gosu-amd64" \
-    && echo "${GOSU_SHA256}  /usr/local/bin/gosu" | sha256sum -c - \
-    && chmod +x /usr/local/bin/gosu \
-    && gosu nobody true
+# Ensure ca-certificates is present for HTTPS
+RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
 
 # Default environment variables
 ENV CONTAINER_HOST=0.0.0.0

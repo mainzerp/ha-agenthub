@@ -1,12 +1,25 @@
 # Version
 
-**Current Version:** 1.21.0
+**Current Version:** 1.21.1
 
 ## Recent Changes
 
-Track changes since `v1.21.0` here.
+Track changes since `v1.21.1` here.
 
 ## Version History
+
+### 1.21.1 (PATCH) -- CI/CD pipeline and Docker security hardening
+
+- fix(docker): remove `gosu` binary and all associated Go-stdlib CVEs; replace with `setpriv` from util-linux
+- fix(docker): pin base image to verified digest; add `apt-get upgrade -y` to both build stages
+- fix(docker): upgrade pip and setuptools during build; explicit Pillow upgrade after torchvision
+- fix(deps): require `Pillow>=12.2.0` and `python-dotenv>=1.0.0` as explicit minimum pins
+- fix(deps): relax litellm pin from exact to range (`>=1.83.7,<2.0.0`)
+- fix(ci): consolidate Trivy scanning into SARIF (exit-code 0) + gate (exit-code 1, ignore-unfixed) steps
+- fix(ci): restrict Trivy to vulnerability scanner only (`scanners: vuln`), preventing secret/misconfig false positives
+- fix(ci): add `limit-severities-for-sarif` to respect severity filter in SARIF output
+- fix(ci): remove redundant explicit ruff install step (already pinned in requirements-dev.txt)
+- fix(ci): add `.trivyignore` for CVE-2023-45853 (zlib1g, marked will-not-fix by Debian upstream)
 
 ### 1.21.0 (MINOR) -- Music Agent official music_assistant integration
 
@@ -284,8 +297,7 @@ Track changes since `v1.21.0` here.
   - Added `CODEOWNERS` and `SECURITY.md`.
   - Security scan artifacts (Bandit, pip-audit) are now uploaded in CI.
 
-
-## Version History
+## Older History
 
 ### 1.13.1 (PATCH) -- Orchestrator entity-name preservation
 
@@ -388,6 +400,5 @@ Track changes since `v1.21.0` here.
 - User-directed release note: version advanced from `0.31.0` to
   `1.0.0` as a MAJOR release. Sentinel mode remains deferred and is not
   part of this release.
-
 
 Older releases are archived in [docs/CHANGELOG_ARCHIVE.md](docs/CHANGELOG_ARCHIVE.md).
