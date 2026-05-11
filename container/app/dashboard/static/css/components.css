@@ -89,6 +89,8 @@
 .badge-yellow { background: rgba(245, 158, 11, 0.15); color: var(--soft-amber); }
 .badge-blue { background: rgba(96, 165, 250, 0.15); color: var(--blue); }
 .badge-purple { background: rgba(168, 85, 247, 0.15); color: #c084fc; }
+.badge-pink { background: rgba(236, 72, 153, 0.15); color: #f472b6; }
+.badge-orange { background: rgba(249, 115, 22, 0.15); color: #fb923c; }
 .badge-danger { background: var(--danger-strong); color: #fff; }
 
 /* --- Overview: 6-column stat grid --- */
@@ -1434,4 +1436,3 @@ details.card > .details-content {
 .badge {
     transition: opacity 0.15s ease;
 }
-

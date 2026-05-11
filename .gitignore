@@ -77,3 +77,4 @@ package-lock.json
 .kilo/kilo.json
 .kilo/
 .kimi/
+.claude/

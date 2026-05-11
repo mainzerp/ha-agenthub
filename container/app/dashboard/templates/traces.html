@@ -151,19 +151,14 @@ function tracesListPage() {
             await this.loadTraces();
         },
 
-        agentColor(id) {
-            return window._agentColors[id] || '#6b7280';
-        },
-
         agentClass(id) {
-            var color = this.agentColor(id);
-            var map = {
-                '#8b5cf6': 'purple', '#f59e0b': 'yellow', '#3b82f6': 'blue',
-                '#10b981': 'green', '#ef4444': 'red', '#ec4899': 'pink',
-                '#6366f1': 'indigo', '#14b8a6': 'teal', '#f97316': 'orange',
-                '#6b7280': 'muted', '#a855f7': 'purple', '#94a3b8': 'muted'
-            };
-            return map[color] || 'muted';
+            if (!id) return 'muted';
+            var classes = window._agentColorClasses;
+            if (classes && classes[id]) return classes[id];
+            var palette = window._agentColorPalette || ['purple', 'yellow', 'blue', 'green', 'red', 'pink', 'indigo', 'teal', 'orange'];
+            var hash = 0;
+            for (var i = 0; i < id.length; i++) hash = (hash * 31 + id.charCodeAt(i)) | 0;
+            return palette[Math.abs(hash) % palette.length];
         },
 
         formatTimestamp(ts) {
