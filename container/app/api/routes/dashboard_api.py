@@ -344,9 +344,15 @@ async def get_overview_extended(request: Request) -> dict[str, Any]:
             }
         )
 
-    # --- Request time-series (hourly buckets) ---
+    # --- Request time-series ---
+    # 24h → 60-min buckets labelled "HH:MM"; 7d → daily buckets labelled "Weekday DD.MM"
     request_buckets: dict[str, int] = defaultdict(int)
-    bucket_minutes = 60
+    if time_range_hours > 24:
+        bucket_minutes = 1440
+        bucket_fmt = "%a %d.%m"
+    else:
+        bucket_minutes = 60
+        bucket_fmt = "%H:%M"
     for e in requests:
         ts = e.get("created_at", "")
         try:
@@ -354,7 +360,7 @@ async def get_overview_extended(request: Request) -> dict[str, Any]:
             bucket_secs = bucket_minutes * 60
             ts_epoch = int(dt.timestamp())
             bucket_start = ts_epoch - (ts_epoch % bucket_secs)
-            bucket_label = datetime.fromtimestamp(bucket_start, tz=UTC).strftime("%H:%M")
+            bucket_label = datetime.fromtimestamp(bucket_start, tz=UTC).strftime(bucket_fmt)
             request_buckets[bucket_label] += 1
         except (ValueError, TypeError):
             logger.debug("Failed to parse request timestamp %s", ts, exc_info=True)
