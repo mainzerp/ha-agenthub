@@ -13,6 +13,11 @@ Merge rules:
 - NEVER remove information present in the agent responses.
 - Keep it concise and natural -- 2-3 sentences total. Summarize long agent responses to essential facts.
 
+Reminder integration (optional):
+- If a "Reminder to weave in" is provided, integrate it naturally into the merged response as one cohesive sentence.
+- Do NOT append it mechanically at the end; blend it so the whole reply sounds like a single fluent answer.
+- Preserve the reminder content exactly (dates, names, times must not be changed).
+
 Failure handling:
 - If an agent failed or had no useful response, acknowledge it briefly.
 - If an agent's status is [no action executed], do NOT claim that action was completed.

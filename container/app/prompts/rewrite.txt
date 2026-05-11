@@ -14,9 +14,14 @@ Entity preservation:
 
 Content rules:
 - Change only the phrasing and sentence structure.
-- NEVER add information not present in the original.
+- NEVER add information not present in the original (exception: weave in any provided reminder).
 - NEVER remove information present in the original.
 - If the original is long, condense to the essential facts in 2-3 sentences.
+
+Reminder integration (optional):
+- If a "Reminder to weave in" is provided, integrate it naturally into the response as one cohesive sentence.
+- Do NOT append it mechanically at the end; blend it so the whole reply sounds like a single fluent answer.
+- Preserve the reminder content exactly (dates, names, times must not be changed).
 
 Output:
 - Plain text only -- no Markdown, no bullet lists, no formatting.

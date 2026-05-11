@@ -31,12 +31,15 @@ class RewriteAgent(BaseAgent):
             timeout_sec=None,
         )
 
-    async def rewrite(self, cached_text: str, language: str = "en", user_text: str | None = None) -> str:
+    async def rewrite(
+        self, cached_text: str, language: str = "en", user_text: str | None = None, reminder_text: str | None = None
+    ) -> str:
         """Rephrase a cached response and apply personality. Returns the rewritten text.
 
         Falls back to returning cached_text verbatim on any failure.
         Uses the unmediated (raw) agent response as input so personality
         and rewrite variation are applied in a single LLM call.
+        If reminder_text is given the LLM weaves it naturally into the output.
         """
         system_prompt = await self._load_prompt_async("rewrite")
         try:
@@ -47,13 +50,12 @@ class RewriteAgent(BaseAgent):
         system_prompt = system_prompt.replace("{personality}", personality_text)
         system_prompt = system_prompt.replace("{language}", language or "en").strip()
         if user_text:
-            user_content = (
-                f"User asked:\n{self._wrap_user_input(user_text)}\n"
-                f"Agent responded: {cached_text}\n\n"
-                f"Rephrase in {language}:"
-            )
+            user_content = f"User asked:\n{self._wrap_user_input(user_text)}\nAgent responded: {cached_text}"
         else:
-            user_content = self._wrap_user_input(cached_text)
+            user_content = f"Agent responded: {cached_text}"
+        if reminder_text:
+            user_content += f"\nReminder to weave in: {reminder_text}"
+        user_content += f"\n\nRephrase in {language}:"
         messages = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_content},

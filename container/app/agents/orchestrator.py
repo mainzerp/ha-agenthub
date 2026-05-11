@@ -913,16 +913,8 @@ class OrchestratorAgent(BaseAgent):
         task_context = getattr(task, "context", None) if task is not None else None
         raw_speech = hit.original_response_text or hit.response_text or ""
         speech = raw_speech
-        if self._cache_manager:
-            async with _optional_span(span_collector, "rewrite", agent_id="rewrite-agent") as rw_span:
-                speech = await self._cache_manager.apply_rewrite(hit, user_text=user_text)
-                if hit.rewrite_applied:
-                    rw_span["metadata"]["original_text"] = hit.original_response_text or ""
-                    rw_span["metadata"]["rewritten_text"] = speech
-                    rw_span["metadata"]["latency_ms"] = hit.rewrite_latency_ms
-                    rw_span["metadata"]["success"] = True
-
-        # Inject proactive calendar reminders even on cache hits
+        # Fetch calendar reminder first so the rewrite agent can weave it in naturally
+        reminder_text: str | None = None
         if self._calendar_injector is not None:
             try:
                 async with _optional_span(span_collector, "calendar_inject", agent_id="orchestrator") as cal_span:
@@ -933,13 +925,24 @@ class OrchestratorAgent(BaseAgent):
                         user_id=task_context.user_id if task_context else None,
                         language=(task_context.language if task_context else "en") or "en",
                     )
-                    if reminder_text:
-                        separator = " " if speech and speech[-1] in ".!?" else ". "
-                        speech = f"{speech}{separator}{reminder_text}" if speech else reminder_text
                     cal_span["metadata"]["reminder_injected"] = bool(reminder_text)
                     cal_span["metadata"]["reminder_length"] = len(reminder_text or "")
             except Exception:
                 logger.debug("Calendar reminder injection failed", exc_info=True)
+
+        if self._cache_manager:
+            async with _optional_span(span_collector, "rewrite", agent_id="rewrite-agent") as rw_span:
+                speech = await self._cache_manager.apply_rewrite(hit, user_text=user_text, reminder_text=reminder_text)
+                if hit.rewrite_applied:
+                    rw_span["metadata"]["original_text"] = hit.original_response_text or ""
+                    rw_span["metadata"]["rewritten_text"] = speech
+                    rw_span["metadata"]["latency_ms"] = hit.rewrite_latency_ms
+                    rw_span["metadata"]["success"] = True
+
+        # Fallback: if rewrite didn't run or failed, append reminder the simple way
+        if reminder_text and not hit.rewrite_applied:
+            separator = " " if speech and speech[-1] in ".!?" else ". "
+            speech = f"{speech}{separator}{reminder_text}" if speech else reminder_text
 
         if hit.cached_action:
             async with _optional_span(span_collector, "ha_action", agent_id=target_agent) as ha_span:
@@ -1346,7 +1349,8 @@ class OrchestratorAgent(BaseAgent):
         async with _optional_span(span_collector, "return", agent_id="orchestrator") as ret_span:
             ret_span["metadata"]["from_agent"] = routed_to
             ret_span["metadata"]["agent_response"] = speech
-            # Inject proactive calendar reminders before mediation
+            # Fetch calendar reminder so the mediation LLM can weave it in naturally
+            reminder_text: str | None = None
             if self._calendar_injector is not None and not has_error:
                 try:
                     reminder_text = await self._calendar_injector.inject_reminders(
@@ -1356,9 +1360,6 @@ class OrchestratorAgent(BaseAgent):
                         user_id=task.context.user_id if task.context else None,
                         language=(task.context.language if task.context else "en") or "en",
                     )
-                    if reminder_text:
-                        separator = " " if speech and speech[-1] in ".!?" else ". "
-                        speech = f"{speech}{separator}{reminder_text}" if speech else reminder_text
                 except Exception:
                     logger.debug("Calendar reminder injection failed", exc_info=True)
 
@@ -1372,7 +1373,12 @@ class OrchestratorAgent(BaseAgent):
                     mediation_agent,
                     language=language,
                     span_collector=span_collector,
+                    reminder_text=reminder_text,
                 )
+            elif reminder_text:
+                # No mediation path — append reminder directly as fallback
+                separator = " " if speech and speech[-1] in ".!?" else ". "
+                speech = f"{speech}{separator}{reminder_text}" if speech else reminder_text
             speech, voice_followup_effective = await self._merge_voice_followup_and_organic(
                 speech,
                 agent_requested=voice_followup_requested,
@@ -1779,26 +1785,26 @@ class OrchestratorAgent(BaseAgent):
                 if not agent_responses and failed_agents:
                     speech = "I'm sorry, I couldn't complete that request. All agents encountered errors."
                 else:
-                    speech = await self._merge_responses(agent_responses, user_text, span_collector=span_collector)
+                    # Fetch calendar reminder before merge so the LLM can weave it in naturally
+                    reminder_text: str | None = None
+                    if self._calendar_injector is not None and not has_error:
+                        try:
+                            reminder_text = await self._calendar_injector.inject_reminders(
+                                utterance=task.description if task else None,
+                                device_id=incoming_context.device_id if incoming_context else None,
+                                area_id=incoming_context.area_id if incoming_context else None,
+                                user_id=incoming_context.user_id if incoming_context else None,
+                                language=detected_language or "en",
+                            )
+                        except Exception:
+                            logger.debug("Calendar reminder injection failed", exc_info=True)
+
+                    speech = await self._merge_responses(
+                        agent_responses, user_text, span_collector=span_collector, reminder_text=reminder_text
+                    )
                     if failed_agents:
                         failed_names = ", ".join(aid for aid, _ in failed_agents)
                         speech += f"\n\n(Note: {failed_names} could not be reached.)"
-
-                # Inject proactive calendar reminders in multi-agent path
-                if self._calendar_injector is not None and not has_error:
-                    try:
-                        reminder_text = await self._calendar_injector.inject_reminders(
-                            utterance=task.description if task else None,
-                            device_id=incoming_context.device_id if incoming_context else None,
-                            area_id=incoming_context.area_id if incoming_context else None,
-                            user_id=incoming_context.user_id if incoming_context else None,
-                            language=detected_language or "en",
-                        )
-                        if reminder_text:
-                            separator = " " if speech and speech[-1] in ".!?" else ". "
-                            speech = f"{speech}{separator}{reminder_text}" if speech else reminder_text
-                    except Exception:
-                        logger.debug("Calendar reminder injection failed", exc_info=True)
 
                 result = {"speech": speech}
                 ret_span["metadata"]["agent_response"] = speech
@@ -3070,19 +3076,25 @@ class OrchestratorAgent(BaseAgent):
         agent_responses: list[tuple[str, str, bool]],
         user_text: str,
         span_collector=None,
+        reminder_text: str | None = None,
     ) -> str:
         """Merge multiple agent responses into a single natural answer via LLM.
 
         Always calls LLM regardless of personality settings.
         Includes personality prompt if configured.
+        If reminder_text is given, the LLM weaves it in naturally.
         Falls back to bracket-prefixed format on failure.
         """
         if not agent_responses:
             return "I couldn't process that request."
 
-        # Only one response: return it directly
+        # Only one response: return it directly (append reminder as fallback)
         if len(agent_responses) == 1:
-            return agent_responses[0][1] or "I couldn't process that request."
+            speech = agent_responses[0][1] or "I couldn't process that request."
+            if reminder_text:
+                separator = " " if speech and speech[-1] in ".!?" else ". "
+                return f"{speech}{separator}{reminder_text}" if speech else reminder_text
+            return speech
 
         # Build structured summary of each agent response
         summary_parts = []
@@ -3103,16 +3115,14 @@ class OrchestratorAgent(BaseAgent):
             personality_text = personality.strip() if personality and personality.strip() else ""
             system_content = system_content.replace("{personality}", personality_text).strip()
 
+            user_content = f"User asked:\n{self._wrap_user_input(user_text)}\n\nAgent responses:\n{agent_summary}\n\n"
+            if reminder_text:
+                user_content += f"Reminder to weave in: {reminder_text}\n\n"
+            user_content += "Combine into one natural response:"
+
             messages = [
                 {"role": "system", "content": system_content},
-                {
-                    "role": "user",
-                    "content": (
-                        f"User asked:\n{self._wrap_user_input(user_text)}\n\n"
-                        f"Agent responses:\n{agent_summary}\n\n"
-                        "Combine into one natural response:"
-                    ),
-                },
+                {"role": "user", "content": user_content},
             ]
 
             overrides = {
@@ -3125,7 +3135,11 @@ class OrchestratorAgent(BaseAgent):
             return result.strip() if result and result.strip() else self._format_fallback(agent_responses)
         except Exception:
             logger.warning("Multi-agent response merge failed, using fallback format", exc_info=True)
-            return self._format_fallback(agent_responses)
+            fallback = self._format_fallback(agent_responses)
+            if reminder_text:
+                separator = " " if fallback and fallback[-1] in ".!?" else ". "
+                return f"{fallback}{separator}{reminder_text}" if fallback else reminder_text
+            return fallback
 
     @staticmethod
     def _format_fallback(agent_responses: list[tuple[str, str, bool]]) -> str:
@@ -3134,20 +3148,33 @@ class OrchestratorAgent(BaseAgent):
         return "\n\n".join(parts) if parts else "I couldn't process that request."
 
     async def _mediate_response(
-        self, agent_speech: str, user_text: str, agent_id: str, language: str = "en", span_collector=None
+        self,
+        agent_speech: str,
+        user_text: str,
+        agent_id: str,
+        language: str = "en",
+        span_collector=None,
+        reminder_text: str | None = None,
     ) -> str:
         """Optionally mediate the domain agent response with personality.
 
         When personality.prompt is non-empty, passes the agent speech through
         a lightweight LLM call to apply the configured personality.
-        Falls back to the original speech on any failure.
+        If reminder_text is given, the LLM weaves it in naturally.
+        Falls back to the original speech (+ appended reminder) on any failure.
         """
         try:
             personality = await SettingsRepository.get_value("personality.prompt", "")
             if not personality.strip():
+                if reminder_text:
+                    separator = " " if agent_speech and agent_speech[-1] in ".!?" else ". "
+                    return f"{agent_speech}{separator}{reminder_text}" if agent_speech else reminder_text
                 return agent_speech
         except Exception:
             logger.debug("Failed to load personality prompt, using original speech", exc_info=True)
+            if reminder_text:
+                separator = " " if agent_speech and agent_speech[-1] in ".!?" else ". "
+                return f"{agent_speech}{separator}{reminder_text}" if agent_speech else reminder_text
             return agent_speech
 
         if not agent_speech or not agent_speech.strip():
@@ -3158,16 +3185,15 @@ class OrchestratorAgent(BaseAgent):
             personality_text = personality.strip() if personality.strip() else ""
             system_prompt = system_prompt.replace("{personality}", personality_text)
             system_prompt = system_prompt.replace("{language}", language or "en").strip()
+            user_content = (
+                f"User asked:\n{self._wrap_user_input(user_text)}\nAgent ({agent_id}) responded: {agent_speech}"
+            )
+            if reminder_text:
+                user_content += f"\nReminder to weave in: {reminder_text}"
+            user_content += f"\n\nRephrase in {language}:"
             messages = [
                 {"role": "system", "content": system_prompt},
-                {
-                    "role": "user",
-                    "content": (
-                        f"User asked:\n{self._wrap_user_input(user_text)}\n"
-                        f"Agent ({agent_id}) responded: {agent_speech}\n\n"
-                        f"Rephrase in {language}:"
-                    ),
-                },
+                {"role": "user", "content": user_content},
             ]
             overrides = {
                 "temperature": self._mediation_temperature,
@@ -3184,6 +3210,9 @@ class OrchestratorAgent(BaseAgent):
             return result.strip() if result and result.strip() else agent_speech
         except Exception:
             logger.warning("Response mediation failed, using original speech", exc_info=True)
+            if reminder_text:
+                separator = " " if agent_speech and agent_speech[-1] in ".!?" else ". "
+                return f"{agent_speech}{separator}{reminder_text}" if agent_speech else reminder_text
             return agent_speech
 
     @staticmethod
