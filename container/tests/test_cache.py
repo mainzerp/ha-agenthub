@@ -1011,7 +1011,9 @@ class TestCacheManagerExtended:
             output = await manager.apply_rewrite(result)
         assert output == "Rephrased text."
         assert result.response_text == "Rephrased text."
-        rewrite_agent.rewrite.assert_awaited_once_with("Original raw.", language="en", user_text=None)
+        rewrite_agent.rewrite.assert_awaited_once_with(
+            "Original raw.", language="en", user_text=None, reminder_text=None
+        )
 
     @pytest.mark.asyncio
     async def test_action_hit_sets_rewrite_metadata(self):
@@ -1089,7 +1091,9 @@ class TestCacheManagerExtended:
         with patch("app.cache.cache_manager.track_rewrite", new_callable=AsyncMock):
             output = await manager.apply_rewrite(result, user_text="Keller einschalten")
         assert output == "Rewritten text."
-        rewrite_agent.rewrite.assert_awaited_once_with("Original.", language="en", user_text="Keller einschalten")
+        rewrite_agent.rewrite.assert_awaited_once_with(
+            "Original.", language="en", user_text="Keller einschalten", reminder_text=None
+        )
 
     # Removed: test_purge_legacy_schema_entries_runs_on_initialize was permanently
     # skipped because the SettingsRepository mock path was broken after v4 refactor.
