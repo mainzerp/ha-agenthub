@@ -1,6 +1,8 @@
 default_language_version:
   python: python3.12
 
+default_install_hook_types: [pre-commit, pre-push]
+
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v4.6.0
@@ -28,3 +30,29 @@ repos:
         args: ["-r", "container/app", "container/tests", "custom_components", "-ll"]
         files: ^(container/|custom_components/)
         pass_filenames: false
+
+  - repo: local
+    hooks:
+      - id: pip-audit
+        name: pip-audit
+        language: system
+        entry: pip-audit
+        args: ["-r", "container/requirements.txt", "--ignore-vuln", "CVE-2026-28684"]
+        files: ^container/requirements.*\.txt$
+        pass_filenames: false
+
+      - id: pytest-container
+        name: pytest (container)
+        language: system
+        entry: bash
+        args: ["-c", "cd container && python -m pytest tests/ -q --tb=short -x"]
+        pass_filenames: false
+        stages: [pre-push]
+
+      - id: pytest-ha
+        name: pytest (HA)
+        language: system
+        entry: python
+        args: ["-m", "pytest", "custom_components/tests/", "-q", "--tb=short", "-x"]
+        pass_filenames: false
+        stages: [pre-push]
