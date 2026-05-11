@@ -10,7 +10,7 @@ NAV_GROUPS = [
             {"key": "system_health", "label": "System Health", "href": "/dashboard/system-health", "icon_id": "heart"},
             {"key": "analytics", "label": "Analytics", "href": "/dashboard/analytics", "icon_id": "bar_chart"},
             {"key": "traces", "label": "Traces", "href": "/dashboard/traces", "icon_id": "activity"},
-            {"key": "logs", "label": "Logs", "href": "/dashboard/logs", "icon_id": "activity"},
+            {"key": "logs", "label": "Logs", "href": "/dashboard/logs", "icon_id": "list"},
         ],
     },
     {

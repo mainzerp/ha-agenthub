@@ -435,19 +435,14 @@ function traceDetailPage() {
             await this.loadDetail();
         },
 
-        agentColor(id) {
-            return window._agentColors[id] || '#6b7280';
-        },
-
         agentClass(id) {
-            var color = this.agentColor(id);
-            var map = {
-                '#8b5cf6': 'purple', '#f59e0b': 'yellow', '#3b82f6': 'blue',
-                '#10b981': 'green', '#ef4444': 'red', '#ec4899': 'pink',
-                '#6366f1': 'indigo', '#14b8a6': 'teal', '#f97316': 'orange',
-                '#6b7280': 'muted', '#a855f7': 'purple', '#94a3b8': 'muted'
-            };
-            return map[color] || 'muted';
+            if (!id) return 'muted';
+            var classes = window._agentColorClasses;
+            if (classes && classes[id]) return classes[id];
+            var palette = window._agentColorPalette || ['purple', 'yellow', 'blue', 'green', 'red', 'pink', 'indigo', 'teal', 'orange'];
+            var hash = 0;
+            for (var i = 0; i < id.length; i++) hash = (hash * 31 + id.charCodeAt(i)) | 0;
+            return palette[Math.abs(hash) % palette.length];
         },
 
         formatTimestamp(ts) {
@@ -521,7 +516,7 @@ function traceDetailPage() {
                 return 1 + getDepth(spanById[span.parent_span]);
             };
 
-            const colorMap = window._traceSpanColors || {};
+            const classToHex = window._agentClassToHex || {};
 
             const items = this.ganttSpans.map((span, idx) => {
                 const start = new Date(span.start_time);
@@ -529,7 +524,8 @@ function traceDetailPage() {
                 const isError = span.status === 'error';
                 const depth = getDepth(span);
                 const indent = '\u00A0\u00A0'.repeat(depth);
-                const color = isError ? '#ef4444' : (colorMap[span.span_name] || '#3b82f6');
+                const agentCls = span.agent_id ? this.agentClass(span.agent_id) : 'muted';
+                const color = isError ? '#ef4444' : (classToHex[agentCls] || '#6b7280');
                 const label = indent + span.span_name + (span.agent_id ? ' (' + span.agent_id + ')' : '') + ' [' + Math.round(span.duration_ms) + 'ms]';
 
                 return {

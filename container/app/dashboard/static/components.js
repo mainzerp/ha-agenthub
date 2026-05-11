@@ -501,20 +501,35 @@
         return parseFloat((n / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
     };
 
-    var _agentColors = {
-        'orchestrator': '#8b5cf6',
-        'light-agent': '#f59e0b',
-        'music-agent': '#3b82f6',
-        'climate-agent': '#10b981',
-        'timer-agent': '#ef4444',
-        'media-agent': '#ec4899',
-        'scene-agent': '#6366f1',
-        'automation-agent': '#14b8a6',
-        'security-agent': '#f97316',
-        'general-agent': '#6b7280',
-        'multi-agent': '#a855f7',
-        'user': '#94a3b8',
-        'rewrite-agent': '#f97316',
+    var _agentColorClasses = {
+        'orchestrator': 'purple',
+        'light-agent': 'yellow',
+        'music-agent': 'blue',
+        'climate-agent': 'green',
+        'timer-agent': 'red',
+        'media-agent': 'pink',
+        'scene-agent': 'indigo',
+        'automation-agent': 'teal',
+        'security-agent': 'orange',
+        'general-agent': 'muted',
+        'multi-agent': 'purple',
+        'user': 'muted',
+        'rewrite-agent': 'orange',
+    };
+
+    var _agentColorPalette = ['purple', 'yellow', 'blue', 'green', 'red', 'pink', 'indigo', 'teal', 'orange'];
+
+    var _agentClassToHex = {
+        'purple': '#8b5cf6',
+        'yellow': '#f59e0b',
+        'blue': '#3b82f6',
+        'green': '#10b981',
+        'red': '#ef4444',
+        'pink': '#ec4899',
+        'indigo': '#6366f1',
+        'teal': '#14b8a6',
+        'orange': '#f97316',
+        'muted': '#6b7280',
     };
 
     var _traceSpanColors = {
