@@ -96,6 +96,32 @@ class TestResolveProviderParams:
         assert params["api_base"] == "http://localhost:11434"
         assert "api_key" not in params
 
+    @patch("app.llm.providers.retrieve_secret", new_callable=AsyncMock, return_value="custom-key")
+    @patch("app.llm.providers.SettingsRepository")
+    async def test_resolve_custom_openai_includes_all_params(self, mock_settings, mock_retrieve):
+        mock_settings.get_value = AsyncMock(side_effect=["http://custom.local:8000/v1", '{"X-Custom": "val"}'])
+        params = await resolve_provider_params("custom_openai/my-model")
+        assert params["api_key"] == "custom-key"
+        assert params["api_base"] == "http://custom.local:8000/v1"
+        assert params["extra_headers"] == {"X-Custom": "val"}
+
+    @patch("app.llm.providers.retrieve_secret", new_callable=AsyncMock, return_value="custom-key")
+    @patch("app.llm.providers.SettingsRepository")
+    async def test_resolve_custom_openai_ignores_empty_headers(self, mock_settings, mock_retrieve):
+        mock_settings.get_value = AsyncMock(side_effect=["http://custom.local:8000/v1", "{}"])
+        params = await resolve_provider_params("custom_openai/my-model")
+        assert params["api_key"] == "custom-key"
+        assert params["api_base"] == "http://custom.local:8000/v1"
+        assert "extra_headers" not in params
+
+    @patch("app.llm.providers.retrieve_secret", new_callable=AsyncMock, return_value="custom-key")
+    @patch("app.llm.providers.SettingsRepository")
+    async def test_resolve_custom_openai_tolerates_bad_json_headers(self, mock_settings, mock_retrieve):
+        mock_settings.get_value = AsyncMock(side_effect=["http://custom.local:8000/v1", "not-json"])
+        params = await resolve_provider_params("custom_openai/my-model")
+        assert params["api_key"] == "custom-key"
+        assert "extra_headers" not in params
+
 
 # ---------------------------------------------------------------------------
 # LLM complete function

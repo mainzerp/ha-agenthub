@@ -1,10 +1,15 @@
 # Version
 
-**Current Version:** 1.21.1
+**Current Version:** 1.22.0
 
 ## Recent Changes
 
-Track changes since `v1.21.1` here.
+Track changes since `v1.22.0` here.
+
+- feat(llm): add custom OpenAI-compatible provider support (`custom_openai`) with configurable base URL, API key, and extra headers
+- fix(cache): external embedding now resolves provider params (API key, base URL) via `resolve_provider_params` instead of relying on env vars
+- feat(admin): new `PUT /api/admin/llm-providers/custom-openai` endpoint for custom provider configuration
+- feat(setup): setup wizard step 4 now includes custom provider fields (name, URL, key, headers)
 
 ## Version History
 

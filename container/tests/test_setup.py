@@ -244,6 +244,60 @@ class TestSetupStepSubmissions:
             assert resp.status_code == 303
             assert "/setup/step/5" in resp.headers.get("location", "")
 
+    async def test_step4_custom_provider_fields(self, setup_client: httpx.AsyncClient):
+        with (
+            patch(
+                "app.setup.routes.store_secret",
+                new_callable=AsyncMock,
+            ) as mock_secret,
+            patch(
+                "app.setup.routes.SettingsRepository.set",
+                new_callable=AsyncMock,
+            ) as mock_settings,
+            patch(
+                "app.setup.routes.SetupStateRepository.set_step_completed",
+                new_callable=AsyncMock,
+            ),
+        ):
+            resp = await csrf_post(
+                setup_client,
+                "/setup/step/4",
+                {
+                    "openrouter_key": "",
+                    "groq_key": "",
+                    "ollama_url": "",
+                    "custom_provider_name": "My Provider",
+                    "custom_provider_url": "http://custom.local:8000/v1",
+                    "custom_provider_key": "sk-custom",
+                    "custom_provider_headers": '{"X-Custom": "value"}',
+                },
+                get_url="/setup/step/4",
+            )
+            assert resp.status_code == 303
+            assert "/setup/step/5" in resp.headers.get("location", "")
+            mock_secret.assert_any_await("custom_openai_api_key", "sk-custom")
+            mock_settings.assert_any_await(
+                "custom_openai_provider.name",
+                "My Provider",
+                "string",
+                "llm",
+                "Custom OpenAI provider name",
+            )
+            mock_settings.assert_any_await(
+                "custom_openai_provider.base_url",
+                "http://custom.local:8000/v1",
+                "string",
+                "llm",
+                "Custom OpenAI provider base URL",
+            )
+            mock_settings.assert_any_await(
+                "custom_openai_provider.headers",
+                '{"X-Custom": "value"}',
+                "json",
+                "llm",
+                "Custom OpenAI provider extra headers",
+            )
+
     async def test_step4_saves_groq_key_and_ollama_url(self, setup_client: httpx.AsyncClient):
         """Cover branches for groq_key and ollama_url in save_llm_keys."""
         with (
@@ -445,6 +499,32 @@ class TestLLMTest:
             assert resp.status_code == 200
             assert "alert-error" in resp.text
             assert "Unknown provider" in resp.text
+
+    async def test_llm_test_custom_openai_success(self, setup_client: httpx.AsyncClient):
+        mock_choice = MagicMock()
+        mock_choice.message.content = "Hi"
+        mock_resp = MagicMock()
+        mock_resp.choices = [mock_choice]
+        mock_litellm_mod = MagicMock()
+        mock_litellm_mod.acompletion = AsyncMock(return_value=mock_resp)
+        with patch.dict(sys.modules, {"litellm": mock_litellm_mod}):
+            resp = await csrf_post(
+                setup_client,
+                "/setup/test/llm",
+                {
+                    "provider": "custom_openai",
+                    "api_key": "sk-custom",
+                    "custom_provider_url": "http://custom.local:8000/v1",
+                    "custom_provider_key": "sk-custom",
+                },
+                get_url="/setup/step/4",
+            )
+        assert resp.status_code == 200
+        assert "alert-success" in resp.text
+        assert "Connected to custom_openai" in resp.text
+        called = mock_litellm_mod.acompletion.await_args
+        assert called.kwargs["model"] == "custom_openai/gpt-4o-mini"
+        assert called.kwargs["api_base"] == "http://custom.local:8000/v1"
 
 
 # ===================================================================

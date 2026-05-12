@@ -110,7 +110,15 @@ class TestSetupRoutesLockedAfterCompletion:
         resp = await self._post(
             complete_client,
             "/setup/step/4",
-            {"openrouter_key": "", "groq_key": "", "ollama_url": ""},
+            {
+                "openrouter_key": "",
+                "groq_key": "",
+                "ollama_url": "",
+                "custom_provider_name": "",
+                "custom_provider_url": "",
+                "custom_provider_key": "",
+                "custom_provider_headers": "",
+            },
         )
         assert resp.status_code == 401
 

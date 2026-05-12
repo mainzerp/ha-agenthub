@@ -1,3 +1,5 @@
+import json
+
 from app.db.repository import SettingsRepository
 from app.security.encryption import retrieve_secret
 
@@ -8,6 +10,7 @@ PROVIDER_SECRET_MAP: dict[str, str] = {
     "groq": "groq_api_key",
     "openai": "openai_api_key",
     "anthropic": "anthropic_api_key",
+    "custom_openai": "custom_openai_api_key",
 }
 
 # Providers that run locally and do not need an API key.
@@ -36,6 +39,8 @@ async def get_api_key(provider: str) -> str | None:
 async def get_base_url(provider: str) -> str | None:
     if provider == "ollama":
         return await SettingsRepository.get_value(OLLAMA_BASE_URL_KEY, OLLAMA_BASE_URL_DEFAULT)
+    if provider == "custom_openai":
+        return await SettingsRepository.get_value("custom_openai_provider.base_url")
     return None
 
 
@@ -48,4 +53,12 @@ async def resolve_provider_params(model: str) -> dict:
     base_url = await get_base_url(provider)
     if base_url is not None:
         params["api_base"] = base_url
+    if provider == "custom_openai":
+        headers_raw = await SettingsRepository.get_value("custom_openai_provider.headers", "{}")
+        try:
+            extra_headers = json.loads(headers_raw or "{}")
+        except json.JSONDecodeError:
+            extra_headers = {}
+        if isinstance(extra_headers, dict) and extra_headers:
+            params["extra_headers"] = extra_headers
     return params

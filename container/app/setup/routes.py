@@ -152,6 +152,10 @@ async def save_llm_keys(
     openrouter_key: str = Form(""),
     groq_key: str = Form(""),
     ollama_url: str = Form(""),
+    custom_provider_name: str = Form(""),
+    custom_provider_url: str = Form(""),
+    custom_provider_key: str = Form(""),
+    custom_provider_headers: str = Form(""),
 ):
     """Step 4: Save LLM provider keys (Fernet-encrypted)."""
     if openrouter_key:
@@ -160,6 +164,30 @@ async def save_llm_keys(
         await store_secret("groq_api_key", groq_key)
     if ollama_url:
         await SettingsRepository.set("ollama_base_url", ollama_url, "string", "llm", "Ollama API URL")
+    if custom_provider_key and custom_provider_url:
+        await store_secret("custom_openai_api_key", custom_provider_key)
+        await SettingsRepository.set(
+            "custom_openai_provider.name",
+            custom_provider_name or "Custom Provider",
+            "string",
+            "llm",
+            "Custom OpenAI provider name",
+        )
+        await SettingsRepository.set(
+            "custom_openai_provider.base_url",
+            custom_provider_url,
+            "string",
+            "llm",
+            "Custom OpenAI provider base URL",
+        )
+        headers = custom_provider_headers.strip() or "{}"
+        await SettingsRepository.set(
+            "custom_openai_provider.headers",
+            headers,
+            "json",
+            "llm",
+            "Custom OpenAI provider extra headers",
+        )
     await SetupStateRepository.set_step_completed("llm_providers")
     return RedirectResponse(url="/setup/step/5", status_code=303)
 
@@ -196,7 +224,12 @@ async def test_ha_endpoint(ha_url: str = Form(...), ha_token: str = Form(...)):
     "/test/llm",
     dependencies=[Depends(verify_csrf), Depends(require_admin_or_setup_open), Depends(rate_limit_setup)],
 )
-async def test_llm_endpoint(provider: str = Form(...), api_key: str = Form(...)):
+async def test_llm_endpoint(
+    provider: str = Form(...),
+    api_key: str = Form(...),
+    custom_provider_url: str = Form(""),
+    custom_provider_key: str = Form(""),
+):
     """Test LLM provider with a small completion request."""
     try:
         if provider == "groq":
@@ -205,17 +238,24 @@ async def test_llm_endpoint(provider: str = Form(...), api_key: str = Form(...))
             model = "openrouter/openai/gpt-4o-mini"
         elif provider == "ollama":
             model = "ollama/llama3"
+        elif provider == "custom_openai":
+            model = "custom_openai/gpt-4o-mini"
         else:
             return HTMLResponse(f'<div class="alert alert-error">Unknown provider: {html.escape(provider)}</div>')
 
         import litellm
 
-        await litellm.acompletion(
-            model=model,
-            messages=[{"role": "user", "content": "Say hello"}],
-            api_key=api_key,
-            max_tokens=10,
-        )
+        kwargs = {
+            "model": model,
+            "messages": [{"role": "user", "content": "Say hello"}],
+            "max_tokens": 10,
+        }
+        if provider == "custom_openai":
+            kwargs["api_key"] = custom_provider_key or api_key
+            kwargs["api_base"] = custom_provider_url
+        else:
+            kwargs["api_key"] = api_key
+        await litellm.acompletion(**kwargs)
         return HTMLResponse(f'<div class="alert alert-success">Connected to {html.escape(provider)}!</div>')
     except Exception:
         logger.warning("LLM provider test failed in setup wizard", exc_info=True)

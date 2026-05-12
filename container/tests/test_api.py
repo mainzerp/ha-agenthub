@@ -1441,6 +1441,62 @@ class TestLLMProviderAPI:
         assert "groq" in data["providers"]
         assert "ollama" in data["providers"]
 
+    async def test_put_custom_openai_config(self, authed_client: httpx.AsyncClient):
+        resp = await authed_client.put(
+            "/api/admin/llm-providers/custom-openai",
+            json={
+                "name": "My Provider",
+                "base_url": "http://custom.local:8000/v1",
+                "api_key": "sk-custom",
+                "extra_headers": {"X-Custom": "value"},
+            },
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "ok"
+        assert data["provider"] == "custom_openai"
+
+    async def test_put_custom_openai_config_invalid_url(self, authed_client: httpx.AsyncClient):
+        resp = await authed_client.put(
+            "/api/admin/llm-providers/custom-openai",
+            json={
+                "name": "Bad",
+                "base_url": "ftp://invalid",
+                "api_key": "sk-custom",
+            },
+        )
+        assert resp.status_code == 422
+
+    async def test_get_llm_providers_includes_custom_openai(self, authed_client: httpx.AsyncClient):
+        await authed_client.put(
+            "/api/admin/llm-providers/custom-openai",
+            json={
+                "name": "My Provider",
+                "base_url": "http://custom.local:8000/v1",
+                "api_key": "sk-custom",
+            },
+        )
+        resp = await authed_client.get("/api/admin/llm-providers")
+        data = resp.json()
+        assert "custom_openai" in data["providers"]
+        assert data["providers"]["custom_openai"]["name"] == "My Provider"
+        assert data["providers"]["custom_openai"]["url"] == "http://custom.local:8000/v1"
+
+    async def test_delete_custom_openai_clears_settings(self, authed_client: httpx.AsyncClient):
+        await authed_client.put(
+            "/api/admin/llm-providers/custom-openai",
+            json={
+                "name": "My Provider",
+                "base_url": "http://custom.local:8000/v1",
+                "api_key": "sk-custom",
+            },
+        )
+        resp = await authed_client.delete("/api/admin/llm-providers/custom_openai")
+        assert resp.status_code == 200
+        resp = await authed_client.get("/api/admin/llm-providers")
+        data = resp.json()
+        assert data["providers"]["custom_openai"]["configured"] is False
+
 
 # ===================================================================
 # Custom Agents API

@@ -1152,13 +1152,10 @@ class TestEmbeddingEngine:
         mock_response = MagicMock()
         mock_response.data = [{"embedding": [0.1] * 384}, {"embedding": [0.2] * 384}]
 
-        import sys
-
-        mock_litellm = MagicMock()
-        mock_litellm.embedding.return_value = mock_response
         with (
-            patch.dict(sys.modules, {"litellm": mock_litellm}),
+            patch("litellm.embedding", return_value=mock_response),
             patch("app.cache.embedding.asyncio.to_thread", side_effect=lambda f, *a, **k: f(*a, **k)),
+            patch("app.llm.providers.retrieve_secret", new_callable=AsyncMock, return_value="sk-test"),
         ):
             results = await engine.embed_batch(["text1", "text2"])
         assert len(results) == 2
@@ -1169,19 +1166,18 @@ class TestEmbeddingEngine:
         engine._provider = "external"
         engine._model_name = "openai/text-embedding-3-small"
 
-        import sys
+        class FakeRateLimitError(Exception):
+            pass
 
-        mock_litellm = MagicMock()
-        mock_litellm.RateLimitError = type("RateLimitError", (Exception,), {})
-        mock_litellm.embedding.side_effect = [
-            mock_litellm.RateLimitError("rate limited"),
-            mock_litellm.RateLimitError("rate limited"),
-            MagicMock(data=[{"embedding": [0.1] * 384}]),
-        ]
+        rate_limit_err = FakeRateLimitError("rate limited")
+        mock_response = MagicMock(data=[{"embedding": [0.1] * 384}])
+
         with (
-            patch.dict(sys.modules, {"litellm": mock_litellm}),
+            patch("litellm.embedding", side_effect=[rate_limit_err, rate_limit_err, mock_response]),
+            patch("litellm.RateLimitError", FakeRateLimitError),
             patch("app.cache.embedding.asyncio.to_thread", side_effect=lambda f, *a, **k: f(*a, **k)),
             patch("app.cache.embedding.asyncio.sleep", new_callable=AsyncMock) as mock_sleep,
+            patch("app.llm.providers.retrieve_secret", new_callable=AsyncMock, return_value="sk-test"),
         ):
             results = await engine.embed_batch(["text1"])
         assert len(results) == 1
