@@ -133,10 +133,15 @@ class EmbeddingEngine:
         """Use litellm for external provider embedding with retry."""
         import litellm
 
+        from app.llm.providers import resolve_provider_params
+
+        provider_params = await resolve_provider_params(self._model_name)
         last_exc: Exception | None = None
         for attempt in range(3):
             try:
-                response = await asyncio.to_thread(litellm.embedding, model=self._model_name, input=texts)
+                response = await asyncio.to_thread(
+                    litellm.embedding, model=self._model_name, input=texts, **provider_params
+                )
                 return [item["embedding"] for item in response.data]
             except litellm.RateLimitError as exc:
                 last_exc = exc

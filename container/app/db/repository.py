@@ -182,6 +182,12 @@ class SettingsRepository:
             cursor = await db.execute("SELECT key, value, value_type, category, description FROM settings")
             return [dict(row) for row in await cursor.fetchall()]
 
+    @staticmethod
+    async def delete(key: str) -> None:
+        async with get_db_write() as db:
+            await db.execute("DELETE FROM settings WHERE key = ?", (key,))
+        await SettingsRepository._cache_invalidate(key)
+
 
 class AgentConfigRepository:
     """CRUD for agent configurations."""

@@ -16,6 +16,18 @@
         <label class="form-label" for="ollama_url">Ollama URL (optional)</label>
         <input type="url" id="ollama_url" name="ollama_url" placeholder="http://localhost:11434" class="form-input">
     </div>
+    <div class="form-group">
+        <label class="form-label" for="custom_openai_name">Custom OpenAI Provider Name (optional)</label>
+        <input type="text" id="custom_openai_name" name="custom_openai_name" class="form-input">
+    </div>
+    <div class="form-group">
+        <label class="form-label" for="custom_openai_url">Custom OpenAI Base URL (optional)</label>
+        <input type="url" id="custom_openai_url" name="custom_openai_url" placeholder="https://api.example.com/v1" class="form-input">
+    </div>
+    <div class="form-group">
+        <label class="form-label" for="custom_openai_key">Custom OpenAI API Key (optional)</label>
+        <input type="password" id="custom_openai_key" name="custom_openai_key" class="form-input">
+    </div>
     <div class="btn-group mb-md">
         <button type="button" class="btn btn-secondary"
             hx-post="/setup/test/llm"
@@ -27,6 +39,11 @@
             hx-vals='js:{"provider": "groq", "api_key": document.getElementById("groq_key").value, "csrf_token": document.querySelector("#llm-form input[name=csrf_token]").value}'
             hx-target="#test-llm-result"
             hx-swap="innerHTML">Test Groq</button>
+        <button type="button" class="btn btn-secondary"
+            hx-post="/setup/test/llm"
+            hx-vals='js:{"provider": "custom_openai", "api_key": document.getElementById("custom_openai_key").value, "base_url": document.getElementById("custom_openai_url").value, "csrf_token": document.querySelector("#llm-form input[name=csrf_token]").value}'
+            hx-target="#test-llm-result"
+            hx-swap="innerHTML">Test Custom Provider</button>
     </div>
     <div id="test-llm-result"></div>
     <div class="mt-md">

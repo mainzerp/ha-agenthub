@@ -56,6 +56,51 @@
                         </div>
                     </template>
                 </div>
+                <div class="mt-md">
+                    <h4 class="section-header mb-sm text-sm">Custom OpenAI-compatible Providers</h4>
+                    <p class="text-muted mb-md text-sm">Add OpenAI-compatible endpoints (e.g., Kimi, DeepSeek, local vLLM).</p>
+                    <div class="provider-grid">
+                        <template x-for="(cp, index) in customProviders" :key="index">
+                            <div class="custom-provider-card">
+                                <div class="flex-between flex-wrap">
+                                    <span class="form-label m-0 fw-600" x-text="cp.name || 'New Provider'"></span>
+                                    <span x-show="cp.configured" class="badge badge-teal text-2xs">Configured</span>
+                                </div>
+                                <div class="form-group m-0">
+                                    <label class="form-label text-xs">Name</label>
+                                    <input type="text" class="form-input m-0" x-model="cp.name" placeholder="Provider name">
+                                </div>
+                                <div class="form-group m-0">
+                                    <label class="form-label text-xs">Base URL</label>
+                                    <input type="url" class="form-input m-0" x-model="cp.base_url" placeholder="https://api.example.com/v1">
+                                </div>
+                                <div class="form-group m-0">
+                                    <label class="form-label text-xs">API Key</label>
+                                    <input type="password" class="form-input m-0" x-model="cp.api_key" placeholder="Leave blank to keep existing key">
+                                </div>
+                                <div class="form-group m-0">
+                                    <label class="form-label text-xs">Optional Headers</label>
+                                    <div class="custom-provider-headers">
+                                        <template x-for="(h, hIndex) in cp.headers" :key="hIndex">
+                                            <div class="custom-provider-header-row">
+                                                <input type="text" class="form-input" x-model="h.key" placeholder="Header name">
+                                                <input type="text" class="form-input" x-model="h.value" placeholder="Header value">
+                                                <button class="btn btn-danger btn-sm" @click="cp.headers.splice(hIndex, 1)">Remove</button>
+                                            </div>
+                                        </template>
+                                        <button class="btn btn-secondary btn-sm" @click="cp.headers.push({key: '', value: ''})">Add Header</button>
+                                    </div>
+                                </div>
+                                <div class="flex gap-xs flex-wrap">
+                                    <button class="btn btn-primary btn-sm" @click="saveCustomProvider(cp)">Save</button>
+                                    <button class="btn btn-secondary btn-sm" @click="testCustomProvider(cp)">Test</button>
+                                    <button class="btn btn-danger btn-sm" @click="deleteCustomProvider()">Delete</button>
+                                </div>
+                            </div>
+                        </template>
+                    </div>
+                    <button class="btn btn-secondary btn-sm mt-sm" @click="addCustomProvider()" x-show="customProviders.length === 0">Add Custom Provider</button>
+                </div>
                 <div x-show="providerMessage" x-transition class="alert mt-sm" role="status" aria-live="polite" aria-atomic="true"
                      :class="providerMessageType === 'error' ? 'alert-error' : 'alert-success'"
                      x-text="providerMessage"></div>
@@ -73,6 +118,7 @@
                             <option value="groq">groq</option>
                             <option value="anthropic">anthropic</option>
                             <option value="ollama">ollama</option>
+                            <option value="custom_openai">custom_openai</option>
                             <option value="external" x-show="s['embedding.provider'] === 'external'" class="hidden">external (legacy)</option>
                         </select>
                     </div>
@@ -349,6 +395,7 @@ function settingsPage() {
             ollama: { configured: false, url: null }
         },
         providerKeys: { openrouter: '', groq: '', anthropic: '', ollama: '' },
+        customProviders: [],
         providerMessage: '',
         providerMessageType: 'success',
         haConn: { url: '', token: '', token_configured: false, token_masked: null },
@@ -394,7 +441,7 @@ function settingsPage() {
         async loadAll() {
             await Promise.all([
                 this.loadSettings(), this.loadWeights(), this.loadProviders(),
-                this.loadHaConnection(), this.loadContainerApiKey(),
+                this.loadCustomProviders(), this.loadHaConnection(), this.loadContainerApiKey(),
             ]);
             this.updateCounts();
         },
@@ -589,6 +636,93 @@ function settingsPage() {
             }
         },
 
+        async loadCustomProviders() {
+            try {
+                var data = await window.dashboardApi.json('/api/admin/llm-providers');
+                var cp = data.providers && data.providers.custom_openai;
+                this.customProviders = [];
+                if (cp && cp.configured) {
+                    this.customProviders.push({
+                        name: cp.name || '',
+                        base_url: cp.url || '',
+                        api_key: '',
+                        headers: [],
+                        configured: true
+                    });
+                }
+            } catch (e) {
+                if (e.code === 'auth_expired') return;
+                console.error('Failed to load custom providers', e);
+            }
+        },
+
+        async saveCustomProvider(cp) {
+            try {
+                var payload = {
+                    name: cp.name,
+                    base_url: cp.base_url,
+                    api_key: cp.api_key,
+                    extra_headers: {}
+                };
+                for (var i = 0; i < (cp.headers || []).length; i++) {
+                    var h = cp.headers[i];
+                    if (h.key && h.value) {
+                        payload.extra_headers[h.key] = h.value;
+                    }
+                }
+                await window.dashboardApi.request('/api/admin/llm-providers/custom-openai', {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload),
+                });
+                cp.configured = true;
+                this.showProviderMessage('Custom provider saved.', 'success');
+            } catch (e) {
+                if (e.code === 'auth_expired') return;
+                this.showProviderMessage(e.detail || 'Network error.', 'error');
+            }
+        },
+
+        async testCustomProvider(cp) {
+            try {
+                var payload = {
+                    provider: 'custom_openai',
+                    api_key: cp.api_key || null,
+                    model: 'custom_openai/gpt-4o-mini'
+                };
+                var data = await window.dashboardApi.json('/api/admin/llm-providers/test', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload),
+                });
+                if (data.status === 'ok') {
+                    this.showProviderMessage('Custom provider connected successfully!', 'success');
+                } else {
+                    this.showProviderMessage('custom_openai: ' + (data.detail || 'Test failed'), 'error');
+                }
+            } catch (e) {
+                if (e.code === 'auth_expired') return;
+                this.showProviderMessage(e.detail || 'Network error testing custom_openai.', 'error');
+            }
+        },
+
+        async deleteCustomProvider() {
+            try {
+                await window.dashboardApi.request('/api/admin/llm-providers/custom_openai', {
+                    method: 'DELETE',
+                });
+                this.customProviders = [];
+                this.showProviderMessage('Custom provider deleted.', 'success');
+            } catch (e) {
+                if (e.code === 'auth_expired') return;
+                this.showProviderMessage(e.detail || 'Network error.', 'error');
+            }
+        },
+
+        addCustomProvider() {
+            this.customProviders.push({ name: '', base_url: '', api_key: '', headers: [], configured: false });
+        },
+
         async saveProviderKey(provider) {
             try {
                 var url, body;
@@ -646,6 +780,7 @@ function settingsPage() {
                 'groq': 'model-name',
                 'anthropic': 'voyage/voyage-3',
                 'ollama': 'nomic-embed-text',
+                'custom_openai': 'custom_openai/text-embedding-3-small',
                 'external': 'provider/model-name'
             };
             return placeholders[provider] || 'model-name';

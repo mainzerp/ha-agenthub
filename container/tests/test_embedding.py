@@ -16,25 +16,23 @@ async def test_embed_batch_rate_limit_retries_with_asyncio_sleep():
     engine._provider = "openrouter"
     engine._model_name = "openrouter/text-embedding-3-small"
 
-    # Build a mock litellm module with a proper RateLimitError exception class
-    mock_litellm = MagicMock()
-    mock_litellm.RateLimitError = type("RateLimitError", (Exception,), {})
-    mock_litellm.exceptions.APIError = type("APIError", (Exception,), {})
+    class FakeRateLimitError(Exception):
+        pass
 
     call_count = 0
 
-    def _fake_embedding(*, model, input):
+    def _fake_embedding(*, model, input, **kwargs):
         nonlocal call_count
         call_count += 1
         if call_count < 2:
-            raise mock_litellm.RateLimitError("rate limited")
+            raise FakeRateLimitError("rate limited")
         return MagicMock(data=[{"embedding": [0.1, 0.2, 0.3]}])
 
-    mock_litellm.embedding = _fake_embedding
-
     with (
-        patch.dict("sys.modules", {"litellm": mock_litellm}),
+        patch("litellm.embedding", _fake_embedding),
+        patch("litellm.RateLimitError", FakeRateLimitError),
         patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep,
+        patch("app.llm.providers.retrieve_secret", new_callable=AsyncMock, return_value="sk-test"),
     ):
         result = await engine.embed_batch(["hello"])
 

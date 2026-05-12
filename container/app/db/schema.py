@@ -516,7 +516,7 @@ async def _seed_defaults(db: aiosqlite.Connection) -> None:
             "local",
             "string",
             "embedding",
-            "Embedding provider: local, openrouter, groq, anthropic, or ollama",
+            "Embedding provider: local, openrouter, groq, anthropic, ollama, or custom_openai",
         ),
         # 0.23.0: default to a multilingual sentence-transformer so that
         # query tokens such as "bedroom" / "schlafzimmer" / "chambre" /
@@ -1562,3 +1562,33 @@ async def _run_migrations(db: aiosqlite.Connection) -> None:
             ("Climate, HVAC, fans, and humidifiers", "climate-agent"),
         )
         await db.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (32)")
+
+    if current_version < 33:
+        # Migration 33: Seed custom_openai_provider settings for custom OpenAI-compatible providers.
+        await db.executemany(
+            "INSERT OR IGNORE INTO settings (key, value, value_type, category, description, updated_at) VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)",
+            [
+                (
+                    "custom_openai_provider.name",
+                    "",
+                    "string",
+                    "llm",
+                    "Custom OpenAI provider name",
+                ),
+                (
+                    "custom_openai_provider.base_url",
+                    "",
+                    "string",
+                    "llm",
+                    "Custom OpenAI provider base URL",
+                ),
+                (
+                    "custom_openai_provider.headers",
+                    "{}",
+                    "json",
+                    "llm",
+                    "Custom OpenAI provider extra headers",
+                ),
+            ],
+        )
+        await db.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (33)")
