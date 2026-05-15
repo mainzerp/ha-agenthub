@@ -72,8 +72,10 @@ async def browse_cache_entries(
 
     vector_store = cache_manager._vector_store
     collection_name = COLLECTION_ROUTING_CACHE if tier == "routing" else COLLECTION_ACTION_CACHE
+    tier_cache = cache_manager._routing_cache if tier == "routing" else cache_manager._action_cache
 
     try:
+        await asyncio.to_thread(tier_cache.flush_pending)
         total = await vector_store.acount(collection_name)
         if total == 0:
             return {"entries": [], "total": 0, "page": page, "per_page": per_page}
