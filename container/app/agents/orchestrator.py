@@ -785,9 +785,10 @@ class OrchestratorAgent(BaseAgent):
         ctx: TaskContext | None,
         language: str,
         has_error: bool,
+        target_agent: str | None = None,
     ) -> tuple[str, bool]:
         """Extend speech for organic follow-up; combine agent + organic mic-open flags."""
-        if has_error:
+        if has_error or target_agent == _CANCEL_INTERACTION_AGENT:
             return speech, bool(agent_requested)
         speech_out, organic = await self._organic_voice_followup_offer(ctx, language, False, speech)
         return speech_out, bool(agent_requested or organic)
@@ -969,6 +970,7 @@ class OrchestratorAgent(BaseAgent):
             ctx=task_context,
             language=language,
             has_error=False,
+            target_agent=target_agent,
         )
 
         if span_collector:
@@ -1385,6 +1387,7 @@ class OrchestratorAgent(BaseAgent):
                 ctx=task.context,
                 language=language,
                 has_error=has_error,
+                target_agent=target_agent,
             )
             ret_span["metadata"]["final_response"] = speech
             ret_span["metadata"]["mediated"] = speech != original_speech
@@ -1814,6 +1817,7 @@ class OrchestratorAgent(BaseAgent):
                     ctx=incoming_context,
                     language=detected_language,
                     has_error=has_error,
+                    target_agent=target_agent,
                 )
                 ret_span["metadata"]["final_response"] = speech
                 ret_span["metadata"]["mediated"] = (speech != original_speech) or len(classifications) > 1
@@ -2014,6 +2018,7 @@ class OrchestratorAgent(BaseAgent):
                     ctx=task.context,
                     language=detected_language,
                     has_error=False,
+                    target_agent=_CANCEL_INTERACTION_AGENT,
                 )
                 ret_span["metadata"]["final_response"] = full_speech
                 ret_span["metadata"]["mediated"] = False
