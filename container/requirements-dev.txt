@@ -1,6 +1,6 @@
 -r requirements.txt
 pre-commit==4.6.0
-pytest>=8.0.0
+pytest>=9.0.3
 pytest-asyncio>=0.23.0
 pytest-cov>=7.1.0
 pytest-mock>=3.14.0
