@@ -34,7 +34,7 @@ async def test_oversample_factor_applied_when_agent_id_present():
     ):
         await matcher._match_query("flur", agent_id="climate-agent")
     embed_mock.assert_awaited_once()
-    assert embed_mock.await_args.kwargs.get("n") == 60
+    assert embed_mock.await_args.kwargs.get("n") == 20
 
 
 @pytest.mark.asyncio
@@ -46,7 +46,7 @@ async def test_oversample_factor_applied_when_preferred_domains_present():
     ):
         await matcher._match_query("flur", preferred_domains=("climate", "sensor", "weather"))
     embed_mock.assert_awaited_once()
-    assert embed_mock.await_args.kwargs.get("n") == 60
+    assert embed_mock.await_args.kwargs.get("n") == 20
 
 
 @pytest.mark.asyncio

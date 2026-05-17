@@ -242,6 +242,7 @@ class EntityMatcher:
         embedding_n = (
             max(self._top_n * 2, self._top_n * self._oversample_factor) if filtering_active else self._top_n * 2
         )
+        embedding_n = min(embedding_n, max(20, self._top_n * 2))
 
         # 1. Alias signal (fast path -- exact match)
         alias_result = await AliasSignal.score(query, self._alias_resolver)
@@ -254,37 +255,27 @@ class EntityMatcher:
                 signal_scores={"alias": alias_score},
             )
 
-        # 2. Embedding signal -- vector search
-        try:
-            embedding_results = await EmbeddingSignal.score(query, self._entity_index, n=embedding_n)
-        except Exception:
-            logger.warning("Embedding signal unavailable, proceeding with remaining signals")
-            embedding_results = []
-        for entity_id, friendly_name, emb_score in embedding_results:
-            if entity_id in results:
-                results[entity_id].signal_scores["embedding"] = emb_score
-                results[entity_id].friendly_name = friendly_name
-            else:
-                results[entity_id] = MatchResult(
-                    entity_id=entity_id,
-                    friendly_name=friendly_name,
+        # 2. Embedding signal -- vector search (skipped when candidates provided)
+        if candidates:
+            for entry in candidates:
+                results[entry.entity_id] = MatchResult(
+                    entity_id=entry.entity_id,
+                    friendly_name=entry.friendly_name or "",
                     score=0.0,
-                    signal_scores={"embedding": emb_score},
+                    signal_scores={},
                 )
-
-        # 2b. Digraph->umlaut dual embedding search
-        umlaut_query = _digraphs_to_umlauts(query)
-        if umlaut_query:
+            embedding_results = []
+            umlaut_results = []
+        else:
             try:
-                umlaut_results = await EmbeddingSignal.score(umlaut_query, self._entity_index, n=embedding_n)
+                embedding_results = await EmbeddingSignal.score(query, self._entity_index, n=embedding_n)
             except Exception:
-                umlaut_results = []
-            for entity_id, friendly_name, emb_score in umlaut_results:
+                logger.warning("Embedding signal unavailable, proceeding with remaining signals")
+                embedding_results = []
+            for entity_id, friendly_name, emb_score in embedding_results:
                 if entity_id in results:
-                    existing = results[entity_id].signal_scores.get("embedding", 0.0)
-                    if emb_score > existing:
-                        results[entity_id].signal_scores["embedding"] = emb_score
-                        results[entity_id].friendly_name = friendly_name
+                    results[entity_id].signal_scores["embedding"] = emb_score
+                    results[entity_id].friendly_name = friendly_name
                 else:
                     results[entity_id] = MatchResult(
                         entity_id=entity_id,
@@ -292,6 +283,27 @@ class EntityMatcher:
                         score=0.0,
                         signal_scores={"embedding": emb_score},
                     )
+
+            # 2b. Digraph->umlaut dual embedding search
+            umlaut_query = _digraphs_to_umlauts(query)
+            if umlaut_query:
+                try:
+                    umlaut_results = await EmbeddingSignal.score(umlaut_query, self._entity_index, n=embedding_n)
+                except Exception:
+                    umlaut_results = []
+                for entity_id, friendly_name, emb_score in umlaut_results:
+                    if entity_id in results:
+                        existing = results[entity_id].signal_scores.get("embedding", 0.0)
+                        if emb_score > existing:
+                            results[entity_id].signal_scores["embedding"] = emb_score
+                            results[entity_id].friendly_name = friendly_name
+                    else:
+                        results[entity_id] = MatchResult(
+                            entity_id=entity_id,
+                            friendly_name=friendly_name,
+                            score=0.0,
+                            signal_scores={"embedding": emb_score},
+                        )
 
         # 3. Levenshtein signal -- compare query against each candidate friendly_name
         for _entity_id, result in results.items():

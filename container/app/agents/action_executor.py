@@ -563,10 +563,14 @@ async def _resolve_light_entity(
     metadata = dict(resolution["metadata"])
     normalized_query = metadata["normalized_query"]
     stripped_query = _strip_trailing_device_noun(entity_query)
+    cached_visible = resolution.get("_visible_entries")
 
     if entity_index:
-        indexed_entries = await _list_index_entries(entity_index, domains=allowed_domains)
-        visible_entries = await _filter_visible_entries(indexed_entries, entity_index, agent_id)
+        if cached_visible is None:
+            indexed_entries = await _list_index_entries(entity_index, domains=allowed_domains)
+            visible_entries = await _filter_visible_entries(indexed_entries, entity_index, agent_id)
+        else:
+            visible_entries = cached_visible
 
         if visible_entries:
             if stripped_query and stripped_query != normalized_query:
@@ -646,6 +650,7 @@ async def _resolve_light_entity(
             entity_query,
             agent_id=agent_id,
             preferred_domains=tuple(sorted(allowed_domains)),
+            candidates=visible_entries if visible_entries else None,
         )
         # FLOW-DOMAIN-1 (0.19.2): drop wrong-domain candidates before
         # area rerank so a same-area wrong-domain entity cannot win.

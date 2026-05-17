@@ -1,12 +1,19 @@
 # Version
 
-**Current Version:** 1.22.3
+**Current Version:** 1.22.4
 
 ## Recent Changes
 
-Track changes since `v1.22.3` here.
+Track changes since `v1.22.4` here.
 
 ## Version History
+
+### 1.22.4 (PATCH) -- Entity resolution performance fixes
+
+- fix(entity): cap embedding oversample at `max(20, top_n * 2)` to avoid excessive HNSW queries when filtering is active.
+- fix(entity): skip EmbeddingSignal search when pre-filtered candidates are passed to the matcher; Levenshtein/JaroWinkler/Phonetic signals still run on the candidate set.
+- fix(entity): avoid duplicate `_list_index_entries` calls in `_resolve_light_entity` by caching visible entries in deterministic resolver metadata and reusing them in the action executor.
+- fix(entity): add HNSW index warm-up after entity index priming to eliminate cold-start latency on the first embedding search.
 
 ### 1.22.3 (PATCH) -- Voice follow-up satellite resolution for origin_device_id
 

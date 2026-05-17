@@ -523,3 +523,12 @@ class EntityIndex:
         """Async wrapper -- offloads list_entries() to thread pool."""
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, partial(self.list_entries, domains=domains))
+
+    def warmup(self) -> None:
+        """Force-load the HNSW index into memory by issuing a dummy query."""
+        self.search("warmup", n_results=1)
+
+    async def warmup_async(self) -> None:
+        """Async wrapper -- offloads warmup() to thread pool."""
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, self.warmup)

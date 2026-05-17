@@ -322,6 +322,11 @@ async def _prime_entity_index(app: FastAPI, ha_client: HARestClient, entity_inde
             await load_user_aliases()
         except Exception:
             logger.debug("User alias load failed", exc_info=True)
+        try:
+            await entity_index.warmup_async()
+            logger.info("Entity index HNSW warm-up completed")
+        except Exception:
+            logger.debug("Entity index warm-up failed", exc_info=True)
     except Exception:
         logger.warning("Failed to prime entity index in background", exc_info=True)
 

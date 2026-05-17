@@ -171,6 +171,12 @@ def _build_resolution_result(
     }
 
 
+def _with_visible_entries(result: dict[str, Any], visible_entries: list[Any]) -> dict[str, Any]:
+    """Attach cached visible entries for downstream reuse without re-listing the index."""
+    result["_visible_entries"] = list(visible_entries) if visible_entries else []
+    return result
+
+
 def _build_exact_terms(entity_query: str, verbatim_terms: list[str] | None) -> list[str]:
     ordered_terms: list[str] = []
     seen: set[str] = set()
@@ -207,6 +213,7 @@ async def resolve_entity_deterministic_first(
         "resolution_path": "unresolved",
         "verbatim_terms_tried": ordered_terms,
     }
+    visible_entries: list[Any] = []
 
     if entity_index and _supports_method(entity_index, "get_by_id"):
         for term in ordered_terms:
@@ -226,11 +233,14 @@ async def resolve_entity_deterministic_first(
                     "top_friendly_name": exact_entry.friendly_name or exact_entry.entity_id,
                 }
             )
-            return _build_resolution_result(
-                entity_query=entity_query,
-                metadata=metadata,
-                entity_id=exact_entry.entity_id,
-                friendly_name=exact_entry.friendly_name or exact_entry.entity_id,
+            return _with_visible_entries(
+                _build_resolution_result(
+                    entity_query=entity_query,
+                    metadata=metadata,
+                    entity_id=exact_entry.entity_id,
+                    friendly_name=exact_entry.friendly_name or exact_entry.entity_id,
+                ),
+                visible_entries,
             )
 
     visible_entries = await _filter_visible_entries(
@@ -260,11 +270,14 @@ async def resolve_entity_deterministic_first(
                     "top_friendly_name": candidate.friendly_name or candidate.entity_id,
                 }
             )
-            return _build_resolution_result(
-                entity_query=entity_query,
-                metadata=metadata,
-                entity_id=candidate.entity_id,
-                friendly_name=candidate.friendly_name or candidate.entity_id,
+            return _with_visible_entries(
+                _build_resolution_result(
+                    entity_query=entity_query,
+                    metadata=metadata,
+                    entity_id=candidate.entity_id,
+                    friendly_name=candidate.friendly_name or candidate.entity_id,
+                ),
+                visible_entries,
             )
         if ambiguity:
             ambiguous_result = {
@@ -293,11 +306,14 @@ async def resolve_entity_deterministic_first(
                         "top_friendly_name": candidate.friendly_name or candidate.entity_id,
                     }
                 )
-                return _build_resolution_result(
-                    entity_query=entity_query,
-                    metadata=metadata,
-                    entity_id=candidate.entity_id,
-                    friendly_name=candidate.friendly_name or candidate.entity_id,
+                return _with_visible_entries(
+                    _build_resolution_result(
+                        entity_query=entity_query,
+                        metadata=metadata,
+                        entity_id=candidate.entity_id,
+                        friendly_name=candidate.friendly_name or candidate.entity_id,
+                    ),
+                    visible_entries,
                 )
             if ambiguity:
                 ambiguous_result = {
@@ -331,11 +347,14 @@ async def resolve_entity_deterministic_first(
             metadata["top_friendly_name"] = chosen.friendly_name or chosen.entity_id
             metadata["top_score"] = getattr(chosen, "score", 0.0)
             metadata["signal_scores"] = getattr(chosen, "signal_scores", {})
-            return _build_resolution_result(
-                entity_query=entity_query,
-                metadata=metadata,
-                entity_id=chosen.entity_id,
-                friendly_name=chosen.friendly_name or chosen.entity_id,
+            return _with_visible_entries(
+                _build_resolution_result(
+                    entity_query=entity_query,
+                    metadata=metadata,
+                    entity_id=chosen.entity_id,
+                    friendly_name=chosen.friendly_name or chosen.entity_id,
+                ),
+                visible_entries,
             )
 
     if ambiguous_result:
@@ -345,11 +364,17 @@ async def resolve_entity_deterministic_first(
                 "resolution_path": ambiguous_result["resolution_path"],
             }
         )
-        return _build_resolution_result(
-            entity_query=entity_query,
-            metadata=metadata,
-            speech=ambiguous_result["speech"],
+        return _with_visible_entries(
+            _build_resolution_result(
+                entity_query=entity_query,
+                metadata=metadata,
+                speech=ambiguous_result["speech"],
+            ),
+            visible_entries,
         )
 
     metadata["resolution_path"] = "no_match"
-    return _build_resolution_result(entity_query=entity_query, metadata=metadata)
+    return _with_visible_entries(
+        _build_resolution_result(entity_query=entity_query, metadata=metadata),
+        visible_entries,
+    )

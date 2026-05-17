@@ -359,6 +359,24 @@ class TestEntityMatcher:
 
         mock_index.search_async.assert_called_once()
 
+    async def test_match_with_candidates_skips_embedding_search(self):
+        """When candidates are passed, EmbeddingSignal should not be called."""
+        matcher, _mock_index, mock_alias = self._make_matcher()
+        matcher._confidence_threshold = 0.0
+        mock_alias.resolve = AsyncMock(return_value=None)
+
+        candidate = make_entity_index_entry("light.kitchen", "Kitchen Light")
+
+        with (
+            patch("app.entity.matcher.EmbeddingSignal.score", new=AsyncMock(return_value=[])) as embed_mock,
+            patch("app.entity.matcher.EntityVisibilityRepository"),
+        ):
+            results = await matcher.match("kitchen light", candidates=[candidate])
+
+        embed_mock.assert_not_awaited()
+        assert len(results) >= 1
+        assert results[0].entity_id == "light.kitchen"
+
     async def test_match_digraph_deduplicates_results(self):
         """When both searches return the same entity, keep the better score."""
         matcher, mock_index, mock_alias = self._make_matcher()
@@ -920,6 +938,15 @@ class TestEntityIndex:
         store.get.return_value = {"ids": [], "metadatas": []}
         entry = index.get_by_id("light.missing")
         assert entry is None
+
+    def test_warmup_issues_dummy_query(self):
+        index, store = self._make_index()
+        store.query.return_value = {"ids": [[]], "metadatas": [[]], "distances": [[]], "documents": [[]]}
+        index.warmup()
+        store.query.assert_called_once()
+        _args, kwargs = store.query.call_args
+        assert kwargs.get("query_texts") == ["warmup"]
+        assert kwargs.get("n_results") == 1
 
 
 # ---------------------------------------------------------------------------

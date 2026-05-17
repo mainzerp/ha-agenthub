@@ -439,7 +439,7 @@ class TestExecuteAction:
         entity_matcher.match.assert_awaited_once()
         call = entity_matcher.match.await_args
         assert call.args == ("kitchen light",)
-        assert call.kwargs == {"agent_id": "light-agent", "preferred_domains": ("light", "switch")}
+        assert call.kwargs == {"agent_id": "light-agent", "preferred_domains": ("light", "switch"), "candidates": None}
 
     @pytest.mark.asyncio
     async def test_domain_validation_rejects_wrong_domain(self, ha_client):
@@ -619,8 +619,6 @@ class TestExecuteAction:
         index.list_entries_async = AsyncMock(
             side_effect=[
                 [],
-                [],
-                [make_entity_index_entry("light.keller", "Deckenlicht", area="Keller")],
                 [make_entity_index_entry("light.keller", "Deckenlicht", area="Keller")],
             ]
         )
