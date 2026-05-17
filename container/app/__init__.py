@@ -1,3 +1,3 @@
 """ha-agenthub container application."""
 
-__version__ = "1.22.2"
+__version__ = "1.22.3"

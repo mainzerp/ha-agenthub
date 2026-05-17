@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json as _json
 import logging
 import re
@@ -200,10 +201,15 @@ async def _trigger_conversation_continuation_on_registry_device(
             "Conversation continuation triggered (registry device_id=%s, e.g. Companion)",
             device_registry_id,
         )
-    except Exception:
+    except Exception as exc:
+        body = ""
+        if hasattr(exc, "response") and exc.response is not None:
+            with contextlib.suppress(Exception):
+                body = exc.response.text or ""
         logger.warning(
-            "Failed to trigger conversation continuation for device %s",
+            "Failed to trigger conversation continuation for device %s (HA response: %s)",
             device_registry_id,
+            body,
             exc_info=True,
         )
 
@@ -240,6 +246,20 @@ async def _run_voice_followup_after_conversation(
         logger.debug("No assist_satellite in area %s, falling back to origin device if set", area_id)
 
     if origin_device_id:
+        satellite = await _resolve_satellite_from_origin_device(ha_client, origin_device_id)
+        if satellite:
+            await _trigger_conversation_continuation(
+                ha_client,
+                satellite,
+                None,
+                profile,
+                entity_index=entity_index,
+            )
+            return
+        logger.debug(
+            "No assist_satellite found for origin_device_id %s, falling back to registry device_id",
+            origin_device_id,
+        )
         await _trigger_conversation_continuation_on_registry_device(ha_client, origin_device_id, profile)
         return
 
