@@ -564,6 +564,7 @@ async def _resolve_light_entity(
     normalized_query = metadata["normalized_query"]
     stripped_query = _strip_trailing_device_noun(entity_query)
     cached_visible = resolution.get("_visible_entries")
+    visible_entries = None
 
     if entity_index:
         if cached_visible is None:
