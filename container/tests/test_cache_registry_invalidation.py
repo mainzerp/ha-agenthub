@@ -165,6 +165,74 @@ async def test_entity_remove_invalidates_action_and_routing():
 
 
 @pytest.mark.asyncio
+async def test_irrelevant_registry_change_does_not_invalidate():
+    handlers, cache_manager, _ha_client, _entity_index = await _initialize_registry_runtime()
+
+    await handlers["entity_registry_updated"](
+        {
+            "data": {
+                "entity_id": "light.kitchen",
+                "changes": {"last_changed": "2024-01-01T00:00:00Z"},
+            }
+        }
+    )
+
+    cache_manager.invalidate_by_entity_id.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_relevant_registry_change_does_invalidate():
+    handlers, cache_manager, _ha_client, _entity_index = await _initialize_registry_runtime()
+
+    await handlers["entity_registry_updated"](
+        {
+            "data": {
+                "entity_id": "light.kitchen",
+                "changes": {"name": "Kitchen Overhead"},
+            }
+        }
+    )
+
+    cache_manager.invalidate_by_entity_id.assert_awaited_once_with(["light.kitchen"])
+
+
+@pytest.mark.asyncio
+async def test_empty_changes_with_entity_id_does_not_invalidate():
+    handlers, cache_manager, _ha_client, _entity_index = await _initialize_registry_runtime()
+
+    await handlers["entity_registry_updated"]({"data": {"entity_id": "light.kitchen", "changes": {}}})
+
+    cache_manager.invalidate_by_entity_id.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_missing_changes_with_entity_id_does_not_invalidate():
+    handlers, cache_manager, _ha_client, _entity_index = await _initialize_registry_runtime()
+
+    await handlers["entity_registry_updated"]({"data": {"entity_id": "light.kitchen"}})
+
+    cache_manager.invalidate_by_entity_id.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_successful_invalidation_is_logged(caplog):
+    import logging
+
+    handlers, cache_manager, _ha_client, _entity_index = await _initialize_registry_runtime()
+    cache_manager.invalidate_by_entity_id.return_value = {"action": 3, "routing": 5}
+
+    with caplog.at_level(logging.INFO):
+        await handlers["entity_registry_updated"](
+            {"data": {"entity_id": "light.kitchen", "changes": {"name": "New Name"}}}
+        )
+
+    assert "Cache invalidation succeeded" in caplog.text
+    assert "action=3" in caplog.text
+    assert "routing=5" in caplog.text
+    assert "light.kitchen" in caplog.text
+
+
+@pytest.mark.asyncio
 async def test_device_registry_update_fans_out_to_both_caches():
     entries = [
         SimpleNamespace(entity_id="light.kitchen", area="kitchen", device_name="Kitchen Lamp"),
@@ -208,7 +276,9 @@ async def test_invalidation_runs_before_index_sync():
     cache_manager.invalidate_by_entity_id.side_effect = _invalidate
     ha_client.get_state.side_effect = _get_state
 
-    await handlers["entity_registry_updated"]({"data": {"entity_id": "light.kitchen"}})
+    await handlers["entity_registry_updated"](
+        {"data": {"entity_id": "light.kitchen", "changes": {"name": "Kitchen Light"}}}
+    )
 
     assert order == ["invalidate", "refresh"]
 

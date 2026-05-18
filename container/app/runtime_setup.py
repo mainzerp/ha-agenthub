@@ -68,6 +68,23 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+RELEVANT_REGISTRY_FIELDS = frozenset(
+    {
+        "entity_id",
+        "name",
+        "friendly_name",
+        "area_id",
+        "device_id",
+        "device_class",
+        "hidden",
+        "disabled",
+        "hidden_by",
+        "aliases",
+        "icon",
+        "labels",
+    }
+)
+
 
 # P3-11: tunables for the runtime background loops. Kept module-level
 # so they can be inspected / overridden from tests via monkeypatch
@@ -405,6 +422,24 @@ async def _purge_stale_response_cache(cache_manager: CacheManager) -> None:
         logger.warning("Failed to purge stale response cache entries", exc_info=True)
 
 
+def _has_relevant_changes(data: dict, changes: dict) -> bool:
+    """Return True if the event contains changes that affect cache semantics."""
+    action = data.get("action")
+    if action == "remove":
+        return True
+    # Check both data and changes for relevant fields.
+    # Home Assistant may put changed fields in either location depending on event type.
+    for source in (data, changes):
+        if not isinstance(source, dict):
+            continue
+        for key in source:
+            if key == "entity_id" and source is data:
+                continue
+            if key in RELEVANT_REGISTRY_FIELDS:
+                return True
+    return False
+
+
 def _resolve_registry_event_entity_ids(app: FastAPI, entity_index: EntityIndex, event: dict) -> list[str]:
     """Resolve affected entity ids for HA registry events."""
     data = event.get("data") or {}
@@ -426,7 +461,9 @@ def _resolve_registry_event_entity_ids(app: FastAPI, entity_index: EntityIndex, 
     if isinstance(changed_entity_ids, list):
         entity_ids.update(str(item) for item in changed_entity_ids if item)
     if entity_ids:
-        return sorted(entity_ids)
+        if _has_relevant_changes(data, changes):
+            return sorted(entity_ids)
+        return []
 
     entries = entity_index.list_entries()
 
@@ -831,8 +868,16 @@ async def _initialize_setup_dependent_services(app: FastAPI, *, source: str) -> 
             resolved_entity_ids = _resolve_registry_event_entity_ids(app, entity_index, event)
             if not resolved_entity_ids:
                 return []
+            event_type = event.get("event_type", "unknown")
             try:
-                await cache_manager.invalidate_by_entity_id(resolved_entity_ids)
+                counts = await cache_manager.invalidate_by_entity_id(resolved_entity_ids)
+                logger.info(
+                    "Cache invalidation succeeded for %s: entities=%s action=%d routing=%d",
+                    event_type,
+                    sorted(resolved_entity_ids),
+                    counts.get("action", 0),
+                    counts.get("routing", 0),
+                )
             except Exception:
                 logger.warning(
                     "Cache invalidation for registry event failed: %s",
