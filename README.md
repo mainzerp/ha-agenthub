@@ -1,5 +1,9 @@
 # HA-AgentHub
 
+<p align="center">
+  <img src="./custom_components/ha_agenthub/brand/logo.png" alt="HA-AgentHub Logo" width="200">
+</p>
+
 A multi-agent AI assistant for Home Assistant with container-based A2A orchestration, two-tier vector caching, hybrid entity matching, MCP tool integration, and a plugin system.
 
 ![Test](https://img.shields.io/github/actions/workflow/status/mainzerp/ha-agenthub/ci.yml?branch=main&job=quality&label=Test&logo=github)
