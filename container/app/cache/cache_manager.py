@@ -389,6 +389,12 @@ class CacheManager:
             asyncio.to_thread(_invalidate, self._action_cache),
             asyncio.to_thread(_invalidate, self._routing_cache),
         )
+        logger.debug(
+            "CacheManager invalidated %d action and %d routing entries for entity_ids=%s",
+            action_count,
+            routing_count,
+            unique_ids,
+        )
         return {
             "action": action_count,
             "routing": routing_count,

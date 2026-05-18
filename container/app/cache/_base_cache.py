@@ -228,6 +228,12 @@ class _BaseCache[TEntry](ABC):
             self._state.discard_pending(entry_id)
         for start in range(0, len(to_delete), 500):
             self._store.delete(self._collection_name, ids=to_delete[start : start + 500])
+        logger.debug(
+            "%s invalidated %d entries for entity_ids=%s",
+            self.__class__.__name__,
+            len(to_delete),
+            sorted(targets),
+        )
         return len(to_delete)
 
     def count(self) -> int:

@@ -1,12 +1,17 @@
 # Version
 
-**Current Version:** 1.22.4
+**Current Version:** 1.22.5
 
 ## Recent Changes
 
-Track changes since `v1.22.4` here.
+Track changes since `v1.22.5` here.
 
 ## Version History
+
+### 1.22.5 (PATCH) -- Cache invalidation fix
+
+- fix(cache): only invalidate cache entries on registry events when relevant fields changed (name, area_id, device_id, hidden, disabled, aliases, labels, etc.)
+- fix(cache): add INFO/DEBUG logging for successful cache invalidation with per-tier deletion counts
 
 ### 1.22.4 (PATCH) -- Entity resolution performance fixes
 
