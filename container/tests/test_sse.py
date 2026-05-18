@@ -24,6 +24,10 @@ class TestRegisterSseTickers:
         for task in app.state.sse_ticker_tasks:
             assert isinstance(task, asyncio.Task)
 
+        # Cancel tasks so pytest-asyncio loop teardown stays clean
+        for task in app.state.sse_ticker_tasks:
+            task.cancel()
+
     @pytest.mark.asyncio
     async def test_cancels_existing_tasks(self):
         """Existing ticker tasks must be cancelled before new ones are created."""
@@ -36,3 +40,7 @@ class TestRegisterSseTickers:
 
         old_task.cancel.assert_called_once()
         assert len(app.state.sse_ticker_tasks) == 4
+
+        # Cancel the newly created real tasks
+        for task in app.state.sse_ticker_tasks:
+            task.cancel()

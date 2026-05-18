@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -188,6 +188,64 @@ def _patch_aiosqlite_close():
     aiosqlite.Connection.close = _patched_close
     yield
     aiosqlite.Connection.close = _original_close
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _patch_aiosqlite_worker_thread():
+    """Suppress RuntimeError when aiosqlite worker thread outlives the event loop.
+
+    Tests using TestClient create/destroy background event loops aggressively.
+    The aiosqlite worker thread can call call_soon_threadsafe() after the loop
+    is closed, raising RuntimeError('Event loop is closed'). Catching it here
+    is safe because the connection is already being torn down.
+    """
+    import aiosqlite.core
+
+    _original = aiosqlite.core._connection_worker_thread
+
+    def _patched(tx: aiosqlite.core._TxQueue):
+        while True:
+            future, function = tx.get()
+            try:
+                result = function()
+                if future:
+                    with suppress(RuntimeError):
+                        future.get_loop().call_soon_threadsafe(aiosqlite.core.set_result, future, result)
+                if result is aiosqlite.core._STOP_RUNNING_SENTINEL:
+                    break
+            except BaseException as e:
+                if future:
+                    with suppress(RuntimeError):
+                        future.get_loop().call_soon_threadsafe(aiosqlite.core.set_exception, future, e)
+
+    aiosqlite.core._connection_worker_thread = _patched
+    yield
+    aiosqlite.core._connection_worker_thread = _original
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _patch_aiosqlite_del():
+    """Suppress ResourceWarning from aiosqlite connections that are garbage-collected
+    without being explicitly closed.
+
+    Tests frequently close event loops while aiosqlite worker threads are still
+    shutting down, which can leave connection objects unreachable before their
+    ``close()`` has completed.  This is a test-artifact only; production code
+    always uses ``async with`` or explicit ``await conn.close()``.
+    """
+    _original_del = aiosqlite.Connection.__del__
+
+    def _patched_del(self):
+        if self._connection is None:
+            return
+        # Connection was not closed before GC; silence the warning in tests.
+        # The worker thread is handled by _patch_aiosqlite_close and
+        # _patch_aiosqlite_worker_thread.
+        self.stop()
+
+    aiosqlite.Connection.__del__ = _patched_del
+    yield
+    aiosqlite.Connection.__del__ = _original_del
 
 
 @pytest.fixture(scope="session", autouse=True)
