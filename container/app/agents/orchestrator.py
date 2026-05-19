@@ -393,13 +393,16 @@ class OrchestratorAgent(BaseAgent):
             context.language = resolved_language
 
         if target_agent == _CANCEL_INTERACTION_AGENT:
-            speech = await generate_cancel_speech(context.language, user_text)
-            await track_request(
-                _CANCEL_INTERACTION_AGENT,
-                cache_hit=False,
-                latency_ms=(time.perf_counter() - t_dispatch) * 1000,
-            )
-            return _CANCEL_INTERACTION_AGENT, speech, {"speech": speech, "action_executed": None}
+            async with _optional_span(span_collector, "dispatch", agent_id=_CANCEL_INTERACTION_AGENT) as span:
+                speech = await generate_cancel_speech(context.language, user_text)
+                latency_ms = (time.perf_counter() - t_dispatch) * 1000
+                span["metadata"]["latency_ms"] = latency_ms
+                await track_request(
+                    _CANCEL_INTERACTION_AGENT,
+                    cache_hit=False,
+                    latency_ms=latency_ms,
+                )
+                return _CANCEL_INTERACTION_AGENT, speech, {"speech": speech, "action_executed": None}
 
         # Populate home location/time context
         if self._ha_client:
@@ -2006,9 +2009,11 @@ class OrchestratorAgent(BaseAgent):
         )
 
         if len(classifications) == 1 and target_agent == _CANCEL_INTERACTION_AGENT:
-            full_speech = await generate_cancel_speech(detected_language, user_text)
-            latency_ms = (time.perf_counter() - t0_request) * 1000
-            await track_request(_CANCEL_INTERACTION_AGENT, cache_hit=False, latency_ms=latency_ms)
+            async with _optional_span(span_collector, "dispatch", agent_id=_CANCEL_INTERACTION_AGENT) as span:
+                full_speech = await generate_cancel_speech(detected_language, user_text)
+                latency_ms = (time.perf_counter() - t0_request) * 1000
+                span["metadata"]["latency_ms"] = latency_ms
+                await track_request(_CANCEL_INTERACTION_AGENT, cache_hit=False, latency_ms=latency_ms)
             async with _optional_span(span_collector, "return", agent_id="orchestrator") as ret_span:
                 ret_span["metadata"]["from_agent"] = target_agent
                 ret_span["metadata"]["agent_response"] = full_speech

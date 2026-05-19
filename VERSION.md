@@ -1,12 +1,16 @@
 # Version
 
-**Current Version:** 1.22.5
+**Current Version:** 1.22.6
 
 ## Recent Changes
 
-Track changes since `v1.22.5` here.
+Track changes since `v1.22.6` here.
 
 ## Version History
+
+### 1.22.6 (PATCH) -- Fix missing cancel-interaction span in trace timeline
+
+- fix(orchestrator): add `dispatch` span for `cancel-interaction` fast-path in both streaming and non-streaming pipelines. Previously, the fast-path bypassed normal dispatch and created no execution span, leaving a visible gap between `classify` and `return` in trace timelines. `cancel-interaction` also did not appear in the trace `agents` list.
 
 ### 1.22.5 (PATCH) -- Cache invalidation fix
 
