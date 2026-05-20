@@ -227,27 +227,17 @@ async def match_preview(
         "error": None,
     }
     try:
-        from app.agents.action_executor import (
-            _resolve_light_entity,
-            _validate_domain,
-        )
+        from app.agents.action_executor import _validate_domain
 
-        if agent and agent not in _LIGHT_DETERMINISTIC_AGENTS:
+        if entity_matcher is None:
+            deterministic["error"] = "entity_matcher not initialized"
+        else:
             resolution = await deterministic_resolver.resolve_entity_deterministic_first(
                 query,
                 entity_index,
                 entity_matcher,
                 agent,
                 allowed_domains=agent_allowed_domains or None,
-            )
-        elif entity_matcher is None:
-            deterministic["error"] = "entity_matcher not initialized"
-        else:
-            resolution = await _resolve_light_entity(
-                query,
-                entity_index,
-                entity_matcher,
-                agent,
             )
         if deterministic["error"] is None:
             metadata = dict(resolution.get("metadata") or {})

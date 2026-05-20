@@ -56,6 +56,7 @@ async def complete(
             messages=messages,
             max_tokens=max_tokens,
             temperature=temperature,
+            timeout=config.timeout,
             **provider_params,
         )
         if reasoning_effort:
@@ -177,6 +178,7 @@ async def complete_with_tools(
             tool_choice="auto",
             max_tokens=max_tokens,
             temperature=temperature,
+            timeout=config.timeout,
             **provider_params,
         )
         if reasoning_effort:
@@ -266,6 +268,7 @@ async def complete_with_tools(
         messages=msgs,
         max_tokens=max_tokens,
         temperature=temperature,
+        timeout=config.timeout,
         **provider_params,
     )
     if reasoning_effort:

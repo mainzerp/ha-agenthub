@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 import pytest
 
-from app.db import repository as repo_mod
+from app.db.repositories import settings as settings_mod
 from app.db.repository import SettingsRepository
 
 pytestmark = pytest.mark.asyncio
@@ -31,8 +31,8 @@ class TestSettingsValueCache:
     async def test_cache_hit_avoids_db(self, db_repository):
         await SettingsRepository.set("p36.cache.test", "first", value_type="string")
 
-        wrapped, counter = _counting_get_db_read(repo_mod.get_db_read)
-        with patch.object(repo_mod, "get_db_read", wrapped):
+        wrapped, counter = _counting_get_db_read(settings_mod.get_db_read)
+        with patch.object(settings_mod, "get_db_read", wrapped):
             assert await SettingsRepository.get_value("p36.cache.test") == "first"
             first_calls = counter["calls"]
             # Subsequent reads must be served from cache.
@@ -50,8 +50,8 @@ class TestSettingsValueCache:
     async def test_ttl_expiry_refetches(self, db_repository, monkeypatch):
         await SettingsRepository.set("p36.cache.ttl", "fresh")
 
-        wrapped, counter = _counting_get_db_read(repo_mod.get_db_read)
-        with patch.object(repo_mod, "get_db_read", wrapped):
+        wrapped, counter = _counting_get_db_read(settings_mod.get_db_read)
+        with patch.object(settings_mod, "get_db_read", wrapped):
             assert await SettingsRepository.get_value("p36.cache.ttl") == "fresh"
             primed_calls = counter["calls"]
             # Confirm the cache is warm (no extra DB hit).
@@ -60,15 +60,15 @@ class TestSettingsValueCache:
 
             # Force every cached entry to look expired without sleeping.
             base = time.monotonic()
-            monkeypatch.setattr(repo_mod.time, "monotonic", lambda: base + 9999)
+            monkeypatch.setattr(settings_mod.time, "monotonic", lambda: base + 9999)
 
             # Expired entry must miss the cache and trigger a fresh DB read.
             assert await SettingsRepository.get_value("p36.cache.ttl") == "fresh"
             assert counter["calls"] == primed_calls + 1
 
     async def test_missing_key_is_cached(self, db_repository):
-        wrapped, counter = _counting_get_db_read(repo_mod.get_db_read)
-        with patch.object(repo_mod, "get_db_read", wrapped):
+        wrapped, counter = _counting_get_db_read(settings_mod.get_db_read)
+        with patch.object(settings_mod, "get_db_read", wrapped):
             # First lookup hits the DB and stores the "missing" sentinel.
             assert await SettingsRepository.get_value("p36.cache.absent", "fallback") == "fallback"
             primed_calls = counter["calls"]

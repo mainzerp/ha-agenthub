@@ -379,10 +379,131 @@ class TestAdminSession:
         assert exc_info.value.status_code == 401
         auth_mod._session_serializer = None
 
+    @patch("app.security.auth.get_session_signing_key", return_value=b"0" * 32)
+    async def test_expired_session_returns_401_not_500(self, _mock_key):
+        """An expired session cookie must return 401, not 500."""
+        from fastapi import HTTPException
+
+        import app.security.auth as auth_mod
+        from app.security.auth import SESSION_COOKIE_NAME, create_session_cookie, require_admin_session
+
+        auth_mod._session_serializer = None
+        # Create a cookie with a timestamp in the distant past
+        with patch("time.time", return_value=0):
+            expired_cookie = create_session_cookie({"username": "admin"})
+
+        request = MagicMock()
+        request.cookies = {SESSION_COOKIE_NAME: expired_cookie}
+        with pytest.raises(HTTPException) as exc_info:
+            await require_admin_session(request)
+        assert exc_info.value.status_code == 401
+        assert "Session expired" in exc_info.value.detail
+        auth_mod._session_serializer = None
+
 
 # ---------------------------------------------------------------------------
 # Phase 4.2: Admin settings allowlist test (fix 1.9)
 # ---------------------------------------------------------------------------
+
+
+class TestSessionSerializerRaceCondition:
+    """Step 10: session serializer initialization must be thread-safe."""
+
+    @patch("app.security.auth.get_session_signing_key", return_value=b"0" * 32)
+    def test_concurrent_init_serialized_by_lock(self, _mock_key):
+        from concurrent.futures import ThreadPoolExecutor
+
+        import app.security.auth as auth_mod
+        from app.security.auth import _get_session_serializer
+
+        auth_mod._session_serializer = None
+        serializers: list = []
+
+        def _init():
+            serializers.append(_get_session_serializer())
+
+        with ThreadPoolExecutor(max_workers=10) as pool:
+            futures = [pool.submit(_init) for _ in range(10)]
+            for f in futures:
+                f.result()
+
+        # All 10 calls must return the exact same object instance
+        assert len(set(serializers)) == 1
+        auth_mod._session_serializer = None
+
+    @patch("app.security.auth.get_session_signing_key", return_value=b"0" * 32)
+    def test_concurrent_session_validation_does_not_corrupt_state(self, _mock_key):
+        """Many threads validating the same valid cookie must all succeed."""
+        import asyncio
+        from concurrent.futures import ThreadPoolExecutor
+
+        import app.security.auth as auth_mod
+        from app.security.auth import SESSION_COOKIE_NAME, create_session_cookie, require_admin_session
+
+        auth_mod._session_serializer = None
+        cookie_value = create_session_cookie({"username": "admin"})
+
+        async def _validate():
+            request = MagicMock()
+            request.cookies = {SESSION_COOKIE_NAME: cookie_value}
+            return await require_admin_session(request)
+
+        def _run():
+            return asyncio.run(_validate())
+
+        results = []
+        with ThreadPoolExecutor(max_workers=20) as pool:
+            futures = [pool.submit(_run) for _ in range(20)]
+            for f in futures:
+                results.append(f.result())
+
+        assert all(r["username"] == "admin" for r in results)
+        auth_mod._session_serializer = None
+
+
+class TestBruteForceRateLimit:
+    """Rate limiting on /dashboard/login must trigger after N attempts."""
+
+    async def test_login_rate_limit_blocks_after_5_attempts(self, db_repository):
+        from app.middleware.rate_limit import reset_rate_limit_store
+
+        reset_rate_limit_store()
+        app = build_integration_test_app(setup_complete=True)
+
+        import httpx
+
+        with patch(
+            "app.db.repository.SetupStateRepository.is_complete",
+            new_callable=AsyncMock,
+            return_value=True,
+        ):
+            transport = httpx.ASGITransport(app=app)
+            async with httpx.AsyncClient(
+                transport=transport,
+                base_url="http://testserver",
+                follow_redirects=False,
+            ) as client:
+                # Prime CSRF token
+                await client.get("/dashboard/login")
+                token = client.cookies.get("agent_assist_csrf")
+                assert token
+
+                # 5 failed attempts should be allowed
+                for i in range(5):
+                    resp = await client.post(
+                        "/dashboard/login",
+                        data={"username": "admin", "password": f"wrong{i}", "csrf_token": token},
+                    )
+                    # 200 = rendered error page (reached handler, not CSRF or rate limit)
+                    assert resp.status_code == 200
+
+                # 6th attempt should be rate limited
+                resp = await client.post(
+                    "/dashboard/login",
+                    data={"username": "admin", "password": "wrong5", "csrf_token": token},
+                )
+                assert resp.status_code == 429
+                assert "Rate limit" in resp.text or "rate limit" in resp.text.lower()
 
 
 class TestSettingsAllowlist:

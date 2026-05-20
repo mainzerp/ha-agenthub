@@ -10,17 +10,10 @@ from typing import Any
 from pydantic import BaseModel, Field, ValidationError
 
 from app.analytics.tracer import _optional_span
+from app.db.repositories.settings import _settings_float
 from app.entity.deterministic_resolver import (
-    _build_resolution_result,
-    _filter_visible_entries,
-    _list_index_entries,
-    _normalize_lookup_text,
-    filter_matches_by_domain,
-    rerank_matches_by_area,
+    filter_matches_by_domain,  # noqa: F401  -- re-exported for test compat
     resolve_entity_deterministic_first,
-)
-from app.entity.deterministic_resolver import (
-    _select_deterministic_candidate as _select_generic_deterministic_candidate,
 )
 from app.ha_client.history_query import execute_recorder_history_query
 from app.ha_client.rest import allow_internal_ha_service_calls, mark_verified_ha_service_call
@@ -35,21 +28,6 @@ _JSON_FENCE_RE = re.compile(r"```json\s*\n?(.*?)\n?\s*```", re.DOTALL)
 # do not fall through to the looser raw-decode scanner, which is
 # noticeably more permissive and can misparse surrounding prose.
 _PLAIN_FENCE_RE = re.compile(r"```\s*\n?(.*?)\n?\s*```", re.DOTALL)
-_TRAILING_DEVICE_NOUNS: frozenset[str] = frozenset(
-    {
-        "bulb",
-        "lamp",
-        "lampe",
-        "lampen",
-        "light",
-        "lights",
-        "licht",
-        "lichter",
-        "schalter",
-        "switch",
-        "switches",
-    }
-)
 
 
 # P2-6 (FLOW-PARSE-1): unified action schema.
@@ -489,220 +467,9 @@ def _build_service_data(action: dict) -> dict[str, Any]:
     return data
 
 
-def _strip_trailing_device_noun(query: str) -> str | None:
-    """Strip a trailing light/switch noun from a query like 'Keller light'."""
-    normalized_query = _normalize_lookup_text(query)
-    parts = normalized_query.split()
-    if len(parts) <= 1:
-        return None
-    if parts[-1] not in _TRAILING_DEVICE_NOUNS:
-        return None
-    stripped = " ".join(parts[:-1]).strip()
-    return stripped or None
-
-
-def _select_deterministic_candidate(
-    entries: list[Any],
-    entity_query: str,
-    *,
-    preferred_area_id: str | None = None,
-) -> tuple[Any | None, str | None]:
-    """Prefer a single light candidate, otherwise require an unambiguous result.
-
-    FLOW-CTX-1 (0.18.6): when multiple candidates otherwise match,
-    ``preferred_area_id`` (typically the originating satellite's
-    area) acts as a tie-breaker. We only apply it when it actually
-    narrows the field to a single candidate, so the outcome is
-    strictly more decisive, never accidentally *less* correct.
-    """
-    if preferred_area_id and len(entries) > 1:
-        area_filtered = [entry for entry in entries if (entry.area or None) == preferred_area_id]
-        if len(area_filtered) == 1:
-            return area_filtered[0], None
-        if len(area_filtered) > 1:
-            entries = area_filtered
-
-    light_entries = [entry for entry in entries if entry.domain == "light"]
-    if len(light_entries) == 1:
-        return light_entries[0], None
-    return _select_generic_deterministic_candidate(
-        entries,
-        entity_query,
-        preferred_area_id=None,
-    )
-
-
-async def _resolve_light_entity(
-    entity_query: str,
-    entity_index: Any,
-    entity_matcher: Any,
-    agent_id: str | None,
-    *,
-    preferred_area_id: str | None = None,
-    allowed_domains: frozenset[str] = _ALLOWED_DOMAINS,
-) -> dict[str, Any]:
-    """Resolve light-agent entities via deterministic checks before hybrid matching.
-
-    FLOW-CTX-1 (0.18.6): ``preferred_area_id`` is the originating
-    satellite's area. It tie-breaks otherwise-ambiguous deterministic
-    matches and reranks the hybrid matcher's top candidate when
-    there is a viable same-area match near the top.
-    """
-    resolution = await resolve_entity_deterministic_first(
-        entity_query,
-        entity_index,
-        None,
-        agent_id,
-        allowed_domains=allowed_domains,
-        preferred_area_id=preferred_area_id,
-    )
-    if resolution.get("entity_id"):
-        return resolution
-    ambiguous_speech = resolution.get("speech")
-
-    metadata = dict(resolution["metadata"])
-    normalized_query = metadata["normalized_query"]
-    stripped_query = _strip_trailing_device_noun(entity_query)
-    cached_visible = resolution.get("_visible_entries")
-    visible_entries = None
-
-    if entity_index:
-        if cached_visible is None:
-            indexed_entries = await _list_index_entries(entity_index, domains=allowed_domains)
-            visible_entries = await _filter_visible_entries(indexed_entries, entity_index, agent_id)
-        else:
-            visible_entries = cached_visible
-
-        if visible_entries:
-            if stripped_query and stripped_query != normalized_query:
-                stripped_matches = [
-                    entry for entry in visible_entries if _normalize_lookup_text(entry.friendly_name) == stripped_query
-                ]
-                candidate, ambiguity = _select_deterministic_candidate(
-                    stripped_matches,
-                    entity_query,
-                    preferred_area_id=preferred_area_id,
-                )
-                if candidate:
-                    metadata.update(
-                        {
-                            "match_count": 1,
-                            "resolution_path": "friendly_name_without_device_noun",
-                            "normalized_query_without_device_noun": stripped_query,
-                            "top_entity_id": candidate.entity_id,
-                            "top_friendly_name": candidate.friendly_name or candidate.entity_id,
-                        }
-                    )
-                    return _build_resolution_result(
-                        entity_query=entity_query,
-                        metadata=metadata,
-                        entity_id=candidate.entity_id,
-                        friendly_name=candidate.friendly_name or candidate.entity_id,
-                    )
-                if ambiguity:
-                    metadata.update(
-                        {
-                            "match_count": len(stripped_matches),
-                            "resolution_path": "friendly_name_without_device_noun_ambiguous",
-                            "normalized_query_without_device_noun": stripped_query,
-                        }
-                    )
-                    ambiguous_speech = ambiguity
-
-            area_queries = {normalized_query}
-            if stripped_query:
-                area_queries.add(stripped_query)
-            area_matches = [
-                entry
-                for entry in visible_entries
-                if entry.domain in allowed_domains and _normalize_lookup_text(entry.area or "") in area_queries
-            ]
-            candidate, ambiguity = _select_deterministic_candidate(
-                area_matches,
-                entity_query,
-                preferred_area_id=preferred_area_id,
-            )
-            if candidate:
-                metadata.update(
-                    {
-                        "match_count": 1,
-                        "resolution_path": "exact_area",
-                        "top_entity_id": candidate.entity_id,
-                        "top_friendly_name": candidate.friendly_name or candidate.entity_id,
-                    }
-                )
-                return _build_resolution_result(
-                    entity_query=entity_query,
-                    metadata=metadata,
-                    entity_id=candidate.entity_id,
-                    friendly_name=candidate.friendly_name or candidate.entity_id,
-                )
-            if ambiguity:
-                metadata.update(
-                    {
-                        "match_count": len(area_matches),
-                        "resolution_path": "exact_area_ambiguous",
-                    }
-                )
-                ambiguous_speech = ambiguity
-
-    if entity_matcher:
-        matches = await entity_matcher.match(
-            entity_query,
-            agent_id=agent_id,
-            preferred_domains=tuple(sorted(allowed_domains)),
-            candidates=visible_entries if visible_entries else None,
-        )
-        # FLOW-DOMAIN-1 (0.19.2): drop wrong-domain candidates before
-        # area rerank so a same-area wrong-domain entity cannot win.
-        filtered_matches = filter_matches_by_domain(matches, allowed_domains)
-        if len(filtered_matches) != len(matches):
-            metadata["domain_filter_dropped"] = len(matches) - len(filtered_matches)
-            metadata["domain_filter_allowed"] = sorted(allowed_domains)
-        metadata.update({"match_count": len(filtered_matches), "resolution_path": "hybrid_matcher"})
-        if filtered_matches:
-            original_top = filtered_matches[0]
-            reranked = rerank_matches_by_area(filtered_matches, preferred_area_id)
-            chosen = reranked[0]
-            if chosen is not original_top:
-                metadata["area_rerank_from"] = original_top.entity_id
-                metadata["area_rerank_reason"] = "preferred_area_match"
-            metadata["top_entity_id"] = chosen.entity_id
-            metadata["top_friendly_name"] = chosen.friendly_name or chosen.entity_id
-            metadata["top_score"] = getattr(chosen, "score", 0.0)
-            metadata["signal_scores"] = getattr(chosen, "signal_scores", {})
-            return _build_resolution_result(
-                entity_query=entity_query,
-                metadata=metadata,
-                entity_id=chosen.entity_id,
-                friendly_name=chosen.friendly_name or chosen.entity_id,
-            )
-
-    if ambiguous_speech:
-        return _build_resolution_result(
-            entity_query=entity_query,
-            metadata=metadata,
-            speech=ambiguous_speech,
-        )
-
-    metadata["resolution_path"] = "no_match"
-    return _build_resolution_result(entity_query=entity_query, metadata=metadata)
-
-
 # ---------------------------------------------------------------------------
 # FLOW-VERIFY-1: helpers for post-action state verification and speech.
 # ---------------------------------------------------------------------------
-async def _settings_float(key: str, *, default: float) -> float:
-    """Read a float setting by key, falling back to ``default`` on any error."""
-    try:
-        from app.db.repository import SettingsRepository
-
-        raw = await SettingsRepository.get_value(key, str(default))
-        if raw is None:
-            return default
-        return float(raw)
-    except (TypeError, ValueError, Exception):
-        return default
 
 
 def _extract_state_from_call_result(
@@ -815,13 +582,16 @@ async def execute_action(
     try:
         if entity_matcher:
             async with _optional_span(span_collector, "entity_match", agent_id=agent_id) as em_span:
-                resolution = await _resolve_light_entity(
+                resolution = await resolve_entity_deterministic_first(
                     entity_query,
                     entity_index,
                     entity_matcher,
                     agent_id,
-                    preferred_area_id=preferred_area_id,
                     allowed_domains=_ACTION_DOMAINS_LIGHT.get(action_name, _ALLOWED_DOMAINS),
+                    preferred_area_id=preferred_area_id,
+                    enable_strip_device_noun=True,
+                    enable_area_fallback=True,
+                    preferred_domain="light",
                 )
                 em_span["metadata"] = resolution["metadata"]
     except Exception:
@@ -939,12 +709,16 @@ async def _query_light_state(
     try:
         if entity_matcher:
             async with _optional_span(span_collector, "entity_match", agent_id=agent_id) as em_span:
-                resolution = await _resolve_light_entity(
+                resolution = await resolve_entity_deterministic_first(
                     entity_query,
                     entity_index,
                     entity_matcher,
                     agent_id,
+                    allowed_domains=_ALLOWED_DOMAINS,
                     preferred_area_id=preferred_area_id,
+                    enable_strip_device_noun=True,
+                    enable_area_fallback=True,
+                    preferred_domain="light",
                 )
                 em_span["metadata"] = resolution["metadata"]
     except Exception:
@@ -1018,12 +792,16 @@ async def _query_light_entity_history(
     try:
         if entity_matcher:
             async with _optional_span(span_collector, "entity_match", agent_id=agent_id) as em_span:
-                resolution = await _resolve_light_entity(
+                resolution = await resolve_entity_deterministic_first(
                     entity_query,
                     entity_index,
                     entity_matcher,
                     agent_id,
+                    allowed_domains=_ALLOWED_DOMAINS,
                     preferred_area_id=preferred_area_id,
+                    enable_strip_device_noun=True,
+                    enable_area_fallback=True,
+                    preferred_domain="light",
                 )
                 em_span["metadata"] = resolution["metadata"]
     except Exception:

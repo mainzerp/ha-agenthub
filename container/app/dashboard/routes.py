@@ -104,6 +104,7 @@ async def login_submit(
         samesite="lax",
         max_age=86400,
         secure=app_settings.cookie_secure is True,
+        path="/",
     )
     return response
 

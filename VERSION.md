@@ -1,12 +1,34 @@
 # Version
 
-**Current Version:** 1.22.6
+**Current Version:** 1.23.0
 
 ## Recent Changes
 
-Track changes since `v1.22.6` here.
+Track changes since `v1.23.0` here.
 
 ## Version History
+
+### 1.23.0 (MINOR) -- Security hardening, cache performance, and agent architecture refactoring
+
+- fix(ws): reject all origins when allowed_ws_origins is empty
+- fix(llm): add explicit timeout to all acompletion calls
+- fix(auth): set cookie path to root; fix setup completion race
+- fix(mcp): enforce timeout on tool calls
+- fix(auth): thread-safe session serializer initialization
+- fix(ha_ws): narrow exception handling in websocket connect
+- feat(ws): add per-IP connection limit for WebSocket endpoint
+- fix(cache): replace full-collection LRU scan with indexed eviction
+- fix(db): narrow JSON exception handling in synonym cache
+- fix(perf): cap legacy warning keys in base cache
+- refactor(executor): deduplicate light resolver into deterministic_resolver
+- feat(agents): extract AgentRegistry with TTL-cached lookups
+- feat(agents): extract shared TaskPipeline from orchestrator
+- feat(db): extract settings repository from god module
+- fix(perf): use set for dedup in orchestrator sanitize
+- test(agents): split monolithic test_agents.py by domain
+- test(timeout): implement per-agent timeout cascade tests
+- test(auth): add edge-case tests for expiry, concurrency, brute-force
+- docs(integration): document tolerated Prime Directive 1 exception for post-filler announce
 
 ### 1.22.6 (PATCH) -- Fix missing cancel-interaction span in trace timeline
 

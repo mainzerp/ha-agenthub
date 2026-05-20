@@ -127,7 +127,7 @@ class HAWebSocketClient:
                     await self.subscribe_events(event_type)
 
             return True
-        except Exception:
+        except (aiohttp.ClientError, TimeoutError, ConnectionError):
             self._logger.error("Failed to connect to HA WebSocket", exc_info=True)
             await self._close_session()
             return False

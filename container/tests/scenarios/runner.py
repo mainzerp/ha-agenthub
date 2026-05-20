@@ -363,6 +363,8 @@ async def _temp_db(db_path):
         patch("app.db.repository.get_db_write", _get_db),
         patch("app.db.schema.get_db_read", _get_db),
         patch("app.db.schema.get_db_write", _get_db),
+        patch("app.db.repositories.settings.get_db_read", _get_db),
+        patch("app.db.repositories.settings.get_db_write", _get_db),
     ):
         yield
 

@@ -446,6 +446,7 @@ class TestConversationEndpoints:
         ws = MagicMock()
         ws.headers = {"origin": "https://evil.com"}
         ws.app.state.allowed_ws_origins = {"https://ha.local:8123"}
+        ws.client.host = "127.0.0.1"
         ws.accept = AsyncMock()
         ws.close = AsyncMock()
 
@@ -461,6 +462,7 @@ class TestConversationEndpoints:
         ws = MagicMock()
         ws.headers = {"origin": "https://ha.local:8123"}
         ws.app.state.allowed_ws_origins = {"https://ha.local:8123"}
+        ws.client.host = "127.0.0.1"
         ws.accept = AsyncMock()
         ws.close = AsyncMock()
         ws.receive_text = AsyncMock(side_effect=Exception("stop test"))
@@ -468,6 +470,45 @@ class TestConversationEndpoints:
         with suppress(Exception):
             await ws_conversation(ws)
         ws.close.assert_not_awaited()
+
+    async def test_ws_conversation_rejects_origin_when_allowed_empty(self):
+        """Step 1: empty allowed_ws_origins must reject all origins."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        from app.api.routes.conversation import ws_conversation
+
+        ws = MagicMock()
+        ws.headers = {"origin": "https://evil.com"}
+        ws.app.state.allowed_ws_origins = set()
+        ws.client.host = "127.0.0.1"
+        ws.accept = AsyncMock()
+        ws.close = AsyncMock()
+
+        await ws_conversation(ws)
+        ws.close.assert_awaited_once_with(code=1008, reason="Invalid origin")
+
+    async def test_ws_conversation_enforces_per_ip_connection_limit(self):
+        """Step 18: exceeding max connections per IP must reject with 1008."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        from app.api.routes import conversation as conv_module
+        from app.api.routes.conversation import ws_conversation
+
+        # Seed the tracker at the limit
+        conv_module._active_ws_connections["10.0.0.1"] = conv_module._MAX_WS_CONNECTIONS_PER_IP
+
+        ws = MagicMock()
+        ws.headers = {"origin": "https://ha.local:8123"}
+        ws.app.state.allowed_ws_origins = {"https://ha.local:8123"}
+        ws.client.host = "10.0.0.1"
+        ws.accept = AsyncMock()
+        ws.close = AsyncMock()
+
+        await ws_conversation(ws)
+        ws.close.assert_awaited_once_with(code=1008, reason="Connection limit exceeded")
+
+        # Clean up
+        conv_module._active_ws_connections.pop("10.0.0.1", None)
 
     async def test_ws_conversation_does_not_leak_exception_details(self):
         """HIGH-10: malformed JSON must return a generic error without exception details."""
@@ -479,6 +520,7 @@ class TestConversationEndpoints:
         ws = MagicMock()
         ws.headers = {"origin": "https://ha.local:8123"}
         ws.app.state.allowed_ws_origins = {"https://ha.local:8123"}
+        ws.client.host = "127.0.0.1"
         ws.accept = AsyncMock()
         ws.close = AsyncMock()
         ws.send_json = AsyncMock()

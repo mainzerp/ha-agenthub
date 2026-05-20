@@ -26,8 +26,29 @@ router = APIRouter(tags=["conversation"])
 # Maximum allowed WebSocket message size in bytes (10 KB)
 _MAX_WS_MESSAGE_SIZE = 10_000
 
+# Per-IP WebSocket connection limit (Step 18)
+_MAX_WS_CONNECTIONS_PER_IP = 5
+_active_ws_connections: dict[str, int] = {}
+
 # The dispatcher is set by main.py during startup
 _dispatcher = None
+
+
+def _get_ws_client_ip(websocket: WebSocket) -> str:
+    """Return the client IP for a WebSocket, respecting X-Forwarded-For."""
+    direct = websocket.client.host if websocket.client else "unknown"
+    forwarded = websocket.headers.get("x-forwarded-for")
+    if not forwarded:
+        return direct
+    # Simple rightmost-non-trusted logic: if there's a forwarded chain,
+    # use the leftmost IP as the client (common for single-proxy setups).
+    # For more robust handling this should align with _get_client_ip in
+    # rate_limit.py, but WebSocket lacks the full Request interface.
+    ips = [ip.strip() for ip in forwarded.split(",")]
+    for ip in ips:
+        if ip and ip != direct:
+            return ip
+    return direct
 
 
 def set_dispatcher(dispatcher) -> None:
@@ -202,9 +223,16 @@ async def ws_conversation(
     # Validate Origin header against allowed WS origins
     origin = websocket.headers.get("origin")
     allowed = getattr(websocket.app.state, "allowed_ws_origins", set())
-    if origin and allowed and origin not in allowed:
+    if origin and (not allowed or origin not in allowed):
         await websocket.close(code=1008, reason="Invalid origin")
         return
+    # Enforce per-IP WebSocket connection limit (Step 18)
+    client_ip = _get_ws_client_ip(websocket)
+    current_count = _active_ws_connections.get(client_ip, 0)
+    if current_count >= _MAX_WS_CONNECTIONS_PER_IP:
+        await websocket.close(code=1008, reason="Connection limit exceeded")
+        return
+    _active_ws_connections[client_ip] = current_count + 1
     # FLOW-WS-TURN-1: ``/ws/conversation`` is a persistent socket
     # carrying many independent HA conversation turns. The
     # TracingMiddleware deliberately does NOT create a connection-
@@ -314,3 +342,8 @@ async def ws_conversation(
                 raise WebSocketDisconnect()
     except WebSocketDisconnect:
         logger.debug("WebSocket client disconnected")
+    finally:
+        # Decrement per-IP connection count (Step 18)
+        _active_ws_connections[client_ip] = max(0, _active_ws_connections.get(client_ip, 1) - 1)
+        if _active_ws_connections[client_ip] == 0:
+            _active_ws_connections.pop(client_ip, None)

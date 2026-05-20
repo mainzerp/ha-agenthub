@@ -173,7 +173,52 @@ class TestActionCachePrepareForFlush:
 
 
 class TestKnownAgentsMemoization:
-    def _make_orchestrator(self) -> tuple[object, MagicMock]:
+    def _make_registry(self) -> tuple[object, MagicMock]:
+        from app.agents.agent_registry import AgentRegistry
+
+        registry = MagicMock()
+        card_a = MagicMock(agent_id="light-agent")
+        card_b = MagicMock(agent_id="music-agent")
+        registry.list_agents = AsyncMock(return_value=[card_a, card_b])
+        agent_reg = AgentRegistry(registry)
+        return agent_reg, registry
+
+    @pytest.mark.asyncio
+    async def test_repeat_calls_within_ttl_hit_cache(self):
+        agent_reg, registry = self._make_registry()
+        agent_reg._known_agents_ttl = 60.0
+
+        first = await agent_reg.get_known_agents()
+        second = await agent_reg.get_known_agents()
+
+        assert first == second
+        registry.list_agents.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_zero_ttl_disables_cache(self):
+        agent_reg, registry = self._make_registry()
+        agent_reg._known_agents_ttl = 0.0  # always expired
+
+        await agent_reg.get_known_agents()
+        await agent_reg.get_known_agents()
+
+        assert registry.list_agents.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_invalidate_caches_clears_memo(self):
+        agent_reg, registry = self._make_registry()
+        agent_reg._known_agents_ttl = 60.0
+        await agent_reg.get_known_agents()
+        assert registry.list_agents.await_count == 1
+
+        agent_reg.invalidate_caches()
+
+        await agent_reg.get_known_agents()
+        assert registry.list_agents.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_load_reliability_config_clears_known_agents_memo(self):
+        """The real _load_reliability_config must invalidate the AgentRegistry memo."""
         from app.agents.orchestrator import OrchestratorAgent
 
         registry = MagicMock()
@@ -184,58 +229,9 @@ class TestKnownAgentsMemoization:
             dispatcher=MagicMock(),
             registry=registry,
         )
-        return orch, registry
-
-    @pytest.mark.asyncio
-    async def test_repeat_calls_within_ttl_hit_cache(self):
-        orch, registry = self._make_orchestrator()
-        # Long TTL so the second call is a guaranteed cache hit.
-        orch._known_agents_ttl = 60.0
-
-        first = await orch._get_known_agents()
-        second = await orch._get_known_agents()
-
-        assert first == second
-        registry.list_agents.assert_awaited_once()
-
-    @pytest.mark.asyncio
-    async def test_zero_ttl_disables_cache(self):
-        orch, registry = self._make_orchestrator()
-        orch._known_agents_ttl = 0.0  # always expired
-
+        orch._agent_registry._known_agents_ttl = 60.0
         await orch._get_known_agents()
-        await orch._get_known_agents()
-
-        assert registry.list_agents.await_count == 2
-
-    @pytest.mark.asyncio
-    async def test_initialize_invalidates_memo(self):
-        orch, registry = self._make_orchestrator()
-        orch._known_agents_ttl = 60.0
-        await orch._get_known_agents()
-        assert registry.list_agents.await_count == 1
-
-        # Reload reliability config (e.g. admin save) clears the memo.
-        with (
-            patch.object(
-                orch,
-                "_load_reliability_config",
-                new=AsyncMock(side_effect=lambda: setattr(orch, "_known_agents_cache", None)),
-            ),
-            patch.object(orch, "_load_mediation_config", new=AsyncMock()),
-        ):
-            await orch.initialize()
-
-        await orch._get_known_agents()
-        assert registry.list_agents.await_count == 2
-
-    @pytest.mark.asyncio
-    async def test_load_reliability_config_clears_known_agents_memo(self):
-        """The real _load_reliability_config must invalidate the memo."""
-        orch, registry = self._make_orchestrator()
-        orch._known_agents_ttl = 60.0
-        await orch._get_known_agents()
-        assert orch._known_agents_cache is not None
+        assert orch._agent_registry._known_agents_cache is not None
 
         async def fake_get_value(key: str, default: object | None = None) -> object:
             return default
@@ -243,7 +239,7 @@ class TestKnownAgentsMemoization:
         with patch("app.agents.orchestrator.SettingsRepository.get_value", new=AsyncMock(side_effect=fake_get_value)):
             await orch._load_reliability_config()
 
-        assert orch._known_agents_cache is None
+        assert orch._agent_registry._known_agents_cache is None
         # Next call now refetches.
         await orch._get_known_agents()
         assert registry.list_agents.await_count == 2

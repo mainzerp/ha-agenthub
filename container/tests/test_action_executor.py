@@ -439,7 +439,11 @@ class TestExecuteAction:
         entity_matcher.match.assert_awaited_once()
         call = entity_matcher.match.await_args
         assert call.args == ("kitchen light",)
-        assert call.kwargs == {"agent_id": "light-agent", "preferred_domains": ("light", "switch"), "candidates": None}
+        assert call.kwargs == {
+            "agent_id": "light-agent",
+            "preferred_domains": ("light", "switch"),
+            "verbatim_terms": None,
+        }
 
     @pytest.mark.asyncio
     async def test_domain_validation_rejects_wrong_domain(self, ha_client):

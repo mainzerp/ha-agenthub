@@ -246,6 +246,7 @@ async def test_ws_conversation_mints_per_turn_trace(mock_summary):
             self.headers = {}
             self.app = MagicMock()
             self.app.state.allowed_ws_origins = set()
+            self.client = type("Address", (), {"host": "127.0.0.1", "port": 12345})()
 
         async def accept(self):
             self.accepted = True
