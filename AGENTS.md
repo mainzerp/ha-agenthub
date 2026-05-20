@@ -92,11 +92,13 @@ YOU (Orchestrator): Plan Approval (in-chat)
 SUBAGENT #3a...#3n: Implementation (subagent_type="general", implement mode, fresh context)
     - Reads the approved plan (or assigned partial plan)
     - Implements ONLY the assigned work stream
+    - Appends every file edit to `docs/SubAgent/[NAME]_CHANGES.md`
     - Returns completion summary
     |
 YOU (Orchestrator): Spawn Merge & Verify subagent (only if parallel implementation was used)
     |
 SUBAGENT #3-Merge: Merge & Verify (subagent_type="general", full toolset)
+    - Reads `docs/SubAgent/[NAME]_CHANGES.md` first to understand all modifications
     - Runs the full test suite (`pytest` or equivalent)
     - Runs lint checks (`ruff check`, `ruff format`)
     - Fixes any merge conflicts, import breaks, or integration issues
@@ -139,13 +141,18 @@ The Orchestrator MAY spawn multiple subagents in parallel during Research and Im
    - `docs/SubAgent/[NAME]_PART2_PLAN.md`
    - (etc.)
 3. Each agent's prompt MUST include: `You are implementing ONLY Part N. Do NOT touch files assigned to other parts. Read docs/SubAgent/[NAME]_PART{N}_PLAN.md.`
-4. Each agent returns its completion summary.
-5. After all parallel agents return, spawn a single **Merge & Verify agent** (general, full toolset) that:
-   - Runs the full test suite (`pytest` or equivalent)
-   - Runs lint checks (`ruff check`, `ruff format`)
-   - Fixes any merge conflicts, import breaks, or integration issues caused by parallel edits
-   - Returns the final verification summary
-6. **Fallback:** If the Merge & Verify agent finds unresolvable conflicts, the Orchestrator MUST abort parallel execution, discard the parallel changes, and re-run Implementation sequentially with a single agent.
+4. Before spawning parallel agents, the Orchestrator MUST create an empty shared changes file at `docs/SubAgent/[NAME]_CHANGES.md`.
+5. After every file edit, each parallel agent MUST append an entry to `docs/SubAgent/[NAME]_CHANGES.md` recording:
+   - The agent identifier (e.g., `Part 1`, `Part 2`, `Part 3`)
+   - The path of the file modified
+   - A brief reason for the change
+6. If an implementation agent detects file changes that it did not make itself, it MUST consult `docs/SubAgent/[NAME]_CHANGES.md` to determine whether a parallel agent was responsible before taking any corrective action.
+7. After all parallel agents return, spawn a single **Merge & Verify agent** (general, full toolset) that:
+    - Runs the full test suite (`pytest` or equivalent)
+    - Runs lint checks (`ruff check`, `ruff format`)
+    - Fixes any merge conflicts, import breaks, or integration issues caused by parallel edits
+    - Returns the final verification summary
+8. **Fallback:** If the Merge & Verify agent finds unresolvable conflicts, the Orchestrator MUST abort parallel execution, discard the parallel changes, and re-run Implementation sequentially with a single agent.
 
 ## Subagent Error Handling
 
