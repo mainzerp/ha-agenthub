@@ -187,7 +187,7 @@ For this project's workflow, use these built-in subagent types:
 All SubAgent artifacts follow this pattern: `docs/SubAgent/[NAME]_[SUFFIX].md`
 
 - `[NAME]` — short, descriptive task identifier in `UPPER_SNAKE_CASE` chosen by the Orchestrator at the start of each task (e.g. `ADD_UPS_PROTOCOL`, `FIX_AUTH_BUG`).
-- `[SUFFIX]` — phase suffix: `ANALYSIS`, `TOPIC_ANALYSIS`, `PLAN`, `PART1_PLAN`, etc.
+- `[SUFFIX]` — phase suffix: `ANALYSIS`, `TOPIC_ANALYSIS`, `PLAN`, `PART1_PLAN`, `CHANGES`, etc.
 
 The same `[NAME]` is used across all phases of a single task so artifacts are easy to trace.
 
