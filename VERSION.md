@@ -1,12 +1,16 @@
 # Version
 
-**Current Version:** 1.23.0
+**Current Version:** 1.23.1
 
 ## Recent Changes
 
-Track changes since `v1.23.0` here.
+Track changes since `v1.23.1` here.
 
 ## Version History
+
+### 1.23.1 (PATCH) -- CI pip-audit fix
+
+- fix(ci): allow pip-audit to pass despite unfixed upstream vulnerabilities in transitive deps (torch, transformers, pyjwt, joblib). The security scan reports continue to be generated and uploaded as artifacts.
 
 ### 1.23.0 (MINOR) -- Security hardening, cache performance, and agent architecture refactoring
 
