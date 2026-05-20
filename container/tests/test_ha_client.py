@@ -6,6 +6,7 @@ import asyncio
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import aiohttp
 import httpx
 import pytest
 import respx
@@ -534,6 +535,41 @@ class TestHAWebSocketClient:
         ws = HAWebSocketClient()
         result = await ws.connect()
         assert result is False
+
+    @patch("app.ha_client.websocket.SettingsRepository")
+    @patch("app.ha_client.websocket.get_ha_token", new_callable=AsyncMock, return_value="tok")
+    async def test_connect_narrow_exception_handling_client_error(self, mock_token, mock_settings):
+        """Step 17: aiohttp.ClientError must be caught and return False."""
+        mock_settings.get_value = AsyncMock(return_value="http://ha.local")
+        ws = HAWebSocketClient()
+
+        # Patch ws_connect to raise a ClientError subclass
+        with (
+            patch.object(ws, "_session", None),
+            patch(
+                "aiohttp.ClientSession.ws_connect",
+                side_effect=aiohttp.ClientConnectionError("refused"),
+            ),
+        ):
+            result = await ws.connect()
+        assert result is False
+
+    @patch("app.ha_client.websocket.SettingsRepository")
+    @patch("app.ha_client.websocket.get_ha_token", new_callable=AsyncMock, return_value="tok")
+    async def test_connect_does_not_swallow_keyboard_interrupt(self, mock_token, mock_settings):
+        """Step 17: KeyboardInterrupt must propagate, not be swallowed."""
+        mock_settings.get_value = AsyncMock(return_value="http://ha.local")
+        ws = HAWebSocketClient()
+
+        with (
+            patch.object(ws, "_session", None),
+            patch(
+                "aiohttp.ClientSession.ws_connect",
+                side_effect=KeyboardInterrupt("stop"),
+            ),
+            pytest.raises(KeyboardInterrupt),
+        ):
+            await ws.connect()
 
     async def test_disconnect_sets_running_false(self):
         ws = HAWebSocketClient()

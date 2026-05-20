@@ -8,6 +8,7 @@ import json
 import logging
 import re
 from abc import ABC, abstractmethod
+from collections import deque
 from collections.abc import Iterable
 from datetime import UTC, datetime
 from typing import TypeVar
@@ -24,7 +25,8 @@ TEntry = TypeVar("TEntry", bound=BaseModel)
 
 _LRU_PAGE_SIZE = 1000
 _LRU_TRIGGER_FRACTION = 0.95
-_LEGACY_WARNING_KEYS: set[tuple[str, str]] = set()
+_MAX_LEGACY_WARNING_KEYS = 1000
+_LEGACY_WARNING_KEYS: deque[tuple[str, str]] = deque(maxlen=_MAX_LEGACY_WARNING_KEYS)
 _WHITESPACE_RE = re.compile(r"\s+")
 
 
@@ -32,7 +34,7 @@ def _warn_legacy_key_once(legacy_key: str, canonical_key: str) -> None:
     pair = (legacy_key, canonical_key)
     if pair in _LEGACY_WARNING_KEYS:
         return
-    _LEGACY_WARNING_KEYS.add(pair)
+    _LEGACY_WARNING_KEYS.append(pair)
     logger.warning("Using legacy cache setting %s; migrate to %s", legacy_key, canonical_key)
 
 
@@ -97,6 +99,7 @@ class _BaseCache[TEntry](ABC):
         self._lru_trigger_fraction: float = _LRU_TRIGGER_FRACTION
         self._flush_interval: int = 5
         self._state = _CacheState()
+        self._lru_index: dict[str, str] = {}
 
     @staticmethod
     def _coerce_bool(raw: str | None, default: bool) -> bool:
@@ -183,9 +186,12 @@ class _BaseCache[TEntry](ABC):
         if not self._state.matches_generation(generation):
             logger.info("Skipping %s cache store after flush invalidation", self._collection_name)
             return
+        entry_id = self.make_entry_id(entry.query_text, language=getattr(entry, "language", "en"))
+        now = datetime.now(UTC).isoformat()
+        self._lru_index[entry_id] = now
         self._store.upsert(
             self._collection_name,
-            ids=[self.make_entry_id(entry.query_text, language=getattr(entry, "language", "en"))],
+            ids=[entry_id],
             documents=[entry.query_text],
             metadatas=[self._serialize_metadata(entry)],
         )
@@ -195,6 +201,7 @@ class _BaseCache[TEntry](ABC):
         # pre-invalidate generation cannot resurrect the row after delete.
         self._state.invalidate()
         self._state.discard_pending(entry_id)
+        self._lru_index.pop(entry_id, None)
         self._store.delete(self._collection_name, ids=[entry_id])
         return True
 
@@ -226,6 +233,7 @@ class _BaseCache[TEntry](ABC):
             return 0
         for entry_id in to_delete:
             self._state.discard_pending(entry_id)
+            self._lru_index.pop(entry_id, None)
         for start in range(0, len(to_delete), 500):
             self._store.delete(self._collection_name, ids=to_delete[start : start + 500])
         logger.debug(
@@ -254,6 +262,8 @@ class _BaseCache[TEntry](ABC):
         to_delete = [entry_id for entry_id, meta in zip(ids, metas, strict=False) if not (meta or {}).get("language")]
         if not to_delete:
             return 0
+        for entry_id in to_delete:
+            self._lru_index.pop(entry_id, None)
         for start in range(0, len(to_delete), 500):
             self._store.delete(self._collection_name, ids=to_delete[start : start + 500])
         return len(to_delete)
@@ -273,6 +283,8 @@ class _BaseCache[TEntry](ABC):
                 to_delete.append(entry_id)
         if not to_delete:
             return 0
+        for entry_id in to_delete:
+            self._lru_index.pop(entry_id, None)
         for start in range(0, len(to_delete), 500):
             self._store.delete(self._collection_name, ids=to_delete[start : start + 500])
         return len(to_delete)
@@ -327,6 +339,7 @@ class _BaseCache[TEntry](ABC):
         hit_count = self._coerce_int(str(meta.get("hit_count", 0)), 0) + 1
         meta["last_accessed"] = now
         meta["hit_count"] = str(hit_count)
+        self._lru_index[entry_id] = now
         should_flush = self._state.record_pending_update(
             entry_id,
             document or "",
@@ -347,7 +360,8 @@ class _BaseCache[TEntry](ABC):
         target = int(self._max_entries * 0.9)
         overage = count - target
 
-        def _iter_all():
+        # Build in-memory LRU index if empty (one-time fallback scan).
+        if not self._lru_index:
             offset = 0
             while True:
                 page = self._store.get(
@@ -358,18 +372,21 @@ class _BaseCache[TEntry](ABC):
                 )
                 ids = page.get("ids") or []
                 if not ids:
-                    return
+                    break
                 metas = page.get("metadatas") or []
                 for entry_id, meta in zip(ids, metas, strict=False):
-                    yield ((meta or {}).get("last_accessed", ""), entry_id)
+                    self._lru_index[entry_id] = (meta or {}).get("last_accessed", "")
                 if len(ids) < _LRU_PAGE_SIZE:
-                    return
+                    break
                 offset += _LRU_PAGE_SIZE
 
-        oldest = heapq.nsmallest(overage, _iter_all(), key=lambda pair: pair[0])
-        to_delete = [pair[1] for pair in oldest]
+        oldest = heapq.nsmallest(overage, self._lru_index.items(), key=lambda pair: pair[1])
+        to_delete = [pair[0] for pair in oldest]
         if not to_delete:
             return
+        for entry_id in to_delete:
+            self._lru_index.pop(entry_id, None)
+            self._state.discard_pending(entry_id)
         for start in range(0, len(to_delete), 500):
             self._store.delete(self._collection_name, ids=to_delete[start : start + 500])
         logger.info("%s LRU evicted %d entries", self.__class__.__name__, len(to_delete))

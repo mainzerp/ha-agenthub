@@ -155,6 +155,33 @@ class TestLLMComplete:
         assert result == "Done!"
         mock_acompletion.assert_awaited_once()
 
+    @patch("litellm.acompletion", new_callable=AsyncMock)
+    @patch("app.llm.client.resolve_provider_params", new_callable=AsyncMock, return_value={})
+    @patch("app.llm.client.AgentConfigRepository")
+    async def test_complete_passes_timeout_from_config(self, mock_repo, mock_params, mock_acompletion):
+        """Step 2: litellm.acompletion must receive the agent config timeout."""
+        mock_repo.get = AsyncMock(
+            return_value={
+                "agent_id": "light-agent",
+                "enabled": True,
+                "model": "openrouter/openai/gpt-4o-mini",
+                "timeout": 45,
+                "max_iterations": 3,
+                "temperature": 0.7,
+                "max_tokens": 256,
+                "description": "Light agent",
+            }
+        )
+        choice = MagicMock()
+        choice.message.content = "Done!"
+        mock_acompletion.return_value = MagicMock(choices=[choice])
+
+        from app.llm.client import complete
+
+        await complete("light-agent", [{"role": "user", "content": "turn on light"}])
+        call_kwargs = mock_acompletion.call_args.kwargs
+        assert call_kwargs.get("timeout") == 45
+
     @patch("app.llm.client.resolve_provider_params", new_callable=AsyncMock, return_value={})
     @patch("app.llm.client.AgentConfigRepository")
     async def test_complete_raises_on_missing_config(self, mock_repo, mock_params):

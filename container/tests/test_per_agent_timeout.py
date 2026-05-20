@@ -16,7 +16,7 @@ dispatch.
 from __future__ import annotations
 
 import sys
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -196,6 +196,207 @@ async def test_resolve_timeout_caches_per_agent(monkeypatch):
     assert a == b == 8.0
     # Only the first lookup hit the settings store.
     assert setting_calls.count("agent.dispatch_timeout.light-agent") == 1
+
+
+@pytest.mark.asyncio
+@patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
+@patch("app.agents.orchestrator.track_agent_timeout", new_callable=AsyncMock)
+async def test_timeout_cascade_triggers_fallback_with_own_timeout(_mock_track_timeout, _mock_track, monkeypatch):
+    """Primary agent timeout triggers fallback to general-agent with its own timeout."""
+    orch = _make_orch_with_registry(
+        [
+            AgentCard(
+                agent_id="light-agent",
+                name="Light",
+                description="",
+                skills=[],
+                timeout_sec=0.001,
+            ),
+            AgentCard(
+                agent_id="general-agent",
+                name="General",
+                description="",
+                skills=[],
+                timeout_sec=10.0,
+            ),
+        ]
+    )
+    orch._default_timeout = 5.0
+
+    async def _no_setting(key, default=""):
+        return ""
+
+    monkeypatch.setattr(
+        "app.agents.orchestrator.SettingsRepository.get_value",
+        AsyncMock(side_effect=_no_setting),
+    )
+
+    # Primary dispatch times out, fallback succeeds
+    fallback_response = MagicMock()
+    fallback_response.error = None
+    fallback_response.result = {"speech": "Fallback OK."}
+
+    orch._dispatcher.dispatch = AsyncMock(side_effect=[TimeoutError(), fallback_response])
+
+    target_agent, speech, _result = await orch._dispatch_single(
+        "light-agent",
+        "turn on light",
+        user_text="turn on light",
+        conversation_id="conv-1",
+        turns=[],
+        span_collector=None,
+    )
+
+    assert target_agent == "general-agent"
+    assert speech == "Fallback OK."
+    assert orch._dispatcher.dispatch.await_count == 2
+
+
+@pytest.mark.asyncio
+@patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
+@patch("app.agents.orchestrator.track_agent_timeout", new_callable=AsyncMock)
+async def test_timeout_cascade_double_timeout_returns_canned_speech(_mock_track_timeout, _mock_track, monkeypatch):
+    """Both primary and fallback timeout yield canned timeout speech."""
+    orch = _make_orch_with_registry(
+        [
+            AgentCard(
+                agent_id="light-agent",
+                name="Light",
+                description="",
+                skills=[],
+                timeout_sec=0.001,
+            ),
+            AgentCard(
+                agent_id="general-agent",
+                name="General",
+                description="",
+                skills=[],
+                timeout_sec=0.001,
+            ),
+        ]
+    )
+
+    async def _no_setting(key, default=""):
+        return ""
+
+    monkeypatch.setattr(
+        "app.agents.orchestrator.SettingsRepository.get_value",
+        AsyncMock(side_effect=_no_setting),
+    )
+
+    orch._dispatcher.dispatch = AsyncMock(side_effect=[TimeoutError(), TimeoutError()])
+
+    _target_agent, speech, _result = await orch._dispatch_single(
+        "light-agent",
+        "turn on light",
+        user_text="turn on light",
+        conversation_id="conv-1",
+        turns=[],
+        span_collector=None,
+    )
+
+    assert "couldn't process" in speech.lower() or "time" in speech.lower()
+
+
+@pytest.mark.asyncio
+@patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
+async def test_error_fallback_uses_fallback_agent_timeout(_mock_track, monkeypatch):
+    """Agent error (not timeout) also falls back with per-agent timeout."""
+    orch = _make_orch_with_registry(
+        [
+            AgentCard(
+                agent_id="light-agent",
+                name="Light",
+                description="",
+                skills=[],
+                timeout_sec=5.0,
+            ),
+            AgentCard(
+                agent_id="general-agent",
+                name="General",
+                description="",
+                skills=[],
+                timeout_sec=15.0,
+            ),
+        ]
+    )
+
+    async def _no_setting(key, default=""):
+        return ""
+
+    monkeypatch.setattr(
+        "app.agents.orchestrator.SettingsRepository.get_value",
+        AsyncMock(side_effect=_no_setting),
+    )
+
+    error_response = MagicMock()
+    error_response.error = MagicMock(message="Agent error")
+    error_response.result = None
+
+    ok_response = MagicMock()
+    ok_response.error = None
+    ok_response.result = {"speech": "General answered."}
+
+    orch._dispatcher.dispatch = AsyncMock(side_effect=[error_response, ok_response])
+
+    target_agent, speech, _result = await orch._dispatch_single(
+        "light-agent",
+        "turn on light",
+        user_text="turn on light",
+        conversation_id="conv-1",
+        turns=[],
+        span_collector=None,
+    )
+
+    assert target_agent == "general-agent"
+    assert speech == "General answered."
+    assert orch._dispatcher.dispatch.await_count == 2
+
+
+@pytest.mark.asyncio
+@patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
+@patch("app.agents.orchestrator.track_agent_timeout", new_callable=AsyncMock)
+async def test_dispatcher_timeout_interaction_respects_agent_timeout(_mock_track_timeout, _mock_track, monkeypatch):
+    """Orchestrator's asyncio.wait_for caps dispatcher call at the per-agent timeout."""
+    import asyncio
+
+    orch = _make_orch_with_registry(
+        [
+            AgentCard(
+                agent_id="general-agent",
+                name="General",
+                description="",
+                skills=[],
+                timeout_sec=0.05,
+            ),
+        ]
+    )
+
+    async def _no_setting(key, default=""):
+        return ""
+
+    monkeypatch.setattr(
+        "app.agents.orchestrator.SettingsRepository.get_value",
+        AsyncMock(side_effect=_no_setting),
+    )
+
+    async def _slow_dispatch(*args, **kwargs):
+        await asyncio.sleep(0.2)
+        return MagicMock(error=None, result={"speech": "too late"})
+
+    orch._dispatcher.dispatch = AsyncMock(side_effect=_slow_dispatch)
+
+    _target_agent, speech, _result = await orch._dispatch_single(
+        "general-agent",
+        "search web",
+        user_text="search web",
+        conversation_id="conv-1",
+        turns=[],
+        span_collector=None,
+    )
+
+    # Should have timed out because dispatch took 0.2s but timeout is 0.05s
+    assert "couldn't process" in speech.lower() or "time" in speech.lower()
 
 
 @pytest.mark.asyncio

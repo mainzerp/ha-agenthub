@@ -1,6 +1,7 @@
 import hmac
 import logging
 import secrets
+import threading
 
 from fastapi import HTTPException, Request, WebSocket
 from fastapi.responses import Response
@@ -25,6 +26,7 @@ CSRF_FIELD_NAME = "csrf_token"
 CSRF_MAX_AGE = 86400
 
 _session_serializer: URLSafeTimedSerializer | None = None
+_session_serializer_lock = threading.Lock()
 
 
 def _rooted_url(request: Request, path: str) -> str:
@@ -42,8 +44,10 @@ def _login_url(request: Request) -> str:
 def _get_session_serializer() -> URLSafeTimedSerializer:
     global _session_serializer
     if _session_serializer is None:
-        signing_key = get_session_signing_key().hex()
-        _session_serializer = URLSafeTimedSerializer(signing_key)
+        with _session_serializer_lock:
+            if _session_serializer is None:
+                signing_key = get_session_signing_key().hex()
+                _session_serializer = URLSafeTimedSerializer(signing_key)
     return _session_serializer
 
 

@@ -92,7 +92,7 @@ async def test_match_preview_returns_all_blocks(preview_client):
 
     with (
         patch(
-            "app.agents.action_executor._resolve_light_entity",
+            "app.entity.deterministic_resolver.resolve_entity_deterministic_first",
             new=AsyncMock(return_value=resolver_output),
         ),
         patch(
@@ -160,7 +160,7 @@ async def test_match_preview_surfaces_domain_gate_reject(preview_client):
     }
     with (
         patch(
-            "app.agents.action_executor._resolve_light_entity",
+            "app.entity.deterministic_resolver.resolve_entity_deterministic_first",
             new=AsyncMock(return_value=resolver_output),
         ),
         patch(
@@ -299,7 +299,7 @@ async def test_match_preview_response_exposes_agent_allowed_domains(preview_clie
     }
     with (
         patch(
-            "app.agents.action_executor._resolve_light_entity",
+            "app.entity.deterministic_resolver.resolve_entity_deterministic_first",
             new=AsyncMock(return_value=resolver_output),
         ),
         patch(
@@ -333,7 +333,7 @@ async def test_match_preview_backward_compat_no_filters(preview_client):
     }
     with (
         patch(
-            "app.agents.action_executor._resolve_light_entity",
+            "app.entity.deterministic_resolver.resolve_entity_deterministic_first",
             new=AsyncMock(return_value=resolver_output),
         ),
         patch(
@@ -396,7 +396,7 @@ async def test_match_preview_area_only_climate_agent_returns_visible_sensor(prev
     }
     with (
         patch(
-            "app.agents.action_executor._resolve_light_entity",
+            "app.entity.deterministic_resolver.resolve_entity_deterministic_first",
             new=AsyncMock(return_value=resolver_output),
         ),
         patch(
@@ -574,7 +574,7 @@ async def test_match_preview_diagnostics_unknown_when_no_filters(preview_client)
     }
     with (
         patch(
-            "app.agents.action_executor._resolve_light_entity",
+            "app.entity.deterministic_resolver.resolve_entity_deterministic_first",
             new=AsyncMock(return_value=resolver_output),
         ),
         patch(
@@ -609,7 +609,7 @@ async def test_match_preview_diagnostics_with_hybrid_error(preview_client):
     }
     with (
         patch(
-            "app.agents.action_executor._resolve_light_entity",
+            "app.entity.deterministic_resolver.resolve_entity_deterministic_first",
             new=AsyncMock(return_value=resolver_output),
         ),
         patch(

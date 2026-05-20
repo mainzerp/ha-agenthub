@@ -21,6 +21,23 @@ _ENTITY_ID_RE = re.compile(r"^[a-z0-9_]+\.[a-z0-9_]+$")
 _NON_WORD_LOOKUP_RE = re.compile(r"[^\w\s\.]")
 _WHITESPACE_RE = re.compile(r"\s+")
 
+# Device nouns that may trail a user query (e.g. "Keller light" -> "Keller").
+_TRAILING_DEVICE_NOUNS: frozenset[str] = frozenset(
+    {
+        "bulb",
+        "lamp",
+        "lampe",
+        "lampen",
+        "light",
+        "lights",
+        "licht",
+        "lichter",
+        "schalter",
+        "switch",
+        "switches",
+    }
+)
+
 
 def _supports_method(obj: Any, method_name: str) -> bool:
     """Return True when an object or its mock spec exposes a callable method."""
@@ -42,6 +59,18 @@ def _normalize_lookup_text(text: str) -> str:
     normalized = "".join(ch for ch in normalized if unicodedata.category(ch) != "Mn")
     normalized = _NON_WORD_LOOKUP_RE.sub(" ", normalized)
     return _WHITESPACE_RE.sub(" ", normalized).strip()
+
+
+def _strip_trailing_device_noun(query: str) -> str | None:
+    """Strip a trailing light/switch noun from a query like 'Keller light'."""
+    normalized_query = _normalize_lookup_text(query)
+    parts = normalized_query.split()
+    if len(parts) <= 1:
+        return None
+    if parts[-1] not in _TRAILING_DEVICE_NOUNS:
+        return None
+    stripped = " ".join(parts[:-1]).strip()
+    return stripped or None
 
 
 async def _list_index_entries(
@@ -136,6 +165,7 @@ def _select_deterministic_candidate(
     entity_query: str,
     *,
     preferred_area_id: str | None = None,
+    preferred_domain: str | None = None,
 ) -> tuple[Any | None, str | None]:
     """Select a single deterministic candidate or return an ambiguity message."""
     if not entries:
@@ -147,6 +177,11 @@ def _select_deterministic_candidate(
             return area_filtered[0], None
         if len(area_filtered) > 1:
             entries = area_filtered
+
+    if preferred_domain:
+        domain_entries = [entry for entry in entries if getattr(entry, "domain", None) == preferred_domain]
+        if len(domain_entries) == 1:
+            return domain_entries[0], None
 
     if len(entries) == 1:
         return entries[0], None
@@ -203,8 +238,20 @@ async def resolve_entity_deterministic_first(
     verbatim_terms: list[str] | None = None,
     preferred_domains: tuple[str, ...] | None = None,
     enable_exact_alias: bool = True,
+    enable_strip_device_noun: bool = False,
+    enable_area_fallback: bool = False,
+    preferred_domain: str | None = None,
 ) -> dict[str, Any]:
-    """Resolve an entity through deterministic stages before hybrid matching."""
+    """Resolve an entity through deterministic stages before hybrid matching.
+
+    Optional extensions (used by the light executor):
+      * ``enable_strip_device_noun`` strips trailing nouns like "light" /
+        "switch" and retries an exact friendly_name match.
+      * ``enable_area_fallback`` matches the query against entity ``area``
+        names when no friendly_name matched.
+      * ``preferred_domain`` biases ``_select_deterministic_candidate``
+        toward a single entry of that domain (e.g. ``"light"``).
+    """
     ordered_terms = _build_exact_terms(entity_query, verbatim_terms)
     metadata: dict[str, Any] = {
         "query": entity_query,
@@ -260,6 +307,7 @@ async def resolve_entity_deterministic_first(
             exact_name_matches,
             entity_query,
             preferred_area_id=preferred_area_id,
+            preferred_domain=preferred_domain,
         )
         if candidate:
             metadata.update(
@@ -296,6 +344,7 @@ async def resolve_entity_deterministic_first(
                 alias_matches,
                 entity_query,
                 preferred_area_id=preferred_area_id,
+                preferred_domain=preferred_domain,
             )
             if candidate:
                 metadata.update(
@@ -321,6 +370,105 @@ async def resolve_entity_deterministic_first(
                     "resolution_path": "exact_alias_ambiguous",
                     "speech": ambiguity,
                 }
+
+    # ------------------------------------------------------------------
+    # Extra deterministic fallbacks (extracted from action_executor)
+    # ------------------------------------------------------------------
+    if visible_entries and normalized_terms and enable_strip_device_noun:
+        stripped_query = _strip_trailing_device_noun(entity_query)
+        if stripped_query and stripped_query != _normalize_lookup_text(entity_query):
+            stripped_matches = [
+                entry
+                for entry in visible_entries
+                if _normalize_lookup_text(entry.friendly_name or "") == stripped_query
+            ]
+            candidate, ambiguity = _select_deterministic_candidate(
+                stripped_matches,
+                entity_query,
+                preferred_area_id=preferred_area_id,
+                preferred_domain=preferred_domain,
+            )
+            if candidate:
+                metadata.update(
+                    {
+                        "match_count": 1,
+                        "resolution_path": "friendly_name_without_device_noun",
+                        "normalized_query_without_device_noun": stripped_query,
+                        "top_entity_id": candidate.entity_id,
+                        "top_friendly_name": candidate.friendly_name or candidate.entity_id,
+                    }
+                )
+                return _with_visible_entries(
+                    _build_resolution_result(
+                        entity_query=entity_query,
+                        metadata=metadata,
+                        entity_id=candidate.entity_id,
+                        friendly_name=candidate.friendly_name or candidate.entity_id,
+                    ),
+                    visible_entries,
+                )
+            if ambiguity:
+                metadata.update(
+                    {
+                        "match_count": len(stripped_matches),
+                        "resolution_path": "friendly_name_without_device_noun_ambiguous",
+                        "normalized_query_without_device_noun": stripped_query,
+                    }
+                )
+                ambiguous_result = {
+                    "match_count": len(stripped_matches),
+                    "resolution_path": "friendly_name_without_device_noun_ambiguous",
+                    "speech": ambiguity,
+                }
+
+    if visible_entries and normalized_terms and enable_area_fallback:
+        area_queries = set(normalized_terms)
+        stripped_query = _strip_trailing_device_noun(entity_query)
+        if stripped_query:
+            area_queries.add(stripped_query)
+        domain_set = allowed_domains if allowed_domains is not None else frozenset()
+        area_matches = [
+            entry
+            for entry in visible_entries
+            if (not domain_set or getattr(entry, "domain", "") in domain_set)
+            and _normalize_lookup_text(entry.area or "") in area_queries
+        ]
+        candidate, ambiguity = _select_deterministic_candidate(
+            area_matches,
+            entity_query,
+            preferred_area_id=preferred_area_id,
+            preferred_domain=preferred_domain,
+        )
+        if candidate:
+            metadata.update(
+                {
+                    "match_count": 1,
+                    "resolution_path": "exact_area",
+                    "top_entity_id": candidate.entity_id,
+                    "top_friendly_name": candidate.friendly_name or candidate.entity_id,
+                }
+            )
+            return _with_visible_entries(
+                _build_resolution_result(
+                    entity_query=entity_query,
+                    metadata=metadata,
+                    entity_id=candidate.entity_id,
+                    friendly_name=candidate.friendly_name or candidate.entity_id,
+                ),
+                visible_entries,
+            )
+        if ambiguity:
+            metadata.update(
+                {
+                    "match_count": len(area_matches),
+                    "resolution_path": "exact_area_ambiguous",
+                }
+            )
+            ambiguous_result = {
+                "match_count": len(area_matches),
+                "resolution_path": "exact_area_ambiguous",
+                "speech": ambiguity,
+            }
 
     if entity_matcher:
         matches = await entity_matcher.match(

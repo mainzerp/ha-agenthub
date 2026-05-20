@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from app.agents.action_executor import (
+from app.entity.deterministic_resolver import (
     _select_deterministic_candidate,
     rerank_matches_by_area,
 )

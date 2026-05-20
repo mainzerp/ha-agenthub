@@ -167,6 +167,37 @@ class TestCsrfDashboardLogin:
             assert resp.status_code == 200
             assert "Invalid credentials" in resp.text
 
+    async def test_login_success_sets_session_cookie_attributes(self, dashboard_client):
+        """Successful login must set session cookie with expected security attributes."""
+        from app.middleware.rate_limit import reset_rate_limit_store
+        from app.security.auth import SESSION_COOKIE_NAME
+
+        reset_rate_limit_store()
+        await dashboard_client.get("/dashboard/login")
+        token = dashboard_client.cookies.get("agent_assist_csrf")
+        assert token
+        with patch(
+            "app.dashboard.routes.authenticate_admin",
+            new_callable=AsyncMock,
+            return_value={"username": "admin"},
+        ):
+            resp = await dashboard_client.post(
+                "/dashboard/login",
+                data={
+                    "username": "admin",
+                    "password": "correct",
+                    "csrf_token": token,
+                },
+            )
+            assert resp.status_code == 303
+            set_cookie = resp.headers.get("set-cookie", "")
+            assert SESSION_COOKIE_NAME in set_cookie
+            assert "HttpOnly" in set_cookie
+            assert "Path=/" in set_cookie
+            assert "samesite=lax" in set_cookie.lower()
+            # In test settings cookie_secure is False (conftest.py)
+            assert "Secure" not in set_cookie
+
 
 class TestCsrfTokenRotation:
     def test_ensure_csrf_token_returns_existing_when_session_present(self):

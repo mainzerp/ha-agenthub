@@ -199,10 +199,10 @@ async def save_llm_keys(
 )
 async def complete_setup(request: Request):
     """Step 5: Mark setup complete and trigger post-setup initialization."""
-    await SetupStateRepository.set_step_completed("review_complete")
     logger.info("Setup wizard completed, triggering post-setup initialization")
     try:
         await ensure_setup_runtime_initialized(request.app)
+        await SetupStateRepository.set_step_completed("review_complete")
     except Exception:
         logger.warning("Post-setup runtime initialization failed", exc_info=True)
     return RedirectResponse(url="/dashboard/", status_code=303)

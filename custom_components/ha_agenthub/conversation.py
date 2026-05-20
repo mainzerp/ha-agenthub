@@ -680,6 +680,14 @@ class HaAgentHubConversationEntity(
                 )
                 return
 
+            # Prime Directive 1 exception (tolerated):
+            # This assist_satellite.announce call runs after the filler-first
+            # pipeline has completed and the satellite has returned to idle.
+            # It is part of the HA Assist lifecycle: the primary response was
+            # already streamed via the pipeline, and this push delivers the
+            # final text to a satellite that is no longer actively listening.
+            # The background-task stability is ensured by the observed_idle
+            # gate and aborted_new_turn checks above.
             try:
                 logger.info(
                     "ha-agenthub: post-filler push dispatching announce key=%s sat=%s final_chars=%d",
