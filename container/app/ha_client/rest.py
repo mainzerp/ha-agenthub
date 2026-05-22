@@ -230,7 +230,7 @@ class HARestClient:
         service_data: dict[str, Any] | None = None,
         *,
         return_response: bool = False,
-    ) -> dict[str, Any]:
+    ) -> dict[str, Any] | None:
         """POST /api/services/<domain>/<service>."""
         context = _ha_service_call_context.get()
         if context is None:
@@ -250,9 +250,40 @@ class HARestClient:
         url = f"/api/services/{domain}/{service}"
         if return_response:
             url += "?return_response"
-        resp = await self._client.post(url, json=payload)
-        resp.raise_for_status()
-        return resp.json()
+
+        original_exc: Exception | None = None
+        try:
+            resp = await self._client.post(url, json=payload)
+            resp.raise_for_status()
+            return resp.json()
+        except httpx.HTTPStatusError as exc:
+            should_fallback = exc.response.status_code == 500 or return_response
+            if not should_fallback:
+                raise
+            original_exc = exc
+        except Exception as exc:
+            if not return_response:
+                raise
+            original_exc = exc
+
+        ws = self._state_observer
+        if ws is not None and ws.is_connected():
+            logger.info("Falling back to WebSocket for service call %s/%s ...", domain, service)
+            ws_result = await ws.call_service(
+                domain,
+                service,
+                entity_id=entity_id,
+                service_data=service_data,
+                return_response=return_response,
+            )
+            if ws_result is not None:
+                logger.debug("WebSocket fallback succeeded for %s/%s", domain, service)
+                return ws_result
+            logger.warning("WebSocket fallback returned None for %s/%s", domain, service)
+        else:
+            logger.debug("WebSocket fallback unavailable for %s/%s", domain, service)
+
+        raise original_exc
 
     async def get_config(self) -> dict[str, Any]:
         """GET /api/config -- returns HA core configuration."""
