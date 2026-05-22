@@ -208,6 +208,104 @@ class TestHARestClient:
         assert client._client is not None
         await client.close()
 
+    async def test_call_service_fallback_to_websocket_on_500(self):
+        client = HARestClient()
+        client._base_url = "http://ha.local"
+        client._client = httpx.AsyncClient(base_url="http://ha.local", headers={})
+        req = httpx.Request("POST", "http://ha.local/api/services/weather/get_forecasts")
+        client._client.post = AsyncMock(return_value=httpx.Response(500, text="error", request=req))
+
+        ws_mock = MagicMock()
+        ws_mock.is_connected.return_value = True
+        ws_mock.call_service = AsyncMock(return_value={"weather.home": {"forecast": []}})
+        client._state_observer = ws_mock
+
+        result = await client.call_service("weather", "get_forecasts", entity_id="weather.home", return_response=True)
+        assert result == {"weather.home": {"forecast": []}}
+        ws_mock.call_service.assert_awaited_once_with(
+            "weather",
+            "get_forecasts",
+            entity_id="weather.home",
+            service_data=None,
+            return_response=True,
+        )
+        await client.close()
+
+    async def test_call_service_fallback_when_return_response_true_and_rest_connect_error(self):
+        client = HARestClient()
+        client._base_url = "http://ha.local"
+        client._client = httpx.AsyncClient(base_url="http://ha.local", headers={})
+        client._client.post = AsyncMock(side_effect=httpx.ConnectError("connection refused"))
+
+        ws_mock = MagicMock()
+        ws_mock.is_connected.return_value = True
+        ws_mock.call_service = AsyncMock(return_value={"result": "ok"})
+        client._state_observer = ws_mock
+
+        result = await client.call_service("calendar", "get_events", return_response=True)
+        assert result == {"result": "ok"}
+        await client.close()
+
+    async def test_call_service_raises_original_error_when_websocket_unavailable(self):
+        client = HARestClient()
+        client._base_url = "http://ha.local"
+        client._client = httpx.AsyncClient(base_url="http://ha.local", headers={})
+        req = httpx.Request("POST", "http://ha.local/api/services/light/turn_on")
+        client._client.post = AsyncMock(return_value=httpx.Response(500, text="error", request=req))
+        client._state_observer = None
+
+        with pytest.raises(httpx.HTTPStatusError):
+            await client.call_service("light", "turn_on", entity_id="light.kitchen")
+        await client.close()
+
+    async def test_call_service_raises_original_error_when_websocket_fallback_returns_none(self):
+        client = HARestClient()
+        client._base_url = "http://ha.local"
+        client._client = httpx.AsyncClient(base_url="http://ha.local", headers={})
+        req = httpx.Request("POST", "http://ha.local/api/services/light/turn_on")
+        client._client.post = AsyncMock(return_value=httpx.Response(500, text="error", request=req))
+
+        ws_mock = MagicMock()
+        ws_mock.is_connected.return_value = True
+        ws_mock.call_service = AsyncMock(return_value=None)
+        client._state_observer = ws_mock
+
+        with pytest.raises(httpx.HTTPStatusError):
+            await client.call_service("light", "turn_on", entity_id="light.kitchen")
+        await client.close()
+
+    async def test_call_service_does_not_fallback_on_non_500_without_return_response(self):
+        client = HARestClient()
+        client._base_url = "http://ha.local"
+        client._client = httpx.AsyncClient(base_url="http://ha.local", headers={})
+        req = httpx.Request("POST", "http://ha.local/api/services/light/turn_on")
+        client._client.post = AsyncMock(return_value=httpx.Response(404, text="not found", request=req))
+
+        ws_mock = MagicMock()
+        ws_mock.is_connected.return_value = True
+        client._state_observer = ws_mock
+
+        with pytest.raises(httpx.HTTPStatusError):
+            await client.call_service("light", "turn_on", entity_id="light.kitchen")
+        ws_mock.call_service.assert_not_called()
+        await client.close()
+
+    async def test_call_service_uses_rest_on_success_no_websocket_call(self):
+        client = HARestClient()
+        client._base_url = "http://ha.local"
+        client._client = httpx.AsyncClient(base_url="http://ha.local", headers={})
+        req = httpx.Request("POST", "http://ha.local/api/services/light/turn_on")
+        client._client.post = AsyncMock(return_value=httpx.Response(200, json={"result": "rest"}, request=req))
+
+        ws_mock = MagicMock()
+        ws_mock.is_connected.return_value = True
+        client._state_observer = ws_mock
+
+        result = await client.call_service("light", "turn_on", entity_id="light.kitchen")
+        assert result == {"result": "rest"}
+        ws_mock.call_service.assert_not_called()
+        await client.close()
+
     @patch("app.ha_client.rest.get_auth_headers", new_callable=AsyncMock)
     @patch("app.ha_client.rest.SettingsRepository")
     async def test_close_nulls_client_and_refresh_is_noop(self, mock_settings, mock_auth):
@@ -661,6 +759,78 @@ class TestHAWebSocketClient:
         ]
         assert len(pause_calls) == 1, f"expected one pause sleep, got {pause_calls}"
         assert connect_calls >= ws_module.MAX_RECONNECT_ATTEMPTS
+
+
+class TestHAWebSocketCallService:
+    async def test_call_service_returns_response_on_success(self):
+        ws = HAWebSocketClient()
+        ws._ws = MagicMock()
+        ws._ws.closed = False
+        ws._running = True
+
+        with patch.object(
+            ws,
+            "send_command",
+            new=AsyncMock(return_value={"context": {}, "response": {"weather.home": {"forecast": []}}}),
+        ):
+            result = await ws.call_service("weather", "get_forecasts", entity_id="weather.home")
+
+        assert result == {"weather.home": {"forecast": []}}
+
+    async def test_call_service_returns_none_when_not_connected(self):
+        ws = HAWebSocketClient()
+        ws._ws = None
+        result = await ws.call_service("light", "turn_on", entity_id="light.kitchen")
+        assert result is None
+
+    async def test_call_service_returns_none_on_timeout(self):
+        ws = HAWebSocketClient()
+        ws._ws = MagicMock()
+        ws._ws.closed = False
+        ws._running = True
+
+        with patch.object(ws, "send_command", new=AsyncMock(return_value=None)):
+            result = await ws.call_service("light", "turn_on", entity_id="light.kitchen")
+
+        assert result is None
+
+    async def test_call_service_builds_correct_payload(self):
+        ws = HAWebSocketClient()
+        ws._ws = MagicMock()
+        ws._ws.closed = False
+        ws._running = True
+
+        mock_send = AsyncMock(return_value={"context": {}, "response": {}})
+        with patch.object(ws, "send_command", new=mock_send):
+            await ws.call_service(
+                "weather",
+                "get_forecasts",
+                entity_id="weather.home",
+                service_data={"type": "daily"},
+                return_response=True,
+            )
+
+        mock_send.assert_awaited_once()
+        call_kwargs = mock_send.call_args.kwargs
+        assert call_kwargs["domain"] == "weather"
+        assert call_kwargs["service"] == "get_forecasts"
+        assert call_kwargs["service_data"] == {"type": "daily"}
+        assert call_kwargs["target"] == {"entity_id": "weather.home"}
+        assert call_kwargs["return_response"] is True
+
+    async def test_call_service_without_entity_id_omits_target(self):
+        ws = HAWebSocketClient()
+        ws._ws = MagicMock()
+        ws._ws.closed = False
+        ws._running = True
+
+        mock_send = AsyncMock(return_value={"context": {}, "response": {}})
+        with patch.object(ws, "send_command", new=mock_send):
+            await ws.call_service("homeassistant", "restart")
+
+        mock_send.assert_awaited_once()
+        call_kwargs = mock_send.call_args.kwargs
+        assert "target" not in call_kwargs
 
 
 # ---------------------------------------------------------------------------

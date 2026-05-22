@@ -1,12 +1,21 @@
 # Version
 
-**Current Version:** 1.23.1
+**Current Version:** 1.24.0
 
 ## Recent Changes
 
-Track changes since `v1.23.1` here.
+Track changes since `v1.24.0` here.
 
 ## Version History
+
+### 1.24.0 (MINOR) -- WebSocket fallback for HA service calls
+
+- feat(ha): add `HAWebSocketClient.call_service()` method for executing HA service calls via WebSocket API
+- feat(ha): implement transparent WebSocket fallback in `HARestClient.call_service()` when REST API returns HTTP 500 or when `return_response=True` is requested
+- fix(climate): resolve weather forecast failures caused by HA 2026.5.2 REST API service call bug by routing `weather.get_forecasts` through WebSocket fallback
+- test(ha): add 5 WebSocket `call_service` tests (`TestHAWebSocketCallService`)
+- test(ha): add 6 REST fallback tests covering 500 errors, `return_response=True`, WS unavailable, and no-fallback paths
+- test(climate): add executor integration test verifying WS response shape handling for weather forecasts
 
 ### 1.23.1 (PATCH) -- CI pip-audit fix
 

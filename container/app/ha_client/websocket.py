@@ -357,6 +357,37 @@ class HAWebSocketClient:
         self._logger.info("Fetched %d hidden/disabled entities via WebSocket", len(hidden))
         return hidden
 
+    async def call_service(
+        self,
+        domain: str,
+        service: str,
+        entity_id: str | None = None,
+        service_data: dict[str, Any] | None = None,
+        *,
+        return_response: bool = False,
+    ) -> dict[str, Any] | None:
+        """Call a Home Assistant service via WebSocket.
+
+        Returns the response dict on success, or ``None`` if the call could not
+        be sent, timed out, or returned an error result.
+        """
+        if not self.is_connected():
+            return None
+        payload = {
+            "domain": domain,
+            "service": service,
+            "service_data": service_data or {},
+            "return_response": return_response,
+        }
+        if entity_id:
+            payload["target"] = {"entity_id": entity_id}
+        self._logger.debug("call_service: sending %s.%s for %s", domain, service, entity_id)
+        result_data = await self.send_command("call_service", **payload)
+        self._logger.debug("call_service: result for %s.%s = %s", domain, service, result_data)
+        if not isinstance(result_data, dict):
+            return None
+        return result_data.get("response", result_data)
+
     def on_event(self, event_type: str, callback: Callable) -> None:
         if event_type not in self._listeners:
             self._listeners[event_type] = []

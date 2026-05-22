@@ -539,6 +539,34 @@ class TestClimateExecutorQueries:
         assert result["success"]
         assert "rainy" in result["speech"]
 
+    async def test_query_weather_forecast_success_with_websocket_response_shape(self):
+        ha = AsyncMock()
+        ha.call_service = AsyncMock(
+            return_value={
+                "weather.home": {
+                    "forecast": [
+                        {"datetime": "2025-01-16T00:00:00", "condition": "rainy", "temperature": 14, "templow": 5},
+                    ],
+                },
+            }
+        )
+        ha.get_states = AsyncMock(
+            return_value=[
+                {"entity_id": "weather.home", "state": "sunny", "attributes": {"friendly_name": "Home"}},
+            ]
+        )
+        matcher = AsyncMock()
+        matcher.match = AsyncMock(return_value=[MagicMock(entity_id="weather.home", friendly_name="Home")])
+        result = await execute_climate_action(
+            {"action": "query_weather_forecast", "entity": "home"},
+            ha,
+            None,
+            matcher,
+            agent_id="climate-agent",
+        )
+        assert result["success"]
+        assert "rainy" in result["speech"]
+
 
 class TestAutomationExecutorQueries:
     async def test_query_automation_state(self):
