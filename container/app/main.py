@@ -105,7 +105,7 @@ async def _periodic_entity_sync(app: FastAPI) -> None:
             raw = await SettingsRepository.get_value(
                 "entity_sync.interval_minutes", str(_ENTITY_SYNC_DEFAULT_INTERVAL_MIN)
             )
-            interval_minutes = int(raw)
+            interval_minutes = int(raw or str(_ENTITY_SYNC_DEFAULT_INTERVAL_MIN))
         except (TypeError, ValueError):
             interval_minutes = _ENTITY_SYNC_DEFAULT_INTERVAL_MIN
 

@@ -24,7 +24,7 @@ async def _safe_generic_exception_handler(request: Request, exc: Exception) -> J
 
 
 def apply_auth_dependencies(app: FastAPI) -> None:
-    app.add_exception_handler(HTTPException, _safe_http_exception_handler)
+    app.add_exception_handler(Exception, _safe_http_exception_handler)  # type: ignore[arg-type]
     app.add_exception_handler(Exception, _safe_generic_exception_handler)
 
 

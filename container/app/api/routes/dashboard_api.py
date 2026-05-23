@@ -210,7 +210,7 @@ async def get_overview(request: Request) -> dict[str, Any]:
         logger.debug("Failed to query recent requests", exc_info=True)
 
     # Compute cache hit rate from analytics DB (cache tier stats don't track hits/queries)
-    cache_hit_rate = 0
+    cache_hit_rate = 0.0
     try:
         cache_events = await AnalyticsRepository.query_by_range(
             event_type="cache",
@@ -516,7 +516,7 @@ async def get_extended_health(request: Request) -> dict[str, Any]:
     mcp_registry = request.app.state.mcp_registry
     startup_time = getattr(request.app.state, "startup_time", None)
 
-    components = {}
+    components: dict[str, Any] = {}
 
     # HA connection
     try:
@@ -598,7 +598,7 @@ async def get_rewrite_config() -> dict[str, Any]:
     temperature = await SettingsRepository.get_value("rewrite.temperature", "0.7")
     return {
         "model": model or "",
-        "temperature": float(temperature),
+        "temperature": float(temperature or "0.7"),
     }
 
 
@@ -636,9 +636,9 @@ async def get_personality_config() -> dict[str, Any]:
     filler_threshold_ms = await SettingsRepository.get_value("filler.threshold_ms", "1000")
     return {
         "prompt": prompt,
-        "mediation_temperature": float(temperature),
-        "filler_enabled": filler_enabled == "true",
-        "filler_threshold_ms": int(filler_threshold_ms),
+        "mediation_temperature": float(temperature or "0.3"),
+        "filler_enabled": (filler_enabled or "false") == "true",
+        "filler_threshold_ms": int(filler_threshold_ms or "1000"),
     }
 
 
@@ -693,7 +693,7 @@ class ChatRequest(BaseModel):
 async def admin_chat(request: Request, payload: ChatRequest) -> dict[str, Any]:
     """Bridge: session-auth chat -> internal conversation pipeline."""
     if _dispatcher is None:
-        return JSONResponse(status_code=503, content={"detail": "Dispatcher not ready"})
+        return JSONResponse(status_code=503, content={"detail": "Dispatcher not ready"})  # type: ignore[return-value]
 
     # FLOW-MED-9: source is now set by TracingMiddleware from the
     # route path (``/api/admin/chat`` -> ``"chat"``).

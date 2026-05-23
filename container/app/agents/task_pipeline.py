@@ -61,15 +61,15 @@ class TaskPipeline:
         action_replay = None
         routing_skip = None
 
-        if not skip_lookup and self._cache_manager:
-            if await self._get_bool_setting("cache.compound_utterance_bypass", True) and looks_compound(user_text):
+        if not skip_lookup and self._cache_manager:  # type: ignore[attr-defined]
+            if await self._get_bool_setting("cache.compound_utterance_bypass", True) and looks_compound(user_text):  # type: ignore[attr-defined]
                 compound_bypass = True
                 import logging
 
                 logger = logging.getLogger(__name__)
                 logger.debug("Skipping cache lookup for structurally compound utterance: %r", user_text[:80])
             else:
-                action_replay, routing_skip = await self._try_cache_replay(
+                action_replay, routing_skip = await self._try_cache_replay(  # type: ignore[attr-defined]
                     task=task,
                     user_text=user_text,
                     language=language,
@@ -89,7 +89,7 @@ class TaskPipeline:
         language: str,
         span_collector,
         *,
-        pre_classified: tuple[list[tuple[str, str, float]], bool] | None = None,
+        pre_classified: tuple[list[tuple[str, str, float | None]], bool] | None = None,
         routing_skip: Any | None = None,
         compound_bypass: bool = False,
         extended_metadata: bool = False,
@@ -113,7 +113,7 @@ class TaskPipeline:
             next_classify_extra["compound_bypass"] = True
             next_classify_extra["compound_bypass_reason"] = "multi_sentence"
         if routing_skip is not None:
-            pre_classified = (self._build_synthetic_classifications(routing_skip), True)
+            pre_classified = (self._build_synthetic_classifications(routing_skip), True)  # type: ignore[attr-defined]
             synthetic_preclassified = True
             next_classify_extra["reason"] = "routing_cache_skip"
         if classify_reason:
@@ -124,7 +124,7 @@ class TaskPipeline:
             target_agent, condensed_task, confidence = classifications[0]
             if synthetic_preclassified:
                 async with _optional_span(span_collector, "classify", agent_id="orchestrator") as span:
-                    self._pipeline_record_classify_span(
+                    self._pipeline_record_classify_span(  # type: ignore[attr-defined]
                         span,
                         classifications,
                         user_text,
@@ -137,7 +137,7 @@ class TaskPipeline:
         else:
             try:
                 async with _optional_span(span_collector, "classify", agent_id="orchestrator") as span:
-                    classifications, routing_cached = await self._classify(
+                    classifications, routing_cached = await self._classify(  # type: ignore[attr-defined]
                         user_text,
                         cache_result=None,
                         conversation_id=task.conversation_id,
@@ -146,7 +146,7 @@ class TaskPipeline:
                         allow_cache_lookup=allow_classify_cache_lookup,
                     )
                     target_agent, condensed_task, confidence = classifications[0]
-                    self._pipeline_record_classify_span(
+                    self._pipeline_record_classify_span(  # type: ignore[attr-defined]
                         span,
                         classifications,
                         user_text,
@@ -196,7 +196,7 @@ class TaskPipeline:
         directive_reason = None
 
         if is_sequential_send:
-            routed_to, speech, result = await self._handle_sequential_send(
+            routed_to, speech, result = await self._handle_sequential_send(  # type: ignore[attr-defined]
                 classifications,
                 user_text,
                 conversation_id,
@@ -224,7 +224,7 @@ class TaskPipeline:
         if len(classifications) == 1:
             target_agent = classifications[0][0]
             condensed_task = classifications[0][1]
-            agent_id, speech, result = await self._dispatch_single(
+            agent_id, speech, result = await self._dispatch_single(  # type: ignore[attr-defined]
                 target_agent,
                 condensed_task,
                 user_text,
@@ -258,7 +258,7 @@ class TaskPipeline:
         import asyncio
 
         dispatch_coros = [
-            self._dispatch_single(
+            self._dispatch_single(  # type: ignore[attr-defined]
                 aid,
                 ctask,
                 user_text,
@@ -281,7 +281,7 @@ class TaskPipeline:
                 logger.warning("Multi-agent dispatch error for %s: %s", agent_id_for_idx, dr)
                 failed_agents.append((agent_id_for_idx, str(dr)))
                 continue
-            aid, sp, res = dr
+            aid, sp, res = dr  # type: ignore[misc]
             res_dict = res or {}
             res_error = res_dict.get("error") if isinstance(res_dict, dict) else None
             if (
@@ -372,9 +372,9 @@ class TaskPipeline:
                 else:
                     # Fetch calendar reminder before merge so the LLM can weave it in naturally
                     reminder_text = None
-                    if self._calendar_injector is not None and not has_error:
+                    if self._calendar_injector is not None and not has_error:  # type: ignore[attr-defined]
                         try:
-                            reminder_text = await self._calendar_injector.inject_reminders(
+                            reminder_text = await self._calendar_injector.inject_reminders(  # type: ignore[attr-defined]
                                 utterance=task.description if task else None,
                                 device_id=task.context.device_id if task.context else None,
                                 area_id=task.context.area_id if task.context else None,
@@ -387,7 +387,7 @@ class TaskPipeline:
                             logger = logging.getLogger(__name__)
                             logger.debug("Calendar reminder injection failed", exc_info=True)
 
-                    speech = await self._merge_responses(
+                    speech = await self._merge_responses(  # type: ignore[attr-defined]
                         agent_responses, user_text, span_collector=span_collector, reminder_text=reminder_text
                     )
                     if failed_agents:
@@ -395,7 +395,7 @@ class TaskPipeline:
                         speech += f"\n\n(Note: {failed_names} could not be reached.)"
 
                 ret_span["metadata"]["agent_response"] = speech
-                speech, voice_followup_effective = await self._merge_voice_followup_and_organic(
+                speech, voice_followup_effective = await self._merge_voice_followup_and_organic(  # type: ignore[attr-defined]
                     speech,
                     agent_requested=agent_voice_followup,
                     ctx=task.context if task else None,
@@ -408,9 +408,9 @@ class TaskPipeline:
                 ret_span["metadata"]["voice_followup"] = voice_followup_effective
                 ret_span["metadata"]["cache_stored_response"] = False
                 ret_span["metadata"]["cache_stored_routing"] = False
-                await self._store_turn(conversation_id, user_text, speech, agent_id=routed_to)
+                await self._store_turn(conversation_id, user_text, speech, agent_id=routed_to)  # type: ignore[attr-defined]
                 if span_collector:
-                    await self._create_trace(
+                    await self._create_trace(  # type: ignore[attr-defined]
                         span_collector,
                         conversation_id,
                         user_text,
@@ -425,7 +425,7 @@ class TaskPipeline:
                     )
         else:
             mediation_agent = "send-agent" if is_sequential_send else target_agent
-            speech, voice_followup_effective = await self._finalize_single_agent_response(
+            speech, voice_followup_effective = await self._finalize_single_agent_response(  # type: ignore[attr-defined]
                 task=task,
                 user_text=user_text,
                 target_agent=target_agent,

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 from app.agents.base import BaseAgent
 from app.agents.tool_calling import call_llm_with_mcp_tools, mcp_tools_to_openai_format
@@ -68,7 +69,7 @@ class GeneralAgent(BaseAgent):
         messages.append({"role": "user", "content": self._wrap_user_input(task.description)})
 
         # Check for available MCP tools
-        llm_kwargs = {}
+        llm_kwargs: dict[str, Any] = {}
         if task.context and task.context.sequential_send:
             llm_kwargs["max_tokens"] = 2048
         tools = await self._get_mcp_tools()

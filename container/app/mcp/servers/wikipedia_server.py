@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import logging
 
-import wikipedia
+import wikipedia  # type: ignore[import-untyped]
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool

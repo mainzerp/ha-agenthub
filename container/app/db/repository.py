@@ -234,6 +234,7 @@ class SetupStateRepository:
         async with get_db_read() as db:
             cursor = await db.execute("SELECT COUNT(*) FROM setup_state WHERE completed = 0")
             row = await cursor.fetchone()
+            assert row is not None
             return row[0] == 0
 
     @staticmethod
@@ -1093,7 +1094,7 @@ class ConversationRepository:
                 "VALUES (?, ?, ?, ?, ?, ?, ?)",
                 (conversation_id, user_text, agent_id, response_text, action_executed, cache_hit, latency_ms),
             )
-            return cursor.lastrowid
+            return cursor.lastrowid or 0
 
     @staticmethod
     async def list_recent(limit: int = 50) -> list[dict[str, Any]]:
@@ -1179,6 +1180,7 @@ class ConversationRepository:
                 params,
             )
             row = await cursor.fetchone()
+            assert row is not None
             return row[0]
 
 
@@ -1283,7 +1285,7 @@ class TraceSpanRepository:
                     json.dumps(metadata) if metadata else None,
                 ),
             )
-            return cursor.lastrowid
+            return cursor.lastrowid or 0
 
     @staticmethod
     async def insert_batch(spans: list[dict[str, Any]]) -> None:
@@ -1342,6 +1344,7 @@ class TraceSpanRepository:
         async with get_db_read() as db:
             cursor = await db.execute("SELECT COUNT(DISTINCT trace_id) FROM trace_spans")
             row = await cursor.fetchone()
+            assert row is not None
             return row[0]
 
     @staticmethod
@@ -1483,6 +1486,7 @@ class TraceSummaryRepository:
                 params,
             )
             row = await cursor.fetchone()
+            assert row is not None
             return row[0]
 
     @staticmethod
@@ -1660,7 +1664,7 @@ class SendDeviceMappingRepository:
                 "VALUES (?, ?, ?, ?, ?)",
                 (display_name.strip(), device_type, ha_service_target, person_entity_id, _now()),
             )
-            return cursor.lastrowid
+            return cursor.lastrowid or 0
 
     @staticmethod
     async def update(mapping_id: int, **kwargs: Any) -> bool:
@@ -1786,7 +1790,7 @@ class CalendarUserMappingRepository:
                     _now(),
                 ),
             )
-            return cursor.lastrowid
+            return cursor.lastrowid or 0
 
     @staticmethod
     async def update(mapping_id: int, **kwargs: Any) -> bool:
@@ -1946,7 +1950,7 @@ class CalendarReminderStateRepository:
 
 def _phonetic_key(name: str) -> str | None:
     try:
-        from pyphonetics import Metaphone
+        from pyphonetics import Metaphone  # type: ignore[import-untyped]
 
         meta = Metaphone()
         return meta.phonetics(name.strip())

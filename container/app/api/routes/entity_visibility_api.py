@@ -110,7 +110,7 @@ async def list_all_entities(request: Request) -> dict[str, Any]:
             areas.append(
                 {
                     "name": area_name,
-                    "entities": sorted(entities, key=lambda e: e["entity_id"]),
+                    "entities": sorted(entities, key=lambda e: e["entity_id"]),  # type: ignore[index]
                 }
             )
         domains.append({"name": domain_name, "areas": areas})

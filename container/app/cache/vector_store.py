@@ -54,7 +54,7 @@ class VectorStore:
         for name in (COLLECTION_ENTITY_INDEX, COLLECTION_ROUTING_CACHE, COLLECTION_ACTION_CACHE):
             self._collections[name] = self._client.get_or_create_collection(
                 name=name,
-                embedding_function=self._embedding_fn,
+                embedding_function=self._embedding_fn,  # type: ignore[arg-type]
                 metadata={"hnsw:space": "cosine"},
             )
         self._delete_legacy_response_collection()
@@ -81,6 +81,8 @@ class VectorStore:
 
     async def _is_alive(self) -> bool:
         """Check if the ChromaDB client is still responsive."""
+        if self._client is None:
+            return False
         try:
             await asyncio.to_thread(self._client.heartbeat)
             return True
@@ -107,7 +109,7 @@ class VectorStore:
             for name in (COLLECTION_ENTITY_INDEX, COLLECTION_ROUTING_CACHE, COLLECTION_ACTION_CACHE):
                 self._collections[name] = self._client.get_or_create_collection(
                     name=name,
-                    embedding_function=self._embedding_fn,
+                    embedding_function=self._embedding_fn,  # type: ignore[arg-type]
                     metadata={"hnsw:space": "cosine"},
                 )
             self._delete_legacy_response_collection()
@@ -156,7 +158,7 @@ class VectorStore:
         # Re-create empty so subsequent get_collection() calls succeed.
         self._collections[name] = self._client.get_or_create_collection(
             name=name,
-            embedding_function=self._embedding_fn,
+            embedding_function=self._embedding_fn,  # type: ignore[arg-type]
             metadata={"hnsw:space": "cosine"},
         )
         logger.info("Recreated empty Chroma collection %s", name)
@@ -234,11 +236,11 @@ class VectorStore:
         if include is not None:
             kwargs["include"] = include
         try:
-            return col.query(**kwargs)
+            return col.query(**kwargs)  # type: ignore[return-value]
         except Exception as exc:
             if _is_client_closed_error(exc):
                 self._reinitialize_sync()
-                return self.get_collection(collection_name).query(**kwargs)
+                return self.get_collection(collection_name).query(**kwargs)  # type: ignore[return-value]
             raise
 
     def delete(self, collection_name: str, ids: list[str]) -> None:
@@ -271,11 +273,11 @@ class VectorStore:
         """Update only metadata for existing entries (no re-embedding)."""
         col = self.get_collection(collection_name)
         try:
-            col.update(ids=ids, metadatas=metadatas)
+            col.update(ids=ids, metadatas=metadatas)  # type: ignore[arg-type]
         except Exception as exc:
             if _is_client_closed_error(exc):
                 self._reinitialize_sync()
-                self.get_collection(collection_name).update(ids=ids, metadatas=metadatas)
+                self.get_collection(collection_name).update(ids=ids, metadatas=metadatas)  # type: ignore[arg-type]
             else:
                 raise
 
@@ -302,11 +304,11 @@ class VectorStore:
         if offset is not None:
             kwargs["offset"] = offset
         try:
-            return col.get(**kwargs)
+            return col.get(**kwargs)  # type: ignore[return-value]
         except Exception as exc:
             if _is_client_closed_error(exc):
                 self._reinitialize_sync()
-                return self.get_collection(collection_name).get(**kwargs)
+                return self.get_collection(collection_name).get(**kwargs)  # type: ignore[return-value]
             raise
 
     # --- Async wrappers (run blocking ChromaDB ops in thread executor) ---

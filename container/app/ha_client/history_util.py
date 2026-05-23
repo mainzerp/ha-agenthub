@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, tzinfo
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -16,12 +16,12 @@ DEFAULT_LOOKBACK_HOURS = 24
 MAX_SUMMARY_POINTS = 400
 
 
-def display_zone_for_context(task_context: TaskContext | None) -> ZoneInfo:
+def display_zone_for_context(task_context: TaskContext | None) -> tzinfo:
     """Timezone for formatting history timestamps (speech / traces)."""
     return _zoneinfo(getattr(task_context, "timezone", None) if task_context else None)
 
 
-def _zoneinfo(tz_name: str | None) -> ZoneInfo:
+def _zoneinfo(tz_name: str | None) -> tzinfo:
     if not tz_name or not str(tz_name).strip():
         return UTC
     try:
@@ -92,7 +92,7 @@ def summarize_history_for_speech(
     friendly_name: str,
     history_groups: list[list[dict[str, Any]]],
     *,
-    display_tz: ZoneInfo,
+    display_tz: tzinfo,
 ) -> str:
     """Turn HA /api/history response into a concise sentence for TTS/chat."""
     if not history_groups or not history_groups[0]:

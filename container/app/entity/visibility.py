@@ -115,7 +115,7 @@ async def _passes_visibility_filters(
     return True
 
 
-async def filter_visible_results[TVisibilityCandidate](
+async def filter_visible_results[TVisibilityCandidate: VisibilityCandidate](
     agent_id: str,
     results: list[TVisibilityCandidate],
     entity_index: EntityIndex | None,

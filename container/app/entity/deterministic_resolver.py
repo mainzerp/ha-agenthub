@@ -482,7 +482,8 @@ async def resolve_entity_deterministic_first(
         )
         if len(filtered_matches) != len(matches):
             metadata["domain_filter_dropped"] = len(matches) - len(filtered_matches)
-            metadata["domain_filter_allowed"] = sorted(allowed_domains)
+            if allowed_domains is not None:
+                metadata["domain_filter_allowed"] = sorted(allowed_domains)
         metadata.update({"match_count": len(filtered_matches), "resolution_path": "hybrid_matcher"})
         if filtered_matches:
             original_top = filtered_matches[0]

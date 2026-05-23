@@ -30,10 +30,10 @@ try:  # pragma: no cover - executed only when the optional SDK is missing
 
     from mcp import ClientSession as _SDKClientSession
 except Exception:  # pragma: no cover
-    _SDKClientSession = None  # type: ignore[assignment]
-    _sdk_stdio_client = None  # type: ignore[assignment]
-    _SDKStdioServerParameters = None  # type: ignore[assignment]
-    _sdk_sse_client = None  # type: ignore[assignment]
+    _SDKClientSession = None  # type: ignore[misc, assignment]
+    _sdk_stdio_client = None  # type: ignore[misc, assignment]
+    _SDKStdioServerParameters = None  # type: ignore[misc, assignment]
+    _sdk_sse_client = None  # type: ignore[misc, assignment]
 
 # Re-exported as module attributes so tests can monkey-patch them.
 ClientSession = _SDKClientSession
@@ -183,6 +183,7 @@ class MCPClient:
                             fut.set_result(None)
                         return
                     try:
+                        result: Any = None
                         if op == _LIST_TOOLS:
                             result = await session.list_tools()
                         elif op == _CALL_TOOL:
@@ -281,6 +282,7 @@ class MCPClient:
                     raise RuntimeError("MCP client not initialized")
                 await self._req_q.put((fut, _STOP, ()))
                 try:
+                    assert self._owner_task is not None
                     await asyncio.wait_for(self._owner_task, timeout=_OWNER_TASK_DISCONNECT_TIMEOUT_SEC)
                 except TimeoutError:
                     logger.warning(

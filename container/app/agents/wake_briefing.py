@@ -7,7 +7,7 @@ import json
 import logging
 import time
 import uuid
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, tzinfo
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -71,7 +71,7 @@ async def _get_setting_json_list(settings_repo: Any, key: str, default: list[str
     return [str(item).strip() for item in value if str(item).strip()]
 
 
-def _resolve_timezone(timezone_name: str | None) -> ZoneInfo | UTC:
+def _resolve_timezone(timezone_name: str | None) -> tzinfo:
     if timezone_name:
         try:
             return ZoneInfo(str(timezone_name))
@@ -117,7 +117,7 @@ async def _dispatch_agent_source(
     return speech or None
 
 
-async def _date_facts(alarm_payload: dict[str, Any], tzinfo: ZoneInfo | UTC) -> dict[str, str]:
+async def _date_facts(alarm_payload: dict[str, Any], tzinfo: tzinfo) -> dict[str, str]:
     scheduled_for_epoch = _coerce_int(alarm_payload.get("scheduled_for_epoch"), default=int(time.time()))
     scheduled_for = datetime.fromtimestamp(scheduled_for_epoch, tz=tzinfo)
     return {

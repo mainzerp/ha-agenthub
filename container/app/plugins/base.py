@@ -12,6 +12,7 @@ if TYPE_CHECKING:
     from app.a2a.orchestrator_gateway import AgentCatalog, OrchestratorGateway
     from app.db.repository import SettingsRepository
     from app.mcp.registry import MCPServerRegistry
+    from app.plugins.hooks import EventBus
 
 
 class PluginContext:
@@ -35,7 +36,7 @@ class PluginContext:
         self.settings = settings_repo
         self._add_api_route: Callable[..., Any] = app.add_api_route
         self._include_router: Callable[..., Any] = app.include_router
-        self.event_bus = None  # Set by PluginLoader after construction
+        self.event_bus: EventBus | None = None  # Set by PluginLoader after construction
 
     @property
     def agent_registry(self):

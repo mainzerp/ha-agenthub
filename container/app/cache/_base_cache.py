@@ -186,13 +186,13 @@ class _BaseCache[TEntry](ABC):
         if not self._state.matches_generation(generation):
             logger.info("Skipping %s cache store after flush invalidation", self._collection_name)
             return
-        entry_id = self.make_entry_id(entry.query_text, language=getattr(entry, "language", "en"))
+        entry_id = self.make_entry_id(entry.query_text, language=getattr(entry, "language", "en"))  # type: ignore[attr-defined]
         now = datetime.now(UTC).isoformat()
         self._lru_index[entry_id] = now
         self._store.upsert(
             self._collection_name,
             ids=[entry_id],
-            documents=[entry.query_text],
+            documents=[entry.query_text],  # type: ignore[attr-defined]
             metadatas=[self._serialize_metadata(entry)],
         )
 
@@ -276,7 +276,7 @@ class _BaseCache[TEntry](ABC):
         for entry_id, meta in zip(ids, metas, strict=False):
             schema_raw = (meta or {}).get("schema_version")
             try:
-                schema_version = int(schema_raw)
+                schema_version = int(schema_raw or 0)
             except Exception:
                 schema_version = 0
             if schema_version < min_schema_version:

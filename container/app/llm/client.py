@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 from collections.abc import Callable
+from typing import Any
 
 import litellm
 
@@ -31,7 +32,7 @@ _LLM_EMPTY_RESPONSE_RETRY_DELAY_SEC = 1.0
 async def complete(
     agent_id: str,
     messages: list[dict],
-    **overrides: object,
+    **overrides: Any,
 ) -> str:
     span_collector = overrides.pop("span_collector", None)
     row = await AgentConfigRepository.get(agent_id)
@@ -128,7 +129,7 @@ async def complete_with_tools(
     tools: list[dict],
     tool_executor: Callable,
     max_tool_rounds: int = 5,
-    **overrides: object,
+    **overrides: Any,
 ) -> str:
     """LLM completion with tool/function calling loop.
 

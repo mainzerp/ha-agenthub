@@ -33,7 +33,7 @@ class _TTLCache:
 
     def _evict_oldest(self) -> None:
         if len(self._data) >= self._maxsize and self._times:
-            oldest = min(self._times, key=self._times.get)
+            oldest = min(self._times, key=lambda k: self._times.get(k) or 0.0)
             self._data.pop(oldest, None)
             self._times.pop(oldest, None)
 

@@ -3,7 +3,7 @@
 import logging
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, Form, HTTPException, Request
+from fastapi import APIRouter, Depends, Form, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
@@ -88,7 +88,7 @@ async def login_submit(
     session_data = await authenticate_admin(username, password)
     if session_data is None:
         token = ensure_csrf_token(request)
-        response = templates.TemplateResponse(
+        response: Response = templates.TemplateResponse(
             request,
             "login.html",
             context={"title": "Login", "error": "Invalid credentials", "csrf_token": token},

@@ -85,7 +85,8 @@ class CalendarReminderInjector:
         if not calendar_ids:
             return None
 
-        lookahead_hours = int(await SettingsRepository.get_value("calendar.reminder_injection.lookahead_hours", "24"))
+        raw_lookahead = await SettingsRepository.get_value("calendar.reminder_injection.lookahead_hours", "24")
+        lookahead_hours = int(raw_lookahead or "24")
         now = datetime.now(UTC)
         end = now + timedelta(hours=lookahead_hours)
 

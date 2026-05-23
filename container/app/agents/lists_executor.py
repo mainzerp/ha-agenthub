@@ -198,7 +198,7 @@ async def _list_lists(entity_index: Any, entity_matcher: Any, agent_id: str | No
     lines = []
     for entry in entries:
         fn = getattr(entry, "friendly_name", None) or getattr(entry, "entity_id", "unknown")
-        lines.append(fn)
+        lines.append(str(fn))
 
     return {
         "success": True,
@@ -233,6 +233,7 @@ async def _list_items(
     )
     if error:
         return {"success": False, "entity_id": None, "new_state": None, "speech": error, "cacheable": False}
+    assert entity_id is not None
 
     items = await _get_todo_items(ha_client, entity_id)
     if not items:
@@ -340,6 +341,7 @@ async def _complete_item(
     )
     if error:
         return {"success": False, "entity_id": None, "new_state": None, "speech": error}
+    assert entity_id is not None
 
     items = await _get_todo_items(ha_client, entity_id)
 
@@ -433,6 +435,7 @@ async def _remove_item(
     )
     if error:
         return {"success": False, "entity_id": None, "new_state": None, "speech": error}
+    assert entity_id is not None
 
     items = await _get_todo_items(ha_client, entity_id)
 
@@ -514,6 +517,7 @@ async def _clear_completed(
     )
     if error:
         return {"success": False, "entity_id": None, "new_state": None, "speech": error}
+    assert entity_id is not None
 
     items = await _get_todo_items(ha_client, entity_id)
     completed_items = [item for item in items if item.get("status") == "completed"]

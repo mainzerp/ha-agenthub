@@ -45,8 +45,7 @@ async def _open_write_connection() -> aiosqlite.Connection:
             logger.warning("DB write connection failed (attempt %d/%d)", attempt, _DB_WRITE_MAX_RETRIES, exc_info=True)
             if attempt < _DB_WRITE_MAX_RETRIES:
                 await asyncio.sleep(_DB_WRITE_BASE_DELAY * (2 ** (attempt - 1)))
-            else:
-                raise
+    raise aiosqlite.OperationalError("Failed to open write connection after all retries")
 
 
 async def _column_exists(db: aiosqlite.Connection, table: str, column: str) -> bool:

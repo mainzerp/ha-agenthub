@@ -63,5 +63,9 @@ ignore = [
 "tests/test_cache_lookup_order.py" = ["E402"]
 "tests/test_routing_cache_skip.py" = ["E402"]
 
+[tool.mypy]
+python_version = "3.12"
+plugins = ["pydantic.mypy"]
+
 [tool.ruff.lint.isort]
 known-first-party = ["app"]

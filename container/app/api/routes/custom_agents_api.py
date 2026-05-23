@@ -82,7 +82,7 @@ async def create_custom_agent(request: Request, body: CustomAgentCreate) -> dict
     except ValueError as exc:
         raise _http_422_from_value_error(exc) from exc
     await _reload_custom_loader(request)
-    return await CustomAgentRepository.get(created_name)
+    return await CustomAgentRepository.get(created_name) or {}
 
 
 @router.get("/{name}")
@@ -117,7 +117,7 @@ async def update_custom_agent(request: Request, name: str, body: CustomAgentUpda
         raise _http_422_from_value_error(exc) from exc
 
     await _reload_custom_loader(request)
-    return await CustomAgentRepository.get(normalized_name)
+    return await CustomAgentRepository.get(normalized_name) or {}
 
 
 @router.delete("/{name}")

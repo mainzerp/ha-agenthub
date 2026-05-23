@@ -10,6 +10,7 @@ import logging
 import time
 import uuid
 from datetime import UTC, datetime
+from typing import Literal, cast
 
 from app.analytics.tracer import SpanCollector
 
@@ -45,7 +46,7 @@ class TracingMiddleware:
             source = "ha"
         else:
             source = "api"
-        span_collector = SpanCollector(trace_id, source=source)
+        span_collector = SpanCollector(trace_id, source=cast(Literal["ha", "chat", "api"], source))
 
         # Make trace_id and span_collector available via request.state.
         # Starlette's Request reads state from scope["state"].
@@ -159,7 +160,7 @@ class TracingMiddleware:
 
         # Legacy per-connection behaviour for any other WS route.
         trace_id = uuid.uuid4().hex[:16]
-        span_collector = SpanCollector(trace_id, source=source)
+        span_collector = SpanCollector(trace_id, source=cast(Literal["ha", "chat", "api"], source))
         state["trace_id"] = trace_id
         state["span_collector"] = span_collector
 
