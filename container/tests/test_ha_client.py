@@ -172,6 +172,18 @@ class TestHARestClient:
         await client.close()
 
     @respx.mock
+    async def test_test_connection_returns_false_on_wrong_body(self):
+        respx.get("http://ha.local/api/").mock(return_value=httpx.Response(200, json={"message": "something else"}))
+
+        client = HARestClient()
+        client._base_url = "http://ha.local"
+        client._client = httpx.AsyncClient(base_url="http://ha.local", headers={})
+
+        result = await client.test_connection()
+        assert result is False
+        await client.close()
+
+    @respx.mock
     async def test_test_connection_returns_false_on_error(self):
         respx.get("http://ha.local/api/").mock(side_effect=httpx.ConnectError("refused"))
 
