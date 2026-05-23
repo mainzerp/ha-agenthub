@@ -8,6 +8,6 @@ pytest-timeout>=2.3.0
 pytest-xdist>=3.8.0
 respx>=0.21.0
 ruff==0.15.12
-mypy>=1.10.0
+mypy>=2.1.0
 pip-audit>=2.10.0
 tzdata>=2024.1
