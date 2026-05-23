@@ -43,7 +43,7 @@ aiosqlite==0.22.1
 # Security
 cryptography==48.0.0
 bcrypt==5.0.0
-python-multipart==0.0.27
+python-multipart==0.0.29
 itsdangerous==2.2.0
 
 # Language detection
