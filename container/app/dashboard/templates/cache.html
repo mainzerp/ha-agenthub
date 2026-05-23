@@ -170,7 +170,7 @@
                     <tbody>
                         <template x-for="e in entries" :key="e.id">
                             <tr>
-                                <td class="truncate max-w-400" x-text="e.document"></td>
+                                <td class="truncate max-w-200" x-text="e.document"></td>
                                 <td><span class="badge badge-teal" x-text="e.agent_id || '-'"></span></td>
                                 <td class="text-mono" x-text="e.hit_count || '0'"></td>
                                 <td class="text-mono text-xs" x-text="formatTimestamp(e.created_at)"></td>
@@ -231,7 +231,7 @@
                     <tbody>
                         <template x-for="e in entries" :key="e.id">
                             <tr>
-                                <td class="truncate max-w-400" x-text="e.document"></td>
+                                <td class="truncate max-w-200" x-text="e.document"></td>
                                 <td><span class="badge badge-teal" x-text="e.agent_id || '-'"></span></td>
                                 <td class="text-mono" x-text="e.hit_count || '0'"></td>
                                 <td class="text-mono text-xs" x-text="formatTimestamp(e.created_at)"></td>
@@ -244,6 +244,15 @@
                     </tbody>
                 </table>
             </div>
+
+            <template x:if="!loadingEntries && entries.length === 0">
+                <div class="empty-state">
+                    <p>No cache entries found.</p>
+                </div>
+            </template>
+        </div>
+    </div>
+</div>
 
             <template x-if="!loadingEntries && entries.length === 0">
                 <div class="empty-state">

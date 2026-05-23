@@ -127,6 +127,16 @@
     align-items: center;
 }
 
+@media (max-width: 640px) {
+  .provider-row { grid-template-columns: 1fr; gap: 0.5rem; }
+}
+
+@media (max-width: 480px) {
+  .settings-rail { flex-direction: row; overflow-x: auto; gap: 0.25rem; padding-bottom: 0.5rem; }
+  .settings-rail-item { white-space: nowrap; padding: 0.4rem 0.75rem; font-size: 0.8rem; }
+  .custom-provider-header-row { grid-template-columns: 1fr; }
+}
+
 @media (max-width: 768px) {
     .form-grid-2 {
         grid-template-columns: 1fr;

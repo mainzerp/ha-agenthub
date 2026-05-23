@@ -2,7 +2,7 @@
 
 .card-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    grid-template-columns: repeat(auto-fill, minmax(min(100%, 220px), 1fr));
     gap: 1rem;
     margin-bottom: 1.5rem;
 }
@@ -206,6 +206,7 @@
     display: flex;
     gap: 1.5rem;
     margin-top: 0.75rem;
+    flex-wrap: wrap;
 }
 
 .cache-breakdown-item {
@@ -347,8 +348,8 @@
 .toggle {
     position: relative;
     display: inline-block;
-    width: 40px;
-    height: 22px;
+    width: 48px;
+    height: 28px;
 }
 
 .toggle input {
@@ -362,15 +363,15 @@
     cursor: pointer;
     inset: 0;
     background: var(--border);
-    border-radius: 22px;
+    border-radius: 28px;
     transition: background 0.2s;
 }
 
 .toggle-slider::before {
     content: "";
     position: absolute;
-    height: 16px;
-    width: 16px;
+    height: 22px;
+    width: 22px;
     left: 3px;
     bottom: 3px;
     background: #fff;
@@ -383,7 +384,7 @@
 }
 
 .toggle input:checked + .toggle-slider::before {
-    transform: translateX(18px);
+    transform: translateX(20px);
 }
 
 /* --- Slider --- */
@@ -391,16 +392,16 @@
 input[type="range"] {
     -webkit-appearance: none;
     width: 100%;
-    height: 6px;
-    border-radius: 3px;
+    height: 8px;
+    border-radius: 4px;
     background: var(--border);
     outline: none;
 }
 
 input[type="range"]::-webkit-slider-thumb {
     -webkit-appearance: none;
-    width: 18px;
-    height: 18px;
+    width: 44px;
+    height: 44px;
     border-radius: 50%;
     background: var(--accent);
     cursor: pointer;
@@ -506,14 +507,14 @@ input[type="range"]::-webkit-slider-thumb {
 
 .stat-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    grid-template-columns: repeat(auto-fill, minmax(min(100%, 220px), 1fr));
     gap: 1rem;
     margin-bottom: 1.5rem;
 }
 
 .stat-grid-3 {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    grid-template-columns: repeat(auto-fill, minmax(min(100%, 280px), 1fr));
     gap: 1rem;
     margin-bottom: 1.5rem;
 }
@@ -557,7 +558,7 @@ input[type="range"]::-webkit-slider-thumb {
 
 .stat-card-value {
     font-family: 'Outfit', sans-serif;
-    font-size: 1.75rem;
+    font-size: clamp(1.25rem, 5vw, 1.75rem);
     font-weight: 700;
     color: var(--color-light);
     line-height: 1.2;
@@ -704,6 +705,7 @@ input[type="range"]::-webkit-slider-thumb {
     backdrop-filter: none;
     -webkit-backdrop-filter: none;
     border-radius: 0;
+    overflow-x: auto;
 }
 
 /* --- Badge enhancements --- */
@@ -840,6 +842,8 @@ input[type="range"]::-webkit-slider-thumb {
     color: var(--color-fog);
     cursor: pointer;
     transition: background 0.2s, color 0.2s, border-color 0.2s;
+    min-width: 44px;
+    min-height: 44px;
 }
 
 .btn-icon:hover {
@@ -962,6 +966,13 @@ input[type="range"]::-webkit-slider-thumb {
     max-width: 24rem;
 }
 
+@media (max-width: 480px) {
+    .toast-container { right: 0.5rem; max-width: calc(100vw - 1rem); }
+    .toast { max-width: 100%; }
+    .chart-card { padding: 0.75rem; }
+    .tree-children { margin-left: 0.75rem; }
+}
+
 @keyframes toast-in {
     from { opacity: 0; transform: translateX(1rem); }
     to { opacity: 1; transform: translateX(0); }
@@ -999,7 +1010,7 @@ input[type="range"]::-webkit-slider-thumb {
 }
 
 .tab-btn {
-    padding: 0.375rem 1rem;
+    padding: 0.65rem 1rem;
     border-radius: 0.5rem;
     font-size: 0.8rem;
     font-weight: 500;
@@ -1207,7 +1218,7 @@ input[type="range"]::-webkit-slider-thumb {
 .chat-container {
     display: flex;
     flex-direction: column;
-    height: calc(100vh - 140px);
+    height: calc(100dvh - 140px);
     max-height: 800px;
 }
 
@@ -1265,6 +1276,7 @@ input[type="range"]::-webkit-slider-thumb {
     border-top: 1px solid color-mix(in srgb, var(--bg-stone) 60%, transparent);
     background: var(--bg-basalt);
     border-radius: 0 0 0.75rem 0.75rem;
+    flex-wrap: wrap;
 }
 
 .chat-input-bar .form-input {

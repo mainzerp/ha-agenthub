@@ -67,7 +67,7 @@
     <!-- Agent List -->
     <template x-for="agent in agents" :key="agent.name">
         <div class="card">
-            <div class="flex-between">
+            <div class="flex-between flex-wrap">
                 <div>
                     <h3 class="card-title mb-0" x-text="'custom-' + agent.name"></h3>
                     <p class="text-muted mb-sm" x-text="agent.description || 'No description'"></p>

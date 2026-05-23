@@ -130,7 +130,7 @@
                                 <span class="badge text-2xs" :class="levelBadgeClass(entry.level)" x-text="entry.level"></span>
                             </td>
                             <td class="text-mono text-xs" x-text="entry.name"></td>
-                            <td class="truncate max-w-400" x-text="entry.message"></td>
+                            <td class="truncate max-w-200" x-text="entry.message"></td>
                             <td class="text-mono text-xs" x-text="entry.module"></td>
                             <td class="text-mono text-xs" x-text="entry.funcName"></td>
                         </tr>
@@ -147,7 +147,7 @@
     </div>
 
     <!-- Pagination -->
-    <div class="flex-between mb-lg" x-show="total > 0">
+    <div class="flex-between flex-wrap mb-lg" x-show="total > 0">
         <span class="text-muted text-sm" x-text="paginationText()"></span>
         <div class="flex-center gap-sm">
             <button class="btn btn-sm btn-secondary" :disabled="offset <= 0" @click="prevPage()">Prev</button>

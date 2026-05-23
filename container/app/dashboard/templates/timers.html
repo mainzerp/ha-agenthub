@@ -160,7 +160,7 @@
                         <td class="text-mono" x-text="formatDurationSeconds(t.remaining_seconds)"></td>
                         <td class="text-mono" x-text="formatDurationSeconds(t.duration_seconds)"></td>
                         <td class="text-mono" x-text="displayOrigin(t)"></td>
-                        <td class="text-nowrap">
+                        <td>
                             <button class="btn btn-sm btn-secondary" @click="openEditTimer(t)">Edit</button>
                             <button class="btn btn-sm btn-danger" @click="cancelRow(t.id)">Cancel</button>
                         </td>
@@ -215,7 +215,7 @@
                                   }"
                                   x-text="a.source || 'ha_legacy'"></span>
                         </td>
-                        <td class="text-nowrap">
+                        <td>
                             <template x-if="a.source === 'internal'">
                                 <span>
                                     <button class="btn btn-sm btn-secondary" @click="openEditAlarm(a)">Edit</button>
