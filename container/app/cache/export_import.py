@@ -211,7 +211,7 @@ def _apply_tier_import(cache_manager: CacheManager, tier: str, entries: list[dic
         chunk = validated_entries[start : start + IMPORT_BATCH_SIZE]
         ids = [tier_cache.make_entry_id(entry.query_text, language=entry.language) for entry in chunk]
         documents = [entry.query_text for entry in chunk]
-        metadatas = [tier_cache._serialize_metadata(entry) for entry in chunk]
+        metadatas = [tier_cache._serialize_metadata(entry) for entry in chunk]  # type: ignore[arg-type]
         cache_manager._vector_store.upsert(
             _TIER_TO_COLLECTION[tier],
             ids=ids,

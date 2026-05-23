@@ -7,6 +7,7 @@ import logging
 import time
 import uuid
 from datetime import UTC, datetime
+from typing import Literal, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
@@ -139,7 +140,7 @@ async def conversation_rest(
     # route path, no post-hoc assignment needed.
     span_collector = getattr(request.state, "span_collector", None)
 
-    a2a_request, _ = _build_a2a_request(conv_request, "message/send", span_collector, request)
+    a2a_request, _task = _build_a2a_request(conv_request, "message/send", span_collector, request)
     if _dispatcher is None:
         raise HTTPException(status_code=503, detail="Service not ready")
     response = await _dispatcher.dispatch(a2a_request)
@@ -173,7 +174,7 @@ async def conversation_sse(
     # FLOW-MED-9: source is now set by TracingMiddleware from the
     # route path.
     span_collector = getattr(request.state, "span_collector", None)
-    a2a_request, _ = _build_a2a_request(conv_request, "message/stream", span_collector, request)
+    a2a_request, _task = _build_a2a_request(conv_request, "message/stream", span_collector, request)
 
     async def generate():
         root_span_id = getattr(request.state, "root_span_id", None)
@@ -222,7 +223,7 @@ async def ws_conversation(
     await websocket.accept()
     # Validate Origin header against allowed WS origins
     origin = websocket.headers.get("origin")
-    allowed = getattr(websocket.app.state, "allowed_ws_origins", set())
+    allowed: set[str] = getattr(websocket.app.state, "allowed_ws_origins", set())
     if origin and (not allowed or origin not in allowed):
         await websocket.close(code=1008, reason="Invalid origin")
         return
@@ -264,7 +265,7 @@ async def ws_conversation(
 
             # Per-turn trace boundary.
             trace_id = uuid.uuid4().hex[:16]
-            span_collector = SpanCollector(trace_id, source=source)
+            span_collector = SpanCollector(trace_id, source=cast(Literal["ha", "chat", "api"], source))
             root_span_id = uuid.uuid4().hex[:12]
             parent_token = span_collector.push_parent(root_span_id)
 
@@ -273,7 +274,7 @@ async def ws_conversation(
             state["span_collector"] = span_collector
             state["root_span_id"] = root_span_id
 
-            a2a_request, _ = _build_a2a_request(conv_request, "message/stream", span_collector)
+            a2a_request, _task = _build_a2a_request(conv_request, "message/stream", span_collector)
 
             if _dispatcher is None:
                 raise HTTPException(status_code=503, detail="Service not ready")

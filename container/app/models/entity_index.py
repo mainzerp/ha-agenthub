@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from typing import Any
 
 from pydantic import BaseModel, Field, PrivateAttr
 
@@ -73,7 +74,7 @@ class EntityIndexEntry(BaseModel):
         """
         if self._content_hash is not None:
             return self._content_hash
-        payload = {
+        payload: dict[str, Any] = {
             "entity_id": self.entity_id or "",
             "friendly_name": self.friendly_name or "",
             "domain": self.domain or "",

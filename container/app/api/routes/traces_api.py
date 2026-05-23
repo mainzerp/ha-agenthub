@@ -285,7 +285,7 @@ async def get_trace_detail(trace_id: str):
         ret_meta = return_span.get("metadata") or {}
         action_cache_hit = bool(ret_meta.get("action_cache_hit") or ret_meta.get("response_cache_hit"))
 
-    if action_cache_hit:
+    if action_cache_hit and return_span:
         # Action cache hit short-circuit
         target = (return_span.get("metadata") or {}).get("from_agent", "")
         agent_communication.append(

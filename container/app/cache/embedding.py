@@ -100,7 +100,7 @@ class EmbeddingEngine:
                 "intfloat/multilingual-e5-base": 768,
                 "paraphrase-multilingual-MiniLM-L12-v2": 384,
             }
-            dimensions = defaults.get(self._model_name)
+            dimensions = defaults.get(self._model_name or "")
         name = (self._model_name or "").lower()
         is_multilingual = "multilingual" in name or name.startswith("intfloat/multilingual")
         return {
@@ -135,6 +135,8 @@ class EmbeddingEngine:
 
         from app.llm.providers import resolve_provider_params
 
+        if self._model_name is None:
+            raise ValueError("No model name configured for external embedding")
         provider_params = await resolve_provider_params(self._model_name)
         last_exc: Exception | None = None
         for attempt in range(3):
@@ -160,7 +162,7 @@ class ChromaEmbeddingFunction(chromadb.EmbeddingFunction[list[str]]):
     def __init__(self, engine: EmbeddingEngine) -> None:
         self._engine = engine
 
-    def __call__(self, input: list[str]) -> list[list[float]]:
+    def __call__(self, input: list[str]) -> list[list[float]]:  # type: ignore[override]
         coro = self._engine.embed_batch(input)
         try:
             asyncio.get_running_loop()

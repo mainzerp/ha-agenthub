@@ -7,8 +7,12 @@ import logging
 import re
 import unicodedata
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 from app.db.repository import EntityVisibilityRepository, SettingsRepository
+
+if TYPE_CHECKING:
+    from app.entity.expansion import QueryExpansionService
 from app.entity.aliases import AliasResolver
 from app.entity.index import EntityIndex
 from app.entity.signals import AliasSignal, EmbeddingSignal, JaroWinklerSignal, LevenshteinSignal, PhoneticSignal
@@ -73,7 +77,7 @@ class EntityMatcher:
         self._oversample_factor: int = 20
         # 0.23.0: optional language-agnostic on-demand expansion service.
         # Wired by runtime_setup; leave None in tests that do not need it.
-        self._expansion_service = None
+        self._expansion_service: QueryExpansionService | None = None
         self._index_language: str | None = None
         self._log_misses: bool = True
 
@@ -107,13 +111,13 @@ class EntityMatcher:
                 "alias": 0.2,
             }
 
-        self._confidence_threshold = float(
-            await SettingsRepository.get_value("entity_matching.confidence_threshold", "0.60")
-        )
-        self._top_n = int(await SettingsRepository.get_value("entity_matching.top_n_candidates", "3"))
+        conf_raw = await SettingsRepository.get_value("entity_matching.confidence_threshold", "0.60")
+        self._confidence_threshold = float(conf_raw or "0.60")
+        top_n_raw = await SettingsRepository.get_value("entity_matching.top_n_candidates", "3")
+        self._top_n = int(top_n_raw or "3")
         try:
             raw_factor = await SettingsRepository.get_value("entity_matching.oversample_factor", "20")
-            self._oversample_factor = max(2, min(200, int(raw_factor)))
+            self._oversample_factor = max(2, min(200, int(raw_factor or "20")))
         except (TypeError, ValueError):
             self._oversample_factor = 20
         try:
@@ -345,19 +349,19 @@ class EntityMatcher:
 
             # Area bonus: query matches or is contained in normalized area
             # (slug) name OR human-readable area_name OR id_tokens.
-            entry = entry_map.get(result.entity_id)
-            if entry:
+            idx_entry: EntityIndexEntry | None = entry_map.get(result.entity_id)
+            if idx_entry:
                 best_area_bonus = 0.0
-                if entry.area:
-                    area_containment = _normalize_for_containment(entry.area)
+                if idx_entry.area:
+                    area_containment = _normalize_for_containment(idx_entry.area)
                     if (
                         query_containment
                         and area_containment
                         and (query_containment == area_containment or query_containment in area_containment)
                     ):
                         best_area_bonus = max(best_area_bonus, 0.30)
-                if entry.area_name:
-                    area_name_containment = _normalize_for_containment(entry.area_name)
+                if idx_entry.area_name:
+                    area_name_containment = _normalize_for_containment(idx_entry.area_name)
                     if (
                         query_containment
                         and area_name_containment
@@ -372,15 +376,15 @@ class EntityMatcher:
                 query_tokens = {t for t in re.split(r"\W+", query.lower()) if t}
                 entity_tokens: set[str] = set()
                 for src in (
-                    entry.friendly_name,
-                    entry.area or "",
-                    entry.area_name or "",
-                    entry.device_name or "",
+                    idx_entry.friendly_name,
+                    idx_entry.area or "",
+                    idx_entry.area_name or "",
+                    idx_entry.device_name or "",
                 ):
                     if src:
                         entity_tokens.update(t for t in re.split(r"\W+", src.lower()) if t)
-                entity_tokens.update(t.lower() for t in (entry.id_tokens or []) if t)
-                for alias in entry.aliases or []:
+                entity_tokens.update(t.lower() for t in (idx_entry.id_tokens or []) if t)
+                for alias in idx_entry.aliases or []:
                     entity_tokens.update(t for t in re.split(r"\W+", alias.lower()) if t)
                 if query_tokens and entity_tokens:
                     matched = query_tokens & entity_tokens

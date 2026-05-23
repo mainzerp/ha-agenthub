@@ -193,17 +193,17 @@ class OrchestratorAgent(BaseAgent, TaskPipeline):
         """Read timeout and max_iterations from settings."""
         try:
             val = await SettingsRepository.get_value("a2a.default_timeout", "5")
-            self._default_timeout = int(val)
+            self._default_timeout = int(val or "5")
         except (ValueError, TypeError):
             logger.debug("Invalid a2a.default_timeout value, using default", exc_info=True)
         try:
             val = await SettingsRepository.get_value("a2a.max_iterations", "3")
-            self._max_iterations = int(val)
+            self._max_iterations = int(val or "3")
         except (ValueError, TypeError):
             logger.debug("Invalid a2a.max_iterations value, using default", exc_info=True)
         try:
             val = await SettingsRepository.get_value("a2a.max_dispatch_timeout", "60")
-            self._max_dispatch_timeout = float(val)
+            self._max_dispatch_timeout = float(val or "60")
         except (ValueError, TypeError):
             logger.debug("Invalid a2a.max_dispatch_timeout value, using default", exc_info=True)
         # P2-2: invalidate per-agent cache so changes to settings or
@@ -238,12 +238,12 @@ class OrchestratorAgent(BaseAgent, TaskPipeline):
             self._mediation_model = None
         try:
             val = await SettingsRepository.get_value("mediation.temperature", "0.3")
-            self._mediation_temperature = float(val)
+            self._mediation_temperature = float(val or "0.3")
         except (ValueError, TypeError):
             self._mediation_temperature = 0.3
         try:
             val = await SettingsRepository.get_value("mediation.max_tokens", "2048")
-            self._mediation_max_tokens = int(val)
+            self._mediation_max_tokens = int(val or "2048")
         except (ValueError, TypeError):
             self._mediation_max_tokens = 2048
         logger.info(
@@ -387,7 +387,7 @@ class OrchestratorAgent(BaseAgent, TaskPipeline):
         )
         try:
             t0 = time.perf_counter()
-            noop_span = {"metadata": {}}
+            noop_span: dict[str, Any] = {"metadata": {}}
             dispatch_ctx = (
                 contextlib.nullcontext(noop_span)
                 if skip_dispatch_span
@@ -418,8 +418,10 @@ class OrchestratorAgent(BaseAgent, TaskPipeline):
                 target_agent,
                 dispatch_timeout,
             )
-            await track_agent_timeout(target_agent, dispatch_timeout)
+            await track_agent_timeout(target_agent, int(dispatch_timeout))
             if target_agent != _FALLBACK_AGENT:
+                if request.params is None:
+                    request.params = {}
                 request.params["agent_id"] = _FALLBACK_AGENT
                 try:
                     # FLOW-HIGH-2: emit a distinct dispatch_fallback span
@@ -447,7 +449,7 @@ class OrchestratorAgent(BaseAgent, TaskPipeline):
                     await track_request(_FALLBACK_AGENT, cache_hit=False, latency_ms=fb_latency_ms)
                     target_agent = _FALLBACK_AGENT
                 except TimeoutError:
-                    await track_agent_timeout(_FALLBACK_AGENT, fb_timeout)
+                    await track_agent_timeout(_FALLBACK_AGENT, int(fb_timeout))
                     return target_agent, _CANNED_TIMEOUT_SPEECH, None
             else:
                 return target_agent, _CANNED_TIMEOUT_SPEECH, None
@@ -460,6 +462,8 @@ class OrchestratorAgent(BaseAgent, TaskPipeline):
                 _FALLBACK_AGENT,
             )
             if target_agent != _FALLBACK_AGENT:
+                if request.params is None:
+                    request.params = {}
                 request.params["agent_id"] = _FALLBACK_AGENT
                 try:
                     # FLOW-HIGH-2: emit a distinct dispatch_fallback span
@@ -486,7 +490,7 @@ class OrchestratorAgent(BaseAgent, TaskPipeline):
                     await track_request(_FALLBACK_AGENT, cache_hit=False, latency_ms=fb_latency_ms)
                     target_agent = _FALLBACK_AGENT
                 except TimeoutError:
-                    await track_agent_timeout(_FALLBACK_AGENT, fb_timeout)
+                    await track_agent_timeout(_FALLBACK_AGENT, int(fb_timeout))
                     return target_agent, _CANNED_TIMEOUT_SPEECH, None
             else:
                 # FLOW-HIGH-1: original target IS general-agent and errored.
@@ -711,13 +715,12 @@ class OrchestratorAgent(BaseAgent, TaskPipeline):
         if has_error or not speech or not speech.strip() or not ctx or ctx.source != "ha":
             return speech, False
         try:
-            enabled = (
-                await SettingsRepository.get_value("orchestrator.organic_followup_enabled", "false")
-            ).lower() == "true"
+            enabled_raw = await SettingsRepository.get_value("orchestrator.organic_followup_enabled", "false")
+            enabled = (enabled_raw or "false").lower() == "true"
             if not enabled:
                 return speech, False
             raw_p = await SettingsRepository.get_value("orchestrator.organic_followup_probability", "0.08")
-            p = float(raw_p)
+            p = float(raw_p or "0.08")
         except (TypeError, ValueError):
             p = 0.08
         if random.random() >= p:
@@ -1384,7 +1387,7 @@ class OrchestratorAgent(BaseAgent, TaskPipeline):
         task: AgentTask,
         *,
         streaming: bool,
-        _pre_classified: tuple[list[tuple[str, str, float]], bool] | None = None,
+        _pre_classified: tuple[list[tuple[str, str, float | None]], bool] | None = None,
         _classify_reason: str | None = None,
         _allow_classify_cache_lookup: bool | None = None,
     ) -> AsyncGenerator[dict[str, Any], None]:
@@ -1427,7 +1430,7 @@ class OrchestratorAgent(BaseAgent, TaskPipeline):
         self,
         task: AgentTask,
         *,
-        _pre_classified: tuple[list[tuple[str, str, float]], bool] | None = None,
+        _pre_classified: tuple[list[tuple[str, str, float | None]], bool] | None = None,
         _classify_reason: str | None = None,
         _allow_classify_cache_lookup: bool | None = None,
     ) -> dict[str, Any]:
@@ -1481,7 +1484,7 @@ class OrchestratorAgent(BaseAgent, TaskPipeline):
         self,
         task: AgentTask,
         *,
-        _pre_classified: tuple[list[tuple[str, str, float]], bool] | None = None,
+        _pre_classified: tuple[list[tuple[str, str, float | None]], bool] | None = None,
         _classify_reason: str | None = None,
         _allow_classify_cache_lookup: bool | None = None,
     ) -> dict[str, Any]:
@@ -1787,7 +1790,7 @@ class OrchestratorAgent(BaseAgent, TaskPipeline):
                     seq_filler_start_ms = (time.perf_counter() - t0_request) * 1000
                     filler_text = await self._invoke_filler_agent(
                         user_text,
-                        content_agent_for_filler,
+                        content_agent_for_filler or "",
                         language,
                     )
                     seq_filler_end_ms = (time.perf_counter() - t0_request) * 1000
@@ -2155,7 +2158,7 @@ class OrchestratorAgent(BaseAgent, TaskPipeline):
         """Check if filler is enabled and the target agent is expected to be slow."""
         try:
             val = await SettingsRepository.get_value("filler.enabled", "false")
-            enabled = val.lower() == "true"
+            enabled = (val or "false").lower() == "true"
         except (ValueError, TypeError):
             enabled = False
         if not enabled:
@@ -2169,7 +2172,7 @@ class OrchestratorAgent(BaseAgent, TaskPipeline):
         """Read filler threshold from DB (live, not cached)."""
         try:
             val = await SettingsRepository.get_value("filler.threshold_ms", "1000")
-            return int(val)
+            return int(val or "1000")
         except (ValueError, TypeError):
             return 1000
 
@@ -2694,23 +2697,23 @@ class OrchestratorAgent(BaseAgent, TaskPipeline):
         if not rows:
             return []
 
-        turns: list[dict[str, Any]] = []
+        conversation_turns: list[dict[str, Any]] = []
         for row in rows[-turn_limit:]:
             user_text = row.get("user_text") or ""
             if user_text:
-                turns.append({"role": "user", "content": user_text})
+                conversation_turns.append({"role": "user", "content": user_text})
             resp_text = row.get("response_text") or ""
             if resp_text:
                 assistant_turn: dict[str, Any] = {"role": "assistant", "content": resp_text}
                 agent_id = row.get("agent_id")
                 if agent_id:
                     assistant_turn["agent_id"] = agent_id
-                turns.append(assistant_turn)
+                conversation_turns.append(assistant_turn)
 
-        if turns:
-            self._conversations[conversation_id] = (time.monotonic(), turns)
+        if conversation_turns:
+            self._conversations[conversation_id] = (time.monotonic(), conversation_turns)
             self._evict_stale_conversations()
-        return list(turns)
+        return conversation_turns
 
     async def _store_turn(
         self, conversation_id: str | None, user_text: str, assistant_text: str, agent_id: str | None = None
@@ -2796,7 +2799,7 @@ class OrchestratorAgent(BaseAgent, TaskPipeline):
         agent_summary = "\n".join(summary_parts)
 
         try:
-            personality = ""
+            personality: str | None = ""
             with contextlib.suppress(Exception):
                 personality = await SettingsRepository.get_value("personality.prompt", "")
 
@@ -2814,7 +2817,7 @@ class OrchestratorAgent(BaseAgent, TaskPipeline):
                 {"role": "user", "content": user_content},
             ]
 
-            overrides = {
+            overrides: dict[str, Any] = {
                 "temperature": self._mediation_temperature,
                 "max_tokens": self._mediation_max_tokens,
             }
@@ -2854,7 +2857,7 @@ class OrchestratorAgent(BaseAgent, TaskPipeline):
         """
         try:
             personality = await SettingsRepository.get_value("personality.prompt", "")
-            if not personality.strip():
+            if not (personality or "").strip():
                 if reminder_text:
                     separator = " " if agent_speech and agent_speech[-1] in ".!?" else ". "
                     return f"{agent_speech}{separator}{reminder_text}" if agent_speech else reminder_text
@@ -2871,7 +2874,7 @@ class OrchestratorAgent(BaseAgent, TaskPipeline):
 
         try:
             system_prompt = await self._load_prompt_async("mediate")
-            personality_text = personality.strip() if personality.strip() else ""
+            personality_text = personality.strip() if personality and personality.strip() else ""
             system_prompt = system_prompt.replace("{personality}", personality_text)
             system_prompt = system_prompt.replace("{language}", language or "en").strip()
             user_content = (
@@ -2884,7 +2887,7 @@ class OrchestratorAgent(BaseAgent, TaskPipeline):
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_content},
             ]
-            overrides = {
+            overrides: dict[str, Any] = {
                 "temperature": self._mediation_temperature,
                 "max_tokens": self._mediation_max_tokens,
             }

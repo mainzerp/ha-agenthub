@@ -22,7 +22,7 @@ def detect_user_language(text: str, fallback: str = "en") -> str:
     if not text or len(text.strip()) < _MIN_TEXT_LENGTH:
         return fallback
     try:
-        from langdetect import DetectorFactory, LangDetectException, detect_langs
+        from langdetect import DetectorFactory, LangDetectException, detect_langs  # type: ignore[import-untyped]
 
         DetectorFactory.seed = 0
     except ImportError:

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import logging
+from collections.abc import Coroutine
 from typing import TYPE_CHECKING
 
 import aiosqlite
@@ -44,7 +45,7 @@ from app.ha_client.rest import HARestClient
 _background_tasks: set[asyncio.Task] = set()
 
 
-def _spawn(coro: asyncio.Coroutine, *, name: str | None = None) -> asyncio.Task:
+def _spawn(coro: Coroutine, *, name: str | None = None) -> asyncio.Task:
     """Schedule ``coro`` as a tracked background task.
 
     The task is stored in a module-level set until completion so it
@@ -369,7 +370,7 @@ async def _periodic_entity_sync(app: FastAPI) -> None:
             raw = await SettingsRepository.get_value(
                 "entity_sync.interval_minutes", str(_ENTITY_SYNC_DEFAULT_INTERVAL_MIN)
             )
-            interval_minutes = int(raw)
+            interval_minutes = int(raw or str(_ENTITY_SYNC_DEFAULT_INTERVAL_MIN))
         except (TypeError, ValueError):
             interval_minutes = _ENTITY_SYNC_DEFAULT_INTERVAL_MIN
 

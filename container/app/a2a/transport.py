@@ -60,9 +60,7 @@ class Transport(ABC):
     async def send(self, agent_id: str, task: AgentTask, request_id: str) -> JsonRpcResponse: ...
 
     @abstractmethod
-    async def stream(
-        self, agent_id: str, task: AgentTask, request_id: str
-    ) -> AsyncGenerator[JsonRpcStreamChunk, None]: ...
+    def stream(self, agent_id: str, task: AgentTask, request_id: str) -> AsyncGenerator[JsonRpcStreamChunk, None]: ...
 
 
 class InProcessTransport(Transport):

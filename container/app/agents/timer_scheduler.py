@@ -17,6 +17,7 @@ import json
 import logging
 import time
 import uuid
+from collections.abc import Sequence
 from datetime import datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -217,8 +218,8 @@ class TimerScheduler:
         self._startup_recovery_task = None
         if startup_recovery and not startup_recovery.done():
             startup_recovery.cancel()
-            results = await asyncio.gather(startup_recovery, return_exceptions=True)
-            for result in results:
+            startup_results = await asyncio.gather(startup_recovery, return_exceptions=True)
+            for result in startup_results:
                 if isinstance(result, BaseException):
                     logger.error(
                         "Startup recovery task raised exception during stop", exc_info=(type(result), result, None)
@@ -448,7 +449,7 @@ class TimerScheduler:
         except Exception:
             logger.error("TimerScheduler startup recovery retry failed", exc_info=True)
 
-    async def _rehydrate_rows(self, rows: list[dict]) -> tuple[int, int]:
+    async def _rehydrate_rows(self, rows: Sequence[dict]) -> tuple[int, int]:
         rehydrated = 0
         fired_on_recovery = 0
         now = int(time.time())
@@ -534,7 +535,7 @@ class TimerScheduler:
                     display_name = f"{logical_name}: {message}"
                 else:
                     display_name = message
-            await gateway.dispatch_background_event(
+            await gateway.dispatch_background_event(  # type: ignore[union-attr]
                 "timer_notification",
                 {
                     "timer_name": display_name,
@@ -553,7 +554,7 @@ class TimerScheduler:
             alarm_name = (payload.get("alarm_label") or logical_name or "alarm").strip() or "alarm"
             synthetic_entity_id = f"agenthub_alarm:{row['id']}"
             briefing = _coerce_bool(payload.get("briefing", False))
-            await gateway.dispatch_background_event(
+            await gateway.dispatch_background_event(  # type: ignore[union-attr]
                 "alarm_notification",
                 {
                     "alarm_name": alarm_name,
@@ -598,7 +599,7 @@ class TimerScheduler:
             if not target_entity or "/" not in target_action:
                 logger.error("delayed_action timer %s missing target_entity/target_action", row["id"])
                 return
-            await gateway.dispatch_background_event(
+            await gateway.dispatch_background_event(  # type: ignore[union-attr]
                 "delayed_action",
                 {
                     "target_entity": target_entity,
@@ -613,7 +614,7 @@ class TimerScheduler:
             if not media_player:
                 logger.error("sleep timer %s missing media_player", row["id"])
                 return
-            await gateway.dispatch_background_event(
+            await gateway.dispatch_background_event(  # type: ignore[union-attr]
                 "sleep_media_stop",
                 {"media_player": media_player},
                 description=f"Stop media playback for {media_player}",

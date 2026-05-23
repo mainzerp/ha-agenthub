@@ -9,7 +9,7 @@ import logging
 import re
 import secrets
 from datetime import datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo
 
 import litellm
@@ -28,6 +28,9 @@ from app.ha_client.auth import get_ha_token, set_ha_token
 from app.ha_client.rest import test_ha_connection
 from app.security.auth import API_KEY_SECRET_NAME, require_admin_session
 from app.security.encryption import delete_secret, retrieve_secret, store_secret
+
+if TYPE_CHECKING:
+    from app.a2a.registry import AgentRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -350,7 +353,7 @@ async def _reload_ha_clients_after_settings_change(request: Request) -> None:
 router = APIRouter(prefix="/api/admin", tags=["admin"], dependencies=[Depends(require_admin_session)])
 
 # The registry is set by main.py during startup
-_registry = None
+_registry: AgentRegistry | None = None
 
 
 def set_registry(reg) -> None:
@@ -369,7 +372,7 @@ async def _resolve_origin_label(
         return origin_device_id or origin_area
     if origin_device_id:
         # legitimate fail-soft: template rendering failure falls back to raw device_id
-        with contextlib.suppress((OSError, ValueError, KeyError)):
+        with contextlib.suppress(OSError, ValueError, KeyError):
             raw = await ha_client.render_template(
                 "{{ device_attr(origin_device_id, 'name_by_user') or device_attr(origin_device_id, 'name') or '' }}",
                 variables={"origin_device_id": str(origin_device_id)},
@@ -398,7 +401,7 @@ async def _resolve_ha_device_id(
         return None
     rendered = None
     # legitimate fail-soft: template rendering failure falls back to None
-    with contextlib.suppress((OSError, ValueError, KeyError)):
+    with contextlib.suppress(OSError, ValueError, KeyError):
         rendered = await ha_client.render_template(
             "{{ device_id(entity_id) }}",
             variables={"entity_id": entity_id},
@@ -414,6 +417,8 @@ async def _resolve_ha_device_id(
 @router.get("/agents")
 async def list_agents() -> dict[str, Any]:
     """List all agents (registered + disabled from DB)."""
+    if _registry is None:
+        return {"agents": []}
     agents = await _registry.list_agents()
     seen_ids = set()
     result = []
@@ -618,7 +623,7 @@ async def _build_alarm_recurrence_patch(
         ha_client = getattr(request.app.state, "ha_client", None)
         if ha_client is not None:
             # legitimate fail-soft: home context failure falls back to UTC
-            with contextlib.suppress((OSError, ValueError, KeyError)):
+            with contextlib.suppress(OSError, ValueError, KeyError):
                 from app.ha_client.home_context import home_context_provider
 
                 home_context = await home_context_provider.get(ha_client)

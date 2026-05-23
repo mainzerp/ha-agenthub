@@ -9,7 +9,7 @@ from app.entity.aliases import AliasResolver
 from app.entity.index import EntityIndex
 
 try:
-    from pyphonetics import Metaphone, Soundex
+    from pyphonetics import Metaphone, Soundex  # type: ignore[import-untyped]
 except ImportError:
     Soundex = None
     Metaphone = None

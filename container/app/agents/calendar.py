@@ -3,7 +3,7 @@
 from app.agents.actionable import ActionableAgent
 from app.agents.calendar_executor import execute_calendar_action
 from app.agents.user_identity import UserIdentityResolver
-from app.models.agent import AgentCard, AgentTask, TaskResult
+from app.models.agent import AgentCard, AgentErrorCode, AgentTask, TaskResult
 
 
 class CalendarAgent(ActionableAgent):
@@ -50,7 +50,7 @@ class CalendarAgent(ActionableAgent):
 
     def _handle_parse_miss(self, task: AgentTask, response: str) -> TaskResult:
         return self._error_result(
-            "parse_error",
+            AgentErrorCode.PARSE_ERROR,
             "I could not understand the calendar command. Please try again.",
         )
 

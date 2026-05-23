@@ -8,7 +8,7 @@ import re
 
 from app.agents.action_executor import parse_action
 from app.agents.base import BaseAgent
-from app.models.agent import ActionExecuted, AgentError, AgentErrorCode, AgentTask, TaskResult
+from app.models.agent import ActionExecuted, AgentError, AgentErrorCode, AgentTask, TaskContext, TaskResult
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +38,8 @@ class ActionableAgent(BaseAgent):
     def __init__(self, ha_client=None, entity_index=None, entity_matcher=None) -> None:
         super().__init__(ha_client=ha_client, entity_index=entity_index)
         self._entity_matcher = entity_matcher
+        self._current_task: AgentTask | None = None
+        self._current_task_context: TaskContext | None = None
 
     async def _do_execute(self, action, ha_client, entity_index, entity_matcher, *, agent_id, span_collector=None):
         """Execute the parsed action. Subclasses must override."""

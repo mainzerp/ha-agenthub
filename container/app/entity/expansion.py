@@ -144,13 +144,15 @@ class QueryExpansionService:
                 except Exception:
                     logger.debug("cache put failed", exc_info=True)
                 try:
-                    ttl = int(await SettingsRepository.get_value("entity_matching.expansion.ttl_seconds", "2592000"))
+                    ttl_raw = await SettingsRepository.get_value("entity_matching.expansion.ttl_seconds", "2592000")
+                    ttl = int(ttl_raw or "2592000")
                     if ttl > 0:
                         await self._cache.purge_expired(ttl)
                 except Exception:
                     logger.debug("Failed to purge expired cache entries", exc_info=True)
                 try:
-                    cap = int(await SettingsRepository.get_value("entity_matching.expansion.max_cache_rows", "5000"))
+                    cap_raw = await SettingsRepository.get_value("entity_matching.expansion.max_cache_rows", "5000")
+                    cap = int(cap_raw or "5000")
                     if cap > 0:
                         await self._cache.evict_lru(cap)
                 except Exception:

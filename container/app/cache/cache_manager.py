@@ -175,7 +175,8 @@ class CacheManager:
                 visible = False
             if not visible:
                 with contextlib.suppress(Exception):
-                    await asyncio.to_thread(self._action_cache.invalidate_by_entry_id, entry_id)
+                    if entry_id is not None:
+                        await asyncio.to_thread(self._action_cache.invalidate_by_entry_id, entry_id)
                 return None
 
         try:
@@ -192,6 +193,8 @@ class CacheManager:
             agent_id=entry.agent_id,
             similarity=similarity,
         )
+        if entry_id is None:
+            return None
         return ActionReplayOutcome(
             kind="full_hit",
             entry_id=entry_id,

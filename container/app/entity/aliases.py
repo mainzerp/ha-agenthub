@@ -27,6 +27,7 @@ class AliasResolver:
         """Look up an alias. Returns entity_id or None."""
         if self._cache is None:
             await self.load()
+        assert self._cache is not None
         return self._cache.get(alias.lower())
 
     async def substitute(self, text: str) -> str:
@@ -37,6 +38,7 @@ class AliasResolver:
         """
         if self._cache is None:
             await self.load()
+        assert self._cache is not None
         if not self._cache:
             return text
         # Sort by length descending to match longest aliases first
@@ -54,6 +56,7 @@ class AliasResolver:
         """Return all alias -> entity_id mappings."""
         if self._cache is None:
             await self.load()
+        assert self._cache is not None
         return dict(self._cache)
 
     async def reload(self) -> None:

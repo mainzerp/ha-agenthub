@@ -162,6 +162,7 @@ class HARestClient:
         Returns True if HA responds with 200 and body is {"message": "API running."},
         False otherwise.
         """
+        assert self._client is not None
         try:
             resp = await self._client.get("/api/")
             if resp.status_code != 200:
@@ -174,12 +175,14 @@ class HARestClient:
 
     async def get_states(self) -> list[dict[str, Any]]:
         """GET /api/states -- returns all entity states."""
+        assert self._client is not None
         resp = await self._client.get("/api/states")
         resp.raise_for_status()
         return resp.json()
 
     async def get_services(self) -> dict[str, Any]:
         """GET /api/services -- returns a dict of domain -> service dict."""
+        assert self._client is not None
         resp = await self._client.get("/api/services")
         resp.raise_for_status()
         data = resp.json()
@@ -190,6 +193,7 @@ class HARestClient:
 
     async def get_state(self, entity_id: str) -> dict[str, Any] | None:
         """GET /api/states/<entity_id> -- returns a single entity state."""
+        assert self._client is not None
         resp = await self._client.get(f"/api/states/{entity_id}")
         if resp.status_code == 404:
             return None
@@ -255,6 +259,7 @@ class HARestClient:
         if return_response:
             url += "?return_response"
 
+        assert self._client is not None
         original_exc: Exception | None = None
         try:
             resp = await self._client.post(url, json=payload)
@@ -291,6 +296,7 @@ class HARestClient:
 
     async def get_config(self) -> dict[str, Any]:
         """GET /api/config -- returns HA core configuration."""
+        assert self._client is not None
         try:
             resp = await self._client.get("/api/config")
             resp.raise_for_status()
@@ -327,6 +333,7 @@ class HARestClient:
         event_data: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """POST /api/events/<event_type>."""
+        assert self._client is not None
         resp = await self._client.post(f"/api/events/{event_type}", json=event_data or {})
         resp.raise_for_status()
         return resp.json()

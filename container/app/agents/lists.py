@@ -2,7 +2,7 @@
 
 from app.agents.actionable import ActionableAgent
 from app.agents.lists_executor import execute_lists_action
-from app.models.agent import AgentCard, AgentTask, TaskResult
+from app.models.agent import AgentCard, AgentErrorCode, AgentTask, TaskResult
 
 
 class ListsAgent(ActionableAgent):
@@ -35,7 +35,7 @@ class ListsAgent(ActionableAgent):
 
     def _handle_parse_miss(self, task: AgentTask, response: str) -> TaskResult:
         return self._error_result(
-            "parse_error",
+            AgentErrorCode.PARSE_ERROR,
             "I could not understand the lists command. Please try again.",
         )
 

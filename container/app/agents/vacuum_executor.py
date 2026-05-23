@@ -6,6 +6,7 @@ import logging
 from typing import Any
 
 from app.agents.action_executor import (
+    _ensure_str,
     build_verified_speech,
     call_service_with_verification,
 )
@@ -256,7 +257,7 @@ async def _query_vacuum_state(
     except Exception:
         logger.warning("Entity resolution failed for '%s'", entity_query, exc_info=True)
 
-    entity_id = resolution["entity_id"]
+    entity_id = _ensure_str(resolution["entity_id"])
     if entity_id and not _validate_domain(entity_id):
         logger.warning("Resolved entity %s not in allowed domains %s", entity_id, _ALLOWED_DOMAINS)
         entity_id = None
@@ -394,8 +395,8 @@ async def _handle_vacuum_read_action(
         except Exception:
             logger.warning("Entity resolution failed for '%s'", entity_query, exc_info=True)
 
-        entity_id = resolution["entity_id"]
-        friendly_name = resolution["friendly_name"]
+        entity_id = _ensure_str(resolution["entity_id"])
+        friendly_name = _ensure_str(resolution["friendly_name"]) or entity_query
         if entity_id and not _validate_domain(entity_id):
             entity_id = None
 

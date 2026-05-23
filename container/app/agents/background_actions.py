@@ -228,7 +228,7 @@ async def _run_voice_followup_after_conversation(
     raw_delay = await SettingsRepository.get_value("orchestrator.voice_followup_delay", None)
     try:
         if raw_delay not in (None, ""):
-            profile["tts_to_listen_delay"] = float(raw_delay)
+            profile["tts_to_listen_delay"] = float(raw_delay or "0")
     except (TypeError, ValueError):
         logger.debug("Invalid voice_followup_delay value, using default", exc_info=True)
 

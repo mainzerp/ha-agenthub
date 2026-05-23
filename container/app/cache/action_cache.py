@@ -218,5 +218,5 @@ class ActionCache(_BaseCache[ActionCacheEntry]):
             schema_version=self._coerce_int(metadata.get("schema_version"), _ACTION_CACHE_SCHEMA_VERSION),
             original_response_text=metadata.get("original_response_text") or None,
             rewrite_applied=self._coerce_bool(metadata.get("rewrite_applied"), False),
-            rewrite_latency_ms=self._coerce_float(metadata.get("rewrite_latency_ms"), None),
+            rewrite_latency_ms=self._coerce_float(metadata.get("rewrite_latency_ms"), 0.0),
         )

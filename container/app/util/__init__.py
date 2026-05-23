@@ -1,9 +1,11 @@
 """Utility helpers."""
 
+from typing import NoReturn
+
 from fastapi import HTTPException
 
 
-def raise_api_error(detail: str, status_code: int = 400) -> None:
+def raise_api_error(detail: str, status_code: int = 400) -> NoReturn:
     """Raise a standardized HTTPException.
 
     Use this instead of returning JSONResponse with error content so
