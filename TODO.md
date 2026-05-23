@@ -8,6 +8,8 @@
 
 - [ ] **P3 -- Security agent sentinel mode**: Deferred. If one or more sensors explicitly assigned to the security agent should automatically trigger a security-agent run, that requires a separate trigger contract and likely a dedicated UI page.
 
+- [x] **P4 -- Mobile compatibility for the dashboard**: Responsive layout, touch-friendly controls, and viewport-aware navigation for the admin/analytics dashboards so they are usable on phones and tablets without horizontal scrolling or overlapping elements.
+
 
 ## Project Roadmap
 

@@ -151,7 +151,7 @@
                     <h4 class="card-title mb-sm text-sm">Agent Communication</h4>
                     <template x-for="(comm, idx) in traceDetail.agent_communication" :key="idx">
                         <div class="mb-md" :class="comm.parallel ? 'parallel-step' : ''">
-                            <div class="flex-center mb-40">
+                            <div class="flex-center flex-wrap mb-40">
                                 <span class="step-num" x-text="'#' + (idx + 1)"></span>
                                 <template x-if="!comm.is_tool_call">
                                     <span class="badge" :class="'badge-' + agentClass(comm.from_agent)"
@@ -263,7 +263,9 @@
             <!-- Span Timeline (Gantt) -->
             <div class="card mb-md bg-obsidian">
                 <h4 class="card-title mb-sm text-sm">Span Timeline</h4>
-                {% include "partials/_trace_gantt.html" %}
+                <div style="overflow-x: auto; width: 100%;">
+                    {% include "partials/_trace_gantt.html" %}
+                </div>
             </div>
 
             <!-- Span detail panel (on click) -->
@@ -406,7 +408,7 @@
                                             <span :class="exec.status === 'error' ? 'badge badge-red' : 'badge badge-green'"
                                                   x-text="exec.status"></span>
                                         </td>
-                                        <td class="truncate max-w-300 text-xs"
+                                        <td class="truncate max-w-200 text-xs"
                                             x-text="exec.response || '-'"></td>
                                     </tr>
                                 </template>

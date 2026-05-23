@@ -396,7 +396,7 @@
                     <tr>
                         <th>Domain</th>
                         <th>Assigned Agents</th>
-                        <th class="w-120"></th>
+                        <th class="w-80"></th>
                     </tr>
                 </thead>
                 <tbody>
@@ -461,11 +461,11 @@
                     <tr>
                         <th>Device Class</th>
                         <th>Assigned Agents</th>
-                        <th class="w-120"></th>
+                        <th class="w-80"></th>
                     </tr>
                 </thead>
                 <tbody>
-                    <template x-for="item in deviceClassMap" :key="item.device_class">
+                    <template x:for="item in deviceClassMap" :key="item.device_class">
                         <tr>
                             <td class="text-nowrap">
                                 <span class="badge badge-indigo" x-text="item.device_class"></span>

@@ -1,10 +1,39 @@
 # Version
 
-**Current Version:** 1.24.2
+**Current Version:** 1.25.0
 
 ## Recent Changes
 
-Track changes since `v1.24.2` here.
+Track changes since `v1.25.0` here.
+
+- feat(dashboard): responsive mobile layout with viewport-aware navigation, touch-friendly controls (44px+ targets), and dynamic viewport height for chat
+- feat(dashboard): sidebar swipe gestures (open from left edge, close by swiping left)
+- feat(dashboard): viewport-aware Chart.js legend positioning (bottom on mobile)
+- fix(dashboard): prevent horizontal overflow on 320px viewports across all pages
+- fix(dashboard): restore table horizontal scroll on `.table-container-flush`
+- refactor(dashboard): remove duplicate `utilities.css`, consolidate into `components.css`
+
+## Version History
+
+### 1.25.0 (MINOR) -- Mobile dashboard compatibility
+
+- feat(dashboard): full mobile responsiveness for admin/analytics dashboards
+- feat(dashboard): touch-friendly controls with 44px+ touch targets (sidebar toggle, nav links, buttons, toggles, tabs, range sliders)
+- feat(dashboard): viewport-aware sidebar with swipe gestures (open from left edge, close by swiping left)
+- feat(dashboard): responsive padding reduction on mobile (page-content, top-bar, setup shell, login)
+- feat(dashboard): collapsible grids (stat-grid-6, card-grid, stat-grid, stat-grid-3) with safe minmax values
+- feat(dashboard): Chart.js legend switches to bottom on screens <=480px
+- fix(dashboard): modal `min-width` uses `min(320px, 90vw)` to prevent overflow on small screens
+- fix(dashboard): add `overflow-x: auto` back to `.table-container-flush`
+- fix(dashboard): replace `100vh` with `100dvh` in chat container for dynamic browser toolbars
+- fix(dashboard): wrap trace detail gantt chart in overflow container
+- fix(dashboard): add `flex-wrap` to plugin cards, custom agent cards, trace communication rows
+- fix(dashboard): reduce table cell max-widths on mobile (max-w-300/400 -> max-w-200)
+- fix(dashboard): settings rail becomes horizontal scrollable tab bar on mobile
+- fix(dashboard): provider rows and custom provider headers stack vertically on narrow screens
+- refactor(dashboard): remove duplicate `utilities.css` and its template references
+- chore(css): add Google Fonts `display=swap` parameter
+- chore(css): add fluid `clamp()` font sizing for stat card values
 
 ## Version History
 

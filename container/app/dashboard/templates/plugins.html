@@ -20,7 +20,7 @@
     <!-- Plugin List -->
     <template x-for="plugin in plugins" :key="plugin.name">
         <div class="card mb-md">
-            <div class="flex-between">
+            <div class="flex-between flex-wrap">
                 <div>
                     <h3 class="card-title mb-0" x-text="plugin.name"></h3>
                     <p class="text-muted mb-sm" x-text="plugin.description || 'No description'"></p>

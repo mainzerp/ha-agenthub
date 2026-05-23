@@ -123,6 +123,16 @@
                 } else if (mql.addListener) {
                     mql.addListener(apply);
                 }
+
+                var touchStartX = 0;
+                document.addEventListener('touchstart', function(e) {
+                    touchStartX = e.changedTouches[0].screenX;
+                });
+                document.addEventListener('touchend', function(e) {
+                    var dx = e.changedTouches[0].screenX - touchStartX;
+                    if (dx > 50 && touchStartX < 30 && this.isMobile) { this.sidebarOpen = true; }
+                    if (dx < -50 && this.isMobile && this.sidebarOpen) { this.sidebarOpen = false; }
+                }.bind(this));
             },
             get sidebarInert() {
                 return this.isMobile && !this.sidebarOpen;
@@ -206,6 +216,10 @@
         var b = parseInt(hex.slice(5, 7), 16);
         return 'rgba(' + r + ', ' + g + ', ' + b + ', ' + alpha + ')';
     };
+
+    function dashChartLegendPosition() {
+        return window.innerWidth <= 480 ? 'bottom' : 'right';
+    }
 
     /* === dashPage === */
     var dashPage = function(opts) {
