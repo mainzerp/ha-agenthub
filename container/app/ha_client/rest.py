@@ -159,12 +159,16 @@ class HARestClient:
     async def test_connection(self) -> bool:
         """Test connectivity to HA by hitting GET /api/.
 
-        Returns True if HA responds with 200, False otherwise.
+        Returns True if HA responds with 200 and body is {"message": "API running."},
+        False otherwise.
         """
         try:
             resp = await self._client.get("/api/")
-            return resp.status_code == 200
-        except httpx.HTTPError:
+            if resp.status_code != 200:
+                return False
+            data = resp.json()
+            return isinstance(data, dict) and data.get("message") == "API running."
+        except (httpx.HTTPError, ValueError, TypeError):
             logger.warning("HA connection test failed", exc_info=True)
             return False
 
@@ -175,7 +179,7 @@ class HARestClient:
         return resp.json()
 
     async def get_services(self) -> dict[str, Any]:
-        """GET /api/services -- returns a dict of domain -> service list."""
+        """GET /api/services -- returns a dict of domain -> service dict."""
         resp = await self._client.get("/api/services")
         resp.raise_for_status()
         data = resp.json()
@@ -527,6 +531,7 @@ class HARestClient:
         end_time_utc: datetime | None = None,
         significant_changes_only: bool = True,
         minimal_response: bool = True,
+        no_attributes: bool = True,
     ) -> list[list[dict[str, Any]]]:
         """GET /api/history/period/<start> -- Recorder state changes.
 
@@ -547,9 +552,11 @@ class HARestClient:
                 end_time_utc = end_time_utc.replace(tzinfo=UTC)
             params["end_time"] = end_time_utc.astimezone(UTC).isoformat()
         if significant_changes_only:
-            params["significant_changes_only"] = "1"
+            params["significant_changes_only"] = "true"
         if minimal_response:
-            params["minimal_response"] = "1"
+            params["minimal_response"] = "true"
+        if no_attributes:
+            params["no_attributes"] = "true"
         resp = await self._client.get(path, params=params)
         resp.raise_for_status()
         data = resp.json()

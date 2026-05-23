@@ -1,10 +1,15 @@
 # Version
 
-**Current Version:** 1.24.0
+**Current Version:** 1.24.1
 
 ## Recent Changes
 
-Track changes since `v1.24.0` here.
+Track changes since `v1.24.1` here.
+
+- fix(ha): validate response body in `HARestClient.test_connection()` -- now checks for `{"message": "API running."}` instead of only HTTP 200
+- fix(ha): correct `get_services()` docstring from "service list" to "service dict"
+- fix(ha): send `"true"` instead of `"1"` for boolean query params in `get_history_period()`
+- feat(ha): add `no_attributes` parameter to `get_history_period()` (defaults to `True`)
 
 ## Version History
 
