@@ -14,6 +14,8 @@ Track changes since `v1.24.2` here.
 - fix(ha): correct `get_services()` docstring from "service list" to "service dict"
 - fix(ha): send `"true"` instead of `"1"` for boolean query params in `get_history_period()`
 - feat(ha): add `no_attributes` parameter to `get_history_period()` (defaults to `True`)
+- fix(types): resolve 282 mypy errors across 73 files
+- chore(deps): bump chromadb, python-multipart, mypy, respx
 
 ### 1.24.0 (MINOR) -- WebSocket fallback for HA service calls
 
