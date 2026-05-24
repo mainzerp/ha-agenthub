@@ -1,15 +1,23 @@
 # Version
 
-**Current Version:** 1.25.1
+**Current Version:** 1.26.0
 
 ## Recent Changes
 
-Track changes since `v1.25.1` here.
+Track changes since `v1.26.0` here.
+
+- feat(dashboard): add expandable detail panel to cache management page showing response text, cached action JSON, entity IDs, and metadata for both routing and action cache tiers
+
+## Version History
+
+### 1.26.0 (MINOR) -- Cache dashboard detail panel
+
+- feat(dashboard): add expandable detail panel to cache management page showing response text, cached action JSON, entity IDs, and metadata for both routing and action cache tiers
+
+### 1.25.1 (PATCH)
 
 - fix(sanitize): strip parenthetical meta-commentary from rewrite-agent and mediation paths before TTS output
 - fix(prompts): add prompt-level prevention against parenthetical explanations in rewrite.txt and mediate.txt
-
-## Version History
 
 ### 1.25.0 (MINOR) -- Mobile dashboard compatibility
 

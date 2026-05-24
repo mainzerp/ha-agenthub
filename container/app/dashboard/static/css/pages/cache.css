@@ -1,1 +1,16 @@
 ﻿/* Page-specific styles for cache */
+
+.cache-row-selected {
+    background: var(--bg-charcoal);
+}
+
+.cache-row-selected td {
+    border-top: 1px solid var(--border-color);
+    border-bottom: 1px solid var(--border-color);
+}
+
+@media (max-width: 768px) {
+    .span-detail-grid {
+        grid-template-columns: 1fr;
+    }
+}
