@@ -169,13 +169,14 @@
                     </thead>
                     <tbody>
                         <template x-for="e in entries" :key="e.id">
-                            <tr>
+                            <tr :class="{ 'cache-row-selected': selectedEntry && selectedEntry.id === e.id }">
                                 <td class="truncate max-w-200" x-text="e.document"></td>
                                 <td><span class="badge badge-teal" x-text="e.agent_id || '-'"></span></td>
                                 <td class="text-mono" x-text="e.hit_count || '0'"></td>
                                 <td class="text-mono text-xs" x-text="formatTimestamp(e.created_at)"></td>
                                 <td class="text-mono text-xs" x-text="formatTimestamp(e.last_accessed)"></td>
                                 <td>
+                                    <button class="btn btn-sm btn-secondary" @click="showDetail(e)">Details</button>
                                     <button class="btn btn-sm btn-coral" @click="deleteEntry(e.id)">Delete</button>
                                 </td>
                             </tr>
@@ -183,6 +184,57 @@
                     </tbody>
                 </table>
             </div>
+
+            <template x-if="selectedEntry && activeTab === 'routing'">
+                <div class="span-detail-panel mt-md">
+                    <div class="flex-between mb-sm">
+                        <h4 class="text-sm fw-600" x-text="'Entry: ' + (selectedEntry.document || '-')"></h4>
+                        <button class="btn btn-sm btn-secondary" @click="closeDetail()">Close</button>
+                    </div>
+                    <div class="span-detail-grid">
+                        <div class="span-detail-row span-detail-wide">
+                            <div class="span-detail-label">Document</div>
+                            <pre class="span-detail-content" x-text="selectedEntry.document || '-'"></pre>
+                        </div>
+                        <div class="span-detail-row">
+                            <div class="span-detail-label">Agent ID</div>
+                            <pre class="span-detail-content" x-text="selectedEntry.agent_id || '-'"></pre>
+                        </div>
+                        <div class="span-detail-row">
+                            <div class="span-detail-label">Confidence</div>
+                            <pre class="span-detail-content" x-text="selectedEntry.confidence || '-'"></pre>
+                        </div>
+                        <div class="span-detail-row">
+                            <div class="span-detail-label">Language</div>
+                            <pre class="span-detail-content" x-text="selectedEntry.language || '-'"></pre>
+                        </div>
+                        <div class="span-detail-row">
+                            <div class="span-detail-label">Hit Count</div>
+                            <pre class="span-detail-content" x-text="selectedEntry.hit_count || '0'"></pre>
+                        </div>
+                        <div class="span-detail-row">
+                            <div class="span-detail-label">Schema Version</div>
+                            <pre class="span-detail-content" x-text="selectedEntry.schema_version || '-'"></pre>
+                        </div>
+                        <div class="span-detail-row span-detail-wide">
+                            <div class="span-detail-label">Condensed Task</div>
+                            <pre class="span-detail-content" x-text="selectedEntry.condensed_task || '-'"></pre>
+                        </div>
+                        <div class="span-detail-row span-detail-wide">
+                            <div class="span-detail-label">Entity IDs</div>
+                            <pre class="span-detail-content" x-text="JSON.stringify(parseJsonSafe(selectedEntry.entity_ids), null, 2) || '-'"></pre>
+                        </div>
+                        <div class="span-detail-row">
+                            <div class="span-detail-label">Created At</div>
+                            <pre class="span-detail-content" x-text="formatTimestamp(selectedEntry.created_at)"></pre>
+                        </div>
+                        <div class="span-detail-row">
+                            <div class="span-detail-label">Last Accessed</div>
+                            <pre class="span-detail-content" x-text="formatTimestamp(selectedEntry.last_accessed)"></pre>
+                        </div>
+                    </div>
+                </div>
+            </template>
 
             <template x-if="!loadingEntries && entries.length === 0">
                 <div class="empty-state">
@@ -230,13 +282,14 @@
                     </thead>
                     <tbody>
                         <template x-for="e in entries" :key="e.id">
-                            <tr>
+                            <tr :class="{ 'cache-row-selected': selectedEntry && selectedEntry.id === e.id }">
                                 <td class="truncate max-w-200" x-text="e.document"></td>
                                 <td><span class="badge badge-teal" x-text="e.agent_id || '-'"></span></td>
                                 <td class="text-mono" x-text="e.hit_count || '0'"></td>
                                 <td class="text-mono text-xs" x-text="formatTimestamp(e.created_at)"></td>
                                 <td class="text-mono text-xs" x-text="formatTimestamp(e.last_accessed)"></td>
                                 <td>
+                                    <button class="btn btn-sm btn-secondary" @click="showDetail(e)">Details</button>
                                     <button class="btn btn-sm btn-coral" @click="deleteEntry(e.id)">Delete</button>
                                 </td>
                             </tr>
@@ -245,14 +298,102 @@
                 </table>
             </div>
 
-            <template x:if="!loadingEntries && entries.length === 0">
-                <div class="empty-state">
-                    <p>No cache entries found.</p>
+            <template x-if="selectedEntry && activeTab === 'action'">
+                <div class="span-detail-panel mt-md">
+                    <div class="flex-between mb-sm">
+                        <h4 class="text-sm fw-600" x-text="'Entry: ' + (selectedEntry.document || '-')"></h4>
+                        <button class="btn btn-sm btn-secondary" @click="closeDetail()">Close</button>
+                    </div>
+                    <div class="span-detail-grid">
+                        <div class="span-detail-row span-detail-wide">
+                            <div class="span-detail-label">Document</div>
+                            <pre class="span-detail-content" x-text="selectedEntry.document || '-'"></pre>
+                        </div>
+                        <div class="span-detail-row">
+                            <div class="span-detail-label">Agent ID</div>
+                            <pre class="span-detail-content" x-text="selectedEntry.agent_id || '-'"></pre>
+                        </div>
+                        <div class="span-detail-row">
+                            <div class="span-detail-label">Confidence</div>
+                            <pre class="span-detail-content" x-text="selectedEntry.confidence || '-'"></pre>
+                        </div>
+                        <div class="span-detail-row">
+                            <div class="span-detail-label">Language</div>
+                            <pre class="span-detail-content" x-text="selectedEntry.language || '-'"></pre>
+                        </div>
+                        <div class="span-detail-row">
+                            <div class="span-detail-label">Hit Count</div>
+                            <pre class="span-detail-content" x-text="selectedEntry.hit_count || '0'"></pre>
+                        </div>
+                        <div class="span-detail-row">
+                            <div class="span-detail-label">Schema Version</div>
+                            <pre class="span-detail-content" x-text="selectedEntry.schema_version || '-'"></pre>
+                        </div>
+                        <div class="span-detail-row span-detail-wide">
+                            <div class="span-detail-label">Condensed Task</div>
+                            <pre class="span-detail-content" x-text="selectedEntry.condensed_task || '-'"></pre>
+                        </div>
+                        <div class="span-detail-row span-detail-wide">
+                            <div class="span-detail-label">Response Text</div>
+                            <pre class="span-detail-content" x-text="selectedEntry.response_text || '-'"></pre>
+                        </div>
+                        <template x-if="selectedEntry.original_response_text">
+                            <div class="span-detail-row span-detail-wide">
+                                <div class="span-detail-label">Original Response Text</div>
+                                <pre class="span-detail-content" x-text="selectedEntry.original_response_text"></pre>
+                            </div>
+                        </template>
+                        <div class="span-detail-row span-detail-wide">
+                            <div class="span-detail-label">Cached Action</div>
+                            <div class="span-detail-content">
+                                <template x-if="parseJsonSafe(selectedEntry.cached_action)">
+                                    <div>
+                                        <div class="mb-xs"><span class="span-detail-label">Service</span> <span x-text="parseJsonSafe(selectedEntry.cached_action).service || '-'"></span></div>
+                                        <div class="mb-xs"><span class="span-detail-label">Entity ID</span> <span x-text="parseJsonSafe(selectedEntry.cached_action).entity_id || '-'"></span></div>
+                                        <div><span class="span-detail-label">Service Data</span></div>
+                                        <pre class="span-detail-content mt-xs" x-text="JSON.stringify(parseJsonSafe(selectedEntry.cached_action).service_data || {}, null, 2)"></pre>
+                                    </div>
+                                </template>
+                                <template x-if="!parseJsonSafe(selectedEntry.cached_action)">
+                                    <span x-text="selectedEntry.cached_action || '-'"></span>
+                                </template>
+                            </div>
+                        </div>
+                        <div class="span-detail-row span-detail-wide">
+                            <div class="span-detail-label">Entity IDs</div>
+                            <pre class="span-detail-content" x-text="JSON.stringify(parseJsonSafe(selectedEntry.entity_ids), null, 2) || '-'"></pre>
+                        </div>
+                        <div class="span-detail-row">
+                            <div class="span-detail-label">Executed At</div>
+                            <pre class="span-detail-content" x-text="formatTimestamp(selectedEntry.executed_at)"></pre>
+                        </div>
+                        <div class="span-detail-row">
+                            <div class="span-detail-label">Origin Area ID</div>
+                            <pre class="span-detail-content" x-text="selectedEntry.origin_area_id || '-'"></pre>
+                        </div>
+                        <div class="span-detail-row">
+                            <div class="span-detail-label">Origin Device ID</div>
+                            <pre class="span-detail-content" x-text="selectedEntry.origin_device_id || '-'"></pre>
+                        </div>
+                        <div class="span-detail-row">
+                            <div class="span-detail-label">Rewrite Applied</div>
+                            <pre class="span-detail-content" x-text="selectedEntry.rewrite_applied || '-'"></pre>
+                        </div>
+                        <div class="span-detail-row">
+                            <div class="span-detail-label">Rewrite Latency (ms)</div>
+                            <pre class="span-detail-content" x-text="selectedEntry.rewrite_latency_ms || '-'"></pre>
+                        </div>
+                        <div class="span-detail-row">
+                            <div class="span-detail-label">Created At</div>
+                            <pre class="span-detail-content" x-text="formatTimestamp(selectedEntry.created_at)"></pre>
+                        </div>
+                        <div class="span-detail-row">
+                            <div class="span-detail-label">Last Accessed</div>
+                            <pre class="span-detail-content" x-text="formatTimestamp(selectedEntry.last_accessed)"></pre>
+                        </div>
+                    </div>
                 </div>
             </template>
-        </div>
-    </div>
-</div>
 
             <template x-if="!loadingEntries && entries.length === 0">
                 <div class="empty-state">
@@ -282,6 +423,7 @@ function cachePage() {
         importFileName: '',
         importBusy: false,
         backupMessage: '',
+        selectedEntry: null,
 
         formatTimestamp(ts) {
             if (!ts) return '-';
@@ -295,10 +437,28 @@ function cachePage() {
             } catch (e) { return ts; }
         },
 
+        parseJsonSafe(str) {
+            if (!str) return null;
+            try {
+                return JSON.parse(str);
+            } catch (e) {
+                return null;
+            }
+        },
+
+        showDetail(entry) {
+            this.selectedEntry = entry;
+        },
+
+        closeDetail() {
+            this.selectedEntry = null;
+        },
+
         setActiveTab(name) {
             this.activeTab = name;
             this.tier = name;
             this.page = 1;
+            this.selectedEntry = null;
             this.loadEntries();
         },
 
