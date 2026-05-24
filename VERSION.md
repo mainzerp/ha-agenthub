@@ -1,17 +1,13 @@
 # Version
 
-**Current Version:** 1.25.0
+**Current Version:** 1.25.1
 
 ## Recent Changes
 
-Track changes since `v1.25.0` here.
+Track changes since `v1.25.1` here.
 
-- feat(dashboard): responsive mobile layout with viewport-aware navigation, touch-friendly controls (44px+ targets), and dynamic viewport height for chat
-- feat(dashboard): sidebar swipe gestures (open from left edge, close by swiping left)
-- feat(dashboard): viewport-aware Chart.js legend positioning (bottom on mobile)
-- fix(dashboard): prevent horizontal overflow on 320px viewports across all pages
-- fix(dashboard): restore table horizontal scroll on `.table-container-flush`
-- refactor(dashboard): remove duplicate `utilities.css`, consolidate into `components.css`
+- fix(sanitize): strip parenthetical meta-commentary from rewrite-agent and mediation paths before TTS output
+- fix(prompts): add prompt-level prevention against parenthetical explanations in rewrite.txt and mediate.txt
 
 ## Version History
 

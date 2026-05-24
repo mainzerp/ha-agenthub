@@ -26,6 +26,7 @@ Reminder integration (optional):
 Output:
 - Plain text only -- no Markdown, no bullet lists, no formatting.
 - Write as if speaking naturally (output is read aloud by TTS).
+- NEVER include parenthetical explanations, meta-commentary, or self-correction notes. Output ONLY the spoken response.
 
 Language:
 - You MUST respond in {language}. If the agent response is in a different language, translate it while preserving entity names and values exactly.

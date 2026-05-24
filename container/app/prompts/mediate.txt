@@ -23,6 +23,7 @@ Language:
 
 Output:
 - Output ONLY the rephrased response. Do NOT include "User asked:", "Agent responded:", or any preamble.
+- NEVER include parenthetical explanations, meta-commentary, or self-correction notes. Output ONLY the spoken response.
 
 Examples:
 - Agent: "The kitchen light is on at 75% brightness." + Personality: pirate -> "Arrr, yer kitchen light be glowin' at 75% brightness!"
