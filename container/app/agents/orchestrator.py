@@ -23,7 +23,7 @@ from app.agents.agent_registry import AgentRegistry
 from app.agents.base import BaseAgent
 from app.agents.cancel_speech import generate_cancel_speech
 from app.agents.language_detect import detect_user_language
-from app.agents.sanitize import strip_markdown
+from app.agents.sanitize import strip_markdown, strip_parenthetical_asides
 from app.agents.task_pipeline import TaskPipeline
 from app.analytics.collector import track_agent_timeout, track_request
 from app.analytics.tracer import _optional_span
@@ -2899,7 +2899,7 @@ class OrchestratorAgent(BaseAgent, TaskPipeline):
                 span["metadata"]["language"] = language or "en"
                 span["metadata"]["original_length"] = len(agent_speech)
                 span["metadata"]["mediated_length"] = len(result.strip()) if result else 0
-            return result.strip() if result and result.strip() else agent_speech
+            return strip_parenthetical_asides(result) if result and result.strip() else agent_speech
         except Exception:
             logger.warning("Response mediation failed, using original speech", exc_info=True)
             if reminder_text:

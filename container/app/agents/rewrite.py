@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 
 from app.agents.base import BaseAgent
+from app.agents.sanitize import strip_parenthetical_asides
 from app.db.repository import SettingsRepository
 from app.models.agent import AgentCard, AgentTask, TaskResult
 
@@ -68,7 +69,7 @@ class RewriteAgent(BaseAgent):
         if not result:
             logger.warning("Rewrite LLM returned empty, using cached text")
             return cached_text
-        return result
+        return strip_parenthetical_asides(result)
 
     async def handle_task(self, task: AgentTask) -> TaskResult:
         """A2A-compatible interface. Rewrites task.description."""

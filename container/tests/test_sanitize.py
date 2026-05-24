@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from app.agents.sanitize import strip_markdown
+from app.agents.sanitize import strip_markdown, strip_parenthetical_asides
 
 CORPUS_PATH = Path(__file__).parent / "data" / "sanitize_corpus.txt"
 
@@ -159,3 +159,36 @@ class TestStripMarkdown:
         assert "- " not in result
         assert "Weather in Berlin" in result
         assert "15C" in result
+
+
+class TestStripParentheticalAsides:
+    """Tests for the strip_parenthetical_asides TTS sanitization utility."""
+
+    def test_empty_string(self):
+        assert strip_parenthetical_asides("") == ""
+
+    def test_none_returns_none(self):
+        assert strip_parenthetical_asides(None) is None
+
+    def test_plain_text_unchanged(self):
+        text = "The weather today is sunny with a high of 72 degrees."
+        assert strip_parenthetical_asides(text) == text
+
+    def test_single_parenthetical_removed(self):
+        assert strip_parenthetical_asides("Hello (world) there") == "Hello there"
+
+    def test_multiple_parentheticals_removed(self):
+        text = "Start (first aside) middle (second aside) end"
+        assert strip_parenthetical_asides(text) == "Start middle end"
+
+    def test_multi_word_aside_removed(self):
+        text = "Done. (I fixed the entity name.)"
+        assert strip_parenthetical_asides(text) == "Done."
+
+    def test_whitespace_collapsed_after_removal(self):
+        text = "Hello  (world)  there"
+        assert strip_parenthetical_asides(text) == "Hello there"
+
+    def test_no_parens_unchanged(self):
+        text = "No parentheses here at all."
+        assert strip_parenthetical_asides(text) == text

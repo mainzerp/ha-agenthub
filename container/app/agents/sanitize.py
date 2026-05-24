@@ -5,6 +5,19 @@ from __future__ import annotations
 import re
 
 
+def strip_parenthetical_asides(text: str) -> str:
+    """Remove parenthetical asides and meta-commentary from TTS output.
+
+    Strips blocks like ``(I corrected the name...)`` and collapses
+    leftover whitespace so the result is clean spoken text.
+    """
+    if not text:
+        return text
+    text = re.sub(r"\s*\([^)]*\)", "", text)
+    text = re.sub(r" {2,}", " ", text)
+    return text.strip()
+
+
 def strip_markdown(text: str) -> str:
     """Remove common Markdown formatting artifacts for TTS clarity.
 
