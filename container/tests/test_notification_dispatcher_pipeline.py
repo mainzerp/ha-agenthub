@@ -175,7 +175,7 @@ async def test_background_tts_prompt_wraps_free_form_context_values() -> None:
 
 
 @pytest.mark.asyncio
-async def test_pipeline_prefers_satellite_from_entity_index() -> None:
+async def test_pipeline_skips_satellite_from_entity_index() -> None:
     entry_kitchen = SimpleNamespace(
         entity_id="assist_satellite.kitchen_pi",
         area="kitchen",
@@ -198,11 +198,7 @@ async def test_pipeline_prefers_satellite_from_entity_index() -> None:
         )
 
     assert client.template_calls == []
-    assert len(client.calls) == 1
-    domain, service, entity_id, data = client.calls[0]
-    assert (domain, service, entity_id) == ("assist_satellite", "start_conversation", "assist_satellite.kitchen_pi")
-    assert data["start_message"] == ""
-    assert data["preannounce"] is False
+    assert len(client.calls) == 0
 
 
 @pytest.mark.asyncio

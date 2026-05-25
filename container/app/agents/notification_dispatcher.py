@@ -101,12 +101,10 @@ async def _run_voice_followup_after_conversation(
     if area_id:
         satellite = await _resolve_satellite_device(ha_client, area_id, entity_index=entity_index)
         if satellite:
-            await _trigger_conversation_continuation(
-                ha_client,
-                satellite,
+            logger.info(
+                "Satellite voice follow-up for area %s is handled by the HA integration (satellite=%s)",
                 area_id,
-                profile,
-                entity_index=entity_index,
+                satellite,
             )
             return
         logger.debug("No assist_satellite in area %s, falling back to origin device if set", area_id)
@@ -653,43 +651,35 @@ async def _trigger_conversation_continuation(
     # media_player entity so single-device setups still resolve.
     target_entity = (await _resolve_satellite_device(ha_client, area, entity_index=entity_index)) or media_player_entity
 
-    try:
-        if target_entity.startswith("assist_satellite."):
-            await ha_client.call_service(
-                "assist_satellite",
-                "start_conversation",
-                target_entity,
-                {
-                    "start_message": "",
-                    "preannounce": False,
-                },
-            )
-            logger.info(
-                "Conversation continuation triggered via assist_satellite.start_conversation on %s (area=%s)",
-                target_entity,
-                area,
-            )
-        else:
-            pipeline_data: dict[str, Any] = {
-                "start_stage": "stt",
-                "end_stage": "tts",
-            }
-            device_id = await _resolve_ha_device_id(ha_client, target_entity)
-            if device_id:
-                pipeline_data["device_id"] = device_id
+    if target_entity.startswith("assist_satellite."):
+        logger.info(
+            "Satellite conversation continuation is handled by the HA integration (target=%s, area=%s)",
+            target_entity,
+            area,
+        )
+        return
 
-            await ha_client.call_service(
-                "assist_pipeline",
-                "run",
-                None,
-                pipeline_data,
-            )
-            logger.info(
-                "Conversation continuation triggered on %s (area=%s, device_id=%s)",
-                target_entity,
-                area,
-                device_id or "<unresolved>",
-            )
+    try:
+        pipeline_data: dict[str, Any] = {
+            "start_stage": "stt",
+            "end_stage": "tts",
+        }
+        device_id = await _resolve_ha_device_id(ha_client, target_entity)
+        if device_id:
+            pipeline_data["device_id"] = device_id
+
+        await ha_client.call_service(
+            "assist_pipeline",
+            "run",
+            None,
+            pipeline_data,
+        )
+        logger.info(
+            "Conversation continuation triggered on %s (area=%s, device_id=%s)",
+            target_entity,
+            area,
+            device_id or "<unresolved>",
+        )
     except Exception:
         logger.warning(
             "Failed to trigger conversation continuation on %s -- user must use wake word for follow-up",

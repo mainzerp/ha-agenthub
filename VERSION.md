@@ -1,12 +1,20 @@
 # Version
 
-**Current Version:** 1.29.0
+**Current Version:** 1.29.1
 
 ## Recent Changes
 
-Track changes since `v1.29.0` here.
+Track changes since `v1.29.1` here.
 
 ## Version History
+
+### 1.29.1 (PATCH) -- Integration-driven satellite voice follow-up
+
+- fix(container/background_actions): remove container-side `assist_satellite.start_conversation` for satellites; follow-up is now handled by the HA integration
+- fix(container/notification_dispatcher): same satellite follow-up removal
+- fix(integration): extend `_post_filler_push` to trigger `assist_satellite.start_conversation` after `assist_satellite.announce` completes and satellite returns to idle
+- fix(integration): capture `voice_followup` flag from done chunk in filler push background task
+- test(notification_dispatcher): update test to assert no service call for satellite targets
 
 ### 1.29.0 (MINOR) -- Dynamic weather forecast types
 

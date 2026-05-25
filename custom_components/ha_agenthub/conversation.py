@@ -556,6 +556,7 @@ class HaAgentHubConversationEntity(
         final_parts: list[str] = []
         observed_idle = asyncio.Event()
         aborted_new_turn = False
+        voice_followup = False
         unsub: Callable[[], None] | None = None
 
         def _on_state(event) -> None:
@@ -628,6 +629,7 @@ class HaAgentHubConversationEntity(
                         if mediated:
                             final_parts = [mediated]
                         stream_sanitized = bool(data.get("sanitized", False))
+                        voice_followup = bool(data.get("voice_followup", False))
                         raw = "".join(final_parts)
                         final_text = raw if stream_sanitized else _strip_markdown(raw)
                         final_text = (final_text or "").strip()
@@ -712,6 +714,30 @@ class HaAgentHubConversationEntity(
                     satellite_entity_id,
                     exc_info=True,
                 )
+            if voice_followup and satellite_entity_id and not aborted_new_turn:
+                try:
+                    await self.hass.services.async_call(
+                        "assist_satellite",
+                        "start_conversation",
+                        {
+                            "entity_id": satellite_entity_id,
+                            "start_message": "",
+                            "preannounce": False,
+                        },
+                        blocking=False,
+                    )
+                    logger.info(
+                        "ha-agenthub: post-filler push triggered voice follow-up key=%s sat=%s",
+                        gate_key,
+                        satellite_entity_id,
+                    )
+                except Exception:
+                    logger.warning(
+                        "ha-agenthub: assist_satellite.start_conversation failed in push key=%s sat=%s",
+                        gate_key,
+                        satellite_entity_id,
+                        exc_info=True,
+                    )
         except asyncio.CancelledError:
             logger.info(
                 "ha-agenthub: post-filler push cancelled key=%s sat=%s",
