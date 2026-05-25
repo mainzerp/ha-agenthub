@@ -587,6 +587,69 @@ class TestOrchestratorAgent:
         sys_en = messages_en[0]["content"]
         assert "User language hint" not in sys_en
 
+    async def test_classify_injects_previous_agent_hint_when_turns_exist(self):
+        orch = OrchestratorAgent(dispatcher=AsyncMock())
+        orch._registry = AsyncMock()
+        orch._registry.list_agents = AsyncMock(
+            return_value=[
+                AgentCard(agent_id="light-agent", name="", description="", skills=[]),
+            ]
+        )
+        orch._build_agent_descriptions = AsyncMock(return_value="light-agent: handles lights")
+        orch._get_turns = AsyncMock(
+            return_value=[
+                {"role": "user", "content": "turn on kitchen light"},
+                {"role": "assistant", "content": "Done.", "agent_id": "light-agent"},
+            ]
+        )
+        orch._call_llm = AsyncMock(return_value="light-agent (90%): turn on bedroom light")
+
+        await orch._classify("turn on bedroom light", conversation_id="conv-prev-hint")
+        messages = orch._call_llm.await_args.args[0]
+        system_prompt = messages[0]["content"]
+        assert "previous turn was handled by light-agent" in system_prompt
+        assert "Route follow-ups to the same agent" in system_prompt
+
+    async def test_classify_omits_previous_agent_hint_on_first_turn(self):
+        orch = OrchestratorAgent(dispatcher=AsyncMock())
+        orch._registry = AsyncMock()
+        orch._registry.list_agents = AsyncMock(
+            return_value=[
+                AgentCard(agent_id="general-agent", name="", description="", skills=[]),
+            ]
+        )
+        orch._build_agent_descriptions = AsyncMock(return_value="general-agent: handles anything")
+        orch._get_turns = AsyncMock(return_value=[])
+        orch._call_llm = AsyncMock(return_value="general-agent (90%): hello world")
+
+        await orch._classify("hello world", conversation_id="conv-first-turn")
+        messages = orch._call_llm.await_args.args[0]
+        system_prompt = messages[0]["content"]
+        assert "previous turn" not in system_prompt
+
+    async def test_classify_previous_agent_hint_uses_most_recent_assistant_turn(self):
+        orch = OrchestratorAgent(dispatcher=AsyncMock())
+        orch._registry = AsyncMock()
+        orch._registry.list_agents = AsyncMock(
+            return_value=[
+                AgentCard(agent_id="light-agent", name="", description="", skills=[]),
+            ]
+        )
+        orch._build_agent_descriptions = AsyncMock(return_value="light-agent: handles lights")
+        orch._get_turns = AsyncMock(
+            return_value=[
+                {"role": "user", "content": "turn on kitchen light"},
+                {"role": "assistant", "content": "Done.", "agent_id": "light-agent"},
+                {"role": "user", "content": "and the bedroom too"},
+            ]
+        )
+        orch._call_llm = AsyncMock(return_value="light-agent (90%): turn on bedroom light")
+
+        await orch._classify("and the bedroom too", conversation_id="conv-backward-scan")
+        messages = orch._call_llm.await_args.args[0]
+        system_prompt = messages[0]["content"]
+        assert "previous turn was handled by light-agent" in system_prompt
+
     async def test_orchestrator_classifier_wraps_user_text_and_user_history(self):
         orch = OrchestratorAgent(dispatcher=AsyncMock())
         orch._registry = AsyncMock()
