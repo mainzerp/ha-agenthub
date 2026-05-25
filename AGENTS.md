@@ -317,7 +317,7 @@ This project uses **Semantic Versioning (SemVer)**: `MAJOR.MINOR.PATCH`.
 When releasing a version, complete **all** of the following:
 
 - [ ] Bump the version in `VERSION.md`.
-- [ ] Update `container/app/__init__.py` — `__version__` must match. Omitting this causes runtime version skew.
+- [ ] Update `custom_components/ha_agenthub/manifest.json (Zeile 11)`, `container/app/__init__.py` — `__version__` must match. Omitting this causes runtime version skew.
 - [ ] Add a clear entry under "Version History" in `VERSION.md` with key features/fixes and relevant commit hashes.
 - [ ] Reset "Recent Changes" to track changes since the new tag.
 - [ ] Ensure the git tag matches the version in both files.
