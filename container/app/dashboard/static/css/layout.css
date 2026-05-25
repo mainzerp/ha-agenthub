@@ -218,6 +218,7 @@ button.sidebar-logout {
     display: flex;
     flex-direction: column;
     min-height: 100vh;
+    overflow-x: hidden; /* prevent horizontal scroll on mobile */
 }
 
 .main-content-expanded {
@@ -318,6 +319,20 @@ button.sidebar-logout {
         margin-left: 0;
     }
 
+    /* Push page title past the fixed hamburger button (~44px icon + 12px left offset) */
+    .top-bar {
+        padding-left: 4rem;
+    }
+
+    /* Allow title to shrink and not overflow the top-bar on narrow screens */
+    .page-title {
+        flex: 1;
+        min-width: 0;
+        overflow: hidden;
+        white-space: nowrap;
+        text-overflow: ellipsis;
+    }
+
     .card-grid {
         grid-template-columns: 1fr;
     }
@@ -329,11 +344,11 @@ button.sidebar-logout {
     }
 
     .stat-grid {
-        grid-template-columns: repeat(2, 1fr);
+        grid-template-columns: repeat(2, minmax(0, 1fr));
     }
 
     .stat-grid-6 {
-        grid-template-columns: repeat(2, 1fr);
+        grid-template-columns: repeat(2, minmax(0, 1fr));
     }
 
     .health-bar {
@@ -395,7 +410,8 @@ button.sidebar-logout {
     }
 
     .page-content { padding: 0.75rem; }
-    .top-bar { padding: 0.5rem 0.75rem; }
+    /* Keep left padding large enough to clear the (bigger) hamburger at ≤480px */
+    .top-bar { padding: 0.5rem 0.75rem 0.5rem 4rem; }
     .setup-shell { padding: 1rem; }
     .stat-grid-6 { grid-template-columns: 1fr; }
     .sidebar-toggle { min-width: 44px; min-height: 44px; padding: 0.6rem; }
