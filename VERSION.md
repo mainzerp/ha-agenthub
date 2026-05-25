@@ -1,14 +1,20 @@
 # Version
 
-**Current Version:** 1.28.0
+**Current Version:** 1.29.0
 
 ## Recent Changes
 
-Track changes since `v1.28.0` here.
-
-- feat(agents): add automation CRUD operations — create, update, delete, and get automation configuration via the automation executor and agent
+Track changes since `v1.29.0` here.
 
 ## Version History
+
+### 1.29.0 (MINOR) -- Dynamic weather forecast types
+
+- feat(climate): climate-agent now requests `hourly` or `daily` forecasts based on user query context
+- feat(climate): `query_weather_forecast` action accepts `type` parameter (`hourly` or `daily`, defaults to `daily`)
+- feat(prompts): update climate-agent prompt to instruct LLM to choose appropriate forecast type
+- test(climate): add test verifying `hourly` forecast type is passed to HA service
+- test(climate): update existing tests to assert correct default `daily` type
 
 ### 1.28.0 (MINOR) -- Automation CRUD operations
 
