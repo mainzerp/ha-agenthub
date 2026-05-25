@@ -197,11 +197,12 @@ async def test_pipeline_prefers_satellite_from_entity_index() -> None:
             entity_index=index,
         )
 
-    assert client.template_calls == [
-        "{{ device_id('assist_satellite.kitchen_pi') }}",
-    ]
-    _, _, _, data = client.calls[0]
-    assert data["device_id"] == "dev-kitchen-001"
+    assert client.template_calls == []
+    assert len(client.calls) == 1
+    domain, service, entity_id, data = client.calls[0]
+    assert (domain, service, entity_id) == ("assist_satellite", "start_conversation", "assist_satellite.kitchen_pi")
+    assert data["start_message"] == ""
+    assert data["preannounce"] is False
 
 
 @pytest.mark.asyncio

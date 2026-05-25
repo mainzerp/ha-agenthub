@@ -654,26 +654,42 @@ async def _trigger_conversation_continuation(
     target_entity = (await _resolve_satellite_device(ha_client, area, entity_index=entity_index)) or media_player_entity
 
     try:
-        pipeline_data: dict[str, Any] = {
-            "start_stage": "stt",
-            "end_stage": "tts",
-        }
-        device_id = await _resolve_ha_device_id(ha_client, target_entity)
-        if device_id:
-            pipeline_data["device_id"] = device_id
+        if target_entity.startswith("assist_satellite."):
+            await ha_client.call_service(
+                "assist_satellite",
+                "start_conversation",
+                target_entity,
+                {
+                    "start_message": "",
+                    "preannounce": False,
+                },
+            )
+            logger.info(
+                "Conversation continuation triggered via assist_satellite.start_conversation on %s (area=%s)",
+                target_entity,
+                area,
+            )
+        else:
+            pipeline_data: dict[str, Any] = {
+                "start_stage": "stt",
+                "end_stage": "tts",
+            }
+            device_id = await _resolve_ha_device_id(ha_client, target_entity)
+            if device_id:
+                pipeline_data["device_id"] = device_id
 
-        await ha_client.call_service(
-            "assist_pipeline",
-            "run",
-            None,
-            pipeline_data,
-        )
-        logger.info(
-            "Conversation continuation triggered on %s (area=%s, device_id=%s)",
-            target_entity,
-            area,
-            device_id or "<unresolved>",
-        )
+            await ha_client.call_service(
+                "assist_pipeline",
+                "run",
+                None,
+                pipeline_data,
+            )
+            logger.info(
+                "Conversation continuation triggered on %s (area=%s, device_id=%s)",
+                target_entity,
+                area,
+                device_id or "<unresolved>",
+            )
     except Exception:
         logger.warning(
             "Failed to trigger conversation continuation on %s -- user must use wake word for follow-up",

@@ -2199,7 +2199,10 @@ class OrchestratorAgent(BaseAgent, TaskPipeline):
             response = await self._dispatcher.dispatch(request)
             result_data = self._normalize_agent_result(response.result)
             speech = result_data.get("speech", "")
-            return speech.strip() if speech else None
+            if not speech or not speech.strip():
+                logger.warning("Filler agent returned empty speech; no filler will be spoken")
+                return None
+            return speech.strip()
         except Exception:
             logger.warning("Filler agent invocation failed", exc_info=True)
             return None

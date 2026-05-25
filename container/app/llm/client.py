@@ -103,9 +103,19 @@ async def complete(
             content = (response.choices[0].message.content or "").strip() if response.choices[0].message else ""
 
         if not content:
+            finish_reason = response.choices[0].finish_reason if response.choices else "unknown"
+            logger.warning(
+                "LLM response completely empty after retry — "
+                "agent=%s model=%s max_tokens=%s finish_reason=%s "
+                "(prompt likely exceeds max_tokens or model returned no content)",
+                agent_id,
+                model,
+                max_tokens,
+                finish_reason,
+            )
             raise ValueError(
                 f"Empty LLM response for agent={agent_id} after retry "
-                f"(finish_reason={response.choices[0].finish_reason if response.choices else 'unknown'})"
+                f"(model={model} max_tokens={max_tokens} finish_reason={finish_reason})"
             )
         if hasattr(response, "usage") and response.usage:
             await track_token_usage(
