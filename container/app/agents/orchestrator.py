@@ -2475,6 +2475,18 @@ class OrchestratorAgent(BaseAgent, TaskPipeline):
 
         # Inject recent conversation history as proper multi-turn messages
         turns = await self._get_turns(conversation_id)
+        previous_agent_hint = ""
+        if turns:
+            for turn in reversed(turns):
+                if turn.get("role") == "assistant":
+                    agent_id = turn.get("agent_id")
+                    if agent_id:
+                        previous_agent_hint = (
+                            f"The previous turn was handled by {agent_id}. "
+                            "Route follow-ups to the same agent unless the user clearly changes subject."
+                        )
+                    break
+        messages[0]["content"] = messages[0]["content"].replace("{previous_agent_hint}", previous_agent_hint)
         if turns:
             self._append_conversation_turn_messages(messages, turns, max_content_length=300)
         messages.append({"role": "user", "content": self._wrap_user_input(user_text)})
