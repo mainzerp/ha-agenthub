@@ -93,7 +93,15 @@ class FillerAgent(BaseAgent):
                 ),
                 timeout=_FILLER_LLM_TIMEOUT_SEC,
             )
-            return TaskResult(speech=result.strip() if result else "")
+            if not result or not result.strip():
+                logger.warning(
+                    "Filler generation produced empty response (agent=%s model=%s max_tokens=%s)",
+                    self.agent_card.agent_id,
+                    self._config.model if self._config else "unknown",
+                    self._config.max_tokens if self._config else "unknown",
+                )
+                return TaskResult(speech="")
+            return TaskResult(speech=result.strip())
         except TimeoutError:
             logger.warning("Filler generation timed out (>%.0fs)", _FILLER_LLM_TIMEOUT_SEC)
             return TaskResult(speech="")

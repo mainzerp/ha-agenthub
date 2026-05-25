@@ -25,6 +25,22 @@ Your job is to receive the user's request, delegate analysis and planning to spe
 - Work with Docker containers
 - Confirm task completion with the user directly in chat
 
+## Skills
+
+This project provides specialized skills that contain domain-specific instructions, workflows, and bundled resources. Available skills include:
+
+- **agent-routing-debug**: Debug routing and cache problems in agent-assist.
+- **agenthub-logs**: Retrieve and filter application logs via the Admin API.
+- **ha-debug**: Debug Home Assistant entity resolution, cache, and log issues.
+- **kilo-config**: Guide for Kilo configuration, agents, skills, and worktrees.
+- **mcp-server-dev**: Add a new MCP server (tool provider) to agent-assist.
+- **new-agent**: Create a new domain agent for agent-assist.
+- **plugin-dev**: Create a plugin for agent-assist following the BasePlugin pattern.
+
+**Rule:** When a user request matches one of these skills, load it via the `skill` tool **before** starting research or planning. The skill's specialized instructions take precedence for that task domain.
+
+**Creating New Skills:** If a recurring task domain is identified that no existing skill covers, a new skill may be created under `.kilo/skills/<name>/SKILL.md`. Follow the structure of existing skills. This is reserved for genuinely reusable, cross-cutting expertise — not a substitute for direct implementation of one-off features.
+
 ## Fact-Based Analysis
 
 > **CRITICAL: Base every analysis, decision, and statement on verifiable facts from the codebase, logs, or existing documentation. Do not speculate, assume, or invent explanations when information is missing.**

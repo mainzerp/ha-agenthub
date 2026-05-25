@@ -789,7 +789,7 @@ async def _seed_defaults(db: aiosqlite.Connection) -> None:
             "Send content to devices via notification or TTS",
         ),
         ("rewrite-agent", 0, "groq/llama-3.1-8b-instant", 2, 1, 0.8, 1024, "Cached response phrasing variation"),
-        ("filler-agent", 1, "groq/llama-3.1-8b-instant", 3, 1, 0.7, 50, "Interim filler TTS phrase generation"),
+        ("filler-agent", 1, "groq/llama-3.1-8b-instant", 3, 1, 0.7, 1024, "Interim filler TTS phrase generation"),
     ]
 
     await db.executemany(
@@ -1591,3 +1591,12 @@ async def _run_migrations(db: aiosqlite.Connection) -> None:
             ],
         )
         await db.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (33)")
+
+    if current_version < 34:
+        # Migration 34: Bump filler-agent max_tokens from 50 to 1024.
+        # The old default (50) caused finish_reason=length and empty responses.
+        await db.execute("""
+            UPDATE agent_configs SET max_tokens = 1024
+            WHERE agent_id = 'filler-agent' AND max_tokens < 1024
+        """)
+        await db.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (34)")

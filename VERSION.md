@@ -1,12 +1,22 @@
 # Version
 
-**Current Version:** 1.27.2
+**Current Version:** 1.27.3
 
 ## Recent Changes
 
-Track changes since `v1.27.2` here.
+Track changes since `v1.27.3` here.
 
 ## Version History
+
+### 1.27.3 (PATCH) -- Filler token limit and satellite voice follow-up fixes
+
+- fix(schema): bump filler-agent default max_tokens from 50 to 1024; add migration 34 to update existing DB rows
+- fix(filler): add detailed warning logs when filler generation produces empty response (includes model and max_tokens)
+- fix(orchestrator): distinguish empty filler speech from true dispatch failures in logs
+- fix(llm): enhance empty-after-retry logging to include agent_id, model, max_tokens, and finish_reason
+- fix(background_actions): use `assist_satellite.start_conversation` for `assist_satellite.*` entities instead of `assist_pipeline.run` (fixes 400 Bad Request on voice follow-up)
+- fix(notification_dispatcher): apply same satellite follow-up fix for timer/alarm notification paths
+- test(notification_dispatcher): update satellite follow-up test to assert `assist_satellite.start_conversation` call
 
 ### 1.27.2 (PATCH) -- Traces table layout fix
 
