@@ -1,12 +1,16 @@
 # Version
 
-**Current Version:** 1.27.1
+**Current Version:** 1.27.2
 
 ## Recent Changes
 
-Track changes since `v1.27.1` here.
+Track changes since `v1.27.2` here.
 
 ## Version History
+
+### 1.27.2 (PATCH) -- Traces table layout fix
+
+- fix(dashboard): View button no longer pushed out of view at ~1280px viewport on the Request Traces page — applied `table-layout: fixed` with explicit column widths via `.traces-table` CSS class; User Input column now truncates with ellipsis instead of expanding to full text width
 
 ### 1.27.1 (PATCH) -- Mobile UI fixes
 
@@ -49,8 +53,6 @@ Track changes since `v1.27.1` here.
 - refactor(dashboard): remove duplicate `utilities.css` and its template references
 - chore(css): add Google Fonts `display=swap` parameter
 - chore(css): add fluid `clamp()` font sizing for stat card values
-
-## Version History
 
 ### 1.24.2 (PATCH)
 

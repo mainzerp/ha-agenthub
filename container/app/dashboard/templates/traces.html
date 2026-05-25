@@ -76,7 +76,7 @@
         </template>
 
         <div class="table-container-flush" x-show="!loading && traces.length > 0">
-            <table class="data-table">
+            <table class="data-table traces-table">
                 <thead>
                     <tr>
                         <th>Timestamp</th>
@@ -92,7 +92,7 @@
                         <tr class="row-clickable" :data-fresh="t._fresh || false">
                             <td class="text-mono text-xs text-nowrap"
                                 x-text="formatTimestamp(t.created_at)"></td>
-                            <td class="truncate max-w-200"
+                            <td class="truncate"
                                 x-text="t.user_input || '-'"></td>
                             <td>
                                 <div class="flex flex-wrap gap-xs">
