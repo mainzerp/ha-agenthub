@@ -28,13 +28,17 @@ class AutomationAgent(ActionableAgent):
         return AgentCard(
             agent_id="automation-agent",
             name="Automation Agent",
-            description="Enables, disables, triggers, and queries Home Assistant automations. Reports status (enabled/disabled, last triggered time). Lists all automations.",
+            description="Enables, disables, triggers, creates, updates, deletes, and queries Home Assistant automations. Reports status (enabled/disabled, last triggered time). Lists all automations.",
             skills=[
                 "automation_enable",
                 "automation_disable",
                 "automation_trigger",
                 "automation_status",
                 "automation_query",
+                "automation_create",
+                "automation_update",
+                "automation_delete",
+                "automation_config",
             ],
             endpoint="local://automation-agent",
         )

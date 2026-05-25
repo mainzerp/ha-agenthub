@@ -90,6 +90,36 @@ class RecordingHaClient:
         return None
 
     # ------------------------------------------------------------------
+    # Automation config helpers (used by automation_executor CRUD)
+    # ------------------------------------------------------------------
+
+    async def get_automation_config(self, automation_id: str) -> dict[str, Any] | None:
+        auts = self._config.get("automations", {})
+        cfg = auts.get(automation_id)
+        if cfg:
+            return copy.deepcopy(cfg)
+        # Fallback: synthesize a minimal config from entity state for scenario tests
+        for state in self._states.values():
+            if state.get("attributes", {}).get("id") == automation_id:
+                friendly_name = state.get("attributes", {}).get("friendly_name", automation_id)
+                return {
+                    "alias": friendly_name,
+                    "trigger": [],
+                    "condition": [],
+                    "action": [],
+                }
+        return None
+
+    async def save_automation_config(self, automation_id: str, config: dict[str, Any]) -> dict[str, Any]:
+        self._config.setdefault("automations", {})[automation_id] = copy.deepcopy(config)
+        return {"success": True}
+
+    async def delete_automation_config(self, automation_id: str) -> dict[str, Any]:
+        self._config.get("automations", {}).pop(automation_id, None)
+        self._states.pop(f"automation.{automation_id}", None)
+        return {"success": True}
+
+    # ------------------------------------------------------------------
     # call_service + state mutations
     # ------------------------------------------------------------------
 

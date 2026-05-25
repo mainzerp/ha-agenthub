@@ -63,6 +63,8 @@ _ACTIONS_WITHOUT_ENTITY: frozenset[str] = frozenset(
         "list_alarms",
         # Lists agent list/query paths
         "list_lists",
+        # Automation CRUD actions that do not require a pre-existing entity
+        "create_automation",
     }
 )
 
