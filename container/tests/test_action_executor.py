@@ -1598,6 +1598,9 @@ class TestClimateExecutorWeatherActions:
         assert result["success"] is True
         assert "cloudy" in result["speech"]
         assert "rainy" in result["speech"]
+        ha_client.call_service.assert_awaited_once_with(
+            "weather", "get_forecasts", "weather.home", {"type": "daily"}, return_response=True
+        )
 
     @pytest.mark.asyncio
     async def test_query_weather_forecast_fallback_to_state(self, ha_client):

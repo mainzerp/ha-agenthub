@@ -728,6 +728,7 @@ async def _query_weather_forecast(
     agent_id: str | None,
     span_collector=None,
     *,
+    parameters: dict[str, Any] | None = None,
     preferred_area_id: str | None = None,
     verbatim_terms: list[str] | None = None,
 ) -> dict:
@@ -750,9 +751,10 @@ async def _query_weather_forecast(
             or "No weather entities found in Home Assistant. Please add a weather integration.",
             "cacheable": False,
         }
+    forecast_type = (parameters or {}).get("type", "daily")
     try:
         resp = await ha_client.call_service(
-            "weather", "get_forecasts", entity_id, {"type": "daily"}, return_response=True
+            "weather", "get_forecasts", entity_id, {"type": forecast_type}, return_response=True
         )
         forecasts = []
         if isinstance(resp, dict):
@@ -903,6 +905,7 @@ async def _handle_climate_read_action(
             entity_matcher,
             agent_id,
             span_collector=span_collector,
+            parameters=params,
             preferred_area_id=preferred_area_id,
             verbatim_terms=verbatim_terms,
         )
