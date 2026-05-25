@@ -527,6 +527,7 @@ input[type="range"]::-webkit-slider-thumb {
     backdrop-filter: blur(12px);
     -webkit-backdrop-filter: blur(12px);
     transition: border-color 0.2s ease, transform 0.15s ease;
+    min-width: 0; /* prevent CSS Grid intrinsic sizing from blowing out the column */
 }
 
 .stat-card:hover {
@@ -554,6 +555,8 @@ input[type="range"]::-webkit-slider-thumb {
     text-transform: uppercase;
     letter-spacing: 0.05em;
     color: var(--color-dust);
+    overflow-wrap: break-word; /* allow long labels to wrap on narrow cards */
+    min-width: 0;
 }
 
 .stat-card-value {
@@ -1447,4 +1450,36 @@ details.card > .details-content {
 
 .badge {
     transition: opacity 0.15s ease;
+}
+
+
+/* ==========================================================================
+   Responsive grid overrides
+   Must live at the END of this file so they win over the base grid definitions
+   above (components.css loads after layout.css in the HTML, so any rule here
+   beats the same rule in layout.css — base definitions earlier in this file
+   would also win without these end-of-file overrides).
+   ========================================================================== */
+
+@media (max-width: 1024px) {
+    .grid-4 { grid-template-columns: repeat(2, 1fr); }
+    .grid-3 { grid-template-columns: repeat(2, 1fr); }
+}
+
+@media (max-width: 768px) {
+    .grid-4,
+    .grid-3,
+    .grid-2 { grid-template-columns: 1fr; }
+
+    /* minmax(0, 1fr) prevents CSS Grid from expanding a track beyond the
+       available space due to its implicit min-width: auto (min-content). */
+    .stat-grid   { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .stat-grid-6 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .stat-grid-3 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+@media (max-width: 480px) {
+    .stat-grid,
+    .stat-grid-6,
+    .stat-grid-3 { grid-template-columns: 1fr; }
 }
