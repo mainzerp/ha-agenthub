@@ -1,14 +1,16 @@
 # Version
 
-**Current Version:** 1.26.0
+**Current Version:** 1.27.0
 
 ## Recent Changes
 
-Track changes since `v1.26.0` here.
-
-- feat(dashboard): add expandable detail panel to cache management page showing response text, cached action JSON, entity IDs, and metadata for both routing and action cache tiers
+Track changes since `v1.27.0` here.
 
 ## Version History
+
+### 1.27.0 (MINOR) -- Follow-up routing hint
+
+- feat(orchestrator): inject previous-agent hint into classification prompt to improve follow-up routing accuracy. The orchestrator now tells the LLM which agent handled the previous turn, reducing mis-routing of short ambiguous follow-ups to general-agent.
 
 ### 1.26.0 (MINOR) -- Cache dashboard detail panel
 
