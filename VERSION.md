@@ -1,12 +1,21 @@
 # Version
 
-**Current Version:** 1.27.0
+**Current Version:** 1.27.1
 
 ## Recent Changes
 
-Track changes since `v1.27.0` here.
+Track changes since `v1.27.1` here.
 
 ## Version History
+
+### 1.27.1 (PATCH) -- Mobile UI fixes
+
+- fix(dashboard): page title no longer hidden behind hamburger button on all mobile pages (added `padding-left: 4rem` to `.top-bar` at ≤768px)
+- fix(dashboard): eliminated horizontal overflow/scrollbar on all mobile pages (`overflow-x: hidden` on `.main-content`)
+- fix(dashboard): resolve CSS cascade bug — responsive grid rules in `layout.css` were silently overridden by base definitions in `components.css` (which loads later); responsive overrides now appended at end of `components.css`
+- fix(dashboard): stat-grid no longer overflows on 375px/320px viewports (`minmax(0, 1fr)` + `min-width: 0` on `.stat-card`)
+- fix(dashboard): settings page grid-2 now correctly collapses to single column on mobile
+- fix(dashboard): stat card labels wrap on narrow cards instead of forcing overflow
 
 ### 1.27.0 (MINOR) -- Follow-up routing hint
 
