@@ -1,12 +1,22 @@
 # Version
 
-**Current Version:** 1.27.3
+**Current Version:** 1.28.0
 
 ## Recent Changes
 
-Track changes since `v1.27.3` here.
+Track changes since `v1.28.0` here.
+
+- feat(agents): add automation CRUD operations — create, update, delete, and get automation configuration via the automation executor and agent
 
 ## Version History
+
+### 1.28.0 (MINOR) -- Automation CRUD operations
+
+- feat(agents): add `create_automation`, `update_automation`, `delete_automation`, and `get_automation_config` actions to automation executor
+- feat(agents): update `AutomationAgent` agent card to include CRUD skills
+- test(agents): add executor unit tests for automation CRUD actions
+- test(agents): add agent integration tests for automation CRUD actions
+- test(scenarios): add 4 scenario YAML files for automation CRUD voice commands
 
 ### 1.27.3 (PATCH) -- Filler token limit and satellite voice follow-up fixes
 

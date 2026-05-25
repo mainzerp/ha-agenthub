@@ -338,6 +338,29 @@ class HARestClient:
         resp.raise_for_status()
         return resp.json()
 
+    async def get_automation_config(self, automation_id: str) -> dict[str, Any] | None:
+        """GET /api/config/automation/config/<automation_id>."""
+        assert self._client is not None
+        resp = await self._client.get(f"/api/config/automation/config/{automation_id}")
+        if resp.status_code == 404:
+            return None
+        resp.raise_for_status()
+        return resp.json()
+
+    async def save_automation_config(self, automation_id: str, config: dict[str, Any]) -> dict[str, Any]:
+        """POST /api/config/automation/config/<automation_id>."""
+        assert self._client is not None
+        resp = await self._client.post(f"/api/config/automation/config/{automation_id}", json=config)
+        resp.raise_for_status()
+        return resp.json()
+
+    async def delete_automation_config(self, automation_id: str) -> dict[str, Any]:
+        """DELETE /api/config/automation/config/<automation_id>."""
+        assert self._client is not None
+        resp = await self._client.delete(f"/api/config/automation/config/{automation_id}")
+        resp.raise_for_status()
+        return resp.json()
+
     # ------------------------------------------------------------------
     # 0.23.0: registry-derived enrichment helpers used by entity ingest.
     # All wrap /api/template with a small TTL cache. Each method returns

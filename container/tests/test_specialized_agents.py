@@ -1974,6 +1974,94 @@ class TestAutomationAgent:
         _, kwargs = mock_exec.call_args
         assert kwargs.get("agent_id") == "automation-agent"
 
+    @patch(
+        "app.agents.automation.execute_automation_action",
+        new_callable=AsyncMock,
+        return_value={
+            "success": True,
+            "entity_id": "ah_kitchen_sunset",
+            "new_state": None,
+            "speech": "Created Kitchen Sunset Light automation.",
+        },
+    )
+    @patch(
+        "app.llm.client.complete",
+        new_callable=AsyncMock,
+        return_value='```json\n{"action": "create_automation", "entity": "kitchen sunset light", "parameters": {"config": {"alias": "Kitchen Sunset Light", "triggers": [{"platform": "sun", "event": "sunset"}], "actions": [{"service": "light.turn_on", "target": {"entity_id": "light.kitchen"}}]}}}\n```\nCreating the kitchen sunset automation.',
+    )
+    async def test_handle_task_create_automation(self, mock_complete, mock_exec):
+        agent = AutomationAgent(ha_client=MagicMock(), entity_index=MagicMock(), entity_matcher=MagicMock())
+        result = await agent.handle_task(_make_task("create an automation that turns on the kitchen light at sunset"))
+        assert result.action_executed.success is True
+
+    @patch(
+        "app.agents.automation.execute_automation_action",
+        new_callable=AsyncMock,
+        return_value={
+            "success": True,
+            "entity_id": "automation.morning_routine",
+            "new_state": None,
+            "speech": "Updated Morning Routine automation.",
+        },
+    )
+    @patch(
+        "app.llm.client.complete",
+        new_callable=AsyncMock,
+        return_value='```json\n{"action": "update_automation", "entity": "morning routine", "parameters": {"config": {"alias": "Morning Routine", "triggers": [{"platform": "time", "at": "07:00:00"}], "actions": [{"service": "light.turn_on", "target": {"entity_id": "light.bedroom"}}]}}}\n```\nUpdating the morning routine.',
+    )
+    async def test_handle_task_update_automation(self, mock_complete, mock_exec):
+        agent = AutomationAgent(ha_client=MagicMock(), entity_index=MagicMock(), entity_matcher=MagicMock())
+        result = await agent.handle_task(_make_task("update the morning routine to turn on the bedroom light at 7 AM"))
+        assert result.action_executed.success is True
+
+    @patch(
+        "app.agents.automation.execute_automation_action",
+        new_callable=AsyncMock,
+        return_value={
+            "success": True,
+            "entity_id": "automation.vacation_mode",
+            "new_state": None,
+            "speech": "Deleted Vacation Mode automation.",
+        },
+    )
+    @patch(
+        "app.llm.client.complete",
+        new_callable=AsyncMock,
+        return_value='```json\n{"action": "delete_automation", "entity": "vacation mode", "parameters": {}}\n```\nDeleting the vacation mode automation.',
+    )
+    async def test_handle_task_delete_automation(self, mock_complete, mock_exec):
+        agent = AutomationAgent(ha_client=MagicMock(), entity_index=MagicMock(), entity_matcher=MagicMock())
+        result = await agent.handle_task(_make_task("delete the vacation mode automation"))
+        assert result.action_executed.success is True
+
+    @patch(
+        "app.agents.automation.execute_automation_action",
+        new_callable=AsyncMock,
+        return_value={
+            "success": True,
+            "entity_id": "automation.motion_sensor",
+            "new_state": None,
+            "speech": "Motion Sensor has 2 triggers, 1 condition, and 3 actions.",
+        },
+    )
+    @patch(
+        "app.llm.client.complete",
+        new_callable=AsyncMock,
+        return_value='```json\n{"action": "get_automation_config", "entity": "motion sensor", "parameters": {}}\n```\nRetrieving the motion sensor automation configuration.',
+    )
+    async def test_handle_task_get_automation_config(self, mock_complete, mock_exec):
+        agent = AutomationAgent(ha_client=MagicMock(), entity_index=MagicMock(), entity_matcher=MagicMock())
+        result = await agent.handle_task(_make_task("show me the config for the motion sensor automation"))
+        assert result.action_executed.success is True
+
+    def test_agent_card_includes_crud_skills(self):
+        agent = AutomationAgent()
+        skills = agent.agent_card.skills
+        assert "automation_create" in skills
+        assert "automation_update" in skills
+        assert "automation_delete" in skills
+        assert "automation_config" in skills
+
 
 class TestSecurityAgentHandler:
     @patch("app.llm.client.complete", new_callable=AsyncMock, return_value="The front door is locked.")

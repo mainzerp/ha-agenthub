@@ -1,0 +1,24 @@
+id: automation.get_automation_config
+agent: automation-agent
+description: Show automation configuration
+snapshot: home_default
+language: en
+context: {source: ha, area_id: living_room, device_id: satellite_living_room}
+preconditions:
+  entity_overrides:
+    - {entity_id: automation.motion_sensor, state: "on", attributes: {id: "motion_sensor_001", friendly_name: "Motion Sensor"}}
+llm:
+  classify: |
+    automation-agent (95%): Show me the motion sensor automation config
+  agents:
+    automation-agent: |
+      Retrieving the motion sensor automation configuration.
+      ```json
+      {"action": "get_automation_config", "entity": "motion sensor", "parameters": {}}
+      ```
+request:
+  text: "show me the config for the motion sensor automation"
+expected:
+  routed_agent: automation-agent
+  service_calls: []
+  speech_contains: ["trigger"]

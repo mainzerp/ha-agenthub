@@ -1,0 +1,24 @@
+id: automation.delete_vacation_mode
+agent: automation-agent
+description: Delete an existing automation
+snapshot: home_default
+language: en
+context: {source: ha, area_id: living_room, device_id: satellite_living_room}
+preconditions:
+  entity_overrides:
+    - {entity_id: automation.vacation_mode, state: "off", attributes: {id: "vacation_mode_001", friendly_name: "Vacation Mode"}}
+llm:
+  classify: |
+    automation-agent (95%): Delete the vacation mode automation
+  agents:
+    automation-agent: |
+      Deleting the vacation mode automation.
+      ```json
+      {"action": "delete_automation", "entity": "vacation mode", "parameters": {}}
+      ```
+request:
+  text: "delete the vacation mode automation"
+expected:
+  routed_agent: automation-agent
+  service_calls: []
+  speech_contains: ["deleted", "Vacation Mode"]

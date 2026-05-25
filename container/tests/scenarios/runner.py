@@ -262,7 +262,7 @@ async def build_pipeline(scenario: Scenario, db_path) -> PipelineHandles:
     # Vector store + entity index + matcher
     vector_store = StubVectorStore()
     entity_index = EntityIndex(vector_store)
-    entries = parse_ha_states(states)
+    entries = parse_ha_states(await ha_client.get_states())
     entity_index.populate(entries)
     alias_resolver = AliasResolver()
     matcher = EntityMatcher(entity_index, alias_resolver)

@@ -660,6 +660,315 @@ class TestAutomationExecutorQueries:
         assert "No automation" in result["speech"]
 
 
+class TestAutomationExecutorCrud:
+    async def test_create_automation_success(self):
+        ha = AsyncMock()
+        ha.get_automation_config = AsyncMock(return_value=None)
+        ha.save_automation_config = AsyncMock(return_value={"result": "ok"})
+        matcher = AsyncMock()
+        matcher.match = AsyncMock(return_value=[])
+        result = await execute_automation_action(
+            {
+                "action": "create_automation",
+                "entity": "kitchen sunset",
+                "parameters": {
+                    "config": {
+                        "alias": "Kitchen Sunset",
+                        "triggers": [{"platform": "sun", "event": "sunset"}],
+                        "actions": [{"service": "light.turn_on", "target": {"entity_id": "light.kitchen"}}],
+                    }
+                },
+            },
+            ha,
+            None,
+            matcher,
+            agent_id="automation-agent",
+        )
+        assert result["success"] is True
+        assert "created" in result["speech"]
+        assert result["entity_id"].startswith("ah_")
+
+    async def test_create_automation_without_alias_uses_entity(self):
+        ha = AsyncMock()
+        ha.get_automation_config = AsyncMock(return_value=None)
+        ha.save_automation_config = AsyncMock(return_value={"result": "ok"})
+        matcher = AsyncMock()
+        matcher.match = AsyncMock(return_value=[])
+        result = await execute_automation_action(
+            {
+                "action": "create_automation",
+                "entity": "kitchen sunset",
+                "parameters": {
+                    "config": {
+                        "triggers": [{"platform": "sun", "event": "sunset"}],
+                        "actions": [{"service": "light.turn_on", "target": {"entity_id": "light.kitchen"}}],
+                    }
+                },
+            },
+            ha,
+            None,
+            matcher,
+            agent_id="automation-agent",
+        )
+        assert result["success"] is True
+        assert "created" in result["speech"]
+        saved_config = ha.save_automation_config.call_args[0][1]
+        assert saved_config.get("alias") == "kitchen sunset"
+
+    async def test_create_automation_id_collision_generates_unique_id(self):
+        ha = AsyncMock()
+        ha.get_automation_config = AsyncMock(side_effect=[{"existing": True}, None])
+        ha.save_automation_config = AsyncMock(return_value={"result": "ok"})
+        matcher = AsyncMock()
+        matcher.match = AsyncMock(return_value=[])
+        result = await execute_automation_action(
+            {
+                "action": "create_automation",
+                "entity": "kitchen sunset",
+                "parameters": {
+                    "config": {
+                        "alias": "Kitchen Sunset",
+                        "triggers": [],
+                        "actions": [],
+                    }
+                },
+            },
+            ha,
+            None,
+            matcher,
+            agent_id="automation-agent",
+        )
+        assert result["success"] is True
+        assert result["entity_id"].endswith("_2")
+
+    async def test_create_automation_ha_error(self):
+        ha = AsyncMock()
+        ha.get_automation_config = AsyncMock(return_value=None)
+        ha.save_automation_config = AsyncMock(side_effect=Exception("Connection refused"))
+        matcher = AsyncMock()
+        matcher.match = AsyncMock(return_value=[])
+        result = await execute_automation_action(
+            {
+                "action": "create_automation",
+                "entity": "kitchen sunset",
+                "parameters": {
+                    "config": {
+                        "alias": "Kitchen Sunset",
+                        "triggers": [],
+                        "actions": [],
+                    }
+                },
+            },
+            ha,
+            None,
+            matcher,
+            agent_id="automation-agent",
+        )
+        assert result["success"] is False
+        assert "Failed" in result["speech"]
+
+    async def test_update_automation_success(self):
+        ha = AsyncMock()
+        ha.get_state = AsyncMock(
+            return_value={
+                "state": "on",
+                "attributes": {"id": "morning_routine_001", "friendly_name": "Morning Routine"},
+            }
+        )
+        ha.save_automation_config = AsyncMock(return_value={"result": "ok"})
+        matcher = AsyncMock()
+        matcher.match = AsyncMock(
+            return_value=[MagicMock(entity_id="automation.morning_routine", friendly_name="Morning Routine")]
+        )
+        result = await execute_automation_action(
+            {
+                "action": "update_automation",
+                "entity": "morning routine",
+                "parameters": {
+                    "config": {
+                        "alias": "Morning Routine",
+                        "triggers": [{"platform": "time", "at": "07:00:00"}],
+                        "actions": [{"service": "light.turn_on", "target": {"entity_id": "light.bedroom"}}],
+                    }
+                },
+            },
+            ha,
+            None,
+            matcher,
+            agent_id="automation-agent",
+        )
+        assert result["success"] is True
+        assert "updated" in result["speech"]
+
+    async def test_update_automation_missing_config_id(self):
+        ha = AsyncMock()
+        ha.get_state = AsyncMock(
+            return_value={
+                "state": "on",
+                "attributes": {"friendly_name": "Morning Routine"},
+            }
+        )
+        matcher = AsyncMock()
+        matcher.match = AsyncMock(
+            return_value=[MagicMock(entity_id="automation.morning_routine", friendly_name="Morning Routine")]
+        )
+        result = await execute_automation_action(
+            {
+                "action": "update_automation",
+                "entity": "morning routine",
+                "parameters": {
+                    "config": {
+                        "alias": "Morning Routine",
+                        "triggers": [],
+                        "actions": [],
+                    }
+                },
+            },
+            ha,
+            None,
+            matcher,
+            agent_id="automation-agent",
+        )
+        assert result["success"] is False
+        assert "editable configuration" in result["speech"]
+
+    async def test_delete_automation_success(self):
+        ha = AsyncMock()
+        ha.get_state = AsyncMock(
+            return_value={
+                "state": "on",
+                "attributes": {"id": "abc123", "friendly_name": "Vacation Mode"},
+            }
+        )
+        ha.delete_automation_config = AsyncMock(return_value={"result": "ok"})
+        matcher = AsyncMock()
+        matcher.match = AsyncMock(
+            return_value=[MagicMock(entity_id="automation.vacation_mode", friendly_name="Vacation Mode")]
+        )
+        result = await execute_automation_action(
+            {
+                "action": "delete_automation",
+                "entity": "vacation mode",
+                "parameters": {},
+            },
+            ha,
+            None,
+            matcher,
+            agent_id="automation-agent",
+        )
+        assert result["success"] is True
+        assert "deleted" in result["speech"]
+
+    async def test_delete_automation_not_found(self):
+        ha = AsyncMock()
+        matcher = AsyncMock()
+        matcher.match = AsyncMock(return_value=[])
+        result = await execute_automation_action(
+            {
+                "action": "delete_automation",
+                "entity": "nonexistent",
+                "parameters": {},
+            },
+            ha,
+            None,
+            matcher,
+            agent_id="automation-agent",
+        )
+        assert result["success"] is False
+        assert "Could not find" in result["speech"]
+
+    async def test_get_automation_config_success(self):
+        ha = AsyncMock()
+        ha.get_state = AsyncMock(
+            return_value={
+                "state": "on",
+                "attributes": {"id": "motion_sensor_001", "friendly_name": "Motion Sensor"},
+            }
+        )
+        ha.get_automation_config = AsyncMock(
+            return_value={
+                "alias": "Motion Sensor",
+                "trigger": [{"platform": "state"}, {"platform": "time"}],
+                "condition": [{"condition": "state"}],
+                "action": [
+                    {"service": "light.turn_on"},
+                    {"service": "light.turn_off"},
+                    {"service": "notify.mobile_app"},
+                ],
+            }
+        )
+        matcher = AsyncMock()
+        matcher.match = AsyncMock(
+            return_value=[MagicMock(entity_id="automation.motion_sensor", friendly_name="Motion Sensor")]
+        )
+        result = await execute_automation_action(
+            {
+                "action": "get_automation_config",
+                "entity": "motion sensor",
+                "parameters": {},
+            },
+            ha,
+            None,
+            matcher,
+            agent_id="automation-agent",
+        )
+        assert result["success"] is True
+        assert "trigger" in result["speech"]
+        assert "condition" in result["speech"]
+        assert "action" in result["speech"]
+
+    async def test_get_automation_config_missing_config_id(self):
+        ha = AsyncMock()
+        ha.get_state = AsyncMock(
+            return_value={
+                "state": "on",
+                "attributes": {"friendly_name": "Motion Sensor"},
+            }
+        )
+        matcher = AsyncMock()
+        matcher.match = AsyncMock(
+            return_value=[MagicMock(entity_id="automation.motion_sensor", friendly_name="Motion Sensor")]
+        )
+        result = await execute_automation_action(
+            {
+                "action": "get_automation_config",
+                "entity": "motion sensor",
+                "parameters": {},
+            },
+            ha,
+            None,
+            matcher,
+            agent_id="automation-agent",
+        )
+        assert result["success"] is False
+
+    async def test_list_automations_shows_agenthub_marker(self):
+        ha = AsyncMock()
+        ha.get_states = AsyncMock(
+            return_value=[
+                {
+                    "entity_id": "automation.morning_routine",
+                    "state": "on",
+                    "attributes": {"friendly_name": "Morning Routine", "id": "ah_test"},
+                },
+                {
+                    "entity_id": "automation.night_mode",
+                    "state": "off",
+                    "attributes": {"friendly_name": "Night Mode"},
+                },
+            ]
+        )
+        result = await execute_automation_action(
+            {"action": "list_automations", "entity": ""},
+            ha,
+            None,
+            None,
+            agent_id="automation-agent",
+        )
+        assert result["success"] is True
+        assert "AgentHub" in result["speech"]
+
+
 class TestSceneExecutorQueries:
     async def test_query_scene_found(self):
         matcher = AsyncMock()
