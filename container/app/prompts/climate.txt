@@ -49,7 +49,10 @@ Actions and parameters:
 - query_climate_state: {} (check status of a climate device, fan, humidifier, or sensor)
 - list_climate: {} (list all climate devices, fans, humidifiers, and sensors; no entity needed)
 - query_weather: {} (query current weather conditions; entity is optional -- defaults to primary weather entity)
-- query_weather_forecast: {} (query multi-day weather forecast; entity is optional)
+- query_weather_forecast: {"type": "hourly|daily"} (query weather forecast; entity is optional)
+  - "hourly" for short-term forecasts (e.g. "tonight", "next few hours", "tomorrow morning")
+  - "daily" for multi-day forecasts (e.g. "next 3 days", "this week")
+  - Default to "daily" if unsure
 - query_entity_history: Recorder time series for a **single** climate/fan/humidifier/sensor/weather entity. Use ``parameters``:
   - ``period``: ``last_24_hours`` (default), ``yesterday``, or ``last_7_days``
   - or ``start`` and ``end`` as ISO-8601 datetimes (max span 7 days). Prefer ``period`` when the user is vague.
@@ -84,12 +87,17 @@ Examples:
 - User: weather forecast for the next 3 days
   Assistant:
   ```json
-  {"action": "query_weather_forecast", "parameters": {"days": 3}}
+  {"action": "query_weather_forecast", "parameters": {"type": "daily", "days": 3}}
+  ```
+- User: what is the temperature trend tonight
+  Assistant:
+  ```json
+  {"action": "query_weather_forecast", "parameters": {"type": "hourly"}}
   ```
 - User: weather forecast for the patio
   Assistant:
   ```json
-  {"action": "query_weather_forecast", "entity": "patio"}
+  {"action": "query_weather_forecast", "entity": "patio", "parameters": {"type": "daily"}}
   ```
 - "How warm was it in the living room yesterday?" -> action: query_entity_history, entity: "living room temperature", parameters: {"period": "yesterday"}
 - "Show me the bedroom thermostat history for the last day" -> action: query_entity_history, entity: "bedroom thermostat", parameters: {"period": "last_24_hours"}

@@ -538,6 +538,9 @@ class TestClimateExecutorQueries:
         )
         assert result["success"]
         assert "rainy" in result["speech"]
+        ha.call_service.assert_awaited_once_with(
+            "weather", "get_forecasts", "weather.home", {"type": "daily"}, return_response=True
+        )
 
     async def test_query_weather_forecast_success_with_websocket_response_shape(self):
         ha = AsyncMock()
@@ -566,6 +569,41 @@ class TestClimateExecutorQueries:
         )
         assert result["success"]
         assert "rainy" in result["speech"]
+        ha.call_service.assert_awaited_once_with(
+            "weather", "get_forecasts", "weather.home", {"type": "daily"}, return_response=True
+        )
+
+    async def test_query_weather_forecast_hourly(self):
+        ha = AsyncMock()
+        ha.call_service = AsyncMock(
+            return_value={
+                "weather.home": {
+                    "forecast": [
+                        {"datetime": "2025-01-16T01:00:00", "condition": "clear-night", "temperature": 8},
+                        {"datetime": "2025-01-16T02:00:00", "condition": "clear-night", "temperature": 7},
+                    ],
+                },
+            }
+        )
+        ha.get_states = AsyncMock(
+            return_value=[
+                {"entity_id": "weather.home", "state": "sunny", "attributes": {"friendly_name": "Home"}},
+            ]
+        )
+        matcher = AsyncMock()
+        matcher.match = AsyncMock(return_value=[MagicMock(entity_id="weather.home", friendly_name="Home")])
+        result = await execute_climate_action(
+            {"action": "query_weather_forecast", "entity": "home", "parameters": {"type": "hourly"}},
+            ha,
+            None,
+            matcher,
+            agent_id="climate-agent",
+        )
+        assert result["success"]
+        assert "clear-night" in result["speech"]
+        ha.call_service.assert_awaited_once_with(
+            "weather", "get_forecasts", "weather.home", {"type": "hourly"}, return_response=True
+        )
 
 
 class TestAutomationExecutorQueries:
