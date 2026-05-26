@@ -1,12 +1,22 @@
 # Version
 
-**Current Version:** 1.30.0
+**Current Version:** 1.31.0
 
 ## Recent Changes
 
-Track changes since `v1.30.0` here.
+Track changes since `v1.31.0` here.
 
 ## Version History
+
+### 1.31.0 (MINOR) -- Cache validator dashboard and skip logic
+
+- feat(cache): add `validated_at` timestamp to ActionCacheEntry; validated entries are skipped on subsequent scans
+- feat(cache): add in-memory scan history (last 50 runs) to ActionCacheValidator with `started_at`/`finished_at`
+- feat(api): add `GET /api/admin/cache/validate/history` endpoint
+- feat(dashboard): add "Cache Validator" tab to cache management page with run button and history table
+- feat(dashboard): add "Validated" column to Action cache table
+- feat(dashboard): replace plain text model field with agent-style Provider + Model selector in cache validator settings
+- feat(ci): add cross-platform `scripts/ci.py` for local quality, security, and docker build/push
 
 ### 1.30.0 (MINOR) -- Action cache validator
 
