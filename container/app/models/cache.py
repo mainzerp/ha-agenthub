@@ -37,6 +37,7 @@ class ActionCacheEntry(BaseModel):
     original_response_text: str | None = None
     rewrite_applied: bool = False
     rewrite_latency_ms: float | None = None
+    validated_at: str | None = None
 
 
 class RoutingCacheEntry(BaseModel):

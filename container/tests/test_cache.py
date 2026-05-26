@@ -761,6 +761,29 @@ class TestActionCacheExtended:
         assert hit.rewrite_applied is True
         assert hit.rewrite_latency_ms == 42.0
 
+    def test_action_cache_roundtrips_validated_at(self):
+        """Store and lookup must preserve validated_at."""
+        cache, store = self._make_cache()
+        store.count.return_value = 0
+        entry = make_action_cache_entry(
+            query_text="turn on kitchen light",
+            response_text="Done.",
+            validated_at="2025-06-01T12:00:00+00:00",
+        )
+        cache.store(entry)
+        stored_metadata = cache._serialize_metadata(entry)
+        exact_id = cache.make_entry_id(entry.query_text, language=entry.language)
+        store.get.return_value = {
+            "ids": [exact_id],
+            "documents": [entry.query_text],
+            "metadatas": [stored_metadata],
+        }
+
+        hit, _similarity = cache.lookup(entry.query_text, language=entry.language)
+
+        assert hit is not None
+        assert hit.validated_at == "2025-06-01T12:00:00+00:00"
+
 
 # ---------------------------------------------------------------------------
 # Cache manager extended tests
