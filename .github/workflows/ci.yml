@@ -34,17 +34,8 @@ jobs:
       - name: Install dependencies
         run: pip install -r container/requirements-dev.txt
 
-      - name: Run linter
-        run: ruff check container/ custom_components/
-
-      - name: Check formatting
-        run: ruff format --check container/ custom_components/
-
-      - name: Run container tests
-        run: cd container && python -m pytest tests/ -n auto -q --tb=short --cov=app --cov-report=xml --cov-report=term-missing --cov-fail-under=72
-
-      - name: Run HA tests
-        run: python -m pytest custom_components/tests/ -v --tb=short
+      - name: Run quality checks
+        run: python scripts/ci.py --skip-security --skip-docker
 
       - name: Upload coverage report
         if: always()
@@ -67,17 +58,8 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install security tools
-        run: pip install bandit pip-audit
-
-      - name: Run Bandit
-        run: bandit -r container/app -f json -o bandit-report.json -c container/.bandit.yml
-
-      - name: Run pip-audit
-        # TODO: Re-evaluate if CVE-2026-28684 ignore is still needed after dependency updates
-        # NOTE: Vulnerabilities in transitive deps (torch, transformers, pyjwt, joblib) currently have no fixes.
-        #       Running with || true so the CI pipeline does not block on unfixed upstream vulnerabilities.
-        run: pip-audit -r container/requirements.txt --format=json --output=pip-audit-report.json --ignore-vuln CVE-2026-28684 || true
+      - name: Run security checks
+        run: python scripts/ci.py --skip-quality --skip-docker
 
       - name: Upload security scan artifacts
         if: always()
