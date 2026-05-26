@@ -190,6 +190,21 @@ async def flush_cache(request: Request, payload: FlushRequest):
         return {"status": "error", "detail": "Cache operation failed"}
 
 
+@router.post("/validate")
+async def validate_cache(request: Request):
+    """Trigger an on-demand action-cache validation scan."""
+    await ensure_setup_runtime_initialized(request.app)
+    validator = getattr(request.app.state, "cache_validator", None)
+    if validator is None:
+        return {"status": "error", "detail": "Cache validator not initialized"}
+    try:
+        result = await validator.run_once()
+        return {"status": "ok", **result}
+    except Exception:
+        logger.warning("Manual cache validation failed", exc_info=True)
+        return {"status": "error", "detail": "Validation failed"}
+
+
 @router.get("/export")
 async def export_cache(
     request: Request,

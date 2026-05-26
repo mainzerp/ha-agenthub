@@ -439,3 +439,11 @@ class CacheManager:
     async def purge_readonly_entries(self) -> int:
         """Purge legacy read-only rows that should now live in routing cache."""
         return await asyncio.to_thread(self._action_cache.purge_readonly_entries)
+
+    def iter_action_entries(self, *, page_size: int = 1000):
+        """Yield action-cache entries, paginating through the underlying store."""
+        return self._action_cache.iterate_entries(page_size=page_size)
+
+    async def update_action_entry(self, entry: ActionCacheEntry) -> None:
+        """Store a corrected action-cache entry (upserts by deterministic entry_id)."""
+        await self.store_action_async(entry)

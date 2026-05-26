@@ -1,12 +1,19 @@
 # Version
 
-**Current Version:** 1.29.1
+**Current Version:** 1.30.0
 
 ## Recent Changes
 
-Track changes since `v1.29.1` here.
+Track changes since `v1.30.0` here.
 
 ## Version History
+
+### 1.30.0 (MINOR) -- Action cache validator
+
+- feat(cache): add ActionCacheValidator for periodic action-cache validation and stale entry cleanup
+- feat(api): add POST /api/admin/cache/validate endpoint for on-demand cache validation scans
+- feat(settings): add cache.validator.* settings (enabled, interval_minutes, model, temperature, reasoning_effort, max_tokens)
+- feat(runtime): integrate cache validator into runtime setup with periodic background task
 
 ### 1.29.1 (PATCH) -- Integration-driven satellite voice follow-up
 

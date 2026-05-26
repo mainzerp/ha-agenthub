@@ -235,6 +235,28 @@ async def lifespan(app: FastAPI):
             description="Response language: 'auto' = detect from user input, or a specific ISO code like 'de', 'en'",
         )
 
+    # Register default cache validator settings if not already set
+    for key, value, vtype, desc in [
+        ("cache.validator.enabled", "true", "bool", "Enable periodic action-cache validation"),
+        (
+            "cache.validator.interval_minutes",
+            "60",
+            "number",
+            "Minutes between periodic action-cache validation scans (0 = disabled)",
+        ),
+        (
+            "cache.validator.model",
+            "",
+            "string",
+            "LLM model for cache validator response regeneration (empty = template only)",
+        ),
+        ("cache.validator.temperature", "0.2", "float", "Temperature for cache validator LLM regeneration"),
+        ("cache.validator.reasoning_effort", "low", "string", "Reasoning effort for cache validator LLM calls"),
+        ("cache.validator.max_tokens", "1024", "int", "Max tokens for cache validator LLM regeneration"),
+    ]:
+        if await SettingsRepository.get_value(key) is None:
+            await SettingsRepository.set(key, value, value_type=vtype, category="cache", description=desc)
+
     # Check if setup is complete before initializing HA-dependent components
     setup_complete = await SetupStateRepository.is_complete()
     app.state.setup_runtime_init_lock = asyncio.Lock()
@@ -467,6 +489,10 @@ async def lifespan(app: FastAPI):
     if entity_index_init_task and not entity_index_init_task.done():
         entity_index_init_task.cancel()
         tasks_to_cancel.append(entity_index_init_task)
+    validator_task = getattr(app.state, "cache_validator_task", None)
+    if validator_task and not validator_task.done():
+        validator_task.cancel()
+        tasks_to_cancel.append(validator_task)
     if tasks_to_cancel:
         await asyncio.gather(*tasks_to_cancel, return_exceptions=True)
 

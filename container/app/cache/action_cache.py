@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Iterator
 from datetime import UTC, datetime
 
 from app.cache._base_cache import _BaseCache, _normalize_language, _parse_entity_ids, make_text_id
@@ -129,6 +130,35 @@ class ActionCache(_BaseCache[ActionCacheEntry]):
         for start in range(0, len(to_delete), 500):
             self._store.delete(COLLECTION_ACTION_CACHE, ids=to_delete[start : start + 500])
         return len(to_delete)
+
+    def iterate_entries(
+        self,
+        *,
+        page_size: int = 1000,
+        include: list[str] | None = None,
+    ) -> Iterator[ActionCacheEntry]:
+        """Yield all action-cache entries, paginating through ChromaDB."""
+        _include = include or ["documents", "metadatas"]
+        offset = 0
+        while True:
+            page = self._store.get(
+                COLLECTION_ACTION_CACHE,
+                include=_include,
+                limit=page_size,
+                offset=offset,
+            )
+            ids = page.get("ids") or []
+            documents = page.get("documents") or []
+            metas = page.get("metadatas") or []
+            if not ids:
+                break
+            for _entry_id, document, meta in zip(ids, documents, metas, strict=False):
+                entry = self._deserialize_entry(document or "", meta or {}, similarity=1.0)
+                if entry is not None:
+                    yield entry
+            if len(ids) < page_size:
+                break
+            offset += page_size
 
     def get_stats(self) -> dict[str, object]:
         stats = super().get_stats()

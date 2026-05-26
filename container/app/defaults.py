@@ -17,4 +17,10 @@ CACHE_DEFAULTS: dict[str, object] = {
     "cache.action.max_entries": 50000,
     "cache.lru.trigger_fraction": 0.95,
     "cache.lru.eviction_interval": 100,
+    "cache.validator.enabled": True,
+    "cache.validator.interval_minutes": 60,
+    "cache.validator.model": "",
+    "cache.validator.temperature": 0.2,
+    "cache.validator.reasoning_effort": "low",
+    "cache.validator.max_tokens": 1024,
 }

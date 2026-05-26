@@ -509,6 +509,48 @@ async def _seed_defaults(db: aiosqlite.Connection) -> None:
             "cache",
             "Action cache max entries (LRU eviction)",
         ),
+        (
+            "cache.validator.enabled",
+            "true" if CACHE_DEFAULTS["cache.validator.enabled"] else "false",
+            "bool",
+            "cache",
+            "Enable periodic action-cache validation",
+        ),
+        (
+            "cache.validator.interval_minutes",
+            str(CACHE_DEFAULTS["cache.validator.interval_minutes"]),
+            "number",
+            "cache",
+            "Minutes between periodic action-cache validation scans (0 = disabled)",
+        ),
+        (
+            "cache.validator.model",
+            CACHE_DEFAULTS["cache.validator.model"],
+            "string",
+            "cache",
+            "LLM model for cache validator response regeneration (empty = template only)",
+        ),
+        (
+            "cache.validator.temperature",
+            str(CACHE_DEFAULTS["cache.validator.temperature"]),
+            "float",
+            "cache",
+            "Temperature for cache validator LLM regeneration",
+        ),
+        (
+            "cache.validator.reasoning_effort",
+            CACHE_DEFAULTS["cache.validator.reasoning_effort"],
+            "string",
+            "cache",
+            "Reasoning effort for cache validator LLM calls",
+        ),
+        (
+            "cache.validator.max_tokens",
+            str(CACHE_DEFAULTS["cache.validator.max_tokens"]),
+            "int",
+            "cache",
+            "Max tokens for cache validator LLM regeneration",
+        ),
         # Embedding settings
         (
             "embedding.provider",

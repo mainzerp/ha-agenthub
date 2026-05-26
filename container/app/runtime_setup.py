@@ -93,6 +93,7 @@ RELEVANT_REGISTRY_FIELDS = frozenset(
 _ENTITY_SYNC_DEFAULT_INTERVAL_MIN = 30
 _ENTITY_SYNC_DISABLED_RECHECK_SEC = 300
 _ENTITY_UPDATE_FLUSH_INTERVAL_SEC = 0.5
+_CACHE_VALIDATOR_DEFAULT_INTERVAL_MIN = 60
 
 
 def _set_entity_index_pending_status(entity_index: EntityIndex, *, state: str, total: int) -> None:
@@ -677,6 +678,23 @@ async def _initialize_setup_dependent_services(app: FastAPI, *, source: str) -> 
     purge_task = getattr(app.state, "purge_task", None)
     if purge_task is None or purge_task.done():
         app.state.purge_task = _spawn(_purge_stale_response_cache(cache_manager))
+
+    cache_validator = getattr(app.state, "cache_validator", None)
+    if cache_validator is None:
+        from app.cache.cache_validator import ActionCacheValidator
+
+        cache_validator = ActionCacheValidator(
+            action_cache=cache_manager.action_cache,
+            cache_manager=cache_manager,
+            entity_index=entity_index,
+            ha_client=ha_client,
+            llm_client=getattr(app.state, "llm_client", None),
+        )
+        app.state.cache_validator = cache_validator
+
+    validator_task = getattr(app.state, "cache_validator_task", None)
+    if validator_task is None or validator_task.done():
+        app.state.cache_validator_task = _spawn(cache_validator.run_periodic(), name="cache_validator")
 
     try:
         await mcp_registry.load_from_db()
