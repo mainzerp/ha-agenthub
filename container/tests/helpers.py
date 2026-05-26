@@ -225,6 +225,7 @@ def make_action_cache_entry(
     original_response_text: str | None = None,
     rewrite_applied: bool = False,
     rewrite_latency_ms: float | None = None,
+    validated_at: str | None = None,
 ) -> ActionCacheEntry:
     """Build an ActionCacheEntry."""
     action = cached_action or make_cached_action()
@@ -240,6 +241,7 @@ def make_action_cache_entry(
         original_response_text=original_response_text,
         rewrite_applied=rewrite_applied,
         rewrite_latency_ms=rewrite_latency_ms,
+        validated_at=validated_at,
     )
 
 

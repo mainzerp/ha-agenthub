@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections import deque
+from datetime import UTC, datetime
 
 from app.cache.action_cache import ActionCache
 from app.cache.cache_manager import CacheManager
@@ -66,6 +68,7 @@ class ActionCacheValidator:
         self._entity_index = entity_index
         self._ha_client = ha_client
         self._llm_client = llm_client
+        self._history: deque[dict] = deque(maxlen=50)
 
     async def run_periodic(self) -> None:
         """Asyncio sleep loop that runs validation at configured intervals."""
@@ -95,7 +98,7 @@ class ActionCacheValidator:
                 logger.warning("Cache validator periodic run failed", exc_info=True)
                 await asyncio.sleep(60)
 
-    async def run_once(self) -> dict[str, int]:
+    async def run_once(self) -> dict[str, int | str]:
         """Run a single validation scan and return counts."""
         try:
             enabled_raw = await SettingsRepository.get_value("cache.validator.enabled", "true")
@@ -118,16 +121,27 @@ class ActionCacheValidator:
             logger.warning("Failed to iterate action cache entries", exc_info=True)
             return {"scanned": 0, "inconsistent": 0, "corrected": 0, "deleted": 0, "errors": 1}
 
+        started_at = datetime.now(UTC).isoformat()
+
         for entry in entries:
+            if entry.validated_at:
+                continue
             scanned += 1
             try:
                 is_valid, corrected_text = await self._validate_entry(entry)
                 if is_valid:
+                    entry.validated_at = datetime.now(UTC).isoformat()
+                    try:
+                        await self._cache_manager.update_action_entry(entry)
+                    except Exception:
+                        logger.warning("Failed to update validated cache entry", exc_info=True)
+                        errors += 1
                     continue
                 inconsistent += 1
                 if corrected_text is not None:
                     entry.response_text = corrected_text
                     entry.original_response_text = corrected_text
+                    entry.validated_at = datetime.now(UTC).isoformat()
                     try:
                         await self._cache_manager.update_action_entry(entry)
                         corrected += 1
@@ -149,6 +163,17 @@ class ActionCacheValidator:
                 logger.warning("Failed to validate cache entry", exc_info=True)
                 errors += 1
 
+        finished_at = datetime.now(UTC).isoformat()
+        result = {
+            "scanned": scanned,
+            "inconsistent": inconsistent,
+            "corrected": corrected,
+            "deleted": deleted,
+            "errors": errors,
+            "started_at": started_at,
+            "finished_at": finished_at,
+        }
+        self._history.append(result)
         logger.info(
             "Cache validator scan complete: scanned=%d inconsistent=%d corrected=%d deleted=%d errors=%d",
             scanned,
@@ -157,13 +182,11 @@ class ActionCacheValidator:
             deleted,
             errors,
         )
-        return {
-            "scanned": scanned,
-            "inconsistent": inconsistent,
-            "corrected": corrected,
-            "deleted": deleted,
-            "errors": errors,
-        }
+        return result
+
+    def get_history(self) -> list[dict]:
+        """Return the last 50 validation run records."""
+        return list(self._history)
 
     async def _validate_entry(self, entry: ActionCacheEntry) -> tuple[bool, str | None]:
         """Return (is_valid, corrected_response_or_None)."""

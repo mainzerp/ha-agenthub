@@ -202,6 +202,7 @@ async def test_run_once_corrects_one_deletes_one():
     updated_entry = validator._cache_manager.update_action_entry.await_args[0][0]
     assert updated_entry.response_text == "Done, Kitchen Ceiling is now off."
     assert updated_entry.original_response_text == "Done, Kitchen Ceiling is now off."
+    assert updated_entry.validated_at is not None
 
     # Uncorrectable entry should have been invalidated
     validator._cache_manager.invalidate_action.assert_called_once()
@@ -236,6 +237,90 @@ async def test_run_once_counts_valid_entries():
     assert result["corrected"] == 0
     assert result["deleted"] == 0
     assert result["errors"] == 0
+    validator._cache_manager.update_action_entry.assert_awaited_once()
+    updated_entry = validator._cache_manager.update_action_entry.await_args[0][0]
+    assert updated_entry.validated_at is not None
+
+
+@pytest.mark.asyncio
+async def test_run_once_skips_validated_entries():
+    already_validated = _make_entry(
+        service="light/turn_on",
+        response_text="Done, Kitchen Light is now on.",
+    )
+    already_validated.validated_at = "2025-01-01T00:00:00+00:00"
+    validator = _make_validator(entries=[already_validated])
+
+    with patch("app.cache.cache_validator.SettingsRepository") as mock_settings:
+        mock_settings.get_value = AsyncMock(return_value="true")
+        result = await validator.run_once()
+
+    assert result["scanned"] == 0
+    assert result["inconsistent"] == 0
+    assert result["corrected"] == 0
+    validator._cache_manager.update_action_entry.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_run_once_sets_validated_at_on_valid_entry():
+    valid = _make_entry(
+        service="light/turn_on",
+        response_text="Done, Kitchen Light is now on.",
+    )
+    validator = _make_validator(entries=[valid])
+
+    with patch("app.cache.cache_validator.SettingsRepository") as mock_settings:
+        mock_settings.get_value = AsyncMock(return_value="true")
+        result = await validator.run_once()
+
+    assert result["scanned"] == 1
+    assert result["inconsistent"] == 0
+    updated_entry = validator._cache_manager.update_action_entry.await_args[0][0]
+    assert updated_entry.validated_at is not None
+    assert result["started_at"] is not None
+    assert result["finished_at"] is not None
+
+
+@pytest.mark.asyncio
+async def test_run_once_sets_validated_at_on_corrected_entry():
+    inconsistent = _make_entry(
+        service="light/turn_off",
+        response_text="Done, Kitchen Light is now on.",
+        entity_id="light.kitchen_ceiling",
+    )
+    entity_index = MagicMock()
+    entity_index.get_by_id_async = AsyncMock(return_value=MagicMock(friendly_name="Kitchen Ceiling"))
+    validator = _make_validator(entries=[inconsistent], entity_index=entity_index)
+
+    with patch("app.cache.cache_validator.SettingsRepository") as mock_settings:
+        mock_settings.get_value = AsyncMock(return_value="true")
+        result = await validator.run_once()
+
+    assert result["scanned"] == 1
+    assert result["inconsistent"] == 1
+    assert result["corrected"] == 1
+    updated_entry = validator._cache_manager.update_action_entry.await_args[0][0]
+    assert updated_entry.validated_at is not None
+    assert updated_entry.response_text == "Done, Kitchen Ceiling is now off."
+
+
+@pytest.mark.asyncio
+async def test_history_recorded_after_run():
+    valid = _make_entry(
+        service="light/turn_on",
+        response_text="Done, Kitchen Light is now on.",
+    )
+    validator = _make_validator(entries=[valid])
+
+    with patch("app.cache.cache_validator.SettingsRepository") as mock_settings:
+        mock_settings.get_value = AsyncMock(return_value="true")
+        result = await validator.run_once()
+
+    history = validator.get_history()
+    assert len(history) == 1
+    assert history[0]["scanned"] == result["scanned"]
+    assert history[0]["started_at"] == result["started_at"]
+    assert history[0]["finished_at"] == result["finished_at"]
 
 
 # ---------------------------------------------------------------------------
