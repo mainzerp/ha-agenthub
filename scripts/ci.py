@@ -24,13 +24,13 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Final
 
 # Colors for terminal output
 if platform.system() == "Windows":
     # Windows CMD/PowerShell may not support ANSI by default
     try:
         import ctypes
+
         kernel32 = ctypes.windll.kernel32
         kernel32.SetConsoleMode(kernel32.GetStdHandle(-11), 7)
     except Exception:
@@ -70,7 +70,13 @@ def dim(msg: str) -> None:
     print(f"{DIM}{msg}{RESET}")
 
 
-def run(cmd: list[str], *, cwd: str | None = None, check: bool = True, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
+def run(
+    cmd: list[str],
+    *,
+    cwd: str | None = None,
+    check: bool = True,
+    env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
     """Run a command and return the result."""
     cmd_str = " ".join(cmd)
     print(f"\n{YELLOW}>>> {cmd_str}{RESET}")
@@ -98,6 +104,7 @@ def run(cmd: list[str], *, cwd: str | None = None, check: bool = True, env: dict
 def which(tool: str) -> str | None:
     """Check if a command exists in PATH."""
     from shutil import which as shutil_which
+
     return shutil_which(tool)
 
 
@@ -121,6 +128,7 @@ def detect_image_name() -> str:
         if remote:
             # git@github.com:user/repo.git -> user/repo
             import re
+
             m = re.search(r"github\.com[/:]([^/]+/[^/]+?)(?:\.git)?$", remote)
             if m:
                 return m.group(1).lower()
@@ -154,12 +162,22 @@ def step_quality(cov_fail_under: int = 72) -> None:
 
     # pytest container
     try:
-        run([
-            sys.executable, "-m", "pytest", "tests/",
-            "-n", "auto", "-q", "--tb=short",
-            "--cov=app", "--cov-report=term-missing",
-            f"--cov-fail-under={cov_fail_under}",
-        ], cwd="container")
+        run(
+            [
+                sys.executable,
+                "-m",
+                "pytest",
+                "tests/",
+                "-n",
+                "auto",
+                "-q",
+                "--tb=short",
+                "--cov=app",
+                "--cov-report=term-missing",
+                f"--cov-fail-under={cov_fail_under}",
+            ],
+            cwd="container",
+        )
         ok("container pytest")
     except subprocess.CalledProcessError:
         fail("container pytest")
@@ -167,7 +185,16 @@ def step_quality(cov_fail_under: int = 72) -> None:
 
     # pytest HA
     try:
-        run([sys.executable, "-m", "pytest", "custom_components/tests/", "-v", "--tb=short"])
+        run(
+            [
+                sys.executable,
+                "-m",
+                "pytest",
+                "custom_components/tests/",
+                "-v",
+                "--tb=short",
+            ]
+        )
         ok("HA pytest")
     except subprocess.CalledProcessError:
         fail("HA pytest")
@@ -183,11 +210,19 @@ def step_security() -> None:
 
     # bandit
     try:
-        run([
-            "bandit", "-r", "container/app",
-            "-f", "json", "-o", "bandit-report.json",
-            "-c", "container/.bandit.yml",
-        ])
+        run(
+            [
+                "bandit",
+                "-r",
+                "container/app",
+                "-f",
+                "json",
+                "-o",
+                "bandit-report.json",
+                "-c",
+                "container/.bandit.yml",
+            ]
+        )
         ok("bandit")
     except subprocess.CalledProcessError:
         # bandit exits non-zero when issues found — check severity
@@ -211,11 +246,17 @@ def step_security() -> None:
 
     # pip-audit
     try:
-        run([
-            "pip-audit", "-r", "container/requirements.txt",
-            "--format=json", "--output=pip-audit-report.json",
-            "--ignore-vuln", "CVE-2026-28684",
-        ])
+        run(
+            [
+                "pip-audit",
+                "-r",
+                "container/requirements.txt",
+                "--format=json",
+                "--output=pip-audit-report.json",
+                "--ignore-vuln",
+                "CVE-2026-28684",
+            ]
+        )
         ok("pip-audit")
     except subprocess.CalledProcessError:
         ok("pip-audit (vulnerabilities found — review pip-audit-report.json)")
@@ -225,7 +266,9 @@ def step_security() -> None:
     print(f"  {GREEN}- pip-audit-report.json{RESET}")
 
 
-def step_docker(image_name: str, tag: str, registry: str, no_trivy: bool, push: bool, no_cache: bool) -> None:
+def step_docker(
+    image_name: str, tag: str, registry: str, no_trivy: bool, push: bool, no_cache: bool
+) -> None:
     """Build, scan and optionally push Docker image."""
     header("STEP 3/4 — Docker Build")
 
@@ -237,7 +280,13 @@ def step_docker(image_name: str, tag: str, registry: str, no_trivy: bool, push: 
     dim(f"Image: {full_name}")
 
     # Build
-    build_cmd = ["docker", "compose", "-f", "container/docker-compose_local.yml", "build"]
+    build_cmd = [
+        "docker",
+        "compose",
+        "-f",
+        "container/docker-compose_local.yml",
+        "build",
+    ]
     if no_cache:
         build_cmd.append("--no-cache")
     try:
@@ -257,10 +306,17 @@ def step_docker(image_name: str, tag: str, registry: str, no_trivy: bool, push: 
 
     # Smoke test
     try:
-        run([
-            "docker", "run", "--rm", "ha-agenthub:latest",
-            "python", "-c", "from app.main import app; print('OK')",
-        ])
+        run(
+            [
+                "docker",
+                "run",
+                "--rm",
+                "ha-agenthub:latest",
+                "python",
+                "-c",
+                "from app.main import app; print('OK')",
+            ]
+        )
         ok("docker smoke test")
     except subprocess.CalledProcessError:
         fail("docker smoke test")
@@ -274,13 +330,18 @@ def step_docker(image_name: str, tag: str, registry: str, no_trivy: bool, push: 
             dim("Skipping Trivy scan.")
         else:
             try:
-                run([
-                    "trivy", "image",
-                    "--exit-code", "1",
-                    "--ignore-unfixed",
-                    "--severity", "HIGH,CRITICAL",
-                    full_name,
-                ])
+                run(
+                    [
+                        "trivy",
+                        "image",
+                        "--exit-code",
+                        "1",
+                        "--ignore-unfixed",
+                        "--severity",
+                        "HIGH,CRITICAL",
+                        full_name,
+                    ]
+                )
                 ok("trivy scan")
             except subprocess.CalledProcessError:
                 fail("trivy scan (HIGH/CRITICAL vulnerabilities found)")
@@ -312,16 +373,33 @@ Examples:
   python scripts/ci.py --no-trivy               # Skip Trivy scan
         """,
     )
-    parser.add_argument("--skip-quality", action="store_true", help="Skip quality checks")
-    parser.add_argument("--skip-security", action="store_true", help="Skip security checks")
+    parser.add_argument(
+        "--skip-quality", action="store_true", help="Skip quality checks"
+    )
+    parser.add_argument(
+        "--skip-security", action="store_true", help="Skip security checks"
+    )
     parser.add_argument("--skip-docker", action="store_true", help="Skip docker build")
     parser.add_argument("--push", action="store_true", help="Push the built image")
-    parser.add_argument("--registry", default="ghcr.io", help="Container registry (default: ghcr.io)")
-    parser.add_argument("--image-name", default="", help="Image name (default: auto-detected from git remote)")
+    parser.add_argument(
+        "--registry", default="ghcr.io", help="Container registry (default: ghcr.io)"
+    )
+    parser.add_argument(
+        "--image-name",
+        default="",
+        help="Image name (default: auto-detected from git remote)",
+    )
     parser.add_argument("--tag", default="latest", help="Image tag (default: latest)")
     parser.add_argument("--no-trivy", action="store_true", help="Skip Trivy image scan")
-    parser.add_argument("--no-cache", action="store_true", help="Build docker image without cache")
-    parser.add_argument("--cov-fail-under", type=int, default=72, help="Coverage threshold (default: 72)")
+    parser.add_argument(
+        "--no-cache", action="store_true", help="Build docker image without cache"
+    )
+    parser.add_argument(
+        "--cov-fail-under",
+        type=int,
+        default=72,
+        help="Coverage threshold (default: 72)",
+    )
     args = parser.parse_args()
 
     image_name = args.image_name or detect_image_name()

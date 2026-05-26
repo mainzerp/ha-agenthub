@@ -125,6 +125,12 @@
                     @click="setActiveTab('action')"
                     role="tab"
                     :aria-selected="activeTab === 'action'">Action</button>
+            <button type="button"
+                    class="tab-btn"
+                    :class="{ 'active': activeTab === 'validator' }"
+                    @click="setActiveTab('validator')"
+                    role="tab"
+                    :aria-selected="activeTab === 'validator'">Cache Validator</button>
         </div>
         <button class="btn btn-sm btn-coral" @click="flushCache(null)">Flush All</button>
     </div>
@@ -277,6 +283,7 @@
                             <th>Hits</th>
                             <th>Created</th>
                             <th>Last Accessed</th>
+                            <th>Validated</th>
                             <th>Actions</th>
                         </tr>
                     </thead>
@@ -288,6 +295,7 @@
                                 <td class="text-mono" x-text="e.hit_count || '0'"></td>
                                 <td class="text-mono text-xs" x-text="formatTimestamp(e.created_at)"></td>
                                 <td class="text-mono text-xs" x-text="formatTimestamp(e.last_accessed)"></td>
+                                <td class="text-mono text-xs" x-text="formatTimestamp(e.validated_at)"></td>
                                 <td>
                                     <button class="btn btn-sm btn-secondary" @click="showDetail(e)">Details</button>
                                     <button class="btn btn-sm btn-coral" @click="deleteEntry(e.id)">Delete</button>
@@ -402,6 +410,51 @@
             </template>
         </div>
     </div>
+
+    <!-- Validator tab -->
+    <div x-show="activeTab === 'validator'" x-cloak role="tabpanel" aria-label="Cache validator">
+        <div class="card">
+            <div class="panel-header flex-between mb-md">
+                <h4 class="panel-title">Cache Validator</h4>
+                <button class="btn btn-primary btn-sm" @click="runValidation()" :disabled="validatorBusy">
+                    <span x-show="!validatorBusy">Run Validation</span>
+                    <span x-show="validatorBusy">Running...</span>
+                </button>
+            </div>
+            <p class="text-muted text-sm mb-md" x-text="validatorMessage"></p>
+
+            <div x-show="validatorHistory.length === 0" class="empty-state">
+                <p class="text-muted">No validation scans yet.</p>
+            </div>
+
+            <div class="table-container-flush" x-show="validatorHistory.length > 0">
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th>Started</th>
+                            <th>Scanned</th>
+                            <th>Inconsistent</th>
+                            <th>Corrected</th>
+                            <th>Deleted</th>
+                            <th>Errors</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <template x-for="h in validatorHistory" :key="h.started_at">
+                            <tr>
+                                <td x-text="formatTimestamp(h.started_at)"></td>
+                                <td x-text="h.scanned"></td>
+                                <td x-text="h.inconsistent"></td>
+                                <td x-text="h.corrected"></td>
+                                <td x-text="h.deleted"></td>
+                                <td x-text="h.errors"></td>
+                            </tr>
+                        </template>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
 </div>
 
 <script>
@@ -424,6 +477,9 @@ function cachePage() {
         importBusy: false,
         backupMessage: '',
         selectedEntry: null,
+        validatorHistory: [],
+        validatorBusy: false,
+        validatorMessage: '',
 
         formatTimestamp(ts) {
             if (!ts) return '-';
@@ -459,7 +515,44 @@ function cachePage() {
             this.tier = name;
             this.page = 1;
             this.selectedEntry = null;
-            this.loadEntries();
+            if (name === 'validator') {
+                this.loadValidatorHistory();
+            } else {
+                this.loadEntries();
+            }
+        },
+
+        async runValidation() {
+            this.validatorBusy = true;
+            this.validatorMessage = 'Running validation...';
+            try {
+                const data = await window.dashboardApi.json('/api/admin/cache/validate', {
+                    method: 'POST'
+                });
+                if (data.status === 'ok') {
+                    this.validatorMessage = 'Validation complete: ' + data.scanned + ' scanned, ' +
+                        data.inconsistent + ' inconsistent, ' + data.corrected + ' corrected, ' +
+                        data.deleted + ' deleted, ' + data.errors + ' errors';
+                } else {
+                    this.validatorMessage = 'Validation failed: ' + (data.detail || 'unknown');
+                }
+                this.loadValidatorHistory();
+            } catch (e) {
+                if (e.code === 'auth_expired') return;
+                console.error('Failed to run validation', e);
+                this.validatorMessage = 'Validation failed: network error';
+            }
+            this.validatorBusy = false;
+        },
+
+        async loadValidatorHistory() {
+            try {
+                const data = await window.dashboardApi.json('/api/admin/cache/validate/history');
+                this.validatorHistory = data.history || [];
+            } catch (e) {
+                if (e.code === 'auth_expired') return;
+                console.error('Failed to load validator history', e);
+            }
         },
 
         async loadStats() {
