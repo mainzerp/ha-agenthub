@@ -452,6 +452,7 @@ class TaskPipeline:
             "routed_to": routed_to,
             "action_executed": action_executed,
             "voice_followup": voice_followup_effective,
+            "sanitized": True,
         }
         if has_error:
             response["error"] = {

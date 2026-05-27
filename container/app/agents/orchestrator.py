@@ -684,26 +684,6 @@ class OrchestratorAgent(BaseAgent, TaskPipeline):
 
         return routed_to, send_speech, merged_result
 
-    def _schedule_ha_voice_followup_if_requested(self, task: AgentTask, effective: bool) -> None:
-        """Re-open Assist STT on the user's device (HA voice requests only)."""
-        if not effective or not self._ha_client:
-            return
-        ctx = task.context
-        if not ctx or ctx.source != "ha":
-            logger.debug("Voice follow-up skipped (requires source=ha)")
-            return
-        if not ctx.area_id and not ctx.device_id:
-            logger.debug("Voice follow-up skipped (need area_id and/or device_id, e.g. Companion has device_id only)")
-            return
-        from app.agents.background_actions import spawn_voice_followup_after_conversation
-
-        spawn_voice_followup_after_conversation(
-            self._ha_client,
-            area_id=ctx.area_id,
-            origin_device_id=ctx.device_id,
-            entity_index=self._entity_index,
-        )
-
     async def _organic_voice_followup_offer(
         self,
         ctx: TaskContext | None,
@@ -957,7 +937,7 @@ class OrchestratorAgent(BaseAgent, TaskPipeline):
             "speech": speech,
             "routed_to": target_agent,
             "action_executed": hit.replay_result,
-            "sanitized": False,
+            "sanitized": True,
             "voice_followup": vf_effective,
         }
 
@@ -1521,7 +1501,6 @@ class OrchestratorAgent(BaseAgent, TaskPipeline):
                 task=task,
             )
             replay["conversation_id"] = conversation_id
-            self._schedule_ha_voice_followup_if_requested(task, bool(replay.get("voice_followup")))
             return replay
 
         # Phase 1: classification
@@ -1604,7 +1583,6 @@ class OrchestratorAgent(BaseAgent, TaskPipeline):
             condensed_task=condensed_task,
         )
         response["conversation_id"] = conversation_id
-        self._schedule_ha_voice_followup_if_requested(task, response.get("voice_followup", False))
         return response
 
     async def _handle_task_stream_impl(self, task: AgentTask) -> AsyncGenerator[dict[str, Any], None]:
@@ -1624,6 +1602,7 @@ class OrchestratorAgent(BaseAgent, TaskPipeline):
                 "conversation_id": conversation_id,
                 "mediated_speech": strip_markdown(result.get("speech", "")),
                 "routed_to": "orchestrator",
+                "sanitized": True,
             }
             if result.get("error"):
                 final_chunk["error"] = result["error"]
@@ -1652,7 +1631,7 @@ class OrchestratorAgent(BaseAgent, TaskPipeline):
                 "done": True,
                 "conversation_id": conversation_id,
                 "mediated_speech": replay["speech"],
-                "sanitized": False,
+                "sanitized": True,
             }
             return
 
@@ -1735,10 +1714,10 @@ class OrchestratorAgent(BaseAgent, TaskPipeline):
                 "conversation_id": conversation_id,
                 "mediated_speech": mediated_text,
                 "routed_to": target_agent,
+                "sanitized": True,
             }
             if vf_eff:
                 final_chunk["voice_followup"] = True
-            self._schedule_ha_voice_followup_if_requested(task, vf_eff)
             yield final_chunk
             return
 
@@ -2144,6 +2123,7 @@ class OrchestratorAgent(BaseAgent, TaskPipeline):
             "conversation_id": conversation_id,
             "mediated_speech": mediated_text,
             "routed_to": target_agent,
+            "sanitized": True,
         }
         if stream_error:
             final_chunk["error"] = stream_error
@@ -2151,7 +2131,6 @@ class OrchestratorAgent(BaseAgent, TaskPipeline):
             final_chunk["voice_followup"] = True
         if action_executed:
             final_chunk["action_executed"] = action_executed
-        self._schedule_ha_voice_followup_if_requested(task, vf_eff)
         yield final_chunk
 
     async def _should_send_filler(self, target_agent: str) -> bool:

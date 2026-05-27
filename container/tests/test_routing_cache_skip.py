@@ -61,7 +61,6 @@ def _make_orchestrator(cache_manager) -> OrchestratorAgent:
     orch._is_background_turn = MagicMock(return_value=False)
     orch._get_turns = AsyncMock(return_value=[])
     orch._get_bool_setting = AsyncMock(side_effect=lambda _key, default: default)
-    orch._schedule_ha_voice_followup_if_requested = MagicMock()
     orch._finalize_single_agent_response = AsyncMock(return_value=("Live dispatch speech", False))
     return orch
 
