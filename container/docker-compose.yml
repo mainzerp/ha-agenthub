@@ -33,6 +33,7 @@ services:
       - CONTAINER_HOST=${CONTAINER_HOST:-0.0.0.0}
       - CONTAINER_PORT=${CONTAINER_PORT:-8080}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - LOG_DIR=${LOG_DIR:-/data/logs}
       - CHROMADB_PERSIST_DIR=${CHROMADB_PERSIST_DIR:-/data/chromadb}
       - SQLITE_DB_PATH=${SQLITE_DB_PATH:-/data/agent_assist.db}
       - HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-0}

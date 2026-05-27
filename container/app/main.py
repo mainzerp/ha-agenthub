@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
 from contextlib import asynccontextmanager
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Any
 
@@ -89,6 +91,17 @@ def _configure_logging() -> None:
         stream_handler = logging.StreamHandler()
         stream_handler.setFormatter(logging.Formatter(log_format))
         root.addHandler(stream_handler)
+
+    # Add RotatingFileHandler for persistent logs.
+    log_dir = os.environ.get("LOG_DIR", "/data/logs")
+    os.makedirs(log_dir, exist_ok=True)
+    file_handler = RotatingFileHandler(
+        os.path.join(log_dir, "app.log"),
+        maxBytes=50 * 1024 * 1024,
+        backupCount=5,
+    )
+    file_handler.setFormatter(logging.Formatter(log_format))
+    root.addHandler(file_handler)
 
     _ensure_log_buffer_handler()
 

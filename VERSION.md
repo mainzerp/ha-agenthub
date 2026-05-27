@@ -1,12 +1,20 @@
 # Version
 
-**Current Version:** 1.32.1
+**Current Version:** 1.32.2
 
 ## Recent Changes
 
-Track changes since `v1.32.1` here.
+Track changes since `v1.32.2` here.
 
 ## Version History
+
+### 1.32.2 (PATCH) -- Fix TTS response delivery and add file-based logging
+
+- fix(orchestrator): set `sanitized` flag in all REST and streaming response paths to prevent double markdown stripping by HA integration
+- fix(orchestrator): remove duplicate voice followup mechanism (`_schedule_ha_voice_followup_if_requested`) to eliminate race condition where HA integration and orchestrator both attempted to reopen the microphone
+- fix(tests): remove obsolete mock assignments for removed `_schedule_ha_voice_followup_if_requested` method
+- feat(logging): add `RotatingFileHandler` writing to `/data/logs/app.log` (50 MB, 5 backups) for persistent container logs
+- chore(docker): add `LOG_DIR` environment variable to docker-compose.yml
 
 ### 1.32.1 (PATCH) -- Fix cache validator LLM client initialization
 
