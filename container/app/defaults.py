@@ -23,4 +23,5 @@ CACHE_DEFAULTS: dict[str, object] = {
     "cache.validator.temperature": 0.2,
     "cache.validator.reasoning_effort": "low",
     "cache.validator.max_tokens": 1024,
+    "cache.validator.batch_size": 10,
 }

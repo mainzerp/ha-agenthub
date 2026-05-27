@@ -664,6 +664,374 @@ async def test_periodic_loop_disabled_sleeps_short():
 
 
 # ---------------------------------------------------------------------------
+# _get_batch_size
+# ---------------------------------------------------------------------------
+
+
+class TestGetBatchSize:
+    @pytest.mark.asyncio
+    async def test_default_batch_size(self):
+        validator = _make_validator()
+        with patch("app.cache.cache_validator.SettingsRepository") as mock_settings:
+            mock_settings.get_value = AsyncMock(return_value="10")
+            size = await validator._get_batch_size()
+        assert size == 10
+
+    @pytest.mark.asyncio
+    async def test_clamps_below_one(self):
+        validator = _make_validator()
+        with patch("app.cache.cache_validator.SettingsRepository") as mock_settings:
+            mock_settings.get_value = AsyncMock(return_value="0")
+            size = await validator._get_batch_size()
+        assert size == 1
+
+    @pytest.mark.asyncio
+    async def test_clamps_above_fifty(self):
+        validator = _make_validator()
+        with patch("app.cache.cache_validator.SettingsRepository") as mock_settings:
+            mock_settings.get_value = AsyncMock(return_value="100")
+            size = await validator._get_batch_size()
+        assert size == 50
+
+    @pytest.mark.asyncio
+    async def test_invalid_string_uses_default(self):
+        validator = _make_validator()
+        with patch("app.cache.cache_validator.SettingsRepository") as mock_settings:
+            mock_settings.get_value = AsyncMock(return_value="abc")
+            size = await validator._get_batch_size()
+        assert size == 10
+
+
+# ---------------------------------------------------------------------------
+# _build_batch_prompt
+# ---------------------------------------------------------------------------
+
+
+class TestBuildBatchPrompt:
+    def test_build_batch_prompt_two_entries(self):
+        entry1 = _make_entry(
+            query_text="turn on kitchen light", service="light/turn_on", response_text="Done, Kitchen Light is now on."
+        )
+        entry2 = _make_entry(
+            query_text="turn off bedroom light",
+            service="light/turn_off",
+            response_text="Done, Bedroom Light is now off.",
+        )
+        prompt = ActionCacheValidator._build_batch_prompt([entry1, entry2])
+        assert "Entry 1:" in prompt
+        assert "Entry 2:" in prompt
+        assert "turn on kitchen light" in prompt
+        assert "turn off bedroom light" in prompt
+        assert "JSON array response:" in prompt
+
+    def test_build_batch_prompt_empty_list(self):
+        prompt = ActionCacheValidator._build_batch_prompt([])
+        assert "JSON array response:" in prompt
+        assert "Entry 1:" not in prompt
+
+
+# ---------------------------------------------------------------------------
+# _parse_batch_response
+# ---------------------------------------------------------------------------
+
+
+class TestParseBatchResponse:
+    def test_parse_valid_array(self):
+        result = ActionCacheValidator._parse_batch_response('["consistent", "invalidate", "correct_response"]', 3)
+        assert result == ["consistent", "invalidate", "correct_response"]
+
+    def test_parse_markdown_code_block(self):
+        result = ActionCacheValidator._parse_batch_response('```json\n["consistent", "invalidate"]\n```', 2)
+        assert result == ["consistent", "invalidate"]
+
+    def test_parse_wrong_count(self):
+        result = ActionCacheValidator._parse_batch_response('["consistent"]', 2)
+        assert result == [None, None]
+
+    def test_parse_non_array(self):
+        result = ActionCacheValidator._parse_batch_response('{"result": "consistent"}', 1)
+        assert result == [None]
+
+    def test_parse_invalid_json(self):
+        result = ActionCacheValidator._parse_batch_response("not json", 2)
+        assert result == [None, None]
+
+    def test_parse_mixed_valid_invalid(self):
+        result = ActionCacheValidator._parse_batch_response('["consistent", "unknown", "invalidate"]', 3)
+        assert result == ["consistent", None, "invalidate"]
+
+    def test_parse_shortcut_correct(self):
+        result = ActionCacheValidator._parse_batch_response('["correct"]', 1)
+        assert result == ["correct_response"]
+
+
+# ---------------------------------------------------------------------------
+# _llm_validate_batch
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_llm_validate_batch_success():
+    entry1 = _make_entry(
+        query_text="turn on kitchen light", service="light/turn_on", response_text="Done, Kitchen Light is now on."
+    )
+    entry2 = _make_entry(
+        query_text="turn off bedroom light", service="light/turn_off", response_text="Done, Bedroom Light is now off."
+    )
+    llm_client = AsyncMock()
+    llm_client.complete = AsyncMock(return_value='["consistent", "consistent"]')
+
+    validator = _make_validator(llm_client=llm_client)
+
+    with patch("app.cache.cache_validator.SettingsRepository") as mock_settings:
+        mock_settings.get_value = AsyncMock(
+            side_effect=lambda key, default="": {
+                "cache.validator.model": "groq/openai/gpt-oss-20b",
+                "cache.validator.temperature": "0.2",
+                "cache.validator.reasoning_effort": "low",
+            }.get(key, default)
+        )
+        results = await validator._llm_validate_batch([entry1, entry2])
+
+    assert results == ["consistent", "consistent"]
+    llm_client.complete.assert_awaited_once()
+    call_kwargs = llm_client.complete.await_args[1]
+    assert call_kwargs["max_tokens"] == 32  # 2 * 16
+
+
+@pytest.mark.asyncio
+async def test_llm_validate_batch_empty_returns_none_list():
+    validator = _make_validator()
+    results = await validator._llm_validate_batch([])
+    assert results == []
+
+
+@pytest.mark.asyncio
+async def test_llm_validate_batch_no_model_returns_none():
+    entry = _make_entry()
+    llm_client = AsyncMock()
+    validator = _make_validator(llm_client=llm_client)
+
+    with patch("app.cache.cache_validator.SettingsRepository") as mock_settings:
+        mock_settings.get_value = AsyncMock(return_value="")
+        results = await validator._llm_validate_batch([entry])
+
+    assert results == [None]
+    llm_client.complete.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_llm_validate_batch_llm_failure_returns_none():
+    entry = _make_entry()
+    llm_client = AsyncMock()
+    llm_client.complete = AsyncMock(side_effect=RuntimeError("LLM down"))
+    validator = _make_validator(llm_client=llm_client)
+
+    with patch("app.cache.cache_validator.SettingsRepository") as mock_settings:
+        mock_settings.get_value = AsyncMock(
+            side_effect=lambda key, default="": {
+                "cache.validator.model": "groq/openai/gpt-oss-20b",
+                "cache.validator.temperature": "0.2",
+                "cache.validator.reasoning_effort": "low",
+            }.get(key, default)
+        )
+        results = await validator._llm_validate_batch([entry])
+
+    assert results == [None]
+
+
+@pytest.mark.asyncio
+async def test_llm_validate_batch_malformed_response_returns_none():
+    entry = _make_entry()
+    llm_client = AsyncMock()
+    llm_client.complete = AsyncMock(return_value="not json")
+    validator = _make_validator(llm_client=llm_client)
+
+    with patch("app.cache.cache_validator.SettingsRepository") as mock_settings:
+        mock_settings.get_value = AsyncMock(
+            side_effect=lambda key, default="": {
+                "cache.validator.model": "groq/openai/gpt-oss-20b",
+                "cache.validator.temperature": "0.2",
+                "cache.validator.reasoning_effort": "low",
+            }.get(key, default)
+        )
+        results = await validator._llm_validate_batch([entry])
+
+    assert results == [None]
+
+
+# ---------------------------------------------------------------------------
+# run_once batching
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_run_once_uses_batch_validation():
+    """Two entries validated in a single batch LLM call."""
+    entry1 = _make_entry(service="light/turn_on", response_text="Done, Kitchen Light is now on.")
+    entry2 = _make_entry(service="light/turn_off", response_text="Done, Bedroom Light is now off.")
+    llm_client = AsyncMock()
+    llm_client.complete = AsyncMock(return_value='["consistent", "consistent"]')
+
+    validator = _make_validator(entries=[entry1, entry2], llm_client=llm_client)
+
+    with patch("app.cache.cache_validator.SettingsRepository") as mock_settings:
+        mock_settings.get_value = AsyncMock(
+            side_effect=lambda key, default="": {
+                "cache.validator.enabled": "true",
+                "cache.validator.batch_size": "10",
+                "cache.validator.model": "groq/openai/gpt-oss-20b",
+                "cache.validator.temperature": "0.2",
+                "cache.validator.reasoning_effort": "low",
+            }.get(key, default)
+        )
+        result = await validator.run_once()
+
+    assert result["scanned"] == 2
+    assert result["inconsistent"] == 0
+    assert result["corrected"] == 0
+    assert result["deleted"] == 0
+    assert result["errors"] == 0
+    assert llm_client.complete.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_run_once_batch_fallback_to_single_on_failure():
+    """Batch fails completely, falls back to single-entry validation."""
+    entry = _make_entry(
+        service="light/turn_off",
+        response_text="Done, Kitchen Light is now on.",
+        entity_id="light.kitchen_ceiling",
+    )
+    llm_client = AsyncMock()
+    # Batch call returns malformed JSON
+    llm_client.complete = AsyncMock(return_value="not json")
+
+    entity_index = MagicMock()
+    entity_index.get_by_id_async = AsyncMock(return_value=MagicMock(friendly_name="Kitchen Ceiling"))
+
+    validator = _make_validator(
+        entries=[entry],
+        entity_index=entity_index,
+        llm_client=llm_client,
+    )
+
+    with patch("app.cache.cache_validator.SettingsRepository") as mock_settings:
+        mock_settings.get_value = AsyncMock(
+            side_effect=lambda key, default="": {
+                "cache.validator.enabled": "true",
+                "cache.validator.batch_size": "10",
+                "cache.validator.model": "groq/openai/gpt-oss-20b",
+                "cache.validator.temperature": "0.2",
+                "cache.validator.reasoning_effort": "low",
+            }.get(key, default)
+        )
+        result = await validator.run_once()
+
+    assert result["scanned"] == 1
+    assert result["inconsistent"] == 1
+    assert result["corrected"] == 1
+    # One batch call (failed) + one single-entry validation call + one regeneration call
+    assert llm_client.complete.await_count == 3
+
+
+@pytest.mark.asyncio
+async def test_run_once_batch_size_one_disables_batching():
+    """Batch size of 1 should still work but only process one at a time."""
+    entry = _make_entry(service="light/turn_on", response_text="Done, Kitchen Light is now on.")
+    llm_client = AsyncMock()
+    llm_client.complete = AsyncMock(return_value='["consistent"]')
+
+    validator = _make_validator(entries=[entry], llm_client=llm_client)
+
+    with patch("app.cache.cache_validator.SettingsRepository") as mock_settings:
+        mock_settings.get_value = AsyncMock(
+            side_effect=lambda key, default="": {
+                "cache.validator.enabled": "true",
+                "cache.validator.batch_size": "1",
+                "cache.validator.model": "groq/openai/gpt-oss-20b",
+                "cache.validator.temperature": "0.2",
+                "cache.validator.reasoning_effort": "low",
+            }.get(key, default)
+        )
+        result = await validator.run_once()
+
+    assert result["scanned"] == 1
+    assert result["inconsistent"] == 0
+    assert llm_client.complete.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_run_once_deletes_entries_with_no_cached_action():
+    """Entries without cached_action should be deleted without LLM calls."""
+    entry = ActionCacheEntry.model_construct(
+        query_text="turn off unknown light",
+        language="en",
+        agent_id="light-agent",
+        response_text="Done, Unknown Light is now on.",
+        cached_action=None,
+    )
+    llm_client = AsyncMock()
+    validator = _make_validator(entries=[entry], llm_client=llm_client)
+
+    with patch("app.cache.cache_validator.SettingsRepository") as mock_settings:
+        mock_settings.get_value = AsyncMock(
+            side_effect=lambda key, default="": {
+                "cache.validator.enabled": "true",
+                "cache.validator.batch_size": "10",
+            }.get(key, default)
+        )
+        result = await validator.run_once()
+
+    assert result["scanned"] == 0  # Not counted as scanned
+    assert result["deleted"] == 1
+    llm_client.complete.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_run_once_batch_correct_response_triggers_regeneration():
+    """Batch says 'correct_response', individual regeneration is called."""
+    entry = _make_entry(
+        service="light/turn_off",
+        response_text="Done, Kitchen Light is now on.",
+        entity_id="light.kitchen_ceiling",
+    )
+    llm_client = AsyncMock()
+    llm_client.complete = AsyncMock(
+        side_effect=[
+            '["correct_response"]',  # batch validation
+            "Done, Kitchen Ceiling is now off.",  # regeneration
+        ]
+    )
+
+    entity_index = MagicMock()
+    entity_index.get_by_id_async = AsyncMock(return_value=MagicMock(friendly_name="Kitchen Ceiling"))
+
+    validator = _make_validator(
+        entries=[entry],
+        entity_index=entity_index,
+        llm_client=llm_client,
+    )
+
+    with patch("app.cache.cache_validator.SettingsRepository") as mock_settings:
+        mock_settings.get_value = AsyncMock(
+            side_effect=lambda key, default="": {
+                "cache.validator.enabled": "true",
+                "cache.validator.batch_size": "10",
+                "cache.validator.model": "groq/openai/gpt-oss-20b",
+                "cache.validator.temperature": "0.2",
+                "cache.validator.max_tokens": "32",
+                "cache.validator.reasoning_effort": "low",
+            }.get(key, default)
+        )
+        result = await validator.run_once()
+
+    assert result["scanned"] == 1
+    assert result["inconsistent"] == 1
+    assert result["corrected"] == 1
+
+
+# ---------------------------------------------------------------------------
 # Constants coverage
 # ---------------------------------------------------------------------------
 

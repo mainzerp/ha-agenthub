@@ -551,6 +551,13 @@ async def _seed_defaults(db: aiosqlite.Connection) -> None:
             "cache",
             "Max tokens for cache validator LLM regeneration",
         ),
+        (
+            "cache.validator.batch_size",
+            str(CACHE_DEFAULTS["cache.validator.batch_size"]),
+            "int",
+            "cache",
+            "Number of cache entries to validate in a single LLM batch call",
+        ),
         # Embedding settings
         (
             "embedding.provider",
