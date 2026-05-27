@@ -9,6 +9,7 @@ class AutomationAgent(ActionableAgent):
     """Manages Home Assistant automations via HA REST API."""
 
     _prompt_name = "automation"
+    _allowed_domains = frozenset({"automation", "script"})
 
     async def _do_execute(self, action, ha_client, entity_index, entity_matcher, *, agent_id, span_collector=None):
         current_task = getattr(self, "_current_task", None)

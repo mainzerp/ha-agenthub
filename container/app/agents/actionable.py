@@ -8,12 +8,22 @@ import re
 
 from app.agents.action_executor import parse_action
 from app.agents.base import BaseAgent
+from app.entity.deterministic_resolver import resolve_entity_deterministic_first
 from app.models.agent import ActionExecuted, AgentError, AgentErrorCode, AgentTask, TaskContext, TaskResult
 
 logger = logging.getLogger(__name__)
 
 _JSON_FENCE_RE = re.compile(r"```json\s*\n?.*?\n?\s*```", re.DOTALL)
 _RAW_JSON_OBJ_RE = re.compile(r'\{[^{}]*"action"\s*:.*?\}', re.DOTALL)
+
+# Lightweight entity mention extraction patterns
+_DOUBLE_QUOTED_RE = re.compile(r'"([^"]+)"')
+_SINGLE_QUOTED_RE = re.compile(r"'([^']+)'")
+_DELIMITER_RE = re.compile(r"[;,.]|(?:\band\b)|(?:\bor\b)|(?:\bif\b)|(?:\bthen\b)|(?:\bwhen\b)", re.IGNORECASE)
+_STRIP_PREFIX_RE = re.compile(
+    r"^(turn\s+(?:on|off|up|down)|set|toggle|open|close|stop|lock|unlock|arm|disarm|activate|make|get|is|are|was|were|the|a|an|das|die|der|den|dem|ein|eine|einer|einen|in|im|at|to|of|from|with)\s+",
+    re.IGNORECASE,
+)
 
 
 def strip_json_blocks(text: str) -> str:
@@ -34,12 +44,151 @@ class ActionableAgent(BaseAgent):
 
     _prompt_name: str = ""
     _clarify_on_not_found: bool = True
+    _allowed_domains: frozenset[str] | None = None
 
     def __init__(self, ha_client=None, entity_index=None, entity_matcher=None) -> None:
         super().__init__(ha_client=ha_client, entity_index=entity_index)
         self._entity_matcher = entity_matcher
         self._current_task: AgentTask | None = None
         self._current_task_context: TaskContext | None = None
+
+    @staticmethod
+    def _extract_entity_mentions(text: str) -> list[str]:
+        """Extract potential entity mentions from task description using lightweight heuristics.
+
+        Splits by common delimiters, extracts quoted phrases, and strips common
+        leading verbs/articles to produce candidate entity names.
+        """
+        if not text:
+            return []
+
+        mentions: list[str] = []
+
+        # Quoted phrases (double and single quotes)
+        for match in _DOUBLE_QUOTED_RE.finditer(text):
+            mention = match.group(1).strip()
+            if mention:
+                mentions.append(mention)
+        for match in _SINGLE_QUOTED_RE.finditer(text):
+            mention = match.group(1).strip()
+            if mention:
+                mentions.append(mention)
+
+        # Split by delimiters and process each chunk
+        parts = _DELIMITER_RE.split(text)
+        for part in parts:
+            if not part:
+                continue
+            part = part.strip()
+            # Iteratively strip common prefixes
+            for _ in range(3):
+                stripped = _STRIP_PREFIX_RE.sub("", part)
+                if stripped == part:
+                    break
+                part = stripped
+            if part and len(part) > 1:
+                lower = part.lower()
+                if lower not in {
+                    "on",
+                    "off",
+                    "up",
+                    "down",
+                    "it",
+                    "them",
+                    "here",
+                    "there",
+                    "an",
+                    "aus",
+                    "ein",
+                    "hier",
+                    "da",
+                    "dark",
+                    "bright",
+                    "hot",
+                    "cold",
+                }:
+                    mentions.append(part)
+
+        # Deduplicate preserving order
+        seen: set[str] = set()
+        result: list[str] = []
+        for m in mentions:
+            key = m.lower()
+            if key not in seen:
+                seen.add(key)
+                result.append(m)
+        return result
+
+    async def _resolve_relevant_entities(self, task: AgentTask) -> list[tuple[str, str]]:
+        """Resolve up to 3 unique entity mentions from the task description.
+
+        Returns a list of (entity_id, friendly_name) tuples.
+        """
+        mentions = self._extract_entity_mentions(task.description)
+        if not mentions:
+            return []
+
+        agent_id = self.agent_card.agent_id
+        resolved: list[tuple[str, str]] = []
+        seen_ids: set[str] = set()
+
+        for mention in mentions:
+            if len(resolved) >= 3:
+                break
+            try:
+                result = await resolve_entity_deterministic_first(
+                    mention,
+                    self._entity_index,
+                    self._entity_matcher,
+                    agent_id,
+                    allowed_domains=self._allowed_domains,
+                )
+            except Exception:
+                logger.debug("Entity resolution failed for mention %r", mention, exc_info=True)
+                continue
+
+            entity_id = result.get("entity_id")
+            friendly_name = result.get("friendly_name")
+            if entity_id and entity_id not in seen_ids:
+                seen_ids.add(entity_id)
+                resolved.append((entity_id, friendly_name or entity_id))
+
+        return resolved
+
+    async def _build_relevant_entity_state_context(self, resolved_entities: list[tuple[str, str]]) -> str | None:
+        """Build a markdown block of current states for the given entities.
+
+        Queries the entity index first, falling back to ha_client.get_state().
+        Returns None if no states could be retrieved.
+        """
+        if not resolved_entities:
+            return None
+
+        lines: list[str] = []
+        for entity_id, friendly_name in resolved_entities:
+            state_value: str | None = None
+            # Try entity index first
+            if self._entity_index is not None:
+                try:
+                    entry = await self._entity_index.get_by_id_async(entity_id)
+                    if entry is not None:
+                        state_value = getattr(entry, "state", None)
+                except Exception:
+                    logger.debug("get_by_id_async failed for %s", entity_id, exc_info=True)
+            # Fallback to HA client
+            if state_value is None and self._ha_client is not None:
+                try:
+                    state_resp = await self._ha_client.get_state(entity_id)
+                    if isinstance(state_resp, dict):
+                        state_value = state_resp.get("state")
+                except Exception:
+                    logger.debug("ha_client.get_state failed for %s", entity_id, exc_info=True)
+            if state_value is not None:
+                lines.append(f"  - {friendly_name} ({entity_id}): {state_value}")
+
+        if not lines:
+            return None
+        return "\n".join(lines)
 
     async def _do_execute(self, action, ha_client, entity_index, entity_matcher, *, agent_id, span_collector=None):
         """Execute the parsed action. Subclasses must override."""
@@ -129,6 +278,28 @@ class ActionableAgent(BaseAgent):
         time_location = self._build_time_location_context(task.context)
         if time_location:
             system_prompt += f"\n\n{time_location}"
+
+        # Inject relevant entity states (selective injection, Phase 1)
+        try:
+            resolved_entities = await self._resolve_relevant_entities(task)
+            entity_state_context = await self._build_relevant_entity_state_context(resolved_entities)
+            if entity_state_context:
+                system_prompt += "\n\n--- Relevant Entity States ---\n" + entity_state_context
+        except Exception:
+            logger.debug("Entity state injection failed for %s", agent_id, exc_info=True)
+
+        # Generic state-aware and conditional instruction block (Phase 3)
+        system_prompt += (
+            "\n\nState-aware decision making:\n"
+            "- Before deciding to act, consider the current states shown above.\n"
+            "- If the target device is already in the desired state, output a query/state-report action instead.\n"
+            '- Only use toggle when the user explicitly says "toggle".\n'
+            "\n"
+            "Conditional actions:\n"
+            '- When the user says "if X, then Y", use the optional "condition" field.\n'
+            "- The condition references another entity by name and an expected state.\n"
+            '- Example JSON: {"action": "turn_on", "entity": "Keller", "condition": {"entity": "outdoor brightness", "state": "dark"}}'
+        )
 
         messages = [{"role": "system", "content": system_prompt}]
 

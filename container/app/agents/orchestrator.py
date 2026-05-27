@@ -1005,11 +1005,18 @@ class OrchestratorAgent(BaseAgent, TaskPipeline):
                     logger.warning("Failed to store routing decision", exc_info=True)
                     return False, False
 
+            # Skip action-cache storage for conditional actions or anything
+            # explicitly marked non-cacheable by the executor.
+            if action_executed.get("cacheable", True) is False:
+                return False, False
+            raw_service_data = action_executed.get("service_data") or {}
+            if isinstance(raw_service_data, dict) and "condition" in raw_service_data:
+                return False, False
+
             if action_executed.get("cacheable", True):
                 entity_id = str(action_executed.get("entity_id") or "").strip()
                 action_name = str(action_executed.get("action") or "").strip().lower()
                 if entity_id and action_name:
-                    raw_service_data = action_executed.get("service_data") or {}
                     cached_service_data: dict[str, Any] = {}
                     if isinstance(raw_service_data, dict):
                         for key in _CACHED_SERVICE_DATA_KEYS:

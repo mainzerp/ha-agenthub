@@ -218,6 +218,27 @@ class TestCacheManager:
         track.assert_awaited_once()
 
     @pytest.mark.asyncio
+    async def test_try_replay_action_returns_none_for_context_dependent_entry(self):
+        manager, _store = self._make_manager()
+        entry = make_action_cache_entry(cached_action=CachedAction(service="light/turn_on", entity_id="light.kitchen"))
+        # Simulate a conditional action entry that should never be replayed.
+        # Use a MagicMock wrapper because ActionCacheEntry does not have a
+        # ``context_dependent`` field (the guard is defensive / future-proof).
+        mock_entry = MagicMock(wraps=entry)
+        mock_entry.context_dependent = True
+        manager._action_cache.lookup_with_id = MagicMock(return_value=("test-id", mock_entry, 0.99))
+
+        result = await manager.try_replay_action(
+            query_text=entry.query_text,
+            language=entry.language,
+            resolve_entity=AsyncMock(return_value="light.kitchen"),
+            check_visibility=AsyncMock(return_value=True),
+            execute_cached_action=AsyncMock(return_value={"success": True, "entity_id": "light.kitchen"}),
+        )
+
+        assert result is None
+
+    @pytest.mark.asyncio
     async def test_try_replay_action_transient_replay_miss_does_not_invalidate(self):
         manager, _store = self._make_manager()
         entry = make_action_cache_entry(cached_action=CachedAction(service="light/turn_on", entity_id="light.kitchen"))

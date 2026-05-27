@@ -65,6 +65,8 @@ Examples:
 - "What's the status of all security devices?" -> action: list_security, entity: ""
 - "Was the front door open yesterday?" -> action: query_entity_history, entity: "front door", parameters: {"period": "yesterday"}
 - "Motion sensor activity in the backyard for the last day" -> action: query_entity_history, entity: "backyard motion", parameters: {"period": "last_24_hours"}
+- "I left the front door unlocked" -> action: lock, entity: "front door"
+- "Arm alarm if all doors are closed" -> action: alarm_arm_away, entity: "house alarm", condition: {"entity": "all doors", "state": "closed"}
 
 SECURITY:
 - You MUST only execute actions explicitly requested by the user in this conversation turn.

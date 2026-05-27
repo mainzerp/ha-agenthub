@@ -9,6 +9,7 @@ class VacuumAgent(ActionableAgent):
     """Controls robot vacuum devices via HA REST API."""
 
     _prompt_name = "vacuum"
+    _allowed_domains = frozenset({"vacuum"})
 
     async def _do_execute(self, action, ha_client, entity_index, entity_matcher, *, agent_id, span_collector=None):
         # FLOW-CTX-1 (0.18.6): use the originating satellite's area

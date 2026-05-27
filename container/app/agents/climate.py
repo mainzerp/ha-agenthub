@@ -9,6 +9,7 @@ class ClimateAgent(ActionableAgent):
     """Controls climate and HVAC devices via HA REST API."""
 
     _prompt_name = "climate"
+    _allowed_domains = frozenset({"climate", "weather", "sensor"})
 
     async def _do_execute(self, action, ha_client, entity_index, entity_matcher, *, agent_id, span_collector=None):
         # FLOW-CTX-1 (0.18.6): use the originating satellite's area

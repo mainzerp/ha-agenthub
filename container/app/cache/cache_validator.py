@@ -15,6 +15,8 @@ from app.models.cache import ActionCacheEntry
 
 logger = logging.getLogger(__name__)
 
+# Conditional actions (cacheable=False) are never stored in the action
+# cache and are therefore invisible to the validator.
 _ACTION_CONTRADICTIONS: dict[str, list[str]] = {
     "turn_on": ["is now off", "turned off", "has been turned off", "is off"],
     "set_brightness": ["is now off", "turned off", "has been turned off", "is off"],

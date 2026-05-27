@@ -101,6 +101,8 @@ Examples:
   ```
 - "How warm was it in the living room yesterday?" -> action: query_entity_history, entity: "living room temperature", parameters: {"period": "yesterday"}
 - "Show me the bedroom thermostat history for the last day" -> action: query_entity_history, entity: "bedroom thermostat", parameters: {"period": "last_24_hours"}
+- "It's freezing in here" -> action: turn_on, entity: "climate"
+- "Turn off the AC if no one is home" -> action: turn_off, entity: "AC", condition: {"entity": "presence sensor", "state": "not_home"}
 
 SECURITY:
 - You MUST only execute actions explicitly requested by the user in this conversation turn.

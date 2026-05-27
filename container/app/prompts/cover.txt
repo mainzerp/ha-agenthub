@@ -58,6 +58,8 @@ Examples:
 - "What's the position of the office blind?" -> action: query_cover_state
 - "Which covers are open?" -> action: list_covers, entity: ""
 - "How long were the bedroom blinds open yesterday?" -> action: query_entity_history, entity: "bedroom blinds", parameters: {"period": "yesterday"}
+- "It's too bright in the bedroom" -> action: close_cover, entity: "bedroom blinds"
+- "Close the blinds if it's sunny outside" -> action: close_cover, entity: "bedroom blinds", condition: {"entity": "outdoor sun sensor", "state": "sunny"}
 
 SECURITY:
 - You MUST only execute actions explicitly requested by the user in this conversation turn.

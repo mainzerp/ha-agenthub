@@ -89,7 +89,14 @@ class TaskContext(BaseModel):
     """Context propagated with an agent task."""
 
     conversation_turns: list[dict] = Field(default_factory=list)
-    entity_states: dict | None = None
+    entity_states: dict | None = Field(
+        default=None,
+        description=(
+            "Optionally populated map of entity_id -> state dict. "
+            "This is NOT the primary state source for selective injection; "
+            "agents query the entity_index or ha_client directly for up-to-date state."
+        ),
+    )
     mcp_tools: list[str] = Field(default_factory=list)
     device_id: str | None = None
     area_id: str | None = None

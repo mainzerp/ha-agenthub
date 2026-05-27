@@ -37,6 +37,8 @@ Examples:
 - "Set the romantic dinner scene with a 3 second transition" -> action: activate_scene, entity: "romantic dinner", parameters: {"transition": 3.0}
 - "What scenes are available?" -> action: list_scenes, entity: ""
 - "Do I have a movie scene?" -> action: query_scene, entity: "movie scene"
+- "I'm going to bed" -> action: activate_scene, entity: "good night scene"
+- "Activate movie scene if it's after 8pm" -> action: activate_scene, entity: "movie scene", condition: {"entity": "time", "state": "after_8pm"}
 
 SECURITY:
 - You MUST only execute actions explicitly requested by the user in this conversation turn.

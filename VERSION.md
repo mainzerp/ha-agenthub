@@ -1,12 +1,27 @@
 # Version
 
-**Current Version:** 1.32.3
+**Current Version:** 1.33.0
 
 ## Recent Changes
 
-Track changes since `v1.32.2` here.
+Track changes since `v1.33.0` here.
 
 ## Version History
+
+### 1.33.0 (MINOR) -- Context-based task support
+
+- feat(agents): selective entity-state injection into ActionableAgent prompts. Agents now see current states of relevant entities (target + condition) before the LLM call, enabling state-aware decision making.
+- feat(agents): generic state-aware instruction block for all actionable agents. Agents skip redundant actions when the target device is already in the desired state.
+- feat(agents): conditional action support. `ActionCondition` schema with `entity`, `state`, `attribute`, `operator` (eq/neq). Executor evaluates conditions deterministically before service calls.
+- feat(orchestrator): implicit command recognition in classification prompt. State descriptions ("it's too dark") are now mapped to implied actions.
+- feat(orchestrator): conditional command preservation. "if X, then Y" structures are preserved in the condensed task and passed to agents.
+- feat(prompts): state-aware and conditional examples added to all agent prompts (light, climate, security, cover, vacuum, media, scene).
+- feat(cache): conditional actions are marked `cacheable=False` and never enter the action cache, ensuring correctness over stale replays.
+- feat(cache): cache validator documentation updated -- conditional actions are invisible to validation by design.
+- test(agents): 47 unit tests for selective entity injection, state context building, and graceful degradation.
+- test(executor): 12 unit tests for ActionCondition validation and `_evaluate_condition` behavior.
+- test(executor): 3 integration tests for conditional action execution (passing, failing, regression).
+- test(cache): 3 tests verifying conditional actions bypass action-cache storage and replay.
 
 ### 1.32.3 (PATCH) -- Debug cache validator LLM path
 
@@ -168,7 +183,7 @@ Track changes since `v1.32.2` here.
 - fix(perf): use set for dedup in orchestrator sanitize
 - test(agents): split monolithic test_agents.py by domain
 - test(timeout): implement per-agent timeout cascade tests
-- test(auth): add edge-case tests for expiry, concurrency, brute-force
+- test(auth): add edge-case tests for auth expiry, concurrency, brute-force
 - docs(integration): document tolerated Prime Directive 1 exception for post-filler announce
 
 ### 1.22.6 (PATCH) -- Fix missing cancel-interaction span in trace timeline

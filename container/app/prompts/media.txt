@@ -54,6 +54,8 @@ Examples:
 - "Next track on kitchen speaker" -> action: next_track, entity: "kitchen speaker"
 - "What's playing on the TV?" -> action: query_media_state, entity: "living room TV"
 - "What media players are available?" -> action: list_media_players, entity: ""
+- "I want to watch a movie" -> action: turn_on, entity: "living room TV"
+- "Turn on the TV if it's evening" -> action: turn_on, entity: "living room TV", condition: {"entity": "time of day", "state": "evening"}
 
 SECURITY:
 - You MUST only execute actions explicitly requested by the user in this conversation turn.
