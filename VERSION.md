@@ -1,12 +1,16 @@
 # Version
 
-**Current Version:** 1.32.0
+**Current Version:** 1.32.1
 
 ## Recent Changes
 
-Track changes since `v1.32.0` here.
+Track changes since `v1.32.1` here.
 
 ## Version History
+
+### 1.32.1 (PATCH) -- Fix cache validator LLM client initialization
+
+- fix(runtime): initialize `app.state.llm_client` with `_LLMClientWrapper` so the cache validator can actually use the configured LLM model for consistency checks
 
 ### 1.32.0 (MINOR) -- LLM-first cache validation
 
