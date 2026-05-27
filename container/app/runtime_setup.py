@@ -679,6 +679,19 @@ async def _initialize_setup_dependent_services(app: FastAPI, *, source: str) -> 
     if purge_task is None or purge_task.done():
         app.state.purge_task = _spawn(_purge_stale_response_cache(cache_manager))
 
+    # Ensure LLM client wrapper is available for components that need it
+    if getattr(app.state, "llm_client", None) is None:
+
+        class _LLMClientWrapper:
+            """Thin wrapper exposing the free ``complete`` function as a bound method."""
+
+            async def complete(self, agent_id: str, messages: list, **kwargs):
+                from app.llm.client import complete
+
+                return await complete(agent_id, messages, **kwargs)
+
+        app.state.llm_client = _LLMClientWrapper()
+
     cache_validator = getattr(app.state, "cache_validator", None)
     if cache_validator is None:
         from app.cache.cache_validator import ActionCacheValidator
@@ -688,7 +701,7 @@ async def _initialize_setup_dependent_services(app: FastAPI, *, source: str) -> 
             cache_manager=cache_manager,
             entity_index=entity_index,
             ha_client=ha_client,
-            llm_client=getattr(app.state, "llm_client", None),
+            llm_client=app.state.llm_client,
         )
         app.state.cache_validator = cache_validator
 
