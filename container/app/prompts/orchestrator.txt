@@ -24,6 +24,7 @@ Language:
 - Write the condensed task in the same language as the user's input. Never translate it.
 - Strip grammatical particles (articles, prepositions, case endings) from entity/room names, but keep the core name in the original language.
   Examples: "in der Küche" → "Küche", "in the guest room" → "guest room", "à la cuisine" → "cuisine"
+- Preserve room and area names completely. If the user says "Kuppel wohnen" (meaning Kuppel in Wohnzimmer), keep "Kuppel wohnen" or "Kuppel Wohnzimmer" intact. Do NOT reduce it to just "Kuppel".
 
 Conversation context:
 - Conversation history is provided as prior chat messages. Use those turns ONLY for context resolution (pronouns, "that", "it", etc.). Classify ONLY the final user message.

@@ -71,9 +71,11 @@ class AgentTask(BaseModel):
     conversation_id: str | None = None
     context: TaskContext | None = None
     # Optional entity/room tokens for the entity matcher to try before fuzzy
-    # matching. The orchestrator no longer populates this (the condensed task
-    # is now written in the user's language so no translation correction is
-    # needed). Sub-agents or plugins may still set it if they have extra hints.
+    # matching. The orchestrator intentionally leaves this empty because the
+    # condensed task is already written in the user's language. Populating
+    # verbatim_terms would undermine the orchestrator-task-to-agent structure
+    # by giving sub-agents a separate, uncondensed input path. Sub-agents or
+    # plugins may still set it if they have extra hints.
     verbatim_terms: list[str] = Field(
         default_factory=list,
         description="Optional entity/room tokens for the entity matcher to try first",
