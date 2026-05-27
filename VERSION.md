@@ -1,12 +1,16 @@
 # Version
 
-**Current Version:** 1.32.2
+**Current Version:** 1.32.3
 
 ## Recent Changes
 
 Track changes since `v1.32.2` here.
 
 ## Version History
+
+### 1.32.3 (PATCH) -- Debug cache validator LLM path
+
+- fix(cache): add INFO-level logging to `_validate_entry` to debug why LLM validation is skipped
 
 ### 1.32.2 (PATCH) -- Fix TTS response delivery and add file-based logging
 
