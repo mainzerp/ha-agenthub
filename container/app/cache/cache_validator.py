@@ -196,11 +196,89 @@ class ActionCacheValidator:
         service = entry.cached_action.service
         response_text = entry.response_text or ""
 
+        # Try LLM-first validation when configured
+        model = await SettingsRepository.get_value("cache.validator.model", "")
+        if model and self._llm_client is not None:
+            llm_result = await self._llm_validate_consistency(entry)
+            if llm_result == "consistent":
+                return True, None
+            if llm_result == "correct_response":
+                corrected_text = await self._regenerate_response(entry)
+                return False, corrected_text
+            if llm_result == "invalidate":
+                return False, None
+            # None (failure/unparseable) → fall through to deterministic check
+
         if not self._is_plausible(service, response_text):
             corrected_text = await self._regenerate_response(entry)
             return False, corrected_text
 
         return True, None
+
+    async def _llm_validate_consistency(self, entry: ActionCacheEntry) -> str | None:
+        """Ask the LLM to evaluate consistency across query, action, and response.
+
+        Returns one of: "consistent", "correct_response", "invalidate", or None on failure.
+        """
+        service = entry.cached_action.service
+        entity_id = entry.cached_action.entity_id or "none"
+        service_data = entry.cached_action.service_data or {}
+        response_text = entry.response_text or ""
+        query_text = entry.query_text or ""
+
+        prompt = (
+            f"You are validating a smart-home assistant cache entry.\n\n"
+            f"User query: '{query_text}'\n"
+            f"Action performed: {service}\n"
+            f"Target entity: {entity_id}\n"
+            f"Service data: {service_data}\n"
+            f"Assistant response: '{response_text}'\n\n"
+            f"Evaluate whether the action matches the user query and whether the response is consistent with the action.\n"
+            f"Answer with exactly one word:\n"
+            f"- 'consistent' if the action matches the query and the response is appropriate\n"
+            f"- 'correct_response' if the action matches the query but the response is inconsistent or wrong\n"
+            f"- 'invalidate' if the action does not match the query or the entry is fundamentally wrong\n"
+        )
+        messages = [{"role": "user", "content": prompt}]
+
+        try:
+            temperature_raw = await SettingsRepository.get_value("cache.validator.temperature", "0.2")
+            try:
+                temperature = float(str(temperature_raw))
+            except (TypeError, ValueError):
+                temperature = 0.2
+            temperature = min(temperature, 0.2)
+
+            max_tokens_raw = await SettingsRepository.get_value("cache.validator.max_tokens", "32")
+            try:
+                max_tokens = int(str(max_tokens_raw))
+            except (TypeError, ValueError):
+                max_tokens = 32
+
+            reasoning_effort = await SettingsRepository.get_value("cache.validator.reasoning_effort", "low")
+
+            llm_result = await self._llm_client.complete(
+                agent_id="cache_validator",
+                messages=messages,
+                model=await SettingsRepository.get_value("cache.validator.model", ""),
+                temperature=temperature,
+                max_tokens=max_tokens,
+                reasoning_effort=reasoning_effort,
+            )
+        except Exception:
+            logger.debug("LLM consistency validation failed, falling back to deterministic check", exc_info=True)
+            return None
+
+        content = (llm_result or "").strip().lower()
+        if content.startswith("consistent"):
+            return "consistent"
+        if content.startswith("correct_response") or content.startswith("correct"):
+            return "correct_response"
+        if content.startswith("invalidate"):
+            return "invalidate"
+
+        logger.debug("LLM validation returned unparseable response: %r", llm_result)
+        return None
 
     async def _regenerate_response(self, entry: ActionCacheEntry) -> str | None:
         """Try LLM first if configured, otherwise use deterministic template."""
