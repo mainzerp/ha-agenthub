@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from collections import deque
 from datetime import UTC, datetime
@@ -122,46 +123,97 @@ class ActionCacheValidator:
             return {"scanned": 0, "inconsistent": 0, "corrected": 0, "deleted": 0, "errors": 1}
 
         started_at = datetime.now(UTC).isoformat()
+        now = started_at
 
+        # Filter pending entries: not validated and have cached_action
+        pending = [e for e in entries if not e.validated_at and e.cached_action is not None]
+
+        # Delete entries with no cached_action immediately
         for entry in entries:
-            if entry.validated_at:
-                continue
-            scanned += 1
-            try:
-                is_valid, corrected_text = await self._validate_entry(entry)
-                if is_valid:
-                    entry.validated_at = datetime.now(UTC).isoformat()
-                    try:
-                        await self._cache_manager.update_action_entry(entry)
-                    except Exception:
-                        logger.warning("Failed to update validated cache entry", exc_info=True)
-                        errors += 1
-                    continue
-                inconsistent += 1
-                if corrected_text is not None:
-                    entry.response_text = corrected_text
-                    entry.original_response_text = corrected_text
-                    entry.validated_at = datetime.now(UTC).isoformat()
-                    try:
-                        await self._cache_manager.update_action_entry(entry)
-                        corrected += 1
-                    except Exception:
-                        logger.warning("Failed to update corrected cache entry", exc_info=True)
-                        errors += 1
-                else:
-                    try:
-                        entry_id = self._action_cache.make_entry_id(
-                            entry.query_text,
-                            language=entry.language,
-                        )
-                        self._cache_manager.invalidate_action(entry_id)
-                        deleted += 1
-                    except Exception:
-                        logger.warning("Failed to invalidate inconsistent cache entry", exc_info=True)
-                        errors += 1
-            except Exception:
-                logger.warning("Failed to validate cache entry", exc_info=True)
-                errors += 1
+            if not entry.validated_at and entry.cached_action is None:
+                try:
+                    entry_id = self._action_cache.make_entry_id(
+                        entry.query_text,
+                        language=entry.language,
+                    )
+                    self._cache_manager.invalidate_action(entry_id)
+                    deleted += 1
+                except Exception:
+                    logger.warning("Failed to invalidate entry with no action", exc_info=True)
+                    errors += 1
+
+        batch_size = await self._get_batch_size()
+
+        for i in range(0, len(pending), batch_size):
+            batch = pending[i : i + batch_size]
+
+            # Try batch validation first
+            batch_results = await self._llm_validate_batch(batch)
+
+            # Check if batch completely failed (all None)
+            batch_failed = all(r is None for r in batch_results)
+
+            for j, entry in enumerate(batch):
+                scanned += 1
+                try:
+                    if batch_failed:
+                        # Fallback to single-entry validation
+                        is_valid, corrected_text = await self._validate_entry(entry)
+                        if is_valid:
+                            entry.validated_at = now
+                            await self._cache_manager.update_action_entry(entry)
+                            continue
+                        inconsistent += 1
+                        if corrected_text is not None:
+                            entry.response_text = corrected_text
+                            entry.original_response_text = corrected_text
+                            entry.validated_at = now
+                            await self._cache_manager.update_action_entry(entry)
+                            corrected += 1
+                        else:
+                            entry_id = self._action_cache.make_entry_id(
+                                entry.query_text,
+                                language=entry.language,
+                            )
+                            self._cache_manager.invalidate_action(entry_id)
+                            deleted += 1
+                    else:
+                        # Use batch result
+                        result = batch_results[j]
+                        if result is None:
+                            # This individual entry was unparseable, fallback
+                            is_valid, corrected_text = await self._validate_entry(entry)
+                            if is_valid:
+                                entry.validated_at = now
+                                await self._cache_manager.update_action_entry(entry)
+                                continue
+                            inconsistent += 1
+                            if corrected_text is not None:
+                                entry.response_text = corrected_text
+                                entry.original_response_text = corrected_text
+                                entry.validated_at = now
+                                await self._cache_manager.update_action_entry(entry)
+                                corrected += 1
+                            else:
+                                entry_id = self._action_cache.make_entry_id(
+                                    entry.query_text,
+                                    language=entry.language,
+                                )
+                                self._cache_manager.invalidate_action(entry_id)
+                                deleted += 1
+                        else:
+                            is_valid, was_corrected, was_deleted = await self._process_validation_result(
+                                entry, result, now
+                            )
+                            if not is_valid:
+                                inconsistent += 1
+                            if was_corrected:
+                                corrected += 1
+                            if was_deleted:
+                                deleted += 1
+                except Exception:
+                    logger.warning("Failed to validate cache entry", exc_info=True)
+                    errors += 1
 
         finished_at = datetime.now(UTC).isoformat()
         result = {
@@ -187,6 +239,174 @@ class ActionCacheValidator:
     def get_history(self) -> list[dict]:
         """Return the last 50 validation run records."""
         return list(self._history)
+
+    async def _get_batch_size(self) -> int:
+        """Read and clamp the configured batch size."""
+        raw = await SettingsRepository.get_value("cache.validator.batch_size", "10")
+        try:
+            batch_size = int(str(raw))
+        except (TypeError, ValueError):
+            batch_size = 10
+        if batch_size < 1:
+            batch_size = 1
+        if batch_size > 50:
+            batch_size = 50
+        return batch_size
+
+    @staticmethod
+    def _build_batch_prompt(entries: list[ActionCacheEntry]) -> str:
+        """Build a single prompt for batch validation of multiple entries."""
+        lines = [
+            "You are validating multiple smart-home assistant cache entries.",
+            "For each entry below, evaluate whether the action matches the user query and whether the response is consistent with the action.",
+            "",
+            "Answer with a JSON array where each element is one of: 'consistent', 'correct_response', or 'invalidate'.",
+            "The array must have exactly the same number of elements as the entries below, in the same order.",
+            "",
+        ]
+        for i, entry in enumerate(entries, 1):
+            service = entry.cached_action.service
+            entity_id = entry.cached_action.entity_id or "none"
+            service_data = entry.cached_action.service_data or {}
+            lines.append(f"Entry {i}:")
+            lines.append(f"  User query: '{entry.query_text}'")
+            lines.append(f"  Action performed: {service}")
+            lines.append(f"  Target entity: {entity_id}")
+            lines.append(f"  Service data: {service_data}")
+            lines.append(f"  Assistant response: '{entry.response_text}'")
+            lines.append("")
+        lines.append("JSON array response:")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _parse_batch_response(response: str, expected_count: int) -> list[str | None]:
+        """Parse LLM batch validation response.
+
+        Returns a list of results parallel to the input entries.
+        Each result is one of: "consistent", "correct_response", "invalidate", or None.
+        If parsing fails or count mismatches, returns all None to trigger fallback.
+        """
+        content = response.strip()
+
+        # Try to extract JSON array from markdown code blocks
+        if "```" in content:
+            start = content.find("[")
+            end = content.rfind("]")
+            if start != -1 and end != -1 and end > start:
+                content = content[start : end + 1]
+
+        try:
+            results = json.loads(content)
+        except json.JSONDecodeError:
+            logger.warning("Batch validation: failed to parse JSON response: %r", response)
+            return [None] * expected_count
+
+        if not isinstance(results, list):
+            logger.warning("Batch validation: LLM returned non-array JSON")
+            return [None] * expected_count
+
+        if len(results) != expected_count:
+            logger.warning("Batch validation: expected %d results, got %d", expected_count, len(results))
+            return [None] * expected_count
+
+        parsed = []
+        for r in results:
+            r_str = str(r).strip().lower()
+            if r_str.startswith("consistent"):
+                parsed.append("consistent")
+            elif r_str.startswith("correct_response") or r_str.startswith("correct"):
+                parsed.append("correct_response")
+            elif r_str.startswith("invalidate"):
+                parsed.append("invalidate")
+            else:
+                parsed.append(None)
+        return parsed
+
+    async def _llm_validate_batch(self, entries: list[ActionCacheEntry]) -> list[str | None]:
+        """Validate multiple entries in a single LLM call.
+
+        Returns a list of results parallel to the input entries.
+        Each result is one of: "consistent", "correct_response", "invalidate", or None.
+        A result of None indicates parsing failure for that entry (caller should fallback).
+        """
+        if not entries or self._llm_client is None:
+            return [None] * len(entries)
+
+        model = await SettingsRepository.get_value("cache.validator.model", "")
+        if not model:
+            return [None] * len(entries)
+
+        prompt = self._build_batch_prompt(entries)
+        messages = [{"role": "user", "content": prompt}]
+
+        try:
+            temperature_raw = await SettingsRepository.get_value("cache.validator.temperature", "0.2")
+            try:
+                temperature = float(str(temperature_raw))
+            except (TypeError, ValueError):
+                temperature = 0.2
+            temperature = min(temperature, 0.2)
+
+            # Batch response needs more tokens: ~16 per entry
+            max_tokens = len(entries) * 16
+
+            reasoning_effort = await SettingsRepository.get_value("cache.validator.reasoning_effort", "low")
+
+            llm_result = await self._llm_client.complete(
+                agent_id="cache_validator",
+                messages=messages,
+                model=model,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                reasoning_effort=reasoning_effort,
+            )
+        except Exception:
+            logger.debug("Batch LLM validation failed, will fallback to single-entry", exc_info=True)
+            return [None] * len(entries)
+
+        if not llm_result:
+            return [None] * len(entries)
+
+        return self._parse_batch_response(llm_result, len(entries))
+
+    async def _process_validation_result(
+        self,
+        entry: ActionCacheEntry,
+        result: str | None,
+        now: str,
+    ) -> tuple[bool, bool, bool]:
+        """Process a single validation result.
+
+        Returns (is_valid, was_corrected, was_deleted) booleans for metric tracking.
+        """
+        if result == "consistent":
+            entry.validated_at = now
+            await self._cache_manager.update_action_entry(entry)
+            return True, False, False
+
+        if result == "correct_response":
+            corrected_text = await self._regenerate_response(entry)
+            if corrected_text:
+                entry.response_text = corrected_text
+                entry.original_response_text = corrected_text
+                entry.validated_at = now
+                await self._cache_manager.update_action_entry(entry)
+                return False, True, False
+            else:
+                entry_id = self._action_cache.make_entry_id(
+                    entry.query_text,
+                    language=entry.language,
+                )
+                self._cache_manager.invalidate_action(entry_id)
+                return False, False, True
+
+        # "invalidate" or None (unparseable)
+        entry_id = self._action_cache.make_entry_id(
+            entry.query_text,
+            language=entry.language,
+        )
+        self._cache_manager.invalidate_action(entry_id)
+        return False, False, True
 
     async def _validate_entry(self, entry: ActionCacheEntry) -> tuple[bool, str | None]:
         """Return (is_valid, corrected_response_or_None)."""

@@ -266,6 +266,7 @@ async def lifespan(app: FastAPI):
         ("cache.validator.temperature", "0.2", "float", "Temperature for cache validator LLM regeneration"),
         ("cache.validator.reasoning_effort", "low", "string", "Reasoning effort for cache validator LLM calls"),
         ("cache.validator.max_tokens", "1024", "int", "Max tokens for cache validator LLM regeneration"),
+        ("cache.validator.batch_size", "10", "int", "Batch size for cache validator LLM calls"),
     ]:
         if await SettingsRepository.get_value(key) is None:
             await SettingsRepository.set(key, value, value_type=vtype, category="cache", description=desc)
