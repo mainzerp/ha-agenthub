@@ -44,9 +44,10 @@ def _make_entry(
     service: str = "light/turn_on",
     response_text: str = "Done, kitchen light is now on.",
     entity_id: str = "light.kitchen_ceiling",
+    query_text: str = "turn on kitchen light",
 ) -> ActionCacheEntry:
     return ActionCacheEntry(
-        query_text="turn on kitchen light",
+        query_text=query_text,
         language="en",
         agent_id="light-agent",
         response_text=response_text,
@@ -407,6 +408,198 @@ async def test_regenerate_response_falls_back_when_model_empty():
         result = await validator._regenerate_response(entry)
 
     assert result == "Done, Kitchen Ceiling is now on."
+
+
+# ---------------------------------------------------------------------------
+# _validate_entry with LLM
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_validate_entry_llm_says_consistent():
+    entry = _make_entry(
+        query_text="Turn on the kitchen light",
+        service="light/turn_on",
+        response_text="Done, Kitchen Light is now on.",
+    )
+    llm_client = AsyncMock()
+    llm_client.complete = AsyncMock(return_value="consistent")
+
+    validator = _make_validator(llm_client=llm_client)
+
+    with patch("app.cache.cache_validator.SettingsRepository") as mock_settings:
+        mock_settings.get_value = AsyncMock(
+            side_effect=lambda key, default="": {
+                "cache.validator.model": "groq/openai/gpt-oss-20b",
+                "cache.validator.temperature": "0.1",
+                "cache.validator.max_tokens": "32",
+                "cache.validator.reasoning_effort": "low",
+            }.get(key, default)
+        )
+        is_valid, corrected = await validator._validate_entry(entry)
+
+    assert is_valid is True
+    assert corrected is None
+    llm_client.complete.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_validate_entry_llm_says_correct_response():
+    entry = _make_entry(
+        query_text="Turn off the kitchen light",
+        service="light/turn_off",
+        response_text="Done, Kitchen Light is now on.",
+    )
+    llm_client = AsyncMock()
+    # First call: validation says "correct_response"
+    # Second call: regeneration generates new text
+    llm_client.complete = AsyncMock(side_effect=["correct_response", "Done, Kitchen Light is now off."])
+
+    entity_index = MagicMock()
+    entity_index.get_by_id_async = AsyncMock(return_value=MagicMock(friendly_name="Kitchen Ceiling"))
+
+    validator = _make_validator(entity_index=entity_index, llm_client=llm_client)
+
+    with patch("app.cache.cache_validator.SettingsRepository") as mock_settings:
+        mock_settings.get_value = AsyncMock(
+            side_effect=lambda key, default="": {
+                "cache.validator.model": "groq/openai/gpt-oss-20b",
+                "cache.validator.temperature": "0.1",
+                "cache.validator.max_tokens": "32",
+                "cache.validator.reasoning_effort": "low",
+            }.get(key, default)
+        )
+        is_valid, corrected = await validator._validate_entry(entry)
+
+    assert is_valid is False
+    assert corrected == "Done, Kitchen Light is now off."
+    assert llm_client.complete.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_validate_entry_llm_says_invalidate():
+    entry = _make_entry(
+        query_text="Turn on the kitchen light",
+        service="cover/open_cover",
+        response_text="Done, Kitchen Light is now on.",
+    )
+    llm_client = AsyncMock()
+    llm_client.complete = AsyncMock(return_value="invalidate")
+
+    validator = _make_validator(llm_client=llm_client)
+
+    with patch("app.cache.cache_validator.SettingsRepository") as mock_settings:
+        mock_settings.get_value = AsyncMock(
+            side_effect=lambda key, default="": {
+                "cache.validator.model": "groq/openai/gpt-oss-20b",
+                "cache.validator.temperature": "0.1",
+                "cache.validator.max_tokens": "32",
+                "cache.validator.reasoning_effort": "low",
+            }.get(key, default)
+        )
+        is_valid, corrected = await validator._validate_entry(entry)
+
+    assert is_valid is False
+    assert corrected is None  # signals deletion
+    llm_client.complete.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_validate_entry_llm_failure_falls_back_to_deterministic():
+    entry = _make_entry(
+        query_text="Turn off the kitchen light",
+        service="light/turn_off",
+        response_text="Done, Kitchen Light is now on.",
+    )
+    llm_client = AsyncMock()
+    llm_client.complete = AsyncMock(side_effect=RuntimeError("LLM timeout"))
+
+    entity_index = MagicMock()
+    entity_index.get_by_id_async = AsyncMock(return_value=MagicMock(friendly_name="Kitchen Ceiling"))
+
+    validator = _make_validator(entity_index=entity_index, llm_client=llm_client)
+
+    with patch("app.cache.cache_validator.SettingsRepository") as mock_settings:
+        mock_settings.get_value = AsyncMock(
+            side_effect=lambda key, default="": {
+                "cache.validator.model": "groq/openai/gpt-oss-20b",
+            }.get(key, default)
+        )
+        is_valid, corrected = await validator._validate_entry(entry)
+
+    assert is_valid is False
+    assert corrected == "Done, Kitchen Ceiling is now off."
+
+
+@pytest.mark.asyncio
+async def test_validate_entry_llm_unparseable_falls_back():
+    entry = _make_entry(
+        query_text="Turn off the kitchen light",
+        service="light/turn_off",
+        response_text="Done, Kitchen Light is now on.",
+    )
+    llm_client = AsyncMock()
+    # First call (validation) returns unparseable text.
+    # Second call (regeneration) fails so fallback to deterministic template occurs.
+    llm_client.complete = AsyncMock(side_effect=["maybe, it depends", RuntimeError("LLM down")])
+
+    entity_index = MagicMock()
+    entity_index.get_by_id_async = AsyncMock(return_value=MagicMock(friendly_name="Kitchen Ceiling"))
+
+    validator = _make_validator(entity_index=entity_index, llm_client=llm_client)
+
+    with patch("app.cache.cache_validator.SettingsRepository") as mock_settings:
+        mock_settings.get_value = AsyncMock(
+            side_effect=lambda key, default="": {
+                "cache.validator.model": "groq/openai/gpt-oss-20b",
+            }.get(key, default)
+        )
+        is_valid, corrected = await validator._validate_entry(entry)
+
+    assert is_valid is False
+    assert corrected == "Done, Kitchen Ceiling is now off."
+
+
+@pytest.mark.asyncio
+async def test_validate_entry_no_model_uses_deterministic():
+    entry = _make_entry(
+        query_text="Turn on the kitchen light",
+        service="light/turn_on",
+        response_text="Done, Kitchen Light is now on.",
+    )
+    validator = _make_validator()
+
+    with patch("app.cache.cache_validator.SettingsRepository") as mock_settings:
+        mock_settings.get_value = AsyncMock(
+            side_effect=lambda key, default="": {
+                "cache.validator.model": "",
+            }.get(key, default)
+        )
+        is_valid, corrected = await validator._validate_entry(entry)
+
+    assert is_valid is True
+    assert corrected is None
+
+
+@pytest.mark.asyncio
+async def test_validate_entry_model_configured_but_no_client_uses_deterministic():
+    entry = _make_entry(
+        query_text="Turn on the kitchen light",
+        service="light/turn_on",
+        response_text="Done, Kitchen Light is now on.",
+    )
+    validator = _make_validator(llm_client=None)
+
+    with patch("app.cache.cache_validator.SettingsRepository") as mock_settings:
+        mock_settings.get_value = AsyncMock(
+            side_effect=lambda key, default="": {
+                "cache.validator.model": "groq/openai/gpt-oss-20b",
+            }.get(key, default)
+        )
+        is_valid, corrected = await validator._validate_entry(entry)
+
+    assert is_valid is True
+    assert corrected is None
 
 
 # ---------------------------------------------------------------------------
