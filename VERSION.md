@@ -1,12 +1,18 @@
 # Version
 
-**Current Version:** 1.31.0
+**Current Version:** 1.32.0
 
 ## Recent Changes
 
-Track changes since `v1.31.0` here.
+Track changes since `v1.32.0` here.
 
 ## Version History
+
+### 1.32.0 (MINOR) -- LLM-first cache validation
+
+- feat(cache): LLM-first validation for action-cache entries. When `cache.validator.model` is configured, the LLM now evaluates consistency across query, action, and response before falling back to deterministic checks.
+- feat(cache): LLM validator can return `consistent`, `correct_response` (regenerates response), or `invalidate` (deletes entry).
+- fix(orchestrator): preserve room names in condensed task and document verbatim_terms intent
 
 ### 1.31.0 (MINOR) -- Cache validator dashboard and skip logic
 
