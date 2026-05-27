@@ -198,6 +198,7 @@ class ActionCacheValidator:
 
         # Try LLM-first validation when configured
         model = await SettingsRepository.get_value("cache.validator.model", "")
+        logger.info("Cache validator: model=%s llm_client=%s", model, self._llm_client is not None)
         if model and self._llm_client is not None:
             llm_result = await self._llm_validate_consistency(entry)
             if llm_result == "consistent":
