@@ -162,6 +162,10 @@ class CacheManager:
         if entry is None or entry.cached_action is None:
             return None
 
+        # Defensive: never replay context-dependent (conditional) entries.
+        if getattr(entry, "context_dependent", False):
+            return None
+
         entity_id = entry.cached_action.entity_id
         if entity_id:
             # Re-validation: only check visibility, skip re-resolution.

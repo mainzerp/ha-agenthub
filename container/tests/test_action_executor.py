@@ -1699,3 +1699,95 @@ class TestFilterMatchesByDomain:
         ]
         out = filter_matches_by_domain(matches, frozenset({"light"}))
         assert [m.entity_id for m in out] == ["light.a", "light.b"]
+
+
+# ---------------------------------------------------------------------------
+# Conditional action tests
+# ---------------------------------------------------------------------------
+
+
+class TestExecuteActionCondition:
+    """Tests for execute_action with pre-action conditions."""
+
+    @pytest.fixture(autouse=True)
+    def _fast_state_verify(self, monkeypatch):
+        from app.agents import action_executor as _ae
+
+        async def _fast(key, *, default):
+            return {
+                "state_verify.ws_timeout_sec": 0.05,
+                "state_verify.poll_interval_sec": 0.01,
+                "state_verify.poll_max_sec": 0.05,
+            }.get(key, default)
+
+        monkeypatch.setattr(_ae, "_settings_float", _fast)
+
+    @pytest.fixture()
+    def ha_client(self):
+        client = AsyncMock()
+        client.call_service = AsyncMock(return_value=[])
+        client.get_state = AsyncMock(return_value={"state": "on", "attributes": {}})
+        return _attach_expect_state_shim(client)
+
+    @pytest.fixture()
+    def entity_matcher(self):
+        matcher = AsyncMock()
+        match_result = MagicMock()
+        match_result.entity_id = "light.kitchen_ceiling"
+        match_result.friendly_name = "Kitchen Ceiling"
+        matcher.match = AsyncMock(return_value=[match_result])
+        return matcher
+
+    @pytest.fixture()
+    def entity_index(self):
+        index = MagicMock()
+        entry = MagicMock()
+        entry.entity_id = "light.kitchen_ceiling"
+        entry.friendly_name = "Kitchen Ceiling"
+        index.search = MagicMock(return_value=[(entry, 0.1)])
+        return index
+
+    @pytest.mark.asyncio
+    async def test_passing_condition_calls_service_and_sets_cacheable_false(
+        self, ha_client, entity_matcher, entity_index
+    ):
+        ha_client.get_state = AsyncMock(return_value={"state": "off", "attributes": {}})
+        action = {
+            "action": "turn_on",
+            "entity": "kitchen light",
+            "parameters": {},
+            "condition": {"entity": "kitchen light", "state": "off", "operator": "eq"},
+        }
+        result = await execute_action(action, ha_client, entity_index, entity_matcher)
+
+        assert result["success"] is True
+        ha_client.call_service.assert_awaited_once()
+        assert result.get("cacheable") is False
+
+    @pytest.mark.asyncio
+    async def test_failing_condition_skips_service_and_sets_cacheable_false(
+        self, ha_client, entity_matcher, entity_index
+    ):
+        ha_client.get_state = AsyncMock(return_value={"state": "on", "attributes": {}})
+        action = {
+            "action": "turn_on",
+            "entity": "kitchen light",
+            "parameters": {},
+            "condition": {"entity": "kitchen light", "state": "off", "operator": "eq"},
+        }
+        result = await execute_action(action, ha_client, entity_index, entity_matcher)
+
+        assert result["success"] is True
+        assert "Skipped" in result["speech"]
+        ha_client.call_service.assert_not_awaited()
+        assert result.get("cacheable") is False
+
+    @pytest.mark.asyncio
+    async def test_no_condition_regression_cacheable_true(self, ha_client, entity_matcher, entity_index):
+        action = {"action": "turn_on", "entity": "kitchen light", "parameters": {}}
+        result = await execute_action(action, ha_client, entity_index, entity_matcher)
+
+        assert result["success"] is True
+        ha_client.call_service.assert_awaited_once()
+        # Without a condition the result should not carry cacheable=False.
+        assert result.get("cacheable", True) is True

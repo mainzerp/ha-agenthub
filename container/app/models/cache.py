@@ -6,7 +6,12 @@ from pydantic import BaseModel, Field
 
 
 class CachedAction(BaseModel):
-    """A cached HA service call for direct execution on cache hit."""
+    """A cached HA service call for direct execution on cache hit.
+
+    Represents static unconditional service calls only. Conditional
+    actions (marked ``cacheable=False`` by the executor) are never
+    stored in the action cache.
+    """
 
     service: str = Field(..., description="HA service (e.g., light/turn_on)")
     entity_id: str

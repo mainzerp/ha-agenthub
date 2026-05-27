@@ -9,6 +9,7 @@ class CoverAgent(ActionableAgent):
     """Controls covers, blinds, curtains, shutters, garage doors, gates, awnings, and windows via HA REST API."""
 
     _prompt_name = "cover"
+    _allowed_domains = frozenset({"cover"})
 
     async def _do_execute(self, action, ha_client, entity_index, entity_matcher, *, agent_id, span_collector=None):
         # FLOW-CTX-1 (0.18.6): use the originating satellite's area

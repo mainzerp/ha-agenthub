@@ -266,3 +266,65 @@ async def test_routing_hit_for_disabled_agent_is_invalidated_and_falls_through()
     assert action_replay is None
     assert routing_skip is None
     cache_manager.invalidate_routing.assert_called_once_with("stale-entry-id")
+
+
+@pytest.mark.asyncio
+async def test_conditional_action_is_not_stored():
+    """Conditional actions (cacheable=False) must not be stored in action cache."""
+    orch = OrchestratorAgent.__new__(OrchestratorAgent)
+    orch._cache_manager = MagicMock()
+    orch._cache_manager.store_routing_async = AsyncMock()
+    orch._cache_manager.store_action_async = AsyncMock()
+    orch._legacy_pipeline_enabled = MagicMock(return_value=False)
+    orch._get_bool_setting = AsyncMock(return_value=True)
+
+    stored_action, stored_routing = await orch._store_after_dispatch(
+        user_text="turn on kitchen light",
+        language="en",
+        target_agent="light-agent",
+        condensed_task="Turn on kitchen light",
+        confidence=0.95,
+        speech="Done.",
+        action_executed={
+            "success": True,
+            "action": "turn_on",
+            "entity_id": "light.kitchen",
+            "cacheable": False,
+        },
+        has_error=False,
+    )
+
+    assert (stored_action, stored_routing) == (False, False)
+    orch._cache_manager.store_action_async.assert_not_awaited()
+    orch._cache_manager.store_routing_async.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_conditional_action_in_service_data_is_not_stored():
+    """Defensive: actions whose service_data contains a condition key must not be stored."""
+    orch = OrchestratorAgent.__new__(OrchestratorAgent)
+    orch._cache_manager = MagicMock()
+    orch._cache_manager.store_routing_async = AsyncMock()
+    orch._cache_manager.store_action_async = AsyncMock()
+    orch._legacy_pipeline_enabled = MagicMock(return_value=False)
+    orch._get_bool_setting = AsyncMock(return_value=True)
+
+    stored_action, stored_routing = await orch._store_after_dispatch(
+        user_text="turn on kitchen light",
+        language="en",
+        target_agent="light-agent",
+        condensed_task="Turn on kitchen light",
+        confidence=0.95,
+        speech="Done.",
+        action_executed={
+            "success": True,
+            "action": "turn_on",
+            "entity_id": "light.kitchen",
+            "service_data": {"condition": {"entity": "light.kitchen", "state": "off"}},
+        },
+        has_error=False,
+    )
+
+    assert (stored_action, stored_routing) == (False, False)
+    orch._cache_manager.store_action_async.assert_not_awaited()
+    orch._cache_manager.store_routing_async.assert_not_awaited()

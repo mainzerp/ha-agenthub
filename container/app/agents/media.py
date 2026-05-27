@@ -9,6 +9,7 @@ class MediaAgent(ActionableAgent):
     """Controls generic media player devices via HA REST API."""
 
     _prompt_name = "media"
+    _allowed_domains = frozenset({"media_player"})
 
     async def _do_execute(self, action, ha_client, entity_index, entity_matcher, *, agent_id, span_collector=None):
         ctx = getattr(self, "_current_task_context", None)

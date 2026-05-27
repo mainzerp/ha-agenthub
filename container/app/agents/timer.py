@@ -13,6 +13,7 @@ class TimerAgent(ActionableAgent):
 
     _prompt_name = "timer"
     _clarify_on_not_found = False
+    _allowed_domains = frozenset({"timer", "input_datetime", "input_boolean"})
 
     async def _do_execute(self, action, ha_client, entity_index, entity_matcher, *, agent_id, span_collector=None):
         # FLOW-CTX-1 (0.18.6): ``_current_task_context`` is now set

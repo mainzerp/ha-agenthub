@@ -69,6 +69,22 @@ _ACTIONS_WITHOUT_ENTITY: frozenset[str] = frozenset(
 )
 
 
+class ActionCondition(BaseModel):
+    """Condition checked before executing a state-changing action.
+
+    Allows agents to emit context-dependent actions (e.g. "turn on the
+    light only if it is off"). When the condition fails the action is
+    skipped rather than executed.
+    """
+
+    model_config = {"extra": "allow"}
+
+    entity: str = Field(..., min_length=1)
+    state: str | None = Field(None)
+    attribute: str | None = Field(None)
+    operator: str = Field("eq")
+
+
 class ActionPayload(BaseModel):
     """Validated structured action emitted by domain LLM prompts.
 
@@ -87,6 +103,7 @@ class ActionPayload(BaseModel):
     entity: str | None = None
     entity_id: str | None = None
     parameters: dict[str, Any] = Field(default_factory=dict)
+    condition: ActionCondition | None = None
 
 
 def _validate_action_dict(candidate: Any) -> dict | None:
@@ -111,6 +128,13 @@ def _validate_action_dict(candidate: Any) -> dict | None:
     has_entity = bool((validated.entity or "").strip()) or bool((validated.entity_id or "").strip())
     if not has_entity and action_name not in _ACTIONS_WITHOUT_ENTITY:
         return None
+
+    # If a condition is present, validate its shape independently.
+    if "condition" in candidate:
+        try:
+            ActionCondition.model_validate(candidate["condition"])
+        except ValidationError:
+            return None
 
     return candidate
 
@@ -476,6 +500,78 @@ def _build_service_data(action: dict) -> dict[str, Any]:
     return data
 
 
+async def _evaluate_condition(
+    condition: ActionCondition,
+    ha_client: Any,
+    entity_index: Any,
+    entity_matcher: Any,
+    preferred_area_id: str | None = None,
+) -> tuple[bool, str | None, str | None, Exception | None]:
+    """Evaluate a pre-action condition against the current HA state.
+
+    Returns ``(passed, observed_value, resolved_entity_id, error)``.
+    * ``passed`` is ``True`` when the condition is satisfied (or when
+      evaluation cannot be performed and we choose to proceed).
+    * ``observed_value`` is the state/attribute string that was compared.
+    * ``resolved_entity_id`` is the HA entity id the condition referenced.
+    * ``error`` is non-None when entity resolution or state lookup failed.
+    """
+    entity_query = condition.entity
+    try:
+        resolution = await resolve_entity_deterministic_first(
+            entity_query,
+            entity_index,
+            entity_matcher,
+            agent_id=None,
+            allowed_domains=None,
+            preferred_area_id=preferred_area_id,
+            enable_strip_device_noun=True,
+            enable_area_fallback=True,
+        )
+    except Exception as exc:
+        return False, None, None, exc
+
+    entity_id = resolution.get("entity_id")
+    if not entity_id:
+        return False, None, None, RuntimeError(f"Could not resolve condition entity '{entity_query}'")
+
+    try:
+        state_resp = await ha_client.get_state(entity_id)
+    except Exception as exc:
+        return False, None, entity_id, exc
+
+    if not isinstance(state_resp, dict):
+        return False, None, entity_id, RuntimeError(f"No state for {entity_id}")
+
+    if condition.attribute:
+        observed = state_resp.get("attributes", {}).get(condition.attribute)
+        observed_str = str(observed) if observed is not None else None
+    else:
+        observed_str = _ensure_str(state_resp.get("state"))
+
+    expected = (condition.state or "").strip()
+    op = (condition.operator or "eq").strip().lower()
+
+    if observed_str is None:
+        # Cannot evaluate -- fail-safe: treat as not passed but surface error
+        return (
+            False,
+            None,
+            entity_id,
+            RuntimeError(f"Missing {'attribute' if condition.attribute else 'state'} for {entity_id}"),
+        )
+
+    if op == "eq":
+        passed = observed_str.lower() == expected.lower()
+    elif op == "neq":
+        passed = observed_str.lower() != expected.lower()
+    else:
+        # Unknown operator defaults to not-passed
+        passed = False
+
+    return passed, observed_str, entity_id, None
+
+
 # ---------------------------------------------------------------------------
 # FLOW-VERIFY-1: helpers for post-action state verification and speech.
 # ---------------------------------------------------------------------------
@@ -624,6 +720,46 @@ async def execute_action(
     # Extract domain from entity_id
     domain = entity_id.split(".")[0] if "." in entity_id else "light"
 
+    # Evaluate pre-action condition if present. Conditional actions are
+    # never cacheable because their outcome depends on runtime state.
+    raw_condition = action.get("condition")
+    if raw_condition is not None:
+        try:
+            condition = ActionCondition.model_validate(raw_condition)
+        except ValidationError:
+            return {
+                "success": False,
+                "entity_id": entity_id,
+                "new_state": None,
+                "speech": f"Invalid condition for action on {friendly_name}.",
+                "cacheable": False,
+            }
+        passed, observed, cond_entity_id, error = await _evaluate_condition(
+            condition,
+            ha_client,
+            entity_index,
+            entity_matcher,
+            preferred_area_id=preferred_area_id,
+        )
+        if error is not None:
+            return {
+                "success": False,
+                "entity_id": entity_id,
+                "new_state": None,
+                "speech": f"Could not evaluate condition for {friendly_name}: {error}",
+                "cacheable": False,
+            }
+        if not passed:
+            observed_display = observed or "unknown"
+            return {
+                "success": True,
+                "entity_id": entity_id,
+                "new_state": observed,
+                "speech": f"Skipped {action_name} on {friendly_name} because {cond_entity_id or condition.entity} is {observed_display}.",
+                "cacheable": False,
+            }
+        # Condition passed -- continue to service call, but mark non-cacheable.
+
     # Build service data
     service_data = _build_service_data(action)
 
@@ -649,7 +785,7 @@ async def execute_action(
         }
 
     new_state = verify["observed_state"]
-    return {
+    result = {
         "success": True,
         "action": action_name,
         "entity_id": entity_id,
@@ -661,6 +797,9 @@ async def execute_action(
             new_state=new_state,
         ),
     }
+    if raw_condition is not None:
+        result["cacheable"] = False
+    return result
 
 
 # ---------------------------------------------------------------------------

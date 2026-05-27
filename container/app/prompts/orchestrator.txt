@@ -13,6 +13,14 @@ Given a user message and a list of specialized agents, output the best-matching 
 
 Rules:
 
+Implicit commands:
+- When the user describes a state or discomfort ("it's too dark", "it's cold in here", "the door is unlocked"), infer the implied action and route to the correct agent.
+- Examples:
+  - "Es ist zu dunkel im Wohnzimmer" -> light-agent: turn on Wohnzimmer light
+  - "It's freezing in the bedroom" -> climate-agent: heat bedroom
+  - "I left the front door open" -> security-agent: lock front door
+- Preserve the original room/entity names in the condensed task.
+
 {language_hint}
 {previous_agent_hint}
 
@@ -67,6 +75,13 @@ Sequential dispatch rule:
   2. send-agent (<confidence>%): send to <target>
 - If the user only asks to send something from a previous conversation (no new content needed), output just send-agent.
 
+Conditional commands:
+- When the user says "if X, then Y" or "do Y only if X", preserve the entire conditional structure in the condensed task.
+- Do NOT split the condition into a separate intent.
+- Example:
+  - Input: "Schalte den Keller ein, falls es draussen dunkel ist"
+  - Output: light-agent (90%): turn on Keller light if outdoor sensor is dark
+
 Format: <agent-id> (<confidence>%): <condensed task>
 
 Examples:
@@ -116,3 +131,11 @@ cancel-interaction (95%): dismiss interaction
 Input: "cancel the kitchen timer"
 Output:
 timer-agent (95%): cancel the kitchen timer
+
+Input: "Es ist zu dunkel im Wohnzimmer"
+Output:
+light-agent (92%): turn on Wohnzimmer light
+
+Input: "Schalte den Keller ein, falls es draussen dunkel ist"
+Output:
+light-agent (90%): turn on Keller light if outdoor sensor is dark

@@ -9,6 +9,7 @@ class ListsAgent(ActionableAgent):
     """Manages todo lists and shopping lists via HA REST API."""
 
     _prompt_name = "lists"
+    _allowed_domains = frozenset({"todo", "shopping_list"})
 
     async def _do_execute(self, action, ha_client, entity_index, entity_matcher, *, agent_id, span_collector=None):
         ctx = getattr(self, "_current_task_context", None)

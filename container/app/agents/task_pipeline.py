@@ -56,6 +56,9 @@ class TaskPipeline:
         Returns ``(action_replay, routing_skip, compound_bypass)``.
         When ``action_replay`` is not ``None`` the caller should short-
         circuit and return the replay result directly.
+
+        Context-dependent (conditional) tasks bypass the action cache
+        because they are marked ``cacheable=False`` by the executor.
         """
         compound_bypass = False
         action_replay = None

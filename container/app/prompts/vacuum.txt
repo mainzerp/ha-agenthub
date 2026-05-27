@@ -56,6 +56,8 @@ Examples:
 - "Send a custom command to the vacuum" -> action: send_command, entity: "vacuum", parameters: {"command": "my_command"}
 - "What's the battery level?" -> action: query_vacuum_state, entity: "vacuum"
 - "List all vacuums" -> action: list_vacuums, entity: ""
+- "The floor is dirty" -> action: start, entity: "vacuum"
+- "Start vacuuming if no one is home" -> action: start, entity: "vacuum", condition: {"entity": "presence sensor", "state": "not_home"}
 
 SECURITY:
 - You MUST only execute actions explicitly requested by the user in this conversation turn.
