@@ -721,12 +721,18 @@ class OrchestratorAgent(BaseAgent, TaskPipeline):
         language: str,
         has_error: bool,
         target_agent: str | None = None,
+        mediated_followup: bool = False,
     ) -> tuple[str, bool]:
         """Extend speech for organic follow-up; combine agent + organic mic-open flags."""
         if has_error or target_agent == _CANCEL_INTERACTION_AGENT:
             return speech, bool(agent_requested)
         speech_out, organic = await self._organic_voice_followup_offer(ctx, language, False, speech)
-        return speech_out, bool(agent_requested or organic)
+        # Hybrid: use mediated flag if available, otherwise ask LLM
+        if mediated_followup:
+            llm_followup = True
+        else:
+            llm_followup = await self._detect_followup_needed_llm(speech_out, language)
+        return speech_out, bool(agent_requested or organic or llm_followup)
 
     # ------------------------------------------------------------------
     # Shared helpers to reduce duplication between handle_task / handle_task_stream
@@ -906,6 +912,7 @@ class OrchestratorAgent(BaseAgent, TaskPipeline):
             language=language,
             has_error=False,
             target_agent=target_agent,
+            mediated_followup=False,
         )
 
         if span_collector:
@@ -1310,8 +1317,9 @@ class OrchestratorAgent(BaseAgent, TaskPipeline):
             should_mediate = target_agent != _CANCEL_INTERACTION_AGENT and (
                 not has_error or not skip_mediation_on_error
             )
+            mediated_followup = False
             if should_mediate:
-                speech = await self._mediate_response(
+                speech, mediated_followup = await self._mediate_response(
                     speech,
                     user_text,
                     mediation_agent,
@@ -1320,7 +1328,7 @@ class OrchestratorAgent(BaseAgent, TaskPipeline):
                     reminder_text=reminder_text,
                 )
             elif reminder_text:
-                # No mediation path — append reminder directly as fallback
+                # No mediation path -- append reminder directly as fallback
                 separator = " " if speech and speech[-1] in ".!?" else ". "
                 speech = f"{speech}{separator}{reminder_text}" if speech else reminder_text
             speech, voice_followup_effective = await self._merge_voice_followup_and_organic(
@@ -1330,6 +1338,7 @@ class OrchestratorAgent(BaseAgent, TaskPipeline):
                 language=language,
                 has_error=has_error,
                 target_agent=target_agent,
+                mediated_followup=mediated_followup,
             )
             ret_span["metadata"]["final_response"] = speech
             ret_span["metadata"]["mediated"] = speech != original_speech
@@ -1692,6 +1701,7 @@ class OrchestratorAgent(BaseAgent, TaskPipeline):
                     language=detected_language,
                     has_error=False,
                     target_agent=_CANCEL_INTERACTION_AGENT,
+                    mediated_followup=False,
                 )
                 ret_span["metadata"]["final_response"] = full_speech
                 ret_span["metadata"]["mediated"] = False
@@ -2840,6 +2850,34 @@ class OrchestratorAgent(BaseAgent, TaskPipeline):
         parts = [f"[{aid}] {sp}" for aid, sp, _ in agent_responses if sp and sp.strip()]
         return "\n\n".join(parts) if parts else "I couldn't process that request."
 
+    async def _detect_followup_needed_llm(self, speech: str, language: str, span_collector=None) -> bool:
+        """Lightweight LLM call to detect if speech contains a question requiring user response."""
+        if not speech or not speech.strip():
+            return False
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "You decide whether a smart home assistant response asks the user a question "
+                    "that requires an answer. Reply ONLY with 'yes' or 'no'."
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    f"Language: {language}\n"
+                    f"Assistant response: '{speech.strip()}'\n"
+                    "Does this ask a question requiring user input? (yes/no)"
+                ),
+            },
+        ]
+        try:
+            result = await self._call_llm(messages, temperature=0.0, max_tokens=4)
+            return result and result.strip().lower().startswith("y")
+        except Exception:
+            logger.debug("Follow-up detection LLM call failed", exc_info=True)
+            return False
+
     async def _mediate_response(
         self,
         agent_speech: str,
@@ -2848,30 +2886,33 @@ class OrchestratorAgent(BaseAgent, TaskPipeline):
         language: str = "en",
         span_collector=None,
         reminder_text: str | None = None,
-    ) -> str:
+    ) -> tuple[str, bool]:
         """Optionally mediate the domain agent response with personality.
 
         When personality.prompt is non-empty, passes the agent speech through
         a lightweight LLM call to apply the configured personality.
         If reminder_text is given, the LLM weaves it in naturally.
         Falls back to the original speech (+ appended reminder) on any failure.
+
+        Returns:
+            Tuple of (mediated_speech, followup_needed).
         """
         try:
             personality = await SettingsRepository.get_value("personality.prompt", "")
             if not (personality or "").strip():
                 if reminder_text:
                     separator = " " if agent_speech and agent_speech[-1] in ".!?" else ". "
-                    return f"{agent_speech}{separator}{reminder_text}" if agent_speech else reminder_text
-                return agent_speech
+                    return (f"{agent_speech}{separator}{reminder_text}" if agent_speech else reminder_text), False
+                return agent_speech, False
         except Exception:
             logger.debug("Failed to load personality prompt, using original speech", exc_info=True)
             if reminder_text:
                 separator = " " if agent_speech and agent_speech[-1] in ".!?" else ". "
-                return f"{agent_speech}{separator}{reminder_text}" if agent_speech else reminder_text
-            return agent_speech
+                return (f"{agent_speech}{separator}{reminder_text}" if agent_speech else reminder_text), False
+            return agent_speech, False
 
         if not agent_speech or not agent_speech.strip():
-            return agent_speech
+            return agent_speech, False
 
         try:
             system_prompt = await self._load_prompt_async("mediate")
@@ -2900,13 +2941,18 @@ class OrchestratorAgent(BaseAgent, TaskPipeline):
                 span["metadata"]["language"] = language or "en"
                 span["metadata"]["original_length"] = len(agent_speech)
                 span["metadata"]["mediated_length"] = len(result.strip()) if result else 0
-            return strip_parenthetical_asides(result) if result and result.strip() else agent_speech
+            mediated = strip_parenthetical_asides(result) if result and result.strip() else agent_speech
+            followup = False
+            if isinstance(mediated, str) and mediated.endswith("[FOLLOWUP]"):
+                mediated = mediated[: -len("[FOLLOWUP]")].rstrip()
+                followup = True
+            return mediated, followup
         except Exception:
             logger.warning("Response mediation failed, using original speech", exc_info=True)
             if reminder_text:
                 separator = " " if agent_speech and agent_speech[-1] in ".!?" else ". "
-                return f"{agent_speech}{separator}{reminder_text}" if agent_speech else reminder_text
-            return agent_speech
+                return (f"{agent_speech}{separator}{reminder_text}" if agent_speech else reminder_text), False
+            return agent_speech, False
 
     @staticmethod
     def _strip_seq_rule(prompt: str) -> str:

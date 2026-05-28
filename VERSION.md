@@ -1,12 +1,20 @@
 # Version
 
-**Current Version:** 1.33.0
+**Current Version:** 1.33.1
 
 ## Recent Changes
 
-Track changes since `v1.33.0` here.
+Track changes since `v1.33.1` here.
 
 ## Version History
+
+### 1.33.1 (PATCH) -- Fix state-aware prompt precision and add LLM-based follow-up detection
+
+- fix(agents): tighten state-aware decision instructions in ActionableAgent prompt. Previously, vague wording caused agents to report state instead of executing requested actions (e.g., "Bewässerung ausschalten" -> query_light_state instead of turn_off).
+- feat(orchestrator): hybrid LLM-based voice follow-up detection. When the final response contains a question requiring user input, voice follow-up is now triggered regardless of whether the agent performed an action or a query.
+- feat(orchestrator): mediation-based follow-up detection (free when personality is active). The mediator appends `[FOLLOWUP]` tag when the rephrased response asks a question.
+- feat(orchestrator): fallback LLM detection when mediation is inactive. A lightweight yes/no LLM call (4 tokens, temperature 0) decides if follow-up is needed.
+- test(orchestrator): 9 new tests for follow-up detection (mediation tag extraction, LLM fallback, merge logic, no false positives).
 
 ### 1.33.0 (MINOR) -- Context-based task support
 

@@ -291,8 +291,11 @@ class ActionableAgent(BaseAgent):
         # Generic state-aware and conditional instruction block (Phase 3)
         system_prompt += (
             "\n\nState-aware decision making:\n"
-            "- Before deciding to act, consider the current states shown above.\n"
-            "- If the target device is already in the desired state, output a query/state-report action instead.\n"
+            "- ONLY skip a state-changing action if the device is ALREADY in the desired state.\n"
+            "- Examples where you MUST skip: user asks to turn ON and device is already ON, OR user asks to turn OFF and device is already OFF.\n"
+            "- In those cases ONLY, output a query/state-report action to confirm the current state.\n"
+            "- If the device is NOT in the desired state, ALWAYS execute the requested action.\n"
+            "- NEVER report the state when the user explicitly requests a state change and the device is in a different state.\n"
             '- Only use toggle when the user explicitly says "toggle".\n'
             "\n"
             "Conditional actions:\n"
