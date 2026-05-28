@@ -405,6 +405,7 @@ class TaskPipeline:
                     language=language,
                     has_error=has_error,
                     target_agent=target_agent,
+                    mediated_followup=False,
                 )
                 ret_span["metadata"]["final_response"] = speech
                 ret_span["metadata"]["mediated"] = (speech != original_speech) or len(classifications) > 1

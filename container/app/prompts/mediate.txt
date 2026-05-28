@@ -28,3 +28,9 @@ Output:
 Examples:
 - Agent: "The kitchen light is on at 75% brightness." + Personality: pirate -> "Arrr, yer kitchen light be glowin' at 75% brightness!"
 - Agent: "La temperatura es 22 grados." + Language: English -> "The temperature is 22 degrees." (rephrased to match personality)
+
+Follow-up detection:
+- If the rephrased response asks the user a question that requires an answer (e.g., "Should I turn it off?", "Soll ich sie ausschalten?"), append the tag [FOLLOWUP] at the very end of your output.
+- If the response is a statement, command confirmation, or information only, do NOT append any tag.
+- Examples that need [FOLLOWUP]: "The light is on. Should I turn it off?[FOLLOWUP]", "Soll ich die Bewässerung ausschalten?[FOLLOWUP]"
+- Examples that do NOT need a tag: "The kitchen light is now on.", "Die Bewässerung ist ausgeschaltet."
