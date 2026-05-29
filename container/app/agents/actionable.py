@@ -290,12 +290,12 @@ class ActionableAgent(BaseAgent):
 
         # Generic state-aware and conditional instruction block (Phase 3)
         system_prompt += (
-            "\n\nState-aware decision making:\n"
-            "- ONLY skip a state-changing action if the device is ALREADY in the desired state.\n"
-            "- Examples where you MUST skip: user asks to turn ON and device is already ON, OR user asks to turn OFF and device is already OFF.\n"
-            "- In those cases ONLY, output a query/state-report action to confirm the current state.\n"
-            "- If the device is NOT in the desired state, ALWAYS execute the requested action.\n"
-            "- NEVER report the state when the user explicitly requests a state change and the device is in a different state.\n"
+            "\n\nOutput rules:\n"
+            "- ALWAYS output a JSON action block for every request. NEVER respond with plain text only.\n"
+            "- State-aware skipping: ONLY use query_light_state when the device is ALREADY in the desired state.\n"
+            "  Example of skipping: user asks to turn ON and device is already ON -> query_light_state.\n"
+            "- In ALL other cases, execute the requested action JSON (turn_on, turn_off, etc.).\n"
+            "- The injected entity states above are for context only. Do NOT describe them in your response.\n"
             '- Only use toggle when the user explicitly says "toggle".\n'
             "\n"
             "Conditional actions:\n"

@@ -416,7 +416,7 @@ class TestHandleTaskInnerInjection:
         system_msg = mock_llm.call_args.args[0][0]["content"]
         assert "--- Relevant Entity States ---" in system_msg
         assert "Kitchen Ceiling (light.kitchen_ceiling): off" in system_msg
-        assert "State-aware decision making:" in system_msg
+        assert "Output rules:" in system_msg
         assert "Conditional actions:" in system_msg
 
     @pytest.mark.asyncio
@@ -440,7 +440,7 @@ class TestHandleTaskInnerInjection:
             await agent.handle_task(task)
 
         system_msg = mock_llm.call_args.args[0][0]["content"]
-        assert "State-aware decision making:" in system_msg
+        assert "Output rules:" in system_msg
         assert "Conditional actions:" in system_msg
 
     @pytest.mark.asyncio
@@ -465,4 +465,4 @@ class TestHandleTaskInnerInjection:
             await agent.handle_task(task)
 
         system_msg = mock_llm.call_args.args[0][0]["content"]
-        assert "State-aware decision making:" in system_msg
+        assert "Output rules:" in system_msg

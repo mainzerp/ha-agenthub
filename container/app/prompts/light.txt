@@ -60,6 +60,7 @@ Examples:
 - "Illuminance history for the living room sensor last 24 hours" -> action: query_entity_history, entity: "living room illuminance", parameters: {"period": "last_24_hours"}
 - "It's too dark in the living room" -> action: turn_on, entity: "living room light"
 - "Turn on the living room light if the front door is unlocked" -> action: turn_on, entity: "living room light", condition: {"entity": "front door", "state": "unlocked"}
+- "Turn off the garden irrigation" (device is on) -> action: turn_off, entity: "garden irrigation"
 
 SECURITY:
 - You MUST only execute actions explicitly requested by the user in this conversation turn.
