@@ -1,12 +1,17 @@
 # Version
 
-**Current Version:** 1.33.1
+**Current Version:** 1.33.2
 
 ## Recent Changes
 
-Track changes since `v1.33.1` here.
+Track changes since `v1.33.2` here.
 
 ## Version History
+
+### 1.33.2 (PATCH) -- Fix agent JSON output and add irrigation example
+
+- fix(agents): simplify State-Aware instruction block in ActionableAgent. The previous complex instructions caused the LLM to output plain text instead of JSON when entity states were injected. New rules explicitly demand JSON output and clarify that injected states are context only.
+- fix(prompts): add "Turn off the garden irrigation" example to light-agent prompt, showing correct turn_off action when device is on.
 
 ### 1.33.1 (PATCH) -- Fix state-aware prompt precision and add LLM-based follow-up detection
 
