@@ -156,7 +156,7 @@ class ActionableAgent(BaseAgent):
         return resolved
 
     async def _build_relevant_entity_state_context(self, resolved_entities: list[tuple[str, str]]) -> str | None:
-        """Build a markdown block of current states for the given entities.
+        """Build a compact single-line string of current states for the given entities.
 
         Queries the entity index first, falling back to ha_client.get_state().
         Returns None if no states could be retrieved.
@@ -184,11 +184,11 @@ class ActionableAgent(BaseAgent):
                 except Exception:
                     logger.debug("ha_client.get_state failed for %s", entity_id, exc_info=True)
             if state_value is not None:
-                lines.append(f"  - {friendly_name} ({entity_id}): {state_value}")
+                lines.append(f"{friendly_name} ({entity_id}): {state_value}")
 
         if not lines:
             return None
-        return "\n".join(lines)
+        return ", ".join(lines)
 
     async def _do_execute(self, action, ha_client, entity_index, entity_matcher, *, agent_id, span_collector=None):
         """Execute the parsed action. Subclasses must override."""
@@ -279,15 +279,6 @@ class ActionableAgent(BaseAgent):
         if time_location:
             system_prompt += f"\n\n{time_location}"
 
-        # Inject relevant entity states (selective injection, Phase 1)
-        try:
-            resolved_entities = await self._resolve_relevant_entities(task)
-            entity_state_context = await self._build_relevant_entity_state_context(resolved_entities)
-            if entity_state_context:
-                system_prompt += "\n\n--- Relevant Entity States ---\n" + entity_state_context
-        except Exception:
-            logger.debug("Entity state injection failed for %s", agent_id, exc_info=True)
-
         # Generic state-aware and conditional instruction block (Phase 3)
         system_prompt += (
             "\n\nOutput rules:\n"
@@ -303,6 +294,15 @@ class ActionableAgent(BaseAgent):
             "- The condition references another entity by name and an expected state.\n"
             '- Example JSON: {"action": "turn_on", "entity": "Keller", "condition": {"entity": "outdoor brightness", "state": "dark"}}'
         )
+
+        # Inject relevant entity states (compact single-line format, after output rules)
+        try:
+            resolved_entities = await self._resolve_relevant_entities(task)
+            entity_state_context = await self._build_relevant_entity_state_context(resolved_entities)
+            if entity_state_context:
+                system_prompt += f"\n\nContext: {entity_state_context}"
+        except Exception:
+            logger.debug("Entity state injection failed for %s", agent_id, exc_info=True)
 
         messages = [{"role": "system", "content": system_prompt}]
 
