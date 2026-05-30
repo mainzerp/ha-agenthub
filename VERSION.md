@@ -1,12 +1,18 @@
 # Version
 
-**Current Version:** 1.33.2
+**Current Version:** 1.33.3
 
 ## Recent Changes
 
-Track changes since `v1.33.2` here.
+Track changes since `v1.33.3` here.
 
 ## Version History
+
+### 1.33.3 (PATCH) -- Redesign state-injection prompt format
+
+- fix(agents): replace prominent markdown state block with compact single-line format (`Context: Entity (id): state`). The multi-line `--- Relevant Entity States ---` block distracted the LLM into describing states instead of outputting JSON actions.
+- fix(agents): move entity state injection to AFTER output rules in the prompt. The LLM now sees "ALWAYS output JSON" before the context, ensuring the rules take priority.
+- fix(prompts): add concrete state-context examples to light-agent prompt showing correct JSON output when device is off (turn_on) vs already on (query_light_state).
 
 ### 1.33.2 (PATCH) -- Fix agent JSON output and add irrigation example
 

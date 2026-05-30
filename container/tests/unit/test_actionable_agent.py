@@ -219,7 +219,7 @@ class TestBuildRelevantEntityStateContext:
         result = await agent._build_relevant_entity_state_context([("light.kitchen_ceiling", "Kitchen Ceiling")])
 
         assert result is not None
-        assert "Kitchen Ceiling (light.kitchen_ceiling): on" in result
+        assert result == "Kitchen Ceiling (light.kitchen_ceiling): on"
 
     @pytest.mark.asyncio
     async def test_fallback_to_ha_client_when_index_lacks_state(self):
@@ -237,7 +237,7 @@ class TestBuildRelevantEntityStateContext:
         result = await agent._build_relevant_entity_state_context([("light.kitchen_ceiling", "Kitchen Ceiling")])
 
         assert result is not None
-        assert "Kitchen Ceiling (light.kitchen_ceiling): off" in result
+        assert result == "Kitchen Ceiling (light.kitchen_ceiling): off"
         ha_client.get_state.assert_awaited_once_with("light.kitchen_ceiling")
 
     @pytest.mark.asyncio
@@ -252,7 +252,7 @@ class TestBuildRelevantEntityStateContext:
         result = await agent._build_relevant_entity_state_context([("light.kitchen_ceiling", "Kitchen Ceiling")])
 
         assert result is not None
-        assert "Kitchen Ceiling (light.kitchen_ceiling): on" in result
+        assert result == "Kitchen Ceiling (light.kitchen_ceiling): on"
 
     @pytest.mark.asyncio
     async def test_returns_none_when_no_states_available(self):
@@ -297,8 +297,7 @@ class TestBuildRelevantEntityStateContext:
         )
 
         assert result is not None
-        assert "Kitchen Ceiling (light.kitchen_ceiling): on" in result
-        assert "Living Room Lamp (light.living_room_lamp): off" in result
+        assert result == "Kitchen Ceiling (light.kitchen_ceiling): on, Living Room Lamp (light.living_room_lamp): off"
 
 
 # ---------------------------------------------------------------------------
@@ -414,10 +413,11 @@ class TestHandleTaskInnerInjection:
 
         assert mock_llm.await_count == 1
         system_msg = mock_llm.call_args.args[0][0]["content"]
-        assert "--- Relevant Entity States ---" in system_msg
-        assert "Kitchen Ceiling (light.kitchen_ceiling): off" in system_msg
+        assert "Context: Kitchen Ceiling (light.kitchen_ceiling): off" in system_msg
         assert "Output rules:" in system_msg
         assert "Conditional actions:" in system_msg
+        # Output rules must appear BEFORE the context line
+        assert system_msg.index("Output rules:") < system_msg.index("Context:")
 
     @pytest.mark.asyncio
     async def test_prompt_includes_state_aware_block_even_without_entities(self):
