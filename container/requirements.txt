@@ -8,7 +8,7 @@ uvicorn[standard]==0.47.0
 litellm>=1.83.11,<2.0.0
 
 # Embeddings (local)
-sentence-transformers==5.4.0
+sentence-transformers==5.5.1
 
 # Vector database
 chromadb==1.5.9
