@@ -113,13 +113,13 @@ class TestLightAgent:
         assert result.action_executed is None
         assert "json" not in result.speech.lower()
 
-    @patch("app.agents.light.execute_action", new_callable=AsyncMock, side_effect=Exception("HA connection lost"))
+    @patch("app.agents.light.execute_light_action", new_callable=AsyncMock, side_effect=Exception("HA connection lost"))
     @patch(
         "app.llm.client.complete",
         new_callable=AsyncMock,
         return_value='```json\n{"action": "turn_on", "entity": "bedroom lamp", "parameters": {}}\n```\nTurning on the bedroom lamp.',
     )
-    async def test_handle_task_execute_action_exception(self, mock_complete, mock_exec):
+    async def test_handle_task_execute_light_action_exception(self, mock_complete, mock_exec):
         """When execute_action raises, return a friendly error instead of propagating."""
         agent = LightAgent(ha_client=MagicMock(), entity_index=MagicMock())
         result = await agent.handle_task(_make_task("Turn on the bedroom lamp"))
@@ -140,7 +140,7 @@ class TestLightAgent:
             assert "action" not in result.speech
 
     @patch(
-        "app.agents.light.execute_action",
+        "app.agents.light.execute_light_action",
         new_callable=AsyncMock,
         return_value={"success": True, "entity_id": "light.kitchen", "new_state": "on", "speech": "Done."},
     )
@@ -149,7 +149,7 @@ class TestLightAgent:
         new_callable=AsyncMock,
         return_value='```json\n{"action": "turn_on", "entity": "kitchen light", "parameters": {}}\n```\nDone.',
     )
-    async def test_handle_task_passes_agent_id_to_execute_action(self, mock_complete, mock_exec):
+    async def test_handle_task_passes_agent_id_to_execute_light_action(self, mock_complete, mock_exec):
         agent = LightAgent(ha_client=MagicMock(), entity_index=MagicMock(), entity_matcher=MagicMock())
         await agent.handle_task(_make_task("Turn on kitchen light"))
         mock_exec.assert_awaited_once()

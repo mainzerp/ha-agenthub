@@ -1,12 +1,23 @@
 # Version
 
-**Current Version:** 1.34.0
+**Current Version:** 1.34.1
 
 ## Recent Changes
 
-Track changes since `v1.34.0` here.
+Track changes since `v1.34.1` here.
+
+- fix(agents): remove state-aware skipping instructions from all LLM prompts. The LLM now always outputs the action the user explicitly requested.
+- fix(executors): add deterministic pre-execution state checking. If a device is already in the target state, the executor skips the HA service call and returns an informative message.
+- fix(light): remove state-context few-shot examples from light-agent prompt that caused smaller LLMs to incorrectly emit `query_light_state` instead of `turn_off`.
 
 ## Version History
+
+### 1.34.1 (PATCH) -- Deterministic state-check in executors, remove state-aware prompt logic
+
+- fix(agents): remove state-aware skipping instructions and examples from light-agent prompt and ActionableAgent injected output rules.
+- fix(executors): add `_state_matches` helper and `_REDUNDANT_IF_STATE` map to `executor_state_check.py`. All domain executors now check current entity state before calling HA. If already in the desired state, the service call is skipped and an "already X" message is returned.
+- fix(orchestrator): skip results are treated as successful action executions for cache storage, no orchestrator changes needed.
+- test(executors): add skip tests for light, climate, cover, media, security, and vacuum executors. Add edge-case test for get_state failure during skip check.
 
 ### 1.34.0 (MINOR) -- Persistent cache validator run history
 

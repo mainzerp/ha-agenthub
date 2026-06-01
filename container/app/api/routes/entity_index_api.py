@@ -227,7 +227,7 @@ async def match_preview(
         "error": None,
     }
     try:
-        from app.agents.action_executor import _validate_domain
+        from app.agents.light_executor import _validate_domain
 
         if entity_matcher is None:
             deterministic["error"] = "entity_matcher not initialized"

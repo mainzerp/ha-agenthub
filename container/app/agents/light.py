@@ -1,7 +1,7 @@
 """Light control agent with direct HA REST API execution."""
 
-from app.agents.action_executor import execute_action
 from app.agents.actionable import ActionableAgent
+from app.agents.light_executor import execute_light_action
 from app.models.agent import AgentCard
 
 
@@ -18,7 +18,7 @@ class LightAgent(ActionableAgent):
         # satellite should prefer ``light.kitchen_*``).
         ctx = getattr(self, "_current_task_context", None)
         area_id = ctx.area_id if ctx else None
-        return await execute_action(
+        return await execute_light_action(
             action,
             ha_client,
             entity_index,
