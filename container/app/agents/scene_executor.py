@@ -6,11 +6,9 @@ import logging
 from typing import Any
 
 from app.agents.action_executor import (
-    _ensure_str,
     call_service_with_verification,
+    resolve_and_validate_entity,
 )
-from app.analytics.tracer import _optional_span
-from app.entity.deterministic_resolver import resolve_entity_deterministic_first
 
 logger = logging.getLogger(__name__)
 
@@ -90,41 +88,21 @@ async def execute_scene_action(
 
     domain, service = mapping
 
-    resolution = {
-        "entity_id": None,
-        "friendly_name": entity_query,
-        "speech": None,
-        "metadata": {"query": entity_query, "match_count": 0, "resolution_path": "not_attempted"},
-    }
-    try:
-        if entity_index or entity_matcher:
-            async with _optional_span(span_collector, "entity_match", agent_id=agent_id) as em_span:
-                resolution = await resolve_entity_deterministic_first(
-                    entity_query,
-                    entity_index,
-                    entity_matcher,
-                    agent_id,
-                    allowed_domains=_ALLOWED_DOMAINS,
-                    preferred_area_id=preferred_area_id,
-                    verbatim_terms=verbatim_terms,
-                )
-                em_span["metadata"] = resolution["metadata"]
-    except Exception:
-        logger.warning("Entity resolution failed for '%s'", entity_query, exc_info=True)
-
-    entity_id = resolution["entity_id"]
-    friendly_name = resolution["friendly_name"]
-    if entity_id and not _validate_domain(entity_id):
-        logger.warning("Resolved entity %s not in allowed domains %s", entity_id, _ALLOWED_DOMAINS)
-        entity_id = None
-
-    if not entity_id:
-        return {
-            "success": False,
-            "entity_id": None,
-            "new_state": None,
-            "speech": resolution["speech"] or f"Could not find an entity matching '{entity_query}'.",
-        }
+    resolved = await resolve_and_validate_entity(
+        entity_query,
+        entity_index,
+        entity_matcher,
+        agent_id,
+        _ALLOWED_DOMAINS,
+        _validate_domain,
+        preferred_area_id=preferred_area_id,
+        verbatim_terms=verbatim_terms,
+        span_collector=span_collector,
+    )
+    if resolved["not_found_result"] is not None:
+        return resolved["not_found_result"]
+    entity_id = resolved["entity_id"]
+    friendly_name = resolved["friendly_name"]
 
     # Build service data
     service_data = _build_scene_service_data(action)
@@ -173,42 +151,24 @@ async def _query_scene(
     preferred_area_id: str | None = None,
     verbatim_terms: list[str] | None = None,
 ) -> dict:
-    resolution = {
-        "entity_id": None,
-        "friendly_name": entity_query,
-        "speech": None,
-        "metadata": {"query": entity_query, "match_count": 0, "resolution_path": "not_attempted"},
-    }
-    try:
-        if entity_index or entity_matcher:
-            async with _optional_span(span_collector, "entity_match", agent_id=agent_id) as em_span:
-                resolution = await resolve_entity_deterministic_first(
-                    entity_query,
-                    entity_index,
-                    entity_matcher,
-                    agent_id,
-                    allowed_domains=_ALLOWED_DOMAINS,
-                    preferred_area_id=preferred_area_id,
-                    verbatim_terms=verbatim_terms,
-                )
-                em_span["metadata"] = resolution["metadata"]
-    except Exception:
-        logger.warning("Entity resolution failed for '%s'", entity_query, exc_info=True)
-
-    entity_id = _ensure_str(resolution["entity_id"])
-    friendly_name = resolution["friendly_name"]
-    if entity_id and not _validate_domain(entity_id):
-        logger.warning("Resolved entity %s not in allowed domains %s", entity_id, _ALLOWED_DOMAINS)
-        entity_id = None
-
-    if not entity_id:
-        return {
-            "success": False,
-            "entity_id": None,
-            "new_state": None,
-            "speech": resolution["speech"] or f"Could not find a scene matching '{entity_query}'.",
-            "cacheable": False,
-        }
+    resolved = await resolve_and_validate_entity(
+        entity_query,
+        entity_index,
+        entity_matcher,
+        agent_id,
+        _ALLOWED_DOMAINS,
+        _validate_domain,
+        preferred_area_id=preferred_area_id,
+        verbatim_terms=verbatim_terms,
+        span_collector=span_collector,
+    )
+    if resolved["not_found_result"] is not None:
+        result = resolved["not_found_result"]
+        result["speech"] = result["speech"].replace("an entity", "a scene")
+        result["cacheable"] = False
+        return result
+    entity_id = resolved["entity_id"]
+    friendly_name = resolved["friendly_name"]
 
     return {
         "success": True,

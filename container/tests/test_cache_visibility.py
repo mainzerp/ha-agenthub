@@ -99,7 +99,7 @@ class TestCachedActionVisibility:
         orch, _dispatcher, _cache_manager, _ha_client = _make_orchestrator()
 
         with patch(
-            "app.agents.orchestrator.entity_is_visible",
+            "app.agents.cache_orchestrator.entity_is_visible",
             new=AsyncMock(side_effect=RuntimeError("db down")),
         ):
             result = await orch._cached_action_is_still_visible("light-agent", "light.kitchen")

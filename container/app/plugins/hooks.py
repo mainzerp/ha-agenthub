@@ -19,6 +19,19 @@ class LifecyclePhase(enum.Enum):
     SHUTDOWN = "shutdown"
 
 
+class PipelineEvent(enum.StrEnum):
+    """Pipeline hook event names emitted by the orchestrator pipeline."""
+
+    PRE_CLASSIFY = "pipeline.pre_classify"
+    POST_CLASSIFY = "pipeline.post_classify"
+    PRE_DISPATCH = "pipeline.pre_dispatch"
+    POST_DISPATCH = "pipeline.post_dispatch"
+    PRE_MEDIATE = "pipeline.pre_mediate"
+
+
+PIPELINE_EVENTS = frozenset(e.value for e in PipelineEvent)
+
+
 class EventBus:
     """Simple subscribe/publish event bus for inter-plugin communication.
 

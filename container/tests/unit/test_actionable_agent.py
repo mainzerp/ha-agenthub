@@ -30,18 +30,20 @@ sys.modules.setdefault("litellm", _litellm_mock)
 
 from tests.helpers import make_agent_task  # noqa: E402
 
-from app.agents.actionable import ActionableAgent  # noqa: E402
-from app.agents.automation import AutomationAgent  # noqa: E402
-from app.agents.climate import ClimateAgent  # noqa: E402
-from app.agents.cover import CoverAgent  # noqa: E402
-from app.agents.light import LightAgent  # noqa: E402
+from app.agents.actionable import (  # noqa: E402
+    ActionableAgent,
+    AutomationAgent,
+    ClimateAgent,
+    CoverAgent,
+    LightAgent,
+    MediaAgent,
+    MusicAgent,
+    SceneAgent,
+    SecurityAgent,
+    VacuumAgent,
+)
 from app.agents.lists import ListsAgent  # noqa: E402
-from app.agents.media import MediaAgent  # noqa: E402
-from app.agents.music import MusicAgent  # noqa: E402
-from app.agents.scene import SceneAgent  # noqa: E402
-from app.agents.security import SecurityAgent  # noqa: E402
 from app.agents.timer import TimerAgent  # noqa: E402
-from app.agents.vacuum import VacuumAgent  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # _extract_entity_mentions

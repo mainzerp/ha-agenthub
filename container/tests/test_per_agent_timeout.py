@@ -200,7 +200,7 @@ async def test_resolve_timeout_caches_per_agent(monkeypatch):
 
 @pytest.mark.asyncio
 @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
-@patch("app.agents.orchestrator.track_agent_timeout", new_callable=AsyncMock)
+@patch("app.agents.dispatch_manager.track_agent_timeout", new_callable=AsyncMock)
 async def test_timeout_cascade_triggers_fallback_with_own_timeout(_mock_track_timeout, _mock_track, monkeypatch):
     """Primary agent timeout triggers fallback to general-agent with its own timeout."""
     orch = _make_orch_with_registry(
@@ -254,7 +254,7 @@ async def test_timeout_cascade_triggers_fallback_with_own_timeout(_mock_track_ti
 
 @pytest.mark.asyncio
 @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
-@patch("app.agents.orchestrator.track_agent_timeout", new_callable=AsyncMock)
+@patch("app.agents.dispatch_manager.track_agent_timeout", new_callable=AsyncMock)
 async def test_timeout_cascade_double_timeout_returns_canned_speech(_mock_track_timeout, _mock_track, monkeypatch):
     """Both primary and fallback timeout yield canned timeout speech."""
     orch = _make_orch_with_registry(
@@ -355,7 +355,7 @@ async def test_error_fallback_uses_fallback_agent_timeout(_mock_track, monkeypat
 
 @pytest.mark.asyncio
 @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
-@patch("app.agents.orchestrator.track_agent_timeout", new_callable=AsyncMock)
+@patch("app.agents.dispatch_manager.track_agent_timeout", new_callable=AsyncMock)
 async def test_dispatcher_timeout_interaction_respects_agent_timeout(_mock_track_timeout, _mock_track, monkeypatch):
     """Orchestrator's asyncio.wait_for caps dispatcher call at the per-agent timeout."""
     import asyncio

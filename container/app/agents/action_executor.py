@@ -19,6 +19,104 @@ from app.ha_client.rest import mark_verified_ha_service_call
 logger = logging.getLogger(__name__)
 
 
+async def resolve_and_validate_entity(
+    entity_query: str,
+    entity_index: Any,
+    entity_matcher: Any,
+    agent_id: str | None,
+    allowed_domains: frozenset[str],
+    validate_domain_fn,
+    *,
+    preferred_area_id: str | None = None,
+    verbatim_terms: list[str] | None = None,
+    enable_strip_device_noun: bool = False,
+    enable_area_fallback: bool = False,
+    preferred_domain: str | None = None,
+    span_collector=None,
+    require_matcher: bool = False,
+) -> dict[str, Any]:
+    """Resolve an entity query deterministically and validate its domain.
+
+    Encapsulates the common entity resolution block used by every domain
+    executor: init dict -> resolve_entity_deterministic_first -> domain
+    validation -> not-found fallback.
+
+    Returns a dict with keys:
+        entity_id: resolved and validated entity_id (None if not found)
+        friendly_name: friendly name of the resolved entity
+        resolution: the full resolution dict
+        not_found_result: only present when entity_id is None; return this
+            directly after adding any caller-specific extra keys
+            (e.g. ``cacheable``, ``voice_followup``).
+    """
+    from app.analytics.tracer import _optional_span
+
+    resolution = {
+        "entity_id": None,
+        "friendly_name": entity_query,
+        "speech": None,
+        "metadata": {"query": entity_query, "match_count": 0, "resolution_path": "not_attempted"},
+    }
+
+    if require_matcher:
+        can_resolve = entity_matcher is not None
+    else:
+        can_resolve = entity_index is not None or entity_matcher is not None
+
+    try:
+        if can_resolve:
+            async with _optional_span(span_collector, "entity_match", agent_id=agent_id) as em_span:
+                kwargs: dict[str, Any] = {
+                    "agent_id": agent_id,
+                    "allowed_domains": allowed_domains,
+                    "preferred_area_id": preferred_area_id,
+                }
+                if verbatim_terms is not None:
+                    kwargs["verbatim_terms"] = verbatim_terms
+                if enable_strip_device_noun:
+                    kwargs["enable_strip_device_noun"] = True
+                if enable_area_fallback:
+                    kwargs["enable_area_fallback"] = True
+                if preferred_domain:
+                    kwargs["preferred_domain"] = preferred_domain
+                resolution = await resolve_entity_deterministic_first(
+                    entity_query,
+                    entity_index,
+                    entity_matcher,
+                    **kwargs,
+                )
+                em_span["metadata"] = resolution["metadata"]
+    except Exception:
+        logger.warning("Entity resolution failed for '%s'", entity_query, exc_info=True)
+
+    entity_id = resolution["entity_id"]
+    friendly_name = resolution["friendly_name"]
+    if entity_id and not validate_domain_fn(entity_id):
+        logger.warning("Resolved entity %s not in allowed domains", entity_id)
+        entity_id = None
+
+    if not entity_id:
+        not_found = {
+            "success": False,
+            "entity_id": None,
+            "new_state": None,
+            "speech": resolution["speech"] or f"Could not find an entity matching '{entity_query}'.",
+        }
+        return {
+            "entity_id": None,
+            "friendly_name": friendly_name,
+            "resolution": resolution,
+            "not_found_result": not_found,
+        }
+
+    return {
+        "entity_id": entity_id,
+        "friendly_name": friendly_name,
+        "resolution": resolution,
+        "not_found_result": None,
+    }
+
+
 def _ensure_str(value: Any) -> str | None:
     if isinstance(value, str):
         return value

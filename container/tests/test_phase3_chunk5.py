@@ -174,13 +174,13 @@ class TestActionCachePrepareForFlush:
 
 class TestKnownAgentsMemoization:
     def _make_registry(self) -> tuple[object, MagicMock]:
-        from app.agents.agent_registry import AgentRegistry
+        from app.agents.agent_registry import CachedAgentRegistry
 
         registry = MagicMock()
         card_a = MagicMock(agent_id="light-agent")
         card_b = MagicMock(agent_id="music-agent")
         registry.list_agents = AsyncMock(return_value=[card_a, card_b])
-        agent_reg = AgentRegistry(registry)
+        agent_reg = CachedAgentRegistry(registry)
         return agent_reg, registry
 
     @pytest.mark.asyncio
@@ -218,7 +218,7 @@ class TestKnownAgentsMemoization:
 
     @pytest.mark.asyncio
     async def test_load_reliability_config_clears_known_agents_memo(self):
-        """The real _load_reliability_config must invalidate the AgentRegistry memo."""
+        """The real _load_reliability_config must invalidate the CachedAgentRegistry memo."""
         from app.agents.orchestrator import OrchestratorAgent
 
         registry = MagicMock()

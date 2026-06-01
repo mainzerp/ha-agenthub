@@ -684,8 +684,8 @@ async def test_initialize_setup_dependent_services_is_idempotent():
         ),
         patch("app.runtime_setup.OrchestratorAgent"),
         patch("app.runtime_setup.GeneralAgent"),
-        patch("app.runtime_setup.LightAgent"),
-        patch("app.runtime_setup.MusicAgent"),
+        patch("app.agents.actionable.LightAgent"),
+        patch("app.agents.actionable.MusicAgent"),
         patch("app.runtime_setup.FillerAgent"),
         patch("app.runtime_setup.CustomAgentLoader"),
         patch(
@@ -841,8 +841,8 @@ async def test_initialize_setup_dependent_services_preloads_prompt_files():
         ),
         patch("app.runtime_setup.OrchestratorAgent"),
         patch("app.runtime_setup.GeneralAgent"),
-        patch("app.runtime_setup.LightAgent"),
-        patch("app.runtime_setup.MusicAgent"),
+        patch("app.agents.actionable.LightAgent"),
+        patch("app.agents.actionable.MusicAgent"),
         patch("app.runtime_setup.FillerAgent"),
         patch("app.runtime_setup.CustomAgentLoader"),
         patch(

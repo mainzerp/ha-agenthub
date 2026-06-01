@@ -167,11 +167,13 @@ def ensure_csrf_token(request: Request) -> str:
     Routes that render forms call this helper, place the returned value in
     the template context as ``csrf_token``, and call ``set_csrf_cookie`` on
     the outgoing response.
+
+    The CSRF token is bound to the session: if no valid session cookie
+    exists the existing CSRF token is discarded and a fresh one is minted
+    so a stale token is never replayed across different sessions.
     """
     existing = request.cookies.get(CSRF_COOKIE_NAME)
     if existing and request.cookies.get(SESSION_COOKIE_NAME):
-        return existing
-    if existing:
         return existing
     return secrets.token_urlsafe(32)
 
@@ -221,3 +223,18 @@ async def verify_csrf(request: Request) -> None:
     form_token = form.get(CSRF_FIELD_NAME)
     if not form_token or not hmac.compare_digest(str(cookie_token), str(form_token)):
         raise HTTPException(status_code=401, detail="CSRF token invalid")
+
+
+def body_size_limit(max_bytes: int):
+    """FastAPI dependency factory: reject requests whose Content-Length exceeds ``max_bytes``."""
+
+    async def _check(request: Request) -> None:
+        cl = request.headers.get("content-length")
+        if cl is not None:
+            try:
+                if int(cl) > max_bytes:
+                    raise HTTPException(status_code=413, detail="Request body too large")
+            except ValueError:
+                pass
+
+    return _check

@@ -13,9 +13,9 @@
       }
     },
     "error": {
-      "cannot_connect": "Keine Verbindung zum Container. URL prüfen und ob der Container läuft.",
-      "invalid_auth": "Ungültiger API-Schlüssel. Bitte prüfen und erneut versuchen.",
-      "invalid_url": "Ungültige URL. Muss mit http:// oder https:// beginnen."
+      "cannot_connect": "Keine Verbindung zum Container. URL prufen und ob der Container lauft.",
+      "invalid_auth": "Ungultiger API-Schlussel. Bitte prufen und erneut versuchen.",
+      "invalid_url": "Ungultige URL. Muss mit http:// oder https:// beginnen."
     },
     "abort": {
       "already_configured": "Dieser Container ist bereits konfiguriert.",
@@ -26,7 +26,7 @@
     "step": {
       "init": {
         "title": "HA-AgentHub Einstellungen",
-        "description": "Verbindungseinstellungen zum HA-AgentHub-Container aktualisieren. API-Schlüssel leer lassen, um den gespeicherten Schlüssel zu behalten.",
+        "description": "Verbindungseinstellungen zum HA-AgentHub-Container aktualisieren. API-Schlussel leer lassen, um den gespeicherten Schlussel zu behalten.",
         "data": {
           "name": "Name",
           "url": "Container-URL",
@@ -35,9 +35,10 @@
       }
     },
     "error": {
-      "cannot_connect": "Keine Verbindung zum Container. URL prüfen und ob der Container läuft.",
-      "invalid_auth": "Ungültiger API-Schlüssel. Bitte prüfen und erneut versuchen.",
-      "invalid_url": "Ungültige URL. Muss mit http:// oder https:// beginnen."
+      "cannot_connect": "Keine Verbindung zum Container. URL prufen und ob der Container lauft.",
+      "invalid_auth": "Ungultiger API-Schlussel. Bitte prufen und erneut versuchen.",
+      "invalid_url": "Ungultige URL. Muss mit http:// oder https:// beginnen.",
+      "already_configured": "Diese URL ist bereits konfiguriert."
     }
   }
 }

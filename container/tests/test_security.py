@@ -483,13 +483,15 @@ class TestBruteForceRateLimit:
                 base_url="http://testserver",
                 follow_redirects=False,
             ) as client:
-                # Prime CSRF token
+                # Prime CSRF token -- re-GET before each POST batch since
+                # ensure_csrf_token regenerates the token when there is no
+                # active session cookie.
                 await client.get("/dashboard/login")
-                token = client.cookies.get("agent_assist_csrf")
-                assert token
 
                 # 5 failed attempts should be allowed
                 for i in range(5):
+                    token = client.cookies.get("agent_assist_csrf")
+                    assert token
                     resp = await client.post(
                         "/dashboard/login",
                         data={"username": "admin", "password": f"wrong{i}", "csrf_token": token},
@@ -498,6 +500,8 @@ class TestBruteForceRateLimit:
                     assert resp.status_code == 200
 
                 # 6th attempt should be rate limited
+                token = client.cookies.get("agent_assist_csrf")
+                assert token
                 resp = await client.post(
                     "/dashboard/login",
                     data={"username": "admin", "password": "wrong5", "csrf_token": token},

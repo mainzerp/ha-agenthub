@@ -26,7 +26,7 @@ from app.db.repository import (
 )
 from app.ha_client.auth import get_ha_token, set_ha_token
 from app.ha_client.rest import test_ha_connection
-from app.security.auth import API_KEY_SECRET_NAME, require_admin_session
+from app.security.auth import API_KEY_SECRET_NAME, body_size_limit, require_admin_session
 from app.security.encryption import delete_secret, retrieve_secret, store_secret
 
 if TYPE_CHECKING:
@@ -350,7 +350,11 @@ async def _reload_ha_clients_after_settings_change(request: Request) -> None:
             logger.warning("HA WebSocket drop_connection() failed", exc_info=True)
 
 
-router = APIRouter(prefix="/api/admin", tags=["admin"], dependencies=[Depends(require_admin_session)])
+router = APIRouter(
+    prefix="/api/admin",
+    tags=["admin"],
+    dependencies=[Depends(require_admin_session), Depends(body_size_limit(10 * 1024 * 1024))],
+)
 
 # The registry is set by main.py during startup
 _registry: AgentRegistry | None = None

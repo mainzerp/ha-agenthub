@@ -56,6 +56,7 @@ def _make_orchestrator(cache_manager) -> OrchestratorAgent:
     orch._is_background_turn = MagicMock(return_value=False)
     orch._get_turns = AsyncMock(return_value=[])
     orch._get_bool_setting = AsyncMock(side_effect=lambda _key, default: default)
+    orch._cache_orchestrator._get_bool_setting_impl = AsyncMock(side_effect=lambda _key, default: default)
     orch._finalize_single_agent_response = AsyncMock(return_value=("Live dispatch speech", False))
     orch._entity_index = MagicMock()
     orch._cached_action_is_still_visible = AsyncMock(return_value=True)
@@ -220,7 +221,7 @@ async def test_routing_disabled_still_consults_action():
     with (
         patch("app.cache.cache_manager.track_cache_event", new_callable=AsyncMock),
         patch(
-            "app.agents.orchestrator.resolve_entity_deterministic_first",
+            "app.agents.cache_orchestrator.resolve_entity_deterministic_first",
             new_callable=AsyncMock,
             return_value={"entity_id": action_entry.cached_action.entity_id},
         ),

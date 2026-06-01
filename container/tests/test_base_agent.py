@@ -29,20 +29,22 @@ _litellm_mock.RateLimitError = _RateLimitError
 sys.modules.setdefault("litellm", _litellm_mock)
 
 import app.llm.client  # noqa: E402,F401 -- force module load for patch targets
-from app.agents.automation import AutomationAgent  # noqa: E402
+from app.agents.actionable import (  # noqa: E402
+    AutomationAgent,
+    ClimateAgent,
+    CoverAgent,
+    LightAgent,
+    MediaAgent,
+    MusicAgent,
+    SceneAgent,
+    SecurityAgent,
+    VacuumAgent,
+)
 from app.agents.base import BaseAgent, _prompt_cache, preload_prompt_cache  # noqa: E402
-from app.agents.climate import ClimateAgent  # noqa: E402
-from app.agents.cover import CoverAgent  # noqa: E402
 from app.agents.general import GeneralAgent  # noqa: E402
-from app.agents.light import LightAgent  # noqa: E402
 from app.agents.lists import ListsAgent  # noqa: E402
-from app.agents.media import MediaAgent  # noqa: E402
-from app.agents.music import MusicAgent  # noqa: E402
 from app.agents.rewrite import RewriteAgent  # noqa: E402
-from app.agents.scene import SceneAgent  # noqa: E402
-from app.agents.security import SecurityAgent  # noqa: E402
 from app.agents.timer import TimerAgent  # noqa: E402
-from app.agents.vacuum import VacuumAgent  # noqa: E402
 from app.models.agent import (  # noqa: E402
     AgentCard,
     AgentTask,

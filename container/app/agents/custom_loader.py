@@ -8,6 +8,7 @@ from typing import Any
 
 from app.a2a.registry import AgentRegistry
 from app.agents.base import BaseAgent
+from app.agents.prompt_builder import PromptBuilder
 from app.agents.tool_calling import call_llm_with_mcp_tools, mcp_tools_to_openai_format
 from app.analytics.tracer import _optional_span
 from app.db.repository import CustomAgentRepository
@@ -63,12 +64,10 @@ class DynamicAgent(BaseAgent):
     async def handle_task(self, task: AgentTask) -> TaskResult:
         agent_id = self.agent_card.agent_id
         span_collector = task.span_collector
-        prompt = self._system_prompt + "\nNEVER translate or normalize entity/room names."
-
-        # Inject time/location context
-        time_location = self._build_time_location_context(task.context)
-        if time_location:
-            prompt += f"\n\n{time_location}"
+        prompt = PromptBuilder.build(
+            self._system_prompt + "\nNEVER translate or normalize entity/room names.",
+            time_location=self._build_time_location_context(task.context),
+        )
 
         messages = [{"role": "system", "content": prompt}]
 

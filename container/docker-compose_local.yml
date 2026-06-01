@@ -27,8 +27,6 @@ services:
       - CHROMADB_PERSIST_DIR=${CHROMADB_PERSIST_DIR:-/data/chromadb}
       - SQLITE_DB_PATH=${SQLITE_DB_PATH:-/data/agent_assist.db}
       - HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-0}
-      # When serving behind HTTPS, set COOKIE_SECURE=true so admin session
-      # and CSRF cookies are restricted to TLS. See docs/configuration.md.
       - COOKIE_SECURE=${COOKIE_SECURE:-false}
     read_only: true
     cap_drop:

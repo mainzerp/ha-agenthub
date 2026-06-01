@@ -271,11 +271,11 @@ async def test_conversation_cache_max_size():
 
     now = time.monotonic()
     for i in range(1002):
-        orch._conversations[f"conv-{i}"] = (now, [{"role": "user", "content": "hi"}])
+        orch._conversation_manager._conversations[f"conv-{i}"] = (now, [{"role": "user", "content": "hi"}])
 
     orch._evict_stale_conversations()
 
-    assert len(orch._conversations) == 1000
+    assert len(orch._conversation_manager._conversations) == 1000
     # Oldest entries should have been evicted
-    assert "conv-0" not in orch._conversations
-    assert "conv-1" not in orch._conversations
+    assert "conv-0" not in orch._conversation_manager._conversations
+    assert "conv-1" not in orch._conversation_manager._conversations

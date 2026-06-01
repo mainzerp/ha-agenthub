@@ -8,44 +8,6 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-
-def _attach_expect_state_shim(client):
-    """Install an ``expect_state`` async context manager on a mocked client.
-
-    The shim mimics :meth:`HARestClient.expect_state` in "no WS observer"
-    mode: it yields a mutable dict to the ``with`` body and, on exit, fills
-    ``new_state`` from a single call to ``client.get_state`` (or leaves it
-    ``None`` if ``get_state`` raises). That keeps ``execute_light_action`` tests
-    deterministic without pulling the real REST client into the unit test.
-    """
-
-    @asynccontextmanager
-    async def _expect_state(
-        entity_id,
-        *,
-        expected=None,
-        timeout=0.05,
-        poll_interval=0.01,
-        poll_max=0.05,
-    ):
-        result = {"new_state": None}
-        yield result
-        try:
-            state_resp = await client.get_state(entity_id)
-        except Exception:
-            return
-        if isinstance(state_resp, dict):
-            state = state_resp.get("state")
-            if expected is None or state == expected:
-                result["new_state"] = state
-            else:
-                result["new_state"] = state
-
-    client.expect_state = _expect_state
-    client.set_state_observer = MagicMock()
-    return client
-
-
 # Mock litellm before importing app modules
 _litellm_mock = MagicMock()
 
@@ -70,7 +32,7 @@ sys.modules.setdefault("litellm", _litellm_mock)
 from app.agents.light_executor import execute_light_action  # noqa: E402
 from app.entity.index import EntityIndex  # noqa: E402
 from app.entity.matcher import EntityMatcher  # noqa: E402
-from tests.helpers import make_entity_index_entry  # noqa: E402
+from tests.helpers import attach_expect_state_shim, make_entity_index_entry  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
@@ -108,7 +70,7 @@ class TestExecuteLightAction:
         client = AsyncMock()
         client.call_service = AsyncMock(return_value=[])
         client.get_state = AsyncMock(return_value={"state": "on", "attributes": {}})
-        return _attach_expect_state_shim(client)
+        return attach_expect_state_shim(client)
 
     @pytest.fixture()
     def entity_matcher(self):
@@ -601,7 +563,7 @@ class TestEntityMatchSpan:
         client = AsyncMock()
         client.call_service = AsyncMock(return_value=[])
         client.get_state = AsyncMock(return_value={"state": "on", "attributes": {}})
-        return _attach_expect_state_shim(client)
+        return attach_expect_state_shim(client)
 
     @pytest.fixture()
     def entity_matcher(self):
@@ -786,7 +748,7 @@ class TestExecuteLightActionCondition:
         client = AsyncMock()
         client.call_service = AsyncMock(return_value=[])
         client.get_state = AsyncMock(return_value={"state": "on", "attributes": {}})
-        return _attach_expect_state_shim(client)
+        return attach_expect_state_shim(client)
 
     @pytest.fixture()
     def entity_matcher(self):

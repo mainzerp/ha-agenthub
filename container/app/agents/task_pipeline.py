@@ -13,7 +13,17 @@ from typing import Any
 
 from app.agents.compound_utterance import looks_compound
 from app.agents.sanitize import strip_markdown
+from app.cache.cache_manager import ActionReplayOutcome, RoutingSkipOutcome
 from app.models.agent import AgentTask
+
+
+@dataclass
+class CacheReplayResult:
+    """Result bag produced by the cache replay phase."""
+
+    action_replay: ActionReplayOutcome | None = None
+    routing_skip: RoutingSkipOutcome | None = None
+    compound_bypass: bool = False
 
 
 @dataclass
@@ -50,10 +60,10 @@ class TaskPipeline:
         span_collector,
         *,
         skip_lookup: bool = False,
-    ) -> tuple[Any | None, Any | None, bool]:
+    ) -> CacheReplayResult:
         """Try action-cache replay and routing-cache skip.
 
-        Returns ``(action_replay, routing_skip, compound_bypass)``.
+        Returns a :class:`CacheReplayResult`.
         When ``action_replay`` is not ``None`` the caller should short-
         circuit and return the replay result directly.
 
@@ -79,7 +89,11 @@ class TaskPipeline:
                     span_collector=span_collector,
                 )
 
-        return action_replay, routing_skip, compound_bypass
+        return CacheReplayResult(
+            action_replay=action_replay,
+            routing_skip=routing_skip,
+            compound_bypass=compound_bypass,
+        )
 
     # ------------------------------------------------------------------
     # Phase 1: intent classification

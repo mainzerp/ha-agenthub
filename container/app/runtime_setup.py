@@ -11,25 +11,13 @@ from typing import TYPE_CHECKING
 import aiosqlite
 
 from app.a2a.orchestrator_gateway import OrchestratorGateway
-from app.agents.automation import AutomationAgent
+from app.agents.actionable import create_domain_agent
 from app.agents.base import preload_prompt_cache
-from app.agents.calendar import CalendarAgent
-from app.agents.climate import ClimateAgent
-from app.agents.cover import CoverAgent
 from app.agents.custom_loader import CustomAgentLoader
 from app.agents.filler import FillerAgent
 from app.agents.general import GeneralAgent
-from app.agents.light import LightAgent
-from app.agents.lists import ListsAgent
-from app.agents.media import MediaAgent
-from app.agents.music import MusicAgent
 from app.agents.orchestrator import OrchestratorAgent
 from app.agents.rewrite import RewriteAgent
-from app.agents.scene import SceneAgent
-from app.agents.security import SecurityAgent
-from app.agents.send import SendAgent
-from app.agents.timer import TimerAgent
-from app.agents.vacuum import VacuumAgent
 from app.cache.cache_manager import CacheManager
 from app.cache.embedding import get_embedding_engine
 from app.cache.vector_store import COLLECTION_ENTITY_INDEX, get_vector_store
@@ -202,8 +190,13 @@ async def _wait_for_ws_connection(app: FastAPI, timeout: float = 8.0) -> bool:
 
 async def _prime_entity_index(app: FastAPI, ha_client: HARestClient, entity_index: EntityIndex, vector_store) -> None:
     """Fetch HA states and build/sync the entity index in the background."""
+    import time as _time
+
+    _t0 = _time.monotonic()
     try:
         states = await ha_client.get_states()
+        _t1 = _time.monotonic()
+        logger.info("Entity index prime: HA states fetched in %.1fs (%d entities)", _t1 - _t0, len(states))
         area_lookup, alias_lookup, device_lookup, area_id_lookup = await _gather_ha_lookups(ha_client)
         _store_entity_lookups(app, area_lookup, alias_lookup, device_lookup, area_id_lookup)
         hidden_ids = await ha_client.get_hidden_entity_ids()
@@ -343,7 +336,8 @@ async def _prime_entity_index(app: FastAPI, ha_client: HARestClient, entity_inde
             logger.debug("User alias load failed", exc_info=True)
         try:
             await entity_index.warmup_async()
-            logger.info("Entity index HNSW warm-up completed")
+            _t_end = _time.monotonic()
+            logger.info("Entity index HNSW warm-up completed (total prime: %.1fs)", _t_end - _t0)
         except Exception:
             logger.debug("Entity index warm-up failed", exc_info=True)
     except Exception:
@@ -532,46 +526,6 @@ async def _refresh_registry_entities(
             area_id_lookup=area_id_lookup,
         )
         await entity_index.add_async(entry)
-
-
-def _create_phase2_agent(agent_id: str, app: FastAPI):
-    """Instantiate a Phase 2 agent by ID for runtime registration."""
-    agent_map = {
-        "timer-agent": TimerAgent,
-        "climate-agent": ClimateAgent,
-        "media-agent": MediaAgent,
-        "scene-agent": SceneAgent,
-        "automation-agent": AutomationAgent,
-        "security-agent": SecurityAgent,
-        "send-agent": SendAgent,
-        "calendar-agent": CalendarAgent,
-        "lists-agent": ListsAgent,
-        "vacuum-agent": VacuumAgent,
-    }
-    with_matcher = {
-        "climate-agent",
-        "cover-agent",
-        "security-agent",
-        "timer-agent",
-        "scene-agent",
-        "automation-agent",
-        "media-agent",
-        "calendar-agent",
-        "lists-agent",
-        "vacuum-agent",
-    }
-
-    cls = agent_map.get(agent_id)
-    if cls is None:
-        return None
-
-    ha_client = getattr(app.state, "ha_client", None)
-    entity_index = getattr(app.state, "entity_index", None)
-    entity_matcher = getattr(app.state, "entity_matcher", None)
-
-    if agent_id in with_matcher:
-        return cls(ha_client=ha_client, entity_index=entity_index, entity_matcher=entity_matcher)
-    return cls(ha_client=ha_client, entity_index=entity_index)
 
 
 async def _initialize_setup_dependent_services(app: FastAPI, *, source: str) -> None:
@@ -820,19 +774,23 @@ async def _initialize_setup_dependent_services(app: FastAPI, *, source: str) -> 
     )
     await registry.register(general_agent, replace=True)
 
-    light_agent = LightAgent(ha_client=ha_client, entity_index=entity_index, entity_matcher=entity_matcher)
-    await registry.register(light_agent, replace=True)
+    light_agent = create_domain_agent("light-agent", app=app)
+    if light_agent is not None:
+        await registry.register(light_agent, replace=True)
 
-    music_agent = MusicAgent(ha_client=ha_client, entity_index=entity_index, entity_matcher=entity_matcher)
-    await registry.register(music_agent, replace=True)
+    music_agent = create_domain_agent("music-agent", app=app)
+    if music_agent is not None:
+        await registry.register(music_agent, replace=True)
 
-    cover_agent = CoverAgent(ha_client=ha_client, entity_index=entity_index, entity_matcher=entity_matcher)
-    await registry.register(cover_agent, replace=True)
+    cover_agent = create_domain_agent("cover-agent", app=app)
+    if cover_agent is not None:
+        await registry.register(cover_agent, replace=True)
 
-    vacuum_agent = VacuumAgent(ha_client=ha_client, entity_index=entity_index, entity_matcher=entity_matcher)
-    await registry.register(vacuum_agent, replace=True)
+    vacuum_agent = create_domain_agent("vacuum-agent", app=app)
+    if vacuum_agent is not None:
+        await registry.register(vacuum_agent, replace=True)
 
-    phase2_agents = [
+    domain_agents = [
         "timer-agent",
         "climate-agent",
         "media-agent",
@@ -843,10 +801,10 @@ async def _initialize_setup_dependent_services(app: FastAPI, *, source: str) -> 
         "calendar-agent",
         "lists-agent",
     ]
-    for agent_id in phase2_agents:
+    for agent_id in domain_agents:
         config = await AgentConfigRepository.get(agent_id)
         if config and config.get("enabled"):
-            agent = _create_phase2_agent(agent_id, app)
+            agent = create_domain_agent(agent_id, app=app)
             if agent is not None:
                 await registry.register(agent, replace=True)
 
