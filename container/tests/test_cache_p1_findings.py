@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from app.agents.cache_orchestrator import CacheOrchestrator
 from app.cache._state import _CacheState
 from app.cache.action_cache import ActionCache
 from app.cache.routing_cache import RoutingCache
@@ -135,14 +136,14 @@ class TestRoutingCacheLRUPagination:
         store = MagicMock(spec=VectorStore)
         cache = RoutingCache(store)
         cache._max_entries = 10
-        store.count.return_value = 1100
+        store.count.return_value = 6000
 
-        # Two pages: 1000 entries, then a 100-entry tail that also
+        # Two pages: 5000 entries, then a 1000-entry tail that also
         # signals the end of pagination (len < PAGE_SIZE).
-        ids_page1 = [f"id-{i}" for i in range(1000)]
-        metas_page1 = [{"last_accessed": f"2025-01-{(i % 28) + 1:02d}T00:00:00"} for i in range(1000)]
-        ids_page2 = [f"id-{i}" for i in range(1000, 1100)]
-        metas_page2 = [{"last_accessed": f"2025-02-{(i % 28) + 1:02d}T00:00:00"} for i in range(100)]
+        ids_page1 = [f"id-{i}" for i in range(5000)]
+        metas_page1 = [{"last_accessed": f"2025-01-{(i % 28) + 1:02d}T00:00:00"} for i in range(5000)]
+        ids_page2 = [f"id-{i}" for i in range(5000, 6000)]
+        metas_page2 = [{"last_accessed": f"2025-02-{(i % 28) + 1:02d}T00:00:00"} for i in range(1000)]
         store.get.side_effect = [
             {"ids": ids_page1, "metadatas": metas_page1},
             {"ids": ids_page2, "metadatas": metas_page2},
@@ -279,6 +280,8 @@ class TestStoreAfterDispatchWhitelist:
         orch._cache_manager.store_action_async = AsyncMock(side_effect=fake_store)
         orch._legacy_pipeline_enabled = MagicMock(return_value=False)
         orch._get_bool_setting = AsyncMock(return_value=True)
+        orch._cache_orchestrator = CacheOrchestrator(cache_manager=orch._cache_manager)
+        orch._cache_orchestrator._get_bool_setting_impl = AsyncMock(return_value=True)
 
         action_executed = {
             "success": True,

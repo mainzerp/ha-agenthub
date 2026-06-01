@@ -138,7 +138,7 @@ class TestGenerateCancelSpeech:
 class TestOrchestratorCancelInteraction:
     @pytest.fixture(autouse=True)
     def _mock_conversation_repo(self):
-        with patch("app.agents.orchestrator.ConversationRepository") as mock_repo:
+        with patch("app.agents.conversation_manager.ConversationRepository") as mock_repo:
             mock_repo.insert = AsyncMock(return_value=1)
             yield mock_repo
 

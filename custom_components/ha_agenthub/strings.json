@@ -37,7 +37,8 @@
     "error": {
       "cannot_connect": "Unable to connect to the container. Check the URL and that the container is running.",
       "invalid_auth": "Invalid API key. Check the key and try again.",
-      "invalid_url": "Invalid URL. Must start with http:// or https://."
+      "invalid_url": "Invalid URL. Must start with http:// or https://.",
+      "already_configured": "This container is already configured."
     }
   }
 }

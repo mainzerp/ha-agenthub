@@ -1,15 +1,22 @@
-"""Base class for agents that parse LLM output into HA actions."""
+"""Base class for agents that parse LLM output into HA actions.
+
+Also provides the config-driven :class:`_ConfigurableDomainAgent` and
+:func:`create_domain_agent` factory for standard domain agents, plus
+the :class:`DomainAgent` type alias for external imports.
+"""
 
 from __future__ import annotations
 
 import asyncio
+import inspect as _inspect
 import logging
 import re
+from typing import Any
 
 from app.agents.action_executor import parse_action
 from app.agents.base import BaseAgent
 from app.entity.deterministic_resolver import resolve_entity_deterministic_first
-from app.models.agent import ActionExecuted, AgentError, AgentErrorCode, AgentTask, TaskContext, TaskResult
+from app.models.agent import ActionExecuted, AgentCard, AgentError, AgentErrorCode, AgentTask, TaskContext, TaskResult
 
 logger = logging.getLogger(__name__)
 
@@ -193,6 +200,16 @@ class ActionableAgent(BaseAgent):
     async def _do_execute(self, action, ha_client, entity_index, entity_matcher, *, agent_id, span_collector=None):
         """Execute the parsed action. Subclasses must override."""
         raise NotImplementedError
+
+    def _extract_verbatim_terms(self) -> list[str]:
+        """Read verbatim_terms from the current task context.
+
+        Provides a single source of truth for domain agents that need
+        the orchestrator-preserved original-language tokens for
+        entity matching.
+        """
+        current_task = getattr(self, "_current_task", None)
+        return list(getattr(current_task, "verbatim_terms", []) or []) if current_task else []
 
     async def _generate_not_found_speech(self, entity_query: str, task: AgentTask, span_collector=None) -> str:
         """Ask the LLM to generate a language-appropriate clarifying question when an entity is not found."""
@@ -446,3 +463,420 @@ class ActionableAgent(BaseAgent):
 
         # Path C: No action (informational)
         return self._handle_parse_miss(task, response)
+
+
+# ---------------------------------------------------------------------------
+# Config-driven domain agent infrastructure (Part 2B)
+# ---------------------------------------------------------------------------
+
+
+def _resolve_executor(module_path: str, name: str) -> Any:
+    import importlib
+
+    return getattr(importlib.import_module(module_path), name)
+
+
+DOMAIN_AGENTS: dict[str, dict[str, Any]] = {
+    "light-agent": {
+        "executor_module": "app.agents.light_executor",
+        "executor_name": "execute_light_action",
+        "prompt_name": "light",
+        "allowed_domains": frozenset({"light", "switch", "sensor"}),
+        "agent_card_kwargs": {
+            "agent_id": "light-agent",
+            "name": "Light Agent",
+            "description": (
+                "Controls and queries lights, switches, and illuminance sensors: on/off, toggle, "
+                "brightness, color, color temperature. Reports light/switch status and light-level "
+                "readings. Lists all lights and switches. Reads Home Assistant Recorder history for "
+                "lights, switches, and illuminance sensors (e.g. how long a light was on yesterday)."
+            ),
+            "skills": [
+                "light_control",
+                "switch_control",
+                "brightness",
+                "color",
+                "toggle",
+                "illuminance_sensor",
+                "light_status",
+                "light_query",
+                "switch_status",
+                "switch_query",
+                "entity_history",
+                "recorder_history",
+            ],
+            "endpoint": "local://light-agent",
+        },
+        "needs_entity_matcher": True,
+    },
+    "climate-agent": {
+        "executor_module": "app.agents.climate_executor",
+        "executor_name": "execute_climate_action",
+        "prompt_name": "climate",
+        "allowed_domains": frozenset({"climate", "weather", "sensor"}),
+        "agent_card_kwargs": {
+            "agent_id": "climate-agent",
+            "name": "Climate Agent",
+            "description": (
+                "Controls and queries climate/HVAC devices, fans, humidifiers, environmental sensors, "
+                "and local weather conditions/forecasts. Set temperature, HVAC mode, fan speed, "
+                "humidity, turn on/off. Control fans: speed, preset mode, oscillation, direction. "
+                "Control humidifiers: target humidity, mode. Reads sensors: temperature, humidity, "
+                "pressure, dew point, wind, precipitation. Queries weather entities for current "
+                "conditions and forecasts."
+            ),
+            "skills": [
+                "temperature",
+                "hvac_mode",
+                "fan_speed",
+                "humidity",
+                "climate_on_off",
+                "sensor_reading",
+                "climate_status",
+                "sensor_query",
+                "weather_sensor",
+                "current_weather",
+                "weather_forecast",
+                "entity_history",
+                "recorder_history",
+                "fan_control",
+                "fan_speed",
+                "fan_preset",
+                "fan_oscillate",
+                "fan_direction",
+                "humidifier_control",
+                "humidifier_humidity",
+                "humidifier_mode",
+            ],
+            "endpoint": "local://climate-agent",
+        },
+        "needs_entity_matcher": True,
+    },
+    "cover-agent": {
+        "executor_module": "app.agents.cover_executor",
+        "executor_name": "execute_cover_action",
+        "prompt_name": "cover",
+        "allowed_domains": frozenset({"cover"}),
+        "agent_card_kwargs": {
+            "agent_id": "cover-agent",
+            "name": "Cover Agent",
+            "description": (
+                "Controls and queries covers, blinds, curtains, shutters, garage doors, gates, "
+                "awnings, and windows: open, close, stop, set position, and tilt control. "
+                "Reports cover status including current position and tilt position. "
+                "Lists all cover entities."
+            ),
+            "skills": [
+                "cover_control",
+                "open",
+                "close",
+                "stop",
+                "set_position",
+                "tilt_control",
+                "query_cover_state",
+                "list_covers",
+                "entity_history",
+                "recorder_history",
+            ],
+            "endpoint": "local://cover-agent",
+        },
+        "needs_entity_matcher": True,
+    },
+    "vacuum-agent": {
+        "executor_module": "app.agents.vacuum_executor",
+        "executor_name": "execute_vacuum_action",
+        "prompt_name": "vacuum",
+        "allowed_domains": frozenset({"vacuum"}),
+        "agent_card_kwargs": {
+            "agent_id": "vacuum-agent",
+            "name": "Vacuum Agent",
+            "description": (
+                "Controls and queries robot vacuum cleaners: start cleaning, pause, stop, "
+                "return to base, clean spot, locate, and set fan speed. Reports vacuum state "
+                "including battery level, fan speed, and status. Lists all vacuum entities."
+            ),
+            "skills": [
+                "vacuum_control",
+                "start",
+                "pause",
+                "stop",
+                "return_to_base",
+                "clean_spot",
+                "set_fan_speed",
+                "locate",
+                "query_vacuum_state",
+                "list_vacuums",
+            ],
+            "endpoint": "local://vacuum-agent",
+        },
+        "needs_entity_matcher": True,
+    },
+    "scene-agent": {
+        "executor_module": "app.agents.scene_executor",
+        "executor_name": "execute_scene_action",
+        "prompt_name": "scene",
+        "allowed_domains": frozenset({"scene"}),
+        "agent_card_kwargs": {
+            "agent_id": "scene-agent",
+            "name": "Scene Agent",
+            "description": (
+                "Activates Home Assistant scenes with optional transition timing. "
+                "Lists available scenes and checks if a scene exists."
+            ),
+            "skills": ["scene_activate", "scene_list", "scene_query"],
+            "endpoint": "local://scene-agent",
+        },
+        "needs_entity_matcher": True,
+    },
+    "security-agent": {
+        "executor_module": "app.agents.security_executor",
+        "executor_name": "execute_security_action",
+        "prompt_name": "security",
+        "allowed_domains": frozenset({"lock", "binary_sensor", "alarm_control_panel"}),
+        "agent_card_kwargs": {
+            "agent_id": "security-agent",
+            "name": "Security Agent",
+            "description": (
+                "Controls and queries locks, alarm panels, cameras, and security sensors "
+                "(motion, door, window, doorbell, smoke, gas). Lock/unlock, arm/disarm, "
+                "camera on/off. Reports status and lists all security devices. Reads Home "
+                "Assistant Recorder history for those entities (e.g. door open events yesterday)."
+            ),
+            "skills": [
+                "lock_control",
+                "alarm_control",
+                "camera_control",
+                "door_sensor",
+                "window_sensor",
+                "motion_sensor",
+                "doorbell",
+                "smoke_sensor",
+                "security_status",
+                "security_query",
+                "entity_history",
+                "recorder_history",
+            ],
+            "endpoint": "local://security-agent",
+        },
+        "needs_entity_matcher": True,
+    },
+    "media-agent": {
+        "executor_module": "app.agents.media_executor",
+        "executor_name": "execute_media_action",
+        "prompt_name": "media",
+        "allowed_domains": frozenset({"media_player"}),
+        "agent_card_kwargs": {
+            "agent_id": "media-agent",
+            "name": "Media Agent",
+            "description": (
+                "Controls generic media players (TV, Chromecast, streaming devices): "
+                "on/off, play/pause/stop, volume, mute, input/source selection. "
+                "Reports playback status. Not for music library/Music Assistant -- use music-agent."
+            ),
+            "skills": [
+                "tv_control",
+                "speaker_control",
+                "casting",
+                "playback",
+                "volume_control",
+                "mute",
+                "source_selection",
+                "media_status",
+                "playback_query",
+            ],
+            "endpoint": "local://media-agent",
+        },
+        "needs_entity_matcher": True,
+    },
+    "music-agent": {
+        "executor_module": "app.agents.music_executor",
+        "executor_name": "execute_music_action",
+        "prompt_name": "music",
+        "allowed_domains": frozenset({"media_player"}),
+        "agent_card_kwargs": {
+            "agent_id": "music-agent",
+            "name": "Music Agent",
+            "description": (
+                "Controls music playback via Music Assistant: play, pause, skip, volume, "
+                "shuffle, repeat, library search, queue management, playlist/artist/album "
+                "selection. Reports current track info and lists music players."
+            ),
+            "skills": [
+                "music_playback",
+                "volume_control",
+                "playlist_selection",
+                "library_search",
+                "queue_management",
+                "shuffle",
+                "repeat",
+                "music_status",
+                "playback_query",
+            ],
+            "endpoint": "local://music-agent",
+        },
+        "needs_entity_matcher": True,
+    },
+    "automation-agent": {
+        "executor_module": "app.agents.automation_executor",
+        "executor_name": "execute_automation_action",
+        "prompt_name": "automation",
+        "allowed_domains": frozenset({"automation", "script"}),
+        "agent_card_kwargs": {
+            "agent_id": "automation-agent",
+            "name": "Automation Agent",
+            "description": (
+                "Enables, disables, triggers, creates, updates, deletes, and queries "
+                "Home Assistant automations. Reports status (enabled/disabled, last triggered time). "
+                "Lists all automations."
+            ),
+            "skills": [
+                "automation_enable",
+                "automation_disable",
+                "automation_trigger",
+                "automation_status",
+                "automation_query",
+                "automation_create",
+                "automation_update",
+                "automation_delete",
+                "automation_config",
+            ],
+            "endpoint": "local://automation-agent",
+        },
+        "needs_entity_matcher": True,
+    },
+}
+
+
+class _ConfigurableDomainAgent(ActionableAgent):
+    """Domain agent whose behaviour is driven by a ``DOMAIN_AGENTS`` config entry.
+
+    Standard agents (light, climate, cover, vacuum, scene, security, media,
+    music, automation) are instantiated through this class.  Agents that
+    need unique logic (TimerAgent, ListsAgent, CalendarAgent) continue to
+    use their own subclasses.
+    """
+
+    _executor_module: str = ""
+    _executor_name: str = ""
+
+    def __init__(
+        self, ha_client=None, entity_index=None, entity_matcher=None, *, config: dict[str, Any] | None = None
+    ) -> None:
+        if config is not None:
+            self._prompt_name = config["prompt_name"]
+            self._allowed_domains = config.get("allowed_domains")
+            self._agent_card_kwargs = config["agent_card_kwargs"]
+            self._executor_module = config["executor_module"]
+            self._executor_name = config["executor_name"]
+        super().__init__(ha_client=ha_client, entity_index=entity_index, entity_matcher=entity_matcher)
+
+    async def _do_execute(self, action, ha_client, entity_index, entity_matcher, *, agent_id, span_collector=None):
+        ctx = getattr(self, "_current_task_context", None)
+        area_id = ctx.area_id if ctx else None
+        verbatim_terms = self._extract_verbatim_terms()
+
+        kwargs: dict[str, Any] = {
+            "preferred_area_id": area_id,
+            "task_context": ctx,
+            "verbatim_terms": verbatim_terms,
+        }
+        executor_fn = _resolve_executor(self._executor_module, self._executor_name)
+        sig = _inspect.signature(executor_fn)
+        filtered = {k: v for k, v in kwargs.items() if k in sig.parameters}
+
+        return await executor_fn(
+            action,
+            ha_client,
+            entity_index,
+            entity_matcher,
+            agent_id=agent_id,
+            span_collector=span_collector,
+            **filtered,
+        )
+
+    @property
+    def agent_card(self) -> AgentCard:
+        return AgentCard(**self._agent_card_kwargs)
+
+
+def create_domain_agent(agent_id: str, app=None, *, ha_client=None, entity_index=None, entity_matcher=None):
+    """Instantiate a domain agent by its ``agent_id``.
+
+    Standard agents are built from the ``DOMAIN_AGENTS`` config dict.
+    Agents with unique behaviour (Timer, Lists, Calendar) use their own
+    subclasses and are imported lazily here.
+
+    Accepts either an ``app`` FastAPI instance (for convenience in
+    runtime setup and dashboard API) or explicit ``ha_client``,
+    ``entity_index``, ``entity_matcher`` kwargs.
+
+    Returns ``None`` when *agent_id* is not recognised.
+    """
+
+    if app is not None:
+        if ha_client is None:
+            ha_client = getattr(app.state, "ha_client", None)
+        if entity_index is None:
+            entity_index = getattr(app.state, "entity_index", None)
+        if entity_matcher is None:
+            entity_matcher = getattr(app.state, "entity_matcher", None)
+
+    config = DOMAIN_AGENTS.get(agent_id)
+    if config is not None:
+        kwargs: dict[str, Any] = {"ha_client": ha_client, "entity_index": entity_index, "config": config}
+        if config.get("needs_entity_matcher"):
+            kwargs["entity_matcher"] = entity_matcher
+        return _ConfigurableDomainAgent(**kwargs)
+
+    if agent_id == "timer-agent":
+        from app.agents.timer import TimerAgent
+
+        return TimerAgent(ha_client=ha_client, entity_index=entity_index, entity_matcher=entity_matcher)
+    if agent_id == "lists-agent":
+        from app.agents.lists import ListsAgent
+
+        return ListsAgent(ha_client=ha_client, entity_index=entity_index, entity_matcher=entity_matcher)
+    if agent_id == "calendar-agent":
+        from app.agents.calendar import CalendarAgent
+
+        return CalendarAgent(ha_client=ha_client, entity_index=entity_index, entity_matcher=entity_matcher)
+    if agent_id == "send-agent":
+        from app.agents.send import SendAgent
+
+        return SendAgent(ha_client=ha_client, entity_index=entity_index)
+
+    return None
+
+
+# Backward-compatible named subclasses so tests and scenarios that import
+# specific classes (e.g. ``from app.agents.light import LightAgent``)
+# continue to work after the per-domain modules are removed.
+
+
+def _make_agent_class(agent_id: str) -> type[_ConfigurableDomainAgent]:
+    cfg = DOMAIN_AGENTS[agent_id]
+    cls_name = cfg["agent_card_kwargs"]["name"].replace(" ", "") + "Agent"
+    return type(
+        cls_name,
+        (_ConfigurableDomainAgent,),
+        {
+            "_prompt_name": cfg["prompt_name"],
+            "_allowed_domains": cfg["allowed_domains"],
+            "_executor_module": cfg["executor_module"],
+            "_executor_name": cfg["executor_name"],
+            "_agent_card_kwargs": cfg["agent_card_kwargs"],
+        },
+    )
+
+
+LightAgent = _make_agent_class("light-agent")
+ClimateAgent = _make_agent_class("climate-agent")
+CoverAgent = _make_agent_class("cover-agent")
+VacuumAgent = _make_agent_class("vacuum-agent")
+SceneAgent = _make_agent_class("scene-agent")
+SecurityAgent = _make_agent_class("security-agent")
+MediaAgent = _make_agent_class("media-agent")
+MusicAgent = _make_agent_class("music-agent")
+AutomationAgent = _make_agent_class("automation-agent")
+
+DomainAgent = _ConfigurableDomainAgent

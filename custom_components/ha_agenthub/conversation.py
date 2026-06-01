@@ -19,6 +19,7 @@ from homeassistant.components.conversation import ConversationEntityFeature
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import MATCH_ALL
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import device_registry as dr, entity_registry as er, intent
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
@@ -731,7 +732,7 @@ class HaAgentHubConversationEntity(
                         gate_key,
                         satellite_entity_id,
                     )
-                except Exception:
+                except (aiohttp.ClientError, OSError):
                     logger.warning(
                         "ha-agenthub: assist_satellite.start_conversation failed in push key=%s sat=%s",
                         gate_key,
@@ -745,7 +746,7 @@ class HaAgentHubConversationEntity(
                 satellite_entity_id,
             )
             raise
-        except Exception:
+        except (HomeAssistantError, aiohttp.ClientError, OSError, asyncio.TimeoutError):
             logger.warning(
                 "ha-agenthub: post-filler push raised unexpectedly key=%s sat=%s",
                 gate_key,

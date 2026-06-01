@@ -337,13 +337,13 @@ class TestCacheManager:
 class TestRoutingCacheExtended:
     """Additional RoutingCache tests recovered from the dead string block.
 
-    Uses _semantic_threshold (v4 field name) instead of the removed _threshold.
+    Uses _exact_match_only (boolean field) instead of the removed _threshold.
     """
 
     def _make_cache(self) -> tuple[RoutingCache, MagicMock]:
         store = MagicMock(spec=VectorStore)
         cache = RoutingCache(store)
-        cache._semantic_threshold = 0.92
+        cache._exact_match_only = True
         cache._max_entries = 100
         return cache, store
 
@@ -449,12 +449,12 @@ class TestRoutingCacheExtended:
             assert call.kwargs.get("limit") == _LRU_PAGE_SIZE
 
     def test_get_stats(self):
-        # v4: stat key is semantic_threshold, not threshold
+        # v4: stat key is exact_match_only, not threshold
         cache, store = self._make_cache()
         store.count.return_value = 42
         stats = cache.get_stats()
         assert stats["count"] == 42
-        assert stats["semantic_threshold"] == pytest.approx(0.92)
+        assert stats["exact_match_only"] is True
 
     @pytest.mark.asyncio
     async def test_load_config_from_db(self):
@@ -471,7 +471,7 @@ class TestRoutingCacheExtended:
         with patch("app.cache._base_cache.SettingsRepository") as mock_base:
             mock_base.get_value = AsyncMock(side_effect=_get_value)
             await cache.load_config()
-        assert cache._semantic_threshold == pytest.approx(0.90)
+        assert cache._exact_match_only is True
         assert cache._max_entries == 1000
 
     def test_routing_cache_rejects_corrupted_condensed_task(self, caplog):
@@ -557,8 +557,8 @@ class TestRoutingCacheExtended:
 
         store = _RoutingStore()
         manager = CacheManager(store)
-        # v4: field is _semantic_threshold
-        manager._routing_cache._semantic_threshold = 0.92
+        # v4: field is _exact_match_only
+        manager._routing_cache._exact_match_only = True
         manager._routing_cache._max_entries = 100
 
         query_text = "turn on kitchen light"
@@ -639,7 +639,7 @@ class TestActionCacheExtended:
     def _make_cache(self) -> tuple[ActionCache, MagicMock]:
         store = MagicMock(spec=VectorStore)
         cache = ActionCache(store)
-        cache._semantic_threshold = 0.95
+        cache._exact_match_only = True
         cache._max_entries = 100
         return cache, store
 
@@ -721,13 +721,13 @@ class TestActionCacheExtended:
         cache.store(entry)
         store.upsert.assert_called_once()
 
-    def test_get_stats_uses_semantic_threshold(self):
-        # v4: stat key is semantic_threshold, not hit_threshold
+    def test_get_stats_uses_exact_match_only(self):
+        # v4: stat key is exact_match_only, not hit_threshold
         cache, store = self._make_cache()
         store.count.return_value = 100
         stats = cache.get_stats()
         assert stats["count"] == 100
-        assert "semantic_threshold" in stats
+        assert "exact_match_only" in stats
         assert "hit_threshold" not in stats
         assert "partial_threshold" not in stats
 
@@ -936,9 +936,9 @@ class TestCacheManagerExtended:
             mock_cms.get_value = AsyncMock(side_effect=_get_value)
             await manager.initialize()
 
-        assert manager._routing_cache._semantic_threshold == pytest.approx(0.92)
+        assert manager._routing_cache._exact_match_only is True
         assert manager._routing_cache._max_entries == 50000
-        assert manager._action_cache._semantic_threshold == pytest.approx(0.95)
+        assert manager._action_cache._exact_match_only is True
         assert manager._action_cache._max_entries == 50000
         assert manager._rewrite_enabled is False
 
@@ -965,9 +965,9 @@ class TestCacheManagerExtended:
             mock_cms.get_value = AsyncMock(side_effect=_get_value)
             await manager.reload_config()
 
-        assert manager._routing_cache._semantic_threshold == pytest.approx(0.90)
+        assert manager._routing_cache._exact_match_only is True
         assert manager._routing_cache._max_entries == 50000
-        assert manager._action_cache._semantic_threshold == pytest.approx(0.90)
+        assert manager._action_cache._exact_match_only is True
         assert manager._action_cache._max_entries == 50000
         assert manager._rewrite_enabled is False
 
@@ -1589,7 +1589,7 @@ class TestCacheTraceSimilarity:
 # Deleted from RoutingCacheEviction: test_eviction_triggers_at_interval,
 #   test_eviction_does_not_trigger_before_interval (used positional cache.store()
 #   signature removed in v4 — entry object required now)
-# Deleted from RoutingCacheEviction: _threshold field usage -> _semantic_threshold
+# Deleted from RoutingCacheEviction: _threshold field usage -> _exact_match_only
 # TestResponseCacheEviction -> TestActionCacheEviction (ResponseCache removed)
 # ---------------------------------------------------------------------------
 
@@ -1600,7 +1600,7 @@ class TestRoutingCacheEviction:
     def _make_cache(self) -> tuple[RoutingCache, MagicMock]:
         store = MagicMock(spec=VectorStore)
         cache = RoutingCache(store)
-        cache._semantic_threshold = 0.92
+        cache._exact_match_only = True
         cache._max_entries = 10
         return cache, store
 
@@ -1652,7 +1652,7 @@ class TestActionCacheEviction:
     def _make_cache(self) -> tuple[ActionCache, MagicMock]:
         store = MagicMock(spec=VectorStore)
         cache = ActionCache(store)
-        cache._semantic_threshold = 0.95
+        cache._exact_match_only = True
         cache._max_entries = 10
         return cache, store
 
@@ -1799,7 +1799,7 @@ async def test_concurrent_cache_stress():
     """
     store = _make_vector_store()
     manager = CacheManager(store)
-    manager._routing_cache._semantic_threshold = 0.5
+    manager._routing_cache._exact_match_only = True
     manager._routing_cache._max_entries = 1000
 
     def worker(task_id: int) -> None:

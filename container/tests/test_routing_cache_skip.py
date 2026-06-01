@@ -7,6 +7,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from app.agents.cache_orchestrator import CacheOrchestrator
+
 _litellm_mock = MagicMock()
 
 
@@ -150,6 +152,8 @@ async def test_read_only_action_stores_routing_only_entry():
     orch._cache_manager.store_action_async = AsyncMock()
     orch._legacy_pipeline_enabled = MagicMock(return_value=False)
     orch._get_bool_setting = AsyncMock(return_value=True)
+    orch._cache_orchestrator = CacheOrchestrator(cache_manager=orch._cache_manager)
+    orch._cache_orchestrator._get_bool_setting_impl = AsyncMock(return_value=True)
 
     stored_action, stored_routing = await orch._store_after_dispatch(
         user_text="what is the kitchen temperature",
@@ -179,6 +183,8 @@ async def test_conversational_answer_stores_routing_only_entry():
     orch._cache_manager.store_action_async = AsyncMock()
     orch._legacy_pipeline_enabled = MagicMock(return_value=False)
     orch._get_bool_setting = AsyncMock(return_value=True)
+    orch._cache_orchestrator = CacheOrchestrator(cache_manager=orch._cache_manager)
+    orch._cache_orchestrator._get_bool_setting_impl = AsyncMock(return_value=True)
 
     stored_action, stored_routing = await orch._store_after_dispatch(
         user_text="hello there",
@@ -204,6 +210,8 @@ async def test_multi_agent_merge_does_not_store_routing():
     orch._cache_manager.store_action_async = AsyncMock()
     orch._legacy_pipeline_enabled = MagicMock(return_value=False)
     orch._get_bool_setting = AsyncMock(return_value=True)
+    orch._cache_orchestrator = CacheOrchestrator(cache_manager=orch._cache_manager)
+    orch._cache_orchestrator._get_bool_setting_impl = AsyncMock(return_value=True)
 
     stored_action, stored_routing = await orch._store_after_dispatch(
         user_text="turn off the lights and play music",
@@ -277,6 +285,8 @@ async def test_conditional_action_is_not_stored():
     orch._cache_manager.store_action_async = AsyncMock()
     orch._legacy_pipeline_enabled = MagicMock(return_value=False)
     orch._get_bool_setting = AsyncMock(return_value=True)
+    orch._cache_orchestrator = CacheOrchestrator(cache_manager=orch._cache_manager)
+    orch._cache_orchestrator._get_bool_setting_impl = AsyncMock(return_value=True)
 
     stored_action, stored_routing = await orch._store_after_dispatch(
         user_text="turn on kitchen light",
@@ -308,6 +318,8 @@ async def test_conditional_action_in_service_data_is_not_stored():
     orch._cache_manager.store_action_async = AsyncMock()
     orch._legacy_pipeline_enabled = MagicMock(return_value=False)
     orch._get_bool_setting = AsyncMock(return_value=True)
+    orch._cache_orchestrator = CacheOrchestrator(cache_manager=orch._cache_manager)
+    orch._cache_orchestrator._get_bool_setting_impl = AsyncMock(return_value=True)
 
     stored_action, stored_routing = await orch._store_after_dispatch(
         user_text="turn on kitchen light",

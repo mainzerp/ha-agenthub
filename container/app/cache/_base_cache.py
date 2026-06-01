@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 TEntry = TypeVar("TEntry", bound=BaseModel)
 
-_LRU_PAGE_SIZE = 1000
+_LRU_PAGE_SIZE = 5000
 _LRU_TRIGGER_FRACTION = 0.95
 _MAX_LEGACY_WARNING_KEYS = 1000
 _LEGACY_WARNING_KEYS: deque[tuple[str, str]] = deque(maxlen=_MAX_LEGACY_WARNING_KEYS)
@@ -302,6 +302,14 @@ class _BaseCache[TEntry](ABC):
         *,
         language: str = "en",
     ) -> tuple[str | None, TEntry | None, float | None]:
+        """Exact-match hash-based cache lookup.
+
+        Computes a deterministic SHA-256 hash from ``(normalized_text, language)``
+        and queries the vector store by ID. This is an O(1) key-value lookup --
+        no semantic similarity or vector distance comparison is performed.
+
+        Returns ``(entry_id, entry, 1.0)`` on cache hit, or ``(None, None, None)`` on miss.
+        """
         if not self._enabled:
             return None, None, None
         lang = _normalize_language(language)
@@ -362,6 +370,11 @@ class _BaseCache[TEntry](ABC):
 
         # Build in-memory LRU index if empty (one-time fallback scan).
         if not self._lru_index:
+            logger.info(
+                "%s: building LRU index from ChromaDB (cold-start scan, page_size=%d)",
+                self.__class__.__name__,
+                _LRU_PAGE_SIZE,
+            )
             offset = 0
             while True:
                 page = self._store.get(

@@ -62,7 +62,7 @@ class _TTLCache:
         self._times.clear()
 
 
-class AgentRegistry:
+class CachedAgentRegistry:
     """Caches agent cards, timeouts, and known-agent lookups.
 
     Uses plain ``dict`` for the per-agent timeout cache (small, explicitly

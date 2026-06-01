@@ -20,6 +20,7 @@ from app.security.auth import (
     _rooted_url,
     attach_csrf,
     authenticate_admin,
+    body_size_limit,
     create_session_cookie,
     ensure_csrf_token,
     require_admin_session_redirect,
@@ -75,7 +76,7 @@ async def login_page(request: Request, error: str | None = None):
 @router.post(
     "/login",
     response_class=HTMLResponse,
-    dependencies=[Depends(verify_csrf), Depends(rate_limit_login)],
+    dependencies=[Depends(verify_csrf), Depends(body_size_limit(1 * 1024 * 1024)), Depends(rate_limit_login)],
 )
 async def login_submit(
     request: Request,

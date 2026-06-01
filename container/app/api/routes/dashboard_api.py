@@ -60,53 +60,13 @@ def set_chat_dispatcher(dispatcher) -> None:
 
 
 def _create_phase2_agent(agent_id: str, app):
-    """Instantiate a Phase 2 agent by ID for hot-registration."""
-    from app.agents.automation import AutomationAgent
-    from app.agents.climate import ClimateAgent
-    from app.agents.cover import CoverAgent
-    from app.agents.lists import ListsAgent
-    from app.agents.media import MediaAgent
-    from app.agents.scene import SceneAgent
-    from app.agents.security import SecurityAgent
-    from app.agents.send import SendAgent
-    from app.agents.timer import TimerAgent
-    from app.agents.vacuum import VacuumAgent
+    """Instantiate a Phase 2 agent by ID for hot-registration.
 
-    agent_map = {
-        "timer-agent": TimerAgent,
-        "climate-agent": ClimateAgent,
-        "cover-agent": CoverAgent,
-        "media-agent": MediaAgent,
-        "scene-agent": SceneAgent,
-        "automation-agent": AutomationAgent,
-        "security-agent": SecurityAgent,
-        "send-agent": SendAgent,
-        "lists-agent": ListsAgent,
-        "vacuum-agent": VacuumAgent,
-    }
-    with_matcher = {
-        "climate-agent",
-        "cover-agent",
-        "security-agent",
-        "timer-agent",
-        "scene-agent",
-        "automation-agent",
-        "media-agent",
-        "lists-agent",
-        "vacuum-agent",
-    }
+    Delegates to :func:`app.agents.actionable.create_domain_agent`.
+    """
+    from app.agents.actionable import create_domain_agent
 
-    cls = agent_map.get(agent_id)
-    if cls is None:
-        return None
-
-    ha_client = getattr(app.state, "ha_client", None)
-    entity_index = getattr(app.state, "entity_index", None)
-    entity_matcher = getattr(app.state, "entity_matcher", None)
-
-    if agent_id in with_matcher:
-        return cls(ha_client=ha_client, entity_index=entity_index, entity_matcher=entity_matcher)
-    return cls(ha_client=ha_client, entity_index=entity_index)
+    return create_domain_agent(agent_id, app=app)
 
 
 def _validate_agent_path(agent_id: str) -> Path:

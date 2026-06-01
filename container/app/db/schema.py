@@ -455,6 +455,7 @@ async def _create_indexes(db: aiosqlite.Connection) -> None:
     await db.execute("CREATE INDEX IF NOT EXISTS idx_trace_summary_created_at ON trace_summary(created_at)")
     await db.execute("CREATE INDEX IF NOT EXISTS idx_trace_summary_routing_agent ON trace_summary(routing_agent)")
     await db.execute("CREATE INDEX IF NOT EXISTS idx_trace_summary_label ON trace_summary(label)")
+    await db.execute("CREATE INDEX IF NOT EXISTS idx_trace_summary_conversation_id ON trace_summary(conversation_id)")
     await db.execute("CREATE INDEX IF NOT EXISTS idx_scheduled_timers_logical_name ON scheduled_timers(logical_name)")
     await db.execute(
         "CREATE INDEX IF NOT EXISTS idx_cache_validator_runs_started_at ON cache_validator_runs(started_at)"
@@ -808,6 +809,59 @@ async def _seed_defaults(db: aiosqlite.Connection) -> None:
         # HA URL is normally set in setup; seed empty so admin UI can upsert
         # before first run and ``GET /api/admin/settings`` stays consistent.
         ("ha_url", "", "string", "ha", "Home Assistant base URL (http/https)"),
+        # Entity sync
+        (
+            "entity_sync.interval_minutes",
+            "30",
+            "number",
+            "sync",
+            "Minutes between periodic entity index syncs (0 = disabled)",
+        ),
+        # Filler agent
+        (
+            "filler.enabled",
+            "false",
+            "bool",
+            "filler",
+            "Enable interim filler responses for slow agents",
+        ),
+        (
+            "filler.threshold_ms",
+            "1000",
+            "number",
+            "filler",
+            "Milliseconds to wait before sending filler",
+        ),
+        # Mediation
+        (
+            "mediation.model",
+            "",
+            "string",
+            "mediation",
+            "LLM model for mediation/merge (empty = use orchestrator model)",
+        ),
+        (
+            "mediation.temperature",
+            "0.3",
+            "number",
+            "mediation",
+            "Temperature for mediation/merge LLM calls",
+        ),
+        (
+            "mediation.max_tokens",
+            "8192",
+            "number",
+            "mediation",
+            "Max tokens for mediation/merge LLM calls (increase for reasoning models)",
+        ),
+        # Language
+        (
+            "language",
+            "auto",
+            "string",
+            "general",
+            "Response language: 'auto' = detect from user input, or a specific ISO code like 'de', 'en'",
+        ),
     ]
 
     await db.executemany(
@@ -1683,3 +1737,11 @@ async def _run_migrations(db: aiosqlite.Connection) -> None:
             "CREATE INDEX IF NOT EXISTS idx_cache_validator_runs_started_at ON cache_validator_runs(started_at)"
         )
         await db.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (35)")
+
+    if current_version < 36:
+        # Migration 36: Add conversation_id index on trace_summary for
+        # dashboard per-conversation lookups.
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_trace_summary_conversation_id ON trace_summary(conversation_id)"
+        )
+        await db.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (36)")

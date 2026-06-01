@@ -69,7 +69,7 @@ def _make_task(
 class TestOrchestratorAgent:
     @pytest.fixture(autouse=True)
     def _mock_conversation_repo(self):
-        with patch("app.agents.orchestrator.ConversationRepository") as mock_repo:
+        with patch("app.agents.conversation_manager.ConversationRepository") as mock_repo:
             mock_repo.insert = AsyncMock(return_value=1)
             yield mock_repo
 
@@ -151,7 +151,7 @@ class TestOrchestratorAgent:
         assert result["routed_to"] == "general-agent"
 
     @patch("app.agents.orchestrator.SettingsRepository")
-    @patch("app.agents.orchestrator.track_agent_timeout", new_callable=AsyncMock)
+    @patch("app.agents.dispatch_manager.track_agent_timeout", new_callable=AsyncMock)
     @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
     @patch("app.llm.client.complete", new_callable=AsyncMock)
     async def test_handle_task_fallback_on_timeout(self, mock_complete, mock_track, mock_timeout, mock_settings):
@@ -250,7 +250,7 @@ class TestOrchestratorAgent:
         task = _make_task("turn on kitchen light")
         task.conversation_id = "conv-test"
         await orch.handle_task(task)
-        entry = orch._conversations.get("conv-test")
+        entry = orch._conversation_manager._conversations.get("conv-test")
         assert entry is not None
         _, turns = entry
         assert len(turns) == 2  # user + assistant
@@ -266,16 +266,19 @@ class TestOrchestratorAgent:
             task = _make_task(f"Question {i}")
             task.conversation_id = "conv-limit"
             await orch.handle_task(task)
-        entry = orch._conversations.get("conv-limit")
+        entry = orch._conversation_manager._conversations.get("conv-limit")
         assert entry is not None
         _, turns = entry
         # Default turn limit is 3, so max 6 messages (3 pairs).
         assert len(turns) <= 6
 
+    @patch("app.agents.conversation_manager.SettingsRepository")
     @patch("app.agents.orchestrator.SettingsRepository")
     @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
     @patch("app.llm.client.complete", new_callable=AsyncMock)
-    async def test_conversation_turns_limit_honors_setting(self, mock_complete, mock_track, mock_settings):
+    async def test_conversation_turns_limit_honors_setting(
+        self, mock_complete, mock_track, mock_settings, mock_conv_settings
+    ):
         async def _get_value(key, default=None):
             if key == "language":
                 return "auto"
@@ -284,13 +287,14 @@ class TestOrchestratorAgent:
             return default
 
         mock_settings.get_value = AsyncMock(side_effect=_get_value)
+        mock_conv_settings.get_value = AsyncMock(side_effect=_get_value)
         orch, *_ = self._make_orchestrator()
         mock_complete.return_value = "general-agent: answer"
         for i in range(10):
             task = _make_task(f"Question {i}")
             task.conversation_id = "conv-limit-two"
             await orch.handle_task(task)
-        _, turns = orch._conversations["conv-limit-two"]
+        _, turns = orch._conversation_manager._conversations["conv-limit-two"]
         assert len(turns) <= 4
         assert [turn["content"] for turn in turns if turn["role"] == "user"] == ["Question 8", "Question 9"]
 
@@ -820,7 +824,7 @@ class TestOrchestratorAgent:
 
     @patch("app.agents.orchestrator.SettingsRepository")
     @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
-    @patch("app.agents.orchestrator.track_agent_timeout", new_callable=AsyncMock)
+    @patch("app.agents.dispatch_manager.track_agent_timeout", new_callable=AsyncMock)
     @patch("app.llm.client.complete", new_callable=AsyncMock)
     async def test_handle_task_multi_agent_partial_timeout(
         self, mock_complete, mock_track, mock_timeout, mock_settings
@@ -1269,7 +1273,7 @@ class TestOrchestratorAgent:
         task.conversation_id = None
         await orch.handle_task(task)
         # Should have stored a turn with a generated conversation_id
-        assert len(orch._conversations) == 1
+        assert len(orch._conversation_manager._conversations) == 1
 
     async def test_store_turn_includes_agent_id(self):
         orch, *_ = self._make_orchestrator()
@@ -1293,13 +1297,13 @@ class TestOrchestratorAgent:
         the turn list from ConversationRepository (multi-worker and
         post-restart replay)."""
         orch, *_ = self._make_orchestrator()
-        orch._conversations.clear()
+        orch._conversation_manager._conversations.clear()
         rows = [
             {"user_text": "hello", "response_text": "hi there", "agent_id": "general-agent"},
             {"user_text": "and again?", "response_text": "sure", "agent_id": None},
         ]
         with patch(
-            "app.agents.orchestrator.ConversationRepository.get_by_conversation_id",
+            "app.agents.conversation_manager.ConversationRepository.get_by_conversation_id",
             new_callable=AsyncMock,
             return_value=rows,
         ) as mock_get:
@@ -1310,11 +1314,11 @@ class TestOrchestratorAgent:
         assert turns[1]["content"] == "hi there"
         assert turns[1].get("agent_id") == "general-agent"
         assert "agent_id" not in turns[3]
-        assert "conv-db-miss" in orch._conversations
+        assert "conv-db-miss" in orch._conversation_manager._conversations
 
     async def test_get_turns_db_fallback_honors_conversation_context_setting(self):
         orch, *_ = self._make_orchestrator()
-        orch._conversations.clear()
+        orch._conversation_manager._conversations.clear()
         rows = [
             {"user_text": "first", "response_text": "one", "agent_id": None},
             {"user_text": "second", "response_text": "two", "agent_id": None},
@@ -1322,7 +1326,7 @@ class TestOrchestratorAgent:
         ]
         with (
             patch(
-                "app.agents.orchestrator.ConversationRepository.get_by_conversation_id",
+                "app.agents.conversation_manager.ConversationRepository.get_by_conversation_id",
                 new_callable=AsyncMock,
                 return_value=rows,
             ),
@@ -1337,7 +1341,7 @@ class TestOrchestratorAgent:
 
     async def test_get_turns_in_memory_respects_updated_setting(self):
         orch, *_ = self._make_orchestrator()
-        orch._conversations["conv-memory-limit"] = (
+        orch._conversation_manager._conversations["conv-memory-limit"] = (
             _time.monotonic(),
             [
                 {"role": "user", "content": "Question 1"},
@@ -1353,12 +1357,12 @@ class TestOrchestratorAgent:
             turns = await orch._get_turns("conv-memory-limit")
 
         assert [turn["content"] for turn in turns] == ["Question 2", "Answer 2", "Question 3", "Answer 3"]
-        _, cached_turns = orch._conversations["conv-memory-limit"]
+        _, cached_turns = orch._conversation_manager._conversations["conv-memory-limit"]
         assert cached_turns == turns
 
     async def test_invalid_conversation_context_setting_falls_back_to_default(self):
         orch, *_ = self._make_orchestrator()
-        orch._conversations["conv-invalid-limit"] = (
+        orch._conversation_manager._conversations["conv-invalid-limit"] = (
             _time.monotonic(),
             [
                 {"role": "user", "content": "Question 1"},
@@ -1386,9 +1390,9 @@ class TestOrchestratorAgent:
 
     async def test_get_turns_db_fallback_ignores_errors(self):
         orch, *_ = self._make_orchestrator()
-        orch._conversations.clear()
+        orch._conversation_manager._conversations.clear()
         with patch(
-            "app.agents.orchestrator.ConversationRepository.get_by_conversation_id",
+            "app.agents.conversation_manager.ConversationRepository.get_by_conversation_id",
             new_callable=AsyncMock,
             side_effect=RuntimeError("db down"),
         ):
@@ -1556,7 +1560,7 @@ class TestOrchestratorAgent:
         # Should NOT raise
         await orch._store_turn("conv-db-fail", "hello", "world", agent_id="test-agent")
         # In-memory store should still work
-        entry = orch._conversations.get("conv-db-fail")
+        entry = orch._conversation_manager._conversations.get("conv-db-fail")
         assert entry is not None
         _, turns = entry
         assert len(turns) == 2
@@ -2204,69 +2208,72 @@ class TestConversationMemoryEviction:
         )
         return orchestrator
 
-    @patch("app.agents.orchestrator.ConversationRepository")
+    @patch("app.agents.conversation_manager.ConversationRepository")
     async def test_conversations_evicted_after_ttl(self, mock_conv_repo):
         """Conversations older than TTL should be evicted on next _store_turn."""
         mock_conv_repo.insert = AsyncMock(return_value=1)
-        import app.agents.orchestrator as orch_mod
+        import app.agents.conversation_manager as conv_mod
 
         orch = self._make_orchestrator()
         # Seed a conversation with old timestamp
-        old_ts = _time.monotonic() - orch_mod._CONVERSATION_TTL_SECONDS - 1
-        orch._conversations["old-conv"] = (old_ts, [{"role": "user", "content": "hi"}])
+        old_ts = _time.monotonic() - conv_mod._CONVERSATION_TTL_SECONDS - 1
+        orch._conversation_manager._conversations["old-conv"] = (old_ts, [{"role": "user", "content": "hi"}])
         # Store a new turn triggers eviction
         await orch._store_turn("new-conv", "hello", "world")
-        assert "old-conv" not in orch._conversations
-        assert "new-conv" in orch._conversations
+        assert "old-conv" not in orch._conversation_manager._conversations
+        assert "new-conv" in orch._conversation_manager._conversations
 
     async def test_get_turns_returns_empty_for_expired(self):
         """_get_turns should return empty for TTL-expired conversations."""
-        import app.agents.orchestrator as orch_mod
+        import app.agents.conversation_manager as conv_mod
 
         orch = self._make_orchestrator()
-        old_ts = _time.monotonic() - orch_mod._CONVERSATION_TTL_SECONDS - 1
-        orch._conversations["expired-conv"] = (old_ts, [{"role": "user", "content": "hi"}])
+        old_ts = _time.monotonic() - conv_mod._CONVERSATION_TTL_SECONDS - 1
+        orch._conversation_manager._conversations["expired-conv"] = (old_ts, [{"role": "user", "content": "hi"}])
         with patch(
-            "app.agents.orchestrator.ConversationRepository.get_by_conversation_id",
+            "app.agents.conversation_manager.ConversationRepository.get_by_conversation_id",
             new_callable=AsyncMock,
             return_value=[],
         ):
             turns = await orch._get_turns("expired-conv")
         assert turns == []
-        assert "expired-conv" not in orch._conversations
+        assert "expired-conv" not in orch._conversation_manager._conversations
 
     def test_active_conversations_preserved(self):
         """Active conversations (within TTL) should be preserved during eviction."""
-        import app.agents.orchestrator as orch_mod
+        import app.agents.conversation_manager as conv_mod
 
         orch = self._make_orchestrator()
         now = _time.monotonic()
         # Add one old (expired) and one fresh
-        old_ts = now - orch_mod._CONVERSATION_TTL_SECONDS - 1
-        orch._conversations["stale"] = (old_ts, [{"role": "user", "content": "old"}])
-        orch._conversations["fresh"] = (now, [{"role": "user", "content": "new"}])
+        old_ts = now - conv_mod._CONVERSATION_TTL_SECONDS - 1
+        orch._conversation_manager._conversations["stale"] = (old_ts, [{"role": "user", "content": "old"}])
+        orch._conversation_manager._conversations["fresh"] = (now, [{"role": "user", "content": "new"}])
         orch._evict_stale_conversations()
-        assert "stale" not in orch._conversations
-        assert "fresh" in orch._conversations
+        assert "stale" not in orch._conversation_manager._conversations
+        assert "fresh" in orch._conversation_manager._conversations
 
     def test_max_conversation_count_enforced(self):
         """When conversation count exceeds _MAX_CONVERSATIONS, oldest are evicted."""
-        import app.agents.orchestrator as orch_mod
+        import app.agents.conversation_manager as conv_mod
 
         orch = self._make_orchestrator()
         now = _time.monotonic()
-        original_max = orch_mod._MAX_CONVERSATIONS
+        original_max = conv_mod._MAX_CONVERSATIONS
         try:
-            orch_mod._MAX_CONVERSATIONS = 5
+            conv_mod._MAX_CONVERSATIONS = 5
             for i in range(7):
-                orch._conversations[f"conv-{i}"] = (now + i, [{"role": "user", "content": f"msg-{i}"}])
+                orch._conversation_manager._conversations[f"conv-{i}"] = (
+                    now + i,
+                    [{"role": "user", "content": f"msg-{i}"}],
+                )
             orch._evict_stale_conversations()
-            assert len(orch._conversations) <= 5
+            assert len(orch._conversation_manager._conversations) <= 5
             # Oldest (conv-0, conv-1) should be gone; newest should remain
-            assert "conv-6" in orch._conversations
-            assert "conv-5" in orch._conversations
+            assert "conv-6" in orch._conversation_manager._conversations
+            assert "conv-5" in orch._conversation_manager._conversations
         finally:
-            orch_mod._MAX_CONVERSATIONS = original_max
+            conv_mod._MAX_CONVERSATIONS = original_max
 
 
 # ---------------------------------------------------------------------------
@@ -2792,10 +2799,25 @@ class TestClassifySpan:
         orch._max_turns = 10
         orch._agent_descriptions_cache = None
         orch._agent_descriptions_cache_time = 0
-        from app.agents.agent_registry import AgentRegistry
+        from app.agents.agent_registry import CachedAgentRegistry
 
-        orch._agent_registry = AgentRegistry(registry=None)
+        orch._agent_registry = CachedAgentRegistry(registry=None)
         orch._registry = None
+        from app.agents.cache_orchestrator import CacheOrchestrator
+        from app.agents.classification_engine import ClassificationEngine
+        from app.agents.conversation_manager import ConversationManager
+
+        orch._conversation_manager = ConversationManager()
+        orch._classification_engine = ClassificationEngine(
+            agent_registry=orch._agent_registry,
+            cache_manager=orch._cache_manager,
+            call_llm=orch._call_llm,
+            load_prompt_async=orch._load_prompt_async,
+            get_turns=orch._conversation_manager.get_turns,
+            wrap_user_input=orch._wrap_user_input,
+            append_conversation_turn_messages=orch._append_conversation_turn_messages,
+        )
+        orch._cache_orchestrator = CacheOrchestrator(cache_manager=orch._cache_manager)
         classifications, cached = await orch._classify(
             "turn on kitchen light",
             span_collector=collector,
@@ -2815,7 +2837,7 @@ class TestClassifySpan:
 class TestResponseCacheFallThrough:
     @pytest.fixture(autouse=True)
     def _mock_conversation_repo(self):
-        with patch("app.agents.orchestrator.ConversationRepository") as mock_repo:
+        with patch("app.agents.conversation_manager.ConversationRepository") as mock_repo:
             mock_repo.insert = AsyncMock(return_value=1)
             yield mock_repo
 
@@ -2993,7 +3015,7 @@ class TestExecuteCachedActionVerification:
 class TestFollowupDetection:
     @pytest.fixture(autouse=True)
     def _mock_conversation_repo(self):
-        with patch("app.agents.orchestrator.ConversationRepository") as mock_repo:
+        with patch("app.agents.conversation_manager.ConversationRepository") as mock_repo:
             mock_repo.insert = AsyncMock(return_value=1)
             yield mock_repo
 

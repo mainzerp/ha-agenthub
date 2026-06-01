@@ -18,10 +18,12 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import ipaddress
 import logging
 import re
 import shlex
 from typing import Any
+from urllib.parse import urlparse
 
 try:  # pragma: no cover - executed only when the optional SDK is missing
     from mcp.client.sse import sse_client as _sdk_sse_client
@@ -53,6 +55,65 @@ _CALL_TOOL = "call_tool"
 # P3-11: how long ``disconnect`` waits for the owner task to drain its
 # request queue and exit cleanly before forcing a cancel.
 _OWNER_TASK_DISCONNECT_TIMEOUT_SEC = 5.0
+
+# Private/reserved IP ranges blocked for SSE transport (M-SEC-03).
+_PRIVATE_IPV4_RANGES = [
+    ipaddress.ip_network("10.0.0.0/8"),
+    ipaddress.ip_network("172.16.0.0/12"),
+    ipaddress.ip_network("192.168.0.0/16"),
+    ipaddress.ip_network("127.0.0.0/8"),
+    ipaddress.ip_network("169.254.0.0/16"),
+    ipaddress.ip_network("0.0.0.0/8"),
+]
+_PRIVATE_IPV6_RANGES = [
+    ipaddress.ip_network("::1/128"),
+    ipaddress.ip_network("fe80::/10"),
+    ipaddress.ip_network("fc00::/7"),
+]
+
+
+def _validate_sse_url(url: str) -> None:
+    """Validate an MCP SSE URL: scheme, no private/reserved IPs.
+
+    Raises ValueError on unsafe or invalid URLs.
+    """
+    if not url or not url.strip():
+        raise ValueError("Invalid MCP SSE URL: empty URL")
+    parsed = urlparse(url.strip())
+    if parsed.scheme not in ("http", "https"):
+        raise ValueError(f"Invalid MCP SSE URL scheme: {parsed.scheme} (must be http or https)")
+    host = parsed.hostname
+    if not host:
+        raise ValueError("Invalid MCP SSE URL: no host")
+    try:
+        addr = ipaddress.ip_address(host)
+    except ValueError:
+        # Host is a domain name -- resolve it and check all addresses.
+        import socket
+
+        try:
+            addrs = socket.getaddrinfo(host, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
+        except socket.gaierror:
+            raise ValueError(f"Invalid MCP SSE URL: cannot resolve host '{host}'") from None
+        for _family, _, _, _, sockaddr in addrs:
+            addr_str = sockaddr[0]
+            try:
+                addr = ipaddress.ip_address(addr_str)
+            except ValueError:
+                continue
+            if _is_private_ip(addr):
+                raise ValueError(
+                    f"Invalid MCP SSE URL: host '{host}' resolves to private/reserved IP {addr_str}"
+                ) from None
+        return
+    if _is_private_ip(addr):
+        raise ValueError(f"Invalid MCP SSE URL: host is private/reserved IP '{host}'")
+
+
+def _is_private_ip(addr: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    if isinstance(addr, ipaddress.IPv4Address):
+        return any(addr in r for r in _PRIVATE_IPV4_RANGES)
+    return any(addr in r for r in _PRIVATE_IPV6_RANGES)
 
 
 def _validate_mcp_command(command_or_url: str) -> None:
@@ -236,6 +297,8 @@ class MCPClient:
         import app.mcp.client as _mod
 
         sse_client = _mod.sse_client
+
+        _validate_sse_url(self._command_or_url)
 
         def _factory():
             return sse_client(self._command_or_url)

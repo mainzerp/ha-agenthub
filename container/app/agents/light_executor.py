@@ -12,10 +12,9 @@ from app.agents.action_executor import (
     _ensure_str,
     _evaluate_condition,
     call_service_with_verification,
+    resolve_and_validate_entity,
 )
 from app.agents.executor_state_check import _state_matches
-from app.analytics.tracer import _optional_span
-from app.entity.deterministic_resolver import resolve_entity_deterministic_first
 from app.ha_client.history_query import execute_recorder_history_query
 from app.ha_client.rest import allow_internal_ha_service_calls
 from app.models.agent import TaskContext
@@ -198,44 +197,26 @@ async def execute_light_action(
             "speech": f"Unknown action: {action_name}",
         }
 
-    resolution = {
-        "entity_id": None,
-        "friendly_name": entity_query,
-        "speech": None,
-        "metadata": {"query": entity_query, "match_count": 0, "resolution_path": "not_attempted"},
-    }
-    try:
-        if entity_matcher:
-            async with _optional_span(span_collector, "entity_match", agent_id=agent_id) as em_span:
-                resolution = await resolve_entity_deterministic_first(
-                    entity_query,
-                    entity_index,
-                    entity_matcher,
-                    agent_id,
-                    allowed_domains=_ACTION_DOMAINS_LIGHT.get(action_name, _ALLOWED_DOMAINS),
-                    preferred_area_id=preferred_area_id,
-                    enable_strip_device_noun=True,
-                    enable_area_fallback=True,
-                    preferred_domain="light",
-                )
-                em_span["metadata"] = resolution["metadata"]
-    except Exception:
-        logger.warning("Entity resolution failed for '%s'", entity_query, exc_info=True)
-
-    entity_id = resolution["entity_id"]
-    friendly_name = resolution["friendly_name"]
-    if entity_id and not _validate_domain(entity_id):
-        logger.warning("Resolved entity %s not in allowed domains %s", entity_id, _ALLOWED_DOMAINS)
-        entity_id = None
-
-    if not entity_id:
-        return {
-            "success": False,
-            "entity_id": None,
-            "new_state": None,
-            "speech": resolution["speech"] or f"Could not find an entity matching '{entity_query}'.",
-            "voice_followup": True,
-        }
+    resolved = await resolve_and_validate_entity(
+        entity_query,
+        entity_index,
+        entity_matcher,
+        agent_id,
+        _ACTION_DOMAINS_LIGHT.get(action_name, _ALLOWED_DOMAINS),
+        _validate_domain,
+        preferred_area_id=preferred_area_id,
+        enable_strip_device_noun=True,
+        enable_area_fallback=True,
+        preferred_domain="light",
+        span_collector=span_collector,
+        require_matcher=True,
+    )
+    if resolved["not_found_result"] is not None:
+        result = resolved["not_found_result"]
+        result["voice_followup"] = True
+        return result
+    entity_id = resolved["entity_id"]
+    friendly_name = resolved["friendly_name"]
 
     # Deterministic skip: if already in target state, do not call HA.
     try:
@@ -386,44 +367,25 @@ async def _query_light_state(
     *,
     preferred_area_id: str | None = None,
 ) -> dict:
-    resolution = {
-        "entity_id": None,
-        "friendly_name": entity_query,
-        "speech": None,
-        "metadata": {"query": entity_query, "match_count": 0, "resolution_path": "not_attempted"},
-    }
-    try:
-        if entity_matcher:
-            async with _optional_span(span_collector, "entity_match", agent_id=agent_id) as em_span:
-                resolution = await resolve_entity_deterministic_first(
-                    entity_query,
-                    entity_index,
-                    entity_matcher,
-                    agent_id,
-                    allowed_domains=_ALLOWED_DOMAINS,
-                    preferred_area_id=preferred_area_id,
-                    enable_strip_device_noun=True,
-                    enable_area_fallback=True,
-                    preferred_domain="light",
-                )
-                em_span["metadata"] = resolution["metadata"]
-    except Exception:
-        logger.warning("Entity resolution failed for '%s'", entity_query, exc_info=True)
-
-    entity_id = _ensure_str(resolution["entity_id"])
-
-    if entity_id and not _validate_domain(entity_id):
-        logger.warning("Resolved entity %s not in allowed domains %s", entity_id, _ALLOWED_DOMAINS)
-        entity_id = None
-
-    if not entity_id:
-        return {
-            "success": False,
-            "entity_id": None,
-            "new_state": None,
-            "speech": resolution["speech"] or f"Could not find an entity matching '{entity_query}'.",
-            "cacheable": False,
-        }
+    resolved = await resolve_and_validate_entity(
+        entity_query,
+        entity_index,
+        entity_matcher,
+        agent_id,
+        _ALLOWED_DOMAINS,
+        _validate_domain,
+        preferred_area_id=preferred_area_id,
+        enable_strip_device_noun=True,
+        enable_area_fallback=True,
+        preferred_domain="light",
+        span_collector=span_collector,
+        require_matcher=True,
+    )
+    if resolved["not_found_result"] is not None:
+        result = resolved["not_found_result"]
+        result["cacheable"] = False
+        return result
+    entity_id = resolved["entity_id"]
 
     try:
         state_resp = await ha_client.get_state(entity_id)
@@ -467,46 +429,28 @@ async def _query_light_entity_history(
     task_context: TaskContext | None = None,
 ) -> dict:
     """Recorder history for a single light, switch, or illuminance/light-level sensor entity."""
-    resolution = {
-        "entity_id": None,
-        "friendly_name": entity_query,
-        "speech": None,
-        "metadata": {"query": entity_query, "match_count": 0, "resolution_path": "not_attempted"},
-    }
-    try:
-        if entity_matcher:
-            async with _optional_span(span_collector, "entity_match", agent_id=agent_id) as em_span:
-                resolution = await resolve_entity_deterministic_first(
-                    entity_query,
-                    entity_index,
-                    entity_matcher,
-                    agent_id,
-                    allowed_domains=_ALLOWED_DOMAINS,
-                    preferred_area_id=preferred_area_id,
-                    enable_strip_device_noun=True,
-                    enable_area_fallback=True,
-                    preferred_domain="light",
-                )
-                em_span["metadata"] = resolution["metadata"]
-    except Exception:
-        logger.warning("Entity resolution failed for '%s'", entity_query, exc_info=True)
-
-    entity_id = _ensure_str(resolution["entity_id"])
-    friendly_name = _ensure_str(resolution["friendly_name"]) or entity_query
-
-    if entity_id and not _validate_domain(entity_id):
-        logger.warning("Resolved entity %s not in allowed domains %s", entity_id, _ALLOWED_DOMAINS)
-        entity_id = None
-
-    if not entity_id:
-        return {
-            "success": False,
-            "entity_id": None,
-            "new_state": None,
-            "speech": resolution["speech"] or f"Could not find a visible entity matching '{entity_query}'.",
-            "cacheable": False,
-            "voice_followup": True,
-        }
+    resolved = await resolve_and_validate_entity(
+        entity_query,
+        entity_index,
+        entity_matcher,
+        agent_id,
+        _ALLOWED_DOMAINS,
+        _validate_domain,
+        preferred_area_id=preferred_area_id,
+        enable_strip_device_noun=True,
+        enable_area_fallback=True,
+        preferred_domain="light",
+        span_collector=span_collector,
+        require_matcher=True,
+    )
+    if resolved["not_found_result"] is not None:
+        result = resolved["not_found_result"]
+        result["speech"] = result["speech"].replace("an entity", "a visible entity")
+        result["cacheable"] = False
+        result["voice_followup"] = True
+        return result
+    entity_id = resolved["entity_id"]
+    friendly_name = resolved["friendly_name"]
 
     return await execute_recorder_history_query(
         entity_id,

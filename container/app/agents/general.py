@@ -6,6 +6,7 @@ import logging
 from typing import Any
 
 from app.agents.base import BaseAgent
+from app.agents.prompt_builder import PromptBuilder
 from app.agents.tool_calling import call_llm_with_mcp_tools, mcp_tools_to_openai_format
 from app.analytics.tracer import _optional_span
 from app.models.agent import AgentCard, AgentErrorCode, AgentTask, TaskResult
@@ -38,25 +39,12 @@ class GeneralAgent(BaseAgent):
 
     async def handle_task(self, task: AgentTask) -> TaskResult:
         span_collector = task.span_collector
-        system_prompt = await self._load_prompt_async("general")
-
-        language = task.context.language if task.context else None
-
-        # Inject time/location context
-        time_location = self._build_time_location_context(task.context)
-        if time_location:
-            system_prompt += f"\n\n{time_location}"
-
-        # Inject language directive for non-English users
-        if language and language.lower() not in ("en", "english", ""):
-            system_prompt += f"\n\nIMPORTANT: Respond in {language}. The user's language is {language}. Keep entity names, device names, and room names exactly as the user wrote them -- do NOT translate those."
-
-        if task.context and task.context.sequential_send:
-            system_prompt += (
-                "\n\nThis response will be delivered as text to a device (not spoken aloud). "
-                "You MAY include URLs and links if relevant. "
-                "Format for readability -- you can use line breaks."
-            )
+        system_prompt = PromptBuilder.build(
+            await self._load_prompt_async("general"),
+            language=task.context.language if task.context else None,
+            time_location=self._build_time_location_context(task.context),
+            sequential_send=bool(task.context and task.context.sequential_send),
+        )
 
         messages = [{"role": "system", "content": system_prompt}]
 

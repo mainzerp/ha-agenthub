@@ -9,7 +9,6 @@ import time
 from contextlib import asynccontextmanager
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
-from typing import Any
 
 from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -19,14 +18,11 @@ from app.a2a.dispatcher import Dispatcher
 from app.a2a.orchestrator_gateway import AgentCatalog, OrchestratorGateway
 from app.a2a.registry import registry
 from app.a2a.transport import InProcessTransport
-from app.agents.cover import CoverAgent
+from app.agents.actionable import CoverAgent, LightAgent, MusicAgent, VacuumAgent
 from app.agents.custom_loader import CustomAgentLoader
 from app.agents.filler import FillerAgent
 from app.agents.general import GeneralAgent
-from app.agents.light import LightAgent
-from app.agents.music import MusicAgent
 from app.agents.orchestrator import OrchestratorAgent
-from app.agents.vacuum import VacuumAgent
 from app.api.routes import admin as admin_routes
 from app.api.routes import conversation as conversation_routes
 from app.api.routes import dashboard_api as dashboard_api_routes
@@ -35,22 +31,13 @@ from app.config import settings
 from app.dashboard.routes import router as dashboard_router
 from app.db.repository import SettingsRepository, SetupStateRepository
 from app.db.schema import init_db
-from app.entity.ingest import parse_ha_states
 from app.middleware.auth import SetupRedirectMiddleware, apply_auth_dependencies
 from app.middleware.rate_limit import rate_limit_admin
 from app.middleware.tracing import TracingMiddleware
-from app.models.entity_index import EntityIndexEntry
 from app.setup.routes import router as setup_router
 from app.util.log_buffer import LogBuffer, LogBufferHandler, get_log_buffer, set_log_buffer
 
 logger = logging.getLogger(__name__)
-
-
-# P3-11: entity-sync loop tunables. The interval can be overridden at
-# runtime via the ``entity_sync.interval_minutes`` setting; these are
-# the defaults / fallbacks used when the setting is missing or 0.
-_ENTITY_SYNC_DEFAULT_INTERVAL_MIN = 30
-_ENTITY_SYNC_DISABLED_RECHECK_SEC = 300
 
 
 def _ensure_log_buffer_handler() -> None:
@@ -106,51 +93,6 @@ def _configure_logging() -> None:
     _ensure_log_buffer_handler()
 
 
-def _parse_ha_states(states: list[dict[str, Any]]) -> list[EntityIndexEntry]:
-    """Parse HA GET /api/states response into EntityIndexEntry list."""
-    return parse_ha_states(states)
-
-
-async def _periodic_entity_sync(app: FastAPI) -> None:
-    """Periodically sync entity index with Home Assistant state."""
-    while True:
-        try:
-            raw = await SettingsRepository.get_value(
-                "entity_sync.interval_minutes", str(_ENTITY_SYNC_DEFAULT_INTERVAL_MIN)
-            )
-            interval_minutes = int(raw or str(_ENTITY_SYNC_DEFAULT_INTERVAL_MIN))
-        except (TypeError, ValueError):
-            interval_minutes = _ENTITY_SYNC_DEFAULT_INTERVAL_MIN
-
-        if interval_minutes <= 0:
-            # Disabled -- check again later in case the setting changes.
-            await asyncio.sleep(_ENTITY_SYNC_DISABLED_RECHECK_SEC)
-            continue
-
-        await asyncio.sleep(interval_minutes * 60)
-
-        try:
-            ha_client = app.state.ha_client
-            entity_index = app.state.entity_index
-            if not ha_client or not entity_index:
-                continue
-
-            states = await ha_client.get_states()
-            hidden_ids = await ha_client.get_hidden_entity_ids()
-            app.state.hidden_entity_ids = hidden_ids
-            entities = parse_ha_states(states, hidden_ids=hidden_ids)
-            result = await entity_index.sync_async(entities)
-            logger.info(
-                "Periodic entity sync: +%d ~%d -%d =%d",
-                result["added"],
-                result["updated"],
-                result["removed"],
-                result["unchanged"],
-            )
-        except Exception:
-            logger.warning("Periodic entity sync failed", exc_info=True)
-
-
 async def _purge_stale_response_cache(cache_manager) -> None:
     """One-time startup task: purge stale read-only response cache entries."""
     try:
@@ -182,94 +124,6 @@ async def lifespan(app: FastAPI):
     # Eager-load Fernet key off the event loop so the cold-path sync
     # file I/O happens during startup instead of on the first request.
     await asyncio.to_thread(get_fernet)
-
-    # Register default sync interval setting if not already set
-    existing = await SettingsRepository.get_value("entity_sync.interval_minutes")
-    if existing is None:
-        await SettingsRepository.set(
-            "entity_sync.interval_minutes",
-            "30",
-            value_type="number",
-            category="sync",
-            description="Minutes between periodic entity index syncs (0 = disabled)",
-        )
-
-    # Register default filler settings if not already set
-    if await SettingsRepository.get_value("filler.enabled") is None:
-        await SettingsRepository.set(
-            "filler.enabled",
-            "false",
-            value_type="bool",
-            category="filler",
-            description="Enable interim filler responses for slow agents",
-        )
-    if await SettingsRepository.get_value("filler.threshold_ms") is None:
-        await SettingsRepository.set(
-            "filler.threshold_ms",
-            "1000",
-            value_type="number",
-            category="filler",
-            description="Milliseconds to wait before sending filler",
-        )
-
-    # Register default mediation settings if not already set
-    if await SettingsRepository.get_value("mediation.model") is None:
-        await SettingsRepository.set(
-            "mediation.model",
-            "",
-            value_type="string",
-            category="mediation",
-            description="LLM model for mediation/merge (empty = use orchestrator model)",
-        )
-    if await SettingsRepository.get_value("mediation.temperature") is None:
-        await SettingsRepository.set(
-            "mediation.temperature",
-            "0.3",
-            value_type="number",
-            category="mediation",
-            description="Temperature for mediation/merge LLM calls",
-        )
-    if await SettingsRepository.get_value("mediation.max_tokens") is None:
-        await SettingsRepository.set(
-            "mediation.max_tokens",
-            "8192",
-            value_type="number",
-            category="mediation",
-            description="Max tokens for mediation/merge LLM calls (increase for reasoning models)",
-        )
-
-    # Register default language setting if not already set
-    if await SettingsRepository.get_value("language") is None:
-        await SettingsRepository.set(
-            "language",
-            "auto",
-            value_type="string",
-            category="general",
-            description="Response language: 'auto' = detect from user input, or a specific ISO code like 'de', 'en'",
-        )
-
-    # Register default cache validator settings if not already set
-    for key, value, vtype, desc in [
-        ("cache.validator.enabled", "true", "bool", "Enable periodic action-cache validation"),
-        (
-            "cache.validator.interval_minutes",
-            "60",
-            "number",
-            "Minutes between periodic action-cache validation scans (0 = disabled)",
-        ),
-        (
-            "cache.validator.model",
-            "",
-            "string",
-            "LLM model for cache validator response regeneration (empty = template only)",
-        ),
-        ("cache.validator.temperature", "0.2", "float", "Temperature for cache validator LLM regeneration"),
-        ("cache.validator.reasoning_effort", "low", "string", "Reasoning effort for cache validator LLM calls"),
-        ("cache.validator.max_tokens", "1024", "int", "Max tokens for cache validator LLM regeneration"),
-        ("cache.validator.batch_size", "10", "int", "Batch size for cache validator LLM calls"),
-    ]:
-        if await SettingsRepository.get_value(key) is None:
-            await SettingsRepository.set(key, value, value_type=vtype, category="cache", description=desc)
 
     # Check if setup is complete before initializing HA-dependent components
     setup_complete = await SetupStateRepository.is_complete()
@@ -421,10 +275,28 @@ async def lifespan(app: FastAPI):
     plugin_dir = str(Path(__file__).resolve().parent.parent / "plugins")
     plugin_loader = PluginLoader(plugin_dir, plugin_context)
     await plugin_loader.discover_and_load()
-    await plugin_loader.run_lifecycle(LifecyclePhase.CONFIGURE)
-    await plugin_loader.run_lifecycle(LifecyclePhase.STARTUP)
-    await plugin_loader.run_lifecycle(LifecyclePhase.READY)
+
+    try:
+        await plugin_loader.run_lifecycle(LifecyclePhase.CONFIGURE)
+    except Exception:
+        logger.warning("Plugin CONFIGURE phase crashed for one or more plugins (continuing startup)", exc_info=True)
+
+    try:
+        await plugin_loader.run_lifecycle(LifecyclePhase.STARTUP)
+    except Exception:
+        logger.warning("Plugin STARTUP phase crashed for one or more plugins (continuing startup)", exc_info=True)
+
+    try:
+        await plugin_loader.run_lifecycle(LifecyclePhase.READY)
+    except Exception:
+        logger.warning("Plugin READY phase crashed for one or more plugins (continuing startup)", exc_info=True)
+
     app.state.plugin_loader = plugin_loader
+
+    # Wire pipeline EventBus to OrchestratorAgent
+    orchestrator_agent = await registry._get_handler_for_transport("orchestrator")
+    if orchestrator_agent is not None:
+        orchestrator_agent._event_bus = plugin_loader.event_bus
 
     if not settings.cookie_secure:
         logger.warning(

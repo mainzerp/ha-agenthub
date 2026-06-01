@@ -34,7 +34,7 @@ class RoutingCache(_BaseCache[RoutingCacheEntry]):
             collection_name=COLLECTION_ROUTING_CACHE,
             default_max_entries=50000,
         )
-        self._semantic_threshold: float = 0.92
+        self._exact_match_only: bool = True
 
     async def load_config(self) -> None:
         await self._load_common_config(
@@ -43,12 +43,12 @@ class RoutingCache(_BaseCache[RoutingCacheEntry]):
             max_entries_key="cache.routing.max_entries",
             max_entries_default=50000,
         )
-        threshold_raw = await self._get_setting(
+        exact_raw = await self._get_setting(
             "cache.routing.semantic_threshold",
-            "0.92",
+            "true",
             legacy_keys=("cache.routing.threshold",),
         )
-        self._semantic_threshold = self._coerce_float(threshold_raw, 0.92)
+        self._exact_match_only = self._coerce_bool(exact_raw, True)
 
     async def reload_config(self) -> None:
         await self.load_config()
@@ -60,10 +60,8 @@ class RoutingCache(_BaseCache[RoutingCacheEntry]):
         language: str = "en",
     ) -> tuple[RoutingCacheEntry | None, float | None]:
         _entry_id, entry, similarity = self._lookup_common(query_text, language=language)
-        if entry is None or similarity is None:
-            return None, similarity
-        if similarity < self._semantic_threshold:
-            return None, similarity
+        if entry is None:
+            return None, None
         if _condensed_task_is_corrupted(entry.condensed_task):
             logger.warning("Routing cache entry rejected due to corrupted condensed task: %r", entry.condensed_task)
             return None, similarity
@@ -77,10 +75,8 @@ class RoutingCache(_BaseCache[RoutingCacheEntry]):
     ) -> tuple[str | None, RoutingCacheEntry | None, float | None]:
         """Like lookup() but also returns the computed entry_id."""
         entry_id, entry, similarity = self._lookup_common(query_text, language=language)
-        if entry is None or similarity is None:
-            return entry_id, None, similarity
-        if similarity < self._semantic_threshold:
-            return entry_id, None, similarity
+        if entry is None:
+            return entry_id, None, None
         if _condensed_task_is_corrupted(entry.condensed_task):
             logger.warning("Routing cache entry rejected due to corrupted condensed task: %r", entry.condensed_task)
             return entry_id, None, similarity
@@ -88,7 +84,7 @@ class RoutingCache(_BaseCache[RoutingCacheEntry]):
 
     def get_stats(self) -> dict[str, object]:
         stats = super().get_stats()
-        stats["semantic_threshold"] = self._semantic_threshold
+        stats["exact_match_only"] = self._exact_match_only
         return stats
 
     def store(
@@ -141,7 +137,7 @@ class RoutingCache(_BaseCache[RoutingCacheEntry]):
             language=metadata.get("language", "en"),
             agent_id=metadata.get("agent_id", ""),
             condensed_task=metadata.get("condensed_task") or None,
-            confidence=similarity,
+            confidence=self._coerce_float(metadata.get("confidence"), 0.0),
             entity_ids=_parse_entity_ids(metadata.get("entity_ids")),
             created_at=metadata.get("created_at") or None,
             last_accessed=metadata.get("last_accessed") or None,

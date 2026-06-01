@@ -6,9 +6,9 @@ import logging
 from typing import Any
 
 from app.agents.action_executor import (
-    _ensure_str,
     build_verified_speech,
     call_service_with_verification,
+    resolve_and_validate_entity,
 )
 from app.agents.executor_state_check import _state_matches
 from app.analytics.tracer import _optional_span
@@ -191,41 +191,21 @@ async def execute_climate_action(
     if action_name in ("turn_on", "turn_off") and domain == "climate":
         pass  # will re-resolve after entity_id is known
 
-    resolution = {
-        "entity_id": None,
-        "friendly_name": entity_query,
-        "speech": None,
-        "metadata": {"query": entity_query, "match_count": 0, "resolution_path": "not_attempted"},
-    }
-    try:
-        if entity_index or entity_matcher:
-            async with _optional_span(span_collector, "entity_match", agent_id=agent_id) as em_span:
-                resolution = await resolve_entity_deterministic_first(
-                    entity_query,
-                    entity_index,
-                    entity_matcher,
-                    agent_id=agent_id,
-                    allowed_domains=_CLIMATE_WRITE_DOMAINS,
-                    preferred_area_id=preferred_area_id,
-                    verbatim_terms=verbatim_terms,
-                )
-                em_span["metadata"] = resolution["metadata"]
-    except Exception:
-        logger.warning("Entity resolution failed for '%s'", entity_query, exc_info=True)
-
-    entity_id = resolution["entity_id"]
-    friendly_name = resolution["friendly_name"]
-    if entity_id and not _validate_domain(entity_id):
-        logger.warning("Resolved entity %s not in allowed domains %s", entity_id, _ALLOWED_DOMAINS)
-        entity_id = None
-
-    if not entity_id:
-        return {
-            "success": False,
-            "entity_id": None,
-            "new_state": None,
-            "speech": resolution["speech"] or f"Could not find an entity matching '{entity_query}'.",
-        }
+    resolved = await resolve_and_validate_entity(
+        entity_query,
+        entity_index,
+        entity_matcher,
+        agent_id,
+        _CLIMATE_WRITE_DOMAINS,
+        _validate_domain,
+        preferred_area_id=preferred_area_id,
+        verbatim_terms=verbatim_terms,
+        span_collector=span_collector,
+    )
+    if resolved["not_found_result"] is not None:
+        return resolved["not_found_result"]
+    entity_id = resolved["entity_id"]
+    friendly_name = resolved["friendly_name"]
 
     # Deterministic skip: if already in target state, do not call HA.
     try:
@@ -364,42 +344,22 @@ async def _query_climate_state(
     preferred_area_id: str | None = None,
     verbatim_terms: list[str] | None = None,
 ) -> dict:
-    resolution = {
-        "entity_id": None,
-        "friendly_name": entity_query,
-        "speech": None,
-        "metadata": {"query": entity_query, "match_count": 0, "resolution_path": "not_attempted"},
-    }
-    try:
-        if entity_index or entity_matcher:
-            async with _optional_span(span_collector, "entity_match", agent_id=agent_id) as em_span:
-                resolution = await resolve_entity_deterministic_first(
-                    entity_query,
-                    entity_index,
-                    entity_matcher,
-                    agent_id,
-                    allowed_domains=_CLIMATE_READ_DOMAINS,
-                    preferred_area_id=preferred_area_id,
-                    verbatim_terms=verbatim_terms,
-                )
-                em_span["metadata"] = resolution["metadata"]
-    except Exception:
-        logger.warning("Entity resolution failed for '%s'", entity_query, exc_info=True)
-
-    entity_id = _ensure_str(resolution["entity_id"])
-    resolution["friendly_name"]
-    if entity_id and not _validate_domain(entity_id):
-        logger.warning("Resolved entity %s not in allowed domains %s", entity_id, _ALLOWED_DOMAINS)
-        entity_id = None
-
-    if not entity_id:
-        return {
-            "success": False,
-            "entity_id": None,
-            "new_state": None,
-            "speech": resolution["speech"] or f"Could not find an entity matching '{entity_query}'.",
-            "cacheable": False,
-        }
+    resolved = await resolve_and_validate_entity(
+        entity_query,
+        entity_index,
+        entity_matcher,
+        agent_id,
+        _CLIMATE_READ_DOMAINS,
+        _validate_domain,
+        preferred_area_id=preferred_area_id,
+        verbatim_terms=verbatim_terms,
+        span_collector=span_collector,
+    )
+    if resolved["not_found_result"] is not None:
+        result = resolved["not_found_result"]
+        result["cacheable"] = False
+        return result
+    entity_id = resolved["entity_id"]
 
     try:
         state_resp = await ha_client.get_state(entity_id)
@@ -827,41 +787,24 @@ async def _query_entity_history(
     verbatim_terms: list[str] | None = None,
 ) -> dict:
     """Fetch Recorder history for a resolved climate/sensor/weather entity (visibility-respected)."""
-    resolution = {
-        "entity_id": None,
-        "friendly_name": entity_query,
-        "speech": None,
-        "metadata": {"query": entity_query, "match_count": 0, "resolution_path": "not_attempted"},
-    }
-    try:
-        if entity_index or entity_matcher:
-            async with _optional_span(span_collector, "entity_match", agent_id=agent_id) as em_span:
-                resolution = await resolve_entity_deterministic_first(
-                    entity_query,
-                    entity_index,
-                    entity_matcher,
-                    agent_id,
-                    allowed_domains=_HISTORY_DOMAINS,
-                    preferred_area_id=preferred_area_id,
-                    verbatim_terms=verbatim_terms,
-                )
-                em_span["metadata"] = resolution["metadata"]
-    except Exception:
-        logger.warning("Entity resolution failed for '%s'", entity_query, exc_info=True)
-
-    entity_id = _ensure_str(resolution["entity_id"])
-    friendly_name = _ensure_str(resolution["friendly_name"]) or entity_query
-    if entity_id and not _validate_domain(entity_id):
-        entity_id = None
-
-    if not entity_id:
-        return {
-            "success": False,
-            "entity_id": None,
-            "new_state": None,
-            "speech": resolution["speech"] or f"Could not find a visible entity matching '{entity_query}'.",
-            "cacheable": False,
-        }
+    resolved = await resolve_and_validate_entity(
+        entity_query,
+        entity_index,
+        entity_matcher,
+        agent_id,
+        _HISTORY_DOMAINS,
+        _validate_domain,
+        preferred_area_id=preferred_area_id,
+        verbatim_terms=verbatim_terms,
+        span_collector=span_collector,
+    )
+    if resolved["not_found_result"] is not None:
+        result = resolved["not_found_result"]
+        result["speech"] = result["speech"].replace("an entity", "a visible entity")
+        result["cacheable"] = False
+        return result
+    entity_id = resolved["entity_id"]
+    friendly_name = resolved["friendly_name"]
 
     return await execute_recorder_history_query(
         entity_id,

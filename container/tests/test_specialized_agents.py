@@ -32,20 +32,22 @@ _litellm_mock.RateLimitError = _RateLimitError
 sys.modules.setdefault("litellm", _litellm_mock)
 
 import app.llm.client  # noqa: E402,F401 -- force module load for patch targets
-from app.agents.automation import AutomationAgent  # noqa: E402
-from app.agents.climate import ClimateAgent  # noqa: E402
-from app.agents.cover import CoverAgent  # noqa: E402
+from app.agents.actionable import (  # noqa: E402
+    AutomationAgent,
+    ClimateAgent,
+    CoverAgent,
+    LightAgent,
+    MediaAgent,
+    MusicAgent,
+    SceneAgent,
+    SecurityAgent,
+    VacuumAgent,
+)
 from app.agents.custom_loader import CustomAgentLoader, DynamicAgent  # noqa: E402
 from app.agents.general import GeneralAgent  # noqa: E402
-from app.agents.light import LightAgent  # noqa: E402
-from app.agents.media import MediaAgent  # noqa: E402
-from app.agents.music import MusicAgent  # noqa: E402
 from app.agents.rewrite import RewriteAgent  # noqa: E402
-from app.agents.scene import SceneAgent  # noqa: E402
-from app.agents.security import SecurityAgent  # noqa: E402
 from app.agents.timer import TimerAgent  # noqa: E402
 from app.agents.timer_executor import execute_timer_action  # noqa: E402
-from app.agents.vacuum import VacuumAgent  # noqa: E402
 from app.models.agent import (  # noqa: E402
     AgentErrorCode,
     AgentTask,
@@ -113,7 +115,11 @@ class TestLightAgent:
         assert result.action_executed is None
         assert "json" not in result.speech.lower()
 
-    @patch("app.agents.light.execute_light_action", new_callable=AsyncMock, side_effect=Exception("HA connection lost"))
+    @patch(
+        "app.agents.light_executor.execute_light_action",
+        new_callable=AsyncMock,
+        side_effect=Exception("HA connection lost"),
+    )
     @patch(
         "app.llm.client.complete",
         new_callable=AsyncMock,
@@ -140,7 +146,7 @@ class TestLightAgent:
             assert "action" not in result.speech
 
     @patch(
-        "app.agents.light.execute_light_action",
+        "app.agents.light_executor.execute_light_action",
         new_callable=AsyncMock,
         return_value={"success": True, "entity_id": "light.kitchen", "new_state": "on", "speech": "Done."},
     )
@@ -189,7 +195,7 @@ class TestMusicAgent:
         assert result.action_executed is None
 
     @patch(
-        "app.agents.music.execute_music_action",
+        "app.agents.music_executor.execute_music_action",
         new_callable=AsyncMock,
         return_value={
             "success": True,
@@ -220,7 +226,11 @@ class TestMusicAgent:
         assert "unavailable" in result.speech.lower()
         assert result.action_executed is None
 
-    @patch("app.agents.music.execute_music_action", new_callable=AsyncMock, side_effect=Exception("HA connection lost"))
+    @patch(
+        "app.agents.music_executor.execute_music_action",
+        new_callable=AsyncMock,
+        side_effect=Exception("HA connection lost"),
+    )
     @patch(
         "app.llm.client.complete",
         new_callable=AsyncMock,
@@ -245,7 +255,7 @@ class TestMusicAgent:
             assert "action" not in result.speech
 
     @patch(
-        "app.agents.music.execute_music_action",
+        "app.agents.music_executor.execute_music_action",
         new_callable=AsyncMock,
         return_value={
             "success": True,
@@ -268,7 +278,7 @@ class TestMusicAgent:
         assert call_args[0][3] is matcher
 
     @patch(
-        "app.agents.music.execute_music_action",
+        "app.agents.music_executor.execute_music_action",
         new_callable=AsyncMock,
         return_value={
             "success": True,
@@ -310,7 +320,7 @@ class TestClimateAgent:
         assert result.action_executed is None
 
     @patch(
-        "app.agents.climate.execute_climate_action",
+        "app.agents.climate_executor.execute_climate_action",
         new_callable=AsyncMock,
         return_value={
             "success": True,
@@ -331,7 +341,9 @@ class TestClimateAgent:
         assert result.action_executed.entity_id == "climate.living_room"
 
     @patch(
-        "app.agents.climate.execute_climate_action", new_callable=AsyncMock, side_effect=Exception("HA connection lost")
+        "app.agents.climate_executor.execute_climate_action",
+        new_callable=AsyncMock,
+        side_effect=Exception("HA connection lost"),
     )
     @patch(
         "app.llm.client.complete",
@@ -364,7 +376,7 @@ class TestClimateAgent:
         assert result.action_executed is None
 
     @patch(
-        "app.agents.climate.execute_climate_action",
+        "app.agents.climate_executor.execute_climate_action",
         new_callable=AsyncMock,
         return_value={"success": True, "entity_id": "climate.living_room", "new_state": "heat", "speech": "Done."},
     )
@@ -397,7 +409,7 @@ class TestClimateAgent:
         ],
     )
     @patch(
-        "app.agents.climate.execute_climate_action",
+        "app.agents.climate_executor.execute_climate_action",
         new_callable=AsyncMock,
         return_value={"success": True, "entity_id": "weather.home", "new_state": "sunny", "speech": "Sunny."},
     )
@@ -445,7 +457,7 @@ class TestCoverAgent:
         assert result.action_executed is None
 
     @patch(
-        "app.agents.cover.execute_cover_action",
+        "app.agents.cover_executor.execute_cover_action",
         new_callable=AsyncMock,
         return_value={
             "success": True,
@@ -465,7 +477,11 @@ class TestCoverAgent:
         assert result.action_executed.success is True
         assert result.action_executed.entity_id == "cover.living_room_blind"
 
-    @patch("app.agents.cover.execute_cover_action", new_callable=AsyncMock, side_effect=Exception("HA connection lost"))
+    @patch(
+        "app.agents.cover_executor.execute_cover_action",
+        new_callable=AsyncMock,
+        side_effect=Exception("HA connection lost"),
+    )
     @patch(
         "app.llm.client.complete",
         new_callable=AsyncMock,
@@ -497,7 +513,7 @@ class TestCoverAgent:
         assert result.action_executed is None
 
     @patch(
-        "app.agents.cover.execute_cover_action",
+        "app.agents.cover_executor.execute_cover_action",
         new_callable=AsyncMock,
         return_value={"success": True, "entity_id": "cover.living_room_blind", "new_state": "open", "speech": "Done."},
     )
@@ -534,7 +550,7 @@ class TestMediaAgent:
         assert result.action_executed is None
 
     @patch(
-        "app.agents.media.execute_media_action",
+        "app.agents.media_executor.execute_media_action",
         new_callable=AsyncMock,
         return_value={
             "success": True,
@@ -554,7 +570,11 @@ class TestMediaAgent:
         assert result.action_executed.success is True
         assert result.action_executed.entity_id == "media_player.living_room_tv"
 
-    @patch("app.agents.media.execute_media_action", new_callable=AsyncMock, side_effect=Exception("HA connection lost"))
+    @patch(
+        "app.agents.media_executor.execute_media_action",
+        new_callable=AsyncMock,
+        side_effect=Exception("HA connection lost"),
+    )
     @patch(
         "app.llm.client.complete",
         new_callable=AsyncMock,
@@ -586,7 +606,7 @@ class TestMediaAgent:
         assert result.action_executed is None
 
     @patch(
-        "app.agents.media.execute_media_action",
+        "app.agents.media_executor.execute_media_action",
         new_callable=AsyncMock,
         return_value={
             "success": True,
@@ -608,7 +628,7 @@ class TestMediaAgent:
         assert kwargs.get("agent_id") == "media-agent"
 
     @patch(
-        "app.agents.media.execute_media_action",
+        "app.agents.media_executor.execute_media_action",
         new_callable=AsyncMock,
         return_value={
             "success": True,
@@ -649,7 +669,7 @@ class TestVacuumAgent:
         assert result.action_executed is None
 
     @patch(
-        "app.agents.vacuum.execute_vacuum_action",
+        "app.agents.vacuum_executor.execute_vacuum_action",
         new_callable=AsyncMock,
         return_value={
             "success": True,
@@ -670,7 +690,9 @@ class TestVacuumAgent:
         assert result.action_executed.entity_id == "vacuum.robot"
 
     @patch(
-        "app.agents.vacuum.execute_vacuum_action", new_callable=AsyncMock, side_effect=Exception("HA connection lost")
+        "app.agents.vacuum_executor.execute_vacuum_action",
+        new_callable=AsyncMock,
+        side_effect=Exception("HA connection lost"),
     )
     @patch(
         "app.llm.client.complete",
@@ -703,7 +725,7 @@ class TestVacuumAgent:
         assert result.action_executed is None
 
     @patch(
-        "app.agents.vacuum.execute_vacuum_action",
+        "app.agents.vacuum_executor.execute_vacuum_action",
         new_callable=AsyncMock,
         return_value={
             "success": True,
@@ -1809,7 +1831,7 @@ class TestSceneAgent:
         assert result.action_executed is None
 
     @patch(
-        "app.agents.scene.execute_scene_action",
+        "app.agents.scene_executor.execute_scene_action",
         new_callable=AsyncMock,
         return_value={
             "success": True,
@@ -1829,7 +1851,11 @@ class TestSceneAgent:
         assert result.action_executed.success is True
         assert result.action_executed.entity_id == "scene.movie_night"
 
-    @patch("app.agents.scene.execute_scene_action", new_callable=AsyncMock, side_effect=Exception("HA connection lost"))
+    @patch(
+        "app.agents.scene_executor.execute_scene_action",
+        new_callable=AsyncMock,
+        side_effect=Exception("HA connection lost"),
+    )
     @patch(
         "app.llm.client.complete",
         new_callable=AsyncMock,
@@ -1861,7 +1887,7 @@ class TestSceneAgent:
         assert result.action_executed is None
 
     @patch(
-        "app.agents.scene.execute_scene_action",
+        "app.agents.scene_executor.execute_scene_action",
         new_callable=AsyncMock,
         return_value={"success": True, "entity_id": "scene.movie_night", "new_state": "scening", "speech": "Done."},
     )
@@ -1902,7 +1928,7 @@ class TestAutomationAgent:
         assert result.action_executed is None
 
     @patch(
-        "app.agents.automation.execute_automation_action",
+        "app.agents.automation_executor.execute_automation_action",
         new_callable=AsyncMock,
         return_value={
             "success": True,
@@ -1923,7 +1949,7 @@ class TestAutomationAgent:
         assert result.action_executed.entity_id == "automation.morning_routine"
 
     @patch(
-        "app.agents.automation.execute_automation_action",
+        "app.agents.automation_executor.execute_automation_action",
         new_callable=AsyncMock,
         side_effect=Exception("HA connection lost"),
     )
@@ -1958,7 +1984,7 @@ class TestAutomationAgent:
         assert result.action_executed is None
 
     @patch(
-        "app.agents.automation.execute_automation_action",
+        "app.agents.automation_executor.execute_automation_action",
         new_callable=AsyncMock,
         return_value={"success": True, "entity_id": "automation.morning_routine", "new_state": "on", "speech": "Done."},
     )
@@ -1975,7 +2001,7 @@ class TestAutomationAgent:
         assert kwargs.get("agent_id") == "automation-agent"
 
     @patch(
-        "app.agents.automation.execute_automation_action",
+        "app.agents.automation_executor.execute_automation_action",
         new_callable=AsyncMock,
         return_value={
             "success": True,
@@ -1995,7 +2021,7 @@ class TestAutomationAgent:
         assert result.action_executed.success is True
 
     @patch(
-        "app.agents.automation.execute_automation_action",
+        "app.agents.automation_executor.execute_automation_action",
         new_callable=AsyncMock,
         return_value={
             "success": True,
@@ -2015,7 +2041,7 @@ class TestAutomationAgent:
         assert result.action_executed.success is True
 
     @patch(
-        "app.agents.automation.execute_automation_action",
+        "app.agents.automation_executor.execute_automation_action",
         new_callable=AsyncMock,
         return_value={
             "success": True,
@@ -2035,7 +2061,7 @@ class TestAutomationAgent:
         assert result.action_executed.success is True
 
     @patch(
-        "app.agents.automation.execute_automation_action",
+        "app.agents.automation_executor.execute_automation_action",
         new_callable=AsyncMock,
         return_value={
             "success": True,
@@ -2083,7 +2109,7 @@ class TestSecurityAgentHandler:
         assert result.action_executed is None
 
     @patch(
-        "app.agents.security.execute_security_action",
+        "app.agents.security_executor.execute_security_action",
         new_callable=AsyncMock,
         return_value={
             "success": True,
@@ -2104,7 +2130,7 @@ class TestSecurityAgentHandler:
         assert result.action_executed.entity_id == "lock.front_door"
 
     @patch(
-        "app.agents.security.execute_security_action",
+        "app.agents.security_executor.execute_security_action",
         new_callable=AsyncMock,
         side_effect=Exception("HA connection lost"),
     )
@@ -2139,7 +2165,7 @@ class TestSecurityAgentHandler:
         assert result.action_executed is None
 
     @patch(
-        "app.agents.security.execute_security_action",
+        "app.agents.security_executor.execute_security_action",
         new_callable=AsyncMock,
         return_value={"success": True, "entity_id": "lock.front_door", "new_state": "locked", "speech": "Done."},
     )

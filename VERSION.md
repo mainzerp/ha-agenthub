@@ -215,7 +215,7 @@ Track changes since `v1.34.1` here.
 - fix(db): narrow JSON exception handling in synonym cache
 - fix(perf): cap legacy warning keys in base cache
 - refactor(executor): deduplicate light resolver into deterministic_resolver
-- feat(agents): extract AgentRegistry with TTL-cached lookups
+- feat(agents): extract CachedAgentRegistry with TTL-cached lookups
 - feat(agents): extract shared TaskPipeline from orchestrator
 - feat(db): extract settings repository from god module
 - fix(perf): use set for dedup in orchestrator sanitize

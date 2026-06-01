@@ -567,6 +567,21 @@ def _ensure_voluptuous_mock():
     yield
 
 
+@pytest.fixture(autouse=True)
+def _ensure_ha_exceptions_mock():
+    """Ensure homeassistant.exceptions.HomeAssistantError is available for custom_components tests."""
+    import sys
+    from types import ModuleType
+
+    if "homeassistant" not in sys.modules:
+        sys.modules["homeassistant"] = ModuleType("homeassistant")
+    if "homeassistant.exceptions" not in sys.modules:
+        ha_exc = ModuleType("homeassistant.exceptions")
+        ha_exc.HomeAssistantError = Exception
+        sys.modules["homeassistant.exceptions"] = ha_exc
+    yield
+
+
 # ---------------------------------------------------------------------------
 # 10. build_scenario_backed_app -- real pipeline with deterministic stubs
 # ---------------------------------------------------------------------------
