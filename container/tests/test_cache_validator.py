@@ -188,8 +188,12 @@ async def test_run_once_corrects_one_deletes_one():
         entity_index=entity_index,
     )
 
-    with patch("app.cache.cache_validator.SettingsRepository") as mock_settings:
+    with (
+        patch("app.cache.cache_validator.SettingsRepository") as mock_settings,
+        patch("app.cache.cache_validator.CacheValidatorRepository") as mock_repo,
+    ):
         mock_settings.get_value = AsyncMock(return_value="true")
+        mock_repo.insert = AsyncMock(return_value=1)
         result = await validator.run_once()
 
     assert result["scanned"] == 2
@@ -213,8 +217,12 @@ async def test_run_once_corrects_one_deletes_one():
 async def test_run_once_skips_when_disabled():
     validator = _make_validator(entries=[_make_entry()])
 
-    with patch("app.cache.cache_validator.SettingsRepository") as mock_settings:
+    with (
+        patch("app.cache.cache_validator.SettingsRepository") as mock_settings,
+        patch("app.cache.cache_validator.CacheValidatorRepository") as mock_repo,
+    ):
         mock_settings.get_value = AsyncMock(return_value="false")
+        mock_repo.insert = AsyncMock(return_value=1)
         result = await validator.run_once()
 
     assert result == {"scanned": 0, "inconsistent": 0, "corrected": 0, "deleted": 0, "errors": 0}
@@ -229,8 +237,12 @@ async def test_run_once_counts_valid_entries():
     )
     validator = _make_validator(entries=[valid])
 
-    with patch("app.cache.cache_validator.SettingsRepository") as mock_settings:
+    with (
+        patch("app.cache.cache_validator.SettingsRepository") as mock_settings,
+        patch("app.cache.cache_validator.CacheValidatorRepository") as mock_repo,
+    ):
         mock_settings.get_value = AsyncMock(return_value="true")
+        mock_repo.insert = AsyncMock(return_value=1)
         result = await validator.run_once()
 
     assert result["scanned"] == 1
@@ -252,8 +264,12 @@ async def test_run_once_skips_validated_entries():
     already_validated.validated_at = "2025-01-01T00:00:00+00:00"
     validator = _make_validator(entries=[already_validated])
 
-    with patch("app.cache.cache_validator.SettingsRepository") as mock_settings:
+    with (
+        patch("app.cache.cache_validator.SettingsRepository") as mock_settings,
+        patch("app.cache.cache_validator.CacheValidatorRepository") as mock_repo,
+    ):
         mock_settings.get_value = AsyncMock(return_value="true")
+        mock_repo.insert = AsyncMock(return_value=1)
         result = await validator.run_once()
 
     assert result["scanned"] == 0
@@ -270,8 +286,12 @@ async def test_run_once_sets_validated_at_on_valid_entry():
     )
     validator = _make_validator(entries=[valid])
 
-    with patch("app.cache.cache_validator.SettingsRepository") as mock_settings:
+    with (
+        patch("app.cache.cache_validator.SettingsRepository") as mock_settings,
+        patch("app.cache.cache_validator.CacheValidatorRepository") as mock_repo,
+    ):
         mock_settings.get_value = AsyncMock(return_value="true")
+        mock_repo.insert = AsyncMock(return_value=1)
         result = await validator.run_once()
 
     assert result["scanned"] == 1
@@ -293,8 +313,12 @@ async def test_run_once_sets_validated_at_on_corrected_entry():
     entity_index.get_by_id_async = AsyncMock(return_value=MagicMock(friendly_name="Kitchen Ceiling"))
     validator = _make_validator(entries=[inconsistent], entity_index=entity_index)
 
-    with patch("app.cache.cache_validator.SettingsRepository") as mock_settings:
+    with (
+        patch("app.cache.cache_validator.SettingsRepository") as mock_settings,
+        patch("app.cache.cache_validator.CacheValidatorRepository") as mock_repo,
+    ):
         mock_settings.get_value = AsyncMock(return_value="true")
+        mock_repo.insert = AsyncMock(return_value=1)
         result = await validator.run_once()
 
     assert result["scanned"] == 1
@@ -313,15 +337,36 @@ async def test_history_recorded_after_run():
     )
     validator = _make_validator(entries=[valid])
 
-    with patch("app.cache.cache_validator.SettingsRepository") as mock_settings:
+    with (
+        patch("app.cache.cache_validator.SettingsRepository") as mock_settings,
+        patch("app.cache.cache_validator.CacheValidatorRepository") as mock_repo,
+    ):
         mock_settings.get_value = AsyncMock(return_value="true")
+        mock_repo.insert = AsyncMock(return_value=1)
+        mock_repo.list_recent = AsyncMock(
+            return_value=[
+                {
+                    "scanned": 1,
+                    "inconsistent": 0,
+                    "corrected": 0,
+                    "deleted": 0,
+                    "errors": 0,
+                    "started_at": "2026-01-01T00:00:00+00:00",
+                    "finished_at": "2026-01-01T00:00:01+00:00",
+                }
+            ]
+        )
         result = await validator.run_once()
 
-    history = validator.get_history()
-    assert len(history) == 1
-    assert history[0]["scanned"] == result["scanned"]
-    assert history[0]["started_at"] == result["started_at"]
-    assert history[0]["finished_at"] == result["finished_at"]
+        mock_repo.insert.assert_awaited_once()
+        call_kwargs = mock_repo.insert.await_args.kwargs
+        assert call_kwargs["scanned"] == result["scanned"]
+        assert call_kwargs["started_at"] == result["started_at"]
+        assert call_kwargs["finished_at"] == result["finished_at"]
+
+        history = await validator.get_history()
+        assert len(history) == 1
+        assert history[0]["scanned"] == result["scanned"]
 
 
 # ---------------------------------------------------------------------------
@@ -875,7 +920,10 @@ async def test_run_once_uses_batch_validation():
 
     validator = _make_validator(entries=[entry1, entry2], llm_client=llm_client)
 
-    with patch("app.cache.cache_validator.SettingsRepository") as mock_settings:
+    with (
+        patch("app.cache.cache_validator.SettingsRepository") as mock_settings,
+        patch("app.cache.cache_validator.CacheValidatorRepository") as mock_repo,
+    ):
         mock_settings.get_value = AsyncMock(
             side_effect=lambda key, default="": {
                 "cache.validator.enabled": "true",
@@ -885,6 +933,7 @@ async def test_run_once_uses_batch_validation():
                 "cache.validator.reasoning_effort": "low",
             }.get(key, default)
         )
+        mock_repo.insert = AsyncMock(return_value=1)
         result = await validator.run_once()
 
     assert result["scanned"] == 2
@@ -916,7 +965,10 @@ async def test_run_once_batch_fallback_to_single_on_failure():
         llm_client=llm_client,
     )
 
-    with patch("app.cache.cache_validator.SettingsRepository") as mock_settings:
+    with (
+        patch("app.cache.cache_validator.SettingsRepository") as mock_settings,
+        patch("app.cache.cache_validator.CacheValidatorRepository") as mock_repo,
+    ):
         mock_settings.get_value = AsyncMock(
             side_effect=lambda key, default="": {
                 "cache.validator.enabled": "true",
@@ -926,6 +978,7 @@ async def test_run_once_batch_fallback_to_single_on_failure():
                 "cache.validator.reasoning_effort": "low",
             }.get(key, default)
         )
+        mock_repo.insert = AsyncMock(return_value=1)
         result = await validator.run_once()
 
     assert result["scanned"] == 1
@@ -944,7 +997,10 @@ async def test_run_once_batch_size_one_disables_batching():
 
     validator = _make_validator(entries=[entry], llm_client=llm_client)
 
-    with patch("app.cache.cache_validator.SettingsRepository") as mock_settings:
+    with (
+        patch("app.cache.cache_validator.SettingsRepository") as mock_settings,
+        patch("app.cache.cache_validator.CacheValidatorRepository") as mock_repo,
+    ):
         mock_settings.get_value = AsyncMock(
             side_effect=lambda key, default="": {
                 "cache.validator.enabled": "true",
@@ -954,6 +1010,7 @@ async def test_run_once_batch_size_one_disables_batching():
                 "cache.validator.reasoning_effort": "low",
             }.get(key, default)
         )
+        mock_repo.insert = AsyncMock(return_value=1)
         result = await validator.run_once()
 
     assert result["scanned"] == 1
@@ -974,13 +1031,17 @@ async def test_run_once_deletes_entries_with_no_cached_action():
     llm_client = AsyncMock()
     validator = _make_validator(entries=[entry], llm_client=llm_client)
 
-    with patch("app.cache.cache_validator.SettingsRepository") as mock_settings:
+    with (
+        patch("app.cache.cache_validator.SettingsRepository") as mock_settings,
+        patch("app.cache.cache_validator.CacheValidatorRepository") as mock_repo,
+    ):
         mock_settings.get_value = AsyncMock(
             side_effect=lambda key, default="": {
                 "cache.validator.enabled": "true",
                 "cache.validator.batch_size": "10",
             }.get(key, default)
         )
+        mock_repo.insert = AsyncMock(return_value=1)
         result = await validator.run_once()
 
     assert result["scanned"] == 0  # Not counted as scanned
@@ -1013,7 +1074,10 @@ async def test_run_once_batch_correct_response_triggers_regeneration():
         llm_client=llm_client,
     )
 
-    with patch("app.cache.cache_validator.SettingsRepository") as mock_settings:
+    with (
+        patch("app.cache.cache_validator.SettingsRepository") as mock_settings,
+        patch("app.cache.cache_validator.CacheValidatorRepository") as mock_repo,
+    ):
         mock_settings.get_value = AsyncMock(
             side_effect=lambda key, default="": {
                 "cache.validator.enabled": "true",
@@ -1024,6 +1088,7 @@ async def test_run_once_batch_correct_response_triggers_regeneration():
                 "cache.validator.reasoning_effort": "low",
             }.get(key, default)
         )
+        mock_repo.insert = AsyncMock(return_value=1)
         result = await validator.run_once()
 
     assert result["scanned"] == 1

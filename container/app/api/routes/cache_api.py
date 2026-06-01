@@ -210,7 +210,7 @@ async def get_validation_history(request: Request):
     validator = getattr(request.app.state, "cache_validator", None)
     if validator is None:
         return {"status": "error", "detail": "Cache validator not initialized"}
-    return {"status": "ok", "history": validator.get_history()}
+    return {"status": "ok", "history": await validator.get_history()}
 
 
 @router.get("/export")
