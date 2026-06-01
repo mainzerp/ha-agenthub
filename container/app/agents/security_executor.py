@@ -10,6 +10,7 @@ from app.agents.action_executor import (
     build_verified_speech,
     call_service_with_verification,
 )
+from app.agents.executor_state_check import _state_matches
 from app.analytics.tracer import _optional_span
 from app.entity.deterministic_resolver import resolve_entity_deterministic_first
 from app.ha_client.history_query import execute_recorder_history_query
@@ -185,6 +186,20 @@ async def execute_security_action(
             "entity_id": None,
             "new_state": None,
             "speech": resolution["speech"] or f"Could not find an entity matching '{entity_query}'.",
+        }
+
+    # Deterministic skip: if already in target state, do not call HA.
+    try:
+        state_resp = await ha_client.get_state(entity_id)
+        current_state = state_resp.get("state") if isinstance(state_resp, dict) else None
+    except Exception:
+        current_state = None
+    if _state_matches(action_name, current_state):
+        return {
+            "success": True,
+            "entity_id": entity_id,
+            "new_state": current_state,
+            "speech": f"Done, {friendly_name} is already {current_state}.",
         }
 
     # Build service data

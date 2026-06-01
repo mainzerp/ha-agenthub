@@ -27,13 +27,15 @@ _litellm_mock.RateLimitError = _RateLimitError
 sys.modules.setdefault("litellm", _litellm_mock)
 
 import app.llm.client  # noqa: E402,F401 -- force module load for patch targets
-from app.agents.action_executor import execute_action  # noqa: E402
 from app.agents.automation_executor import execute_automation_action  # noqa: E402
 from app.agents.climate_executor import execute_climate_action  # noqa: E402
+from app.agents.cover_executor import execute_cover_action  # noqa: E402
+from app.agents.light_executor import execute_light_action  # noqa: E402
 from app.agents.media_executor import execute_media_action  # noqa: E402
 from app.agents.music_executor import execute_music_action  # noqa: E402
 from app.agents.scene_executor import execute_scene_action  # noqa: E402
 from app.agents.security_executor import execute_security_action  # noqa: E402
+from app.agents.vacuum_executor import execute_vacuum_action  # noqa: E402
 from app.models.agent import (  # noqa: E402
     AgentTask,
     TaskContext,
@@ -114,6 +116,34 @@ class TestClimateExecutor:
         assert result["success"] is False
         assert "Failed" in result["speech"]
 
+    async def test_turn_off_skips_when_already_off(self):
+        matcher = AsyncMock()
+        match_obj = MagicMock(entity_id="climate.living_room", friendly_name="Living Room")
+        matcher.match = AsyncMock(return_value=[match_obj])
+        ha = AsyncMock()
+        ha.expect_state = None
+        ha.get_state = AsyncMock(return_value={"state": "off"})
+        result = await execute_climate_action(
+            {"action": "turn_off", "entity": "thermostat", "parameters": {}}, ha, MagicMock(), matcher
+        )
+        assert result["success"] is True
+        assert "already off" in result["speech"]
+        ha.call_service.assert_not_awaited()
+
+    async def test_turn_on_skips_when_already_heat(self):
+        matcher = AsyncMock()
+        match_obj = MagicMock(entity_id="climate.living_room", friendly_name="Living Room")
+        matcher.match = AsyncMock(return_value=[match_obj])
+        ha = AsyncMock()
+        ha.expect_state = None
+        ha.get_state = AsyncMock(return_value={"state": "heat"})
+        result = await execute_climate_action(
+            {"action": "turn_on", "entity": "thermostat", "parameters": {}}, ha, MagicMock(), matcher
+        )
+        assert result["success"] is True
+        assert "already" in result["speech"]
+        ha.call_service.assert_not_awaited()
+
 
 # ---------------------------------------------------------------------------
 # Security Executor
@@ -134,7 +164,7 @@ class TestSecurityExecutor:
         ha = AsyncMock()
         ha.expect_state = None
         ha.call_service = AsyncMock()
-        ha.get_state = AsyncMock(return_value={"state": "locked"})
+        ha.get_state = AsyncMock(return_value={"state": "unlocked"})
         result = await execute_security_action(
             {"action": "lock", "entity": "front door", "parameters": {}}, ha, MagicMock(), matcher
         )
@@ -148,7 +178,7 @@ class TestSecurityExecutor:
         ha = AsyncMock()
         ha.expect_state = None
         ha.call_service = AsyncMock()
-        ha.get_state = AsyncMock(return_value={"state": "armed_away"})
+        ha.get_state = AsyncMock(return_value={"state": "disarmed"})
         result = await execute_security_action(
             {"action": "alarm_arm_away", "entity": "house alarm", "parameters": {}}, ha, MagicMock(), matcher
         )
@@ -164,12 +194,61 @@ class TestSecurityExecutor:
         ha = AsyncMock()
         ha.expect_state = None
         ha.call_service = AsyncMock()
-        ha.get_state = AsyncMock(return_value={"state": "unlocked"})
+        ha.get_state = AsyncMock(return_value={"state": "locked"})
         result = await execute_security_action(
             {"action": "unlock", "entity": "front door", "parameters": {"code": "1234"}}, ha, MagicMock(), matcher
         )
         assert result["success"] is True
         ha.call_service.assert_awaited_once_with("lock", "unlock", "lock.front_door", {"code": "1234"})
+
+    async def test_lock_skips_when_already_locked(self):
+        matcher = AsyncMock()
+        match_obj = MagicMock(entity_id="lock.front_door", friendly_name="Front Door")
+        matcher.match = AsyncMock(return_value=[match_obj])
+        ha = AsyncMock()
+        ha.expect_state = None
+        ha.get_state = AsyncMock(return_value={"state": "locked"})
+        result = await execute_security_action(
+            {"action": "lock", "entity": "front door", "parameters": {}}, ha, MagicMock(), matcher
+        )
+        assert result["success"] is True
+        assert "already locked" in result["speech"]
+        ha.call_service.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# Cover Executor
+# ---------------------------------------------------------------------------
+
+
+class TestCoverExecutor:
+    async def test_open_cover_skips_when_already_open(self):
+        matcher = AsyncMock()
+        match_obj = MagicMock(entity_id="cover.living_room", friendly_name="Living Room Blind")
+        matcher.match = AsyncMock(return_value=[match_obj])
+        ha = AsyncMock()
+        ha.expect_state = None
+        ha.get_state = AsyncMock(return_value={"state": "open"})
+        result = await execute_cover_action(
+            {"action": "open_cover", "entity": "living room blind"}, ha, MagicMock(), matcher
+        )
+        assert result["success"] is True
+        assert "already open" in result["speech"]
+        ha.call_service.assert_not_awaited()
+
+    async def test_close_cover_skips_when_already_closed(self):
+        matcher = AsyncMock()
+        match_obj = MagicMock(entity_id="cover.living_room", friendly_name="Living Room Blind")
+        matcher.match = AsyncMock(return_value=[match_obj])
+        ha = AsyncMock()
+        ha.expect_state = None
+        ha.get_state = AsyncMock(return_value={"state": "closed"})
+        result = await execute_cover_action(
+            {"action": "close_cover", "entity": "living room blind"}, ha, MagicMock(), matcher
+        )
+        assert result["success"] is True
+        assert "already closed" in result["speech"]
+        ha.call_service.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------
@@ -188,7 +267,7 @@ class TestLightExecutorQueries:
         )
         matcher = AsyncMock()
         matcher.match = AsyncMock(return_value=[MagicMock(entity_id="light.kitchen", friendly_name="Kitchen Light")])
-        result = await execute_action(
+        result = await execute_light_action(
             {"action": "query_light_state", "entity": "kitchen light"},
             ha,
             None,
@@ -205,7 +284,7 @@ class TestLightExecutorQueries:
         ha.get_state = AsyncMock(return_value={"state": "on", "attributes": {"friendly_name": "Garden Pump"}})
         matcher = AsyncMock()
         matcher.match = AsyncMock(return_value=[MagicMock(entity_id="switch.garden_pump", friendly_name="Garden Pump")])
-        result = await execute_action(
+        result = await execute_light_action(
             {"action": "query_light_state", "entity": "garden pump"},
             ha,
             None,
@@ -220,7 +299,7 @@ class TestLightExecutorQueries:
         ha = AsyncMock()
         matcher = AsyncMock()
         matcher.match = AsyncMock(return_value=[])
-        result = await execute_action(
+        result = await execute_light_action(
             {"action": "query_light_state", "entity": "nonexistent light"},
             ha,
             None,
@@ -235,7 +314,7 @@ class TestLightExecutorQueries:
         ha.get_state = AsyncMock(side_effect=Exception("HA down"))
         matcher = AsyncMock()
         matcher.match = AsyncMock(return_value=[MagicMock(entity_id="light.kitchen", friendly_name="Kitchen Light")])
-        result = await execute_action(
+        result = await execute_light_action(
             {"action": "query_light_state", "entity": "kitchen light"},
             ha,
             None,
@@ -254,7 +333,7 @@ class TestLightExecutorQueries:
                 {"entity_id": "switch.garden_pump", "state": "on", "attributes": {"friendly_name": "Garden Pump"}},
             ]
         )
-        result = await execute_action(
+        result = await execute_light_action(
             {"action": "list_lights", "entity": ""},
             ha,
             None,
@@ -268,7 +347,7 @@ class TestLightExecutorQueries:
     async def test_list_lights_empty(self):
         ha = AsyncMock()
         ha.get_states = AsyncMock(return_value=[])
-        result = await execute_action(
+        result = await execute_light_action(
             {"action": "list_lights", "entity": ""},
             ha,
             None,
@@ -1277,6 +1356,66 @@ class TestMusicExecutorQueries:
         )
         assert result["success"]
         assert "No music" in result["speech"]
+
+
+class TestMediaExecutor:
+    async def test_turn_off_skips_when_already_off(self):
+        matcher = AsyncMock()
+        match_obj = MagicMock(entity_id="media_player.tv", friendly_name="TV")
+        matcher.match = AsyncMock(return_value=[match_obj])
+        ha = AsyncMock()
+        ha.expect_state = None
+        ha.get_state = AsyncMock(return_value={"state": "off"})
+        result = await execute_media_action(
+            {"action": "turn_off", "entity": "tv", "parameters": {}}, ha, MagicMock(), matcher
+        )
+        assert result["success"] is True
+        assert "already off" in result["speech"]
+        ha.call_service.assert_not_awaited()
+
+    async def test_play_skips_when_already_playing(self):
+        matcher = AsyncMock()
+        match_obj = MagicMock(entity_id="media_player.tv", friendly_name="TV")
+        matcher.match = AsyncMock(return_value=[match_obj])
+        ha = AsyncMock()
+        ha.expect_state = None
+        ha.get_state = AsyncMock(return_value={"state": "playing"})
+        result = await execute_media_action(
+            {"action": "play", "entity": "tv", "parameters": {}}, ha, MagicMock(), matcher
+        )
+        assert result["success"] is True
+        assert "already playing" in result["speech"]
+        ha.call_service.assert_not_awaited()
+
+
+class TestVacuumExecutor:
+    async def test_start_skips_when_already_cleaning(self):
+        matcher = AsyncMock()
+        match_obj = MagicMock(entity_id="vacuum.robot", friendly_name="Robot")
+        matcher.match = AsyncMock(return_value=[match_obj])
+        ha = AsyncMock()
+        ha.expect_state = None
+        ha.get_state = AsyncMock(return_value={"state": "cleaning"})
+        result = await execute_vacuum_action(
+            {"action": "start", "entity": "robot", "parameters": {}}, ha, MagicMock(), matcher
+        )
+        assert result["success"] is True
+        assert "already cleaning" in result["speech"]
+        ha.call_service.assert_not_awaited()
+
+    async def test_return_to_base_skips_when_already_returning(self):
+        matcher = AsyncMock()
+        match_obj = MagicMock(entity_id="vacuum.robot", friendly_name="Robot")
+        matcher.match = AsyncMock(return_value=[match_obj])
+        ha = AsyncMock()
+        ha.expect_state = None
+        ha.get_state = AsyncMock(return_value={"state": "returning"})
+        result = await execute_vacuum_action(
+            {"action": "return_to_base", "entity": "robot", "parameters": {}}, ha, MagicMock(), matcher
+        )
+        assert result["success"] is True
+        assert "already returning" in result["speech"]
+        ha.call_service.assert_not_awaited()
 
 
 class TestMediaExecutorQueries:

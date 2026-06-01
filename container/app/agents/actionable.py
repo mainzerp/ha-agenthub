@@ -283,9 +283,7 @@ class ActionableAgent(BaseAgent):
         system_prompt += (
             "\n\nOutput rules:\n"
             "- ALWAYS output a JSON action block for every request. NEVER respond with plain text only.\n"
-            "- State-aware skipping: ONLY use query_light_state when the device is ALREADY in the desired state.\n"
-            "  Example of skipping: user asks to turn ON and device is already ON -> query_light_state.\n"
-            "- In ALL other cases, execute the requested action JSON (turn_on, turn_off, etc.).\n"
+            "- Execute the action the user explicitly requested (turn_on, turn_off, open_cover, etc.).\n"
             "- The injected entity states above are for context only. Do NOT describe them in your response.\n"
             '- Only use toggle when the user explicitly says "toggle".\n'
             "\n"
