@@ -23,7 +23,7 @@ from app.agents.conversation_manager import ConversationManager
 from app.agents.dispatch_manager import DispatchManager
 from app.agents.language_detect import detect_user_language
 from app.agents.sanitize import strip_markdown, strip_parenthetical_asides
-from app.agents.task_pipeline import TaskPipeline
+from app.agents.task_pipeline import PipelineDirector
 from app.analytics.collector import track_request
 from app.analytics.tracer import _optional_span
 from app.cache.cache_manager import ActionReplayOutcome, RoutingSkipOutcome
@@ -49,6 +49,29 @@ _CANCEL_INTERACTION_AGENT = "cancel-interaction"
 
 _CANNED_TIMEOUT_SPEECH = "I couldn't process that request in time."
 _CANNED_GENERAL_ERROR_SPEECH = "I couldn't process that request right now."
+
+
+@dataclass
+class PipelinePreludeResult:
+    """Shared prelude result for streaming and non-streaming pipelines.
+
+    Fields are computed once and consumed by both :meth:`_handle_task_impl`
+    and :meth:`_handle_task_stream_impl`. ``early_exit`` signals that the
+    caller should short-circuit; its dict carries the logic result so each
+    caller formats it for its own output channel.
+    """
+
+    conversation_id: str
+    detected_language: str
+    lang_turns: list
+    span_collector: Any
+    classifications: list[tuple[str, str, float | None]]
+    routing_cached: bool
+    target_agent: str
+    condensed_task: str
+    confidence: float | None
+    used_origin_context: bool
+    early_exit: dict[str, Any] | None = None
 
 
 @dataclass
@@ -84,7 +107,7 @@ class StreamingContext:
             self.collected_speech.append(token)
 
 
-class OrchestratorAgent(BaseAgent, TaskPipeline):
+class OrchestratorAgent(BaseAgent):
     """Classifies user intent and dispatches to specialized agents via A2A."""
 
     def __init__(
@@ -156,6 +179,44 @@ class OrchestratorAgent(BaseAgent, TaskPipeline):
             merge_voice_followup_and_organic=self._merge_voice_followup_and_organic,
             create_trace=self._create_trace,
         )
+        self._pipeline_director = PipelineDirector(
+            cache_manager=cache_manager,
+            calendar_injector=self._calendar_injector,
+            cache_orchestrator=self._cache_orchestrator,
+            classification_engine=self._classification_engine,
+            dispatch_manager=self._dispatch_manager,
+            conversation_manager=self._conversation_manager,
+            call_llm=self._call_llm,
+            load_prompt_async=self._load_prompt_async,
+            get_turns=self._get_turns,
+            pipeline_record_classify_span=self._pipeline_record_classify_span,
+            handle_sequential_send=self._handle_sequential_send,
+            merge_responses=self._merge_responses,
+            merge_voice_followup_and_organic=self._merge_voice_followup_and_organic,
+            create_trace=self._create_trace,
+            finalize_single_agent_response=self._finalize_single_agent_response,
+        )
+
+    def apply_pipeline_strategies(self, strategies: dict[str, Any]) -> None:
+        """Apply strategy overrides from PluginContext to PipelineDirector.
+
+        ``strategies`` is a dict keyed by phase name
+        (``"cache_replay"``, ``"classification"``, ``"dispatch"``,
+        ``"finalization"``). Values are strategy instances conforming to
+        the corresponding ABC in :mod:`pipeline_strategies`.
+        """
+        _setters: dict[str, Any] = {
+            "cache_replay": self._pipeline_director.set_cache_replay_strategy,
+            "classification": self._pipeline_director.set_classification_strategy,
+            "dispatch": self._pipeline_director.set_dispatch_strategy,
+            "finalization": self._pipeline_director.set_finalization_strategy,
+        }
+        for phase, strategy in strategies.items():
+            setter = _setters.get(phase)
+            if setter is not None:
+                setter(strategy)
+            else:
+                logger.warning("Unknown pipeline strategy phase: %s", phase)
 
     @property
     def _registry(self):
@@ -269,10 +330,6 @@ class OrchestratorAgent(BaseAgent, TaskPipeline):
             skills=["intent_classification", "task_routing"],
             endpoint="local://orchestrator",
         )
-
-    @staticmethod
-    def _normalize_agent_result(result_data: Any) -> dict[str, Any]:
-        return DispatchManager.normalize_agent_result(result_data)
 
     async def _dispatch_fallback(
         self,
@@ -703,6 +760,167 @@ class OrchestratorAgent(BaseAgent, TaskPipeline):
         detected_language = await self._resolve_language(user_text, context_language, turns=lang_turns)
         return conversation_id, detected_language, lang_turns
 
+    async def _run_pipeline_prelude(
+        self,
+        task: AgentTask,
+        *,
+        pre_classified: tuple[list[tuple[str, str, float | None]], bool] | None = None,
+        classify_reason: str | None = None,
+        allow_classify_cache_lookup: bool = False,
+        extended_metadata: bool = False,
+        publish_events: bool = False,
+    ) -> PipelinePreludeResult:
+        """Shared prelude: resolve language, check background/cache, classify.
+
+        Encapsulates the logic that was duplicated between
+        :meth:`_handle_task_impl` and :meth:`_handle_task_stream_impl`.
+        When ``early_exit`` is not ``None`` the caller must short-circuit.
+        """
+        user_text = task.user_text or task.description
+
+        conversation_id, detected_language, lang_turns = await self._pipeline_resolve_conversation_and_language(task)
+        span_collector = task.span_collector
+
+        if self._is_background_turn(task):
+            result = await self._handle_background_turn(task)
+            return PipelinePreludeResult(
+                conversation_id=conversation_id,
+                detected_language=detected_language,
+                lang_turns=lang_turns,
+                span_collector=span_collector,
+                classifications=[],
+                routing_cached=False,
+                target_agent="orchestrator",
+                condensed_task="",
+                confidence=None,
+                used_origin_context=False,
+                early_exit={
+                    "_exit_type": "background_turn",
+                    "speech": result.get("speech", ""),
+                    "routed_to": "orchestrator",
+                    "action_executed": result.get("action_executed"),
+                    "voice_followup": False,
+                    "error": result.get("error"),
+                },
+            )
+
+        cache_replay = await self._pipeline_director.run_cache_replay(
+            task,
+            user_text,
+            detected_language,
+            span_collector,
+            skip_lookup=pre_classified is not None,
+        )
+        if cache_replay.action_replay is not None:
+            replay = await self._finalize_action_replay_hit(
+                cache_replay.action_replay,
+                conversation_id,
+                user_text,
+                span_collector,
+                task=task,
+            )
+            return PipelinePreludeResult(
+                conversation_id=conversation_id,
+                detected_language=detected_language,
+                lang_turns=lang_turns,
+                span_collector=span_collector,
+                classifications=[],
+                routing_cached=False,
+                target_agent="",
+                condensed_task="",
+                confidence=None,
+                used_origin_context=False,
+                early_exit={
+                    "_exit_type": "cache_replay",
+                    **replay,
+                },
+            )
+
+        used_origin_context = bool(task and task.context and (task.context.area_id or task.context.device_id))
+
+        if publish_events and self._event_bus is not None:
+            await self._event_bus.publish(
+                "pipeline.pre_classify", {"task": task, "user_text": user_text, "language": detected_language}
+            )
+
+        try:
+            (
+                classifications,
+                routing_cached,
+                target_agent,
+                condensed_task,
+                confidence,
+            ) = await self._pipeline_director.run_classification(
+                task,
+                user_text,
+                detected_language,
+                span_collector,
+                pre_classified=pre_classified,
+                routing_skip=cache_replay.routing_skip,
+                compound_bypass=cache_replay.compound_bypass,
+                extended_metadata=extended_metadata,
+                classify_reason=classify_reason,
+                allow_classify_cache_lookup=allow_classify_cache_lookup,
+            )
+        except _RecoverableClassificationError as exc:
+            return PipelinePreludeResult(
+                conversation_id=conversation_id,
+                detected_language=detected_language,
+                lang_turns=lang_turns,
+                span_collector=span_collector,
+                classifications=[],
+                routing_cached=False,
+                target_agent="orchestrator",
+                condensed_task="",
+                confidence=None,
+                used_origin_context=used_origin_context,
+                early_exit={
+                    "_exit_type": "classification_error",
+                    "speech": exc.message,
+                    "routed_to": "orchestrator",
+                    "action_executed": None,
+                    "voice_followup": False,
+                    "error": {
+                        "code": exc.code,
+                        "message": exc.message,
+                        "recoverable": True,
+                    },
+                },
+            )
+
+        logger.debug(
+            "Routed to %s (%s): %s (conversation=%s)",
+            target_agent,
+            f"{confidence * 100:.0f}%" if confidence is not None else "unknown",
+            condensed_task[:80],
+            conversation_id,
+        )
+
+        if publish_events and self._event_bus is not None:
+            await self._event_bus.publish(
+                "pipeline.post_classify",
+                {
+                    "task": task,
+                    "classifications": classifications,
+                    "target_agent": target_agent,
+                    "condensed_task": condensed_task,
+                    "confidence": confidence,
+                },
+            )
+
+        return PipelinePreludeResult(
+            conversation_id=conversation_id,
+            detected_language=detected_language,
+            lang_turns=lang_turns,
+            span_collector=span_collector,
+            classifications=classifications,
+            routing_cached=routing_cached,
+            target_agent=target_agent,
+            condensed_task=condensed_task,
+            confidence=confidence,
+            used_origin_context=used_origin_context,
+        )
+
     @staticmethod
     def _pipeline_record_classify_span(
         span,
@@ -973,93 +1191,31 @@ class OrchestratorAgent(BaseAgent, TaskPipeline):
     ) -> dict[str, Any]:
         """Thin wrapper around the shared TaskPipeline phases."""
         user_text = task.user_text or task.description
-        conversation_id, detected_language, _lang_turns = await self._pipeline_resolve_conversation_and_language(task)
-        span_collector = task.span_collector
-
-        if self._is_background_turn(task):
-            result = await self._handle_background_turn(task)
-            return {
-                "speech": result.get("speech", ""),
-                "conversation_id": conversation_id,
-                "routed_to": "orchestrator",
-                "action_executed": result.get("action_executed"),
-                "voice_followup": False,
-                "error": result.get("error"),
-            }
-
-        # Phase 0: cache replay
-        cache_replay = await self._run_cache_replay(
+        prelude = await self._run_pipeline_prelude(
             task,
-            user_text,
-            detected_language,
-            span_collector,
-            skip_lookup=_pre_classified is not None,
+            pre_classified=_pre_classified,
+            classify_reason=_classify_reason,
+            allow_classify_cache_lookup=_allow_classify_cache_lookup
+            if _allow_classify_cache_lookup is not None
+            else False,
+            extended_metadata=True,
+            publish_events=self._event_bus is not None,
         )
-        if cache_replay.action_replay is not None:
-            replay = await self._finalize_action_replay_hit(
-                cache_replay.action_replay,
-                conversation_id,
-                user_text,
-                span_collector,
-                task=task,
-            )
-            replay["conversation_id"] = conversation_id
-            return replay
+        if prelude.early_exit is not None:
+            response = dict(prelude.early_exit)
+            response.pop("_exit_type", None)
+            response["conversation_id"] = prelude.conversation_id
+            return response
 
-        # Phase 1: classification
-        used_origin_context = bool(task and task.context and (task.context.area_id or task.context.device_id))
-        if self._event_bus is not None:
-            await self._event_bus.publish(
-                "pipeline.pre_classify", {"task": task, "user_text": user_text, "language": detected_language}
-            )
-        try:
-            classifications, _routing_cached, target_agent, condensed_task, confidence = await self._run_classification(
-                task,
-                user_text,
-                detected_language,
-                span_collector,
-                pre_classified=_pre_classified,
-                routing_skip=cache_replay.routing_skip,
-                compound_bypass=cache_replay.compound_bypass,
-                extended_metadata=True,
-                classify_reason=_classify_reason,
-                allow_classify_cache_lookup=_allow_classify_cache_lookup
-                if _allow_classify_cache_lookup is not None
-                else False,
-            )
-        except _RecoverableClassificationError as exc:
-            return {
-                "speech": exc.message,
-                "conversation_id": conversation_id,
-                "routed_to": "orchestrator",
-                "action_executed": None,
-                "voice_followup": False,
-                "error": {
-                    "code": exc.code,
-                    "message": exc.message,
-                    "recoverable": True,
-                },
-            }
-
-        # P3-10: per-request routing log; debug.
-        logger.debug(
-            "Routed to %s (%s): %s (conversation=%s)",
-            target_agent,
-            f"{confidence * 100:.0f}%" if confidence is not None else "unknown",
-            condensed_task[:80],
-            conversation_id,
-        )
-        if self._event_bus is not None:
-            await self._event_bus.publish(
-                "pipeline.post_classify",
-                {
-                    "task": task,
-                    "classifications": classifications,
-                    "target_agent": target_agent,
-                    "condensed_task": condensed_task,
-                    "confidence": confidence,
-                },
-            )
+        conversation_id = prelude.conversation_id
+        detected_language = prelude.detected_language
+        span_collector = prelude.span_collector
+        classifications = prelude.classifications
+        _routing_cached = prelude.routing_cached
+        target_agent = prelude.target_agent
+        condensed_task = prelude.condensed_task
+        confidence = prelude.confidence
+        used_origin_context = prelude.used_origin_context
 
         # Phase 2: dispatch
         turns = await self._get_turns(conversation_id)
@@ -1068,7 +1224,7 @@ class OrchestratorAgent(BaseAgent, TaskPipeline):
                 "pipeline.pre_dispatch",
                 {"task": task, "classifications": classifications, "target_agent": target_agent},
             )
-        dispatch_result = await self._run_dispatch(
+        dispatch_result = await self._pipeline_director.run_dispatch(
             task,
             classifications,
             user_text,
@@ -1096,7 +1252,7 @@ class OrchestratorAgent(BaseAgent, TaskPipeline):
             }
 
         # Phase 3: finalization
-        response = await self._run_finalization(
+        response = await self._pipeline_director.run_finalization(
             task,
             dispatch_result,
             user_text,
@@ -1115,87 +1271,60 @@ class OrchestratorAgent(BaseAgent, TaskPipeline):
 
     async def _handle_task_stream_impl(self, task: AgentTask) -> AsyncGenerator[dict[str, Any], None]:
         user_text = task.user_text or task.description
-        conversation_id, detected_language, lang_turns = await self._pipeline_resolve_conversation_and_language(task)
-
         span_collector = task.span_collector
-        t0_request = time.perf_counter()  # Wall-clock start for filler threshold
-        t0_request_utc = datetime.now(UTC)  # Absolute UTC for span timestamp overrides
+        t0_request = time.perf_counter()
+        t0_request_utc = datetime.now(UTC)
 
-        # 0. Background turn (streaming path)
-        if self._is_background_turn(task):
-            result = await self._handle_background_turn(task)
-            final_chunk = {
-                "token": "",
-                "done": True,
-                "conversation_id": conversation_id,
-                "mediated_speech": strip_markdown(result.get("speech", "")),
-                "routed_to": "orchestrator",
-                "sanitized": True,
-            }
-            if result.get("error"):
-                final_chunk["error"] = result["error"]
-            if result.get("action_executed"):
-                final_chunk["action_executed"] = result["action_executed"]
-            yield final_chunk
-            return
-
-        # 0. Cache replay / routing skip (before classify)
-        cache_replay = await self._run_cache_replay(
+        prelude = await self._run_pipeline_prelude(
             task,
-            user_text,
-            detected_language,
-            span_collector,
+            extended_metadata=False,
+            publish_events=False,
         )
-        if cache_replay.action_replay is not None:
-            replay = await self._finalize_action_replay_hit(
-                cache_replay.action_replay,
-                conversation_id,
-                user_text,
-                span_collector,
-                task=task,
-            )
-            yield {
-                "token": replay["speech"],
-                "done": True,
-                "conversation_id": conversation_id,
-                "mediated_speech": replay["speech"],
-                "sanitized": True,
-            }
+        if prelude.early_exit is not None:
+            ee = prelude.early_exit
+            exit_type = ee.pop("_exit_type", "")
+            if exit_type == "classification_error":
+                yield {
+                    "token": "",
+                    "done": True,
+                    "conversation_id": prelude.conversation_id,
+                    "mediated_speech": strip_markdown(ee.get("speech", "")),
+                    "error": ee["error"],
+                }
+            elif exit_type == "background_turn":
+                final_chunk: dict[str, Any] = {
+                    "token": "",
+                    "done": True,
+                    "conversation_id": prelude.conversation_id,
+                    "mediated_speech": strip_markdown(ee.get("speech", "")),
+                    "routed_to": ee.get("routed_to", "orchestrator"),
+                    "sanitized": True,
+                }
+                if ee.get("action_executed"):
+                    final_chunk["action_executed"] = ee["action_executed"]
+                if ee.get("error"):
+                    final_chunk["error"] = ee["error"]
+                yield final_chunk
+            else:
+                yield {
+                    "token": ee["speech"],
+                    "done": True,
+                    "conversation_id": prelude.conversation_id,
+                    "mediated_speech": ee["speech"],
+                    "sanitized": True,
+                }
             return
 
-        # 1. Classify (non-streaming -- fast via Groq)
-        used_origin_context = bool(task and task.context and (task.context.area_id or task.context.device_id))
-        try:
-            classifications, routing_cached, target_agent, condensed_task, confidence = await self._run_classification(
-                task,
-                user_text,
-                detected_language,
-                span_collector,
-                routing_skip=cache_replay.routing_skip,
-                compound_bypass=cache_replay.compound_bypass,
-                extended_metadata=False,
-                allow_classify_cache_lookup=False,
-            )
-        except _RecoverableClassificationError as exc:
-            yield {
-                "token": "",
-                "done": True,
-                "conversation_id": conversation_id,
-                "mediated_speech": strip_markdown(exc.message),
-                "error": {
-                    "code": exc.code,
-                    "message": exc.message,
-                    "recoverable": True,
-                },
-            }
-            return
-        # P3-10: per-request streaming routing log; debug.
-        logger.debug(
-            "Stream routed to %s: %s (conversation=%s)",
-            target_agent,
-            condensed_task[:80],
-            conversation_id,
-        )
+        conversation_id = prelude.conversation_id
+        detected_language = prelude.detected_language
+        lang_turns = prelude.lang_turns
+        span_collector = prelude.span_collector
+        classifications = prelude.classifications
+        routing_cached = prelude.routing_cached
+        target_agent = prelude.target_agent
+        condensed_task = prelude.condensed_task
+        confidence = prelude.confidence
+        used_origin_context = prelude.used_origin_context
 
         if len(classifications) == 1 and target_agent == _CANCEL_INTERACTION_AGENT:
             async with _optional_span(span_collector, "dispatch", agent_id=_CANCEL_INTERACTION_AGENT) as span:
@@ -1692,7 +1821,7 @@ class OrchestratorAgent(BaseAgent, TaskPipeline):
                 id=f"filler-{uuid.uuid4().hex[:8]}",
             )
             response = await self._dispatcher.dispatch(request)
-            result_data = self._normalize_agent_result(response.result)
+            result_data = self._dispatch_manager.normalize_agent_result(response.result)
             speech = result_data.get("speech", "")
             if not speech or not speech.strip():
                 logger.warning("Filler agent returned empty speech; no filler will be spoken")

@@ -37,6 +37,15 @@ class PluginContext:
         self._add_api_route: Callable[..., Any] = app.add_api_route
         self._include_router: Callable[..., Any] = app.include_router
         self.event_bus: EventBus | None = None  # Set by PluginLoader after construction
+        self.pipeline_strategies: dict[str, Any] = {}
+
+    def set_pipeline_strategy(self, phase: str, strategy: Any) -> None:
+        """Register a pipeline phase strategy override.
+
+        ``phase`` must be one of ``"cache_replay"``, ``"classification"``,
+        ``"dispatch"``, ``"finalization"``.
+        """
+        self.pipeline_strategies[phase] = strategy
 
     @property
     def agent_registry(self):

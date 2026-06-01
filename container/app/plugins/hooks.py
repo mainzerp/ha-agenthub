@@ -26,7 +26,6 @@ class PipelineEvent(enum.StrEnum):
     POST_CLASSIFY = "pipeline.post_classify"
     PRE_DISPATCH = "pipeline.pre_dispatch"
     POST_DISPATCH = "pipeline.post_dispatch"
-    PRE_MEDIATE = "pipeline.pre_mediate"
 
 
 PIPELINE_EVENTS = frozenset(e.value for e in PipelineEvent)

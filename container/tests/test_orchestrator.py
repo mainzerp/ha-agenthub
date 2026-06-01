@@ -1093,6 +1093,7 @@ class TestOrchestratorAgent:
 
         orch, *_ = self._make_orchestrator()
         orch._cache_manager = None
+        orch._pipeline_director._cache_manager = None
         mock_complete.return_value = "general-agent: answer"
         mock_settings.get_value = AsyncMock(return_value="")
         collector = SpanCollector("trace-no-cache")

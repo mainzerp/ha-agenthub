@@ -70,7 +70,7 @@ def _make_orchestrator(cache_manager) -> OrchestratorAgent:
 @pytest.mark.asyncio
 async def test_exact_text_routing_hit_skips_classify():
     orch = _make_orchestrator(MagicMock())
-    orch._try_cache_replay = AsyncMock(
+    orch._cache_orchestrator.try_cache_replay = AsyncMock(
         return_value=(
             None,
             RoutingSkipOutcome(
@@ -82,21 +82,23 @@ async def test_exact_text_routing_hit_skips_classify():
             ),
         )
     )
-    orch._classify = AsyncMock(side_effect=AssertionError("classification should be skipped on routing hit"))
-    orch._dispatch_single = AsyncMock(
+    orch._classification_engine.classify = AsyncMock(
+        side_effect=AssertionError("classification should be skipped on routing hit")
+    )
+    orch._dispatch_manager.dispatch_single = AsyncMock(
         return_value=("light-agent", "Live dispatch speech", {"speech": "Live dispatch speech"})
     )
 
     result = await orch._handle_task_impl(_make_task("turn on kitchen light"))
 
     assert result["speech"] == "Live dispatch speech"
-    orch._classify.assert_not_awaited()
+    orch._classification_engine.classify.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 async def test_semantic_routing_hit_above_threshold_skips_classify():
     orch = _make_orchestrator(MagicMock())
-    orch._try_cache_replay = AsyncMock(
+    orch._cache_orchestrator.try_cache_replay = AsyncMock(
         return_value=(
             None,
             RoutingSkipOutcome(
@@ -108,21 +110,23 @@ async def test_semantic_routing_hit_above_threshold_skips_classify():
             ),
         )
     )
-    orch._classify = AsyncMock(side_effect=AssertionError("classification should be skipped on routing hit"))
-    orch._dispatch_single = AsyncMock(
+    orch._classification_engine.classify = AsyncMock(
+        side_effect=AssertionError("classification should be skipped on routing hit")
+    )
+    orch._dispatch_manager.dispatch_single = AsyncMock(
         return_value=("light-agent", "Live dispatch speech", {"speech": "Live dispatch speech"})
     )
 
     result = await orch._handle_task_impl(_make_task("switch on the kitchen lamp"))
 
     assert result["routed_to"] == "light-agent"
-    orch._classify.assert_not_awaited()
+    orch._classification_engine.classify.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 async def test_routing_hit_always_runs_live_dispatch():
     orch = _make_orchestrator(MagicMock())
-    orch._try_cache_replay = AsyncMock(
+    orch._cache_orchestrator.try_cache_replay = AsyncMock(
         return_value=(
             None,
             RoutingSkipOutcome(
@@ -134,14 +138,16 @@ async def test_routing_hit_always_runs_live_dispatch():
             ),
         )
     )
-    orch._classify = AsyncMock(side_effect=AssertionError("classification should be skipped on routing hit"))
-    orch._dispatch_single = AsyncMock(
+    orch._classification_engine.classify = AsyncMock(
+        side_effect=AssertionError("classification should be skipped on routing hit")
+    )
+    orch._dispatch_manager.dispatch_single = AsyncMock(
         return_value=("light-agent", "Live dispatch speech", {"speech": "Live dispatch speech"})
     )
 
     await orch._handle_task_impl(_make_task("turn on kitchen light"))
 
-    orch._dispatch_single.assert_awaited_once()
+    orch._dispatch_manager.dispatch_single.assert_awaited_once()
 
 
 @pytest.mark.asyncio
