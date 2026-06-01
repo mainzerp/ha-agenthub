@@ -420,6 +420,20 @@ async def _create_tables(db: aiosqlite.Connection) -> None:
         )
     """)
 
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS cache_validator_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            scanned INTEGER NOT NULL DEFAULT 0,
+            inconsistent INTEGER NOT NULL DEFAULT 0,
+            corrected INTEGER NOT NULL DEFAULT 0,
+            deleted INTEGER NOT NULL DEFAULT 0,
+            errors INTEGER NOT NULL DEFAULT 0,
+            started_at TEXT NOT NULL,
+            finished_at TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+    """)
+
 
 async def _create_indexes(db: aiosqlite.Connection) -> None:
     """Create indexes for query performance."""
@@ -441,10 +455,10 @@ async def _create_indexes(db: aiosqlite.Connection) -> None:
     await db.execute("CREATE INDEX IF NOT EXISTS idx_trace_summary_created_at ON trace_summary(created_at)")
     await db.execute("CREATE INDEX IF NOT EXISTS idx_trace_summary_routing_agent ON trace_summary(routing_agent)")
     await db.execute("CREATE INDEX IF NOT EXISTS idx_trace_summary_label ON trace_summary(label)")
-    await db.execute(
-        "CREATE INDEX IF NOT EXISTS idx_scheduled_timers_state_fires_at ON scheduled_timers(state, fires_at)"
-    )
     await db.execute("CREATE INDEX IF NOT EXISTS idx_scheduled_timers_logical_name ON scheduled_timers(logical_name)")
+    await db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_cache_validator_runs_started_at ON cache_validator_runs(started_at)"
+    )
 
 
 async def _seed_defaults(db: aiosqlite.Connection) -> None:
@@ -1649,3 +1663,23 @@ async def _run_migrations(db: aiosqlite.Connection) -> None:
             WHERE agent_id = 'filler-agent' AND max_tokens < 1024
         """)
         await db.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (34)")
+
+    if current_version < 35:
+        # Migration 35: Persistent cache validator run history.
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS cache_validator_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                scanned INTEGER NOT NULL DEFAULT 0,
+                inconsistent INTEGER NOT NULL DEFAULT 0,
+                corrected INTEGER NOT NULL DEFAULT 0,
+                deleted INTEGER NOT NULL DEFAULT 0,
+                errors INTEGER NOT NULL DEFAULT 0,
+                started_at TEXT NOT NULL,
+                finished_at TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+        """)
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_cache_validator_runs_started_at ON cache_validator_runs(started_at)"
+        )
+        await db.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (35)")

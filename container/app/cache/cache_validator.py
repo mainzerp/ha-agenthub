@@ -5,12 +5,11 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from collections import deque
 from datetime import UTC, datetime
 
 from app.cache.action_cache import ActionCache
 from app.cache.cache_manager import CacheManager
-from app.db.repository import SettingsRepository
+from app.db.repository import CacheValidatorRepository, SettingsRepository
 from app.models.cache import ActionCacheEntry
 
 logger = logging.getLogger(__name__)
@@ -71,7 +70,6 @@ class ActionCacheValidator:
         self._entity_index = entity_index
         self._ha_client = ha_client
         self._llm_client = llm_client
-        self._history: deque[dict] = deque(maxlen=50)
 
     async def run_periodic(self) -> None:
         """Asyncio sleep loop that runs validation at configured intervals."""
@@ -227,7 +225,15 @@ class ActionCacheValidator:
             "started_at": started_at,
             "finished_at": finished_at,
         }
-        self._history.append(result)
+        await CacheValidatorRepository.insert(
+            scanned=result["scanned"],
+            inconsistent=result["inconsistent"],
+            corrected=result["corrected"],
+            deleted=result["deleted"],
+            errors=result["errors"],
+            started_at=result["started_at"],
+            finished_at=result["finished_at"],
+        )
         logger.info(
             "Cache validator scan complete: scanned=%d inconsistent=%d corrected=%d deleted=%d errors=%d",
             scanned,
@@ -238,9 +244,9 @@ class ActionCacheValidator:
         )
         return result
 
-    def get_history(self) -> list[dict]:
-        """Return the last 50 validation run records."""
-        return list(self._history)
+    async def get_history(self) -> list[dict]:
+        """Return the last 50 validation run records from persistent storage."""
+        return await CacheValidatorRepository.list_recent(limit=50)
 
     async def _get_batch_size(self) -> int:
         """Read and clamp the configured batch size."""

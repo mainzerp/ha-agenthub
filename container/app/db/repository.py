@@ -1226,6 +1226,38 @@ class AnalyticsRepository:
             return rows
 
 
+class CacheValidatorRepository:
+    """CRUD for cache validator run history."""
+
+    @staticmethod
+    async def insert(
+        scanned: int,
+        inconsistent: int,
+        corrected: int,
+        deleted: int,
+        errors: int,
+        started_at: str,
+        finished_at: str,
+    ) -> int:
+        async with get_db_write() as db:
+            cursor = await db.execute(
+                "INSERT INTO cache_validator_runs "
+                "(scanned, inconsistent, corrected, deleted, errors, started_at, finished_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (scanned, inconsistent, corrected, deleted, errors, started_at, finished_at),
+            )
+            return cursor.lastrowid or 0
+
+    @staticmethod
+    async def list_recent(limit: int = 50) -> list[dict[str, Any]]:
+        async with get_db_read() as db:
+            cursor = await db.execute(
+                "SELECT * FROM cache_validator_runs ORDER BY started_at DESC LIMIT ?",
+                (limit,),
+            )
+            return [dict(row) for row in await cursor.fetchall()]
+
+
 class EntityMatchingConfigRepository:
     """CRUD for entity matching configuration."""
 

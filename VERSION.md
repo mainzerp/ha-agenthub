@@ -1,12 +1,20 @@
 # Version
 
-**Current Version:** 1.33.3
+**Current Version:** 1.34.0
 
 ## Recent Changes
 
-Track changes since `v1.33.3` here.
+Track changes since `v1.34.0` here.
 
 ## Version History
+
+### 1.34.0 (MINOR) -- Persistent cache validator run history
+
+- feat(cache): persist cache validator run history to SQLite `cache_validator_runs` table instead of in-memory deque
+- feat(cache): validator history now survives container restart
+- feat(cache): `get_history()` returns runs sorted newest-first (`ORDER BY started_at DESC`)
+- feat(db): add migration v35 for `cache_validator_runs` table and index
+- feat(db): add `CacheValidatorRepository` for CRUD operations on validator runs
 
 ### 1.33.3 (PATCH) -- Redesign state-injection prompt format
 
