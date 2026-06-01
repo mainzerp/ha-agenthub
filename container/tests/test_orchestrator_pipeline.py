@@ -102,7 +102,7 @@ async def test_handle_task_equals_run_pipeline_payload(mock_complete, mock_track
     mock_settings.get_value = AsyncMock(return_value="")
 
     captured = {"speech": "Light is on."}
-    orch._dispatch_single = AsyncMock(return_value=("light-agent", "Light is on.", captured))
+    orch._dispatch_manager.dispatch_single = AsyncMock(return_value=("light-agent", "Light is on.", captured))
 
     task_a = _make_task("turn on light", conversation_id="conv-a")
     task_b = _make_task("turn on light", conversation_id="conv-b")

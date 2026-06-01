@@ -297,6 +297,8 @@ async def lifespan(app: FastAPI):
     orchestrator_agent = await registry._get_handler_for_transport("orchestrator")
     if orchestrator_agent is not None:
         orchestrator_agent._event_bus = plugin_loader.event_bus
+        if plugin_context.pipeline_strategies:
+            orchestrator_agent.apply_pipeline_strategies(plugin_context.pipeline_strategies)
 
     if not settings.cookie_secure:
         logger.warning(
