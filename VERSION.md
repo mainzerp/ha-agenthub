@@ -1,12 +1,20 @@
 # Version
 
-**Current Version:** 1.35.1
+**Current Version:** 1.35.2
 
 ## Recent Changes
 
-Track changes since `v1.35.1` here.
+Track changes since `v1.35.2` here.
 
 ## Version History
+
+### 1.35.2 (PATCH) -- Dependency updates, DuckDuckGo package migration
+
+- chore(deps): bump uvicorn from 0.47.0 to 0.48.0 -- SSL cipher defaults and proxy header fix. (042e830)
+- chore(deps): bump sentence-transformers from 5.4.0 to 5.5.1 -- EmbedDistillLoss, ADRMSELoss, processing_kwargs override. (f050c14)
+- chore(deps): update python-dotenv minimum pin from >=1.0.0 to >=1.2.2 -- Python 3.14 support. (51faeb0)
+- chore(deps): migrate duckduckgo-search to ddgs package -- renamed in v8.1.0, PyPI starts at v9.0.0. Update import paths, requirements pin, and test importorskip. (d88c3f7, b41ff16)
+- chore(deps-dev): bump ruff from 0.15.14 to 0.15.15. (b710343)
 
 ### 1.35.1 (PATCH) -- Dashboard JS consolidation, A2A cleanup, runtime bootstrap decomposition
 
