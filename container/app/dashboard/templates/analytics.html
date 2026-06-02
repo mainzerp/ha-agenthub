@@ -1,9 +1,12 @@
 {% extends "dashboard_base.html" %}
 {% block page_title %}Analytics{% endblock %}
 {% block page_css %}<link rel="stylesheet" href="{{ static_url(request, '/dashboard/static/css/pages/analytics.css') }}">{% endblock %}
+{% block page_js %}<script src="{{ static_url(request, '/dashboard/static/vendor/chartjs/chart-4.umd.min.js') }}" defer></script>{% endblock %}
 {% block header_title %}Analytics{% endblock %}
 {% block page_content %}
 <div x-data="analyticsPage()" x-init="loadAll()">
+
+    <div x-show="error" class="alert alert-error mb-md" x-text="error" @click="error = null" style="cursor:pointer"></div>
 
     <div class="page-header">
         <div class="page-header-text">
@@ -163,6 +166,7 @@
 function analyticsPage() {
     return {
         hours: 24,
+        error: null,
         overview: {},
         agentMetrics: [],
         tokenData: {},
@@ -182,32 +186,17 @@ function analyticsPage() {
         },
 
         async loadOverview() {
-            try {
-                this.overview = await window.dashboardApi.json('/api/admin/analytics/overview?hours=' + this.hours);
-            } catch (e) {
-                if (e.code === 'auth_expired') return;
-                console.error('Failed to load overview', e);
-            }
+            this.overview = await window.dashboardApi.safeJson('/api/admin/analytics/overview?hours=' + this.hours) || {};
         },
 
         async loadRequestsChart() {
-            try {
-                const data = await window.dashboardApi.json('/api/admin/analytics/requests?hours=' + this.hours);
-                this.renderChart('requestsChart', 'requestsChart', data, 'bar', 'rgba(59, 130, 246, 0.7)');
-            } catch (e) {
-                if (e.code === 'auth_expired') return;
-                console.error('Failed to load requests chart', e);
-            }
+            var data = await window.dashboardApi.safeJson('/api/admin/analytics/requests?hours=' + this.hours);
+            if (data) this.renderChart('requestsChart', 'requestsChart', data, 'bar', 'rgba(59, 130, 246, 0.7)');
         },
 
         async loadCacheChart() {
-            try {
-                const data = await window.dashboardApi.json('/api/admin/analytics/cache?hours=' + this.hours);
-                this.renderChart('cacheChart', 'cacheChart', data, 'line', 'rgba(34, 197, 94, 0.7)');
-            } catch (e) {
-                if (e.code === 'auth_expired') return;
-                console.error('Failed to load cache chart', e);
-            }
+            var data = await window.dashboardApi.safeJson('/api/admin/analytics/cache?hours=' + this.hours);
+            if (data) this.renderChart('cacheChart', 'cacheChart', data, 'line', 'rgba(34, 197, 94, 0.7)');
         },
 
         renderChart(propName, canvasId, data, type, color) {
@@ -230,46 +219,21 @@ function analyticsPage() {
             this[propName] = new Chart(ctx, {
                 type: type,
                 data: { labels: data.labels || [], datasets: datasets },
-                options: {
-                    responsive: true,
-                    maintainAspectRatio: false,
-                    scales: {
-                        y: { beginAtZero: true, grid: { color: chartRgba('text', 0.05) }, ticks: { color: chartColors().text } },
-                        x: { grid: { color: chartRgba('text', 0.05) }, ticks: { color: chartColors().text } }
-                    },
-                    plugins: {
-                        legend: { labels: { color: chartColors().text } }
-                    }
-                }
+                options: dashChartOptions()
             });
         },
 
         async loadAgents() {
-            try {
-                const data = await window.dashboardApi.json('/api/admin/analytics/agents?hours=' + this.hours);
-                this.agentMetrics = data.agents || [];
-            } catch (e) {
-                if (e.code === 'auth_expired') return;
-                console.error('Failed to load agent metrics', e);
-            }
+            var data = await window.dashboardApi.safeJson('/api/admin/analytics/agents?hours=' + this.hours);
+            if (data) this.agentMetrics = data.agents || [];
         },
 
         async loadTokens() {
-            try {
-                this.tokenData = await window.dashboardApi.json('/api/admin/analytics/tokens?hours=' + this.hours);
-            } catch (e) {
-                if (e.code === 'auth_expired') return;
-                console.error('Failed to load token data', e);
-            }
+            this.tokenData = await window.dashboardApi.safeJson('/api/admin/analytics/tokens?hours=' + this.hours) || {};
         },
 
         async loadRewrite() {
-            try {
-                this.rewriteData = await window.dashboardApi.json('/api/admin/analytics/rewrite?hours=' + this.hours);
-            } catch (e) {
-                if (e.code === 'auth_expired') return;
-                console.error('Failed to load rewrite data', e);
-            }
+            this.rewriteData = await window.dashboardApi.safeJson('/api/admin/analytics/rewrite?hours=' + this.hours) || {};
         }
     };
 }

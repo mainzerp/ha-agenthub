@@ -6,6 +6,7 @@
 
 {% block page_content %}
 <div x-data="pluginsPage()">
+    <div x-show="error" class="alert alert-error mb-md" x-text="error" @click="error = null" style="cursor:pointer"></div>
 
     <div class="page-header">
         <div class="page-header-text">
@@ -62,18 +63,14 @@
 function pluginsPage() {
     return {
         plugins: [],
+        error: null,
         message: '',
         messageType: 'success',
         loading: true,
         init() { this.loadPlugins(); },
         async loadPlugins() {
             this.loading = true;
-            try {
-                this.plugins = await window.dashboardApi.json('/api/admin/plugins');
-            } catch (e) {
-                if (e.code === 'auth_expired') return;
-                console.error('Failed to load plugins', e);
-            }
+            this.plugins = await window.dashboardApi.safeJson('/api/admin/plugins') || [];
             this.loading = false;
         },
         async togglePlugin(name, enabled) {

@@ -1,6 +1,7 @@
 {% extends "dashboard_base.html" %}
 {% block page_title %}Overview{% endblock %}
 {% block page_css %}<link rel="stylesheet" href="{{ static_url(request, '/dashboard/static/css/pages/overview.css') }}">{% endblock %}
+{% block page_js %}<script src="{{ static_url(request, '/dashboard/static/vendor/chartjs/chart-4.umd.min.js') }}" defer></script>{% endblock %}
 {% block header_title %}System Overview{% endblock %}
 {% block page_content %}
 <div x-data="overviewPage()" x-init="loadAll()">
@@ -97,8 +98,8 @@
     </div>
     <div class="health-bar" x-show="health">
         <template x-for="comp in healthComponents" :key="comp.key">
-            <div class="health-badge" :class="getBadgeClass(health ? health[comp.key] : null)">
-                <span class="status-dot" :class="getStatusClass(health ? health[comp.key] : null)"></span>
+                <div class="health-badge" :class="dashBadgeClass(health ? health[comp.key] : null)">
+                <span class="status-dot" :class="dashStatusClass(health ? health[comp.key] : null)"></span>
                 <span x-text="comp.label + getDetail(comp.key, health ? health[comp.key] : null)"></span>
             </div>
         </template>
@@ -160,7 +161,7 @@
                     <tbody>
                         <template x-for="t in (data ? data.recent_traces : [])" :key="t.trace_id">
                             <tr>
-                                <td class="text-muted" x-text="formatTimeAgo(t.created_at)"></td>
+                                <td class="text-muted" x-text="dashFormatRelativeTime(t.created_at)"></td>
                                 <td x-text="t.user_input.length > 60 ? t.user_input.substring(0, 60) + '...' : t.user_input"></td>
                                 <td class="text-mono" x-text="t.routing_agent || '-'"></td>
                                 <td class="text-mono" x-text="t.total_duration_ms ? Math.round(t.total_duration_ms) + 'ms' : '-'"></td>
@@ -214,23 +215,20 @@ function overviewPage() {
         },
 
         async loadExtended() {
-            try {
-                this.data = await window.dashboardApi.json('/api/admin/overview/extended');
-            } catch(e) {
-                if (e.code === 'auth_expired') return;
-                console.error('Failed to load extended overview', e);
+            var newData = await window.dashboardApi.safeJson('/api/admin/overview/extended');
+            if (newData && JSON.stringify(newData) !== JSON.stringify(this.data)) {
+                this.data = newData;
             }
         },
 
         async loadHealth() {
-            try {
-                this.health = await window.dashboardApi.json('/api/admin/health/extended');
-                this.healthErrors = Object.entries(this.health)
-                    .filter(([k, v]) => v.status === 'error' && k !== 'uptime')
-                    .map(([k]) => this.healthComponents.find(c => c.key === k)?.label || k);
-            } catch(e) {
-                if (e.code === 'auth_expired') return;
-                console.error('Failed to load health', e);
+            var newHealth = await window.dashboardApi.safeJson('/api/admin/health/extended');
+            if (newHealth && JSON.stringify(newHealth) !== JSON.stringify(this.health)) {
+                this.health = newHealth;
+                var self = this;
+                this.healthErrors = Object.entries(this.health || {})
+                    .filter(function(e) { var v = e[1]; var k = e[0]; return v && v.status === 'error' && k !== 'uptime'; })
+                    .map(function(e) { var k = e[0]; return (self.healthComponents.find(function(c) { return c.key === k; }) || {}).label || k; });
             }
         },
 
@@ -256,7 +254,7 @@ function overviewPage() {
                             tension: 0.3
                         }]
                     },
-                    options: chartOptions()
+                    options: dashChartOptions()
                 });
             }
             var adCtx = document.getElementById("agentDistChart");
@@ -330,19 +328,6 @@ function overviewPage() {
             }
         },
 
-        getStatusClass(comp) {
-            if (!comp) return "status-unknown";
-            return comp.status === "healthy" ? "status-healthy" : (comp.status === "error" ? "status-error" : "status-unknown");
-        },
-
-        getBadgeClass(comp) {
-            if (!comp) return "";
-            if (comp.status === "healthy") return "health-badge--healthy";
-            if (comp.status === "error") return "health-badge--error";
-            if (comp.status === "warning") return "health-badge--warning";
-            return "";
-        },
-
         getDetail(key, comp) {
             if (!comp) return "";
             if (key === "uptime" && comp.display) return " (" + comp.display + ")";
@@ -351,30 +336,7 @@ function overviewPage() {
             return "";
         },
 
-        formatTimeAgo(ts) {
-            if (!ts) return "-";
-            var now = Date.now();
-            var then = new Date(ts).getTime();
-            var diffS = Math.floor((now - then) / 1000);
-            if (diffS < 60) return diffS + "s ago";
-            if (diffS < 3600) return Math.floor(diffS / 60) + "m ago";
-            if (diffS < 86400) return Math.floor(diffS / 3600) + "h ago";
-            return Math.floor(diffS / 86400) + "d ago";
-        }
-    };
-}
 
-function chartOptions() {
-    return {
-        responsive: true,
-        maintainAspectRatio: false,
-        scales: {
-            y: { beginAtZero: true, grid: { color: chartRgba('text', 0.05) }, ticks: { color: chartColors().text } },
-            x: { grid: { color: chartRgba('text', 0.05) }, ticks: { color: chartColors().text } }
-        },
-        plugins: {
-            legend: { labels: { color: chartColors().text } }
-        }
     };
 }
 </script>

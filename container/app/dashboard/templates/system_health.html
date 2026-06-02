@@ -29,7 +29,7 @@
                             <span class="badge badge-dot" :class="'badge-dot--' + getDotClass(health[c.key])"></span>
                             <strong x-text="c.label"></strong>
                         </div>
-                        <span class="badge" :class="getBadgeClass(health[c.key])" x-text="(health[c.key] || {status:'unknown'}).status"></span>
+                        <span class="badge" :class="dashBadgeClass(health[c.key])" x-text="(health[c.key] || {status:'unknown'}).status"></span>
                     </div>
                     <p class="stat-card-detail" x-text="getDetail(c.key, health[c.key])"></p>
                 </div>
@@ -56,15 +56,10 @@ function healthPage() {
         async loadHealth() {
             var self = this;
             async function doFetch() {
-                try {
-                    self.health = await window.dashboardApi.json('/api/admin/health/extended');
+                var newHealth = await window.dashboardApi.safeJson('/api/admin/health/extended');
+                if (newHealth && JSON.stringify(newHealth) !== JSON.stringify(self.health)) {
+                    self.health = newHealth;
                     self.error = '';
-                } catch(e) {
-                    if (e.code === 'auth_expired') {
-                        return;
-                    }
-                    self.error = 'Failed to load health data';
-                    console.error("Failed to parse health data", e);
                 }
             }
             await doFetch();
@@ -78,22 +73,11 @@ function healthPage() {
                 this.refreshInterval = null;
             }
         },
-        getStatusClass(comp) {
-            if (!comp) return "status-unknown";
-            return comp.status === "healthy" ? "status-healthy" : (comp.status === "error" ? "status-error" : "status-unknown");
-        },
-        getDotColor(comp) {
-            if (!comp) return "var(--soft-amber)";
-            return comp.status === "healthy" ? "var(--sage)" : (comp.status === "error" ? "var(--coral)" : "var(--soft-amber)");
-        },
         getDotClass(comp) {
             if (!comp) return "muted";
             return comp.status === "healthy" ? "green" : (comp.status === "error" ? "red" : "yellow");
         },
-        getBadgeClass(comp) {
-            if (!comp) return "badge-yellow";
-            return comp.status === "healthy" ? "badge-green" : (comp.status === "error" ? "badge-red" : "badge-yellow");
-        },
+        getBadgeClass(comp) { return dashBadgeClass(comp); },
         getDetail(key, comp) {
             if (!comp) return "";
             if (key === "uptime" && comp.display) return comp.display;

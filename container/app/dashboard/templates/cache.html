@@ -179,8 +179,8 @@
                                 <td class="truncate max-w-200" x-text="e.document"></td>
                                 <td><span class="badge badge-teal" x-text="e.agent_id || '-'"></span></td>
                                 <td class="text-mono" x-text="e.hit_count || '0'"></td>
-                                <td class="text-mono text-xs" x-text="formatTimestamp(e.created_at)"></td>
-                                <td class="text-mono text-xs" x-text="formatTimestamp(e.last_accessed)"></td>
+                                <td class="text-mono text-xs" x-text="dashFormatTimestamp(e.created_at)"></td>
+                                <td class="text-mono text-xs" x-text="dashFormatTimestamp(e.last_accessed)"></td>
                                 <td>
                                     <button class="btn btn-sm btn-secondary" @click="showDetail(e)">Details</button>
                                     <button class="btn btn-sm btn-coral" @click="deleteEntry(e.id)">Delete</button>
@@ -228,15 +228,15 @@
                         </div>
                         <div class="span-detail-row span-detail-wide">
                             <div class="span-detail-label">Entity IDs</div>
-                            <pre class="span-detail-content" x-text="JSON.stringify(parseJsonSafe(selectedEntry.entity_ids), null, 2) || '-'"></pre>
+                            <pre class="span-detail-content" x-text="JSON.stringify(dashParseJsonSafe(selectedEntry.entity_ids), null, 2) || '-'"></pre>
                         </div>
                         <div class="span-detail-row">
                             <div class="span-detail-label">Created At</div>
-                            <pre class="span-detail-content" x-text="formatTimestamp(selectedEntry.created_at)"></pre>
+                            <pre class="span-detail-content" x-text="dashFormatTimestamp(selectedEntry.created_at)"></pre>
                         </div>
                         <div class="span-detail-row">
                             <div class="span-detail-label">Last Accessed</div>
-                            <pre class="span-detail-content" x-text="formatTimestamp(selectedEntry.last_accessed)"></pre>
+                            <pre class="span-detail-content" x-text="dashFormatTimestamp(selectedEntry.last_accessed)"></pre>
                         </div>
                     </div>
                 </div>
@@ -293,9 +293,9 @@
                                 <td class="truncate max-w-200" x-text="e.document"></td>
                                 <td><span class="badge badge-teal" x-text="e.agent_id || '-'"></span></td>
                                 <td class="text-mono" x-text="e.hit_count || '0'"></td>
-                                <td class="text-mono text-xs" x-text="formatTimestamp(e.created_at)"></td>
-                                <td class="text-mono text-xs" x-text="formatTimestamp(e.last_accessed)"></td>
-                                <td class="text-mono text-xs" x-text="formatTimestamp(e.validated_at)"></td>
+                                <td class="text-mono text-xs" x-text="dashFormatTimestamp(e.created_at)"></td>
+                                <td class="text-mono text-xs" x-text="dashFormatTimestamp(e.last_accessed)"></td>
+                                <td class="text-mono text-xs" x-text="dashFormatTimestamp(e.validated_at)"></td>
                                 <td>
                                     <button class="btn btn-sm btn-secondary" @click="showDetail(e)">Details</button>
                                     <button class="btn btn-sm btn-coral" @click="deleteEntry(e.id)">Delete</button>
@@ -354,26 +354,26 @@
                         <div class="span-detail-row span-detail-wide">
                             <div class="span-detail-label">Cached Action</div>
                             <div class="span-detail-content">
-                                <template x-if="parseJsonSafe(selectedEntry.cached_action)">
+                                <template x-if="dashParseJsonSafe(selectedEntry.cached_action)">
                                     <div>
-                                        <div class="mb-xs"><span class="span-detail-label">Service</span> <span x-text="parseJsonSafe(selectedEntry.cached_action).service || '-'"></span></div>
-                                        <div class="mb-xs"><span class="span-detail-label">Entity ID</span> <span x-text="parseJsonSafe(selectedEntry.cached_action).entity_id || '-'"></span></div>
+                                        <div class="mb-xs"><span class="span-detail-label">Service</span> <span x-text="(dashParseJsonSafe(selectedEntry.cached_action) || {}).service || '-'"></span></div>
+                                        <div class="mb-xs"><span class="span-detail-label">Entity ID</span> <span x-text="(dashParseJsonSafe(selectedEntry.cached_action) || {}).entity_id || '-'"></span></div>
                                         <div><span class="span-detail-label">Service Data</span></div>
-                                        <pre class="span-detail-content mt-xs" x-text="JSON.stringify(parseJsonSafe(selectedEntry.cached_action).service_data || {}, null, 2)"></pre>
+                                        <pre class="span-detail-content mt-xs" x-text="JSON.stringify((dashParseJsonSafe(selectedEntry.cached_action) || {}).service_data || {}, null, 2)"></pre>
                                     </div>
                                 </template>
-                                <template x-if="!parseJsonSafe(selectedEntry.cached_action)">
+                                <template x-if="!dashParseJsonSafe(selectedEntry.cached_action)">
                                     <span x-text="selectedEntry.cached_action || '-'"></span>
                                 </template>
                             </div>
                         </div>
                         <div class="span-detail-row span-detail-wide">
                             <div class="span-detail-label">Entity IDs</div>
-                            <pre class="span-detail-content" x-text="JSON.stringify(parseJsonSafe(selectedEntry.entity_ids), null, 2) || '-'"></pre>
+                            <pre class="span-detail-content" x-text="JSON.stringify(dashParseJsonSafe(selectedEntry.entity_ids), null, 2) || '-'"></pre>
                         </div>
                         <div class="span-detail-row">
                             <div class="span-detail-label">Executed At</div>
-                            <pre class="span-detail-content" x-text="formatTimestamp(selectedEntry.executed_at)"></pre>
+                            <pre class="span-detail-content" x-text="dashFormatTimestamp(selectedEntry.executed_at)"></pre>
                         </div>
                         <div class="span-detail-row">
                             <div class="span-detail-label">Origin Area ID</div>
@@ -393,11 +393,11 @@
                         </div>
                         <div class="span-detail-row">
                             <div class="span-detail-label">Created At</div>
-                            <pre class="span-detail-content" x-text="formatTimestamp(selectedEntry.created_at)"></pre>
+                            <pre class="span-detail-content" x-text="dashFormatTimestamp(selectedEntry.created_at)"></pre>
                         </div>
                         <div class="span-detail-row">
                             <div class="span-detail-label">Last Accessed</div>
-                            <pre class="span-detail-content" x-text="formatTimestamp(selectedEntry.last_accessed)"></pre>
+                            <pre class="span-detail-content" x-text="dashFormatTimestamp(selectedEntry.last_accessed)"></pre>
                         </div>
                     </div>
                 </div>
@@ -442,7 +442,7 @@
                     <tbody>
                         <template x-for="h in validatorHistory" :key="h.started_at">
                             <tr>
-                                <td x-text="formatTimestamp(h.started_at)"></td>
+                                <td x-text="dashFormatTimestamp(h.started_at)"></td>
                                 <td x-text="h.scanned"></td>
                                 <td x-text="h.inconsistent"></td>
                                 <td x-text="h.corrected"></td>
@@ -481,26 +481,9 @@ function cachePage() {
         validatorBusy: false,
         validatorMessage: '',
 
-        formatTimestamp(ts) {
-            if (!ts) return '-';
-            try {
-                var clean = ts.trim();
-                if (!clean.match(/[Zz]|[+-]\d{2}:\d{2}$/)) {
-                    clean = clean.replace(' ', 'T') + 'Z';
-                }
-                var d = new Date(clean);
-                return d.toLocaleString();
-            } catch (e) { return ts; }
-        },
 
-        parseJsonSafe(str) {
-            if (!str) return null;
-            try {
-                return JSON.parse(str);
-            } catch (e) {
-                return null;
-            }
-        },
+
+        parseJsonSafe: dashParseJsonSafe,
 
         showDetail(entry) {
             this.selectedEntry = entry;
@@ -546,45 +529,31 @@ function cachePage() {
         },
 
         async loadValidatorHistory() {
-            try {
-                const data = await window.dashboardApi.json('/api/admin/cache/validate/history');
-                this.validatorHistory = data.history || [];
-            } catch (e) {
-                if (e.code === 'auth_expired') return;
-                console.error('Failed to load validator history', e);
-            }
+            var data = await window.dashboardApi.safeJson('/api/admin/cache/validate/history');
+            if (data) this.validatorHistory = data.history || [];
         },
 
         async loadStats() {
-            try {
-                const data = await window.dashboardApi.json('/api/admin/cache/stats');
-                // Defensive read: fall back to the legacy stats key for
-                // dashboards talking to a 0.20.x server during a rolling
-                // restart on dev environments.
-                const action = data.action ?? data.response ?? {};
-                const routing = data.routing ?? {};
-                this.stats = { ...data, routing, action };
-            } catch (e) {
-                if (e.code === 'auth_expired') return;
-                console.error('Failed to load cache stats', e);
+            var data = await window.dashboardApi.safeJson('/api/admin/cache/stats');
+            if (data) {
+                var action = data.action ?? data.response ?? {};
+                var routing = data.routing ?? {};
+                this.stats = { ...data, routing: routing, action: action };
             }
         },
 
         async loadEntries() {
             this.loadingEntries = true;
-            const params = new URLSearchParams();
+            var params = new URLSearchParams();
             params.set('tier', this.tier);
             params.set('page', this.page);
             params.set('per_page', '50');
             if (this.search) params.set('search', this.search);
-            try {
-                const data = await window.dashboardApi.json('/api/admin/cache/entries?' + params.toString());
+            var data = await window.dashboardApi.safeJson('/api/admin/cache/entries?' + params.toString());
+            if (data) {
                 this.entries = data.entries || [];
                 this.entryTotal = data.total || 0;
                 this.entryPages = data.pages || 1;
-            } catch (e) {
-                if (e.code === 'auth_expired') return;
-                console.error('Failed to load cache entries', e);
             }
             this.loadingEntries = false;
         },
@@ -604,7 +573,7 @@ function cachePage() {
                 }
             } catch (e) {
                 console.error('Failed to delete cache entry', e);
-                alert('Failed to delete cache entry');
+                toast('Failed to delete cache entry', 'error');
             }
         },
 

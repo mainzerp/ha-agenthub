@@ -4,6 +4,7 @@
 {% block header_title %}Persons{% endblock %}
 {% block page_content %}
 <div x-data="personsPage()" x-init="loadPersons()">
+    <div x-show="error" class="alert alert-error mb-md" x-text="error" @click="error = null" style="cursor:pointer"></div>
 
     <div class="page-header">
         <div class="page-header-text">
@@ -82,6 +83,7 @@ function personsPage() {
     return {
         persons: [],
         loading: false,
+        error: null,
         search: '',
 
         get filteredPersons() {
@@ -96,12 +98,7 @@ function personsPage() {
 
         async loadPersons() {
             this.loading = true;
-            try {
-                this.persons = await window.dashboardApi.json('/api/admin/persons');
-            } catch (e) {
-                if (e.code === 'auth_expired') return;
-                console.error('Failed to load persons', e);
-            }
+            this.persons = await window.dashboardApi.safeJson('/api/admin/persons') || [];
             this.loading = false;
         }
     };

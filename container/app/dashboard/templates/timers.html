@@ -4,6 +4,7 @@
 {% block header_title %}Timers & Alarms{% endblock %}
 {% block page_content %}
 <div x-data="timersPage()" x-init="init()">
+    <div x-show="error" class="alert alert-error mb-md" x-text="error" @click="error = null" style="cursor:pointer"></div>
 
     <div id="timers-alpine-warning" class="card alpine-warning">
         <p class="m-0 text-danger fw-600">
@@ -302,6 +303,7 @@ function timersPage() {
         timers: [],
         alarms: [],
         loading: true,
+        error: null,
         wakeBriefingLoading: true,
         wakeBriefingSaving: false,
         wakeBriefingTesting: false,
@@ -385,13 +387,10 @@ function timersPage() {
         },
 
         async loadData() {
-            try {
-                const data = await window.dashboardApi.json('/api/admin/timers');
+            var data = await window.dashboardApi.safeJson('/api/admin/timers');
+            if (data) {
                 this.timers = data.timers || [];
                 this.alarms = data.alarms || [];
-            } catch (e) {
-                if (e.code === 'auth_expired') return;
-                console.error('Failed to load timer data', e);
             }
             this.loading = false;
         },

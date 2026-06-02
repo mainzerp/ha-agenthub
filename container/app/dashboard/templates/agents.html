@@ -4,6 +4,7 @@
 {% block header_title %}Agent Configuration{% endblock %}
 {% block page_content %}
 <div x-data="agentsPage()" x-init="loadAgents()">
+    <div x-show="error" class="alert alert-error mb-md" x-text="error" @click="error = null" style="cursor:pointer"></div>
     <div class="page-header">
         <div class="page-header-text">
             <p class="page-subtitle">Enable or disable agents, edit model settings, and modify system prompts.</p>
@@ -193,6 +194,7 @@ function agentsPage() {
     return {
         agents: [],
         loading: true,
+        error: null,
         allProviders: [],
         configuredProviders: [],
         visibilitySummary: {},

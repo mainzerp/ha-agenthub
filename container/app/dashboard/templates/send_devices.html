@@ -6,6 +6,7 @@
 
 {% block page_content %}
 <div x-data="sendDevicesPage()" x-init="loadMappings()">
+    <div x-show="error" class="alert alert-error mb-md" x-text="error" @click="error = null" style="cursor:pointer"></div>
 
     <div class="page-header">
         <div class="page-header-text">
@@ -99,42 +100,26 @@
 function sendDevicesPage() {
     return {
         mappings: [],
+        error: null,
         availableTargets: [],
         persons: [],
         newMapping: { display_name: '', device_type: 'notify', ha_service_target: '' },
 
         async loadMappings() {
-            try {
-                this.mappings = await window.dashboardApi.json('/api/admin/send-devices');
-            } catch (e) {
-                if (e.code === 'auth_expired') return;
-                window.toast(e.detail || 'Failed to load mappings', 'error');
-                this.mappings = [];
-            }
+            this.mappings = await window.dashboardApi.safeJson('/api/admin/send-devices') || [];
             await this.loadAvailableTargets();
             await this.loadPersons();
         },
 
         async loadPersons() {
-            try {
-                this.persons = await window.dashboardApi.json('/api/admin/persons');
-            } catch (e) {
-                if (e.code === 'auth_expired') return;
-                this.persons = [];
-            }
+            this.persons = await window.dashboardApi.safeJson('/api/admin/persons') || [];
         },
 
         async loadAvailableTargets() {
-            const type = this.newMapping.device_type;
-            try {
-                this.availableTargets = await window.dashboardApi.json(
-                    `/api/admin/send-devices/available-targets?type=${encodeURIComponent(type)}`
-                );
-            } catch (e) {
-                if (e.code === 'auth_expired') return;
-                this.message = e.detail || 'Failed to load available targets';
-                this.messageType = 'error';
-                this.availableTargets = [];
+            var type = this.newMapping.device_type;
+            var data = await window.dashboardApi.safeJson('/api/admin/send-devices/available-targets?type=' + encodeURIComponent(type));
+            if (data) {
+                this.availableTargets = data;
             }
         },
 
