@@ -1,16 +1,33 @@
 # Version
 
-**Current Version:** 1.34.1
+**Current Version:** 1.35.0
 
 ## Recent Changes
 
-Track changes since `v1.34.1` here.
-
-- fix(agents): remove state-aware skipping instructions from all LLM prompts. The LLM now always outputs the action the user explicitly requested.
-- fix(executors): add deterministic pre-execution state checking. If a device is already in the target state, the executor skips the HA service call and returns an informative message.
-- fix(light): remove state-context few-shot examples from light-agent prompt that caused smaller LLMs to incorrectly emit `query_light_state` instead of `turn_off`.
+Track changes since `v1.35.0` here.
 
 ## Version History
+
+### 1.35.0 (MINOR) -- Orchestrator refactoring, config-driven agents, MCP HA server
+
+- feat(mcp): add built-in HA action MCP server with `ha_call_service`, `ha_get_states`, `ha_get_services` tools assigned to general-agent. Server runs as stdio subprocess with independent HA REST API access via `HA_URL`/`HA_TOKEN` env vars. (261bde4)
+- feat(agents): add `@agent` decorator for declarative agent registration. Replaces ~480-line `DOMAIN_AGENTS` dict and `create_domain_agent()` factory with co-located metadata on agent classes. `install_all_agents()` bootstrap replaces scattered `registry.register()` calls. Plugin agents auto-discover via decorator. (c68467b)
+- refactor(agents): replace 9 boilerplate domain-agent class files with config-driven `_ConfigurableDomainAgent` factory stored in `actionable.py`. (7dd875d)
+- refactor(agents): decompose 2966-line `OrchestratorAgent` into `ClassificationEngine`, `CacheOrchestrator`, `DispatchManager`, `ConversationManager` (each <500 lines). (272b6e6)
+- refactor(agents): add `PipelineDirector` standalone class replacing `TaskPipeline` mixin — eliminates all 17 `# type: ignore[attr-defined]` duck-typing annotations via 15-parameter constructor injection. (272b6e6)
+- refactor(agents): add pipeline strategy pattern with 4 pluggable ABCs (`CacheReplayStrategy`, `ClassificationStrategy`, `DispatchStrategy`, `FinalizationStrategy`) and default implementations. Plugins can swap strategies via `PluginContext.set_pipeline_strategy()`. (272b6e6)
+- refactor(agents): unify streaming and non-streaming dispatch paths via shared `_run_pipeline_prelude` method, eliminating 67 lines of structural duplication. (272b6e6)
+- refactor(a2a): simplify `InProcessTransport` — remove JSON-RPC wrapping for in-process calls. `send()` returns `TaskResult` directly, `stream()` yields dict chunks, errors raise exceptions. Net -80 lines. (7f2db65)
+- fix(security): `COOKIE_SECURE` default `true` in production `docker-compose.yml`. (7dd875d)
+- fix(cache): rename `_semantic_threshold` to `_exact_match_only` — logic uses SHA-256 hash exact-match, not embedding similarity. (7dd875d)
+- fix(core): remove duplicate `_periodic_entity_sync` from `main.py`, consolidate settings defaults into `schema.py`. (7dd875d)
+- fix(security): plugin lifecycle isolation (per-plugin try/except), body size limits (1MB forms, 10MB admin), CSRF token bound to session. (7dd875d)
+- fix(mcp): SSE URL validation blocking private/reserved IP ranges for MCP transport. (7dd875d)
+- fix(db): add missing `conversation_id` index on `trace_summary` table. (7dd875d)
+- fix(integration): narrow `except Exception` in filler push handler, add missing `"already_configured"` error string. (7dd875d)
+- test(executors): add 45 unit tests for climate, cover, vacuum, scene, security executors and `resolve_and_validate_entity` base class. (87f822d)
+- test(agents): add 12 unit tests for `ActionableAgent.handle_task` covering all execution paths, LLM error scenarios, and edge cases. (0f5a497)
+- test(integration): expand HA integration test coverage from 2 to 44 tests. (7dd875d)
 
 ### 1.34.1 (PATCH) -- Deterministic state-check in executors, remove state-aware prompt logic
 
