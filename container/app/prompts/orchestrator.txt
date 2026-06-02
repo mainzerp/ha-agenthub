@@ -11,16 +11,6 @@ Given a user message and a list of specialized agents, output the best-matching 
 {agent_descriptions}
 --- END AVAILABLE AGENTS ---
 
-Rules:
-
-Implicit commands:
-- When the user describes a state or discomfort ("it's too dark", "it's cold in here", "the door is unlocked"), infer the implied action and route to the correct agent.
-- Examples:
-  - "Es ist zu dunkel im Wohnzimmer" -> light-agent: turn on Wohnzimmer light
-  - "It's freezing in the bedroom" -> climate-agent: heat bedroom
-  - "I left the front door open" -> security-agent: lock front door
-- Preserve the original room/entity names in the condensed task.
-
 {language_hint}
 {previous_agent_hint}
 
@@ -28,11 +18,17 @@ Output:
 - Output ONLY classification lines. No preamble, no explanation, no markdown, no commentary.
 - One line per intent. Maximum 3 lines.
 
-Language:
+Condensed Task Rules:
 - Write the condensed task in the same language as the user's input. Never translate it.
-- Strip grammatical particles (articles, prepositions, case endings) from entity/room names, but keep the core name in the original language.
-  Examples: "in der Küche" → "Küche", "in the guest room" → "guest room", "à la cuisine" → "cuisine"
-- Preserve room and area names completely. If the user says "Kuppel wohnen" (meaning Kuppel in Wohnzimmer), keep "Kuppel wohnen" or "Kuppel Wohnzimmer" intact. Do NOT reduce it to just "Kuppel".
+- Preserve entity, room, area, device, and scene names verbatim from the user's message.
+- Be concise and actionable: drop filler words, keep the core intent.
+- Preserve conditional clauses ("if X, then Y") in the condensed task. Do not split them.
+
+Routing Rules:
+
+Implicit commands:
+- When the user describes a state or discomfort ("it's too dark", "it's cold in here", "the door is unlocked"), infer the implied action and route to the correct agent.
+- Preserve the original room/entity names in the condensed task.
 
 Conversation context:
 - Conversation history is provided as prior chat messages. Use those turns ONLY for context resolution (pronouns, "that", "it", etc.). Classify ONLY the final user message.
@@ -46,13 +42,13 @@ Cancel / dismiss the interaction only:
 - Examples: nevermind, forget it, scratch that, no thanks, stop (meaning stop talking). Same idea for cancel/dismiss phrasing in whatever language the user writes—route here only when clearly not a device or media command.
 - Do NOT use cancel-interaction for: cancel the timer, cancel the alarm, stop the music, turn off X—these go to timer-agent, music-agent, light-agent, etc.
 
-Confidence calibration:
+Confidence Calibration:
 - 90-100%: Intent clearly matches one agent's domain.
 - 70-89%: Reasonable match but some ambiguity.
 - 50-69%: Uncertain; consider general-agent.
 - Below 50%: Route to general-agent.
 
-Multi-intent & dispatch modes:
+Multi-Intent & Dispatch Modes:
 
 Parallel dispatch:
 - When the message contains multiple independent intents targeting different agents (connected by "and", "also", or separate clauses), output one line per intent.
@@ -79,63 +75,7 @@ Conditional commands:
 - When the user says "if X, then Y" or "do Y only if X", preserve the entire conditional structure in the condensed task.
 - Do NOT split the condition into a separate intent.
 - Example:
-  - Input: "Schalte den Keller ein, falls es draußen dunkel ist"
-  - Output: light-agent (90%): turn on Keller light if outdoor sensor is dark
+  - Input: "turn on the basement light if it's dark outside"
+  - Output: light-agent (90%): turn on the basement light if it's dark outside
 
 Format: <agent-id> (<confidence>%): <condensed task>
-
-Examples:
-
-Input: "turn off the bedroom lamp"
-Output:
-light-agent (95%): turn off the bedroom lamp
-
-Input: "what's the weather like tomorrow?"
-Output:
-climate-agent (90%): weather forecast for tomorrow
-
-Input: "how warm was the living room yesterday?"
-Output:
-climate-agent (92%): living room temperature history yesterday
-
-Input: "how long was the kitchen light on yesterday?"
-Output:
-light-agent (92%): kitchen light on/off history yesterday
-
-Input: "was the front door open yesterday?"
-Output:
-security-agent (92%): front door open/closed history yesterday
-
-Input: "turn on the kitchen light and play some jazz music"
-Output:
-light-agent (95%): turn on the kitchen light
-music-agent (90%): play jazz music
-
-Input: "find a lasagna recipe and send it to Laura"
-Output:
-[SEQ] general-agent (90%): find a lasagna recipe with link
-send-agent (95%): send to Laura
-
-Input: "tell me something interesting"
-Output:
-general-agent (75%): tell me something interesting
-
-Input: "never mind"
-Output:
-cancel-interaction (98%): dismiss interaction
-
-Input: "forget it, I'm good"
-Output:
-cancel-interaction (95%): dismiss interaction
-
-Input: "cancel the kitchen timer"
-Output:
-timer-agent (95%): cancel the kitchen timer
-
-Input: "Es ist zu dunkel im Wohnzimmer"
-Output:
-light-agent (92%): turn on Wohnzimmer light
-
-Input: "Schalte den Keller ein, falls es draußen dunkel ist"
-Output:
-light-agent (90%): turn on Keller light if outdoor sensor is dark

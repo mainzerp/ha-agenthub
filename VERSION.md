@@ -1,12 +1,18 @@
 # Version
 
-**Current Version:** 1.36.1
+**Current Version:** 1.36.2
 
 ## Recent Changes
 
-Track changes since `v1.36.1` here.
+Track changes since `v1.36.2` here.
 
 ## Version History
+
+### 1.36.2 (PATCH) -- Action cache streaming fix, orchestrator prompt restructure, span timeline repair
+
+- fix(cache): serialize Pydantic models in streaming action cache store. Streaming dispatch path now calls `model_dump()` on `ActionExecuted` instances before the `isinstance(dict)` guard, fixing silently skipped cache writes. (a81b2bd)
+- fix(orchestrator): restructure classification prompt with clean section hierarchy. Removed redundant Examples section, grammar-stripping rules (entity resolver territory), and German-input examples violating Prime Directive #13. Added dedicated Condensed Task Rules section. Prompt reduced from 141 to 81 lines. (ae9ce00)
+- fix(dashboard): repair span timeline Gantt chart rendering. Fixed `this.dashAgentClass` → `window.dashAgentClass` (Alpine.js scope TypeError) and `span.span_id` → `span.metadata?.span_id` (span_id stored in metadata JSON, not top-level column). (e24d1c0)
 
 ### 1.36.1 (PATCH) -- Fix mediation test failures caused by personality cache TTL
 
