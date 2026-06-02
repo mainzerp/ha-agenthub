@@ -1,12 +1,17 @@
 # Version
 
-**Current Version:** 1.36.0
+**Current Version:** 1.36.1
 
 ## Recent Changes
 
-Track changes since `v1.36.0` here.
+Track changes since `v1.36.1` here.
 
 ## Version History
+
+### 1.36.1 (PATCH) -- Fix mediation test failures caused by personality cache TTL
+
+- fix(mediation): expire personality cache TS in test fixtures instead of changing cache logic. (e949d6d)
+- chore(ci): use python3 in pre-commit config (python3.12 not on PATH). (6091dbc)
 
 ### 1.36.0 (MINOR) -- Cache miss tracking, error metrics, expanded trace detail, UI polish
 
