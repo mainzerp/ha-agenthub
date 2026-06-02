@@ -18,11 +18,8 @@ from app.a2a.dispatcher import Dispatcher
 from app.a2a.orchestrator_gateway import AgentCatalog, OrchestratorGateway
 from app.a2a.registry import registry
 from app.a2a.transport import InProcessTransport
-from app.agents.actionable import CoverAgent, LightAgent, MusicAgent, VacuumAgent
 from app.agents.custom_loader import CustomAgentLoader
-from app.agents.filler import FillerAgent
-from app.agents.general import GeneralAgent
-from app.agents.orchestrator import OrchestratorAgent
+from app.agents.decorator import install_all_agents
 from app.api.routes import admin as admin_routes
 from app.api.routes import conversation as conversation_routes
 from app.api.routes import dashboard_api as dashboard_api_routes
@@ -164,43 +161,15 @@ async def lifespan(app: FastAPI):
     else:
         # Setup wizard path: register the core agents with None HA deps
         # so the A2A surface is usable enough to serve the wizard.
-        filler_agent = FillerAgent(ha_client=None, entity_index=None)
-        await registry.register(filler_agent)
-        orchestrator_agent = OrchestratorAgent(
-            dispatcher=dispatcher,
-            registry=registry,
-            cache_manager=None,
-            ha_client=None,
-            entity_index=None,
-            filler_agent=filler_agent,
-        )
-        await registry.register(orchestrator_agent)
+        await install_all_agents(app)
 
-        general_agent = GeneralAgent(ha_client=None, entity_index=None, mcp_tool_manager=mcp_tool_manager)
-        await registry.register(general_agent)
-
-        light_agent = LightAgent(ha_client=None, entity_index=None, entity_matcher=None)
-        await registry.register(light_agent)
-
-        music_agent = MusicAgent(ha_client=None, entity_index=None, entity_matcher=None)
-        await registry.register(music_agent)
-
-        cover_agent = CoverAgent(ha_client=None, entity_index=None, entity_matcher=None)
-        await registry.register(cover_agent)
-
-        vacuum_agent = VacuumAgent(ha_client=None, entity_index=None, entity_matcher=None)
-        await registry.register(vacuum_agent)
-
-        custom_loader = CustomAgentLoader(
+        custom_loader = app.state.custom_loader = CustomAgentLoader(
             registry,
             ha_client=None,
             entity_index=None,
             mcp_tool_manager=mcp_tool_manager,
         )
         await custom_loader.load_all()
-        app.state.custom_loader = custom_loader
-
-        await orchestrator_agent.initialize()
 
     # Populate allowed WebSocket origins from HA URL
     ha_client = getattr(app.state, "ha_client", None)

@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 
 from app.agents.base import BaseAgent
+from app.agents.decorator import agent
 from app.agents.sanitize import strip_parenthetical_asides
 from app.db.repository import SettingsRepository
 from app.models.agent import AgentCard, AgentTask, TaskResult
@@ -12,6 +13,15 @@ from app.models.agent import AgentCard, AgentTask, TaskResult
 logger = logging.getLogger(__name__)
 
 
+@agent(
+    agent_id="rewrite-agent",
+    name="Rewrite Agent",
+    description="Rephrases cached responses to vary wording while preserving meaning.",
+    skills=["rewrite"],
+    expected_latency="low",
+    timeout_sec=None,
+    needs_entity_matcher=False,
+)
 class RewriteAgent(BaseAgent):
     """Rephrases cached responses for natural variation.
 

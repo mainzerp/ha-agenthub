@@ -20,6 +20,7 @@ from app.agents.cache_orchestrator import CacheOrchestrator
 from app.agents.cancel_speech import generate_cancel_speech
 from app.agents.classification_engine import ClassificationEngine, _RecoverableClassificationError
 from app.agents.conversation_manager import ConversationManager
+from app.agents.decorator import agent
 from app.agents.dispatch_manager import DispatchManager
 from app.agents.language_detect import detect_user_language
 from app.agents.sanitize import strip_markdown, strip_parenthetical_asides
@@ -107,6 +108,21 @@ class StreamingContext:
             self.collected_speech.append(token)
 
 
+@agent(
+    agent_id="orchestrator",
+    name="Orchestrator",
+    description="Routes user requests to the appropriate specialized agent.",
+    skills=["intent_classification", "task_routing"],
+    needs_entity_matcher=False,
+    factory=lambda app, filler: OrchestratorAgent(
+        dispatcher=app.state.dispatcher,
+        registry=app.state.registry,
+        cache_manager=getattr(app.state, "cache_manager", None),
+        ha_client=getattr(app.state, "ha_client", None),
+        entity_index=getattr(app.state, "entity_index", None),
+        filler_agent=filler,
+    ),
+)
 class OrchestratorAgent(BaseAgent):
     """Classifies user intent and dispatches to specialized agents via A2A."""
 

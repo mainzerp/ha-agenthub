@@ -6,6 +6,7 @@ import logging
 import re
 
 from app.agents.base import BaseAgent
+from app.agents.decorator import agent
 from app.analytics.tracer import _optional_span
 from app.db.repository import SendDeviceMappingRepository, SettingsRepository
 from app.models.agent import (
@@ -21,6 +22,21 @@ logger = logging.getLogger(__name__)
 _CONTENT_SEPARATOR = "|||CONTENT|||"
 
 
+@agent(
+    agent_id="send-agent",
+    name="Send Agent",
+    description=(
+        "Sends or delivers researched content, information, or messages "
+        "to a person or device. Use when the user says 'send to', "
+        "'schicke an', 'sende an' followed by a person name or device name. "
+        "Examples: 'send the recipe to Laura Handy', "
+        "'sende das Rezept an Satellite Kueche'."
+    ),
+    skills=["send_message", "deliver_content", "notify_device"],
+    needs_entity_matcher=False,
+    db_gated=True,
+    expected_latency="low",
+)
 class SendAgent(BaseAgent):
     """Delivers pre-produced content to a target device.
 

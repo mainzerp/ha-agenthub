@@ -62,11 +62,26 @@ def set_chat_dispatcher(dispatcher) -> None:
 def _create_phase2_agent(agent_id: str, app):
     """Instantiate a Phase 2 agent by ID for hot-registration.
 
-    Delegates to :func:`app.agents.actionable.create_domain_agent`.
+    Looks up the agent class from the @agent decorator registry.
     """
-    from app.agents.actionable import create_domain_agent
+    from app.agents.decorator import _AGENT_CLASSES
 
-    return create_domain_agent(agent_id, app=app)
+    cls = _AGENT_CLASSES.get(agent_id)
+    if cls is None:
+        return None
+
+    import inspect as _inspect
+
+    sig = _inspect.signature(cls.__init__)
+    kwargs: dict[str, Any] = {
+        "ha_client": getattr(app.state, "ha_client", None),
+        "entity_index": getattr(app.state, "entity_index", None),
+    }
+    meta = getattr(cls, "_agent_meta", {})
+    if meta.get("needs_entity_matcher", True) and "entity_matcher" in sig.parameters:
+        kwargs["entity_matcher"] = getattr(app.state, "entity_matcher", None)
+
+    return cls(**kwargs)
 
 
 def _validate_agent_path(agent_id: str) -> Path:
