@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -44,6 +45,7 @@ from app.agents.actionable import (  # noqa: E402
 )
 from app.agents.lists import ListsAgent  # noqa: E402
 from app.agents.timer import TimerAgent  # noqa: E402
+from app.models.agent import AgentErrorCode  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # _extract_entity_mentions
@@ -468,3 +470,343 @@ class TestHandleTaskInnerInjection:
 
         system_msg = mock_llm.call_args.args[0][0]["content"]
         assert "Output rules:" in system_msg
+
+
+# ---------------------------------------------------------------------------
+# handle_task execution paths
+# ---------------------------------------------------------------------------
+
+
+class TestHandleTaskExecution:
+    @pytest.mark.asyncio
+    async def test_success_path_returns_action_executed(self):
+        agent = LightAgent()
+        task = make_agent_task(description="turn on the kitchen light")
+
+        with (
+            patch.object(agent, "_load_prompt_async", new_callable=AsyncMock, return_value="You are a light agent."),
+            patch.object(
+                agent,
+                "_call_llm",
+                new_callable=AsyncMock,
+                return_value='{"action": "turn_on", "entity": "kitchen light"}',
+            ),
+            patch.object(
+                agent,
+                "_do_execute",
+                new_callable=AsyncMock,
+                return_value={
+                    "speech": "Kitchen light is on",
+                    "entity_id": "light.kitchen_ceiling",
+                    "success": True,
+                    "new_state": "on",
+                },
+            ),
+            patch.object(agent, "_resolve_relevant_entities", new_callable=AsyncMock, return_value=[]),
+        ):
+            agent._ha_client = AsyncMock()
+            agent._entity_index = None
+            agent._entity_matcher = None
+
+            result = await agent.handle_task(task)
+
+        assert result.speech == "Kitchen light is on"
+        assert result.action_executed is not None
+        assert result.action_executed.action == "turn_on"
+        assert result.action_executed.entity_id == "light.kitchen_ceiling"
+        assert result.action_executed.success is True
+        assert result.error is None
+
+    @pytest.mark.asyncio
+    async def test_success_path_service_data_from_parameters(self):
+        agent = LightAgent()
+        task = make_agent_task(description="set brightness")
+
+        with (
+            patch.object(agent, "_load_prompt_async", new_callable=AsyncMock, return_value="You are a light agent."),
+            patch.object(
+                agent,
+                "_call_llm",
+                new_callable=AsyncMock,
+                return_value='{"action": "turn_on", "entity": "kitchen light", "parameters": {"brightness": 128}}',
+            ),
+            patch.object(
+                agent,
+                "_do_execute",
+                new_callable=AsyncMock,
+                return_value={"speech": "OK", "entity_id": "light.a", "success": True},
+            ),
+            patch.object(agent, "_resolve_relevant_entities", new_callable=AsyncMock, return_value=[]),
+        ):
+            agent._ha_client = AsyncMock()
+            agent._entity_index = None
+            agent._entity_matcher = None
+
+            result = await agent.handle_task(task)
+
+        assert result.action_executed is not None
+        assert result.action_executed.service_data == {"brightness": 128}
+        assert result.error is None
+
+    @pytest.mark.asyncio
+    async def test_directive_from_executor(self):
+        agent = LightAgent()
+        task = make_agent_task(description="turn on the kitchen light")
+
+        with (
+            patch.object(agent, "_load_prompt_async", new_callable=AsyncMock, return_value="You are a light agent."),
+            patch.object(
+                agent,
+                "_call_llm",
+                new_callable=AsyncMock,
+                return_value='{"action": "turn_on", "entity": "kitchen light"}',
+            ),
+            patch.object(
+                agent,
+                "_do_execute",
+                new_callable=AsyncMock,
+                return_value={
+                    "speech": "Delegating",
+                    "directive": "timer:create",
+                    "reason": "native timer",
+                },
+            ),
+            patch.object(agent, "_resolve_relevant_entities", new_callable=AsyncMock, return_value=[]),
+        ):
+            agent._ha_client = AsyncMock()
+            agent._entity_index = None
+            agent._entity_matcher = None
+
+            result = await agent.handle_task(task)
+
+        assert result.directive == "timer:create"
+        assert result.reason == "native timer"
+        assert result.action_executed is None
+        assert result.error is None
+
+    @pytest.mark.asyncio
+    async def test_executor_returns_explicit_error(self):
+        agent = LightAgent()
+        task = make_agent_task(description="turn on the kitchen light")
+
+        with (
+            patch.object(agent, "_load_prompt_async", new_callable=AsyncMock, return_value="You are a light agent."),
+            patch.object(
+                agent,
+                "_call_llm",
+                new_callable=AsyncMock,
+                return_value='{"action": "turn_on", "entity": "kitchen light"}',
+            ),
+            patch.object(
+                agent,
+                "_do_execute",
+                new_callable=AsyncMock,
+                return_value={
+                    "speech": "Entity not found",
+                    "error": {"code": "entity_not_found", "message": "not found"},
+                },
+            ),
+            patch.object(agent, "_resolve_relevant_entities", new_callable=AsyncMock, return_value=[]),
+        ):
+            agent._ha_client = AsyncMock()
+            agent._entity_index = None
+            agent._entity_matcher = None
+
+            result = await agent.handle_task(task)
+
+        assert result.error is not None
+        assert result.error.code == AgentErrorCode.ENTITY_NOT_FOUND
+        assert result.error.recoverable is True
+
+    @pytest.mark.asyncio
+    async def test_executor_raises_action_failed(self):
+        agent = LightAgent()
+        task = make_agent_task(description="turn on the kitchen light")
+
+        with (
+            patch.object(agent, "_load_prompt_async", new_callable=AsyncMock, return_value="You are a light agent."),
+            patch.object(
+                agent,
+                "_call_llm",
+                new_callable=AsyncMock,
+                return_value='{"action": "turn_on", "entity": "kitchen light"}',
+            ),
+            patch.object(agent, "_do_execute", new_callable=AsyncMock, side_effect=RuntimeError("HA timeout")),
+            patch.object(agent, "_resolve_relevant_entities", new_callable=AsyncMock, return_value=[]),
+        ):
+            agent._ha_client = AsyncMock()
+            agent._entity_index = None
+            agent._entity_matcher = None
+
+            result = await agent.handle_task(task)
+
+        assert result.error is not None
+        assert result.error.code == AgentErrorCode.ACTION_FAILED
+        assert "kitchen light" in result.speech.lower()
+        assert result.action_executed is None
+
+    @pytest.mark.asyncio
+    async def test_llm_call_raises_exception(self):
+        agent = LightAgent()
+        task = make_agent_task(description="turn on the kitchen light")
+
+        with (
+            patch.object(agent, "_load_prompt_async", new_callable=AsyncMock, return_value="You are a light agent."),
+            patch.object(agent, "_call_llm", new_callable=AsyncMock, side_effect=RuntimeError("LLM down")),
+            patch.object(agent, "_resolve_relevant_entities", new_callable=AsyncMock, return_value=[]),
+        ):
+            agent._ha_client = AsyncMock()
+            agent._entity_index = None
+            agent._entity_matcher = None
+
+            with patch.object(agent, "_do_execute", new_callable=AsyncMock) as mock_exec:
+                result = await agent.handle_task(task)
+
+        assert result.error is not None
+        assert result.error.code == AgentErrorCode.LLM_ERROR
+        assert result.speech
+        mock_exec.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_llm_returns_empty_response(self):
+        agent = LightAgent()
+        task = make_agent_task(description="turn on the kitchen light")
+
+        with (
+            patch.object(agent, "_load_prompt_async", new_callable=AsyncMock, return_value="You are a light agent."),
+            patch.object(agent, "_call_llm", new_callable=AsyncMock, return_value=""),
+            patch.object(agent, "_resolve_relevant_entities", new_callable=AsyncMock, return_value=[]),
+        ):
+            agent._ha_client = AsyncMock()
+            agent._entity_index = None
+            agent._entity_matcher = None
+
+            with patch.object(agent, "_do_execute", new_callable=AsyncMock) as mock_exec:
+                result = await agent.handle_task(task)
+
+        assert result.error is not None
+        assert result.error.code == AgentErrorCode.LLM_EMPTY_RESPONSE
+        mock_exec.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_llm_cancelled_error_propagates(self):
+        agent = LightAgent()
+        task = make_agent_task(description="turn on the kitchen light")
+
+        with (
+            patch.object(agent, "_load_prompt_async", new_callable=AsyncMock, return_value="You are a light agent."),
+            patch.object(agent, "_call_llm", new_callable=AsyncMock, side_effect=asyncio.CancelledError()),
+            patch.object(agent, "_resolve_relevant_entities", new_callable=AsyncMock, return_value=[]),
+        ):
+            agent._ha_client = AsyncMock()
+            agent._entity_index = None
+            agent._entity_matcher = None
+
+            with pytest.raises(asyncio.CancelledError):
+                await agent.handle_task(task)
+
+    @pytest.mark.asyncio
+    async def test_parse_miss_returns_fallback_speech(self):
+        agent = LightAgent()
+        task = make_agent_task(description="turn on the kitchen light")
+
+        with (
+            patch.object(agent, "_load_prompt_async", new_callable=AsyncMock, return_value="You are a light agent."),
+            patch.object(agent, "_call_llm", new_callable=AsyncMock, return_value="Hello! How can I help?"),
+            patch.object(agent, "_resolve_relevant_entities", new_callable=AsyncMock, return_value=[]),
+        ):
+            agent._ha_client = AsyncMock()
+            agent._entity_index = None
+            agent._entity_matcher = None
+
+            result = await agent.handle_task(task)
+
+        assert "Hello" in result.speech
+        assert result.error is None
+        assert result.action_executed is None
+
+    @pytest.mark.asyncio
+    async def test_no_ha_client_returns_ha_unavailable(self):
+        agent = LightAgent()
+        task = make_agent_task(description="turn on the kitchen light")
+
+        with (
+            patch.object(agent, "_load_prompt_async", new_callable=AsyncMock, return_value="You are a light agent."),
+            patch.object(
+                agent,
+                "_call_llm",
+                new_callable=AsyncMock,
+                return_value='{"action": "turn_on", "entity": "kitchen light"}',
+            ),
+            patch.object(agent, "_resolve_relevant_entities", new_callable=AsyncMock, return_value=[]),
+        ):
+            agent._ha_client = None
+            agent._entity_index = None
+            agent._entity_matcher = None
+
+            with patch.object(agent, "_do_execute", new_callable=AsyncMock) as mock_exec:
+                result = await agent.handle_task(task)
+
+        assert result.error is not None
+        assert result.error.code == AgentErrorCode.HA_UNAVAILABLE
+        assert result.error.recoverable is False
+        mock_exec.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_outer_handle_task_exception_returns_internal(self):
+        agent = LightAgent()
+        task = make_agent_task(description="turn on the kitchen light")
+
+        with (
+            patch.object(
+                agent, "_load_prompt_async", new_callable=AsyncMock, side_effect=TypeError("injection failed")
+            ),
+            patch.object(agent, "_resolve_relevant_entities", new_callable=AsyncMock, return_value=[]),
+        ):
+            agent._ha_client = AsyncMock()
+            agent._entity_index = None
+            agent._entity_matcher = None
+
+            result = await agent.handle_task(task)
+
+        assert result.error is not None
+        assert result.error.code == AgentErrorCode.INTERNAL
+        assert "something went wrong" in result.speech.lower()
+
+    @pytest.mark.asyncio
+    async def test_entity_not_found_clarification_calls_llm(self):
+        agent = LightAgent()
+        task = make_agent_task(description="turn on the kitchen light")
+
+        with (
+            patch.object(agent, "_load_prompt_async", new_callable=AsyncMock, return_value="You are a light agent."),
+            patch.object(
+                agent,
+                "_call_llm",
+                new_callable=AsyncMock,
+                return_value='{"action": "turn_on", "entity": "kitchen light"}',
+            ),
+            patch.object(
+                agent,
+                "_do_execute",
+                new_callable=AsyncMock,
+                return_value={"success": False, "entity_id": None, "error": None, "speech": "not found"},
+            ),
+            patch.object(
+                agent,
+                "_generate_not_found_speech",
+                new_callable=AsyncMock,
+                return_value="Which light?",
+            ),
+            patch.object(agent, "_resolve_relevant_entities", new_callable=AsyncMock, return_value=[]),
+        ):
+            agent._ha_client = AsyncMock()
+            agent._entity_index = None
+            agent._entity_matcher = None
+
+            result = await agent.handle_task(task)
+
+        assert result.speech == "Which light?"
+        assert result.action_executed is not None
+        assert result.action_executed.success is False
+        assert result.error is None
