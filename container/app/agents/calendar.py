@@ -2,14 +2,32 @@
 
 from app.agents.actionable import ActionableAgent
 from app.agents.calendar_executor import execute_calendar_action
+from app.agents.decorator import agent
 from app.agents.user_identity import UserIdentityResolver
 from app.models.agent import AgentCard, AgentErrorCode, AgentTask, TaskResult
 
 
+@agent(
+    agent_id="calendar-agent",
+    name="Calendar Agent",
+    description=(
+        "Manages calendar events. Read upcoming events, create new events, "
+        "update or delete existing events. Uses calendar entities from Home Assistant. "
+        "Examples: 'Was steht morgen im Kalender?', 'Termin beim Zahnarzt am Freitag um 14 Uhr', "
+        "'Loese den Team-Meeting Termin'"
+    ),
+    skills=[
+        "calendar_read",
+        "calendar_create",
+        "calendar_update",
+        "calendar_delete",
+        "calendar_query",
+    ],
+    prompt_name="calendar",
+    db_gated=True,
+)
 class CalendarAgent(ActionableAgent):
     """Manages calendar events: read, create, update, delete."""
-
-    _prompt_name = "calendar"
 
     async def _do_execute(self, action, ha_client, entity_index, entity_matcher, *, agent_id, span_collector=None):
         ctx = getattr(self, "_current_task_context", None)

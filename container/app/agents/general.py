@@ -6,6 +6,7 @@ import logging
 from typing import Any
 
 from app.agents.base import BaseAgent
+from app.agents.decorator import agent
 from app.agents.prompt_builder import PromptBuilder
 from app.agents.tool_calling import call_llm_with_mcp_tools, mcp_tools_to_openai_format
 from app.analytics.tracer import _optional_span
@@ -14,6 +15,20 @@ from app.models.agent import AgentCard, AgentErrorCode, AgentTask, TaskResult
 logger = logging.getLogger(__name__)
 
 
+@agent(
+    agent_id="general-agent",
+    name="General Agent",
+    description="Handles general knowledge, conversation, web search, current events, and requests outside device control. Can search the web for real-time information. Fallback for unroutable requests.",
+    skills=["general_qa", "web_search", "current_events", "conversation", "fallback"],
+    expected_latency="high",
+    timeout_sec=30.0,
+    needs_entity_matcher=False,
+    factory=lambda app, filler: GeneralAgent(
+        ha_client=getattr(app.state, "ha_client", None),
+        entity_index=getattr(app.state, "entity_index", None),
+        mcp_tool_manager=getattr(app.state, "mcp_tool_manager", None),
+    ),
+)
 class GeneralAgent(BaseAgent):
     """Handles general Q&A and unroutable requests. No HA service calls."""
 

@@ -11,17 +11,14 @@ from typing import TYPE_CHECKING
 import aiosqlite
 
 from app.a2a.orchestrator_gateway import OrchestratorGateway
-from app.agents.actionable import create_domain_agent
 from app.agents.base import preload_prompt_cache
 from app.agents.custom_loader import CustomAgentLoader
-from app.agents.filler import FillerAgent
-from app.agents.general import GeneralAgent
-from app.agents.orchestrator import OrchestratorAgent
+from app.agents.decorator import install_all_agents
 from app.agents.rewrite import RewriteAgent
 from app.cache.cache_manager import CacheManager
 from app.cache.embedding import get_embedding_engine
 from app.cache.vector_store import COLLECTION_ENTITY_INDEX, get_vector_store
-from app.db.repository import AgentConfigRepository, SettingsRepository, SetupStateRepository
+from app.db.repository import SettingsRepository, SetupStateRepository
 from app.defaults import DEFAULT_LOCAL_EMBEDDING_MODEL
 from app.entity.aliases import AliasResolver
 from app.entity.index import EntityIndex
@@ -755,60 +752,7 @@ async def _initialize_setup_dependent_services(app: FastAPI, *, source: str) -> 
                 source,
             )
 
-    filler_agent = FillerAgent(ha_client=ha_client, entity_index=entity_index)
-    await registry.register(filler_agent, replace=True)
-    orchestrator_agent = OrchestratorAgent(
-        dispatcher=dispatcher,
-        registry=registry,
-        cache_manager=cache_manager,
-        ha_client=ha_client,
-        entity_index=entity_index,
-        filler_agent=filler_agent,
-    )
-    await registry.register(orchestrator_agent, replace=True)
-
-    general_agent = GeneralAgent(
-        ha_client=ha_client,
-        entity_index=entity_index,
-        mcp_tool_manager=mcp_tool_manager,
-    )
-    await registry.register(general_agent, replace=True)
-
-    light_agent = create_domain_agent("light-agent", app=app)
-    if light_agent is not None:
-        await registry.register(light_agent, replace=True)
-
-    music_agent = create_domain_agent("music-agent", app=app)
-    if music_agent is not None:
-        await registry.register(music_agent, replace=True)
-
-    cover_agent = create_domain_agent("cover-agent", app=app)
-    if cover_agent is not None:
-        await registry.register(cover_agent, replace=True)
-
-    vacuum_agent = create_domain_agent("vacuum-agent", app=app)
-    if vacuum_agent is not None:
-        await registry.register(vacuum_agent, replace=True)
-
-    domain_agents = [
-        "timer-agent",
-        "climate-agent",
-        "media-agent",
-        "scene-agent",
-        "automation-agent",
-        "security-agent",
-        "send-agent",
-        "calendar-agent",
-        "lists-agent",
-    ]
-    for agent_id in domain_agents:
-        config = await AgentConfigRepository.get(agent_id)
-        if config and config.get("enabled"):
-            agent = create_domain_agent(agent_id, app=app)
-            if agent is not None:
-                await registry.register(agent, replace=True)
-
-    await registry.register(rewrite_agent, replace=True)
+    await install_all_agents(app)
 
     custom_loader = getattr(app.state, "custom_loader", None)
     if custom_loader is None:
@@ -827,8 +771,6 @@ async def _initialize_setup_dependent_services(app: FastAPI, *, source: str) -> 
         reload_result = custom_loader.reload()
         if inspect.isawaitable(reload_result):
             await reload_result
-
-    await orchestrator_agent.initialize()
 
     ws_client = getattr(app.state, "ws_client", None)
     if ws_client is None:

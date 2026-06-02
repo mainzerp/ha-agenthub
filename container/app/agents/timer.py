@@ -1,6 +1,7 @@
 """Timer and alarm agent with direct HA REST API execution."""
 
 from app.agents.actionable import ActionableAgent
+from app.agents.decorator import agent
 from app.agents.satellite_targeting import (
     resolve_satellite_target_name,
 )
@@ -8,12 +9,30 @@ from app.agents.timer_executor import execute_timer_action
 from app.models.agent import AgentCard, AgentErrorCode, AgentTask, TaskResult
 
 
+@agent(
+    agent_id="timer-agent",
+    name="Timer Agent",
+    description="Manages timers, alarms, reminders, and scheduled actions. Start, cancel, pause, resume, snooze timers. Sets alarms, schedules delayed actions and sleep timers. Reports timer status and remaining time.",
+    skills=[
+        "timer_set",
+        "timer_cancel",
+        "timer_pause",
+        "timer_resume",
+        "timer_snooze",
+        "timer_query",
+        "alarm",
+        "reminder",
+        "delayed_action",
+        "sleep_timer",
+    ],
+    prompt_name="timer",
+    allowed_domains=frozenset({"timer", "input_datetime", "input_boolean"}),
+    db_gated=True,
+)
 class TimerAgent(ActionableAgent):
     """Controls timers and reminders via HA REST API."""
 
-    _prompt_name = "timer"
     _clarify_on_not_found = False
-    _allowed_domains = frozenset({"timer", "input_datetime", "input_boolean"})
 
     async def _do_execute(self, action, ha_client, entity_index, entity_matcher, *, agent_id, span_collector=None):
         # FLOW-CTX-1 (0.18.6): ``_current_task_context`` is now set

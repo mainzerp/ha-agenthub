@@ -1,15 +1,35 @@
 """Lists agent — manages todo and shopping lists via HA REST API."""
 
 from app.agents.actionable import ActionableAgent
+from app.agents.decorator import agent
 from app.agents.lists_executor import execute_lists_action
 from app.models.agent import AgentCard, AgentErrorCode, AgentTask, TaskResult
 
 
+@agent(
+    agent_id="lists-agent",
+    name="Lists Agent",
+    description=(
+        "Manages todo lists and shopping lists in Home Assistant. "
+        "List available lists, view items, add items, mark items as completed, "
+        "remove items, and clear completed items. "
+        "Examples: 'Was ist auf der Einkaufsliste?', 'Fuege Milch zur Einkaufsliste hinzu', "
+        "'Markiere Butter als erledigt', 'Leere die Einkaufsliste'"
+    ),
+    skills=[
+        "list_lists",
+        "list_items",
+        "add_item",
+        "complete_item",
+        "remove_item",
+        "clear_completed",
+    ],
+    prompt_name="lists",
+    allowed_domains=frozenset({"todo", "shopping_list"}),
+    db_gated=True,
+)
 class ListsAgent(ActionableAgent):
     """Manages todo lists and shopping lists via HA REST API."""
-
-    _prompt_name = "lists"
-    _allowed_domains = frozenset({"todo", "shopping_list"})
 
     async def _do_execute(self, action, ha_client, entity_index, entity_matcher, *, agent_id, span_collector=None):
         ctx = getattr(self, "_current_task_context", None)

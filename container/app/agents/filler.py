@@ -6,6 +6,7 @@ import asyncio
 import logging
 
 from app.agents.base import BaseAgent
+from app.agents.decorator import agent
 from app.db.repository import SettingsRepository
 from app.models.agent import AgentCard, AgentTask, TaskResult
 
@@ -41,6 +42,14 @@ _LANGUAGE_NAMES: dict[str, str] = {
 }
 
 
+@agent(
+    agent_id="filler-agent",
+    name="Filler Agent",
+    description="Generates short interim TTS filler phrases while slow agents process requests.",
+    skills=["filler_generation"],
+    expected_latency="low",
+    needs_entity_matcher=False,
+)
 class FillerAgent(BaseAgent):
     """Generates short interim TTS filler phrases while slow agents process requests."""
 
