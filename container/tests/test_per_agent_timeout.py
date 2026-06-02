@@ -232,9 +232,7 @@ async def test_timeout_cascade_triggers_fallback_with_own_timeout(_mock_track_ti
     )
 
     # Primary dispatch times out, fallback succeeds
-    fallback_response = MagicMock()
-    fallback_response.error = None
-    fallback_response.result = {"speech": "Fallback OK."}
+    fallback_response = {"speech": "Fallback OK."}
 
     orch._dispatcher.dispatch = AsyncMock(side_effect=[TimeoutError(), fallback_response])
 
@@ -329,15 +327,9 @@ async def test_error_fallback_uses_fallback_agent_timeout(_mock_track, monkeypat
         AsyncMock(side_effect=_no_setting),
     )
 
-    error_response = MagicMock()
-    error_response.error = MagicMock(message="Agent error")
-    error_response.result = None
+    ok_response = {"speech": "General answered."}
 
-    ok_response = MagicMock()
-    ok_response.error = None
-    ok_response.result = {"speech": "General answered."}
-
-    orch._dispatcher.dispatch = AsyncMock(side_effect=[error_response, ok_response])
+    orch._dispatcher.dispatch = AsyncMock(side_effect=[RuntimeError("Agent error"), ok_response])
 
     target_agent, speech, _result = await orch._dispatch_single(
         "light-agent",

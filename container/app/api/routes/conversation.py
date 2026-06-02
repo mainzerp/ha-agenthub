@@ -121,7 +121,7 @@ def _build_a2a_request(
         method=method,
         params={
             "agent_id": "orchestrator",
-            "task": task.model_dump(),
+            "task": task,
             "_span_collector": span_collector,
         },
         id=request_id,
@@ -143,15 +143,15 @@ async def conversation_rest(
     a2a_request, _task = _build_a2a_request(conv_request, "message/send", span_collector, request)
     if _dispatcher is None:
         raise HTTPException(status_code=503, detail="Service not ready")
-    response = await _dispatcher.dispatch(a2a_request)
-
-    if response.error:
+    try:
+        response = await _dispatcher.dispatch(a2a_request)
+    except RuntimeError as exc:
         return ConversationResponse(
-            speech=f"Error: {response.error.message}",
+            speech=f"Error: {exc}",
             conversation_id=conv_request.conversation_id,
         )
 
-    result = response.result or {}
+    result = response or {}
     return ConversationResponse(
         speech=result.get("speech", ""),
         conversation_id=result.get("conversation_id") or conv_request.conversation_id,
@@ -186,23 +186,23 @@ async def conversation_sse(
                 raise HTTPException(status_code=503, detail="Service not ready")
             async for chunk in _dispatcher.dispatch_stream(a2a_request):
                 token = StreamToken(
-                    token=chunk.result.get("token", ""),
-                    done=chunk.done,
-                    conversation_id=chunk.result.get("conversation_id") if chunk.done else None,
-                    mediated_speech=chunk.result.get("mediated_speech") if chunk.done else None,
-                    is_filler=chunk.result.get("is_filler", False),
-                    error=chunk.result.get("error") if chunk.done else None,
-                    voice_followup=bool(chunk.result.get("voice_followup")) if chunk.done else False,
-                    sanitized=bool(chunk.result.get("sanitized", True))
-                    if chunk.done
-                    else not chunk.result.get("is_filler", False),
-                    directive=chunk.result.get("directive") if chunk.done else None,
-                    reason=chunk.result.get("reason") if chunk.done else None,
-                    filler_push=chunk.result.get("filler_push") if not chunk.done else None,
-                    action_executed=_normalize_action_executed(chunk.result.get("action_executed"))
-                    if chunk.done
+                    token=chunk.get("token", ""),
+                    done=chunk.get("done", False),
+                    conversation_id=chunk.get("conversation_id") if chunk.get("done") else None,
+                    mediated_speech=chunk.get("mediated_speech") if chunk.get("done") else None,
+                    is_filler=chunk.get("is_filler", False),
+                    error=chunk.get("error") if chunk.get("done") else None,
+                    voice_followup=bool(chunk.get("voice_followup")) if chunk.get("done") else False,
+                    sanitized=bool(chunk.get("sanitized", True))
+                    if chunk.get("done")
+                    else not chunk.get("is_filler", False),
+                    directive=chunk.get("directive") if chunk.get("done") else None,
+                    reason=chunk.get("reason") if chunk.get("done") else None,
+                    filler_push=chunk.get("filler_push") if not chunk.get("done") else None,
+                    action_executed=_normalize_action_executed(chunk.get("action_executed"))
+                    if chunk.get("done")
                     else None,
-                    routed_agent=chunk.result.get("routed_to") or chunk.result.get("agent_id") if chunk.done else None,
+                    routed_agent=chunk.get("routed_to") or chunk.get("agent_id") if chunk.get("done") else None,
                 )
                 yield f"data: {token.model_dump_json()}\n\n"
         finally:
@@ -286,25 +286,23 @@ async def ws_conversation(
             try:
                 async for chunk in _dispatcher.dispatch_stream(a2a_request):
                     token = StreamToken(
-                        token=chunk.result.get("token", ""),
-                        done=chunk.done,
-                        conversation_id=chunk.result.get("conversation_id") if chunk.done else None,
-                        mediated_speech=chunk.result.get("mediated_speech") if chunk.done else None,
-                        is_filler=chunk.result.get("is_filler", False),
-                        error=chunk.result.get("error") if chunk.done else None,
-                        voice_followup=bool(chunk.result.get("voice_followup")) if chunk.done else False,
-                        sanitized=bool(chunk.result.get("sanitized", True))
-                        if chunk.done
-                        else not chunk.result.get("is_filler", False),
-                        directive=chunk.result.get("directive") if chunk.done else None,
-                        reason=chunk.result.get("reason") if chunk.done else None,
-                        filler_push=chunk.result.get("filler_push") if not chunk.done else None,
-                        action_executed=_normalize_action_executed(chunk.result.get("action_executed"))
-                        if chunk.done
+                        token=chunk.get("token", ""),
+                        done=chunk.get("done", False),
+                        conversation_id=chunk.get("conversation_id") if chunk.get("done") else None,
+                        mediated_speech=chunk.get("mediated_speech") if chunk.get("done") else None,
+                        is_filler=chunk.get("is_filler", False),
+                        error=chunk.get("error") if chunk.get("done") else None,
+                        voice_followup=bool(chunk.get("voice_followup")) if chunk.get("done") else False,
+                        sanitized=bool(chunk.get("sanitized", True))
+                        if chunk.get("done")
+                        else not chunk.get("is_filler", False),
+                        directive=chunk.get("directive") if chunk.get("done") else None,
+                        reason=chunk.get("reason") if chunk.get("done") else None,
+                        filler_push=chunk.get("filler_push") if not chunk.get("done") else None,
+                        action_executed=_normalize_action_executed(chunk.get("action_executed"))
+                        if chunk.get("done")
                         else None,
-                        routed_agent=chunk.result.get("routed_to") or chunk.result.get("agent_id")
-                        if chunk.done
-                        else None,
+                        routed_agent=chunk.get("routed_to") or chunk.get("agent_id") if chunk.get("done") else None,
                     )
                     await websocket.send_json(token.model_dump())
             except WebSocketDisconnect:

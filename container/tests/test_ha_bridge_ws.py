@@ -52,10 +52,7 @@ class TestWsAdvanced:
         old_dispatcher = conv_routes._dispatcher
 
         async def _fast_stream(req):
-            final = MagicMock()
-            final.result = {"token": ""}
-            final.done = True
-            yield final
+            yield {"token": "", "done": True}
 
         mock_d = MagicMock()
         mock_d.dispatch_stream = _fast_stream
@@ -89,14 +86,8 @@ class TestWsAdvanced:
         old_dispatcher = conv_routes._dispatcher
 
         async def _filler_push_stream(req):
-            filler = MagicMock()
-            filler.result = {"token": "One moment...", "is_filler": True, "filler_push": "One moment please"}
-            filler.done = False
-            yield filler
-            final = MagicMock()
-            final.result = {"token": "", "mediated_speech": "Done"}
-            final.done = True
-            yield final
+            yield {"token": "One moment...", "is_filler": True, "filler_push": "One moment please", "done": False}
+            yield {"token": "", "mediated_speech": "Done", "done": True}
 
         mock_d = MagicMock()
         mock_d.dispatch_stream = _filler_push_stream
@@ -134,10 +125,7 @@ class TestWsAdvanced:
         async def _capture_stream(req):
             nonlocal captured_request
             captured_request = req
-            final = MagicMock()
-            final.result = {"token": ""}
-            final.done = True
-            yield final
+            yield {"token": "", "done": True}
 
         mock_d = MagicMock()
         mock_d.dispatch_stream = _capture_stream
@@ -149,6 +137,6 @@ class TestWsAdvanced:
                 await client.send_turn("turn on the kitchen light", device_id="satellite_kitchen")
                 assert captured_request is not None
                 sent_task = captured_request.params["task"]
-                assert sent_task["context"]["device_id"] == "satellite_kitchen"
+                assert sent_task.context.device_id == "satellite_kitchen"
             finally:
                 conv_routes._dispatcher = old_dispatcher

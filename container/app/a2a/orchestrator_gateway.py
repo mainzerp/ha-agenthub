@@ -42,21 +42,22 @@ class OrchestratorGateway:
             method="message/send",
             params={
                 "agent_id": "orchestrator",
-                "task": task.model_dump(exclude_none=True),
+                "task": task,
             },
             id=request_id or task.conversation_id or f"orchestrator-gateway-{uuid.uuid4().hex}",
         )
-        response = await self._dispatcher.dispatch(request)
-        if response.error:
+        try:
+            response = await self._dispatcher.dispatch(request)
+        except RuntimeError as exc:
             return {
                 "speech": "",
                 "error": {
                     "code": "internal",
-                    "message": response.error.message,
+                    "message": str(exc),
                     "recoverable": True,
                 },
             }
-        return response.result or {}
+        return response or {}
 
     async def dispatch_text(
         self,

@@ -218,8 +218,7 @@ class TestDispatcher:
             params={"agent_id": "light-agent", "task": {"description": "turn on", "user_text": "turn on"}},
         )
         resp = await dispatcher.dispatch(request)
-        assert resp.result == {"speech": "Done"}
-        assert resp.error is None
+        assert resp == {"speech": "Done"}
 
     async def test_dispatch_unknown_method_returns_error(self):
         dispatcher, _, _ = self._make_dispatcher()
@@ -279,7 +278,7 @@ class TestDispatcher:
         async for chunk in dispatcher.dispatch_stream(request):
             chunks.append(chunk)
         assert len(chunks) == 2
-        assert chunks[-1].done is True
+        assert chunks[-1].get("done") is True
 
     async def test_dispatch_stream_unknown_method(self):
         dispatcher, _, _ = self._make_dispatcher()
@@ -288,7 +287,7 @@ class TestDispatcher:
         async for chunk in dispatcher.dispatch_stream(request):
             chunks.append(chunk)
         assert len(chunks) == 1
-        assert chunks[0].done is True
+        assert chunks[0].get("done") is True
 
 
 # ---------------------------------------------------------------------------
@@ -306,17 +305,16 @@ class TestInProcessTransport:
         transport = InProcessTransport(reg)
         task = AgentTask(description="test", user_text="test")
         resp = await transport.send("t-agent", task, "req-1")
-        assert resp.result == {"speech": "ok"}
+        assert resp == {"speech": "ok"}
 
-    async def test_send_unknown_agent_returns_error(self):
+    async def test_send_unknown_agent_raises_runtime_error(self):
         reg = AgentRegistry()
         transport = InProcessTransport(reg)
         task = AgentTask(description="test", user_text="test")
-        resp = await transport.send("missing", task, "req-1")
-        assert resp.error is not None
-        assert resp.error.code == INTERNAL_ERROR
+        with pytest.raises(RuntimeError, match="Agent not found: missing"):
+            await transport.send("missing", task, "req-1")
 
-    async def test_send_handler_exception_returns_error(self):
+    async def test_send_handler_exception_raises_runtime_error(self):
         reg = AgentRegistry()
         agent = _make_mock_agent("err-agent")
         agent.handle_task = AsyncMock(side_effect=RuntimeError("boom"))
@@ -324,9 +322,8 @@ class TestInProcessTransport:
 
         transport = InProcessTransport(reg)
         task = AgentTask(description="test", user_text="test")
-        resp = await transport.send("err-agent", task, "req-1")
-        assert resp.error is not None
-        assert resp.error.code == INTERNAL_ERROR
+        with pytest.raises(RuntimeError, match="Agent error: err-agent"):
+            await transport.send("err-agent", task, "req-1")
 
     async def test_stream_calls_handler(self):
         reg = AgentRegistry()
@@ -354,7 +351,7 @@ class TestInProcessTransport:
         async for c in transport.stream("missing", task, "req-1"):
             chunks.append(c)
         assert len(chunks) == 1
-        assert chunks[0].done is True
+        assert chunks[0].get("done") is True
 
     async def test_transport_is_abstract(self):
         assert hasattr(Transport, "send")

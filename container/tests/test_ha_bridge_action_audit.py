@@ -221,8 +221,7 @@ class TestEntityResolutionAudit:
         old_dispatcher = conv_routes._dispatcher
 
         async def _mock_stream(req):
-            final = MagicMock()
-            final.result = {
+            yield {
                 "token": "",
                 "mediated_speech": "Turned on the living room lamp.",
                 "done": True,
@@ -234,8 +233,6 @@ class TestEntityResolutionAudit:
                 },
                 "routed_to": "light-agent",
             }
-            final.done = True
-            yield final
 
         mock_d = MagicMock()
         mock_d.dispatch_stream = _mock_stream

@@ -134,7 +134,7 @@ async def test_streaming_pipeline_terminates_with_done(mock_complete, mock_track
     mock_settings.get_value = AsyncMock(return_value="")
 
     async def mock_stream(_request):
-        yield MagicMock(result={"token": "Light is on.", "done": True})
+        yield {"token": "Light is on.", "done": True}
 
     dispatcher.dispatch_stream = mock_stream
     task = _make_task("turn on light", conversation_id="conv-stream")
@@ -213,9 +213,9 @@ async def test_streaming_mediation_buffers_tokens_until_terminal_frame(mock_comp
     )
 
     async def mock_stream(_request):
-        yield MagicMock(result={"token": "Light ", "done": False})
-        yield MagicMock(result={"token": "is ", "done": False})
-        yield MagicMock(result={"token": "on.", "done": True})
+        yield {"token": "Light ", "done": False}
+        yield {"token": "is ", "done": False}
+        yield {"token": "on.", "done": True}
 
     dispatcher.dispatch_stream = mock_stream
     task = _make_task("turn on light", conversation_id="conv-stream-med")
@@ -244,7 +244,7 @@ async def test_stream_with_filler_cancels_reader_on_timeout(mock_complete, mock_
 
     async def _slow_stream(_request):
         await asyncio.sleep(0.06)
-        yield MagicMock(result={"token": "late", "done": True})
+        yield {"token": "late", "done": True}
 
     dispatcher.dispatch_stream = _slow_stream
     task = _make_task("turn on light", conversation_id="conv-slow")

@@ -75,6 +75,8 @@ class DispatchManager:
         """Coerce an agent result into a dict, logging warnings on unexpected types."""
         if isinstance(result_data, dict):
             return result_data
+        if hasattr(result_data, "model_dump"):
+            return result_data.model_dump(exclude_none=True)
         if isinstance(result_data, str):
             logger.warning("Agent returned string result instead of dict; wrapping as speech")
             return {"speech": result_data}
@@ -117,12 +119,14 @@ class DispatchManager:
                 fb_span["metadata"]["from_agent"] = target_agent
                 fb_span["metadata"]["reason"] = reason
                 fb_span["metadata"]["dispatch_timeout_sec"] = fb_timeout
-                fb_result_data = self.normalize_agent_result(response.result)
+                fb_result_data = self.normalize_agent_result(response)
                 fb_span["metadata"]["agent_response"] = fb_result_data.get("speech") or ""
             await track_request(_FALLBACK_AGENT, cache_hit=False, latency_ms=fb_latency_ms)
             return _FALLBACK_AGENT, response
         except TimeoutError:
             await track_agent_timeout(_FALLBACK_AGENT, int(fb_timeout))
+            return None
+        except RuntimeError:
             return None
 
     async def dispatch_single(
@@ -190,7 +194,7 @@ class DispatchManager:
             method="message/send",
             params={
                 "agent_id": target_agent,
-                "task": agent_task.model_dump(),
+                "task": agent_task,
                 "_span_collector": span_collector,
             },
             id=conversation_id or "orchestrator-dispatch",
@@ -212,7 +216,7 @@ class DispatchManager:
                 latency_ms = (time.perf_counter() - t0) * 1000
                 span["metadata"]["latency_ms"] = round(latency_ms, 1)
                 span["metadata"]["dispatch_timeout_sec"] = dispatch_timeout
-                result_data = self.normalize_agent_result(response.result)
+                result_data = self.normalize_agent_result(response)
                 span["metadata"]["agent_response"] = result_data.get("speech") or ""
                 span["metadata"]["condensed_task"] = condensed_task
             logger.debug("Agent %s responded in %.1fms", target_agent, latency_ms)
@@ -229,19 +233,18 @@ class DispatchManager:
                 target_agent, response = fb_result
             else:
                 return target_agent, _CANNED_TIMEOUT_SPEECH, None
-
-        if response.error:
+        except RuntimeError as exc:
             logger.warning(
                 "Agent %s error: %s -- falling back to %s",
                 target_agent,
-                response.error.message,
+                str(exc),
                 _FALLBACK_AGENT,
             )
             fb_result = await self.dispatch_fallback(request, target_agent, span_collector, "agent_error")
             if fb_result is not None:
                 target_agent, response = fb_result
             elif target_agent == _FALLBACK_AGENT:
-                error_code = (response.error.message or "unknown")[:64]
+                error_code = str(exc)[:64]
                 return (
                     _FALLBACK_AGENT,
                     _CANNED_GENERAL_ERROR_SPEECH,
@@ -256,7 +259,7 @@ class DispatchManager:
             else:
                 return target_agent, _CANNED_TIMEOUT_SPEECH, None
 
-        result = self.normalize_agent_result(response.result)
+        result = self.normalize_agent_result(response)
         speech = result.get("speech", "")
 
         error = result.get("error")

@@ -225,10 +225,7 @@ async def test_ws_conversation_mints_per_turn_trace(mock_summary):
 
     # Fake dispatcher that yields one done chunk per call.
     async def _stream(req):
-        chunk = MagicMock()
-        chunk.result = {"token": "hi", "conversation_id": "c1"}
-        chunk.done = True
-        yield chunk
+        yield {"token": "hi", "conversation_id": "c1", "done": True}
 
     fake_dispatcher = MagicMock()
     fake_dispatcher.dispatch_stream = _stream
