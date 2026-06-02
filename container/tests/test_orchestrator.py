@@ -72,7 +72,7 @@ class TestOrchestratorAgent:
         """Reset the _get_personality_cached globals between tests."""
         from app.agents import orchestrator as orch_mod
 
-        orch_mod._PERSONALITY_CACHE_TS = 0.0
+        orch_mod._PERSONALITY_CACHE_TS = -999999.0
         orch_mod._PERSONALITY_CACHE_VALUE = ""
         yield
 
@@ -2246,7 +2246,7 @@ class TestStreamMediatedSpeech:
         """Reset the _get_personality_cached globals between tests."""
         from app.agents import orchestrator as orch_mod
 
-        orch_mod._PERSONALITY_CACHE_TS = 0.0
+        orch_mod._PERSONALITY_CACHE_TS = -999999.0
         orch_mod._PERSONALITY_CACHE_VALUE = ""
         yield
 
@@ -2703,7 +2703,7 @@ class TestMediationSpan:
         """Reset the _get_personality_cached globals between tests."""
         from app.agents import orchestrator as orch_mod
 
-        orch_mod._PERSONALITY_CACHE_TS = 0.0
+        orch_mod._PERSONALITY_CACHE_TS = -999999.0
         orch_mod._PERSONALITY_CACHE_VALUE = ""
         yield
 
@@ -2989,7 +2989,7 @@ class TestFollowupDetection:
         """Reset the _get_personality_cached globals between tests."""
         from app.agents import orchestrator as orch_mod
 
-        orch_mod._PERSONALITY_CACHE_TS = 0.0
+        orch_mod._PERSONALITY_CACHE_TS = -999999.0
         orch_mod._PERSONALITY_CACHE_VALUE = ""
         yield
 
