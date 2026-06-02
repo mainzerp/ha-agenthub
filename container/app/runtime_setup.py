@@ -24,6 +24,7 @@ from app.entity.aliases import AliasResolver
 from app.entity.index import EntityIndex
 from app.entity.ingest import parse_ha_states, state_to_entity_index_entry
 from app.entity.matcher import EntityMatcher
+from app.ha_client.auth import get_ha_token
 from app.ha_client.home_context import home_context_provider
 from app.ha_client.rest import HARestClient
 
@@ -751,6 +752,42 @@ async def _initialize_setup_dependent_services(app: FastAPI, *, source: str) -> 
                 "Setup init (%s): Wikipedia MCP server registered but failed to connect",
                 source,
             )
+
+    ha_url = await SettingsRepository.get_value("ha_url")
+    ha_token = await get_ha_token()
+    if ha_url and ha_token:
+        ha_action_server = await McpServerRepository.get("ha-action")
+        if ha_action_server is None:
+            logger.info("Setup init (%s): registering built-in HA action MCP server", source)
+            connected = await mcp_registry.add_server(
+                name="ha-action",
+                transport="stdio",
+                command_or_url="python -m app.mcp.servers.ha_action_server",
+                env_vars={"HA_URL": ha_url, "HA_TOKEN": ha_token},
+            )
+            if connected:
+                try:
+                    tools = await mcp_tool_manager.refresh_server("ha-action")
+                    for tool in tools:
+                        await AgentMcpToolsRepository.assign_tool(
+                            "general-agent",
+                            "ha-action",
+                            tool["name"],
+                        )
+                    logger.info("Assigned %d HA action tools to general-agent", len(tools))
+                except Exception:
+                    logger.warning(
+                        "Setup init (%s): failed to auto-assign HA action tools",
+                        source,
+                        exc_info=True,
+                    )
+            else:
+                logger.warning(
+                    "Setup init (%s): HA action MCP server registered but failed to connect",
+                    source,
+                )
+    else:
+        logger.info("Setup init (%s): skipping HA action MCP server -- HA not yet configured", source)
 
     await install_all_agents(app)
 
