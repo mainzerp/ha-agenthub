@@ -91,13 +91,13 @@
                     <template x-for="t in traces" :key="t.trace_id">
                         <tr class="row-clickable" :data-fresh="t._fresh || false">
                             <td class="text-mono text-xs text-nowrap"
-                                x-text="formatTimestamp(t.created_at)"></td>
+                                x-text="dashFormatTimestamp(t.created_at)"></td>
                             <td class="truncate"
                                 x-text="t.user_input || '-'"></td>
                             <td>
                                 <div class="flex flex-wrap gap-xs">
                                     <template x-for="agent in (t.agents || [])" :key="agent">
-                                        <span class="badge agent-badge" :class="'agent-' + agentClass(agent)"
+                                        <span class="badge agent-badge" :class="'agent-' + dashAgentClass(agent)"
                                               x-text="agent"></span>
                                     </template>
                                 </div>
@@ -151,49 +151,24 @@ function tracesListPage() {
             await this.loadTraces();
         },
 
-        agentClass(id) {
-            if (!id) return 'muted';
-            var classes = window._agentColorClasses;
-            if (classes && classes[id]) return classes[id];
-            var palette = window._agentColorPalette || ['purple', 'yellow', 'blue', 'green', 'red', 'pink', 'indigo', 'teal', 'orange'];
-            var hash = 0;
-            for (var i = 0; i < id.length; i++) hash = (hash * 31 + id.charCodeAt(i)) | 0;
-            return palette[Math.abs(hash) % palette.length];
-        },
 
-        formatTimestamp(ts) {
-            if (!ts) return '-';
-            try {
-                var clean = ts.trim();
-                // SQLite datetime('now') returns "YYYY-MM-DD HH:MM:SS" without timezone.
-                // If no timezone indicator is present, treat it as UTC.
-                if (!clean.match(/[Zz]|[+-]\d{2}:\d{2}$/)) {
-                    clean = clean.replace(' ', 'T') + 'Z';
-                }
-                const d = new Date(clean);
-                return d.toLocaleString();
-            } catch { return ts; }
-        },
 
         async loadTraces() {
             this.loading = true;
-            try {
-                const params = new URLSearchParams({ page: this.page, per_page: 50 });
-                if (this.search) params.set('search', this.search);
-                if (this.agentFilter) params.set('agent', this.agentFilter);
-                if (this.labelFilter) params.set('label', this.labelFilter);
-                if (this.dateFrom) params.set('from', this.dateFrom);
-                if (this.dateTo) params.set('to', this.dateTo);
+            var params = new URLSearchParams({ page: this.page, per_page: 50 });
+            if (this.search) params.set('search', this.search);
+            if (this.agentFilter) params.set('agent', this.agentFilter);
+            if (this.labelFilter) params.set('label', this.labelFilter);
+            if (this.dateFrom) params.set('from', this.dateFrom);
+            if (this.dateTo) params.set('to', this.dateTo);
 
-                const data = await window.dashboardApi.json('/api/admin/traces?' + params.toString());
+            var data = await window.dashboardApi.safeJson('/api/admin/traces?' + params.toString());
+            if (data) {
                 this.traces = data.traces || [];
                 this.total = data.total || 0;
                 this.pages = data.pages || 1;
                 this.allLabels = data.labels || [];
                 this.allAgents = data.agents || [];
-            } catch (e) {
-                if (e.code === 'auth_expired') return;
-                console.error('Failed to load traces', e);
             }
             this.loading = false;
         },

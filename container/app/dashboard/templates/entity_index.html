@@ -4,6 +4,7 @@
 {% block header_title %}Entity Index{% endblock %}
 {% block page_content %}
 <div x-data="entityIndexPage()" x-init="init()">
+    <div x-show="error" class="alert alert-error mb-md" x-text="error" @click="error = null" style="cursor:pointer"></div>
 
     <div class="page-header">
         <div class="page-header-text">
@@ -515,6 +516,7 @@ function entityIndexPage() {
     return {
         // --- Entity Index state ---
         stats: {},
+        error: null,
         refreshing: false,
         refreshMessage: '',
         pollInterval: null,
@@ -577,16 +579,11 @@ function entityIndexPage() {
         // --- Entity Index methods ---
 
         async loadStats() {
-            try {
-                this.stats = await window.dashboardApi.json('/api/admin/entity-index/stats');
-                if (this.stats.embedding?.state === 'building') {
-                    this.startPolling();
-                } else {
-                    this.stopPolling();
-                }
-            } catch (e) {
-                if (e.code === 'auth_expired') return;
-                console.error('Failed to load entity index stats', e);
+            this.stats = await window.dashboardApi.safeJson('/api/admin/entity-index/stats') || {};
+            if (this.stats.embedding && this.stats.embedding.state === 'building') {
+                this.startPolling();
+            } else {
+                this.stopPolling();
             }
         },
 

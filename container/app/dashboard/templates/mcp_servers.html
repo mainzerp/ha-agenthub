@@ -6,6 +6,7 @@
 
 {% block page_content %}
 <div x-data="mcpServers()">
+    <div x-show="error" class="alert alert-error mb-md" x-text="error" @click="error = null" style="cursor:pointer"></div>
 
     <div class="page-header">
         <div class="page-header-text">
@@ -141,6 +142,7 @@
 function mcpServers() {
     return {
         servers: [],
+        error: null,
         showAddForm: false,
         message: '',
         messageType: 'success',
@@ -157,12 +159,7 @@ function mcpServers() {
             this.loadServers();
         },
         async loadServers() {
-            try {
-                this.servers = await window.dashboardApi.json('/api/admin/mcp-servers');
-            } catch (e) {
-                if (e.code === 'auth_expired') return;
-                console.error('Failed to load MCP servers', e);
-            }
+            this.servers = await window.dashboardApi.safeJson('/api/admin/mcp-servers') || [];
         },
         async addServer() {
             let env_vars = null;

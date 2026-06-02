@@ -1,6 +1,10 @@
 {% extends "dashboard_base.html" %}
 {% block page_title %}Trace Detail{% endblock %}
-{% block page_css %}<link rel="stylesheet" href="{{ static_url(request, '/dashboard/static/css/pages/trace_detail.css') }}">{% endblock %}
+{% block page_css %}
+<link rel="stylesheet" href="{{ static_url(request, '/dashboard/static/css/pages/trace_detail.css') }}">
+<link rel="stylesheet" href="{{ static_url(request, '/dashboard/static/vendor/vis-timeline/vis-timeline-graph2d-7.7.3.min.css') }}">
+{% endblock %}
+{% block page_js %}<script src="{{ static_url(request, '/dashboard/static/vendor/vis-timeline/vis-timeline-graph2d-7.7.3.min.js') }}" defer></script>{% endblock %}
 {% block header_title %}Trace Detail{% endblock %}
 {% block top_bar_actions %}
 <a class="btn btn-sm btn-secondary" href="{{ root_url(request, '/dashboard/traces') }}">Back to List</a>
@@ -24,7 +28,7 @@
                 <div class="flex-center gap-lg flex-wrap">
                     <div>
                         <span class="text-muted text-xs">Timestamp</span><br>
-                        <span class="text-mono text-sm" x-text="formatTimestamp(traceDetail.timestamp)"></span>
+                        <span class="text-mono text-sm" x-text="dashFormatTimestamp(traceDetail.timestamp)"></span>
                     </div>
                     <div>
                         <span class="text-muted text-xs">Session</span><br>
@@ -100,13 +104,13 @@
                         <template x-if="traceDetail.routing?.multi_agent && traceDetail.routing?.all_agents">
                             <span class="flex flex-wrap gap-xs">
                                 <template x-for="a in (traceDetail.routing.all_agents || '').split(', ')" :key="a">
-                                    <span class="badge" :class="'badge-' + agentClass(a.trim())"
+                                    <span class="badge" :class="'badge-' + dashAgentClass(a.trim())"
                                           x-text="a.trim()"></span>
                                 </template>
                             </span>
                         </template>
                         <template x-if="!traceDetail.routing?.multi_agent || !traceDetail.routing?.all_agents">
-                            <span class="badge" :class="'badge-' + agentClass(traceDetail.routing?.selected_agent)"
+                            <span class="badge" :class="'badge-' + dashAgentClass(traceDetail.routing?.selected_agent)"
                                   x-text="traceDetail.routing?.selected_agent || '-'"></span>
                         </template>
                     </div>
@@ -137,7 +141,7 @@
                     <h4 class="card-title mb-sm text-sm">Agent Instructions</h4>
                     <template x-for="[agent, task] in Object.entries(traceDetail.agent_instructions || {})" :key="agent">
                         <div class="mb-40 flex-center">
-                            <span class="badge" :class="'badge-' + agentClass(agent)"
+                            <span class="badge" :class="'badge-' + dashAgentClass(agent)"
                                   x-text="agent"></span>
                             <span class="text-sm text-cloud" x-text="task"></span>
                         </div>
@@ -154,14 +158,14 @@
                             <div class="flex-center flex-wrap mb-40">
                                 <span class="step-num" x-text="'#' + (idx + 1)"></span>
                                 <template x-if="!comm.is_tool_call">
-                                    <span class="badge" :class="'badge-' + agentClass(comm.from_agent)"
+                                    <span class="badge" :class="'badge-' + dashAgentClass(comm.from_agent)"
                                           x-text="comm.from_agent"></span>
                                     <span class="text-silver text-xs">--&gt;</span>
-                                    <span class="badge" :class="'badge-' + agentClass(comm.to_agent)"
+                                    <span class="badge" :class="'badge-' + dashAgentClass(comm.to_agent)"
                                           x-text="comm.to_agent"></span>
                                 </template>
                                 <template x-if="comm.is_tool_call">
-                                    <span class="badge" :class="'badge-' + agentClass(comm.from_agent)"
+                                    <span class="badge" :class="'badge-' + dashAgentClass(comm.from_agent)"
                                           x-text="comm.from_agent"></span>
                                     <span class="text-silver text-xs">calls</span>
                                     <span class="badge badge-indigo" x-text="comm.to_agent.replace('tool: ', '')"></span>
@@ -297,7 +301,7 @@
                                     <div>
                                         <template x-for="[agent, info] in Object.entries(selectedSpan.metadata.all_classifications)" :key="agent">
                                             <div class="mb-30 flex-center">
-                                                <span class="badge" :class="'badge-' + agentClass(agent)"
+                                                <span class="badge" :class="'badge-' + dashAgentClass(agent)"
                                                       x-text="agent"></span>
                                                 <span class="text-xs text-cloud" x-text="info.task + ' (' + Math.round(info.confidence * 100) + '%)'"></span>
                                             </div>
@@ -399,7 +403,7 @@
                                 <template x-for="exec in traceDetail.agent_executions" :key="exec.agent_id + exec.span_name">
                                     <tr>
                                         <td>
-                                            <span class="badge" :class="'badge-' + agentClass(exec.agent_id)"
+                                            <span class="badge" :class="'badge-' + dashAgentClass(exec.agent_id)"
                                                   x-text="exec.agent_id"></span>
                                         </td>
                                         <td class="text-mono text-xs" x-text="exec.span_name"></td>
@@ -437,43 +441,18 @@ function traceDetailPage() {
             await this.loadDetail();
         },
 
-        agentClass(id) {
-            if (!id) return 'muted';
-            var classes = window._agentColorClasses;
-            if (classes && classes[id]) return classes[id];
-            var palette = window._agentColorPalette || ['purple', 'yellow', 'blue', 'green', 'red', 'pink', 'indigo', 'teal', 'orange'];
-            var hash = 0;
-            for (var i = 0; i < id.length; i++) hash = (hash * 31 + id.charCodeAt(i)) | 0;
-            return palette[Math.abs(hash) % palette.length];
-        },
 
-        formatTimestamp(ts) {
-            if (!ts) return '-';
-            try {
-                var clean = ts.trim();
-                // SQLite datetime('now') returns "YYYY-MM-DD HH:MM:SS" without timezone.
-                // If no timezone indicator is present, treat it as UTC.
-                if (!clean.match(/[Zz]|[+-]\d{2}:\d{2}$/)) {
-                    clean = clean.replace(' ', 'T') + 'Z';
-                }
-                const d = new Date(clean);
-                return d.toLocaleString();
-            } catch { return ts; }
-        },
 
         async loadDetail() {
             this.loading = true;
-            try {
-                this.traceDetail = await window.dashboardApi.json('/api/admin/traces/' + encodeURIComponent(this.traceId));
-                this.ganttSpans = (this.traceDetail.spans || []).slice().sort((a, b) => {
+            this.traceDetail = await window.dashboardApi.safeJson('/api/admin/traces/' + encodeURIComponent(this.traceId));
+            if (this.traceDetail) {
+                this.ganttSpans = (this.traceDetail.spans || []).slice().sort(function(a, b) {
                     if (a.start_time < b.start_time) return -1;
                     if (a.start_time > b.start_time) return 1;
                     return 0;
                 });
-                this.$nextTick(() => { this.renderGantt(); });
-            } catch (e) {
-                if (e.code === 'auth_expired') return;
-                console.error('Failed to load trace detail', e);
+                this.$nextTick(function() { this.renderGantt(); }.bind(this));
             }
             this.loading = false;
         },
@@ -526,7 +505,7 @@ function traceDetailPage() {
                 const isError = span.status === 'error';
                 const depth = getDepth(span);
                 const indent = '\u00A0\u00A0'.repeat(depth);
-                const agentCls = span.agent_id ? this.agentClass(span.agent_id) : 'muted';
+                const agentCls = span.agent_id ? this.dashAgentClass(span.agent_id) : 'muted';
                 const color = isError ? '#ef4444' : (classToHex[agentCls] || '#6b7280');
                 const label = indent + span.span_name + (span.agent_id ? ' (' + span.agent_id + ')' : '') + ' [' + Math.round(span.duration_ms) + 'ms]';
 

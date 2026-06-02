@@ -91,6 +91,16 @@
         async json(url, options) {
             var response = await this.request(url, options);
             return await response.json();
+        },
+
+        async safeJson(url, options) {
+            try {
+                return await this.json(url, options);
+            } catch (e) {
+                if (e.code === 'auth_expired') return null;
+                console.error('API request failed: ' + url, e);
+                return null;
+            }
         }
     };
 
@@ -485,10 +495,15 @@
                 }
             },
             _fallback() {
+                var self = this;
                 if (opts.fallbackPollMs && opts.onMessage) {
-                    this._pollTimer = setInterval(function() {
-                        if (opts.onMessage) opts.onMessage();
-                    }, opts.fallbackPollMs);
+                    var doFetch = function() {
+                        dashboardApi.json(url).then(function(data) {
+                            if (opts.onMessage) opts.onMessage(data);
+                        }).catch(function() {});
+                    };
+                    this._pollTimer = setInterval(doFetch, opts.fallbackPollMs);
+                    doFetch();
                     if (opts.onFallback) opts.onFallback();
                 }
             }
@@ -496,17 +511,6 @@
     };
 
     /* === Format helpers === */
-    var dashFormatRelativeTime = function(ts) {
-        if (!ts) return '-';
-        var now = Date.now();
-        var then = new Date(ts).getTime();
-        var diffS = Math.floor((now - then) / 1000);
-        if (diffS < 60) return diffS + 's ago';
-        if (diffS < 3600) return Math.floor(diffS / 60) + 'm ago';
-        if (diffS < 86400) return Math.floor(diffS / 3600) + 'h ago';
-        return Math.floor(diffS / 86400) + 'd ago';
-    };
-
     var dashFormatBytes = function(n) {
         if (n === 0) return '0 B';
         var k = 1024;
@@ -533,6 +537,17 @@
 
     var _agentColorPalette = ['purple', 'yellow', 'blue', 'green', 'red', 'pink', 'indigo', 'teal', 'orange'];
 
+    window._agentColorClasses = _agentColorClasses;
+    window._agentColorPalette = _agentColorPalette;
+
+    var dashAgentClass = function(id) {
+        if (!id) return 'muted';
+        if (_agentColorClasses[id]) return _agentColorClasses[id];
+        var hash = 0;
+        for (var i = 0; i < id.length; i++) hash = (hash * 31 + id.charCodeAt(i)) | 0;
+        return _agentColorPalette[Math.abs(hash) % _agentColorPalette.length];
+    };
+
     var _agentClassToHex = {
         'purple': '#8b5cf6',
         'yellow': '#f59e0b',
@@ -545,6 +560,8 @@
         'orange': '#f97316',
         'muted': '#6b7280',
     };
+
+    window._agentClassToHex = _agentClassToHex;
 
     var _traceSpanColors = {
         'cache_lookup': '#06b6d4',
@@ -566,9 +583,68 @@
         'cache_fallthrough': '#f43f5e',
     };
 
+    var dashFormatTimestamp = function(ts) {
+        if (!ts) return '-';
+        try {
+            var clean = ts.trim();
+            if (!clean.match(/[Zz]|[+-]\d{2}:\d{2}$/)) {
+                clean = clean.replace(' ', 'T') + 'Z';
+            }
+            var d = new Date(clean);
+            return d.toLocaleString();
+        } catch (_) { return ts; }
+    };
+
+    var dashFormatRelativeTime = function(ts) {
+        if (!ts) return '-';
+        var now = Date.now();
+        var then = new Date(ts).getTime();
+        var diffS = Math.floor((now - then) / 1000);
+        if (diffS < 60) return diffS + 's ago';
+        if (diffS < 3600) return Math.floor(diffS / 60) + 'm ago';
+        if (diffS < 86400) return Math.floor(diffS / 3600) + 'h ago';
+        return Math.floor(diffS / 86400) + 'd ago';
+    };
+
     var dashTruncate = function(s, n) {
         if (!s || s.length <= n) return s;
         return s.substring(0, n) + '...';
+    };
+
+    var dashParseJsonSafe = function(str) {
+        if (!str) return null;
+        try {
+            return JSON.parse(str);
+        } catch (_) {
+            return null;
+        }
+    };
+
+    var dashChartOptions = function() {
+        return {
+            responsive: true,
+            maintainAspectRatio: false,
+            scales: {
+                y: { beginAtZero: true, grid: { color: chartRgba('text', 0.05) }, ticks: { color: chartColors().text } },
+                x: { grid: { color: chartRgba('text', 0.05) }, ticks: { color: chartColors().text } }
+            },
+            plugins: {
+                legend: { labels: { color: chartColors().text } }
+            }
+        };
+    };
+
+    var dashStatusClass = function(comp) {
+        if (!comp) return 'status-unknown';
+        return comp.status === 'healthy' ? 'status-healthy' : (comp.status === 'error' ? 'status-error' : 'status-unknown');
+    };
+
+    var dashBadgeClass = function(comp) {
+        if (!comp) return '';
+        if (comp.status === 'healthy') return 'health-badge--healthy';
+        if (comp.status === 'error') return 'health-badge--error';
+        if (comp.status === 'warning') return 'health-badge--warning';
+        return '';
     };
 
     /* === Settings helpers (Phase 4) === */
@@ -589,29 +665,6 @@
             setCategory(cat) {
                 this.activeCategory = cat;
                 window.location.hash = cat;
-            }
-        };
-    };
-
-    var dashSettingsSearch = function(rootSelector) {
-        return {
-            search: '',
-            apply() {
-                var root = document.querySelector(rootSelector);
-                if (!root) return;
-                var sections = root.querySelectorAll('[data-category]');
-                var term = this.search.toLowerCase().trim();
-                sections.forEach(function(sec) {
-                    var rows = sec.querySelectorAll('.form-group, .provider-row, .ha-config, [data-setting]');
-                    var sectionMatch = false;
-                    rows.forEach(function(row) {
-                        var text = row.textContent.toLowerCase();
-                        var match = !term || text.indexOf(term) !== -1;
-                        row.style.display = match ? '' : 'none';
-                        if (match) sectionMatch = true;
-                    });
-                    sec.style.display = sectionMatch ? '' : 'none';
-                });
             }
         };
     };

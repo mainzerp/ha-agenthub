@@ -125,7 +125,7 @@
                 <tbody>
                     <template x-for="entry in entries" :key="entry.timestamp + entry.name + entry.lineno">
                         <tr>
-                            <td class="text-mono text-xs text-nowrap" x-text="formatTimestamp(entry.timestamp)"></td>
+                            <td class="text-mono text-xs text-nowrap" x-text="dashFormatTimestamp(entry.timestamp)"></td>
                             <td>
                                 <span class="badge text-2xs" :class="levelBadgeClass(entry.level)" x-text="entry.level"></span>
                             </td>
@@ -209,13 +209,7 @@ function logsPage() {
             return map[level] || 'badge-muted';
         },
 
-        formatTimestamp(ts) {
-            if (!ts) return '-';
-            try {
-                var d = new Date(ts);
-                return d.toLocaleString();
-            } catch (e) { return ts; }
-        },
+
 
         paginationText() {
             if (this.total === 0) return 'No entries';
@@ -225,25 +219,21 @@ function logsPage() {
         },
 
         async loadLogs() {
-            // Only show loading spinner on first load; background polls
-            // should update silently to avoid table flicker.
             var isFirstLoad = this.entries.length === 0;
             if (isFirstLoad) this.loading = true;
-            try {
-                var params = new URLSearchParams();
-                params.set('limit', String(this.limit));
-                params.set('offset', String(this.offset));
-                if (this.filterLevel) params.set('level', this.filterLevel);
-                if (this.filterLogger) params.set('logger', this.filterLogger);
-                if (this.filterSearch) params.set('search', this.filterSearch);
-                if (this.filterSince) params.set('since', this.filterSince);
+            var params = new URLSearchParams();
+            params.set('limit', String(this.limit));
+            params.set('offset', String(this.offset));
+            if (this.filterLevel) params.set('level', this.filterLevel);
+            if (this.filterLogger) params.set('logger', this.filterLogger);
+            if (this.filterSearch) params.set('search', this.filterSearch);
+            if (this.filterSince) params.set('since', this.filterSince);
 
-                var data = await window.dashboardApi.json('/api/admin/logs?' + params.toString());
+            var data = await window.dashboardApi.safeJson('/api/admin/logs?' + params.toString());
+            if (data) {
                 var newEntries = data.entries || [];
                 var newTotal = data.total || 0;
 
-                // Only assign if data changed -- prevents unnecessary DOM churn
-                // and cursor jumps when the user is interacting with the table.
                 if (this.total !== newTotal || this.entries.length !== newEntries.length) {
                     this.entries = newEntries;
                     this.total = newTotal;
@@ -260,22 +250,17 @@ function logsPage() {
                     }
                 }
                 this.error = '';
-            } catch (e) {
-                if (e.code === 'auth_expired') return;
+            } else {
                 this.error = 'Failed to load logs';
-                console.error('Failed to load logs', e);
             }
             if (isFirstLoad) this.loading = false;
         },
 
         async loadLevels() {
-            try {
-                var data = await window.dashboardApi.json('/api/admin/logs/levels');
+            var data = await window.dashboardApi.safeJson('/api/admin/logs/levels');
+            if (data) {
                 this.rootLevel = data.root_level || '';
                 this.loggers = data.loggers || {};
-            } catch (e) {
-                if (e.code === 'auth_expired') return;
-                console.error('Failed to load log levels', e);
             }
         },
 

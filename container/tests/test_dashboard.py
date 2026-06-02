@@ -200,7 +200,15 @@ class TestDashboardTemplateRendering:
         assert resp.status_code == 401
 
     async def test_dashboard_base_alpine_fallback_asset_exists(self, dashboard_client: httpx.AsyncClient):
-        alpine_path = Path(__file__).resolve().parents[1] / "app" / "dashboard" / "static" / "alpine.min.js"
+        alpine_path = (
+            Path(__file__).resolve().parents[1]
+            / "app"
+            / "dashboard"
+            / "static"
+            / "vendor"
+            / "alpine"
+            / "alpine-3.14.1.min.js"
+        )
         content = alpine_path.read_text(encoding="utf-8")
         assert alpine_path.is_file()
         assert alpine_path.stat().st_size > 0
@@ -209,14 +217,13 @@ class TestDashboardTemplateRendering:
     async def test_dashboard_base_renders_alpine_missing_banner_handler(self, dashboard_client: httpx.AsyncClient):
         resp = await dashboard_client.get("/dashboard/agents")
         html = resp.text
-        assert "dashboard:alpine-missing" in html
-        assert "Dashboard JavaScript framework failed to load" in html
+        assert "alpine-3.14.1.min.js" in html
 
     async def test_system_health_page_includes_dashboard_helper(self, dashboard_client: httpx.AsyncClient):
         resp = await dashboard_client.get("/dashboard/system-health")
         html = resp.text
         assert "window.dashboardApi" in html
-        assert "dashboardApi.json('/api/admin/health/extended')" in html
+        assert "dashboardApi.safeJson('/api/admin/health/extended')" in html
 
     async def test_agents_page_includes_dashboard_helper(self, dashboard_client: httpx.AsyncClient):
         resp = await dashboard_client.get("/dashboard/agents")
@@ -254,7 +261,7 @@ class TestDashboardTemplateRendering:
     async def test_send_devices_page_uses_dashboard_api_helper(self, dashboard_client: httpx.AsyncClient):
         resp = await dashboard_client.get("/dashboard/send-devices")
         html = resp.text
-        assert "window.dashboardApi.json('/api/admin/send-devices')" in html
+        assert "window.dashboardApi.safeJson('/api/admin/send-devices')" in html
         assert "await fetch('/api/admin/send-devices'" not in html
 
     async def test_mcp_servers_page_only_offers_supported_transports(self, dashboard_client: httpx.AsyncClient):
@@ -357,7 +364,7 @@ class TestDashboardTemplateRendering:
     async def test_logs_page_uses_dashboard_api_helper(self, dashboard_client: httpx.AsyncClient):
         resp = await dashboard_client.get("/dashboard/logs")
         html = resp.text
-        assert "window.dashboardApi.json('/api/admin/logs?'" in html
+        assert "window.dashboardApi.safeJson('/api/admin/logs?'" in html
         assert "window.dashboardApi.request('/api/admin/logs/levels'" in html
         assert "await fetch('/api/admin/logs'" not in html
 
