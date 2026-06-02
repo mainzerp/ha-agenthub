@@ -354,7 +354,7 @@ class TestDuckDuckGoServerTools:
     def test_server_module_importable(self):
         """The DuckDuckGo MCP server module can be imported."""
         pytest.importorskip("mcp")
-        pytest.importorskip("duckduckgo_search")
+        pytest.importorskip("ddgs")
         from app.mcp.servers import duckduckgo_server
 
         assert hasattr(duckduckgo_server, "server")
@@ -362,7 +362,7 @@ class TestDuckDuckGoServerTools:
     async def test_list_tools_returns_expected_tools(self):
         """Server exposes web_search and web_search_news tools."""
         pytest.importorskip("mcp")
-        pytest.importorskip("duckduckgo_search")
+        pytest.importorskip("ddgs")
         from app.mcp.servers.duckduckgo_server import list_tools
 
         tools = await list_tools()
@@ -373,7 +373,7 @@ class TestDuckDuckGoServerTools:
     async def test_web_search_tool_has_query_param(self):
         """web_search tool requires a 'query' parameter."""
         pytest.importorskip("mcp")
-        pytest.importorskip("duckduckgo_search")
+        pytest.importorskip("ddgs")
         from app.mcp.servers.duckduckgo_server import list_tools
 
         tools = await list_tools()

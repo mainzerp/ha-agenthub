@@ -3,7 +3,7 @@
 import json
 import logging
 
-from duckduckgo_search import DDGS
+from ddgs import DDGS
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
