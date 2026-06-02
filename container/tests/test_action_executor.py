@@ -1036,3 +1036,120 @@ class TestClimateExecutorWeatherActions:
         )
         assert result["success"] is False
         assert "not available" in result["speech"]
+
+
+# ---------------------------------------------------------------------------
+# resolve_and_validate_entity tests
+# ---------------------------------------------------------------------------
+
+from app.agents.action_executor import resolve_and_validate_entity  # noqa: E402
+
+
+class TestResolveAndValidateEntity:
+    """Tests for resolve_and_validate_entity() shared entity resolution helper."""
+
+    @pytest.fixture()
+    def entity_index(self):
+        index = MagicMock(spec=EntityIndex)
+        index.list_entries_async = AsyncMock(return_value=[])
+        index.list_entries = MagicMock(return_value=[])
+        return index
+
+    @pytest.mark.asyncio
+    async def test_resolve_and_validate_entity_success(self, entity_index):
+        entity_index.list_entries_async = AsyncMock(
+            return_value=[make_entity_index_entry("light.kitchen", "Kitchen Light", area="Kitchen")]
+        )
+        matcher = MagicMock(spec=EntityMatcher)
+        matcher.match = AsyncMock(return_value=[])
+
+        result = await resolve_and_validate_entity(
+            "Kitchen Light",
+            entity_index,
+            matcher,
+            "light-agent",
+            frozenset({"light"}),
+            lambda eid: True,
+        )
+
+        assert result["entity_id"] == "light.kitchen"
+        assert result["friendly_name"] == "Kitchen Light"
+        assert result["not_found_result"] is None
+
+    @pytest.mark.asyncio
+    async def test_resolve_and_validate_entity_not_found(self, entity_index):
+        matcher = MagicMock(spec=EntityMatcher)
+        matcher.match = AsyncMock(return_value=[])
+
+        result = await resolve_and_validate_entity(
+            "nonexistent lamp",
+            entity_index,
+            matcher,
+            None,
+            frozenset({"light"}),
+            lambda eid: True,
+        )
+
+        assert result["entity_id"] is None
+        assert result["not_found_result"] is not None
+        assert "Could not find" in result["not_found_result"]["speech"]
+
+    @pytest.mark.asyncio
+    async def test_resolve_and_validate_entity_domain_validation_fails(self, entity_index):
+        entity_index.list_entries_async = AsyncMock(
+            return_value=[make_entity_index_entry("media_player.tv", "TV", area="Living Room")]
+        )
+        matcher = MagicMock(spec=EntityMatcher)
+        matcher.match = AsyncMock(return_value=[])
+
+        result = await resolve_and_validate_entity(
+            "TV",
+            entity_index,
+            matcher,
+            None,
+            frozenset({"light"}),
+            lambda eid: False,
+        )
+
+        assert result["entity_id"] is None
+        assert result["not_found_result"] is not None
+        assert result["not_found_result"]["success"] is False
+
+    @pytest.mark.asyncio
+    async def test_resolve_and_validate_entity_no_matcher_no_index(self):
+        result = await resolve_and_validate_entity(
+            "kitchen light",
+            None,
+            None,
+            None,
+            frozenset({"light"}),
+            lambda eid: True,
+        )
+
+        assert result["entity_id"] is None
+        assert result["not_found_result"] is not None
+        assert result["not_found_result"]["success"] is False
+
+    @pytest.mark.asyncio
+    async def test_resolve_and_validate_entity_ambiguous_voice_followup(self, entity_index):
+        entity_index.list_entries_async = AsyncMock(
+            return_value=[
+                make_entity_index_entry("light.kitchen_1", "Kitchen", area="Kitchen"),
+                make_entity_index_entry("light.kitchen_2", "Kitchen", area="Kitchen"),
+            ]
+        )
+        matcher = MagicMock(spec=EntityMatcher)
+        matcher.match = AsyncMock(return_value=[])
+
+        result = await resolve_and_validate_entity(
+            "Kitchen",
+            entity_index,
+            matcher,
+            None,
+            frozenset({"light"}),
+            lambda eid: True,
+        )
+
+        assert result["entity_id"] is None
+        assert result["not_found_result"] is not None
+        assert "Multiple entities match" in result["not_found_result"]["speech"]
