@@ -13,6 +13,7 @@ from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from app.agents.base import _load_prompt_path, _prompt_path
 from app.agents.user_identity import UserIdentityResolver
 from app.db.repository import (
     CalendarEntitySettingsRepository,
@@ -23,12 +24,6 @@ from app.db.repository import (
 logger = logging.getLogger(__name__)
 
 _DEFAULT_OFFSETS = [15, 60, 1440]
-
-_REMINDER_SYSTEM_PROMPT = (
-    "You are a helpful assistant that writes brief, natural calendar reminders. "
-    "Write a single short sentence in the user's language. Be friendly but concise. "
-    "Mention the event name and roughly how soon it is. Do not use emojis."
-)
 
 
 class CalendarReminderInjector:
@@ -224,7 +219,7 @@ class CalendarReminderInjector:
             )
 
             messages = [
-                {"role": "system", "content": _REMINDER_SYSTEM_PROMPT},
+                {"role": "system", "content": _load_prompt_path(_prompt_path("calendar_reminder"))},
                 {"role": "user", "content": user_content},
             ]
 

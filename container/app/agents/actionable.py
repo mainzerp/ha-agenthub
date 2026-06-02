@@ -217,9 +217,7 @@ class ActionableAgent(BaseAgent):
         messages = [
             {
                 "role": "system",
-                "content": (
-                    f"You are a smart home assistant. Respond in {language}. Keep your response to one short sentence."
-                ),
+                "content": self._load_prompt("entity_not_found").format(language=language),
             },
             {
                 "role": "user",

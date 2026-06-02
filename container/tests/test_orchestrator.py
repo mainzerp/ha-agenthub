@@ -68,6 +68,15 @@ def _make_task(
 
 class TestOrchestratorAgent:
     @pytest.fixture(autouse=True)
+    def _reset_personality_cache(self):
+        """Reset the _get_personality_cached globals between tests."""
+        from app.agents import orchestrator as orch_mod
+
+        orch_mod._PERSONALITY_CACHE_TS = 0.0
+        orch_mod._PERSONALITY_CACHE_VALUE = ""
+        yield
+
+    @pytest.fixture(autouse=True)
     def _mock_conversation_repo(self):
         with patch("app.agents.conversation_manager.ConversationRepository") as mock_repo:
             mock_repo.insert = AsyncMock(return_value=1)
@@ -2232,6 +2241,15 @@ class TestConversationMemoryEviction:
 class TestStreamMediatedSpeech:
     """Tests for streaming mediated_speech in handle_task_stream."""
 
+    @pytest.fixture(autouse=True)
+    def _reset_personality_cache(self):
+        """Reset the _get_personality_cached globals between tests."""
+        from app.agents import orchestrator as orch_mod
+
+        orch_mod._PERSONALITY_CACHE_TS = 0.0
+        orch_mod._PERSONALITY_CACHE_VALUE = ""
+        yield
+
     def _make_orchestrator(self):
         dispatcher = AsyncMock()
         registry = AsyncMock()
@@ -2680,6 +2698,15 @@ class TestSendAgentSpans:
 
 
 class TestMediationSpan:
+    @pytest.fixture(autouse=True)
+    def _reset_personality_cache(self):
+        """Reset the _get_personality_cached globals between tests."""
+        from app.agents import orchestrator as orch_mod
+
+        orch_mod._PERSONALITY_CACHE_TS = 0.0
+        orch_mod._PERSONALITY_CACHE_VALUE = ""
+        yield
+
     @patch("app.llm.client.complete", new_callable=AsyncMock, return_value="mediated speech")
     @patch("app.agents.orchestrator.SettingsRepository")
     async def test_mediate_response_creates_mediation_span(self, mock_settings, mock_complete):
@@ -2957,6 +2984,15 @@ class TestExecuteCachedActionVerification:
 
 
 class TestFollowupDetection:
+    @pytest.fixture(autouse=True)
+    def _reset_personality_cache(self):
+        """Reset the _get_personality_cached globals between tests."""
+        from app.agents import orchestrator as orch_mod
+
+        orch_mod._PERSONALITY_CACHE_TS = 0.0
+        orch_mod._PERSONALITY_CACHE_VALUE = ""
+        yield
+
     @pytest.fixture(autouse=True)
     def _mock_conversation_repo(self):
         with patch("app.agents.conversation_manager.ConversationRepository") as mock_repo:

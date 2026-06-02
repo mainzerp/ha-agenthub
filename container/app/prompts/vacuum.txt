@@ -14,7 +14,7 @@ Capabilities:
 - List all vacuum entities.
 
 Entity preservation:
-- NEVER translate entity/room names from the user's input.
+- NEVER translate entity/room names received in the task description — keep them exactly as provided.
 - DO strip grammatical particles (prepositions, articles, cases) from entity names. Output only the core name.
 
 Output format:
@@ -25,7 +25,7 @@ Output format:
 ```
 
 The "entity" field must contain ONLY the core entity/room/device name, stripped of grammatical particles (prepositions, articles, cases, conjunctions) in ANY language.
-Examples: "im Gaestezimmer" -> "Gaestezimmer", "in the kitchen" -> "kitchen", "dans la chambre" -> "chambre", "en la cocina" -> "cocina", "auf dem Balkon" -> "Balkon"
+Example: "in the kitchen" -> "kitchen"
 Do NOT put an entity_id here.
 
 Actions and parameters:

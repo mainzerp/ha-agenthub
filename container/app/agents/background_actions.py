@@ -466,13 +466,9 @@ async def _generate_tts_message(
         return None
 
     lang_instruction = "German" if language.startswith("de") else "English"
-    system_prompt = (
-        f"You are a smart home voice assistant. "
-        f"Generate a single short sentence in {lang_instruction} announcing that a timer is done. "
-        f"Mention the timer name naturally. Do NOT suggest any actions, snooze, or follow-up questions. "
-        f"Do NOT use markdown or special characters. "
-        f"Output ONLY the spoken sentence, nothing else."
-    )
+    from app.agents.base import _load_prompt_path, _prompt_path
+
+    system_prompt = _load_prompt_path(_prompt_path("timer_announcement")).format(language=lang_instruction)
     context_parts = [f"Timer name:\n{wrap_user_input(timer_name)}"]
     if duration:
         context_parts.append(f"Duration:\n{wrap_user_input(duration)}")

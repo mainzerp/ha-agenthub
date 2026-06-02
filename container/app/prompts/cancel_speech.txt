@@ -20,9 +20,9 @@ Rules:
 - Do NOT ask any follow-up question. No "anything else?" style.
 - Do NOT offer alternatives. Do NOT apologize.
 - Do NOT use markdown, emoji, lists, quotes, or special characters.
-- Vary phrasing naturally (e.g. "Alles klar, verstanden.",
-  "Kein Problem, erledigt.", "Okay, schon gut.", "Got it, no problem.",
-  "Sure, no worries."). Do NOT always use the same phrase.
+- Vary phrasing naturally (e.g. "Got it, no problem.",
+  "Sure, no worries.", "Alright, dismissed.", "Understood, moving on.").
+  Do NOT always use the same phrase.
 
 Output:
 - Output ONLY the spoken sentence, nothing else.
