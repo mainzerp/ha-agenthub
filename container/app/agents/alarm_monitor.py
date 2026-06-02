@@ -5,10 +5,12 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import uuid
 from datetime import datetime
 from typing import Any
 
-from app.a2a.orchestrator_gateway import OrchestratorGateway
+from app.a2a.protocol import JsonRpcRequest
+from app.models.agent import AgentTask, BackgroundEvent, TaskContext
 
 logger = logging.getLogger(__name__)
 
@@ -19,9 +21,9 @@ _MATCH_WINDOW = 60  # seconds -- alarm matches if within this window
 class AlarmMonitor:
     """Polls input_datetime entities and dispatches notifications when alarm time is reached."""
 
-    def __init__(self, entity_index: Any, orchestrator_gateway: OrchestratorGateway) -> None:
+    def __init__(self, entity_index: Any, dispatcher: Any) -> None:
         self._entity_index = entity_index
-        self._orchestrator_gateway = orchestrator_gateway
+        self._dispatcher = dispatcher
         self._fired: set[str] = set()
         self._last_reset_date: str = ""
         self._task: asyncio.Task | None = None
@@ -118,13 +120,14 @@ class AlarmMonitor:
         return None
 
     async def _fire_notification(self, entry: Any) -> None:
-        """Dispatch alarm notification through the orchestrator gateway."""
+        """Dispatch alarm notification through the dispatcher."""
         entity_id = entry.entity_id
         friendly_name = entry.friendly_name or entity_id
         try:
-            await self._orchestrator_gateway.dispatch_background_event(
-                "alarm_notification",
-                {
+            event_context = TaskContext(source="background")
+            event_context.background_event = BackgroundEvent(
+                event_type="alarm_notification",
+                payload={
                     "alarm_name": friendly_name,
                     "briefing": False,
                     "entity_id": entity_id,
@@ -133,7 +136,17 @@ class AlarmMonitor:
                     "origin_area": getattr(entry, "area", None),
                     "language": getattr(entry, "language", None),
                 },
-                description=f"Dispatch alarm notification for {friendly_name}",
             )
+            task = AgentTask(
+                description=f"Dispatch alarm notification for {friendly_name}",
+                user_text=f"Dispatch alarm notification for {friendly_name}",
+                context=event_context,
+            )
+            request = JsonRpcRequest(
+                method="message/send",
+                params={"agent_id": "orchestrator", "task": task},
+                id=str(uuid.uuid4()),
+            )
+            await self._dispatcher.dispatch(request)
         except Exception:
             logger.error("Alarm notification dispatch failed for %s", entity_id, exc_info=True)

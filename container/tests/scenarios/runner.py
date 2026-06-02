@@ -360,14 +360,31 @@ async def _temp_db(db_path):
         finally:
             await shutdown_aiosqlite(conn)
 
-    with (
-        patch("app.db.repository.get_db_read", _get_db),
-        patch("app.db.repository.get_db_write", _get_db),
-        patch("app.db.schema.get_db_read", _get_db),
-        patch("app.db.schema.get_db_write", _get_db),
-        patch("app.db.repositories.settings.get_db_read", _get_db),
-        patch("app.db.repositories.settings.get_db_write", _get_db),
-    ):
+    _repo_modules = [
+        "app.db.repository",
+        "app.db.schema",
+        "app.db.repositories.admin",
+        "app.db.repositories.agent_config",
+        "app.db.repositories.alias",
+        "app.db.repositories.analytics",
+        "app.db.repositories.calendar",
+        "app.db.repositories.conversation",
+        "app.db.repositories.custom_agent",
+        "app.db.repositories.entity_matching_config",
+        "app.db.repositories.entity_visibility",
+        "app.db.repositories.mcp",
+        "app.db.repositories.plugin",
+        "app.db.repositories.query_synonym_cache",
+        "app.db.repositories.scheduled_timers",
+        "app.db.repositories.secrets",
+        "app.db.repositories.send_device_mapping",
+        "app.db.repositories.settings",
+        "app.db.repositories.trace",
+    ]
+    with contextlib.ExitStack() as stack:
+        for mod in _repo_modules:
+            stack.enter_context(patch(f"{mod}.get_db_read", _get_db))
+            stack.enter_context(patch(f"{mod}.get_db_write", _get_db))
         yield
 
 

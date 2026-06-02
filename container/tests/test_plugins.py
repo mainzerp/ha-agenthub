@@ -6,7 +6,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.a2a.orchestrator_gateway import AgentCatalog, OrchestratorGateway
 from app.a2a.registry import AgentRegistry
 from app.agents.custom_loader import CustomAgentLoader
 from app.ha_client.rest import (
@@ -128,42 +127,30 @@ class TestBasePlugin:
 
 class TestPluginContext:
     def test_context_provides_registries(self):
-        agent_catalog = MagicMock(spec=AgentCatalog)
-        gateway = MagicMock(spec=OrchestratorGateway)
+        agent_registry = MagicMock(spec=AgentRegistry)
+        dispatcher = MagicMock()
         mcp_reg = MagicMock()
         settings = MagicMock()
         app = MagicMock()
         ctx = PluginContext(
-            agent_catalog=agent_catalog,
-            orchestrator_gateway=gateway,
+            agent_registry=agent_registry,
+            dispatcher=dispatcher,
             mcp_registry=mcp_reg,
             settings_repo=settings,
             app=app,
         )
-        assert ctx.agent_catalog is agent_catalog
-        assert ctx.orchestrator_gateway is gateway
+        assert ctx.agent_registry is agent_registry
+        assert ctx.dispatcher is dispatcher
         assert ctx.mcp_registry is mcp_reg
         assert ctx.settings is settings
         assert not hasattr(ctx, "_app")
-
-    def test_ctx_agent_registry_raises_attribute_error(self):
-        app = MagicMock()
-        ctx = PluginContext(
-            agent_catalog=MagicMock(spec=AgentCatalog),
-            orchestrator_gateway=MagicMock(spec=OrchestratorGateway),
-            mcp_registry=MagicMock(),
-            settings_repo=MagicMock(),
-            app=app,
-        )
-        with pytest.raises(AttributeError, match="agent_registry has been removed"):
-            _ = ctx.agent_registry
 
     def test_ctx_app_raises_attribute_error(self):
         """PluginContext.app must raise AttributeError (escape hatch removed)."""
         app = MagicMock()
         ctx = PluginContext(
-            agent_catalog=MagicMock(spec=AgentCatalog),
-            orchestrator_gateway=MagicMock(spec=OrchestratorGateway),
+            agent_registry=MagicMock(spec=AgentRegistry),
+            dispatcher=MagicMock(),
             mcp_registry=MagicMock(),
             settings_repo=MagicMock(),
             app=app,
@@ -175,8 +162,8 @@ class TestPluginContext:
         """add_api_route should still work after app property removal."""
         app = MagicMock()
         ctx = PluginContext(
-            agent_catalog=MagicMock(spec=AgentCatalog),
-            orchestrator_gateway=MagicMock(spec=OrchestratorGateway),
+            agent_registry=MagicMock(spec=AgentRegistry),
+            dispatcher=MagicMock(),
             mcp_registry=MagicMock(),
             settings_repo=MagicMock(),
             app=app,
@@ -189,8 +176,8 @@ class TestPluginContext:
         app = MagicMock()
         router = MagicMock()
         ctx = PluginContext(
-            agent_catalog=MagicMock(spec=AgentCatalog),
-            orchestrator_gateway=MagicMock(spec=OrchestratorGateway),
+            agent_registry=MagicMock(spec=AgentRegistry),
+            dispatcher=MagicMock(),
             mcp_registry=MagicMock(),
             settings_repo=MagicMock(),
             app=app,
@@ -199,11 +186,14 @@ class TestPluginContext:
         app.include_router.assert_called_once_with(router)
 
     def test_gateway_surfaces_do_not_expose_raw_handler_access(self):
-        catalog = AgentCatalog(MagicMock())
-        gateway = OrchestratorGateway(MagicMock())
-        assert not hasattr(catalog, "get_handler")
-        assert not hasattr(catalog, "_get_handler_for_transport")
-        assert not hasattr(gateway, "get_handler")
+        from app.a2a.dispatcher import Dispatcher
+        from app.a2a.transport import InProcessTransport
+
+        registry = AgentRegistry()
+        transport = InProcessTransport(registry)
+        dispatcher = Dispatcher(registry, transport)
+        assert not hasattr(registry, "get_handler")
+        assert not hasattr(dispatcher, "get_handler")
 
 
 class TestD8Hardening:

@@ -15,7 +15,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from app.a2a.dispatcher import Dispatcher
-from app.a2a.orchestrator_gateway import AgentCatalog, OrchestratorGateway
 from app.a2a.registry import registry
 from app.a2a.transport import InProcessTransport
 from app.agents.custom_loader import CustomAgentLoader
@@ -90,18 +89,6 @@ def _configure_logging() -> None:
     _ensure_log_buffer_handler()
 
 
-async def _purge_stale_response_cache(cache_manager) -> None:
-    """One-time startup task: purge stale read-only response cache entries."""
-    try:
-        count = await cache_manager.purge_readonly_entries()
-        if count:
-            logger.info("Purged %d stale read-only response cache entries", count)
-        else:
-            logger.info("No stale read-only response cache entries to purge")
-    except Exception:
-        logger.warning("Failed to purge stale response cache entries", exc_info=True)
-
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup and shutdown events."""
@@ -133,7 +120,6 @@ async def lifespan(app: FastAPI):
     # helper used by both this lifespan and the post-wizard re-init path.
     transport = InProcessTransport(registry)
     dispatcher = Dispatcher(registry, transport)
-    orchestrator_gateway = OrchestratorGateway(dispatcher)
     conversation_routes.set_dispatcher(dispatcher)
     dashboard_api_routes.set_chat_dispatcher(dispatcher)
     admin_routes.set_registry(registry)
@@ -146,7 +132,6 @@ async def lifespan(app: FastAPI):
 
     app.state.registry = registry
     app.state.dispatcher = dispatcher
-    app.state.orchestrator_gateway = orchestrator_gateway
     app.state.mcp_registry = mcp_registry
     app.state.mcp_tool_manager = mcp_tool_manager
 
@@ -235,8 +220,8 @@ async def lifespan(app: FastAPI):
     from app.plugins.loader import PluginLoader
 
     plugin_context = PluginContext(
-        agent_catalog=AgentCatalog(registry),
-        orchestrator_gateway=orchestrator_gateway,
+        agent_registry=registry,
+        dispatcher=dispatcher,
         mcp_registry=mcp_registry,
         settings_repo=SettingsRepository,
         app=app,

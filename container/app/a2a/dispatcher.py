@@ -6,22 +6,59 @@ import logging
 from collections.abc import AsyncGenerator
 from typing import Any
 
-from app.a2a.protocol import (
-    INVALID_PARAMS,
-    METHOD_NOT_FOUND,
-    AgentDiscoverParams,
-    JsonRpcRequest,
-    JsonRpcResponse,
-    MessageSendParams,
-    MessageStreamParams,
-    error_response,
-    success_response,
-)
+from pydantic import BaseModel
+
+from app.a2a.protocol import JsonRpcRequest
 from app.a2a.registry import AgentRegistry
 from app.a2a.transport import Transport
 from app.models.agent import AgentTask
 
 logger = logging.getLogger(__name__)
+
+_PARSE_ERROR = -32700
+_INVALID_REQUEST = -32600
+_METHOD_NOT_FOUND = -32601
+_INVALID_PARAMS = -32602
+_INTERNAL_ERROR = -32603
+_TIMEOUT_ERROR = -32000
+
+
+class _JsonRpcError(BaseModel):
+    code: int
+    message: str
+    data: Any | None = None
+
+
+class _JsonRpcResponse(BaseModel):
+    jsonrpc: str = "2.0"
+    result: Any | None = None
+    error: _JsonRpcError | None = None
+    id: str
+
+
+class _MessageSendParams(BaseModel):
+    agent_id: str
+    task: Any
+
+
+class _MessageStreamParams(BaseModel):
+    agent_id: str
+    task: Any
+
+
+class _AgentDiscoverParams(BaseModel):
+    agent_id: str
+
+
+def _error_response(request_id: str, code: int, message: str, data: Any | None = None) -> _JsonRpcResponse:
+    return _JsonRpcResponse(
+        id=request_id,
+        error=_JsonRpcError(code=code, message=message, data=data),
+    )
+
+
+def _success_response(request_id: str, result: Any) -> _JsonRpcResponse:
+    return _JsonRpcResponse(id=request_id, result=result)
 
 
 class Dispatcher:
@@ -42,7 +79,7 @@ class Dispatcher:
         elif method == "agent/list":
             return await self._handle_agent_list(request)
         else:
-            return error_response(request.id, METHOD_NOT_FOUND, f"Method not found: {method}")
+            return _error_response(request.id, _METHOD_NOT_FOUND, f"Method not found: {method}")
 
     async def dispatch_stream(self, request: JsonRpcRequest) -> AsyncGenerator[dict[str, Any], None]:
         """Dispatch a streaming JSON-RPC request (message/stream)."""
@@ -57,7 +94,7 @@ class Dispatcher:
         try:
             raw_params = request.params or {}
             span_collector = raw_params.get("_span_collector")
-            params = MessageStreamParams(**{k: v for k, v in raw_params.items() if k != "_span_collector"})
+            params = _MessageStreamParams(**{k: v for k, v in raw_params.items() if k != "_span_collector"})
         except Exception as exc:
             yield {
                 "token": "",
@@ -76,26 +113,26 @@ class Dispatcher:
         try:
             raw_params = request.params or {}
             span_collector = raw_params.get("_span_collector")
-            params = MessageSendParams(**{k: v for k, v in raw_params.items() if k != "_span_collector"})
+            params = _MessageSendParams(**{k: v for k, v in raw_params.items() if k != "_span_collector"})
         except Exception as exc:
-            return error_response(request.id, INVALID_PARAMS, f"Invalid params: {exc}")
+            return _error_response(request.id, _INVALID_PARAMS, f"Invalid params: {exc}")
 
         task_data = params.task
         task = task_data if isinstance(task_data, AgentTask) else AgentTask(**task_data)
         task.span_collector = span_collector
         return await self._transport.send(params.agent_id, task, request.id)
 
-    async def _handle_agent_discover(self, request: JsonRpcRequest) -> JsonRpcResponse:
+    async def _handle_agent_discover(self, request: JsonRpcRequest) -> _JsonRpcResponse:
         try:
-            params = AgentDiscoverParams(**(request.params or {}))
+            params = _AgentDiscoverParams(**(request.params or {}))
         except Exception as exc:
-            return error_response(request.id, INVALID_PARAMS, f"Invalid params: {exc}")
+            return _error_response(request.id, _INVALID_PARAMS, f"Invalid params: {exc}")
 
         card = await self._registry.discover(params.agent_id)
         if card is None:
-            return error_response(request.id, INVALID_PARAMS, f"Agent not found: {params.agent_id}")
-        return success_response(request.id, card.model_dump())
+            return _error_response(request.id, _INVALID_PARAMS, f"Agent not found: {params.agent_id}")
+        return _success_response(request.id, card.model_dump())
 
-    async def _handle_agent_list(self, request: JsonRpcRequest) -> JsonRpcResponse:
+    async def _handle_agent_list(self, request: JsonRpcRequest) -> _JsonRpcResponse:
         agents = await self._registry.list_agents()
-        return success_response(request.id, {"agents": [a.model_dump() for a in agents]})
+        return _success_response(request.id, {"agents": [a.model_dump() for a in agents]})

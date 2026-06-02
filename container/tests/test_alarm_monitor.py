@@ -25,9 +25,9 @@ async def test_alarm_monitor_reads_entity_index_and_dispatches_gateway() -> None
     )
     entity_index = MagicMock()
     entity_index.list_entries_async = AsyncMock(return_value=[entry])
-    gateway = MagicMock()
-    gateway.dispatch_background_event = AsyncMock()
-    monitor = AlarmMonitor(entity_index, gateway)
+    dispatcher = MagicMock()
+    dispatcher.dispatch = AsyncMock()
+    monitor = AlarmMonitor(entity_index, dispatcher)
 
     fake_datetime = MagicMock(wraps=datetime)
     fake_datetime.now.return_value = datetime(2026, 4, 24, 8, 30, 0)
@@ -37,23 +37,24 @@ async def test_alarm_monitor_reads_entity_index_and_dispatches_gateway() -> None
         await monitor._check_alarms()
 
     entity_index.list_entries_async.assert_awaited()
-    gateway.dispatch_background_event.assert_awaited_once()
-    assert gateway.dispatch_background_event.await_args.args[0] == "alarm_notification"
-    payload = gateway.dispatch_background_event.await_args.args[1]
-    assert payload["entity_id"] == "input_datetime.morning_alarm"
-    assert payload["briefing"] is False
-    assert payload["origin_area"] == "bedroom"
-    assert payload["origin_device_id"] == "device-bedroom"
-    assert payload["media_player"] == "media_player.bedroom"
-    assert payload["language"] == "de"
+    dispatcher.dispatch.assert_awaited_once()
+    call_args = dispatcher.dispatch.await_args.args[0]
+    assert call_args.method == "message/send"
+    task_params = call_args.params["task"]
+    assert task_params.context.background_event.payload["entity_id"] == "input_datetime.morning_alarm"
+    assert task_params.context.background_event.payload["briefing"] is False
+    assert task_params.context.background_event.payload["origin_area"] == "bedroom"
+    assert task_params.context.background_event.payload["origin_device_id"] == "device-bedroom"
+    assert task_params.context.background_event.payload["media_player"] == "media_player.bedroom"
+    assert task_params.context.background_event.payload["language"] == "de"
 
 
 async def test_alarm_monitor_resets_fired_set_on_new_day() -> None:
     entity_index = MagicMock()
     entity_index.list_entries_async = AsyncMock(return_value=[])
-    gateway = MagicMock()
-    gateway.dispatch_background_event = AsyncMock()
-    monitor = AlarmMonitor(entity_index, gateway)
+    dispatcher = MagicMock()
+    dispatcher.dispatch = AsyncMock()
+    monitor = AlarmMonitor(entity_index, dispatcher)
     monitor._fired = {"input_datetime.old:2026-04-23"}
     monitor._last_reset_date = "2026-04-23"
 

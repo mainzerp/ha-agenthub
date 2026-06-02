@@ -1871,7 +1871,6 @@ class OrchestratorAgent(BaseAgent):
                     "recoverable": True,
                 },
             }
-        from app.a2a.orchestrator_gateway import OrchestratorGateway
         from app.agents.background_actions import handle_background_event
 
         return await handle_background_event(
@@ -1879,7 +1878,7 @@ class OrchestratorAgent(BaseAgent):
             context=ctx,
             ha_client=self._ha_client,
             entity_index=self._entity_index,
-            gateway=OrchestratorGateway(self._dispatcher),
+            gateway=self._dispatcher,
         )
 
     async def _repair_send_agent_classifications(

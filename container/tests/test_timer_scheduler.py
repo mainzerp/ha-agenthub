@@ -21,14 +21,34 @@ from app.db.repository import ScheduledTimersRepository
 pytestmark = pytest.mark.asyncio
 
 
+def _dispatch_event_type(dispatcher_mock):
+    """Extract the background event type from the most recent dispatch call."""
+    req = dispatcher_mock.dispatch.await_args.args[0]
+    return req.params["task"].context.background_event.event_type
+
+
+def _dispatch_payload(dispatcher_mock):
+    """Extract the background event payload from the most recent dispatch call."""
+    req = dispatcher_mock.dispatch.await_args.args[0]
+    return req.params["task"].context.background_event.payload
+
+
+def _dispatch_args_list(dispatcher_mock):
+    """Return all dispatch call payloads."""
+    return [
+        call_args.args[0].params["task"].context.background_event.payload
+        for call_args in dispatcher_mock.dispatch.call_args_list
+    ]
+
+
 def _make_scheduler(*, gateway=None) -> tuple[TimerScheduler, MagicMock]:
-    orchestrator_gateway = gateway or MagicMock()
-    orchestrator_gateway.dispatch_background_event = AsyncMock()
+    dispatcher = gateway or MagicMock()
+    dispatcher.dispatch = AsyncMock()
     scheduler = TimerScheduler(
         ScheduledTimersRepository,
-        orchestrator_gateway=orchestrator_gateway,
+        dispatcher=dispatcher,
     )
-    return scheduler, orchestrator_gateway
+    return scheduler, dispatcher
 
 
 class TestSchedulePersistence:
@@ -73,8 +93,8 @@ class TestFireOnDeadline:
                 if row and row["state"] == "fired":
                     break
             assert row["state"] == "fired"
-            gateway.dispatch_background_event.assert_awaited_once()
-            assert gateway.dispatch_background_event.await_args.args[0] == "timer_notification"
+            gateway.dispatch.assert_awaited_once()
+            assert _dispatch_event_type(gateway) == "timer_notification"
         finally:
             await sched.stop()
 
@@ -325,8 +345,8 @@ class TestRestartRecovery:
             await sched.start()
             row = await ScheduledTimersRepository.get("overdue-id")
             assert row["state"] == "fired"
-            gateway.dispatch_background_event.assert_awaited_once()
-            assert gateway.dispatch_background_event.await_args.args[0] == "timer_notification"
+            gateway.dispatch.assert_awaited_once()
+            assert _dispatch_event_type(gateway) == "timer_notification"
         finally:
             await sched.stop()
 
@@ -398,8 +418,8 @@ class TestRestartRecovery:
             fired_args = repo.mark_fired.await_args.args
             assert fired_args[0] == "retry-overdue-id"
             assert isinstance(fired_args[1], int)
-            gateway.dispatch_background_event.assert_awaited_once()
-            assert gateway.dispatch_background_event.await_args.args[0] == "timer_notification"
+            gateway.dispatch.assert_awaited_once()
+            assert _dispatch_event_type(gateway) == "timer_notification"
         finally:
             await sched.stop()
 
@@ -421,9 +441,9 @@ class TestKindDispatch:
                 row = await ScheduledTimersRepository.get(tid)
                 if row and row["state"] == "fired":
                     break
-            gateway.dispatch_background_event.assert_awaited_once()
-            assert gateway.dispatch_background_event.await_args.args[0] == "timer_notification"
-            payload = gateway.dispatch_background_event.await_args.args[1]
+            gateway.dispatch.assert_awaited_once()
+            assert _dispatch_event_type(gateway) == "timer_notification"
+            payload = _dispatch_payload(gateway)
             assert payload["origin_device_id"] == "device-123"
             assert payload["origin_area"] == "kitchen"
             assert payload["language"] == "de"
@@ -447,9 +467,9 @@ class TestKindDispatch:
                 row = await ScheduledTimersRepository.get(tid)
                 if row and row["state"] == "fired":
                     break
-            gateway.dispatch_background_event.assert_awaited_once()
-            assert gateway.dispatch_background_event.await_args.args[0] == "delayed_action"
-            assert gateway.dispatch_background_event.await_args.args[1]["target_entity"] == "light.kitchen"
+            gateway.dispatch.assert_awaited_once()
+            assert _dispatch_event_type(gateway) == "delayed_action"
+            assert _dispatch_payload(gateway)["target_entity"] == "light.kitchen"
         finally:
             await sched.stop()
 
@@ -467,9 +487,9 @@ class TestKindDispatch:
                 row = await ScheduledTimersRepository.get(tid)
                 if row and row["state"] == "fired":
                     break
-            gateway.dispatch_background_event.assert_awaited_once()
-            assert gateway.dispatch_background_event.await_args.args[0] == "sleep_media_stop"
-            assert gateway.dispatch_background_event.await_args.args[1]["media_player"] == "media_player.bedroom"
+            gateway.dispatch.assert_awaited_once()
+            assert _dispatch_event_type(gateway) == "sleep_media_stop"
+            assert _dispatch_payload(gateway)["media_player"] == "media_player.bedroom"
         finally:
             await sched.stop()
 
@@ -497,9 +517,9 @@ class TestKindDispatch:
                 if row and row["state"] == "fired":
                     break
 
-            gateway.dispatch_background_event.assert_awaited_once()
-            assert gateway.dispatch_background_event.await_args.args[0] == "alarm_notification"
-            payload = gateway.dispatch_background_event.await_args.args[1]
+            gateway.dispatch.assert_awaited_once()
+            assert _dispatch_event_type(gateway) == "alarm_notification"
+            payload = _dispatch_payload(gateway)
             assert payload["alarm_name"] == "Morning Alarm"
             assert payload["entity_id"].startswith("agenthub_alarm:")
             assert payload["origin_device_id"] == "device-123"
@@ -562,8 +582,8 @@ class TestKindDispatch:
             assert next_payload["recurrence"]["freq"] == "daily"
             assert int(next_payload["scheduled_for_epoch"]) == next_fire
 
-            gateway.dispatch_background_event.assert_awaited_once()
-            assert gateway.dispatch_background_event.await_args.args[0] == "alarm_notification"
+            gateway.dispatch.assert_awaited_once()
+            assert _dispatch_event_type(gateway) == "alarm_notification"
         finally:
             await sched.stop()
 
@@ -608,8 +628,8 @@ class TestRecurringRecovery:
             assert pending[0]["origin_device_id"] == "device-777"
             assert pending[0]["origin_area"] == "bedroom"
 
-            gateway.dispatch_background_event.assert_awaited_once()
-            assert gateway.dispatch_background_event.await_args.args[0] == "alarm_notification"
+            gateway.dispatch.assert_awaited_once()
+            assert _dispatch_event_type(gateway) == "alarm_notification"
         finally:
             await sched.stop()
 
@@ -673,12 +693,8 @@ class TestTimerNameDisplay:
                     if row and row["state"] == "fired":
                         break
 
-                calls = [
-                    call
-                    for call in gateway.dispatch_background_event.await_args_list
-                    if call.args[0] == "timer_notification"
-                ]
-                payload = calls[-1].args[1]
+                payloads = _dispatch_args_list(gateway)
+                payload = payloads[-1]
                 assert payload["timer_name"] == "Eggs done!"
         finally:
             await sched.stop()
@@ -700,8 +716,8 @@ class TestTimerNameDisplay:
                 row = await ScheduledTimersRepository.get(tid)
                 if row and row["state"] == "fired":
                     break
-            gateway.dispatch_background_event.assert_awaited_once()
-            payload = gateway.dispatch_background_event.await_args.args[1]
+            gateway.dispatch.assert_awaited_once()
+            payload = _dispatch_payload(gateway)
             assert payload["timer_name"] == "egg timer: Eggs done!"
         finally:
             await sched.stop()

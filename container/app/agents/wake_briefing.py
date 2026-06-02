@@ -11,7 +11,7 @@ from datetime import UTC, datetime, timedelta, tzinfo
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from app.a2a.orchestrator_gateway import OrchestratorGateway
+from app.a2a.protocol import JsonRpcRequest
 from app.db.repository import AgentConfigRepository, SettingsRepository
 from app.entity.matcher import MatchResult
 from app.entity.visibility import filter_visible_results
@@ -100,19 +100,22 @@ def _build_task_context(alarm_payload: dict[str, Any], *, language: str, timezon
 
 
 async def _dispatch_agent_source(
-    gateway: OrchestratorGateway,
+    dispatcher: Any,
     *,
     description: str,
     user_text: str,
     conversation_id: str,
     context: TaskContext,
 ) -> str | None:
-    result = await gateway.dispatch_text(
-        description,
-        user_text=user_text,
-        conversation_id=conversation_id,
-        context=context,
+    from app.models.agent import AgentTask
+
+    task = AgentTask(description=description, user_text=user_text, conversation_id=conversation_id, context=context)
+    request = JsonRpcRequest(
+        method="message/send",
+        params={"agent_id": "orchestrator", "task": task},
+        id=conversation_id,
     )
+    result = await dispatcher.dispatch(request)
     speech = (result.get("speech") or "").strip() if isinstance(result, dict) else ""
     return speech or None
 
@@ -231,7 +234,7 @@ async def _sensor_facts(
 
 
 async def _compose_wake_briefing_inner(
-    gateway: OrchestratorGateway,
+    dispatcher: Any,
     alarm_payload: dict[str, Any],
     *,
     ha_client: Any,
@@ -263,7 +266,7 @@ async def _compose_wake_briefing_inner(
             tasks.append(
                 asyncio.wait_for(
                     _dispatch_agent_source(
-                        gateway,
+                        dispatcher,
                         description="weather today and short forecast",
                         user_text="weather today and short forecast",
                         conversation_id=f"{conversation_seed}-weather",
@@ -281,7 +284,7 @@ async def _compose_wake_briefing_inner(
             tasks.append(
                 asyncio.wait_for(
                     _dispatch_agent_source(
-                        gateway,
+                        dispatcher,
                         description=news_request,
                         user_text=news_request,
                         conversation_id=f"{conversation_seed}-news",
@@ -369,7 +372,7 @@ async def _compose_wake_briefing_inner(
 
 
 async def compose_wake_briefing(
-    gateway: OrchestratorGateway,
+    dispatcher: Any,
     alarm_payload: dict,
     *,
     ha_client: Any,
@@ -380,7 +383,7 @@ async def compose_wake_briefing(
     fallback_message = _fallback_alarm_message(alarm_payload)
     try:
         return await _compose_wake_briefing_inner(
-            gateway,
+            dispatcher,
             dict(alarm_payload or {}),
             ha_client=ha_client,
             entity_index=entity_index,

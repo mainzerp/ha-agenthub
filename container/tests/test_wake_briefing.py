@@ -57,8 +57,8 @@ def _alarm_payload(**overrides):
 
 
 async def test_compose_wake_briefing_happy_path_uses_gateway_and_calendar_facts() -> None:
-    gateway = MagicMock()
-    gateway.dispatch_text = AsyncMock(side_effect=[{"speech": "18 C and sunny."}, {"speech": "Headline one."}])
+    dispatcher = MagicMock()
+    dispatcher.dispatch = AsyncMock(side_effect=[{"speech": "18 C and sunny."}, {"speech": "Headline one."}])
     ha_client = _HaClient()
     ha_client.get_calendar_events.return_value = [{"summary": "Standup", "start": "2026-04-27T09:00:00+00:00"}]
     entity_index = MagicMock()
@@ -79,7 +79,7 @@ async def test_compose_wake_briefing_happy_path_uses_gateway_and_calendar_facts(
         patch("app.agents.wake_briefing.complete", new=AsyncMock(return_value="Good morning.")) as complete_mock,
     ):
         result = await compose_wake_briefing(
-            gateway,
+            dispatcher,
             _alarm_payload(),
             ha_client=ha_client,
             entity_index=entity_index,
@@ -87,8 +87,10 @@ async def test_compose_wake_briefing_happy_path_uses_gateway_and_calendar_facts(
         )
 
     assert result == "Good morning."
-    assert gateway.dispatch_text.await_count == 2
-    assert gateway.dispatch_text.await_args_list[1].args[0] == "top news today. Return 3 concise headlines."
+    assert dispatcher.dispatch.call_count == 2
+    second_call = dispatcher.dispatch.call_args_list[1]
+    second_task = second_call.args[0].params["task"]
+    assert second_task.description == "top news today. Return 3 concise headlines."
     facts = json.loads(complete_mock.await_args.kwargs["messages"][1]["content"])
     assert facts["date"] == "2026-04-27"
     assert facts["weekday"] == "Monday"
@@ -99,13 +101,14 @@ async def test_compose_wake_briefing_happy_path_uses_gateway_and_calendar_facts(
 
 
 async def test_compose_wake_briefing_omits_timed_out_source() -> None:
-    async def _dispatch(description, **kwargs):
-        if description.startswith("top news today"):
+    async def _dispatch(request):
+        task = request.params["task"]
+        if task.description.startswith("top news today"):
             raise TimeoutError()
         return {"speech": "Clear and cool."}
 
-    gateway = MagicMock()
-    gateway.dispatch_text = AsyncMock(side_effect=_dispatch)
+    dispatcher = MagicMock()
+    dispatcher.dispatch = AsyncMock(side_effect=_dispatch)
 
     settings_repo = _SettingsRepo(
         {
@@ -119,7 +122,7 @@ async def test_compose_wake_briefing_omits_timed_out_source() -> None:
         patch("app.agents.wake_briefing.complete", new=AsyncMock(return_value="Briefing")) as complete_mock,
     ):
         result = await compose_wake_briefing(
-            gateway,
+            dispatcher,
             _alarm_payload(),
             ha_client=_HaClient(),
             entity_index=MagicMock(),
@@ -213,6 +216,6 @@ async def test_compose_wake_briefing_skips_hidden_calendar_entities() -> None:
 async def test_wake_briefing_module_uses_gateway_boundary_only() -> None:
     source = (Path(__file__).resolve().parents[1] / "app" / "agents" / "wake_briefing.py").read_text(encoding="utf-8")
 
-    assert "from app.a2a.orchestrator_gateway import OrchestratorGateway" in source
-    assert "dispatch_text(" in source
+    assert "from app.a2a.protocol import JsonRpcRequest" in source
+    assert "await dispatcher.dispatch(" in source
     assert "from app.agents." not in source

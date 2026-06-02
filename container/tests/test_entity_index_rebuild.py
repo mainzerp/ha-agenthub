@@ -56,10 +56,10 @@ def _patch_entity_pipeline(entities: list | None = None):
         entities = [MagicMock(name="entity-stub")]
     return [
         patch(
-            "app.runtime_setup._gather_ha_lookups",
+            "app.bootstrap._entity._gather_ha_lookups",
             new=AsyncMock(return_value=({}, {}, {}, {})),
         ),
-        patch("app.runtime_setup.parse_ha_states", return_value=entities),
+        patch("app.bootstrap._entity.parse_ha_states", return_value=entities),
         patch(
             "app.entity.user_aliases.load_user_aliases",
             new=AsyncMock(return_value=None),
@@ -79,15 +79,15 @@ def _patch_settings(values: dict[str, str]):
         values[key] = value
 
     return (
-        patch("app.runtime_setup.SettingsRepository.get_value", new=AsyncMock(side_effect=_get)),
-        patch("app.runtime_setup.SettingsRepository.set", new=AsyncMock(side_effect=_set)),
+        patch("app.bootstrap._entity.SettingsRepository.get_value", new=AsyncMock(side_effect=_get)),
+        patch("app.bootstrap._entity.SettingsRepository.set", new=AsyncMock(side_effect=_set)),
         set_calls,
     )
 
 
 @pytest.mark.asyncio
 async def test_resolve_active_embedding_model_uses_multilingual_default_when_setting_missing():
-    from app import runtime_setup
+    from app.bootstrap import _entity as runtime_setup
 
     async def _get_value(key: str, default: str | None = None) -> str:
         if key == "embedding.provider":
@@ -97,7 +97,7 @@ async def test_resolve_active_embedding_model_uses_multilingual_default_when_set
         return default if default is not None else ""
 
     with patch(
-        "app.runtime_setup.SettingsRepository.get_value",
+        "app.bootstrap._entity.SettingsRepository.get_value",
         new=AsyncMock(side_effect=_get_value),
     ):
         resolved = await runtime_setup._resolve_active_embedding_model()
@@ -107,7 +107,7 @@ async def test_resolve_active_embedding_model_uses_multilingual_default_when_set
 
 @pytest.mark.asyncio
 async def test_prime_drops_collection_when_embedding_model_changed():
-    from app import runtime_setup
+    from app.bootstrap import _entity as runtime_setup
 
     app = _make_app_state()
     ha = _make_ha_client()
@@ -149,7 +149,7 @@ async def test_prime_drops_collection_when_embedding_model_changed():
 
 @pytest.mark.asyncio
 async def test_prime_does_not_drop_when_schema_and_model_match():
-    from app import runtime_setup
+    from app.bootstrap import _entity as runtime_setup
 
     app = _make_app_state()
     ha = _make_ha_client()
@@ -184,7 +184,7 @@ async def test_prime_does_not_drop_when_schema_and_model_match():
 @pytest.mark.asyncio
 async def test_prime_drops_and_retries_on_chroma_compaction_error():
     """First populate raises a compaction/HNSW error; code drops + retries once."""
-    from app import runtime_setup
+    from app.bootstrap import _entity as runtime_setup
 
     app = _make_app_state()
     ha = _make_ha_client()

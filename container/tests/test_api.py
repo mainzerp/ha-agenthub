@@ -113,7 +113,7 @@ async def timer_admin_client(db_repository):
 
     gateway = MagicMock()
     gateway.dispatch_background_event = AsyncMock()
-    scheduler = TimerScheduler(ScheduledTimersRepository, orchestrator_gateway=gateway)
+    scheduler = TimerScheduler(ScheduledTimersRepository, dispatcher=gateway)
 
     ha_client = AsyncMock()
     ha_client.get_area_registry = AsyncMock(return_value={})
@@ -743,7 +743,7 @@ class TestAdminSettingsEndpoints:
         ha_client = AsyncMock()
         ha_client.get_config = AsyncMock(return_value={"time_zone": "Europe/Berlin", "location_name": "Home"})
         app = _build_test_app(mock_ha_rest_client=ha_client)
-        app.state.orchestrator_gateway = MagicMock()
+        app.state.dispatcher = MagicMock()
         app.state.entity_index = MagicMock()
 
         with (

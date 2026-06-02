@@ -704,7 +704,7 @@ async def update_wake_briefing_settings(payload: WakeBriefingSettingsPayload) ->
 @router.post("/settings/wake-briefing/test")
 async def test_wake_briefing_settings(payload: WakeBriefingSettingsPayload, request: Request) -> dict[str, Any]:
     """Compose a wake briefing preview from unsaved dashboard values."""
-    gateway = getattr(request.app.state, "orchestrator_gateway", None)
+    gateway = getattr(request.app.state, "dispatcher", None)
     ha_client = getattr(request.app.state, "ha_client", None)
     entity_index = getattr(request.app.state, "entity_index", None)
     if gateway is None or ha_client is None:

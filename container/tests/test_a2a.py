@@ -6,23 +6,24 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from app.a2a.dispatcher import Dispatcher
+from app.a2a.dispatcher import (
+    _INTERNAL_ERROR,
+    _INVALID_PARAMS,
+    _INVALID_REQUEST,
+    _METHOD_NOT_FOUND,
+    _PARSE_ERROR,
+    _TIMEOUT_ERROR,
+    Dispatcher,
+    _AgentDiscoverParams,
+    _error_response,
+    _JsonRpcError,
+    _JsonRpcResponse,
+    _MessageSendParams,
+    _MessageStreamParams,
+    _success_response,
+)
 from app.a2a.protocol import (
-    INTERNAL_ERROR,
-    INVALID_PARAMS,
-    INVALID_REQUEST,
-    METHOD_NOT_FOUND,
-    PARSE_ERROR,
-    TIMEOUT_ERROR,
-    AgentDiscoverParams,
-    JsonRpcError,
     JsonRpcRequest,
-    JsonRpcResponse,
-    JsonRpcStreamChunk,
-    MessageSendParams,
-    MessageStreamParams,
-    error_response,
-    success_response,
 )
 from app.a2a.registry import AgentRegistry
 from app.a2a.transport import InProcessTransport, Transport
@@ -56,64 +57,54 @@ class TestJsonRpcRequest:
 
 class TestJsonRpcResponse:
     def test_success_response(self):
-        resp = JsonRpcResponse(id="1", result={"status": "ok"})
+        resp = _JsonRpcResponse(id="1", result={"status": "ok"})
         assert resp.error is None
         assert resp.result["status"] == "ok"
 
     def test_error_response(self):
-        resp = JsonRpcResponse(id="1", error=JsonRpcError(code=-32601, message="Not found"))
+        resp = _JsonRpcResponse(id="1", error=_JsonRpcError(code=-32601, message="Not found"))
         assert resp.result is None
         assert resp.error.code == -32601
 
 
 class TestJsonRpcError:
     def test_standard_codes(self):
-        assert PARSE_ERROR == -32700
-        assert INVALID_REQUEST == -32600
-        assert METHOD_NOT_FOUND == -32601
-        assert INVALID_PARAMS == -32602
-        assert INTERNAL_ERROR == -32603
-        assert TIMEOUT_ERROR == -32000
+        assert _PARSE_ERROR == -32700
+        assert _INVALID_REQUEST == -32600
+        assert _METHOD_NOT_FOUND == -32601
+        assert _INVALID_PARAMS == -32602
+        assert _INTERNAL_ERROR == -32603
+        assert _TIMEOUT_ERROR == -32000
 
     def test_error_with_data(self):
-        err = JsonRpcError(code=-32600, message="bad", data={"detail": "stuff"})
+        err = _JsonRpcError(code=-32600, message="bad", data={"detail": "stuff"})
         assert err.data["detail"] == "stuff"
-
-
-class TestJsonRpcStreamChunk:
-    def test_chunk_not_done(self):
-        c = JsonRpcStreamChunk(id="1", result={"token": "Hello"}, done=False)
-        assert c.done is False
-
-    def test_chunk_done(self):
-        c = JsonRpcStreamChunk(id="1", result={"token": "", "done": True}, done=True)
-        assert c.done is True
 
 
 class TestHelperFactories:
     def test_error_response_factory(self):
-        resp = error_response("req-1", METHOD_NOT_FOUND, "Not found")
+        resp = _error_response("req-1", _METHOD_NOT_FOUND, "Not found")
         assert resp.error is not None
-        assert resp.error.code == METHOD_NOT_FOUND
+        assert resp.error.code == _METHOD_NOT_FOUND
         assert resp.id == "req-1"
 
     def test_success_response_factory(self):
-        resp = success_response("req-1", {"status": "ok"})
+        resp = _success_response("req-1", {"status": "ok"})
         assert resp.result == {"status": "ok"}
         assert resp.error is None
 
 
 class TestParamModels:
     def test_message_send_params(self):
-        p = MessageSendParams(agent_id="light-agent", task={"description": "test"})
+        p = _MessageSendParams(agent_id="light-agent", task={"description": "test"})
         assert p.agent_id == "light-agent"
 
     def test_message_stream_params(self):
-        p = MessageStreamParams(agent_id="music-agent", task={"description": "play"})
+        p = _MessageStreamParams(agent_id="music-agent", task={"description": "play"})
         assert p.agent_id == "music-agent"
 
     def test_agent_discover_params(self):
-        p = AgentDiscoverParams(agent_id="light-agent")
+        p = _AgentDiscoverParams(agent_id="light-agent")
         assert p.agent_id == "light-agent"
 
 
@@ -225,7 +216,7 @@ class TestDispatcher:
         request = JsonRpcRequest(method="unknown/method", id="r2")
         resp = await dispatcher.dispatch(request)
         assert resp.error is not None
-        assert resp.error.code == METHOD_NOT_FOUND
+        assert resp.error.code == _METHOD_NOT_FOUND
 
     async def test_dispatch_agent_discover(self):
         dispatcher, reg, _ = self._make_dispatcher()
@@ -240,7 +231,7 @@ class TestDispatcher:
         request = JsonRpcRequest(method="agent/discover", id="r4", params={"agent_id": "nope"})
         resp = await dispatcher.dispatch(request)
         assert resp.error is not None
-        assert resp.error.code == INVALID_PARAMS
+        assert resp.error.code == _INVALID_PARAMS
 
     async def test_dispatch_agent_list(self):
         dispatcher, reg, _ = self._make_dispatcher()
@@ -256,7 +247,7 @@ class TestDispatcher:
         request = JsonRpcRequest(method="message/send", id="r6", params={})
         resp = await dispatcher.dispatch(request)
         assert resp.error is not None
-        assert resp.error.code == INVALID_PARAMS
+        assert resp.error.code == _INVALID_PARAMS
 
     async def test_dispatch_stream_valid(self):
         dispatcher, reg, _ = self._make_dispatcher()

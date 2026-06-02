@@ -1603,7 +1603,7 @@ class TestPeriodicEntitySync:
         """Task fetches states, parses, and calls entity_index.sync()."""
         from unittest.mock import AsyncMock, patch
 
-        from app.runtime_setup import _periodic_entity_sync
+        from app.bootstrap._entity import _periodic_entity_sync
 
         mock_app = MagicMock()
         mock_app.state.ha_client = AsyncMock()
@@ -1624,9 +1624,9 @@ class TestPeriodicEntitySync:
         )
 
         with (
-            patch("app.runtime_setup.SettingsRepository") as mock_settings,
-            patch("app.runtime_setup._gather_ha_lookups") as mock_gather,
-            patch("app.runtime_setup._store_entity_lookups"),
+            patch("app.bootstrap._entity.SettingsRepository") as mock_settings,
+            patch("app.bootstrap._entity._gather_ha_lookups") as mock_gather,
+            patch("app.bootstrap._entity._store_entity_lookups"),
             patch("asyncio.sleep", side_effect=[None, asyncio.CancelledError]),
         ):
             mock_settings.get_value = AsyncMock(return_value="1")
@@ -1640,7 +1640,7 @@ class TestPeriodicEntitySync:
         """Interval=0 skips sync and re-checks after 5 min."""
         from unittest.mock import AsyncMock, patch
 
-        from app.runtime_setup import _periodic_entity_sync
+        from app.bootstrap._entity import _periodic_entity_sync
 
         mock_app = MagicMock()
         mock_app.state.ha_client = AsyncMock()
@@ -1654,7 +1654,7 @@ class TestPeriodicEntitySync:
                 raise asyncio.CancelledError
 
         with (
-            patch("app.runtime_setup.SettingsRepository") as mock_settings,
+            patch("app.bootstrap._entity.SettingsRepository") as mock_settings,
             patch("asyncio.sleep", side_effect=fake_sleep),
         ):
             mock_settings.get_value = AsyncMock(return_value="0")
@@ -1667,7 +1667,7 @@ class TestPeriodicEntitySync:
         """Errors are logged but do not crash the task."""
         from unittest.mock import AsyncMock, patch
 
-        from app.runtime_setup import _periodic_entity_sync
+        from app.bootstrap._entity import _periodic_entity_sync
 
         mock_app = MagicMock()
         mock_app.state.ha_client = AsyncMock()
@@ -1683,7 +1683,7 @@ class TestPeriodicEntitySync:
                 raise asyncio.CancelledError
 
         with (
-            patch("app.runtime_setup.SettingsRepository") as mock_settings,
+            patch("app.bootstrap._entity.SettingsRepository") as mock_settings,
             patch("asyncio.sleep", side_effect=fake_sleep),
         ):
             mock_settings.get_value = AsyncMock(return_value="1")
