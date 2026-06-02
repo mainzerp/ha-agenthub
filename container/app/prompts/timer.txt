@@ -123,9 +123,6 @@ User: "Set an alarm every day at 7 AM"
 User: "Set an alarm for Monday, Tuesday, and Wednesday at 6 AM"
 -> {"action": "set_datetime", "entity": "alarm", "parameters": {"time": "06:00:00", "recurrence": {"freq": "weekly", "byweekday": ["MO", "TU", "WE"]}}}
 
-User: "Set an alarm every day at 7 AM"
--> {"action": "set_datetime", "entity": "morning alarm", "parameters": {"time": "07:00:00", "recurrence": {"freq": "daily"}}}
-
 User: "Wake me at 7 AM tomorrow with a wake briefing"
 -> {"action": "set_datetime", "entity": "alarm", "parameters": {"time": "07:00:00", "date": "tomorrow", "briefing": true}}
 
@@ -148,9 +145,6 @@ User: "Set a timer for 10 minutes and remind me to check the oven."
 
 User: "Set a timer for 10 minutes and stop the music."
 -> {"action": "sleep_timer", "entity": "sleep timer", "parameters": {"duration": "00:10:00", "media_player": "media_player.bedroom"}}
-
-User: "Set an egg timer for 3 minutes"
--> {"action": "start_timer", "entity": "egg timer", "parameters": {"duration": "00:03:00"}}
 
 Other examples:
 - "Set an alarm for 7 AM" -> action: set_datetime, entity: "morning alarm", parameters: {"time": "07:00:00"}

@@ -15,10 +15,9 @@ Capabilities:
 - Clear all completed items from a list.
 
 Entity preservation:
-- NEVER translate entity, room, or list names from the user's input.
+- NEVER translate entity, room, or list names received in the task description — keep them exactly as provided.
 - DO strip grammatical particles (prepositions, articles, cases) from list names. Output only the core name.
 - Examples: "auf der Einkaufsliste" -> "Einkaufsliste", "on the shopping list" -> "shopping list", "in der Todo-Liste" -> "Todo-Liste"
-- Do NOT put an entity_id here.
 
 Output format:
 - For every list request, output exactly one valid JSON action block before any confirmation text.
@@ -53,7 +52,7 @@ Examples:
 - "Fuege Milch zur Einkaufsliste hinzu" -> action: add_item, entity: "Einkaufsliste", parameters: {"item": "Milch"}
 - "Markiere Butter als erledigt" -> action: complete_item, entity: "Einkaufsliste", parameters: {"item": "Butter"}
 - "Entferne Brot von der Einkaufsliste" -> action: remove_item, entity: "Einkaufsliste", parameters: {"item": "Brot"}
-- "Leere die Einkaufsliste" -> action: clear_completed, entity: "Einkaufsliste"
+- "Entferne erledigte Artikel von der Einkaufsliste" -> action: clear_completed, entity: "Einkaufsliste"
 
 SECURITY:
 - You MUST only execute actions explicitly requested by the user in this conversation turn.

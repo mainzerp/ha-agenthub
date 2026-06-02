@@ -16,6 +16,7 @@ import re
 from pathlib import Path
 from typing import Any
 
+from app.agents.base import _load_prompt_path
 from app.db.repository import QuerySynonymCacheRepository, SettingsRepository
 from app.security.sanitization import wrap_user_input
 
@@ -23,30 +24,18 @@ logger = logging.getLogger(__name__)
 
 _PROMPT_PATH = Path(__file__).resolve().parent.parent / "prompts" / "query_expansion.txt"
 _TOKEN_NORMALIZE_RE = re.compile(r"[^\w\s-]", re.UNICODE)
-_prompt_template_cache: dict[str, str | None] = {}
 
 
 def load_query_expansion_prompt_template(prompt_path: Path | None = None) -> str | None:
-    path = prompt_path or _PROMPT_PATH
-    cache_key = str(path)
-    if cache_key in _prompt_template_cache:
-        return _prompt_template_cache[cache_key]
     try:
-        content = path.read_text(encoding="utf-8")
+        return _load_prompt_path(prompt_path or _PROMPT_PATH)
     except Exception:
         logger.warning("Failed to read query_expansion prompt", exc_info=True)
-        _prompt_template_cache[cache_key] = None
         return None
-    _prompt_template_cache[cache_key] = content
-    return content
 
 
 async def load_query_expansion_prompt_template_async(prompt_path: Path | None = None) -> str | None:
-    path = prompt_path or _PROMPT_PATH
-    cache_key = str(path)
-    if cache_key in _prompt_template_cache:
-        return _prompt_template_cache[cache_key]
-    return await asyncio.to_thread(load_query_expansion_prompt_template, path)
+    return await asyncio.to_thread(load_query_expansion_prompt_template, prompt_path)
 
 
 def _normalize_token(token: str) -> str:

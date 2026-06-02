@@ -21,10 +21,13 @@ class PromptBuilder:
 
         if language and language.lower() not in ("en", "english", ""):
             prompt += (
-                f"\n\nIMPORTANT: Respond in {language}. "
-                f"The user's language is {language}. "
-                "Keep entity names, device names, and room names exactly as the user wrote them -- "
-                "do NOT translate those."
+                f"\n\nCRITICAL LANGUAGE INSTRUCTION: The user's language is {language}.\n"
+                f"Respond in {language}.\n"
+                "Copy entity, device, room, and scene names verbatim from the user's message.\n"
+                "NEVER translate entity names to English, "
+                "regardless of what language the few-shot examples use.\n"
+                "If a few-shot example uses a different language than the user, "
+                "copy the example's STRUCTURE but keep the USER's original entity names unchanged.\n\n"
             )
 
         if sequential_send:

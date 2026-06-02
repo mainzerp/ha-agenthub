@@ -51,6 +51,25 @@ _CANCEL_INTERACTION_AGENT = "cancel-interaction"
 _CANNED_TIMEOUT_SPEECH = "I couldn't process that request in time."
 _CANNED_GENERAL_ERROR_SPEECH = "I couldn't process that request right now."
 
+_PERSONALITY_CACHE_TS: float = 0.0
+_PERSONALITY_CACHE_VALUE: str = ""
+_PERSONALITY_CACHE_TTL_SEC: float = 300.0
+
+
+async def _get_personality_cached(settings_repo) -> str:
+    """Return cached personality prompt with 300-second TTL."""
+    global _PERSONALITY_CACHE_TS, _PERSONALITY_CACHE_VALUE
+    now_ = time.monotonic()
+    if now_ - _PERSONALITY_CACHE_TS < _PERSONALITY_CACHE_TTL_SEC:
+        return _PERSONALITY_CACHE_VALUE
+    try:
+        personality = await settings_repo.get_value("personality.prompt", "")
+    except Exception:
+        personality = ""
+    _PERSONALITY_CACHE_TS = now_
+    _PERSONALITY_CACHE_VALUE = personality
+    return personality
+
 
 @dataclass
 class PipelinePreludeResult:
@@ -1995,9 +2014,7 @@ class OrchestratorAgent(BaseAgent):
         agent_summary = "\n".join(summary_parts)
 
         try:
-            personality: str | None = ""
-            with contextlib.suppress(Exception):
-                personality = await SettingsRepository.get_value("personality.prompt", "")
+            personality = await _get_personality_cached(SettingsRepository)
 
             system_content = await self._load_prompt_async("merge")
             personality_text = personality.strip() if personality and personality.strip() else ""
@@ -2042,10 +2059,7 @@ class OrchestratorAgent(BaseAgent):
         messages = [
             {
                 "role": "system",
-                "content": (
-                    "You decide whether a smart home assistant response asks the user a question "
-                    "that requires an answer. Reply ONLY with 'yes' or 'no'."
-                ),
+                "content": self._load_prompt("followup_detection"),
             },
             {
                 "role": "user",
@@ -2082,15 +2096,8 @@ class OrchestratorAgent(BaseAgent):
         Returns:
             Tuple of (mediated_speech, followup_needed).
         """
-        try:
-            personality = await SettingsRepository.get_value("personality.prompt", "")
-            if not (personality or "").strip():
-                if reminder_text:
-                    separator = " " if agent_speech and agent_speech[-1] in ".!?" else ". "
-                    return (f"{agent_speech}{separator}{reminder_text}" if agent_speech else reminder_text), False
-                return agent_speech, False
-        except Exception:
-            logger.debug("Failed to load personality prompt, using original speech", exc_info=True)
+        personality = await _get_personality_cached(SettingsRepository)
+        if not personality.strip():
             if reminder_text:
                 separator = " " if agent_speech and agent_speech[-1] in ".!?" else ". "
                 return (f"{agent_speech}{separator}{reminder_text}" if agent_speech else reminder_text), False

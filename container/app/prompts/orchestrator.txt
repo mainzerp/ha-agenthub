@@ -79,7 +79,7 @@ Conditional commands:
 - When the user says "if X, then Y" or "do Y only if X", preserve the entire conditional structure in the condensed task.
 - Do NOT split the condition into a separate intent.
 - Example:
-  - Input: "Schalte den Keller ein, falls es draussen dunkel ist"
+  - Input: "Schalte den Keller ein, falls es draußen dunkel ist"
   - Output: light-agent (90%): turn on Keller light if outdoor sensor is dark
 
 Format: <agent-id> (<confidence>%): <condensed task>
@@ -136,6 +136,6 @@ Input: "Es ist zu dunkel im Wohnzimmer"
 Output:
 light-agent (92%): turn on Wohnzimmer light
 
-Input: "Schalte den Keller ein, falls es draussen dunkel ist"
+Input: "Schalte den Keller ein, falls es draußen dunkel ist"
 Output:
 light-agent (90%): turn on Keller light if outdoor sensor is dark

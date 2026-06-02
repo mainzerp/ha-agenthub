@@ -6,6 +6,7 @@ import logging
 
 from app.agents.base import BaseAgent
 from app.agents.decorator import agent
+from app.agents.orchestrator import _get_personality_cached
 from app.agents.sanitize import strip_parenthetical_asides
 from app.db.repository import SettingsRepository
 from app.models.agent import AgentCard, AgentTask, TaskResult
@@ -54,7 +55,7 @@ class RewriteAgent(BaseAgent):
         """
         system_prompt = await self._load_prompt_async("rewrite")
         try:
-            personality = await SettingsRepository.get_value("personality.prompt", "")
+            personality = await _get_personality_cached(SettingsRepository)
         except Exception:
             personality = ""
         personality_text = personality.strip() if personality else ""
