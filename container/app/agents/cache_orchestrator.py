@@ -372,6 +372,8 @@ class CacheOrchestrator:
             return False, False
 
         entity_ids: list[str] = []
+        if hasattr(action_executed, "model_dump"):
+            action_executed = action_executed.model_dump()
         if isinstance(action_executed, dict):
             raw_entity_ids = action_executed.get("entity_ids")
             if isinstance(raw_entity_ids, list):

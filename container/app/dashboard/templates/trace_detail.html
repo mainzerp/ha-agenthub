@@ -601,7 +601,7 @@ function traceDetailPage() {
 
             const spanById = {};
             this.ganttSpans.forEach(span => {
-                const sid = span.span_id;
+                const sid = span.metadata?.span_id;
                 if (sid) spanById[sid] = span;
             });
 
@@ -618,7 +618,7 @@ function traceDetailPage() {
                 const isError = span.status === 'error';
                 const depth = getDepth(span);
                 const indent = '\u00A0\u00A0'.repeat(depth);
-                const agentCls = span.agent_id ? this.dashAgentClass(span.agent_id) : 'muted';
+                const agentCls = span.agent_id ? window.dashAgentClass(span.agent_id) : 'muted';
                 const color = isError ? '#ef4444' : (classToHex[agentCls] || '#6b7280');
                 const label = indent + span.span_name + (span.agent_id ? ' (' + span.agent_id + ')' : '') + ' [' + Math.round(span.duration_ms) + 'ms]';
 
