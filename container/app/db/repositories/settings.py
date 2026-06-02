@@ -5,17 +5,12 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from datetime import UTC, datetime
 from typing import Any, ClassVar
 
+from app.db.repositories._utils import _now
 from app.db.schema import get_db_read, get_db_write
 
 logger = logging.getLogger(__name__)
-
-
-def _now() -> str:
-    """Return current UTC timestamp as ISO 8601 string."""
-    return datetime.now(UTC).isoformat()
 
 
 # P3-6: in-memory TTL cache for ``SettingsRepository.get_value``.

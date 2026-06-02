@@ -58,16 +58,16 @@ async def _initialize_registry_runtime(*, entity_entries=None, cache_counts=None
         return MagicMock()
 
     patches = [
-        patch("app.runtime_setup.HARestClient", return_value=fake_ha_client),
-        patch("app.runtime_setup.EntityIndex", return_value=fake_entity_index),
-        patch("app.runtime_setup.get_embedding_engine", new_callable=AsyncMock),
-        patch("app.runtime_setup.get_vector_store", new_callable=AsyncMock, return_value=fake_vector_store),
-        patch("app.runtime_setup.schedule_entity_index_prime", new_callable=AsyncMock, return_value=True),
-        patch("app.runtime_setup.home_context_provider"),
-        patch("app.runtime_setup.AliasResolver"),
-        patch("app.runtime_setup.EntityMatcher"),
-        patch("app.runtime_setup.RewriteAgent"),
-        patch("app.runtime_setup.CacheManager", return_value=fake_cache),
+        patch("app.bootstrap._ha_client.HARestClient", return_value=fake_ha_client),
+        patch("app.bootstrap._entity.EntityIndex", return_value=fake_entity_index),
+        patch("app.bootstrap._ha_client.get_embedding_engine", new_callable=AsyncMock),
+        patch("app.bootstrap._ha_client.get_vector_store", new_callable=AsyncMock, return_value=fake_vector_store),
+        patch("app.bootstrap._entity.schedule_entity_index_prime", new_callable=AsyncMock, return_value=True),
+        patch("app.bootstrap._ha_client.home_context_provider"),
+        patch("app.bootstrap._ha_client.AliasResolver"),
+        patch("app.bootstrap._entity_matcher.EntityMatcher"),
+        patch("app.bootstrap._agents.RewriteAgent"),
+        patch("app.bootstrap._cache.CacheManager", return_value=fake_cache),
         patch(
             "app.db.repository.McpServerRepository.get",
             new_callable=AsyncMock,
@@ -78,12 +78,12 @@ async def _initialize_registry_runtime(*, entity_entries=None, cache_counts=None
         patch("app.agents.actionable.LightAgent"),
         patch("app.agents.actionable.MusicAgent"),
         patch("app.agents.filler.FillerAgent"),
-        patch("app.runtime_setup.CustomAgentLoader"),
+        patch("app.bootstrap._agents.CustomAgentLoader"),
         patch("app.db.repository.AgentConfigRepository.get", new_callable=AsyncMock, return_value=None),
         patch("app.ha_client.websocket.HAWebSocketClient", return_value=ws_inst),
         patch("app.agents.alarm_monitor.AlarmMonitor"),
         patch("app.agents.timer_scheduler.TimerScheduler"),
-        patch("app.runtime_setup.asyncio.create_task", side_effect=_fake_create_task),
+        patch("app.util.tasks.asyncio.create_task", side_effect=_fake_create_task),
     ]
 
     with contextlib.ExitStack() as stack:

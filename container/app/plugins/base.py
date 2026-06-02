@@ -9,7 +9,8 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from fastapi import FastAPI
 
-    from app.a2a.orchestrator_gateway import AgentCatalog, OrchestratorGateway
+    from app.a2a.dispatcher import Dispatcher
+    from app.a2a.registry import AgentRegistry
     from app.db.repository import SettingsRepository
     from app.mcp.registry import MCPServerRegistry
     from app.plugins.hooks import EventBus
@@ -24,14 +25,14 @@ class PluginContext:
 
     def __init__(
         self,
-        agent_catalog: AgentCatalog,
-        orchestrator_gateway: OrchestratorGateway,
+        agent_registry: AgentRegistry,
+        dispatcher: Dispatcher,
         mcp_registry: MCPServerRegistry,
         settings_repo: type[SettingsRepository],
         app: FastAPI,
     ) -> None:
-        self.agent_catalog = agent_catalog
-        self.orchestrator_gateway = orchestrator_gateway
+        self.agent_registry = agent_registry
+        self.dispatcher = dispatcher
         self.mcp_registry = mcp_registry
         self.settings = settings_repo
         self._add_api_route: Callable[..., Any] = app.add_api_route
@@ -46,10 +47,6 @@ class PluginContext:
         ``"dispatch"``, ``"finalization"``.
         """
         self.pipeline_strategies[phase] = strategy
-
-    @property
-    def agent_registry(self):
-        raise AttributeError("PluginContext.agent_registry has been removed. Use agent_catalog instead.")
 
     def add_api_route(self, path: str, endpoint, **kwargs):
         """Add an API route to the application (restricted interface)."""

@@ -14,9 +14,9 @@ from __future__ import annotations
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+from app.bootstrap._entity import _store_entity_lookups
 from app.entity.index import EntityIndex
 from app.entity.ingest import state_to_entity_index_entry
-from app.runtime_setup import _store_entity_lookups
 
 
 def _state_payload(entity_id: str, state: str, area_id: str | None = "kitchen") -> dict:

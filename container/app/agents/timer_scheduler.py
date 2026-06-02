@@ -22,8 +22,9 @@ from datetime import datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from app.a2a.orchestrator_gateway import OrchestratorGateway
+from app.a2a.protocol import JsonRpcRequest
 from app.db.repository import ScheduledTimersRepository
+from app.models.agent import AgentTask, BackgroundEvent, TaskContext
 
 logger = logging.getLogger(__name__)
 
@@ -165,14 +166,58 @@ class TimerScheduler:
         self,
         repo: type[ScheduledTimersRepository] | ScheduledTimersRepository = ScheduledTimersRepository,
         *,
-        orchestrator_gateway: OrchestratorGateway | None = None,
+        dispatcher: Any = None,
     ) -> None:
         self._repo = repo
-        self._orchestrator_gateway = orchestrator_gateway
+        self._dispatcher = dispatcher
         self._tasks: dict[str, asyncio.Task] = {}
         self._by_logical: dict[str, list[str]] = {}
         self._startup_recovery_task: asyncio.Task | None = None
         self._started = False
+
+    async def _dispatch_background_event(
+        self,
+        event_type: str,
+        payload: dict[str, Any] | None = None,
+        *,
+        description: str,
+        user_text: str | None = None,
+        conversation_id: str | None = None,
+        context: TaskContext | None = None,
+        request_id: str | None = None,
+    ) -> dict[str, Any]:
+        event_context = context.model_copy(deep=True) if context is not None else TaskContext()
+        event_context.source = "background"
+        event_context.background_event = BackgroundEvent(
+            event_type=event_type,
+            payload=dict(payload or {}),
+        )
+        task = AgentTask(
+            description=description,
+            user_text=user_text or description,
+            conversation_id=conversation_id,
+            context=event_context,
+        )
+        request = JsonRpcRequest(
+            method="message/send",
+            params={
+                "agent_id": "orchestrator",
+                "task": task,
+            },
+            id=request_id or task.conversation_id or f"scheduler-{uuid.uuid4().hex}",
+        )
+        try:
+            response = await self._dispatcher.dispatch(request)
+        except RuntimeError as exc:
+            return {
+                "speech": "",
+                "error": {
+                    "code": "internal",
+                    "message": str(exc),
+                    "recoverable": True,
+                },
+            }
+        return response or {}
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -521,9 +566,9 @@ class TimerScheduler:
         duration_seconds = int(row.get("duration_seconds") or 0)
         duration_str = _seconds_to_hms(duration_seconds)
         language = payload.get("language")
-        gateway = self._orchestrator_gateway
-        if gateway is None and kind != "snooze":
-            logger.warning("TimerScheduler fire skipped for %s: no orchestrator gateway", row["id"])
+        dispatcher = self._dispatcher
+        if dispatcher is None and kind != "snooze":
+            logger.warning("TimerScheduler fire skipped for %s: no dispatcher available", row["id"])
             return
 
         if kind in ("plain", "notification"):
@@ -535,7 +580,7 @@ class TimerScheduler:
                     display_name = f"{logical_name}: {message}"
                 else:
                     display_name = message
-            await gateway.dispatch_background_event(  # type: ignore[union-attr]
+            await self._dispatch_background_event(
                 "timer_notification",
                 {
                     "timer_name": display_name,
@@ -554,7 +599,7 @@ class TimerScheduler:
             alarm_name = (payload.get("alarm_label") or logical_name or "alarm").strip() or "alarm"
             synthetic_entity_id = f"agenthub_alarm:{row['id']}"
             briefing = _coerce_bool(payload.get("briefing", False))
-            await gateway.dispatch_background_event(  # type: ignore[union-attr]
+            await self._dispatch_background_event(
                 "alarm_notification",
                 {
                     "alarm_name": alarm_name,
@@ -599,7 +644,7 @@ class TimerScheduler:
             if not target_entity or "/" not in target_action:
                 logger.error("delayed_action timer %s missing target_entity/target_action", row["id"])
                 return
-            await gateway.dispatch_background_event(  # type: ignore[union-attr]
+            await self._dispatch_background_event(
                 "delayed_action",
                 {
                     "target_entity": target_entity,
@@ -614,7 +659,7 @@ class TimerScheduler:
             if not media_player:
                 logger.error("sleep timer %s missing media_player", row["id"])
                 return
-            await gateway.dispatch_background_event(  # type: ignore[union-attr]
+            await self._dispatch_background_event(
                 "sleep_media_stop",
                 {"media_player": media_player},
                 description=f"Stop media playback for {media_player}",

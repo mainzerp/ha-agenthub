@@ -659,24 +659,24 @@ async def test_initialize_setup_dependent_services_is_idempotent():
     fake_vector_store = MagicMock()
 
     patches = [
-        patch("app.runtime_setup.HARestClient", return_value=fake_ha_client),
-        patch("app.runtime_setup.EntityIndex", return_value=fake_entity_index),
-        patch("app.runtime_setup.get_embedding_engine", new_callable=AsyncMock),
+        patch("app.bootstrap._ha_client.HARestClient", return_value=fake_ha_client),
+        patch("app.bootstrap._entity.EntityIndex", return_value=fake_entity_index),
+        patch("app.bootstrap._ha_client.get_embedding_engine", new_callable=AsyncMock),
         patch(
-            "app.runtime_setup.get_vector_store",
+            "app.bootstrap._ha_client.get_vector_store",
             new_callable=AsyncMock,
             return_value=fake_vector_store,
         ),
         patch(
-            "app.runtime_setup.schedule_entity_index_prime",
+            "app.bootstrap._entity.schedule_entity_index_prime",
             new_callable=AsyncMock,
             return_value=True,
         ),
-        patch("app.runtime_setup.home_context_provider"),
-        patch("app.runtime_setup.AliasResolver"),
-        patch("app.runtime_setup.EntityMatcher"),
-        patch("app.runtime_setup.RewriteAgent"),
-        patch("app.runtime_setup.CacheManager"),
+        patch("app.bootstrap._ha_client.home_context_provider"),
+        patch("app.bootstrap._ha_client.AliasResolver"),
+        patch("app.bootstrap._entity_matcher.EntityMatcher"),
+        patch("app.bootstrap._agents.RewriteAgent"),
+        patch("app.bootstrap._cache.CacheManager"),
         patch(
             "app.db.repository.McpServerRepository.get",
             new_callable=AsyncMock,
@@ -687,7 +687,7 @@ async def test_initialize_setup_dependent_services_is_idempotent():
         patch("app.agents.actionable.LightAgent"),
         patch("app.agents.actionable.MusicAgent"),
         patch("app.agents.filler.FillerAgent"),
-        patch("app.runtime_setup.CustomAgentLoader"),
+        patch("app.bootstrap._agents.CustomAgentLoader"),
         patch(
             "app.db.repository.AgentConfigRepository.get",
             new_callable=AsyncMock,
@@ -772,7 +772,7 @@ async def test_initialize_setup_dependent_services_is_idempotent():
         # Registry is re-populated on every init call; idempotency only applies
         # to HA client and cache manager construction above.
         assert "filler-agent" in fake_registry.registered
-        assert getattr(app.state, "orchestrator_gateway", None) is not None
+        assert getattr(app.state, "dispatcher", None) is not None
 
 
 @pytest.mark.asyncio
@@ -816,24 +816,24 @@ async def test_initialize_setup_dependent_services_preloads_prompt_files():
         return func(*args, **kwargs)
 
     patches = [
-        patch("app.runtime_setup.HARestClient", return_value=fake_ha_client),
-        patch("app.runtime_setup.EntityIndex", return_value=fake_entity_index),
-        patch("app.runtime_setup.get_embedding_engine", new_callable=AsyncMock),
+        patch("app.bootstrap._ha_client.HARestClient", return_value=fake_ha_client),
+        patch("app.bootstrap._entity.EntityIndex", return_value=fake_entity_index),
+        patch("app.bootstrap._ha_client.get_embedding_engine", new_callable=AsyncMock),
         patch(
-            "app.runtime_setup.get_vector_store",
+            "app.bootstrap._ha_client.get_vector_store",
             new_callable=AsyncMock,
             return_value=fake_vector_store,
         ),
         patch(
-            "app.runtime_setup.schedule_entity_index_prime",
+            "app.bootstrap._entity.schedule_entity_index_prime",
             new_callable=AsyncMock,
             return_value=True,
         ),
-        patch("app.runtime_setup.home_context_provider"),
-        patch("app.runtime_setup.AliasResolver"),
-        patch("app.runtime_setup.EntityMatcher"),
-        patch("app.runtime_setup.RewriteAgent"),
-        patch("app.runtime_setup.CacheManager"),
+        patch("app.bootstrap._ha_client.home_context_provider"),
+        patch("app.bootstrap._ha_client.AliasResolver"),
+        patch("app.bootstrap._entity_matcher.EntityMatcher"),
+        patch("app.bootstrap._agents.RewriteAgent"),
+        patch("app.bootstrap._cache.CacheManager"),
         patch(
             "app.db.repository.McpServerRepository.get",
             new_callable=AsyncMock,
@@ -844,7 +844,7 @@ async def test_initialize_setup_dependent_services_preloads_prompt_files():
         patch("app.agents.actionable.LightAgent"),
         patch("app.agents.actionable.MusicAgent"),
         patch("app.agents.filler.FillerAgent"),
-        patch("app.runtime_setup.CustomAgentLoader"),
+        patch("app.bootstrap._agents.CustomAgentLoader"),
         patch(
             "app.db.repository.AgentConfigRepository.get",
             new_callable=AsyncMock,
@@ -853,8 +853,8 @@ async def test_initialize_setup_dependent_services_preloads_prompt_files():
         patch("app.ha_client.websocket.HAWebSocketClient"),
         patch("app.agents.alarm_monitor.AlarmMonitor"),
         patch("app.agents.timer_scheduler.TimerScheduler"),
-        patch("app.runtime_setup.preload_prompt_cache"),
-        patch("app.runtime_setup.asyncio.to_thread", new=AsyncMock(side_effect=fake_to_thread)),
+        patch("app.bootstrap._ha_client.preload_prompt_cache"),
+        patch("app.bootstrap._ha_client.asyncio.to_thread", new=AsyncMock(side_effect=fake_to_thread)),
         patch("app.entity.expansion.load_query_expansion_prompt_template", return_value="Prompt: {token}"),
         patch("app.entity.expansion.QueryExpansionService"),
     ]
