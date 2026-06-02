@@ -753,8 +753,12 @@ async def _initialize_setup_dependent_services(app: FastAPI, *, source: str) -> 
                 source,
             )
 
-    ha_url = await SettingsRepository.get_value("ha_url")
-    ha_token = await get_ha_token()
+    try:
+        ha_url = await SettingsRepository.get_value("ha_url")
+        ha_token = await get_ha_token()
+    except Exception:
+        ha_url = None
+        ha_token = None
     if ha_url and ha_token:
         ha_action_server = await McpServerRepository.get("ha-action")
         if ha_action_server is None:
