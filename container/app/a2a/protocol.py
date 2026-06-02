@@ -58,14 +58,14 @@ class MessageSendParams(BaseModel):
     """Params for method 'message/send'."""
 
     agent_id: str
-    task: dict[str, Any]
+    task: Any
 
 
 class MessageStreamParams(BaseModel):
     """Params for method 'message/stream'."""
 
     agent_id: str
-    task: dict[str, Any]
+    task: Any
 
 
 class AgentDiscoverParams(BaseModel):

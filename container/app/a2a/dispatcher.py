@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import AsyncGenerator
+from typing import Any
 
 from app.a2a.protocol import (
     INVALID_PARAMS,
@@ -11,7 +12,6 @@ from app.a2a.protocol import (
     AgentDiscoverParams,
     JsonRpcRequest,
     JsonRpcResponse,
-    JsonRpcStreamChunk,
     MessageSendParams,
     MessageStreamParams,
     error_response,
@@ -31,7 +31,7 @@ class Dispatcher:
         self._registry = registry
         self._transport = transport
 
-    async def dispatch(self, request: JsonRpcRequest) -> JsonRpcResponse:
+    async def dispatch(self, request: JsonRpcRequest) -> Any:
         """Dispatch a non-streaming JSON-RPC request."""
         method = request.method
 
@@ -44,14 +44,14 @@ class Dispatcher:
         else:
             return error_response(request.id, METHOD_NOT_FOUND, f"Method not found: {method}")
 
-    async def dispatch_stream(self, request: JsonRpcRequest) -> AsyncGenerator[JsonRpcStreamChunk, None]:
+    async def dispatch_stream(self, request: JsonRpcRequest) -> AsyncGenerator[dict[str, Any], None]:
         """Dispatch a streaming JSON-RPC request (message/stream)."""
         if request.method != "message/stream":
-            yield JsonRpcStreamChunk(
-                id=request.id,
-                result={"token": "", "done": True, "error": f"Method not found: {request.method}"},
-                done=True,
-            )
+            yield {
+                "token": "",
+                "done": True,
+                "error": f"Method not found: {request.method}",
+            }
             return
 
         try:
@@ -59,19 +59,20 @@ class Dispatcher:
             span_collector = raw_params.get("_span_collector")
             params = MessageStreamParams(**{k: v for k, v in raw_params.items() if k != "_span_collector"})
         except Exception as exc:
-            yield JsonRpcStreamChunk(
-                id=request.id,
-                result={"token": "", "done": True, "error": f"Invalid params: {exc}"},
-                done=True,
-            )
+            yield {
+                "token": "",
+                "done": True,
+                "error": f"Invalid params: {exc}",
+            }
             return
 
-        task = AgentTask(**params.task)
+        task_data = params.task
+        task = task_data if isinstance(task_data, AgentTask) else AgentTask(**task_data)
         task.span_collector = span_collector
         async for chunk in self._transport.stream(params.agent_id, task, request.id):
             yield chunk
 
-    async def _handle_message_send(self, request: JsonRpcRequest) -> JsonRpcResponse:
+    async def _handle_message_send(self, request: JsonRpcRequest) -> Any:
         try:
             raw_params = request.params or {}
             span_collector = raw_params.get("_span_collector")
@@ -79,7 +80,8 @@ class Dispatcher:
         except Exception as exc:
             return error_response(request.id, INVALID_PARAMS, f"Invalid params: {exc}")
 
-        task = AgentTask(**params.task)
+        task_data = params.task
+        task = task_data if isinstance(task_data, AgentTask) else AgentTask(**task_data)
         task.span_collector = span_collector
         return await self._transport.send(params.agent_id, task, request.id)
 

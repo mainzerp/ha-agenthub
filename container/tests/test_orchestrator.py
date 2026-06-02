@@ -93,9 +93,7 @@ class TestOrchestratorAgent:
         cache_manager.store_action_async = _store_action_async
 
         # Mock dispatch response
-        response_mock = MagicMock()
-        response_mock.error = None
-        response_mock.result = dispatch_result or {"speech": "Done!"}
+        response_mock = dispatch_result or {"speech": "Done!"}
         dispatcher.dispatch = AsyncMock(return_value=response_mock)
 
         registry.list_agents = AsyncMock(
@@ -161,9 +159,7 @@ class TestOrchestratorAgent:
         orch._default_timeout = 0.001  # very short timeout
 
         # First dispatch times out, fallback succeeds
-        fallback_response = MagicMock()
-        fallback_response.error = None
-        fallback_response.result = {"speech": "Fallback response."}
+        fallback_response = {"speech": "Fallback response."}
         dispatcher.dispatch = AsyncMock(side_effect=[TimeoutError(), fallback_response])
 
         task = _make_task("turn on kitchen light")
@@ -215,16 +211,10 @@ class TestOrchestratorAgent:
         orch, dispatcher, *_ = self._make_orchestrator()
         mock_complete.return_value = "light-agent: Turn on light"
 
-        # First dispatch returns error, fallback succeeds
-        error_response = MagicMock()
-        error_response.error = MagicMock(message="Agent error")
-        error_response.result = None
+        # First dispatch raises error, fallback succeeds
+        ok_response = {"speech": "General answered."}
 
-        ok_response = MagicMock()
-        ok_response.error = None
-        ok_response.result = {"speech": "General answered."}
-
-        dispatcher.dispatch = AsyncMock(side_effect=[error_response, ok_response])
+        dispatcher.dispatch = AsyncMock(side_effect=[RuntimeError("Agent error"), ok_response])
         task = _make_task("turn on kitchen light")
         result = await orch.handle_task(task)
         assert result["speech"] == "General answered."
@@ -805,12 +795,8 @@ class TestOrchestratorAgent:
         )
 
         # Dispatcher returns different responses per agent
-        response_light = MagicMock()
-        response_light.error = None
-        response_light.result = {"speech": "Shelf is on."}
-        response_music = MagicMock()
-        response_music.error = None
-        response_music.result = {"speech": "Playing jazz."}
+        response_light = {"speech": "Shelf is on."}
+        response_music = {"speech": "Playing jazz."}
         dispatcher.dispatch = AsyncMock(side_effect=[response_light, response_music])
 
         task = _make_task("turn on shelf and play jazz", user_text="turn on shelf and play jazz")
@@ -846,9 +832,7 @@ class TestOrchestratorAgent:
         orch._default_timeout = 0.001
 
         # First dispatch times out then fallback, second succeeds
-        fallback_resp = MagicMock()
-        fallback_resp.error = None
-        fallback_resp.result = {"speech": "Fallback."}
+        fallback_resp = {"speech": "Fallback."}
         dispatcher.dispatch = AsyncMock(
             side_effect=[
                 TimeoutError(),
@@ -955,7 +939,7 @@ class TestOrchestratorAgent:
                 similarity=0.96,
             )
         )
-        dispatcher.dispatch.return_value.result = {
+        dispatcher.dispatch.return_value = {
             "speech": "Done!",
             "action_executed": {"success": True, "entity_id": "light.kitchen", "action": "turn_on"},
         }
@@ -1175,14 +1159,12 @@ class TestOrchestratorAgent:
         mock_settings.get_value = AsyncMock(return_value="")
 
         async def mock_stream(request):
-            yield MagicMock(result={"token": "Light ", "done": False})
-            yield MagicMock(
-                result={
-                    "token": "is on.",
-                    "done": True,
-                    "action_executed": {"action": "turn_on", "entity_id": "light.kitchen", "success": True},
-                }
-            )
+            yield {"token": "Light ", "done": False}
+            yield {
+                "token": "is on.",
+                "done": True,
+                "action_executed": {"action": "turn_on", "entity_id": "light.kitchen", "success": True},
+            }
 
         dispatcher.dispatch_stream = mock_stream
 
@@ -1207,7 +1189,7 @@ class TestOrchestratorAgent:
         mock_settings.get_value = AsyncMock(return_value="")
 
         async def mock_stream(request):
-            yield MagicMock(result={"token": "42.", "done": True})
+            yield {"token": "42.", "done": True}
 
         dispatcher.dispatch_stream = mock_stream
 
@@ -1424,7 +1406,7 @@ class TestOrchestratorAgent:
         # Verify that the dispatched task contains conversation turns
         call_args = dispatcher.dispatch.call_args[0][0]
         dispatched_task = call_args.params["task"]
-        conv_turns = dispatched_task["context"]["conversation_turns"]
+        conv_turns = dispatched_task.context.conversation_turns
         assert len(conv_turns) == 2  # 1 user + 1 assistant from previous turn
         assert conv_turns[0]["content"] == "find a recipe for cream puffs"
         assert "cream-puffs" in conv_turns[1]["content"]
@@ -1442,8 +1424,8 @@ class TestOrchestratorAgent:
         mock_settings.get_value = AsyncMock(return_value="")
 
         async def mock_stream(request):
-            yield MagicMock(result={"token": "partial ", "done": False})
-            yield MagicMock(result={"token": "", "done": True, "error": "Agent error: light-agent"})
+            yield {"token": "partial ", "done": False}
+            yield {"token": "", "done": True, "error": "Agent error: light-agent"}
 
         dispatcher.dispatch_stream = mock_stream
 
@@ -1468,7 +1450,7 @@ class TestOrchestratorAgent:
         mock_settings.get_value = AsyncMock(return_value="")
 
         async def mock_stream(request):
-            yield MagicMock(result={"token": "", "done": True, "error": "Agent error: general-agent"})
+            yield {"token": "", "done": True, "error": "Agent error: general-agent"}
 
         dispatcher.dispatch_stream = mock_stream
 
@@ -1501,10 +1483,14 @@ class TestOrchestratorAgent:
             }.get(k, d)
         )
 
-        response_music = MagicMock()
-        response_music.error = None
-        response_music.result = {"speech": "Playing jazz."}
-        dispatcher.dispatch = AsyncMock(side_effect=[RuntimeError("light-agent down"), response_music])
+        response_music = {"speech": "Playing jazz."}
+        dispatcher.dispatch = AsyncMock(
+            side_effect=[
+                RuntimeError("light-agent down"),
+                RuntimeError("fallback general fails"),
+                response_music,
+            ]
+        )
 
         task = _make_task("turn on shelf and play jazz", user_text="turn on shelf and play jazz")
         task.conversation_id = "conv-partial"
@@ -1513,7 +1499,7 @@ class TestOrchestratorAgent:
         failed = result["partial_failure"]["failed_agents"]
         assert len(failed) == 1
         assert failed[0]["agent_id"] == "light-agent"
-        assert "light-agent down" in failed[0]["error"]
+        assert failed[0]["error"] == "timeout"
 
     @patch("app.agents.orchestrator.SettingsRepository")
     @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
@@ -1641,9 +1627,7 @@ class TestOrchestratorFiller:
         cache_manager.store_routing_async = _store_routing_async
         cache_manager.store_action_async = _store_action_async
 
-        response_mock = MagicMock()
-        response_mock.error = None
-        response_mock.result = {"speech": "Done!"}
+        response_mock = {"speech": "Done!"}
         dispatcher.dispatch = AsyncMock(return_value=response_mock)
 
         registry.list_agents = AsyncMock(
@@ -1725,9 +1709,7 @@ class TestOrchestratorFiller:
     async def test_invoke_filler_agent_returns_text(self):
         """Dispatcher returns filler speech via A2A; _invoke_filler_agent extracts it."""
         orch, dispatcher, _ = self._make_filler_orchestrator()
-        response_mock = MagicMock()
-        response_mock.error = None
-        response_mock.result = {"speech": "One moment, let me check that for you."}
+        response_mock = {"speech": "One moment, let me check that for you."}
         dispatcher.dispatch = AsyncMock(return_value=response_mock)
         result = await orch._invoke_filler_agent("what is the weather", "general-agent", "en")
         assert result == "One moment, let me check that for you."
@@ -1766,14 +1748,8 @@ class TestOrchestratorFiller:
 
         # Dispatcher streams tokens immediately (no delay)
         async def _fast_stream(req):
-            chunk = MagicMock()
-            chunk.result = {"token": "Here is the answer", "done": False}
-            chunk.done = False
-            yield chunk
-            final = MagicMock()
-            final.result = {"token": "", "done": True}
-            final.done = True
-            yield final
+            yield {"token": "Here is the answer", "done": False}
+            yield {"token": "", "done": True}
 
         dispatcher.dispatch_stream = _fast_stream
 
@@ -1817,14 +1793,8 @@ class TestOrchestratorFiller:
         # Dispatcher delays just enough to exceed the 50ms threshold
         async def _slow_stream(req):
             await asyncio.sleep(0.06)
-            chunk = MagicMock()
-            chunk.result = {"token": "Here is the answer", "done": False}
-            chunk.done = False
-            yield chunk
-            final = MagicMock()
-            final.result = {"token": "", "done": True}
-            final.done = True
-            yield final
+            yield {"token": "Here is the answer", "done": False}
+            yield {"token": "", "done": True}
 
         dispatcher.dispatch_stream = _slow_stream
 
@@ -1858,10 +1828,7 @@ class TestOrchestratorFiller:
         mock_complete.return_value = "light-agent: Turn on kitchen light"
 
         async def _stream(req):
-            chunk = MagicMock()
-            chunk.result = {"token": "Done", "done": True}
-            chunk.done = True
-            yield chunk
+            yield {"token": "Done", "done": True}
 
         dispatcher.dispatch_stream = _stream
 
@@ -1904,14 +1871,8 @@ class TestOrchestratorFiller:
 
         async def _slow_stream(req):
             await asyncio.sleep(0.06)
-            chunk = MagicMock()
-            chunk.result = {"token": "Real answer", "done": False}
-            chunk.done = False
-            yield chunk
-            final = MagicMock()
-            final.result = {"token": "", "done": True}
-            final.done = True
-            yield final
+            yield {"token": "Real answer", "done": False}
+            yield {"token": "", "done": True}
 
         dispatcher.dispatch_stream = _slow_stream
 
@@ -1963,14 +1924,8 @@ class TestOrchestratorFiller:
         async def _fast_after_threshold(req):
             # Small delay to exceed threshold, but chunk arrives during filler gen
             await asyncio.sleep(0.07)
-            chunk = MagicMock()
-            chunk.result = {"token": "Fast answer", "done": False}
-            chunk.done = False
-            yield chunk
-            final = MagicMock()
-            final.result = {"token": "", "done": True}
-            final.done = True
-            yield final
+            yield {"token": "Fast answer", "done": False}
+            yield {"token": "", "done": True}
 
         dispatcher.dispatch_stream = _fast_after_threshold
 
@@ -2018,14 +1973,8 @@ class TestOrchestratorFiller:
 
         async def _slow_stream(req):
             await asyncio.sleep(0.06)
-            chunk = MagicMock()
-            chunk.result = {"token": "Here is the answer", "done": False}
-            chunk.done = False
-            yield chunk
-            final = MagicMock()
-            final.result = {"token": "", "done": True}
-            final.done = True
-            yield final
+            yield {"token": "Here is the answer", "done": False}
+            yield {"token": "", "done": True}
 
         dispatcher.dispatch_stream = _slow_stream
 
@@ -2191,9 +2140,7 @@ class TestConversationMemoryEviction:
         cache_manager.store_routing_async = _store_routing_async
         cache_manager.store_action_async = _store_action_async
 
-        response_mock = MagicMock()
-        response_mock.error = None
-        response_mock.result = {"speech": "Done!"}
+        response_mock = {"speech": "Done!"}
         dispatcher.dispatch = AsyncMock(return_value=response_mock)
 
         registry.list_agents = AsyncMock(
@@ -2343,8 +2290,8 @@ class TestStreamMediatedSpeech:
         )
 
         async def mock_stream(request):
-            yield MagicMock(result={"token": "Light ", "done": False})
-            yield MagicMock(result={"token": "is on.", "done": True})
+            yield {"token": "Light ", "done": False}
+            yield {"token": "is on.", "done": True}
 
         dispatcher.dispatch_stream = mock_stream
 
@@ -2372,7 +2319,7 @@ class TestStreamMediatedSpeech:
         mock_settings.get_value = AsyncMock(return_value="")
 
         async def mock_stream(request):
-            yield MagicMock(result={"token": "Light is on.", "done": True})
+            yield {"token": "Light is on.", "done": True}
 
         dispatcher.dispatch_stream = mock_stream
 
@@ -2394,7 +2341,7 @@ class TestStreamMediatedSpeech:
         mock_settings.get_value = AsyncMock(return_value="")
 
         async def mock_stream(request):
-            yield MagicMock(result={"token": "Light is on.", "done": True})
+            yield {"token": "Light is on.", "done": True}
 
         dispatcher.dispatch_stream = mock_stream
 
@@ -2867,9 +2814,7 @@ class TestResponseCacheFallThrough:
         cache_manager.store_routing_async = _store_routing_async
         cache_manager.store_action_async = _store_action_async
 
-        response_mock = MagicMock()
-        response_mock.error = None
-        response_mock.result = {"speech": "Fresh response!"}
+        response_mock = {"speech": "Fresh response!"}
         dispatcher.dispatch = AsyncMock(return_value=response_mock)
 
         registry.list_agents = AsyncMock(
@@ -2923,9 +2868,7 @@ class TestResponseCacheFallThrough:
         cache_manager.store_action_async = _store_action_async
         cache_manager.store_routing = MagicMock()
 
-        response_mock = MagicMock()
-        response_mock.error = None
-        response_mock.result = {
+        response_mock = {
             "speech": "Light is on!",
             "action_executed": {"success": True, "entity_id": "light.kitchen", "action": "turn_on"},
         }
@@ -3039,9 +2982,7 @@ class TestFollowupDetection:
         cache_manager.store_routing_async = _store_routing_async
         cache_manager.store_action_async = _store_action_async
 
-        response_mock = MagicMock()
-        response_mock.error = None
-        response_mock.result = dispatch_result or {"speech": "Done!"}
+        response_mock = dispatch_result or {"speech": "Done!"}
         dispatcher.dispatch = AsyncMock(return_value=response_mock)
 
         registry.list_agents = AsyncMock(

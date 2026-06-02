@@ -1562,7 +1562,7 @@ class OrchestratorAgent(BaseAgent):
             method="message/stream",
             params={
                 "agent_id": target_agent,
-                "task": agent_task.model_dump(),
+                "task": agent_task,
                 "_span_collector": span_collector,
             },
             id=conversation_id or "orchestrator-stream",
@@ -1577,7 +1577,7 @@ class OrchestratorAgent(BaseAgent):
 
         async def _process_chunk(chunk):
             """Process a single stream chunk: collect speech and detect actions."""
-            chunk_result = chunk.result if isinstance(chunk.result, dict) else {}
+            chunk_result = chunk if isinstance(chunk, dict) else {}
             token = chunk_result.get("token", "")
             done = chunk_result.get("done", False)
             error = chunk_result.get("error")
@@ -1832,12 +1832,12 @@ class OrchestratorAgent(BaseAgent):
                 method="message/send",
                 params={
                     "agent_id": "filler-agent",
-                    "task": filler_task.model_dump(),
+                    "task": filler_task,
                 },
                 id=f"filler-{uuid.uuid4().hex[:8]}",
             )
             response = await self._dispatcher.dispatch(request)
-            result_data = self._dispatch_manager.normalize_agent_result(response.result)
+            result_data = self._dispatch_manager.normalize_agent_result(response)
             speech = result_data.get("speech", "")
             if not speech or not speech.strip():
                 logger.warning("Filler agent returned empty speech; no filler will be spoken")

@@ -40,9 +40,7 @@ def _classify_then_cancel(classify_text: str, cancel_text: str | Exception):
 
 def _make_orch():
     dispatcher = AsyncMock()
-    response_mock = MagicMock()
-    response_mock.error = None
-    response_mock.result = {"speech": "unexpected"}
+    response_mock = {"speech": "unexpected"}
     dispatcher.dispatch = AsyncMock(return_value=response_mock)
     dispatcher.dispatch_stream = AsyncMock()
 

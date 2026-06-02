@@ -138,22 +138,36 @@ class BaseAgent(ABC):
                 AgentErrorCode.INTERNAL,
                 "Sorry, something went wrong while handling that request.",
             )
-        # Support both TaskResult and raw dict
-        result_dict = result.model_dump() if hasattr(result, "model_dump") else result
-        chunk = {
-            "token": result_dict.get("speech", ""),
-            "done": True,
-            "conversation_id": task.conversation_id,
-        }
-        action = result_dict.get("action_executed")
-        if action:
-            chunk["action_executed"] = action
-        if result_dict.get("voice_followup"):
-            chunk["voice_followup"] = True
-        if result_dict.get("directive"):
-            chunk["directive"] = result_dict["directive"]
-        if result_dict.get("reason") is not None:
-            chunk["reason"] = result_dict["reason"]
+        if hasattr(result, "model_dump"):
+            chunk = {
+                "token": result.speech or "",
+                "done": True,
+                "conversation_id": task.conversation_id,
+            }
+            action = result.action_executed
+            if action:
+                chunk["action_executed"] = action
+            if result.voice_followup:
+                chunk["voice_followup"] = True
+            if result.directive:
+                chunk["directive"] = result.directive
+            if result.reason is not None:
+                chunk["reason"] = result.reason
+        else:
+            chunk = {
+                "token": result.get("speech", ""),
+                "done": True,
+                "conversation_id": task.conversation_id,
+            }
+            action = result.get("action_executed")
+            if action:
+                chunk["action_executed"] = action
+            if result.get("voice_followup"):
+                chunk["voice_followup"] = True
+            if result.get("directive"):
+                chunk["directive"] = result["directive"]
+            if result.get("reason") is not None:
+                chunk["reason"] = result["reason"]
         yield chunk
 
     def _load_prompt(self, name: str) -> str:

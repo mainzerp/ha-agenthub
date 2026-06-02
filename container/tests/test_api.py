@@ -53,23 +53,15 @@ def _build_test_app(
     admin_routes.set_registry(mock_registry)
 
     # ---- mock dispatcher ----
-    mock_response = MagicMock()
-    mock_response.error = None
-    mock_response.result = {"speech": "Test response from agent"}
+    mock_response = {"speech": "Test response from agent"}
 
     mock_dispatcher = MagicMock()
     mock_dispatcher.dispatch = AsyncMock(return_value=mock_response)
 
     # Streaming mock
     async def _stream(req):
-        chunk = MagicMock()
-        chunk.result = {"token": "Hello"}
-        chunk.done = False
-        yield chunk
-        final = MagicMock()
-        final.result = {"token": ""}
-        final.done = True
-        yield final
+        yield {"token": "Hello", "done": False}
+        yield {"token": "", "done": True}
 
     mock_dispatcher.dispatch_stream = _stream
     conversation_routes.set_dispatcher(mock_dispatcher)
@@ -224,9 +216,7 @@ class TestConversationEndpoints:
         from app.api.routes import conversation as conv_routes
 
         old_dispatcher = conv_routes._dispatcher
-        mock_response = MagicMock()
-        mock_response.error = None
-        mock_response.result = {"speech": "ok", "conversation_id": "conv-live"}
+        mock_response = {"speech": "ok", "conversation_id": "conv-live"}
         mock_dispatcher = MagicMock()
         mock_dispatcher.dispatch = AsyncMock(return_value=mock_response)
         conv_routes._dispatcher = mock_dispatcher
@@ -239,9 +229,9 @@ class TestConversationEndpoints:
             assert resp.status_code == 200
             sent_request = mock_dispatcher.dispatch.await_args.args[0]
             sent_task = sent_request.params["task"]
-            assert "\x00" not in sent_task["user_text"]
-            assert "Küche" in sent_task["user_text"]
-            assert sent_task["context"]["injection_detected"] is True
+            assert "\x00" not in sent_task.user_text
+            assert "Küche" in sent_task.user_text
+            assert sent_task.context.injection_detected is True
         finally:
             conv_routes._dispatcher = old_dispatcher
 
@@ -263,9 +253,7 @@ class TestConversationEndpoints:
         from app.api.routes import dashboard_api as dash_routes
 
         old_dispatcher = dash_routes._dispatcher
-        mock_response = MagicMock()
-        mock_response.error = None
-        mock_response.result = {"speech": "ok", "conversation_id": "conv-chat"}
+        mock_response = {"speech": "ok", "conversation_id": "conv-chat"}
         mock_dispatcher = MagicMock()
         mock_dispatcher.dispatch = AsyncMock(return_value=mock_response)
         dash_routes._dispatcher = mock_dispatcher
@@ -282,10 +270,10 @@ class TestConversationEndpoints:
             assert resp.status_code == 200
             sent_request = mock_dispatcher.dispatch.await_args.args[0]
             sent_task = sent_request.params["task"]
-            assert "\x00" not in sent_task["description"]
-            assert "Wohnzimmer" in sent_task["description"]
-            assert sent_task["context"]["source"] == "chat"
-            assert sent_task["context"]["injection_detected"] is True
+            assert "\x00" not in sent_task.description
+            assert "Wohnzimmer" in sent_task.description
+            assert sent_task.context.source == "chat"
+            assert sent_task.context.injection_detected is True
         finally:
             dash_routes._dispatcher = old_dispatcher
 
@@ -297,10 +285,7 @@ class TestConversationEndpoints:
         async def _stream(req):
             nonlocal captured_request
             captured_request = req
-            final = MagicMock()
-            final.result = {"token": "", "conversation_id": "conv-chat-stream"}
-            final.done = True
-            yield final
+            yield {"token": "", "conversation_id": "conv-chat-stream", "done": True}
 
         old_dispatcher = dash_routes._dispatcher
         mock_dispatcher = MagicMock()
@@ -319,9 +304,9 @@ class TestConversationEndpoints:
             assert resp.status_code == 200
             assert captured_request is not None
             sent_task = captured_request.params["task"]
-            assert "\x00" not in sent_task["user_text"]
-            assert "Küche" in sent_task["user_text"]
-            assert sent_task["context"]["injection_detected"] is True
+            assert "\x00" not in sent_task.user_text
+            assert "Küche" in sent_task.user_text
+            assert sent_task.context.injection_detected is True
         finally:
             dash_routes._dispatcher = old_dispatcher
 
@@ -359,18 +344,9 @@ class TestConversationEndpoints:
 
         # Mock dispatcher that yields a filler token
         async def _filler_stream(req):
-            filler = MagicMock()
-            filler.result = {"token": "One moment...", "is_filler": True}
-            filler.done = False
-            yield filler
-            chunk = MagicMock()
-            chunk.result = {"token": "Here is the answer"}
-            chunk.done = False
-            yield chunk
-            final = MagicMock()
-            final.result = {"token": ""}
-            final.done = True
-            yield final
+            yield {"token": "One moment...", "is_filler": True, "done": False}
+            yield {"token": "Here is the answer", "done": False}
+            yield {"token": "", "done": True}
 
         old_dispatcher = conv_routes._dispatcher
         mock_d = MagicMock()
@@ -398,14 +374,8 @@ class TestConversationEndpoints:
         from app.api.routes import conversation as conv_routes
 
         async def _error_stream(req):
-            chunk = MagicMock()
-            chunk.result = {"token": "partial"}
-            chunk.done = False
-            yield chunk
-            final = MagicMock()
-            final.result = {"token": "", "done": True, "error": "Agent error: test"}
-            final.done = True
-            yield final
+            yield {"token": "partial", "done": False}
+            yield {"token": "", "done": True, "error": "Agent error: test"}
 
         old_dispatcher = conv_routes._dispatcher
         mock_d = MagicMock()

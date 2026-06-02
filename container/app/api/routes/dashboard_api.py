@@ -691,17 +691,17 @@ async def admin_chat(request: Request, payload: ChatRequest) -> dict[str, Any]:
         method="message/send",
         params={
             "agent_id": "orchestrator",
-            "task": task.model_dump(),
+            "task": task,
             "_span_collector": span_collector,
         },
         id=str(uuid.uuid4()),
     )
-    response = await _dispatcher.dispatch(a2a_request)
+    try:
+        response = await _dispatcher.dispatch(a2a_request)
+    except RuntimeError as exc:
+        return {"speech": f"Error: {exc}", "conversation_id": payload.conversation_id}
 
-    if response.error:
-        return {"speech": f"Error: {response.error.message}", "conversation_id": payload.conversation_id}
-
-    result = response.result or {}
+    result = response or {}
     return {
         "speech": result.get("speech", ""),
         "conversation_id": result.get("conversation_id") or payload.conversation_id,
@@ -731,7 +731,7 @@ async def admin_chat_stream(request: Request, payload: ChatRequest):
         method="message/stream",
         params={
             "agent_id": "orchestrator",
-            "task": task.model_dump(),
+            "task": task,
             "_span_collector": span_collector,
         },
         id=str(uuid.uuid4()),
@@ -745,12 +745,12 @@ async def admin_chat_stream(request: Request, payload: ChatRequest):
         try:
             async for chunk in _dispatcher.dispatch_stream(a2a_request):
                 token = StreamToken(
-                    token=chunk.result.get("token", ""),
-                    done=chunk.done,
-                    conversation_id=chunk.result.get("conversation_id") if chunk.done else None,
-                    mediated_speech=chunk.result.get("mediated_speech") if chunk.done else None,
-                    is_filler=chunk.result.get("is_filler", False),
-                    error=chunk.result.get("error") if chunk.done else None,
+                    token=chunk.get("token", ""),
+                    done=chunk.get("done", False),
+                    conversation_id=chunk.get("conversation_id") if chunk.get("done") else None,
+                    mediated_speech=chunk.get("mediated_speech") if chunk.get("done") else None,
+                    is_filler=chunk.get("is_filler", False),
+                    error=chunk.get("error") if chunk.get("done") else None,
                 )
                 yield f"data: {token.model_dump_json()}\n\n"
         finally:
