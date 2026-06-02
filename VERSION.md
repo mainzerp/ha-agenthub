@@ -1,12 +1,24 @@
 # Version
 
-**Current Version:** 1.35.0
+**Current Version:** 1.35.1
 
 ## Recent Changes
 
-Track changes since `v1.35.0` here.
+Track changes since `v1.35.1` here.
 
 ## Version History
+
+### 1.35.1 (PATCH) -- Dashboard JS consolidation, A2A cleanup, runtime bootstrap decomposition
+
+- refactor(dashboard): consolidate JS utilities into shared `components.js` -- move `formatTimestamp`, `formatTimeAgo`, `agentClass`, `parseJsonSafe`, `chartOptions`, `getStatusClass`/`getBadgeClass` out of template inline scripts. Add `dashboardApi.safeJson()` eliminating ~200 lines of repetitive try/catch boilerplate. (20bbe8b)
+- fix(dashboard): `dashLiveStream._fallback()` now fetches real data instead of calling `onMessage(undefined)`. Command palette results now render correctly (add missing `x-for`). (20bbe8b)
+- fix(dashboard): merge duplicate `tokens.css`/`base.css` `:root` blocks, add missing `--text-silver` CSS variable. (20bbe8b)
+- perf(dashboard): conditionally load Chart.js and vis-timeline only on pages that use them (~600KB saved on most pages). Add JSON diffing to polling pages to avoid unnecessary Alpine re-renders. (20bbe8b)
+- fix(dashboard): add visible error states to 9 pages that previously only console.error'd. Replace `alert()` with `toast()` in cache page. (20bbe8b)
+- refactor(dashboard): remove duplicate `alpine.min.js`, dead `dashSettingsSearch`, simplify Alpine.js fallback. Add `aria-hidden` to decorative SVG icons. (20bbe8b)
+- refactor: A2A cleanup -- extract `Repository` protocol, split repositories from 2190-line module into 20 domain-specific modules. Simplify `InProcessTransport`. Remove `orchestrator_gateway.py`. (05e3ab4)
+- refactor: decompose 959-line `runtime_setup.py` into 10 bootstrap modules (`_agents.py`, `_cache.py`, `_entity.py`, `_ha_client.py`, `_llm.py`, `_mcp.py`, `_monitors.py`, `_entity_matcher.py`). (05e3ab4)
+- fix(runtime): guard HA action MCP settings read against missing DB table during startup. (ff54177)
 
 ### 1.35.0 (MINOR) -- Orchestrator refactoring, config-driven agents, MCP HA server
 
