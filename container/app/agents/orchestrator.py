@@ -60,7 +60,7 @@ async def _get_personality_cached(settings_repo) -> str:
     """Return cached personality prompt with 300-second TTL."""
     global _PERSONALITY_CACHE_TS, _PERSONALITY_CACHE_VALUE
     now_ = time.monotonic()
-    if now_ - _PERSONALITY_CACHE_TS < _PERSONALITY_CACHE_TTL_SEC:
+    if _PERSONALITY_CACHE_VALUE and now_ - _PERSONALITY_CACHE_TS < _PERSONALITY_CACHE_TTL_SEC:
         return _PERSONALITY_CACHE_VALUE
     try:
         personality = await settings_repo.get_value("personality.prompt", "")
