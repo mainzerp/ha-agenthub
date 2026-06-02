@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import time
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -182,43 +183,62 @@ class ClassificationEngine:
         _call_llm = call_llm or self._call_llm
         _load_prompt = load_prompt_async or self._load_prompt_async
         _get_turns_fn = get_turns or self._get_turns
-        await self._get_known_agents()
+        t_start = time.perf_counter()
+        async with _optional_span(span_collector, "classify.agents", agent_id="orchestrator") as subspan:
+            await self._get_known_agents()
+            subspan["span_name"] = "classify.agents"
+            subspan["status"] = "ok"
+        t_agents = time.perf_counter()
 
-        if cache_result is not None:
-            if cache_result.hit_type == "routing_hit" and cache_result.agent_id:
-                if cache_result.agent_id == "send-agent" or cache_result.agent_id in _INTERNAL_ONLY_AGENTS:
-                    logger.debug(
-                        "Ignoring invalid routing cache hit: %s for '%s'", cache_result.agent_id, user_text[:80]
-                    )
-                else:
-                    logger.debug("Routing cache hit: %s for '%s'", cache_result.agent_id, user_text[:80])
-                    condensed = user_text
-                    return [(cache_result.agent_id, condensed, 1.0)], True
-        elif allow_cache_lookup and self._cache_manager:
-            try:
-                cache_result = await self._cache_manager.process(
-                    user_text,
-                    language=language,
-                )
+        async with _optional_span(span_collector, "classify.cache_lookup", agent_id="orchestrator") as subspan:
+            if cache_result is not None:
                 if cache_result.hit_type == "routing_hit" and cache_result.agent_id:
                     if cache_result.agent_id == "send-agent" or cache_result.agent_id in _INTERNAL_ONLY_AGENTS:
                         logger.debug(
-                            "Ignoring invalid routing cache hit: %s for '%s'",
-                            cache_result.agent_id,
-                            user_text[:80],
+                            "Ignoring invalid routing cache hit: %s for '%s'", cache_result.agent_id, user_text[:80]
                         )
                     else:
                         logger.debug("Routing cache hit: %s for '%s'", cache_result.agent_id, user_text[:80])
                         condensed = user_text
+                        subspan["span_name"] = "classify.cache_lookup"
+                        subspan["status"] = "ok"
                         return [(cache_result.agent_id, condensed, 1.0)], True
-            except Exception:
-                logger.warning("Routing cache check failed, proceeding with LLM", exc_info=True)
+            elif allow_cache_lookup and self._cache_manager:
+                try:
+                    cache_result = await self._cache_manager.process(
+                        user_text,
+                        language=language,
+                    )
+                    if cache_result.hit_type == "routing_hit" and cache_result.agent_id:
+                        if cache_result.agent_id == "send-agent" or cache_result.agent_id in _INTERNAL_ONLY_AGENTS:
+                            logger.debug(
+                                "Ignoring invalid routing cache hit: %s for '%s'",
+                                cache_result.agent_id,
+                                user_text[:80],
+                            )
+                        else:
+                            logger.debug("Routing cache hit: %s for '%s'", cache_result.agent_id, user_text[:80])
+                            condensed = user_text
+                            subspan["span_name"] = "classify.cache_lookup"
+                            subspan["status"] = "ok"
+                            return [(cache_result.agent_id, condensed, 1.0)], True
+                except Exception:
+                    logger.warning("Routing cache check failed, proceeding with LLM", exc_info=True)
+            subspan["span_name"] = "classify.cache_lookup"
+            subspan["status"] = "ok"
+        t_cache = time.perf_counter()
 
         if _load_prompt is None or _call_llm is None:
             return [(_FALLBACK_AGENT, user_text, 0.0)], False
 
-        system_prompt_template = await _load_prompt("orchestrator")
-        agent_descriptions = await self.build_agent_descriptions()
+        async with _optional_span(
+            span_collector, "classify.prompt_and_descriptions", agent_id="orchestrator"
+        ) as subspan:
+            system_prompt_template = await _load_prompt("orchestrator")
+            agent_descriptions = await self.build_agent_descriptions()
+            subspan["span_name"] = "classify.prompt_and_descriptions"
+            subspan["status"] = "ok"
+        t_prompt = time.perf_counter()
         lang = (language or "").strip().lower()
         if lang and lang != "en":
             language_hint = (
@@ -235,55 +255,81 @@ class ClassificationEngine:
             {"role": "system", "content": system_prompt},
         ]
 
-        turns = []
-        if _get_turns_fn is not None:
-            turns = await _get_turns_fn(conversation_id)
-        previous_agent_hint = ""
-        if turns:
-            for turn in reversed(turns):
-                if turn.get("role") == "assistant":
-                    agent_id = turn.get("agent_id")
-                    if agent_id:
-                        previous_agent_hint = (
-                            f"The previous turn was handled by {agent_id}. "
-                            "Route follow-ups to the same agent unless the user clearly changes subject."
-                        )
-                    break
-        messages[0]["content"] = messages[0]["content"].replace("{previous_agent_hint}", previous_agent_hint)
-        if turns:
-            self._append_conversation_turn_messages(messages, turns, max_content_length=300)
+        async with _optional_span(span_collector, "classify.conversation_turns", agent_id="orchestrator") as subspan:
+            turns = []
+            if _get_turns_fn is not None:
+                turns = await _get_turns_fn(conversation_id)
+            previous_agent_hint = ""
+            if turns:
+                for turn in reversed(turns):
+                    if turn.get("role") == "assistant":
+                        agent_id_turn = turn.get("agent_id")
+                        if agent_id_turn:
+                            previous_agent_hint = (
+                                f"The previous turn was handled by {agent_id_turn}. "
+                                "Route follow-ups to the same agent unless the user clearly changes subject."
+                            )
+                        break
+            messages[0]["content"] = messages[0]["content"].replace("{previous_agent_hint}", previous_agent_hint)
+            if turns:
+                self._append_conversation_turn_messages(messages, turns, max_content_length=300)
+            subspan["span_name"] = "classify.conversation_turns"
+            subspan["status"] = "ok"
         messages.append({"role": "user", "content": self._wrap_user_input(user_text)})
+        t_turns = time.perf_counter()
 
         try:
             async with _optional_span(span_collector, "llm_call", agent_id="orchestrator") as llm_span:
                 response = await _call_llm(messages, span_collector=span_collector)
                 llm_span["metadata"]["model"] = "orchestrator"
                 llm_span["metadata"]["routing_cached"] = False
-            logger.debug("Classification LLM response for '%s': %s", user_text[:60], repr(response[:300]))
-            classifications = await self.parse_classification(response, user_text)
-            classifications = await self.sanitize_or_repair_classifications(
-                classifications,
-                user_text=user_text,
-                conversation_id=conversation_id,
-                span_collector=span_collector,
-                language=language,
+            t_llm = time.perf_counter()
+            async with _optional_span(
+                span_collector, "classify.parse_and_sanitize", agent_id="orchestrator"
+            ) as subspan:
+                logger.debug("Classification LLM response for '%s': %s", user_text[:60], repr(response[:300]))
+                classifications = await self.parse_classification(response, user_text)
+                classifications = await self.sanitize_or_repair_classifications(
+                    classifications,
+                    user_text=user_text,
+                    conversation_id=conversation_id,
+                    span_collector=span_collector,
+                    language=language,
+                )
+                subspan["span_name"] = "classify.parse_and_sanitize"
+                subspan["status"] = "ok"
+            t_parse = time.perf_counter()
+            async with _optional_span(span_collector, "classify.cache_store", agent_id="orchestrator") as subspan:
+                if self._cache_manager and len(classifications) == 1:
+                    target_agent, condensed, confidence = classifications[0]
+                    if (
+                        target_agent not in (_FALLBACK_AGENT, _CANCEL_INTERACTION_AGENT, "send-agent")
+                        and confidence is not None
+                    ):
+                        try:
+                            await self._cache_manager.store_routing_async(
+                                user_text,
+                                target_agent,
+                                confidence,
+                                condensed,
+                                language=language,
+                            )
+                        except Exception:
+                            logger.warning("Failed to store routing decision", exc_info=True)
+                subspan["span_name"] = "classify.cache_store"
+                subspan["status"] = "ok"
+            t_store = time.perf_counter()
+            logger.debug(
+                "classify timing: agents=%.1fms cache=%.1fms prompt=%.1fms turns=%.1fms llm=%.1fms parse=%.1fms store=%.1fms total=%.1fms",
+                (t_agents - t_start) * 1000,
+                (t_cache - t_agents) * 1000,
+                (t_prompt - t_cache) * 1000,
+                (t_turns - t_prompt) * 1000,
+                (t_llm - t_turns) * 1000,
+                (t_parse - t_llm) * 1000,
+                (t_store - t_parse) * 1000,
+                (t_store - t_start) * 1000,
             )
-            if self._cache_manager and len(classifications) == 1:
-                target_agent, condensed, confidence = classifications[0]
-                if (
-                    target_agent not in (_FALLBACK_AGENT, _CANCEL_INTERACTION_AGENT, "send-agent")
-                    and confidence is not None
-                ):
-                    try:
-                        await self._cache_manager.store_routing_async(
-                            user_text,
-                            target_agent,
-                            confidence,
-                            condensed,
-                            language=language,
-                        )
-                    except Exception:
-                        logger.warning("Failed to store routing decision", exc_info=True)
             return classifications, False
         except _RecoverableClassificationError:
             raise
