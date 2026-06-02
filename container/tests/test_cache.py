@@ -837,7 +837,7 @@ class TestCacheManagerExtended:
         with patch("app.cache.cache_manager.track_cache_event", new_callable=AsyncMock) as track:
             result = await manager.process("random query")
         assert result.hit_type == "miss"
-        track.assert_not_awaited()
+        track.assert_awaited()
 
     @pytest.mark.asyncio
     async def test_process_emits_event_only_for_routing_hits(self):
@@ -848,7 +848,7 @@ class TestCacheManagerExtended:
             await manager.process("turn on light")
             manager._routing_cache.lookup_with_id = MagicMock(return_value=(None, None, None))
             await manager.process("nothing matches")
-        assert track.await_count == 1
+        assert track.await_count == 2
 
     @pytest.mark.asyncio
     async def test_process_exception_returns_miss(self):

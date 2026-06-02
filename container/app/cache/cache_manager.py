@@ -150,6 +150,8 @@ class CacheManager:
         execute_cached_action,
     ) -> ActionReplayOutcome | None:
         """Attempt to replay a cached action after current-turn validation."""
+        if not self._action_cache._enabled:
+            return None
         try:
             entry_id, entry, similarity = await asyncio.to_thread(
                 self._action_cache.lookup_with_id,
@@ -181,6 +183,7 @@ class CacheManager:
                 with contextlib.suppress(Exception):
                     if entry_id is not None:
                         await asyncio.to_thread(self._action_cache.invalidate_by_entry_id, entry_id)
+                await track_cache_event(tier="action", hit_type="miss")
                 return None
 
         try:
@@ -189,6 +192,7 @@ class CacheManager:
             logger.warning("Cached action replay failed", exc_info=True)
             replay_result = None
         if replay_result is None:
+            await track_cache_event(tier="action", hit_type="miss")
             return None
 
         await track_cache_event(
@@ -219,6 +223,8 @@ class CacheManager:
         language: str = "en",
     ) -> RoutingSkipOutcome | None:
         """Return a routing cache hit that can skip live classification."""
+        if not self._routing_cache._enabled:
+            return None
         try:
             entry_id, entry, similarity = await asyncio.to_thread(
                 self._routing_cache.lookup_with_id,
@@ -229,6 +235,7 @@ class CacheManager:
             logger.warning("Routing cache lookup failed", exc_info=True)
             return None
         if entry is None or similarity is None:
+            await track_cache_event(tier="routing", hit_type="miss")
             return None
         await track_cache_event(
             tier="routing",

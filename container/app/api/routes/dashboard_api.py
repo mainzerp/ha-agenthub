@@ -273,6 +273,16 @@ async def get_overview_extended(request: Request) -> dict[str, Any]:
     ]
     avg_latency = round(sum(latencies) / len(latencies), 1) if latencies else 0
 
+    latency_p50 = 0.0
+    latency_p95 = 0.0
+    latency_p99 = 0.0
+    if latencies:
+        latencies_sorted = sorted(latencies)
+        n = len(latencies_sorted)
+        latency_p50 = round(latencies_sorted[min(int(n * 0.50), n - 1)], 2)
+        latency_p95 = round(latencies_sorted[min(int(n * 0.95), n - 1)], 2)
+        latency_p99 = round(latencies_sorted[min(int(n * 0.99), n - 1)], 2)
+
     # --- Cache events (all non-request events for cache analysis) ---
     all_events = []
     with contextlib.suppress(Exception):
@@ -360,6 +370,7 @@ async def get_overview_extended(request: Request) -> dict[str, Any]:
                     "routing_agent": t.get("routing_agent", ""),
                     "total_duration_ms": t.get("total_duration_ms", 0),
                     "label": t.get("label", ""),
+                    "voice_followup": t.get("voice_followup", False),
                 }
             )
     except Exception:
@@ -381,6 +392,9 @@ async def get_overview_extended(request: Request) -> dict[str, Any]:
         "entity_count": entity_count,
         "mcp_server_count": mcp_count,
         "avg_latency_ms": avg_latency,
+        "latency_p50": latency_p50,
+        "latency_p95": latency_p95,
+        "latency_p99": latency_p99,
         "total_conversations": total_conversations,
         "agent_distribution": agent_distribution,
         "cache_tier": {
@@ -559,6 +573,20 @@ async def get_extended_health(request: Request) -> dict[str, Any]:
         components["uptime"] = {"status": "healthy", "seconds": uptime_s, "display": f"{hours}h {minutes}m {seconds}s"}
     else:
         components["uptime"] = {"status": "unknown"}
+
+    # Background task queue
+    queue = getattr(request.app.state, "task_queue", None)
+    if queue:
+        try:
+            components["task_queue"] = {
+                "status": "healthy" if queue.qsize() < 100 else "warning",
+                "pending_count": queue.qsize(),
+                "max_workers": getattr(queue, "_max_workers", None),
+            }
+        except Exception:
+            components["task_queue"] = {"status": "unknown", "detail": "Queue stats unavailable"}
+    else:
+        components["task_queue"] = {"status": "healthy", "detail": "No background task queue"}
 
     return components
 

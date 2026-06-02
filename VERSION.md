@@ -1,12 +1,37 @@
 # Version
 
-**Current Version:** 1.35.2
+**Current Version:** 1.36.0
 
 ## Recent Changes
 
-Track changes since `v1.35.2` here.
+Track changes since `v1.36.0` here.
 
 ## Version History
+
+### 1.36.0 (MINOR) -- Cache miss tracking, error metrics, expanded trace detail, UI polish
+
+- feat(analytics): add cache miss tracking in cache_orchestrator and cache_manager (routing, action, and both-miss tiers with enabled checks preventing tracking when cache is disabled).
+- feat(analytics): add `track_error()` collector and `/api/admin/analytics/errors` endpoint returning per-agent and per-error-type counts.
+- feat(analytics): add `/api/admin/analytics/cache/tiers` endpoint returning routing/action/miss time-series breakdown.
+- feat(analytics): add global latency percentiles (p50/p95/p99) to analytics overview response.
+- feat(dashboard): add error rate chart and cache tier breakdown (stacked bar) to analytics page.
+- feat(dashboard): add latency percentile display (p50/p95/p99) to overview page with graceful fallback.
+- feat(dashboard): add FOLLOW-UP badge on overview recent traces and voice_followup field to extended overview response.
+- feat(dashboard): add task queue health component (pending_count, max_workers) to system health page.
+- feat(traces): add voice_followup to trace detail API response (was stored but not returned).
+- feat(traces): add created_at to span detail response and gantt chart tooltip.
+- feat(traces): expand span detail panel with 19 new metadata keys (device, area, domain, entity, language, model, tool, error, delivery type, etc.).
+- feat(traces): make conversation_id clickable in trace detail linking to filtered traces list.
+- feat(traces): add Source, Confidence, Device columns to traces list page.
+- feat(traces): add view links from overview recent traces to trace detail pages.
+- feat(traces): expand CSV export from 10 to 15 columns (Agents, Device, Area, Voice Followup, Conversation Turns).
+- feat(dashboard): vendor Google Fonts locally (DM Sans, JetBrains Mono, Outfit as woff2) replacing Google CDN import.
+- feat(dashboard): modularize components.js into utils.js + api.js + components.js (Alpine component factories only).
+- fix(css): define missing --bg-abyss CSS token in tokens.css.
+- fix(css): consolidate duplicate responsive grid overrides from components.css into layout.css.
+- fix(css): replace 8 inline cursor:pointer styles with .cursor-pointer utility class.
+- fix(css): remove gantt container inline style, move to trace_detail.css class.
+- fix(docs): remove non-existent utilities.css reference from style guide.
 
 ### 1.35.2 (PATCH) -- Dependency updates, DuckDuckGo package migration
 
