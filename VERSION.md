@@ -1,12 +1,17 @@
 # Version
 
-**Current Version:** 1.36.2
+**Current Version:** 1.36.3
 
 ## Recent Changes
 
-Track changes since `v1.36.2` here.
+Track changes since `v1.36.3` here.
 
 ## Version History
+
+### 1.36.3 (PATCH) -- Pipeline performance instrumentation
+
+- feat(observability): add sub-span timing to classification pipeline. 6 new sub-spans (`classify.agents`, `classify.cache_lookup`, `classify.prompt_and_descriptions`, `classify.conversation_turns`, `classify.parse_and_sanitize`, `classify.cache_store`) with ms timing logs break down the ~2500ms classify overhead beyond the LLM call.
+- feat(observability): add `perf_counter()` checkpoints to HA action executor (`_do_execute`) covering dynamic imports, executor prep, and service calls with aggregate timing log.
 
 ### 1.36.2 (PATCH) -- Action cache streaming fix, orchestrator prompt restructure, span timeline repair
 

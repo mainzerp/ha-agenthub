@@ -10,6 +10,7 @@ import asyncio
 import inspect as _inspect
 import logging
 import re
+import time
 from typing import Any
 
 from app.agents.action_executor import parse_action
@@ -500,11 +501,13 @@ class _ConfigurableDomainAgent(ActionableAgent):
 
         import importlib as _importlib
 
+        t0 = time.perf_counter()
         executor_fn = getattr(_importlib.import_module(executor_module), executor_name)
+        t1 = time.perf_counter()
         sig = _inspect.signature(executor_fn)
         filtered = {k: v for k, v in kwargs.items() if k in sig.parameters}
-
-        return await executor_fn(
+        t2 = time.perf_counter()
+        result = await executor_fn(
             action,
             ha_client,
             entity_index,
@@ -513,6 +516,16 @@ class _ConfigurableDomainAgent(ActionableAgent):
             span_collector=span_collector,
             **filtered,
         )
+        t3 = time.perf_counter()
+        logger.debug(
+            "_do_execute %s: import=%.1fms prep=%.1fms exec=%.1fms total=%.1fms",
+            agent_id,
+            (t1 - t0) * 1000,
+            (t2 - t1) * 1000,
+            (t3 - t2) * 1000,
+            (t3 - t0) * 1000,
+        )
+        return result
 
     @property
     def agent_card(self) -> AgentCard:
