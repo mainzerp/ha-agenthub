@@ -32,7 +32,12 @@
                     </div>
                     <div>
                         <span class="text-muted text-xs">Session</span><br>
-                        <span class="text-mono text-sm" x-text="traceDetail.conversation_id || '-'"></span>
+                        <template x-if="traceDetail.conversation_id">
+                            <a class="text-teal text-mono text-sm conv-link" :href="rootUrl + '/dashboard/traces?search=' + encodeURIComponent(traceDetail.conversation_id)" x-text="traceDetail.conversation_id"></a>
+                        </template>
+                        <template x-if="!traceDetail.conversation_id">
+                            <span class="text-mono text-sm">-</span>
+                        </template>
                     </div>
                     <div>
                         <span class="text-muted text-xs">Duration</span><br>
@@ -267,7 +272,7 @@
             <!-- Span Timeline (Gantt) -->
             <div class="card mb-md bg-obsidian">
                 <h4 class="card-title mb-sm text-sm">Span Timeline</h4>
-                <div style="overflow-x: auto; width: 100%;">
+                <div class="gantt-scroll-container">
                     {% include "partials/_trace_gantt.html" %}
                 </div>
             </div>
@@ -378,6 +383,114 @@
                             <div class="span-detail-row">
                                 <span class="span-detail-label">Status Code</span>
                                 <span class="text-mono" x-text="selectedSpan.metadata.status_code"></span>
+                            </div>
+                        </template>
+                        <template x-if="selectedSpan.metadata && selectedSpan.metadata.device_name">
+                            <div class="span-detail-row">
+                                <span class="span-detail-label">Device</span>
+                                <span class="text-mono" x-text="selectedSpan.metadata.device_name"></span>
+                            </div>
+                        </template>
+                        <template x-if="selectedSpan.metadata && selectedSpan.metadata.device_id">
+                            <div class="span-detail-row">
+                                <span class="span-detail-label">Device ID</span>
+                                <span class="text-mono" x-text="selectedSpan.metadata.device_id"></span>
+                            </div>
+                        </template>
+                        <template x-if="selectedSpan.metadata && selectedSpan.metadata.area_name">
+                            <div class="span-detail-row">
+                                <span class="span-detail-label">Area</span>
+                                <span class="text-mono" x-text="selectedSpan.metadata.area_name"></span>
+                            </div>
+                        </template>
+                        <template x-if="selectedSpan.metadata && selectedSpan.metadata.area_id">
+                            <div class="span-detail-row">
+                                <span class="span-detail-label">Area ID</span>
+                                <span class="text-mono" x-text="selectedSpan.metadata.area_id"></span>
+                            </div>
+                        </template>
+                        <template x-if="selectedSpan.metadata && selectedSpan.metadata.domain">
+                            <div class="span-detail-row">
+                                <span class="span-detail-label">Domain</span>
+                                <span class="text-mono" x-text="selectedSpan.metadata.domain"></span>
+                            </div>
+                        </template>
+                        <template x-if="selectedSpan.metadata && selectedSpan.metadata.entity_id">
+                            <div class="span-detail-row">
+                                <span class="span-detail-label">Entity ID</span>
+                                <span class="text-mono" x-text="selectedSpan.metadata.entity_id"></span>
+                            </div>
+                        </template>
+                        <template x-if="selectedSpan.metadata && selectedSpan.metadata.language">
+                            <div class="span-detail-row">
+                                <span class="span-detail-label">Language</span>
+                                <span class="text-mono" x-text="selectedSpan.metadata.language"></span>
+                            </div>
+                        </template>
+                        <template x-if="selectedSpan.metadata && selectedSpan.metadata.model">
+                            <div class="span-detail-row">
+                                <span class="span-detail-label">Model</span>
+                                <span class="text-mono" x-text="selectedSpan.metadata.model"></span>
+                            </div>
+                        </template>
+                        <template x-if="selectedSpan.metadata && selectedSpan.metadata.tool_name">
+                            <div class="span-detail-row">
+                                <span class="span-detail-label">Tool</span>
+                                <span class="text-mono" x-text="selectedSpan.metadata.tool_name"></span>
+                            </div>
+                        </template>
+                        <template x-if="selectedSpan.metadata && selectedSpan.metadata.server_name">
+                            <div class="span-detail-row">
+                                <span class="span-detail-label">Server</span>
+                                <span class="text-mono" x-text="selectedSpan.metadata.server_name"></span>
+                            </div>
+                        </template>
+                        <template x-if="selectedSpan.metadata && selectedSpan.metadata.service">
+                            <div class="span-detail-row">
+                                <span class="span-detail-label">Service</span>
+                                <span class="text-mono" x-text="selectedSpan.metadata.service"></span>
+                            </div>
+                        </template>
+                        <template x-if="selectedSpan.metadata && selectedSpan.metadata.error_type">
+                            <div class="span-detail-row">
+                                <span class="span-detail-label">Error Type</span>
+                                <span class="text-mono" x-text="selectedSpan.metadata.error_type"></span>
+                            </div>
+                        </template>
+                        <template x-if="selectedSpan.metadata && selectedSpan.metadata.delivery_type">
+                            <div class="span-detail-row">
+                                <span class="span-detail-label">Delivery</span>
+                                <span class="text-mono" x-text="selectedSpan.metadata.delivery_type"></span>
+                            </div>
+                        </template>
+                        <template x-if="selectedSpan.metadata && selectedSpan.metadata.content_agent">
+                            <div class="span-detail-row">
+                                <span class="span-detail-label">Content Agent</span>
+                                <span class="text-mono" x-text="selectedSpan.metadata.content_agent"></span>
+                            </div>
+                        </template>
+                        <template x-if="selectedSpan.metadata && selectedSpan.metadata.count !== undefined">
+                            <div class="span-detail-row">
+                                <span class="span-detail-label">Count</span>
+                                <span class="text-mono" x-text="selectedSpan.metadata.count"></span>
+                            </div>
+                        </template>
+                        <template x-if="selectedSpan.metadata && selectedSpan.metadata.chars !== undefined">
+                            <div class="span-detail-row">
+                                <span class="span-detail-label">Chars</span>
+                                <span class="text-mono" x-text="selectedSpan.metadata.chars"></span>
+                            </div>
+                        </template>
+                        <template x-if="selectedSpan.metadata && selectedSpan.metadata.length !== undefined">
+                            <div class="span-detail-row">
+                                <span class="span-detail-label">Length</span>
+                                <span class="text-mono" x-text="selectedSpan.metadata.length"></span>
+                            </div>
+                        </template>
+                        <template x-if="selectedSpan.created_at">
+                            <div class="span-detail-row">
+                                <span class="span-detail-label">Created</span>
+                                <span class="text-mono" x-text="new Date(selectedSpan.created_at).toISOString()"></span>
                             </div>
                         </template>
                     </div>
@@ -515,7 +628,7 @@ function traceDetailPage() {
                     start: start,
                     end: end,
                     style: 'background-color: ' + color + '; color: white; border: none; border-radius: 4px; font-size: 0.75rem; cursor: pointer;',
-                    title: span.span_name + '\nAgent: ' + (span.agent_id || '-') + '\nDuration: ' + span.duration_ms.toFixed(2) + 'ms\nStatus: ' + span.status,
+                    title: span.span_name + '\nAgent: ' + (span.agent_id || '-') + '\nDuration: ' + span.duration_ms.toFixed(2) + 'ms\nStatus: ' + span.status + (span.created_at ? '\nCreated: ' + new Date(span.created_at).toISOString() : ''),
                 };
             });
 

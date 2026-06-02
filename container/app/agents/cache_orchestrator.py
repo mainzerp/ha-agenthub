@@ -14,6 +14,7 @@ from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import Any
 
+from app.analytics.collector import track_cache_event
 from app.analytics.tracer import _optional_span
 from app.cache.cache_manager import ActionReplayOutcome, CacheManager, RoutingSkipOutcome
 from app.db.repository import SettingsRepository
@@ -210,6 +211,7 @@ class CacheOrchestrator:
 
             cache_span["metadata"]["hit_type"] = "miss"
             cache_span["metadata"]["cache_tier"] = "both_miss"
+            await track_cache_event(tier="both_miss", hit_type="miss")
             return None, None
 
     async def cached_action_is_still_visible(self, agent_id: str, entity_id: str) -> bool:

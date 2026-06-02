@@ -14,7 +14,6 @@ The admin UI is dark-only, server-rendered with Jinja2, and styled with modular 
 | `base.css` | Global resets, scrollbar rules, `[x-cloak]` |
 | `layout.css` | Grid system, sidebar, topbar, main content area, responsive breakpoints |
 | `components.css` | Cards, badges, buttons, forms, tables, toasts, modals, nav groups, command palette |
-| `utilities.css` | One-off spacing, sizing, typography, and visual utilities |
 | `auth.css` | Login and setup wizard specific styles |
 | `pages/*.css` | Page-specific overrides (overview, analytics, traces, trace_detail, timers, etc.) |
 
@@ -25,7 +24,6 @@ All templates load the core stack in this order:
 <link rel="stylesheet" href="{{ static_url(request, '/dashboard/static/css/base.css') }}">
 <link rel="stylesheet" href="{{ static_url(request, '/dashboard/static/css/layout.css') }}">
 <link rel="stylesheet" href="{{ static_url(request, '/dashboard/static/css/components.css') }}">
-<link rel="stylesheet" href="{{ static_url(request, '/dashboard/static/css/utilities.css') }}">
 ```
 
 Page-specific CSS is loaded via `{% block page_css %}` after the core stack.

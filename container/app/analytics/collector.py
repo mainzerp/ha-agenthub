@@ -80,3 +80,15 @@ async def track_agent_timeout(agent_id: str, timeout_s: int) -> None:
         )
     except Exception:
         logger.warning("Failed to track agent timeout event", exc_info=True)
+
+
+async def track_error(agent_id: str, error_type: str, endpoint: str | None = None) -> None:
+    """Track an error occurrence."""
+    try:
+        await AnalyticsRepository.insert(
+            event_type="error",
+            agent_id=agent_id,
+            data={"error_type": error_type, "endpoint": endpoint},
+        )
+    except Exception:
+        logger.warning("Failed to track error event", exc_info=True)

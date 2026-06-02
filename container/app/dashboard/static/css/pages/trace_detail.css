@@ -7,6 +7,19 @@
     padding: 0.5rem;
 }
 
+.gantt-scroll-container {
+    overflow-x: auto;
+    width: 100%;
+}
+
+.conv-link {
+    text-decoration: none;
+}
+
+.conv-link:hover {
+    text-decoration: underline;
+}
+
 .span-detail-panel {
     margin-top: 1rem;
     padding: 1rem;

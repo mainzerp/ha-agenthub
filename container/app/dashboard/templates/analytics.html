@@ -6,7 +6,7 @@
 {% block page_content %}
 <div x-data="analyticsPage()" x-init="loadAll()">
 
-    <div x-show="error" class="alert alert-error mb-md" x-text="error" @click="error = null" style="cursor:pointer"></div>
+    <div x-show="error" class="alert alert-error mb-md cursor-pointer" x-text="error" @click="error = null"></div>
 
     <div class="page-header">
         <div class="page-header-text">
@@ -72,10 +72,18 @@
             </div>
         </div>
         <div class="card">
-            <h3 class="card-title mb-md">Cache Hit Rate</h3>
+            <h3 class="card-title mb-md">Cache Tier Breakdown</h3>
             <div class="chart-wrap-sm">
                 <canvas id="cacheChart"></canvas>
             </div>
+        </div>
+    </div>
+
+    <!-- Error chart -->
+    <div class="card mb-lg" x-show="errorData && errorData.labels && errorData.labels.length > 0">
+        <h3 class="card-title mb-md">Errors by Type</h3>
+        <div class="chart-wrap-sm">
+            <canvas id="errorsChart"></canvas>
         </div>
     </div>
 
@@ -171,14 +179,17 @@ function analyticsPage() {
         agentMetrics: [],
         tokenData: {},
         rewriteData: {},
+        errorData: {},
         requestsChart: null,
         cacheChart: null,
+        errorsChart: null,
 
         async loadAll() {
             await Promise.all([
                 this.loadOverview(),
                 this.loadRequestsChart(),
                 this.loadCacheChart(),
+                this.loadErrors(),
                 this.loadAgents(),
                 this.loadTokens(),
                 this.loadRewrite(),
@@ -195,8 +206,14 @@ function analyticsPage() {
         },
 
         async loadCacheChart() {
-            var data = await window.dashboardApi.safeJson('/api/admin/analytics/cache?hours=' + this.hours);
-            if (data) this.renderChart('cacheChart', 'cacheChart', data, 'line', 'rgba(34, 197, 94, 0.7)');
+            var data = await window.dashboardApi.safeJson('/api/admin/analytics/cache/tiers?hours=' + this.hours);
+            if (data) {
+                this.renderMultiChart('cacheChart', data, 'bar', [
+                    { color: 'rgba(34, 197, 94, 0.7)', label: 'Routing Hits' },
+                    { color: 'rgba(45, 212, 191, 0.7)', label: 'Action Hits' },
+                    { color: 'rgba(232, 119, 119, 0.7)', label: 'Misses' },
+                ]);
+            }
         },
 
         renderChart(propName, canvasId, data, type, color) {
@@ -221,6 +238,46 @@ function analyticsPage() {
                 data: { labels: data.labels || [], datasets: datasets },
                 options: dashChartOptions()
             });
+        },
+
+        renderMultiChart(canvasId, data, type, spec) {
+            if (typeof Chart === 'undefined') {
+                setTimeout(() => this.renderMultiChart(canvasId, data, type, spec), 100);
+                return;
+            }
+            if (this[canvasId]) {
+                this[canvasId].destroy();
+            }
+            const ctx = document.getElementById(canvasId);
+            if (!ctx) return;
+            const datasets = (data.datasets || []).map((ds, idx) => ({
+                ...ds,
+                backgroundColor: spec[idx] ? spec[idx].color : 'rgba(100, 100, 100, 0.5)',
+                borderColor: spec[idx] ? spec[idx].color : 'rgba(100, 100, 100, 0.5)',
+                borderWidth: 1,
+            }));
+            this[canvasId] = new Chart(ctx, {
+                type: type,
+                data: { labels: data.labels || [], datasets: datasets },
+                options: Object.assign({}, dashChartOptions(), {
+                    scales: Object.assign({}, dashChartOptions().scales, {
+                        x: Object.assign({}, dashChartOptions().scales.x, { stacked: true }),
+                        y: Object.assign({}, dashChartOptions().scales.y, { stacked: true, beginAtZero: true }),
+                    }),
+                }),
+            });
+        },
+
+        async loadErrors() {
+            var data = await window.dashboardApi.safeJson('/api/admin/analytics/errors?hours=' + this.hours);
+            if (data && data.labels && data.labels.length > 0) {
+                this.errorData = data;
+                this.renderMultiChart('errorsChart', data, 'bar', [
+                    { color: 'rgba(245, 158, 11, 0.7)', label: 'Errors' },
+                ]);
+            } else {
+                this.errorData = {};
+            }
         },
 
         async loadAgents() {

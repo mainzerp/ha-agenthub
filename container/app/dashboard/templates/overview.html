@@ -80,6 +80,11 @@
                 <span class="stat-card-label">Avg Latency</span>
             </div>
             <div class="stat-card-value" x-text="data ? data.avg_latency_ms + 'ms' : '--'">--</div>
+            <div class="stat-card-detail text-xs" x-show="data && data.latency_p50">
+                <span>p50: <span x-text="data.latency_p50 + 'ms'"></span></span>
+                <span class="ml-md">p95: <span x-text="data.latency_p95 + 'ms'"></span></span>
+                <span class="ml-md">p99: <span x-text="data.latency_p99 + 'ms'"></span></span>
+            </div>
         </div>
         <div class="stat-card">
             <div class="stat-card-header">
@@ -156,6 +161,7 @@
                             <th>Input</th>
                             <th>Agent</th>
                             <th>Latency</th>
+                            <th></th>
                         </tr>
                     </thead>
                     <tbody>
@@ -163,7 +169,10 @@
                             <tr>
                                 <td class="text-muted" x-text="dashFormatRelativeTime(t.created_at)"></td>
                                 <td x-text="t.user_input.length > 60 ? t.user_input.substring(0, 60) + '...' : t.user_input"></td>
-                                <td class="text-mono" x-text="t.routing_agent || '-'"></td>
+                                <td>
+                                    <span class="text-mono" x-text="t.routing_agent || '-'"></span>
+                                    <span x-show="t.voice_followup" class="badge badge-teal text-2xs ml-xs">FOLLOW-UP</span>
+                                </td>
                                 <td class="text-mono" x-text="t.total_duration_ms ? Math.round(t.total_duration_ms) + 'ms' : '-'"></td>
                             </tr>
                         </template>

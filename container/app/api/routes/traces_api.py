@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import contextlib
 import csv
 import io
+import json
 import logging
 
 from fastapi import APIRouter, Depends, Query
@@ -126,9 +128,24 @@ async def export_traces(
             "Duration (ms)",
             "Label",
             "Source",
+            "Agents",
+            "Device",
+            "Area",
+            "Voice Followup",
+            "Conversation Turns",
         ]
     )
     for row in rows:
+        agents_list = row.get("agents")
+        agents_str = ", ".join(agents_list) if isinstance(agents_list, list) else str(agents_list or "")
+        device = row.get("device_name") or row.get("device_id") or ""
+        area = row.get("area_name") or row.get("area_id") or ""
+        voice_followup = "Yes" if row.get("voice_followup") else ""
+        conv_turns = row.get("conversation_turns")
+        if isinstance(conv_turns, str):
+            with contextlib.suppress(json.JSONDecodeError):
+                conv_turns = json.loads(conv_turns)
+        conv_turns_str = str(len(conv_turns)) if isinstance(conv_turns, list) else str(conv_turns or "")
         writer.writerow(
             [
                 row.get("created_at", ""),
@@ -141,6 +158,11 @@ async def export_traces(
                 row.get("total_duration_ms", ""),
                 row.get("label", ""),
                 row.get("source", ""),
+                agents_str,
+                device,
+                area,
+                voice_followup,
+                conv_turns_str,
             ]
         )
 
@@ -223,6 +245,7 @@ async def get_trace_detail(trace_id: str):
                     "duration_ms": span["duration_ms"],
                     "status": span["status"],
                     "response": _build_response(span["span_name"], meta),
+                    "created_at": span.get("created_at"),
                 }
             )
 
@@ -643,6 +666,7 @@ async def get_trace_detail(trace_id: str):
         "area_id": summary.get("area_id"),
         "device_name": summary.get("device_name"),
         "area_name": summary.get("area_name"),
+        "voice_followup": summary.get("voice_followup"),
         "spans": spans,
         "agent_executions": agent_executions,
         "agent_communication": agent_communication,

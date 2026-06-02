@@ -83,6 +83,9 @@
                         <th>User Input</th>
                         <th>Agents</th>
                         <th>Duration</th>
+                        <th>Source</th>
+                        <th>Confidence</th>
+                        <th>Device</th>
                         <th>Label</th>
                         <th></th>
                     </tr>
@@ -103,6 +106,9 @@
                                 </div>
                             </td>
                             <td class="text-mono" x-text="t.total_duration_ms ? Math.round(t.total_duration_ms) + 'ms' : '-'"></td>
+                            <td class="text-mono text-xs" x-text="t.source || '-'"></td>
+                            <td class="text-mono text-xs" x-text="t.routing_confidence != null ? (Math.round(t.routing_confidence * 100) / 100).toFixed(2) : '-'"></td>
+                            <td class="text-xs truncate max-w-128" x-text="t.device_name || t.device_id || '-'"></td>
                             <td>
                                 <div class="flex flex-wrap gap-xs">
                                     <span x-show="t.label" class="badge badge-blue text-2xs"

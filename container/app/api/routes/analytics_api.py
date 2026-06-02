@@ -62,6 +62,7 @@ async def analytics_overview(
         if r.get("data") and isinstance(r["data"], dict) and "latency_ms" in r["data"]
     ]
     avg_latency = round(sum(latencies) / len(latencies), 1) if latencies else 0
+    latency_percentiles = _compute_percentiles(latencies, [50, 95, 99])
 
     # Cache hit rate
     hits = sum(1 for e in cache_events if e.get("event_type") in ("routing_hit", "action_hit"))
@@ -78,6 +79,7 @@ async def analytics_overview(
         "cache_hit_rate": hit_rate,
         "total_conversations": total_conversations,
         "period_hours": hours,
+        **latency_percentiles,
     }
 
 
@@ -236,6 +238,82 @@ async def analytics_tokens(
         "by_agent": dict(by_agent),
         "by_provider": dict(by_provider),
         "period_hours": hours,
+    }
+
+
+@router.get("/errors")
+async def analytics_errors(
+    hours: int = Query(24, ge=1, le=720),
+):
+    """Error counts per agent and per error type."""
+    start = (datetime.now(UTC) - timedelta(hours=hours)).strftime("%Y-%m-%d %H:%M:%S")
+    events = await AnalyticsRepository.query_by_range(
+        event_type="error",
+        start=start,
+        limit=10000,
+    )
+
+    by_agent: dict[str, int] = defaultdict(int)
+    by_error_type: dict[str, int] = defaultdict(int)
+
+    for e in events:
+        agent = e.get("agent_id") or "unknown"
+        by_agent[agent] += 1
+        data = e.get("data")
+        if isinstance(data, dict):
+            error_type = data.get("error_type", "unknown")
+            by_error_type[error_type] += 1
+
+    return {
+        "labels": sorted(by_error_type.keys()),
+        "datasets": [
+            {"label": "Errors by Type", "data": [by_error_type[k] for k in sorted(by_error_type.keys())]},
+        ],
+        "by_agent": dict(by_agent),
+        "period_hours": hours,
+    }
+
+
+@router.get("/cache/tiers")
+async def analytics_cache_tiers(
+    hours: int = Query(24, ge=1, le=720),
+    bucket_minutes: int = Query(60, ge=5, le=1440),
+):
+    """Cache tier time-series with separate datasets per tier."""
+    start = (datetime.now(UTC) - timedelta(hours=hours)).strftime("%Y-%m-%d %H:%M:%S")
+    events = await AnalyticsRepository.query_by_range(start=start, limit=10000)
+
+    routing_hits_per_bucket: dict[str, int] = defaultdict(int)
+    action_hits_per_bucket: dict[str, int] = defaultdict(int)
+    misses_per_bucket: dict[str, int] = defaultdict(int)
+
+    for e in events:
+        et = e.get("event_type", "")
+        ts = e.get("created_at", "")
+        try:
+            dt = datetime.fromisoformat(ts)
+            bucket_secs = bucket_minutes * 60
+            ts_epoch = int(dt.timestamp())
+            bucket_start = ts_epoch - (ts_epoch % bucket_secs)
+            bucket_label = datetime.fromtimestamp(bucket_start, tz=UTC).strftime("%H:%M")
+            if et == "routing_hit":
+                routing_hits_per_bucket[bucket_label] += 1
+            elif et == "action_hit":
+                action_hits_per_bucket[bucket_label] += 1
+            elif et == "miss":
+                misses_per_bucket[bucket_label] += 1
+        except (ValueError, TypeError):
+            logger.debug("Failed to parse cache event timestamp %s", ts, exc_info=True)
+
+    labels = sorted(set(routing_hits_per_bucket) | set(action_hits_per_bucket) | set(misses_per_bucket))
+
+    return {
+        "labels": labels,
+        "datasets": [
+            {"label": "Routing Hits", "data": [routing_hits_per_bucket.get(lb, 0) for lb in labels]},
+            {"label": "Action Hits", "data": [action_hits_per_bucket.get(lb, 0) for lb in labels]},
+            {"label": "Misses", "data": [misses_per_bucket.get(lb, 0) for lb in labels]},
+        ],
     }
 
 

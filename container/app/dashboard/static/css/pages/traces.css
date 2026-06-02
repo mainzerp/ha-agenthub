@@ -15,8 +15,11 @@
 .traces-table th:nth-child(1) { width: 175px; }   /* Timestamp */
 .traces-table th:nth-child(3) { width: 165px; }   /* Agents */
 .traces-table th:nth-child(4) { width: 90px;  }   /* Duration */
-.traces-table th:nth-child(5) { width: 105px; }   /* Label */
-.traces-table th:nth-child(6) { width: 80px; text-align: right; } /* View */
+.traces-table th:nth-child(5) { width: 85px;  }   /* Source */
+.traces-table th:nth-child(6) { width: 90px;  }   /* Confidence */
+.traces-table th:nth-child(7) { width: 130px; }   /* Device */
+.traces-table th:nth-child(8) { width: 105px; }   /* Label */
+.traces-table th:nth-child(9) { width: 80px; text-align: right; } /* View */
 
 /* Truncate long user-input text inside the fixed-width column */
 .traces-table td:nth-child(2) {
@@ -26,6 +29,6 @@
 }
 
 /* Right-align the View button cell to match the header */
-.traces-table td:nth-child(6) {
+.traces-table td:nth-child(9) {
     text-align: right;
 }

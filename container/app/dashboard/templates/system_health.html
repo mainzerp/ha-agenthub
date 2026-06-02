@@ -51,6 +51,7 @@ function healthPage() {
             { key: "entity_index", label: "Entity Index" },
             { key: "cache", label: "Cache System" },
             { key: "mcp_servers", label: "MCP Servers" },
+            { key: "task_queue", label: "Task Queue" },
             { key: "uptime", label: "Container Uptime" }
         ],
         async loadHealth() {
@@ -83,6 +84,7 @@ function healthPage() {
             if (key === "uptime" && comp.display) return comp.display;
             if (key === "entity_index" && comp.count !== undefined) return comp.count + " entities indexed";
             if (key === "mcp_servers" && comp.count !== undefined) return comp.count + " server(s) connected";
+            if (key === "task_queue" && comp.pending_count !== undefined) return comp.pending_count + " pending";
             if (comp.detail) return comp.detail;
             if (comp.status === "healthy") return "Operating normally";
             return "";

@@ -19,6 +19,8 @@
     <script>var __dashboard = { rootPath: '{{ root_path }}', loginUrl: '{{ root_url(request, '/dashboard/login') }}' };</script>
     <script src="{{ static_url(request, '/dashboard/static/vendor/htmx/htmx-2.0.4.min.js') }}" defer></script>
     {% block page_js %}{% endblock %}
+    <script src="{{ static_url(request, '/dashboard/static/utils.js') }}"></script>
+    <script src="{{ static_url(request, '/dashboard/static/api.js') }}"></script>
     <script src="{{ static_url(request, '/dashboard/static/components.js') }}"></script>
     <script defer src="{{ static_url(request, '/dashboard/static/vendor/alpine/alpine-3.14.1.min.js') }}"></script>
 </head>
