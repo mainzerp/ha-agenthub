@@ -1,12 +1,17 @@
 # Version
 
-**Current Version:** 1.36.4
+**Current Version:** 1.37.0
 
 ## Recent Changes
 
-Track changes since `v1.36.4` here.
+Track changes since `v1.37.0` here.
 
 ## Version History
+
+### 1.37.0 (MINOR) -- SQLite cache backend, dispatch delay logging
+
+- feat(cache): replace ChromaDB with SQLite for routing and action caches. New `SqliteCacheStore` using Python's `sqlite3` with WAL mode. Eliminates ChromaDB embedding overhead, `_lru_index` dict, `heapq`, and cold-start page scan. LRU eviction via `DELETE ... ORDER BY last_accessed LIMIT N`. EntityIndex stays on ChromaDB.
+- feat(observability): add `perf_counter()` checkpoints with `logger.info()` in dispatch pipeline (actionable.py, dispatch_manager.py, orchestrator.py streaming path) to measure per-phase latency.
 
 ### 1.36.4 (PATCH) -- Cache write performance, follow-up cleanup
 

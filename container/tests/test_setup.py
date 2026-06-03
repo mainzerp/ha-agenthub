@@ -667,6 +667,7 @@ async def test_initialize_setup_dependent_services_is_idempotent():
             new_callable=AsyncMock,
             return_value=fake_vector_store,
         ),
+        patch("app.bootstrap._ha_client.SqliteCacheStore", return_value=MagicMock()),
         patch(
             "app.bootstrap._entity.schedule_entity_index_prime",
             new_callable=AsyncMock,
@@ -705,6 +706,7 @@ async def test_initialize_setup_dependent_services_is_idempotent():
             _ei_cls,
             _embed,
             _vs,
+            _sqlite_cache,
             _prime,
             mock_home_ctx,
             mock_alias_cls,
@@ -824,6 +826,7 @@ async def test_initialize_setup_dependent_services_preloads_prompt_files():
             new_callable=AsyncMock,
             return_value=fake_vector_store,
         ),
+        patch("app.bootstrap._ha_client.SqliteCacheStore", return_value=MagicMock()),
         patch(
             "app.bootstrap._entity.schedule_entity_index_prime",
             new_callable=AsyncMock,
@@ -866,6 +869,7 @@ async def test_initialize_setup_dependent_services_preloads_prompt_files():
             _ei_cls,
             _embed,
             _vs,
+            _sqlite_cache,
             _prime,
             mock_home_ctx,
             mock_alias_cls,

@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from typing import TYPE_CHECKING
 
 from app.agents.base import preload_prompt_cache
 from app.cache.embedding import get_embedding_engine
+from app.cache.sqlite_cache_store import SqliteCacheStore
 from app.cache.vector_store import get_vector_store
+from app.config import settings
 from app.entity.aliases import AliasResolver
 from app.ha_client.home_context import home_context_provider
 from app.ha_client.rest import HARestClient
@@ -26,10 +29,12 @@ async def setup_ha_client(app: FastAPI, source: str):
     Pre-warms the prompt cache.
 
     Returns:
-        ``(vector_store, ha_client, alias_resolver)`` for use by later steps.
+        ``(vector_store, cache_store, ha_client, alias_resolver)`` for use by later steps.
     """
     await get_embedding_engine()
     vector_store = await get_vector_store()
+
+    cache_store = SqliteCacheStore(os.path.join(settings.chromadb_persist_dir, "cache.db"))
 
     ha_client = getattr(app.state, "ha_client", None)
     if ha_client is None:
@@ -52,4 +57,4 @@ async def setup_ha_client(app: FastAPI, source: str):
 
     await asyncio.to_thread(preload_prompt_cache)
 
-    return vector_store, ha_client, alias_resolver
+    return vector_store, cache_store, ha_client, alias_resolver

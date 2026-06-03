@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
-from app.cache.vector_store import (
+from app.cache.sqlite_cache_store import (
     COLLECTION_ACTION_CACHE,
     COLLECTION_ROUTING_CACHE,
 )
@@ -212,7 +212,7 @@ def _apply_tier_import(cache_manager: CacheManager, tier: str, entries: list[dic
         ids = [tier_cache.make_entry_id(entry.query_text, language=entry.language) for entry in chunk]
         documents = [entry.query_text for entry in chunk]
         metadatas = [tier_cache._serialize_metadata(entry) for entry in chunk]  # type: ignore[arg-type]
-        cache_manager._vector_store.upsert(
+        cache_manager._cache_store.upsert(
             _TIER_TO_COLLECTION[tier],
             ids=ids,
             documents=documents,

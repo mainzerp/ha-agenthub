@@ -8,7 +8,7 @@ from collections.abc import Iterator
 from datetime import UTC, datetime
 
 from app.cache._base_cache import _BaseCache, _normalize_language, _parse_entity_ids, make_text_id
-from app.cache.vector_store import COLLECTION_ACTION_CACHE, VectorStore
+from app.cache.sqlite_cache_store import COLLECTION_ACTION_CACHE, SqliteCacheStore
 from app.models.cache import ActionCacheEntry, CachedAction
 
 logger = logging.getLogger(__name__)
@@ -58,9 +58,9 @@ def _is_readonly_action(action) -> bool:
 class ActionCache(_BaseCache[ActionCacheEntry]):
     """Stores replayable action results keyed by raw user text + language."""
 
-    def __init__(self, vector_store: VectorStore) -> None:
+    def __init__(self, cache_store: SqliteCacheStore) -> None:
         super().__init__(
-            vector_store,
+            cache_store,
             collection_name=COLLECTION_ACTION_CACHE,
             default_max_entries=50000,
         )

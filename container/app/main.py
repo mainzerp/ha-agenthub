@@ -363,6 +363,14 @@ async def lifespan(app: FastAPI):
     if ha_client:
         await ha_client.close()
     close_vector_store()
+
+    cache_store = getattr(app.state, "cache_store", None)
+    if cache_store is not None:
+        try:
+            cache_store.close()
+        except Exception:
+            logger.warning("Failed to close SQLite cache store", exc_info=True)
+
     from app.db.schema import close_db
 
     await close_db()

@@ -72,7 +72,7 @@ async def _initialize_setup_dependent_services(app: FastAPI, *, source: str) -> 
     from app.bootstrap._monitors import setup_monitors
 
     # Phase 1: HA client, embedding engine, vector store, HomeContext, AliasResolver, preload
-    vector_store, ha_client, alias_resolver = await setup_ha_client(app, source)
+    vector_store, cache_store, ha_client, alias_resolver = await setup_ha_client(app, source)
 
     # Phase 2: Entity index creation + background prime
     entity_index = await setup_entity_index(app, source, ha_client, vector_store)
@@ -83,9 +83,9 @@ async def _initialize_setup_dependent_services(app: FastAPI, *, source: str) -> 
     # Phase 4: Rewrite agent (depends on ha_client, entity_index)
     rewrite_agent = await setup_rewrite_agent(app, source, ha_client, entity_index)
 
-    # Phase 5: Cache manager + purge + validator (depends on vector_store, rewrite_agent, llm_client)
+    # Phase 5: Cache manager + purge + validator (depends on cache_store, rewrite_agent, llm_client)
     llm_client = await setup_llm_client(app, source)
-    await setup_cache(app, source, vector_store, rewrite_agent, entity_index, ha_client, llm_client)
+    await setup_cache(app, source, cache_store, rewrite_agent, entity_index, ha_client, llm_client)
 
     # Phase 6: MCP servers (depends on mcp_registry, mcp_tool_manager)
     await setup_mcp(app, source)

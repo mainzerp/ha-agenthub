@@ -271,6 +271,7 @@ class ActionableAgent(BaseAgent):
             self._current_task = None
 
     async def _handle_task_inner(self, task: AgentTask) -> TaskResult:
+        _t0 = time.perf_counter()
         agent_id = self.agent_card.agent_id
         span_collector = task.span_collector
         system_prompt = await self._load_prompt_async(self._prompt_name)
@@ -312,7 +313,9 @@ class ActionableAgent(BaseAgent):
         # Inject relevant entity states (compact single-line format, after output rules)
         try:
             resolved_entities = await self._resolve_relevant_entities(task)
+            _t1 = time.perf_counter()
             entity_state_context = await self._build_relevant_entity_state_context(resolved_entities)
+            _t2 = time.perf_counter()
             if entity_state_context:
                 system_prompt += f"\n\nContext: {entity_state_context}"
         except Exception:
@@ -346,6 +349,8 @@ class ActionableAgent(BaseAgent):
                 AgentErrorCode.LLM_ERROR,
                 "The language model could not complete this request. Please try again.",
             )
+
+        _t3 = time.perf_counter()
 
         if not response:
             logger.warning("LLM returned empty response for %s task: %s", agent_id, task.description[:100])
@@ -385,6 +390,9 @@ class ActionableAgent(BaseAgent):
                         agent_id=agent_id,
                         span_collector=span_collector,
                     )
+
+                _t4 = time.perf_counter()
+
                 # Entity not found: replace hardcoded speech with LLM-generated clarifying question
                 if (
                     self._clarify_on_not_found
@@ -399,6 +407,17 @@ class ActionableAgent(BaseAgent):
                     }
 
                 metadata = result.get("metadata") or {}
+                _t5 = time.perf_counter()
+                logger.info(
+                    "dispatch_timing agent=%s pre_entities=%.1fms entities=%.1fms llm_parse=%.1fms ha_action=%.1fms post_action=%.1fms total=%.1fms",
+                    agent_id,
+                    (_t1 - _t0) * 1000,
+                    (_t2 - _t1) * 1000,
+                    (_t3 - _t2) * 1000,
+                    (_t4 - _t3) * 1000,
+                    (_t5 - _t4) * 1000,
+                    (_t5 - _t0) * 1000,
+                )
                 if result.get("directive"):
                     return TaskResult(
                         speech=result.get("speech", ""),

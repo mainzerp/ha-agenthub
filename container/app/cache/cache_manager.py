@@ -12,7 +12,7 @@ from typing import Any
 from app.analytics.collector import track_cache_event, track_rewrite
 from app.cache.action_cache import ActionCache
 from app.cache.routing_cache import RoutingCache
-from app.cache.vector_store import COLLECTION_ACTION_CACHE, COLLECTION_ROUTING_CACHE, VectorStore
+from app.cache.sqlite_cache_store import COLLECTION_ACTION_CACHE, COLLECTION_ROUTING_CACHE, SqliteCacheStore
 from app.models.cache import ActionCacheEntry, CachedAction, RoutingCacheEntry
 
 logger = logging.getLogger(__name__)
@@ -64,12 +64,12 @@ class CacheManager:
 
     def __init__(
         self,
-        vector_store: VectorStore,
+        cache_store: SqliteCacheStore,
         rewrite_agent=None,
     ) -> None:
-        self._vector_store = vector_store
-        self._routing_cache = RoutingCache(vector_store)
-        self._action_cache = ActionCache(vector_store)
+        self._cache_store = cache_store
+        self._routing_cache = RoutingCache(cache_store)
+        self._action_cache = ActionCache(cache_store)
         self._rewrite_agent = rewrite_agent
         self._rewrite_enabled: bool = False
 
@@ -420,19 +420,15 @@ class CacheManager:
             raise ValueError(f"unknown cache tier {tier!r}")
         if tier is None or tier == "routing":
             self._routing_cache.prepare_for_flush()
-            count = self._vector_store.count(COLLECTION_ROUTING_CACHE)
+            count = self._cache_store.count(COLLECTION_ROUTING_CACHE)
             if count > 0:
-                all_data = self._vector_store.get(COLLECTION_ROUTING_CACHE, include=[])
-                if all_data["ids"]:
-                    self._vector_store.delete(COLLECTION_ROUTING_CACHE, ids=all_data["ids"])
+                self._cache_store.delete_all(COLLECTION_ROUTING_CACHE)
             logger.info("Routing cache flushed")
         if tier is None or tier == "action":
             self._action_cache.prepare_for_flush()
-            count = self._vector_store.count(COLLECTION_ACTION_CACHE)
+            count = self._cache_store.count(COLLECTION_ACTION_CACHE)
             if count > 0:
-                all_data = self._vector_store.get(COLLECTION_ACTION_CACHE, include=[])
-                if all_data["ids"]:
-                    self._vector_store.delete(COLLECTION_ACTION_CACHE, ids=all_data["ids"])
+                self._cache_store.delete_all(COLLECTION_ACTION_CACHE)
             logger.info("Action cache flushed")
 
     def flush_pending(self) -> None:

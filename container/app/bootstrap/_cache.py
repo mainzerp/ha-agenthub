@@ -33,7 +33,7 @@ async def _purge_stale_response_cache(cache_manager: CacheManager) -> None:
 async def setup_cache(
     app: FastAPI,
     source: str,
-    vector_store,
+    cache_store,
     rewrite_agent: RewriteAgent,
     entity_index: EntityIndex,
     ha_client: HARestClient,
@@ -41,13 +41,14 @@ async def setup_cache(
 ) -> CacheManager:
     """Create CacheManager, spawn purge task, create CacheValidator, spawn validator task.
 
-    Stores ``cache_manager`` and ``cache_validator`` on ``app.state``.
+    Stores ``cache_manager``, ``cache_validator``, and ``cache_store`` on ``app.state``.
     """
     cache_manager = getattr(app.state, "cache_manager", None)
     if cache_manager is None:
-        cache_manager = CacheManager(vector_store, rewrite_agent=rewrite_agent)
+        cache_manager = CacheManager(cache_store, rewrite_agent=rewrite_agent)
         await cache_manager.initialize()
         app.state.cache_manager = cache_manager
+        app.state.cache_store = cache_store
 
     purge_task = getattr(app.state, "purge_task", None)
     if purge_task is None or purge_task.done():
