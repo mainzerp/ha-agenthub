@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import heapq
 import json
 import logging
 import re
@@ -11,12 +10,11 @@ from abc import ABC, abstractmethod
 from collections import deque
 from collections.abc import Iterable
 from datetime import UTC, datetime
-from typing import TypeVar
+from typing import Any, TypeVar
 
 from pydantic import BaseModel
 
 from app.cache._state import _CacheState
-from app.cache.vector_store import VectorStore
 from app.db.repository import SettingsRepository
 
 logger = logging.getLogger(__name__)
@@ -87,12 +85,15 @@ class _BaseCache[TEntry](ABC):
 
     def __init__(
         self,
-        vector_store: VectorStore,
+        cache_store: Any,
         *,
         collection_name: str,
         default_max_entries: int,
     ) -> None:
-        self._store = vector_store
+        # Accepts VectorStore (entity_index) or SqliteCacheStore (routing/action) —
+        # duck-typed on the cache-relevant methods: upsert, get, delete, count,
+        # update_metadata, delete_oldest.
+        self._store = cache_store
         self._collection_name = collection_name
         self._enabled: bool = True
         self._max_entries: int = default_max_entries
@@ -100,7 +101,6 @@ class _BaseCache[TEntry](ABC):
         self._lru_trigger_fraction: float = _LRU_TRIGGER_FRACTION
         self._flush_interval: int = 5
         self._state = _CacheState()
-        self._lru_index: dict[str, str] = {}
         self._exact_match_only: bool = False
 
     @staticmethod
@@ -189,23 +189,17 @@ class _BaseCache[TEntry](ABC):
             logger.info("Skipping %s cache store after flush invalidation", self._collection_name)
             return
         entry_id = self.make_entry_id(entry.query_text, language=getattr(entry, "language", "en"))  # type: ignore[attr-defined]
-        now = datetime.now(UTC).isoformat()
-        self._lru_index[entry_id] = now
-        embeddings = [[0.0] * _ZERO_EMBEDDING_DIM] if self._exact_match_only else None
         self._store.upsert(
             self._collection_name,
             ids=[entry_id],
             documents=[entry.query_text],  # type: ignore[attr-defined]
-            embeddings=embeddings,
+            embeddings=None,
             metadatas=[self._serialize_metadata(entry)],
         )
 
     def invalidate_by_entry_id(self, entry_id: str) -> bool:
-        # Bump invalidation generation so a concurrent store() that captured the
-        # pre-invalidate generation cannot resurrect the row after delete.
         self._state.invalidate()
         self._state.discard_pending(entry_id)
-        self._lru_index.pop(entry_id, None)
         self._store.delete(self._collection_name, ids=[entry_id])
         return True
 
@@ -237,7 +231,6 @@ class _BaseCache[TEntry](ABC):
             return 0
         for entry_id in to_delete:
             self._state.discard_pending(entry_id)
-            self._lru_index.pop(entry_id, None)
         for start in range(0, len(to_delete), 500):
             self._store.delete(self._collection_name, ids=to_delete[start : start + 500])
         logger.debug(
@@ -266,8 +259,6 @@ class _BaseCache[TEntry](ABC):
         to_delete = [entry_id for entry_id, meta in zip(ids, metas, strict=False) if not (meta or {}).get("language")]
         if not to_delete:
             return 0
-        for entry_id in to_delete:
-            self._lru_index.pop(entry_id, None)
         for start in range(0, len(to_delete), 500):
             self._store.delete(self._collection_name, ids=to_delete[start : start + 500])
         return len(to_delete)
@@ -287,8 +278,6 @@ class _BaseCache[TEntry](ABC):
                 to_delete.append(entry_id)
         if not to_delete:
             return 0
-        for entry_id in to_delete:
-            self._lru_index.pop(entry_id, None)
         for start in range(0, len(to_delete), 500):
             self._store.delete(self._collection_name, ids=to_delete[start : start + 500])
         return len(to_delete)
@@ -351,7 +340,6 @@ class _BaseCache[TEntry](ABC):
         hit_count = self._coerce_int(str(meta.get("hit_count", 0)), 0) + 1
         meta["last_accessed"] = now
         meta["hit_count"] = str(hit_count)
-        self._lru_index[entry_id] = now
         should_flush = self._state.record_pending_update(
             entry_id,
             document or "",
@@ -368,19 +356,18 @@ class _BaseCache[TEntry](ABC):
         trigger = int(self._max_entries * self._lru_trigger_fraction)
         if count <= trigger:
             return
-        # Evict down to 90% of max so the next eviction sweep is not immediate.
         target = int(self._max_entries * 0.9)
         overage = count - target
-
-        # Build in-memory LRU index if empty (one-time fallback scan).
-        if not self._lru_index:
-            logger.info(
-                "%s: building LRU index from ChromaDB (cold-start scan, page_size=%d)",
-                self.__class__.__name__,
-                _LRU_PAGE_SIZE,
-            )
+        if overage <= 0:
+            return
+        deleted = 0
+        if hasattr(self._store, "delete_oldest"):
+            deleted = self._store.delete_oldest(self._collection_name, overage)
+        else:
+            # Fallback for VectorStore (entity_index): page scan
+            to_delete: list[str] = []
             offset = 0
-            while True:
+            while len(to_delete) < overage:
                 page = self._store.get(
                     self._collection_name,
                     include=["metadatas"],
@@ -391,22 +378,18 @@ class _BaseCache[TEntry](ABC):
                 if not ids:
                     break
                 metas = page.get("metadatas") or []
-                for entry_id, meta in zip(ids, metas, strict=False):
-                    self._lru_index[entry_id] = (meta or {}).get("last_accessed", "")
+                for entry_id, _meta in zip(ids, metas, strict=False):
+                    to_delete.append(entry_id)
                 if len(ids) < _LRU_PAGE_SIZE:
                     break
                 offset += _LRU_PAGE_SIZE
-
-        oldest = heapq.nsmallest(overage, self._lru_index.items(), key=lambda pair: pair[1])
-        to_delete = [pair[0] for pair in oldest]
-        if not to_delete:
-            return
-        for entry_id in to_delete:
-            self._lru_index.pop(entry_id, None)
-            self._state.discard_pending(entry_id)
-        for start in range(0, len(to_delete), 500):
-            self._store.delete(self._collection_name, ids=to_delete[start : start + 500])
-        logger.info("%s LRU evicted %d entries", self.__class__.__name__, len(to_delete))
+            to_delete = to_delete[:overage]
+            for entry_id in to_delete:
+                self._state.discard_pending(entry_id)
+            for start in range(0, len(to_delete), 500):
+                self._store.delete(self._collection_name, ids=to_delete[start : start + 500])
+            deleted = len(to_delete)
+        logger.info("%s LRU evicted %d entries", self.__class__.__name__, deleted)
 
     def _flush_pending_updates(self) -> None:
         pending = self._state.swap_pending()

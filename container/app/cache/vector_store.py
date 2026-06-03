@@ -15,8 +15,6 @@ from app.config import settings
 logger = logging.getLogger(__name__)
 
 COLLECTION_ENTITY_INDEX = "entity_index"
-COLLECTION_ROUTING_CACHE = "routing_cache"
-COLLECTION_ACTION_CACHE = "action_cache"
 COLLECTION_RESPONSE_CACHE = "response_cache"
 
 
@@ -51,16 +49,14 @@ class VectorStore:
         engine = await get_embedding_engine()
         self._embedding_fn = ChromaEmbeddingFunction(engine)
         self._client = chromadb.PersistentClient(path=settings.chromadb_persist_dir)
-        for name in (COLLECTION_ENTITY_INDEX, COLLECTION_ROUTING_CACHE, COLLECTION_ACTION_CACHE):
-            self._collections[name] = self._client.get_or_create_collection(
-                name=name,
-                embedding_function=self._embedding_fn,  # type: ignore[arg-type]
-                metadata={"hnsw:space": "cosine"},
-            )
+        self._collections[COLLECTION_ENTITY_INDEX] = self._client.get_or_create_collection(
+            name=COLLECTION_ENTITY_INDEX,
+            embedding_function=self._embedding_fn,  # type: ignore[arg-type]
+            metadata={"hnsw:space": "cosine"},
+        )
         self._delete_legacy_response_collection()
         logger.info(
-            "VectorStore initialized with %d collections at %s",
-            len(self._collections),
+            "VectorStore initialized with entity_index at %s",
             settings.chromadb_persist_dir,
         )
 
@@ -106,7 +102,7 @@ class VectorStore:
                     logger.debug("ChromaDB heartbeat failed, will reinitialize", exc_info=True)
             logger.warning("ChromaDB client dead, reinitializing VectorStore")
             self._client = chromadb.PersistentClient(path=settings.chromadb_persist_dir)
-            for name in (COLLECTION_ENTITY_INDEX, COLLECTION_ROUTING_CACHE, COLLECTION_ACTION_CACHE):
+            for name in (COLLECTION_ENTITY_INDEX,):
                 self._collections[name] = self._client.get_or_create_collection(
                     name=name,
                     embedding_function=self._embedding_fn,  # type: ignore[arg-type]

@@ -209,14 +209,24 @@ class DispatchManager:
             )
             dispatch_timeout = await self.resolve_dispatch_timeout(target_agent)
             async with dispatch_ctx as span:
+                _t_dispatch_pre = time.perf_counter()
                 response = await asyncio.wait_for(
                     self._dispatcher.dispatch(request),
                     timeout=dispatch_timeout,
                 )
+                _t_dispatch_post = time.perf_counter()
                 latency_ms = (time.perf_counter() - t0) * 1000
                 span["metadata"]["latency_ms"] = round(latency_ms, 1)
                 span["metadata"]["dispatch_timeout_sec"] = dispatch_timeout
                 result_data = self.normalize_agent_result(response)
+                _t_norm = time.perf_counter()
+                logger.info(
+                    "dispatch_manager agent=%s dispatch_inner=%.1fms normalize=%.1fms total=%.1fms",
+                    target_agent,
+                    (_t_dispatch_post - _t_dispatch_pre) * 1000,
+                    (_t_norm - _t_dispatch_post) * 1000,
+                    (_t_norm - _t_dispatch_pre) * 1000,
+                )
                 span["metadata"]["agent_response"] = result_data.get("speech") or ""
                 span["metadata"]["condensed_task"] = condensed_task
             logger.debug("Agent %s responded in %.1fms", target_agent, latency_ms)

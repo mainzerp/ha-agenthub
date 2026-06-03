@@ -145,8 +145,8 @@ class TestActionCachePrepareForFlush:
         from app.cache.cache_manager import CacheManager
 
         manager = CacheManager.__new__(CacheManager)
-        manager._vector_store = MagicMock()
-        manager._vector_store.count.return_value = 0
+        manager._cache_store = MagicMock()
+        manager._cache_store.count.return_value = 0
         manager._routing_cache = MagicMock()
         manager._action_cache = MagicMock()
 
@@ -157,8 +157,8 @@ class TestActionCachePrepareForFlush:
         from app.cache.cache_manager import CacheManager
 
         manager = CacheManager.__new__(CacheManager)
-        manager._vector_store = MagicMock()
-        manager._vector_store.count.return_value = 0
+        manager._cache_store = MagicMock()
+        manager._cache_store.count.return_value = 0
         manager._routing_cache = MagicMock()
         manager._action_cache = MagicMock()
 

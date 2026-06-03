@@ -19,7 +19,7 @@ from app.cache.export_import import (
     iter_export_chunks,
     parse_envelope,
 )
-from app.cache.vector_store import (
+from app.cache.sqlite_cache_store import (
     COLLECTION_ACTION_CACHE,
     COLLECTION_ROUTING_CACHE,
 )
@@ -70,24 +70,26 @@ async def browse_cache_entries(
     if not cache_manager:
         return {"entries": [], "total": 0}
 
-    vector_store = cache_manager._vector_store
+    cache_store = cache_manager._cache_store
     collection_name = COLLECTION_ROUTING_CACHE if tier == "routing" else COLLECTION_ACTION_CACHE
     tier_cache = cache_manager._routing_cache if tier == "routing" else cache_manager._action_cache
 
     try:
         await asyncio.to_thread(tier_cache.flush_pending)
-        total = await vector_store.acount(collection_name)
+        total = await asyncio.to_thread(cache_store.count, collection_name)
         if total == 0:
             return {"entries": [], "total": 0, "page": page, "per_page": per_page}
 
         # When not searching, use limit/offset to avoid loading all entries
         if not search:
             offset_val = (page - 1) * per_page
-            data = await vector_store.aget(
+            data = await asyncio.to_thread(
+                cache_store.get,
                 collection_name,
-                include=["metadatas", "documents"],
-                limit=per_page,
-                offset=offset_val,
+                None,  # ids
+                ["metadatas", "documents"],  # include
+                per_page,  # limit
+                offset_val,  # offset
             )
             entries = []
             for i, doc_id in enumerate(data["ids"]):
@@ -105,9 +107,11 @@ async def browse_cache_entries(
             }
 
         # Search requires loading all entries for text filtering
-        data = await vector_store.aget(
+        data = await asyncio.to_thread(
+            cache_store.get,
             collection_name,
-            include=["metadatas", "documents"],
+            None,  # ids
+            ["metadatas", "documents"],  # include
         )
         entries = []
         for i, doc_id in enumerate(data["ids"]):

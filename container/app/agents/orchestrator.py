@@ -1683,8 +1683,15 @@ class OrchestratorAgent(BaseAgent):
                     await asyncio.wait_for(reader_task, timeout=5.0)
 
         async with _optional_span(span_collector, "dispatch", agent_id=target_agent) as span:
+            _t_stream_start = time.perf_counter()
             async for token_dict in _stream_with_filler(self._dispatcher.dispatch_stream(request), span):
                 yield token_dict
+            _t_stream_end = time.perf_counter()
+            logger.info(
+                "dispatch_stream agent=%s stream_inner=%.1fms",
+                target_agent,
+                (_t_stream_end - _t_stream_start) * 1000,
+            )
             span["metadata"]["token_count"] = len(sc.collected_speech)
             span["metadata"]["agent_response"] = "".join(sc.collected_speech)
             if sc.filler_sent:

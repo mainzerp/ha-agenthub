@@ -5,6 +5,7 @@ from app.cache.cache_manager import ActionReplayOutcome, CacheManager, CacheResu
 from app.cache.cache_validator import ActionCacheValidator
 from app.cache.embedding import ChromaEmbeddingFunction, EmbeddingEngine, get_embedding_engine
 from app.cache.routing_cache import RoutingCache
+from app.cache.sqlite_cache_store import SqliteCacheStore
 from app.cache.vector_store import VectorStore, get_vector_store
 
 __all__ = [
@@ -17,6 +18,7 @@ __all__ = [
     "EmbeddingEngine",
     "RoutingCache",
     "RoutingSkipOutcome",
+    "SqliteCacheStore",
     "VectorStore",
     "get_embedding_engine",
     "get_vector_store",

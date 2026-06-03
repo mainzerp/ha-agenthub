@@ -34,7 +34,7 @@ from app.cache.export_import import (
     parse_envelope,
 )
 from app.cache.routing_cache import make_routing_entry_id
-from app.cache.vector_store import COLLECTION_ACTION_CACHE, COLLECTION_ROUTING_CACHE, VectorStore
+from app.cache.sqlite_cache_store import COLLECTION_ACTION_CACHE, COLLECTION_ROUTING_CACHE
 from tests.helpers import make_action_cache_entry, make_routing_cache_entry
 
 
@@ -43,10 +43,12 @@ def _empty_page() -> dict:
 
 
 def _make_manager(store: MagicMock | None = None) -> CacheManager:
-    vector_store = store or MagicMock(spec=VectorStore)
-    vector_store.count.return_value = 0
-    vector_store.get.return_value = _empty_page()
-    return CacheManager(vector_store)
+    cache_store = store or MagicMock()
+    cache_store.count.return_value = 0
+    cache_store.get.return_value = _empty_page()
+    cache_store.delete_oldest.return_value = 0
+    cache_store.delete_all.return_value = 0
+    return CacheManager(cache_store)
 
 
 def _page_from_action_entries(manager: CacheManager, entries: list) -> dict:
@@ -66,8 +68,10 @@ def _page_from_routing_entries(manager: CacheManager, entries: list) -> dict:
 
 
 def _vector_store_with_pages(pages_by_collection: dict[str, list[dict]]) -> MagicMock:
-    store = MagicMock(spec=VectorStore)
+    store = MagicMock()
     store.count.return_value = 0
+    store.delete_oldest.return_value = 0
+    store.delete_all.return_value = 0
 
     def _get(collection_name, *, include, limit=None, offset=None, ids=None):
         if ids is not None:
@@ -186,8 +190,11 @@ def test_parse_envelope_rejects_response_tier_alias():
 
 @pytest.mark.asyncio
 async def test_import_envelope_merge_upserts_action_and_routing_entries():
-    store = MagicMock(spec=VectorStore)
+    store = MagicMock()
     store.count.return_value = 0
+    store.upsert = MagicMock()
+    store.delete_oldest.return_value = 0
+    store.delete_all.return_value = 0
     manager = _make_manager(store)
     manager.action_cache._enforce_lru = MagicMock()
     manager._routing_cache._enforce_lru = MagicMock()
@@ -217,8 +224,11 @@ async def test_import_envelope_merge_upserts_action_and_routing_entries():
 
 @pytest.mark.asyncio
 async def test_import_envelope_replace_flushes_requested_tier_first():
-    store = MagicMock(spec=VectorStore)
+    store = MagicMock()
     store.count.return_value = 0
+    store.upsert = MagicMock()
+    store.delete_oldest.return_value = 0
+    store.delete_all.return_value = 0
     manager = _make_manager(store)
     manager.flush = MagicMock()
     manager.action_cache._enforce_lru = MagicMock()
@@ -236,8 +246,11 @@ async def test_import_envelope_replace_flushes_requested_tier_first():
 
 @pytest.mark.asyncio
 async def test_import_envelope_skips_invalid_entries_and_records_warning():
-    store = MagicMock(spec=VectorStore)
+    store = MagicMock()
     store.count.return_value = 0
+    store.upsert = MagicMock()
+    store.delete_oldest.return_value = 0
+    store.delete_all.return_value = 0
     manager = _make_manager(store)
     manager.action_cache._enforce_lru = MagicMock()
     valid_entry = make_action_cache_entry(query_text="turn on kitchen light")
@@ -257,8 +270,11 @@ async def test_import_envelope_skips_invalid_entries_and_records_warning():
 
 @pytest.mark.asyncio
 async def test_import_envelope_warns_when_requested_tier_is_missing():
-    store = MagicMock(spec=VectorStore)
+    store = MagicMock()
     store.count.return_value = 0
+    store.upsert = MagicMock()
+    store.delete_oldest.return_value = 0
+    store.delete_all.return_value = 0
     manager = _make_manager(store)
 
     summary = await import_envelope(

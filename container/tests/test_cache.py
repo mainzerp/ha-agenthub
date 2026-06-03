@@ -14,11 +14,13 @@ from app.cache.action_cache import ActionCache, _is_readonly_action, make_action
 from app.cache.cache_manager import ActionReplayOutcome, CacheManager, CacheResult
 from app.cache.embedding import ChromaEmbeddingFunction, EmbeddingEngine
 from app.cache.routing_cache import RoutingCache, make_routing_entry_id
-from app.cache.vector_store import (
+from app.cache.sqlite_cache_store import (
     COLLECTION_ACTION_CACHE,
+    COLLECTION_ROUTING_CACHE,
+)
+from app.cache.vector_store import (
     COLLECTION_ENTITY_INDEX,
     COLLECTION_RESPONSE_CACHE,
-    COLLECTION_ROUTING_CACHE,
     VectorStore,
 )
 from app.defaults import DEFAULT_LOCAL_EMBEDDING_MODEL
@@ -35,10 +37,12 @@ def _empty_query_result() -> dict:
 
 
 def _make_vector_store() -> MagicMock:
-    store = MagicMock(spec=VectorStore)
+    store = MagicMock()
     store.count.return_value = 0
     store.get.return_value = _empty_get_result()
     store.query.return_value = _empty_query_result()
+    store.delete_oldest.return_value = 0
+    store.delete_all.return_value = 0
     return store
 
 
@@ -815,7 +819,11 @@ class TestCacheManagerExtended:
     """CacheManager tests recovered from dead block; ported to v4 API."""
 
     def _make_manager(self) -> tuple[CacheManager, MagicMock]:
-        store = MagicMock(spec=VectorStore)
+        store = MagicMock()
+        store.count.return_value = 0
+        store.get.return_value = _empty_get_result()
+        store.delete_oldest.return_value = 0
+        store.delete_all.return_value = 0
         manager = CacheManager(store)
         return manager, store
 
@@ -879,17 +887,15 @@ class TestCacheManagerExtended:
     def test_flush_routing(self):
         manager, store = self._make_manager()
         store.count.return_value = 5
-        store.get.return_value = {"ids": ["a", "b"]}
         manager.flush(tier="routing")
-        store.delete.assert_called()
+        store.delete_all.assert_called_with("routing_cache")
 
     def test_flush_action(self):
         # v4: flush tier is "action" not "response"
         manager, store = self._make_manager()
         store.count.return_value = 5
-        store.get.return_value = {"ids": ["a", "b"]}
         manager.flush(tier="action")
-        store.delete.assert_called()
+        store.delete_all.assert_called_with("action_cache")
 
     def test_flush_unknown_tier_raises(self):
         manager, _store = self._make_manager()
@@ -901,9 +907,9 @@ class TestCacheManagerExtended:
     def test_flush_both(self):
         manager, store = self._make_manager()
         store.count.return_value = 3
-        store.get.return_value = {"ids": ["a"]}
+        store.delete_all.return_value = 3
         manager.flush(tier=None)
-        assert store.delete.call_count == 2
+        assert store.delete_all.call_count == 2
 
     def test_get_stats(self):
         manager, store = self._make_manager()
