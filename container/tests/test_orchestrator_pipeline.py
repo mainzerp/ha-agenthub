@@ -279,3 +279,98 @@ async def test_conversation_cache_max_size():
     # Oldest entries should have been evicted
     assert "conv-0" not in orch._conversation_manager._conversations
     assert "conv-1" not in orch._conversation_manager._conversations
+
+
+# ---------------------------------------------------------------------------
+# Phase 3 gaps: G2, G11, L6, L7
+# ---------------------------------------------------------------------------
+
+
+class TestEventBusPublishing:
+    @pytest.mark.asyncio
+    @patch("app.agents.orchestrator.SettingsRepository")
+    @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
+    @patch("app.llm.client.complete", new_callable=AsyncMock)
+    async def test_event_bus_pre_classify_and_post_classify(self, mock_complete, mock_track, mock_settings):
+        """G2: Event bus must publish pre_classify and post_classify events."""
+        mock_settings.get_value = AsyncMock(return_value="")
+        mock_complete.return_value = "light-agent (95%): Turn on light"
+        orch, _dispatcher = _make_orchestrator()
+
+        event_bus = AsyncMock()
+        orch._event_bus = event_bus
+        orch._get_turns = AsyncMock(return_value=[])
+        orch._dispatch_manager.dispatch_single = AsyncMock(
+            return_value=("light-agent", "Light is on.", {"speech": "Light is on."})
+        )
+
+        task = _make_task("turn on light")
+        await orch.handle_task(task)
+
+        published_events = [call.args[0] for call in event_bus.publish.await_args_list]
+        assert "pipeline.pre_classify" in published_events
+        assert "pipeline.post_classify" in published_events
+
+    @pytest.mark.asyncio
+    @patch("app.agents.orchestrator.SettingsRepository")
+    @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
+    @patch("app.llm.client.complete", new_callable=AsyncMock)
+    async def test_event_bus_pre_dispatch_and_post_dispatch(self, mock_complete, mock_track, mock_settings):
+        """G2: Event bus must publish pre_dispatch and post_dispatch events."""
+        mock_settings.get_value = AsyncMock(return_value="")
+        mock_complete.return_value = "light-agent (95%): Turn on light"
+        orch, _dispatcher = _make_orchestrator()
+
+        event_bus = AsyncMock()
+        orch._event_bus = event_bus
+        orch._get_turns = AsyncMock(return_value=[])
+        orch._dispatch_manager.dispatch_single = AsyncMock(
+            return_value=("light-agent", "Light is on.", {"speech": "Light is on."})
+        )
+
+        task = _make_task("turn on light")
+        await orch.handle_task(task)
+
+        published_events = [call.args[0] for call in event_bus.publish.await_args_list]
+        assert "pipeline.pre_dispatch" in published_events
+        assert "pipeline.post_dispatch" in published_events
+
+
+class TestRunPipelineDefensiveFallback:
+    @pytest.mark.asyncio
+    async def test_run_pipeline_defensive_fallback_on_malformed_chunks(self):
+        """G11: _run_pipeline must handle malformed chunks gracefully in non-streaming mode."""
+        orch, _dispatcher = _make_orchestrator()
+
+        # Simulate _run_pipeline receiving chunks without "payload"
+        async def _broken_run_pipeline(task, streaming=False, **kwargs):
+            yield {"done": False, "token": "partial"}
+            yield {"done": True}  # missing payload
+
+        orch._run_pipeline = _broken_run_pipeline
+        orch._legacy_pipeline_enabled = lambda: False
+
+        task = _make_task("turn on light")
+        # The fallback should call _handle_task_impl directly
+        orch._handle_task_impl = AsyncMock(return_value={"speech": "Fallback!", "routed_to": "light-agent"})
+
+        result = await orch.handle_task(task)
+        assert result["speech"] == "Fallback!"
+
+    @pytest.mark.asyncio
+    async def test_run_pipeline_no_terminal_chunk_fallback(self):
+        """L7: Test defensive fallback path explicitly when no terminal chunk arrives."""
+        orch, _dispatcher = _make_orchestrator()
+
+        async def _empty_run_pipeline(task, streaming=False, **kwargs):
+            return
+            yield  # make it an async generator
+
+        orch._run_pipeline = _empty_run_pipeline
+        orch._legacy_pipeline_enabled = lambda: False
+
+        task = _make_task("turn on light")
+        orch._handle_task_impl = AsyncMock(return_value={"speech": "Fallback!", "routed_to": "light-agent"})
+
+        result = await orch.handle_task(task)
+        assert result["speech"] == "Fallback!"

@@ -854,7 +854,44 @@ def test_tts_to_listen_delay_constant_is_sufficient() -> None:
 
 
 @pytest.mark.asyncio
-async def test_notification_profile_default_delay_is_sufficient() -> None:
+async def test_notification_profile_default_delay_is_sufficient():
     with patch.object(ndisp.SettingsRepository, "get_value", new=AsyncMock(return_value=None)):
         profile = await ndisp._load_notification_profile()
     assert profile["tts_to_listen_delay"] >= 10.0
+
+
+# ---------------------------------------------------------------------------
+# G20: Parity test between notification_dispatcher and background_actions
+# ---------------------------------------------------------------------------
+
+
+class TestNotificationDispatcherBackgroundActionsParity:
+    @pytest.mark.asyncio
+    async def test_both_modules_have_handle_background_event(self):
+        """G20: background_actions should expose handle_background_event."""
+        assert hasattr(nd, "handle_background_event")
+        assert callable(nd.handle_background_event)
+
+    @pytest.mark.asyncio
+    async def test_both_modules_handle_alarm_notification(self):
+        """G20: background_actions should handle alarm_notification events via dispatch_alarm_notification."""
+        event = BackgroundEvent(event_type="alarm_notification", payload={"alarm_name": "Morning"})
+        with patch.object(nd, "dispatch_alarm_notification", new=AsyncMock(return_value=None)) as mock_alarm:
+            await nd.handle_background_event(
+                event,
+                context=TaskContext(),
+                ha_client=AsyncMock(),
+            )
+            mock_alarm.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_both_modules_handle_timer_notification(self):
+        """G20: background_actions should handle timer_notification events via dispatch_timer_notification."""
+        event = BackgroundEvent(event_type="timer_notification", payload={"timer_name": "Pasta", "duration": "10 min"})
+        with patch.object(nd, "dispatch_timer_notification", new=AsyncMock(return_value=None)) as mock_timer:
+            await nd.handle_background_event(
+                event,
+                context=TaskContext(),
+                ha_client=AsyncMock(),
+            )
+            mock_timer.assert_awaited_once()

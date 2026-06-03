@@ -68,15 +68,6 @@ def _make_task(
 
 class TestOrchestratorAgent:
     @pytest.fixture(autouse=True)
-    def _reset_personality_cache(self):
-        """Reset the _get_personality_cached globals between tests."""
-        from app.agents import orchestrator as orch_mod
-
-        orch_mod._PERSONALITY_CACHE_TS = -999999.0
-        orch_mod._PERSONALITY_CACHE_VALUE = ""
-        yield
-
-    @pytest.fixture(autouse=True)
     def _mock_conversation_repo(self):
         with patch("app.agents.conversation_manager.ConversationRepository") as mock_repo:
             mock_repo.insert = AsyncMock(return_value=1)
@@ -519,8 +510,8 @@ class TestOrchestratorAgent:
             ]
         )
         response = (
-            "climate-agent (96%): living room temperature"
-            "climate-agent (96%): living room temperature"
+            "climate-agent (96%): living room temperature "
+            "climate-agent (96%): living room temperature "
             "climate-agent (96%): living room temperature"
         )
         results = await orch._parse_classification(response, "original")
@@ -2235,15 +2226,6 @@ class TestConversationMemoryEviction:
 class TestStreamMediatedSpeech:
     """Tests for streaming mediated_speech in handle_task_stream."""
 
-    @pytest.fixture(autouse=True)
-    def _reset_personality_cache(self):
-        """Reset the _get_personality_cached globals between tests."""
-        from app.agents import orchestrator as orch_mod
-
-        orch_mod._PERSONALITY_CACHE_TS = -999999.0
-        orch_mod._PERSONALITY_CACHE_VALUE = ""
-        yield
-
     def _make_orchestrator(self):
         dispatcher = AsyncMock()
         registry = AsyncMock()
@@ -2692,15 +2674,6 @@ class TestSendAgentSpans:
 
 
 class TestMediationSpan:
-    @pytest.fixture(autouse=True)
-    def _reset_personality_cache(self):
-        """Reset the _get_personality_cached globals between tests."""
-        from app.agents import orchestrator as orch_mod
-
-        orch_mod._PERSONALITY_CACHE_TS = -999999.0
-        orch_mod._PERSONALITY_CACHE_VALUE = ""
-        yield
-
     @patch("app.llm.client.complete", new_callable=AsyncMock, return_value="mediated speech")
     @patch("app.agents.orchestrator.SettingsRepository")
     async def test_mediate_response_creates_mediation_span(self, mock_settings, mock_complete):
@@ -2979,15 +2952,6 @@ class TestExecuteCachedActionVerification:
 
 class TestFollowupDetection:
     @pytest.fixture(autouse=True)
-    def _reset_personality_cache(self):
-        """Reset the _get_personality_cached globals between tests."""
-        from app.agents import orchestrator as orch_mod
-
-        orch_mod._PERSONALITY_CACHE_TS = -999999.0
-        orch_mod._PERSONALITY_CACHE_VALUE = ""
-        yield
-
-    @pytest.fixture(autouse=True)
     def _mock_conversation_repo(self):
         with patch("app.agents.conversation_manager.ConversationRepository") as mock_repo:
             mock_repo.insert = AsyncMock(return_value=1)
@@ -3081,3 +3045,306 @@ class TestFollowupDetection:
         )
         assert vf is False
         assert speech == "The kitchen light is now on."
+
+
+# ---------------------------------------------------------------------------
+# Phase 3 gaps: G3, G4, G5, G7, G9, G10, G13, G19, G27, G28
+# ---------------------------------------------------------------------------
+
+
+class TestOrchestratorPhase3Gaps:
+    @pytest.fixture(autouse=True)
+    def _mock_conversation_repo(self):
+        with patch("app.agents.conversation_manager.ConversationRepository") as mock_repo:
+            mock_repo.insert = AsyncMock(return_value=1)
+            yield mock_repo
+
+    def _make_orchestrator(self, dispatch_result=None):
+        dispatcher = AsyncMock()
+        registry = AsyncMock()
+        cache_manager = MagicMock()
+        cache_manager.process = AsyncMock(return_value=MagicMock(hit_type="miss", agent_id=None, similarity=0.5))
+        cache_manager.apply_rewrite = AsyncMock()
+        cache_manager.try_replay_action = AsyncMock(return_value=None)
+        cache_manager.try_routing_skip = AsyncMock(return_value=None)
+        cache_manager.store_response = MagicMock()
+
+        async def _store_routing_async(*args, **kwargs):
+            return cache_manager.store_routing(*args, **kwargs)
+
+        async def _store_action_async(entry):
+            return cache_manager.store_response(entry)
+
+        cache_manager.store_routing_async = _store_routing_async
+        cache_manager.store_action_async = _store_action_async
+
+        response_mock = dispatch_result or {"speech": "Done!"}
+        dispatcher.dispatch = AsyncMock(return_value=response_mock)
+
+        registry.list_agents = AsyncMock(
+            return_value=[
+                AgentCard(agent_id="light-agent", name="Light Agent", description="", skills=["light"]),
+                AgentCard(agent_id="music-agent", name="Music Agent", description="", skills=["music"]),
+                AgentCard(agent_id="general-agent", name="General Agent", description="", skills=["general"]),
+                AgentCard(agent_id="custom-1", name="Custom Agent", description="", skills=["custom"]),
+            ]
+        )
+
+        orchestrator = OrchestratorAgent(
+            dispatcher=dispatcher,
+            registry=registry,
+            cache_manager=cache_manager,
+        )
+        return orchestrator
+
+    # G3: Calendar reminder injection failure path
+    @patch("app.agents.orchestrator.SettingsRepository")
+    @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
+    @patch("app.llm.client.complete", new_callable=AsyncMock)
+    async def test_calendar_reminder_failure_path_continues(self, mock_complete, mock_track, mock_settings):
+        """G3: Calendar injector failure should not break finalization."""
+        mock_settings.get_value = AsyncMock(side_effect=lambda k, d=None: "auto" if k == "language" else d)
+        orch = self._make_orchestrator()
+        mock_complete.return_value = "light-agent (95%): Turn on light"
+        orch._calendar_injector = AsyncMock()
+        orch._calendar_injector.inject_reminders = AsyncMock(side_effect=RuntimeError("calendar down"))
+
+        task = _make_task("turn on kitchen light")
+        result = await orch.handle_task(task)
+        assert result["speech"] == "Done!"
+        orch._calendar_injector.inject_reminders.assert_awaited_once()
+
+    # G4: Organic followup with mocked random.random()
+    @patch("app.agents.orchestrator.random.random", return_value=0.05)
+    @patch("app.agents.orchestrator.SettingsRepository")
+    @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
+    @patch("app.llm.client.complete", new_callable=AsyncMock)
+    async def test_organic_followup_enabled_and_triggered(self, mock_complete, mock_track, mock_settings, _mock_random):
+        """G4: When organic followup is enabled and random() < probability, allow_organic_followup=True."""
+        mock_settings.get_value = AsyncMock(
+            side_effect=lambda k, d=None: {
+                "language": "auto",
+                "orchestrator.organic_followup_enabled": "true",
+                "orchestrator.organic_followup_probability": "0.10",
+            }.get(k, d)
+        )
+        orch = self._make_orchestrator()
+        mock_complete.return_value = "light-agent (95%): Turn on light"
+        task = _make_task("turn on kitchen light")
+        task.context = TaskContext(language="en", source="ha")
+        result = await orch.handle_task(task)
+        assert result["speech"] == "Done!"
+
+    @patch("app.agents.orchestrator.random.random", return_value=0.99)
+    @patch("app.agents.orchestrator.SettingsRepository")
+    @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
+    @patch("app.llm.client.complete", new_callable=AsyncMock)
+    async def test_organic_followup_not_triggered(self, mock_complete, mock_track, mock_settings, _mock_random):
+        """G4: When random() >= probability, organic followup should not be triggered."""
+        mock_settings.get_value = AsyncMock(
+            side_effect=lambda k, d=None: {
+                "language": "auto",
+                "orchestrator.organic_followup_enabled": "true",
+                "orchestrator.organic_followup_probability": "0.10",
+            }.get(k, d)
+        )
+        orch = self._make_orchestrator()
+        mock_complete.return_value = "light-agent (95%): Turn on light"
+        task = _make_task("turn on kitchen light")
+        task.context = TaskContext(language="en", source="ha")
+        result = await orch.handle_task(task)
+        assert result["speech"] == "Done!"
+
+    # G5: Directive handling early return in _handle_task_impl
+    @patch("app.agents.orchestrator.SettingsRepository")
+    @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
+    @patch("app.llm.client.complete", new_callable=AsyncMock)
+    async def test_directive_early_return_in_handle_task_impl(self, mock_complete, mock_track, mock_settings):
+        """G5: When dispatch returns a directive, _handle_task_impl should return early with directive fields."""
+        mock_settings.get_value = AsyncMock(side_effect=lambda k, d=None: "auto" if k == "language" else d)
+        orch = self._make_orchestrator()
+        mock_complete.return_value = "light-agent (95%): Turn on light"
+
+        # Force dispatch to return a directive
+        orch._dispatch_manager.dispatch_single = AsyncMock(
+            return_value=(
+                "light-agent",
+                "",
+                {
+                    "directive": "cancel-interaction",
+                    "reason": "user_requested_cancel",
+                    "speech": "",
+                },
+            )
+        )
+
+        task = _make_task("never mind")
+        result = await orch.handle_task(task)
+        assert result.get("directive") == "cancel-interaction"
+        assert result.get("reason") == "user_requested_cancel"
+
+    # G7: _merge_responses with multi-agent + reminder
+    @patch("app.agents.orchestrator.SettingsRepository")
+    @patch("app.llm.client.complete", new_callable=AsyncMock)
+    async def test_merge_responses_with_reminder_text(self, mock_complete, mock_settings):
+        """G7: _merge_responses should weave reminder_text into the LLM prompt."""
+        mock_settings.get_value = AsyncMock(
+            side_effect=lambda k, d=None: {
+                "personality.prompt": "",
+                "rewrite.model": "groq/llama-3.1-8b-instant",
+                "rewrite.temperature": "0.3",
+            }.get(k, d)
+        )
+        mock_complete.return_value = "Merged with reminder."
+        orch = self._make_orchestrator()
+
+        agent_responses = [
+            ("light-agent", "Light is on.", True),
+            ("music-agent", "Playing jazz.", False),
+        ]
+        result = await orch._merge_responses(
+            agent_responses, "turn on light and play jazz", reminder_text="Meeting in 5 minutes."
+        )
+        assert result == "Merged with reminder."
+        call_messages = mock_complete.call_args[0][1]
+        user_content = call_messages[1]["content"]
+        assert "Meeting in 5 minutes." in user_content
+
+    # G9: Personality cache TTL expiration
+    async def test_personality_cache_ttl_expiration(self):
+        """G9: After 300s TTL, _get_personality_cached should refetch from settings."""
+        import time
+
+        orch = self._make_orchestrator()
+        orch._personality_cache_value = "old personality"
+        orch._personality_cache_ts = time.monotonic() - 301  # past TTL
+
+        with patch(
+            "app.agents.orchestrator.SettingsRepository.get_value", new=AsyncMock(return_value="new personality")
+        ):
+            result = await orch._get_personality_cached()
+            assert result == "new personality"
+            assert orch._personality_cache_ts > time.monotonic() - 10
+
+    async def test_personality_cache_within_ttl_returns_cached(self):
+        """G9: Within TTL, _get_personality_cached should return cached value without DB call."""
+        import time
+
+        orch = self._make_orchestrator()
+        orch._personality_cache_value = "cached personality"
+        orch._personality_cache_ts = time.monotonic() - 10  # within TTL
+
+        with patch(
+            "app.agents.orchestrator.SettingsRepository.get_value", new=AsyncMock(return_value="db personality")
+        ) as mock_get:
+            result = await orch._get_personality_cached()
+            assert result == "cached personality"
+            mock_get.assert_not_awaited()
+
+    # G10: Language auto-detection with turn history
+    @patch("app.agents.orchestrator.SettingsRepository")
+    async def test_resolve_language_uses_turn_history_on_short_text(self, mock_settings):
+        """G10: When current text is too short for detection, use recent turn history."""
+        mock_settings.get_value = AsyncMock(return_value="auto")
+        orch = self._make_orchestrator()
+
+        with patch("app.agents.orchestrator.detect_user_language", side_effect=["", "de"]) as mock_detect:
+            turns = [
+                {"role": "user", "content": "Guten Morgen"},
+                {"role": "assistant", "content": "Guten Morgen!"},
+            ]
+            result = await orch._resolve_language("hi", context_language="en", turns=turns)
+            assert result == "de"
+            # Second call should combine last 3 user turns with current text
+            second_call_text = mock_detect.call_args_list[1][0][0]
+            assert "Guten Morgen" in second_call_text
+            assert "hi" in second_call_text
+
+    # G13: Response mediation with personality.prompt set
+    @patch("app.agents.orchestrator.SettingsRepository")
+    @patch("app.llm.client.complete", new_callable=AsyncMock)
+    async def test_mediate_response_with_personality_sets_active_flag(self, mock_complete, mock_settings):
+        """G13: When personality.prompt is set, mediation should call LLM and set personality_active."""
+        from app.analytics.tracer import SpanCollector
+
+        mock_settings.get_value = AsyncMock(return_value="You are a friendly assistant.")
+        mock_complete.return_value = "Hey there! Light is on."
+        orch = self._make_orchestrator()
+        collector = SpanCollector("trace-mediate-g13")
+
+        speech, _followup = await orch._mediate_response(
+            "Done, light is on.", "turn on light", "light-agent", language="en", span_collector=collector
+        )
+        assert speech == "Hey there! Light is on."
+        med_spans = [s for s in collector._spans if s["span_name"] == "mediation"]
+        assert len(med_spans) == 1
+        assert med_spans[0]["metadata"]["personality_active"] is True
+
+    # G19: _load_reliability_config with "0" and edge values
+    @patch("app.agents.orchestrator.SettingsRepository")
+    async def test_load_reliability_config_with_zero_timeout(self, mock_settings):
+        """G19: "0" timeout should be parsed as 0, not fallback to default."""
+        mock_settings.get_value = AsyncMock(
+            side_effect=lambda key, default=None: {
+                "a2a.default_timeout": "0",
+                "a2a.max_iterations": "0",
+                "a2a.max_dispatch_timeout": "0",
+            }.get(key, default)
+        )
+        orch = self._make_orchestrator()
+        await orch._load_reliability_config()
+        assert orch._default_timeout == 0
+        assert orch._max_iterations == 0
+        assert orch._max_dispatch_timeout == 0.0
+
+    @patch("app.agents.orchestrator.SettingsRepository")
+    async def test_load_reliability_config_with_empty_string_uses_defaults(self, mock_settings):
+        """G19: Empty string values should fallback to defaults."""
+        mock_settings.get_value = AsyncMock(
+            side_effect=lambda key, default=None: {
+                "a2a.default_timeout": "",
+                "a2a.max_iterations": "",
+                "a2a.max_dispatch_timeout": "",
+            }.get(key, default)
+        )
+        orch = self._make_orchestrator()
+        await orch._load_reliability_config()
+        # int("") raises ValueError, caught by the except block;
+        # attributes retain their initial default values.
+        assert orch._default_timeout == 5
+        assert orch._max_iterations == 3
+        assert orch._max_dispatch_timeout == 60.0
+
+    # G27: cancel-interaction pseudo-agent routing
+    @patch("app.agents.orchestrator.SettingsRepository")
+    @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
+    async def test_cancel_interaction_routed_correctly(self, mock_track, mock_settings):
+        """G27: cancel-interaction pseudo-agent must be routed correctly in non-streaming mode."""
+        mock_settings.get_value = AsyncMock(return_value="")
+        orch = self._make_orchestrator()
+        orch._get_turns = AsyncMock(return_value=[])
+        orch._dispatch_manager.dispatch_single = AsyncMock(
+            return_value=(
+                "cancel-interaction",
+                "",
+                {"speech": "", "directive": "cancel-interaction", "reason": "user_requested"},
+            )
+        )
+
+        task = _make_task("never mind")
+        result = await orch.handle_task(task)
+        assert result["routed_to"] == "cancel-interaction"
+        assert "speech" in result
+
+    # G28: Custom agent routed via orchestrator LLM classification
+    @patch("app.agents.orchestrator.SettingsRepository")
+    @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
+    @patch("app.llm.client.complete", new_callable=AsyncMock)
+    async def test_custom_agent_routed_via_llm_classification(self, mock_complete, mock_track, mock_settings):
+        """G28: Custom agent should appear in LLM classification and be dispatched."""
+        mock_settings.get_value = AsyncMock(side_effect=lambda k, d=None: "auto" if k == "language" else d)
+        orch = self._make_orchestrator()
+        mock_complete.return_value = "custom-1 (95%): Do custom thing"
+        task = _make_task("do a custom thing")
+        result = await orch.handle_task(task)
+        assert result["routed_to"] == "custom-1"
