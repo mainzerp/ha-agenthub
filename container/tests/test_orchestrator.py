@@ -789,11 +789,10 @@ class TestOrchestratorAgent:
         """Multi-agent classification dispatches to multiple agents and merges via LLM."""
         orch, dispatcher, *_ = self._make_orchestrator()
         merged_text = "The shelf light is now on, and jazz is playing."
-        # First call: classification. Second call: LLM merge. Third call: follow-up detection.
+        # Two LLM calls: classify, merge (follow-up detection removed).
         mock_complete.side_effect = [
             "light-agent (95%): turn on shelf\nmusic-agent (90%): play jazz",
             merged_text,
-            "no",
         ]
         mock_settings.get_value = AsyncMock(
             side_effect=lambda k, d=None: {
@@ -814,8 +813,8 @@ class TestOrchestratorAgent:
         assert result["speech"] == merged_text
         assert "light-agent" in result["routed_to"]
         assert "music-agent" in result["routed_to"]
-        # LLM called three times: classify, merge, follow-up detection
-        assert mock_complete.await_count == 3
+        # LLM called twice: classify, merge
+        assert mock_complete.await_count == 2
 
     @patch("app.agents.orchestrator.SettingsRepository")
     @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
@@ -863,11 +862,10 @@ class TestOrchestratorAgent:
         """Streaming with multi-agent falls back to handle_task and yields one chunk."""
         orch, dispatcher, *_ = self._make_orchestrator()
         merged_text = "Shelf is on and jazz is playing."
-        # Stream classify + merge + follow-up detection (no duplicate classify thanks to _pre_classified)
+        # Stream classify + merge (follow-up detection removed)
         mock_complete.side_effect = [
             "light-agent (95%): on\nmusic-agent (90%): play",
             merged_text,
-            "no",
         ]
         mock_settings.get_value = AsyncMock(
             side_effect=lambda k, d=None: {
@@ -883,8 +881,8 @@ class TestOrchestratorAgent:
         task.conversation_id = "conv-once"
         chunks = [c async for c in orch.handle_task_stream(task)]
         assert any(c["done"] for c in chunks)
-        # 3 LLM calls: classify + merge + follow-up detection
-        assert mock_complete.await_count == 3
+        # 2 LLM calls: classify + merge
+        assert mock_complete.await_count == 2
 
     @patch("app.agents.orchestrator.SettingsRepository")
     @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
@@ -2917,8 +2915,8 @@ class TestResponseCacheFallThrough:
 
         assert result["speech"] == "Light is on!"
         dispatcher.dispatch.assert_awaited_once()
-        # classify is skipped (routing hit), but follow-up detection fires
-        assert mock_complete.await_count == 1
+        # classify and follow-up detection both skipped (routing hit, no follow-up LLM)
+        assert mock_complete.await_count == 0
 
 
 # ---------------------------------------------------------------------------
@@ -3066,79 +3064,24 @@ class TestFollowupDetection:
         assert speech == "Done, light is on."
         assert followup is False
 
-    @patch("app.llm.client.complete", new_callable=AsyncMock)
-    async def test_detect_followup_needed_llm_yes(self, mock_complete):
-        """LLM returning 'yes' -> True."""
+    def test_merge_uses_mediated_followup(self):
+        """When mediated_followup=True, voice_followup=True regardless of agent_requested."""
         orch = self._make_orchestrator()
-        mock_complete.return_value = "yes"
-        result = await orch._detect_followup_needed_llm("Should I turn it off?", "en")
-        assert result is True
-
-    @patch("app.llm.client.complete", new_callable=AsyncMock)
-    async def test_detect_followup_needed_llm_no(self, mock_complete):
-        """LLM returning 'no' -> False."""
-        orch = self._make_orchestrator()
-        mock_complete.return_value = "no"
-        result = await orch._detect_followup_needed_llm("The light is on.", "en")
-        assert result is False
-
-    async def test_detect_followup_needed_llm_empty_speech(self):
-        """Empty speech returns False without LLM call."""
-        orch = self._make_orchestrator()
-        orch._call_llm = AsyncMock(side_effect=AssertionError("should not call LLM for empty speech"))
-        result = await orch._detect_followup_needed_llm("", "en")
-        assert result is False
-
-    @patch("app.agents.orchestrator.SettingsRepository")
-    async def test_merge_uses_mediated_followup(self, mock_settings):
-        """When mediated_followup=True, voice_followup=True regardless of agent/organic."""
-        orch = self._make_orchestrator()
-        mock_settings.get_value = AsyncMock(return_value="")
-        orch._detect_followup_needed_llm = AsyncMock(side_effect=AssertionError("should not fall back to LLM"))
-        speech, vf = await orch._merge_voice_followup_and_organic(
+        speech, vf = orch._merge_voice_followup_and_organic(
             "Should I turn it off?",
             agent_requested=False,
-            ctx=None,
-            language="en",
-            has_error=False,
-            target_agent="light-agent",
             mediated_followup=True,
         )
         assert vf is True
         assert speech == "Should I turn it off?"
 
-    @patch("app.agents.orchestrator.SettingsRepository")
-    async def test_merge_falls_back_to_llm_detection(self, mock_settings):
-        """When mediated_followup=False, separate LLM call decides follow-up."""
+    def test_merge_no_followup_when_both_false(self):
+        """When both agent_requested and mediated_followup are False, vf is False."""
         orch = self._make_orchestrator()
-        mock_settings.get_value = AsyncMock(return_value="")
-        orch._detect_followup_needed_llm = AsyncMock(return_value=True)
-        _speech, vf = await orch._merge_voice_followup_and_organic(
-            "Should I turn it off?",
-            agent_requested=False,
-            ctx=None,
-            language="en",
-            has_error=False,
-            target_agent="light-agent",
-            mediated_followup=False,
-        )
-        assert vf is True
-        orch._detect_followup_needed_llm.assert_awaited_once()
-
-    @patch("app.agents.orchestrator.SettingsRepository")
-    async def test_merge_no_false_positives(self, mock_settings):
-        """Statements do not trigger follow-up when LLM says no."""
-        orch = self._make_orchestrator()
-        mock_settings.get_value = AsyncMock(return_value="")
-        orch._detect_followup_needed_llm = AsyncMock(return_value=False)
-        _speech, vf = await orch._merge_voice_followup_and_organic(
+        speech, vf = orch._merge_voice_followup_and_organic(
             "The kitchen light is now on.",
             agent_requested=False,
-            ctx=None,
-            language="en",
-            has_error=False,
-            target_agent="light-agent",
             mediated_followup=False,
         )
         assert vf is False
-        orch._detect_followup_needed_llm.assert_awaited_once()
+        assert speech == "The kitchen light is now on."

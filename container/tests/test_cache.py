@@ -528,7 +528,7 @@ class TestRoutingCacheExtended:
                         }
                 return {"ids": [[]], "distances": [[]], "documents": [[]], "metadatas": [[]]}
 
-            def upsert(self, _collection, ids, documents, metadatas):
+            def upsert(self, _collection, ids, documents, metadatas, embeddings=None):
                 for entry_id, document, metadata in zip(ids, documents, metadatas, strict=False):
                     self._entries[entry_id] = (document, metadata)
 
@@ -1857,7 +1857,7 @@ class TestLruMemoryBounded:
             def __init__(self):
                 self._entries: dict[str, tuple[str, dict]] = {}
 
-            def upsert(self, _collection, ids, documents, metadatas):
+            def upsert(self, _collection, ids, documents, metadatas, embeddings=None):
                 for entry_id, document, metadata in zip(ids, documents, metadatas, strict=False):
                     self._entries[entry_id] = (document, metadata)
 

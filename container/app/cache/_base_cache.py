@@ -28,6 +28,7 @@ _LRU_TRIGGER_FRACTION = 0.95
 _MAX_LEGACY_WARNING_KEYS = 1000
 _LEGACY_WARNING_KEYS: deque[tuple[str, str]] = deque(maxlen=_MAX_LEGACY_WARNING_KEYS)
 _WHITESPACE_RE = re.compile(r"\s+")
+_ZERO_EMBEDDING_DIM = 384
 
 
 def _warn_legacy_key_once(legacy_key: str, canonical_key: str) -> None:
@@ -100,6 +101,7 @@ class _BaseCache[TEntry](ABC):
         self._flush_interval: int = 5
         self._state = _CacheState()
         self._lru_index: dict[str, str] = {}
+        self._exact_match_only: bool = False
 
     @staticmethod
     def _coerce_bool(raw: str | None, default: bool) -> bool:
@@ -189,10 +191,12 @@ class _BaseCache[TEntry](ABC):
         entry_id = self.make_entry_id(entry.query_text, language=getattr(entry, "language", "en"))  # type: ignore[attr-defined]
         now = datetime.now(UTC).isoformat()
         self._lru_index[entry_id] = now
+        embeddings = [[0.0] * _ZERO_EMBEDDING_DIM] if self._exact_match_only else None
         self._store.upsert(
             self._collection_name,
             ids=[entry_id],
             documents=[entry.query_text],  # type: ignore[attr-defined]
+            embeddings=embeddings,
             metadatas=[self._serialize_metadata(entry)],
         )
 

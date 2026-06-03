@@ -305,16 +305,11 @@ class CacheOrchestrator:
             if self._store_turn is not None:
                 await self._store_turn(conversation_id, user_text, speech, agent_id=target_agent)
 
-        language = (task_context.language if task_context else None) or "en"
         vf_effective = False
         if self._merge_voice_followup_and_organic is not None:
-            speech, vf_effective = await self._merge_voice_followup_and_organic(
+            speech, vf_effective = self._merge_voice_followup_and_organic(
                 speech,
                 agent_requested=False,
-                ctx=task_context,
-                language=language,
-                has_error=False,
-                target_agent=target_agent,
                 mediated_followup=False,
             )
 

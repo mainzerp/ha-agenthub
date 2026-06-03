@@ -21,6 +21,8 @@ Reminder integration (optional):
 Language:
 - You MUST respond in {language}. If the agent response is in a different language, translate it while preserving entity names and values exactly.
 
+{organic_followup_hint}
+
 Output:
 - Output ONLY the rephrased response. Do NOT include "User asked:", "Agent responded:", or any preamble.
 - NEVER include parenthetical explanations, meta-commentary, or self-correction notes. Output ONLY the spoken response.

@@ -1,12 +1,17 @@
 # Version
 
-**Current Version:** 1.36.3
+**Current Version:** 1.36.4
 
 ## Recent Changes
 
-Track changes since `v1.36.3` here.
+Track changes since `v1.36.4` here.
 
 ## Version History
+
+### 1.36.4 (PATCH) -- Cache write performance, follow-up cleanup
+
+- perf(cache): skip ChromaDB embedding generation for exact-match-only caches. Pass zero embedding vector to `VectorStore.upsert()` instead of triggering `SentenceTransformer.encode()` (~500ms). Affects both routing and action cache writes.
+- refactor(mediator): remove hardcoded organic follow-up suffix ("Darf es noch etwas sein?") and redundant `_detect_followup_needed_llm` LLM call. Mediation now handles follow-up question generation in a single LLM call via `[FOLLOWUP]` marker + `{organic_followup_hint}` prompt hint. Probability settings (`orchestrator.organic_followup_enabled` / `orchestrator.organic_followup_probability`) still respected.
 
 ### 1.36.3 (PATCH) -- Pipeline performance instrumentation
 

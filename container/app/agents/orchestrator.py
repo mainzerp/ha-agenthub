@@ -547,55 +547,15 @@ class OrchestratorAgent(BaseAgent):
 
         return routed_to, send_speech, merged_result
 
-    async def _organic_voice_followup_offer(
-        self,
-        ctx: TaskContext | None,
-        language: str,
-        has_error: bool,
-        speech: str,
-    ) -> tuple[str, bool]:
-        """Optionally append a short closing question for satellite sessions."""
-        if has_error or not speech or not speech.strip() or not ctx or ctx.source != "ha":
-            return speech, False
-        try:
-            enabled_raw = await SettingsRepository.get_value("orchestrator.organic_followup_enabled", "false")
-            enabled = (enabled_raw or "false").lower() == "true"
-            if not enabled:
-                return speech, False
-            raw_p = await SettingsRepository.get_value("orchestrator.organic_followup_probability", "0.08")
-            p = float(raw_p or "0.08")
-        except (TypeError, ValueError):
-            p = 0.08
-        if random.random() >= p:
-            return speech, False
-        lang_key = "de" if (language or "en").lower().startswith("de") else "en"
-        suffix = {
-            "de": " Darf es noch etwas sein?",
-            "en": " Is there anything else I can help with?",
-        }[lang_key]
-        return speech + suffix, True
-
-    async def _merge_voice_followup_and_organic(
+    def _merge_voice_followup_and_organic(
         self,
         speech: str,
         *,
         agent_requested: bool,
-        ctx: TaskContext | None,
-        language: str,
-        has_error: bool,
-        target_agent: str | None = None,
         mediated_followup: bool = False,
     ) -> tuple[str, bool]:
-        """Extend speech for organic follow-up; combine agent + organic mic-open flags."""
-        if has_error or target_agent == _CANCEL_INTERACTION_AGENT:
-            return speech, bool(agent_requested)
-        speech_out, organic = await self._organic_voice_followup_offer(ctx, language, False, speech)
-        # Hybrid: use mediated flag if available, otherwise ask LLM
-        if mediated_followup:
-            llm_followup = True
-        else:
-            llm_followup = await self._detect_followup_needed_llm(speech_out, language)
-        return speech_out, bool(agent_requested or organic or llm_followup)
+        """Merge agent-requested and mediated followup flags."""
+        return speech, bool(agent_requested or mediated_followup)
 
     # ------------------------------------------------------------------
     # Shared helpers to reduce duplication between handle_task / handle_task_stream
@@ -1054,6 +1014,17 @@ class OrchestratorAgent(BaseAgent):
                 except Exception:
                     logger.debug("Calendar reminder injection failed", exc_info=True)
 
+            allow_organic_followup = False
+            if task.context and task.context.source == "ha" and not has_error:
+                try:
+                    enabled_raw = await SettingsRepository.get_value("orchestrator.organic_followup_enabled", "false")
+                    if (enabled_raw or "false").lower() == "true":
+                        raw_p = await SettingsRepository.get_value("orchestrator.organic_followup_probability", "0.08")
+                        p = float(raw_p or "0.08")
+                        allow_organic_followup = random.random() < p
+                except (TypeError, ValueError):
+                    pass
+
             should_mediate = target_agent != _CANCEL_INTERACTION_AGENT and (
                 not has_error or not skip_mediation_on_error
             )
@@ -1066,18 +1037,15 @@ class OrchestratorAgent(BaseAgent):
                     language=language,
                     span_collector=span_collector,
                     reminder_text=reminder_text,
+                    allow_organic_followup=allow_organic_followup,
                 )
             elif reminder_text:
                 # No mediation path -- append reminder directly as fallback
                 separator = " " if speech and speech[-1] in ".!?" else ". "
                 speech = f"{speech}{separator}{reminder_text}" if speech else reminder_text
-            speech, voice_followup_effective = await self._merge_voice_followup_and_organic(
+            speech, voice_followup_effective = self._merge_voice_followup_and_organic(
                 speech,
                 agent_requested=voice_followup_requested,
-                ctx=task.context,
-                language=language,
-                has_error=has_error,
-                target_agent=target_agent,
                 mediated_followup=mediated_followup,
             )
             ret_span["metadata"]["final_response"] = speech
@@ -1370,13 +1338,9 @@ class OrchestratorAgent(BaseAgent):
             async with _optional_span(span_collector, "return", agent_id="orchestrator") as ret_span:
                 ret_span["metadata"]["from_agent"] = target_agent
                 ret_span["metadata"]["agent_response"] = full_speech
-                full_speech, vf_eff = await self._merge_voice_followup_and_organic(
+                full_speech, vf_eff = self._merge_voice_followup_and_organic(
                     full_speech,
                     agent_requested=False,
-                    ctx=task.context,
-                    language=detected_language,
-                    has_error=False,
-                    target_agent=_CANCEL_INTERACTION_AGENT,
                     mediated_followup=False,
                 )
                 ret_span["metadata"]["final_response"] = full_speech
@@ -2052,31 +2016,6 @@ class OrchestratorAgent(BaseAgent):
         parts = [f"[{aid}] {sp}" for aid, sp, _ in agent_responses if sp and sp.strip()]
         return "\n\n".join(parts) if parts else "I couldn't process that request."
 
-    async def _detect_followup_needed_llm(self, speech: str, language: str, span_collector=None) -> bool:
-        """Lightweight LLM call to detect if speech contains a question requiring user response."""
-        if not speech or not speech.strip():
-            return False
-        messages = [
-            {
-                "role": "system",
-                "content": self._load_prompt("followup_detection"),
-            },
-            {
-                "role": "user",
-                "content": (
-                    f"Language: {language}\n"
-                    f"Assistant response: '{speech.strip()}'\n"
-                    "Does this ask a question requiring user input? (yes/no)"
-                ),
-            },
-        ]
-        try:
-            result = await self._call_llm(messages, temperature=0.0, max_tokens=4)
-            return result and result.strip().lower().startswith("y")
-        except Exception:
-            logger.debug("Follow-up detection LLM call failed", exc_info=True)
-            return False
-
     async def _mediate_response(
         self,
         agent_speech: str,
@@ -2085,6 +2024,7 @@ class OrchestratorAgent(BaseAgent):
         language: str = "en",
         span_collector=None,
         reminder_text: str | None = None,
+        allow_organic_followup: bool = False,
     ) -> tuple[str, bool]:
         """Optionally mediate the domain agent response with personality.
 
@@ -2110,7 +2050,13 @@ class OrchestratorAgent(BaseAgent):
             system_prompt = await self._load_prompt_async("mediate")
             personality_text = personality.strip() if personality and personality.strip() else ""
             system_prompt = system_prompt.replace("{personality}", personality_text)
-            system_prompt = system_prompt.replace("{language}", language or "en").strip()
+            system_prompt = system_prompt.replace("{language}", language or "en")
+            system_prompt = system_prompt.replace(
+                "{organic_followup_hint}",
+                "You may add a natural follow-up question at the end. Append [FOLLOWUP] if you do."
+                if allow_organic_followup
+                else "Do not add any follow-up questions.",
+            ).strip()
             user_content = (
                 f"User asked:\n{self._wrap_user_input(user_text)}\nAgent ({agent_id}) responded: {agent_speech}"
             )
