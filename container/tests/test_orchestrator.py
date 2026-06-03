@@ -1919,18 +1919,14 @@ class TestOrchestratorFiller:
         )
         mock_complete.return_value = "general-agent: search the web"
 
-        # Filler agent returns text, but agent responds during filler generation
-        # We simulate this by having the stream put a chunk before filler finishes
         async def _filler_slow(user_text, agent, lang):
             await asyncio.sleep(0.10)
             return "Hold on..."
 
         orch._invoke_filler_agent = AsyncMock(side_effect=_filler_slow)
 
-        # Dispatcher streams a chunk immediately (will be in queue when filler returns)
         async def _fast_after_threshold(req):
-            # Yield quickly so chunk arrives before filler completes
-            await asyncio.sleep(0.03)
+            await asyncio.sleep(0.07)
             yield {"token": "Fast answer", "done": False}
             yield {"token": "", "done": True}
 
