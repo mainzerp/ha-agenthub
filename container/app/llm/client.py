@@ -157,7 +157,10 @@ async def complete(
                 logger.warning(
                     "LLM response completely empty after timeout retry — "
                     "agent=%s model=%s max_tokens=%s finish_reason=%s",
-                    agent_id, model, max_tokens, finish_reason,
+                    agent_id,
+                    model,
+                    max_tokens,
+                    finish_reason,
                 )
                 raise ValueError(
                     f"Empty LLM response for agent={agent_id} after timeout retry "
