@@ -344,7 +344,6 @@ class TestActionExecutedAudit:
                     "light-agent": [
                         'Turning on the kitchen ceiling light.\n```json\n{"action": "turn_on", "entity": "kitchen ceiling", "parameters": {}}\n```\n'
                     ],
-                    "orchestrator": ["no"],
                 },
             ),
             expected=Expected(routed_agent="light-agent"),
@@ -357,7 +356,6 @@ class TestActionExecutedAudit:
                             "light-agent": [
                                 'Turning off the living room ceiling light.\n```json\n{"action": "turn_off", "entity": "living room ceiling", "parameters": {}}\n```\n'
                             ],
-                            "orchestrator": ["no"],
                         },
                     ),
                     expected=Expected(routed_agent="light-agent"),
