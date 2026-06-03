@@ -289,7 +289,7 @@ class ClassificationEngine:
             ) as subspan:
                 logger.info("Classification LLM response for '%s': %s", user_text[:60], repr(response[:300]))
                 classifications = await self.parse_classification(response, user_text)
-                classifications = await self.sanitize_or_repair_classifications(
+                classifications, was_repaired = await self.sanitize_or_repair_classifications(
                     classifications,
                     user_text=user_text,
                     conversation_id=conversation_id,
@@ -300,7 +300,7 @@ class ClassificationEngine:
                 subspan["status"] = "ok"
             t_parse = time.perf_counter()
             async with _optional_span(span_collector, "classify.cache_store", agent_id="orchestrator") as subspan:
-                if self._cache_manager and len(classifications) == 1:
+                if self._cache_manager and len(classifications) == 1 and not was_repaired:
                     target_agent, condensed, confidence = classifications[0]
                     if (
                         target_agent not in (_FALLBACK_AGENT, _CANCEL_INTERACTION_AGENT, "send-agent")
@@ -377,7 +377,7 @@ class ClassificationEngine:
         if known_agents:
             agent_alt = "|".join(re.escape(a) for a in sorted(known_agents, key=len, reverse=True))
             fragment_re: re.Pattern[str] | None = re.compile(
-                rf"({agent_alt})\s*(?:\(\s*\d+\s*%?\s*\))?\s*:\s*",
+                rf"\b({agent_alt})\b\s*(?:\(\s*\d+\s*%?\s*\))?\s*:\s*",
                 re.IGNORECASE,
             )
         else:
@@ -501,7 +501,12 @@ class ClassificationEngine:
         language: str = "en",
         allow_repair: bool = True,
         require_send_partner: bool = False,
-    ) -> list[tuple[str, str, float | None]]:
+    ) -> tuple[list[tuple[str, str, float | None]], bool]:
+        """Sanitize classifications and optionally repair invalid send-agent routing.
+
+        Returns ``(classifications, was_repaired)`` where ``was_repaired`` is
+        ``True`` when the repair LLM was invoked.
+        """
         filtered = [c for c in classifications if c[0] not in _INTERNAL_ONLY_AGENTS]
         if not filtered:
             raise _RecoverableClassificationError("I couldn't determine the right agent for that request.")
@@ -512,10 +517,10 @@ class ClassificationEngine:
         if not send_entries:
             if require_send_partner:
                 raise _RecoverableClassificationError("I couldn't determine what content to deliver.")
-            return filtered
+            return filtered, False
 
         if content_entries:
-            return content_entries + send_entries
+            return content_entries + send_entries, False
 
         if allow_repair:
             repaired = await self.repair_send_agent_classifications(
@@ -524,7 +529,7 @@ class ClassificationEngine:
                 span_collector=span_collector,
                 language=language,
             )
-            return await self.sanitize_or_repair_classifications(
+            re_sanitized, _ = await self.sanitize_or_repair_classifications(
                 repaired,
                 user_text=user_text,
                 conversation_id=conversation_id,
@@ -533,5 +538,6 @@ class ClassificationEngine:
                 allow_repair=False,
                 require_send_partner=True,
             )
+            return re_sanitized, True
 
         raise _RecoverableClassificationError("I couldn't determine what content to deliver.")

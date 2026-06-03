@@ -31,6 +31,7 @@ class DynamicAgent(BaseAgent):
         entity_index=None,
         mcp_tool_manager=None,
         model_override: str | None = None,
+        timeout_sec: float | None = None,
         mcp_tools: list[dict[str, str]] | None = None,
         entity_visibility: list[dict[str, str]] | None = None,
     ) -> None:
@@ -43,6 +44,7 @@ class DynamicAgent(BaseAgent):
         self._skills = skills
         self._mcp_tool_manager = mcp_tool_manager
         self._model_override = model_override
+        self._timeout_sec = timeout_sec
         self._mcp_tool_assignments = mcp_tools or []
         self._entity_visibility = entity_visibility or []
 
@@ -58,7 +60,7 @@ class DynamicAgent(BaseAgent):
             # MCP / reasoning calls. 30s default mirrors general-agent;
             # operators can still narrow this per agent_id via the
             # ``agent.dispatch_timeout.custom-<name>`` setting.
-            timeout_sec=30.0,
+            timeout_sec=self._timeout_sec if self._timeout_sec is not None else 30.0,
         )
 
     async def handle_task(self, task: AgentTask) -> TaskResult:
@@ -167,6 +169,7 @@ class CustomAgentLoader:
             entity_index=self._entity_index,
             mcp_tool_manager=self._mcp_tool_manager,
             model_override=row.get("model_override"),
+            timeout_sec=row.get("timeout_sec"),
             mcp_tools=row.get("mcp_tools") or [],
             entity_visibility=row.get("entity_visibility") or [],
         )

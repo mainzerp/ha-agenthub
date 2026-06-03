@@ -9,7 +9,7 @@ import random
 import time
 import uuid
 from collections.abc import AsyncGenerator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -45,30 +45,23 @@ _CONVERSATION_TTL_SECONDS = 1800  # 30 minutes
 
 # Fallback agent when classification fails
 _FALLBACK_AGENT = "general-agent"
+# cancel-interaction is a pipeline-level directive, not a real agent.
+# It signals that the user wants to abort the current voice/chat turn.
 _CANCEL_INTERACTION_AGENT = "cancel-interaction"
 
 
 _CANNED_TIMEOUT_SPEECH = "I couldn't process that request in time."
 _CANNED_GENERAL_ERROR_SPEECH = "I couldn't process that request right now."
 
-_PERSONALITY_CACHE_TS: float = 0.0
-_PERSONALITY_CACHE_VALUE: str = ""
 _PERSONALITY_CACHE_TTL_SEC: float = 300.0
 
 
 async def _get_personality_cached(settings_repo) -> str:
-    """Return cached personality prompt with 300-second TTL."""
-    global _PERSONALITY_CACHE_TS, _PERSONALITY_CACHE_VALUE
-    now_ = time.monotonic()
-    if now_ - _PERSONALITY_CACHE_TS < _PERSONALITY_CACHE_TTL_SEC:
-        return _PERSONALITY_CACHE_VALUE
+    """Return personality prompt (no caching at module level; kept for backward compat)."""
     try:
-        personality = await settings_repo.get_value("personality.prompt", "")
+        return await settings_repo.get_value("personality.prompt", "")
     except Exception:
-        personality = ""
-    _PERSONALITY_CACHE_TS = now_
-    _PERSONALITY_CACHE_VALUE = personality
-    return personality
+        return ""
 
 
 @dataclass
@@ -108,7 +101,7 @@ class StreamingContext:
     filler_end_ms: float = 0.0
     filler_generated: bool = False
     filler_send_ms: float = 0.0
-    collected_speech: list[str] = None  # type: ignore[assignment]
+    collected_speech: list[str] = field(default_factory=list)
     stream_directive: str | None = None
     stream_reason: str | None = None
     action_executed: Any = None
@@ -116,8 +109,7 @@ class StreamingContext:
     stream_voice_followup: bool = False
 
     def __post_init__(self) -> None:
-        if self.collected_speech is None:
-            self.collected_speech = []
+        pass
 
     def reset_buffer(self) -> None:
         self.collected_speech.clear()
@@ -167,6 +159,8 @@ class OrchestratorAgent(BaseAgent):
         self._mediation_temperature: float = 0.3
         self._mediation_max_tokens: int = 2048
         self._max_dispatch_timeout: float = 60.0
+        self._personality_cache_ts: float = 0.0
+        self._personality_cache_value: str = ""
         self._calendar_injector = None
         if ha_client is not None and entity_index is not None:
             from app.agents.calendar_injector import CalendarReminderInjector
@@ -193,6 +187,7 @@ class OrchestratorAgent(BaseAgent):
             mediation_model=self._mediation_model,
             mediation_temperature=self._mediation_temperature,
             mediation_max_tokens=self._mediation_max_tokens,
+            settings_repo=SettingsRepository,
         )
         self._classification_engine = ClassificationEngine(
             agent_registry=self._agent_registry,
@@ -272,17 +267,17 @@ class OrchestratorAgent(BaseAgent):
         """Read timeout and max_iterations from settings."""
         try:
             val = await SettingsRepository.get_value("a2a.default_timeout", "5")
-            self._default_timeout = int(val or "5")
+            self._default_timeout = int(val) if val is not None else 5
         except (ValueError, TypeError):
             logger.debug("Invalid a2a.default_timeout value, using default", exc_info=True)
         try:
             val = await SettingsRepository.get_value("a2a.max_iterations", "3")
-            self._max_iterations = int(val or "3")
+            self._max_iterations = int(val) if val is not None else 3
         except (ValueError, TypeError):
             logger.debug("Invalid a2a.max_iterations value, using default", exc_info=True)
         try:
             val = await SettingsRepository.get_value("a2a.max_dispatch_timeout", "60")
-            self._max_dispatch_timeout = float(val or "60")
+            self._max_dispatch_timeout = float(val) if val is not None else 60.0
         except (ValueError, TypeError):
             logger.debug("Invalid a2a.max_dispatch_timeout value, using default", exc_info=True)
         # P2-2: invalidate per-agent cache so changes to settings or
@@ -317,12 +312,12 @@ class OrchestratorAgent(BaseAgent):
             self._mediation_model = None
         try:
             val = await SettingsRepository.get_value("mediation.temperature", "0.3")
-            self._mediation_temperature = float(val or "0.3")
+            self._mediation_temperature = float(val) if val is not None else 0.3
         except (ValueError, TypeError):
             self._mediation_temperature = 0.3
         try:
             val = await SettingsRepository.get_value("mediation.max_tokens", "2048")
-            self._mediation_max_tokens = int(val or "2048")
+            self._mediation_max_tokens = int(val) if val is not None else 2048
         except (ValueError, TypeError):
             self._mediation_max_tokens = 2048
         logger.info(
@@ -331,6 +326,20 @@ class OrchestratorAgent(BaseAgent):
             self._mediation_temperature,
             self._mediation_max_tokens,
         )
+
+    async def _get_personality_cached(self) -> str:
+        """Return cached personality prompt with 300-second TTL."""
+        now_ = time.monotonic()
+        cache_ts = getattr(self, "_personality_cache_ts", 0.0)
+        if now_ - cache_ts < _PERSONALITY_CACHE_TTL_SEC:
+            return getattr(self, "_personality_cache_value", "")
+        try:
+            personality = await SettingsRepository.get_value("personality.prompt", "")
+        except Exception:
+            personality = ""
+        self._personality_cache_ts = now_
+        self._personality_cache_value = personality
+        return personality
 
     async def _get_known_agents(self) -> set[str]:
         return await self._classification_engine._get_known_agents()
@@ -997,6 +1006,7 @@ class OrchestratorAgent(BaseAgent):
         original_speech = speech
         cache_stored_action = False
         cache_stored_routing = False
+        cache_stored_response = False
         async with _optional_span(span_collector, "return", agent_id="orchestrator") as ret_span:
             ret_span["metadata"]["from_agent"] = routed_to
             ret_span["metadata"]["agent_response"] = speech
@@ -1066,8 +1076,9 @@ class OrchestratorAgent(BaseAgent):
                     merged_multi_agent=False,
                     used_origin_context=used_origin_context,
                 )
+                cache_stored_response = cache_stored_action
             ret_span["metadata"]["cache_stored_action"] = cache_stored_action
-            ret_span["metadata"]["cache_stored_response"] = cache_stored_action
+            ret_span["metadata"]["cache_stored_response"] = cache_stored_response
             ret_span["metadata"]["cache_stored_routing"] = cache_stored_routing
             await self._store_turn(conversation_id, user_text, speech, agent_id=routed_to)
             if span_collector:
@@ -1285,7 +1296,7 @@ class OrchestratorAgent(BaseAgent):
         )
         if prelude.early_exit is not None:
             ee = prelude.early_exit
-            exit_type = ee.pop("_exit_type", "")
+            exit_type = ee.get("_exit_type", "")
             if exit_type == "classification_error":
                 yield {
                     "token": "",
@@ -1679,7 +1690,9 @@ class OrchestratorAgent(BaseAgent):
                     await _process_chunk(item)
             finally:
                 reader_task.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await stream_iter.aclose()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
                     await asyncio.wait_for(reader_task, timeout=5.0)
 
         async with _optional_span(span_collector, "dispatch", agent_id=target_agent) as span:
@@ -1827,7 +1840,7 @@ class OrchestratorAgent(BaseAgent):
                 id=f"filler-{uuid.uuid4().hex[:8]}",
             )
             response = await self._dispatcher.dispatch(request)
-            result_data = self._dispatch_manager.normalize_agent_result(response)
+            result_data = self._dispatch_manager.normalize_agent_result(response, agent_id="filler-agent")
             speech = result_data.get("speech", "")
             if not speech or not speech.strip():
                 logger.warning("Filler agent returned empty speech; no filler will be spoken")
@@ -1897,7 +1910,7 @@ class OrchestratorAgent(BaseAgent):
         allow_repair: bool = True,
         require_send_partner: bool = False,
     ) -> list[tuple[str, str, float | None]]:
-        return await self._classification_engine.sanitize_or_repair_classifications(
+        result, _ = await self._classification_engine.sanitize_or_repair_classifications(
             classifications,
             user_text=user_text,
             conversation_id=conversation_id,
@@ -1906,6 +1919,7 @@ class OrchestratorAgent(BaseAgent):
             allow_repair=allow_repair,
             require_send_partner=require_send_partner,
         )
+        return result
 
     async def _build_agent_descriptions(self) -> str:
         return await self._classification_engine.build_agent_descriptions()
@@ -1985,7 +1999,7 @@ class OrchestratorAgent(BaseAgent):
         agent_summary = "\n".join(summary_parts)
 
         try:
-            personality = await _get_personality_cached(SettingsRepository)
+            personality = await self._get_personality_cached()
 
             system_content = await self._load_prompt_async("merge")
             personality_text = personality.strip() if personality and personality.strip() else ""
@@ -2043,7 +2057,7 @@ class OrchestratorAgent(BaseAgent):
         Returns:
             Tuple of (mediated_speech, followup_needed).
         """
-        personality = await _get_personality_cached(SettingsRepository)
+        personality = await self._get_personality_cached()
         if not personality.strip():
             if reminder_text:
                 separator = " " if agent_speech and agent_speech[-1] in ".!?" else ". "

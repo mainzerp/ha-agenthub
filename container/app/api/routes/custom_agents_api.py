@@ -25,6 +25,7 @@ class CustomAgentCreate(BaseModel):
     description: str = ""
     system_prompt: str
     model_override: str | None = None
+    timeout_sec: float | None = None
     mcp_tools: list[dict[str, str]] | None = None
     entity_visibility: list[dict[str, str]] | None = None
     intent_patterns: list[str] | None = None
@@ -34,6 +35,7 @@ class CustomAgentUpdate(BaseModel):
     description: str | None = None
     system_prompt: str | None = None
     model_override: str | None = None
+    timeout_sec: float | None = None
     mcp_tools: list[dict[str, str]] | None = None
     entity_visibility: list[dict[str, str]] | None = None
     intent_patterns: list[str] | None = None

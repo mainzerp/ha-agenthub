@@ -35,7 +35,7 @@ WORKDIR /app
 # Copy installed packages from builder
 COPY --from=builder /install /usr/local
 
-RUN pip install --upgrade --no-cache-dir "setuptools>=78.1.1"
+RUN pip install --upgrade --no-cache-dir "setuptools>=78.1.1,<82"
 
 # Copy application code
 COPY app/ ./app/
