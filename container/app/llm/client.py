@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import os
 from collections.abc import Callable
 from typing import Any
 
@@ -20,8 +21,7 @@ class LLMError(Exception):
 
 
 # Enable litellm debug logging for provider troubleshooting.
-litellm.suppress_debug_info = False
-litellm.set_verbose = True
+os.environ["LITELLM_LOG"] = "DEBUG"
 
 # P3-11: backoff between the first LLM call and the single retry that
 # kicks in when the provider returns an empty completion (typically
@@ -129,6 +129,19 @@ async def complete(
     except litellm.exceptions.AuthenticationError:
         logger.error("Authentication failed for agent=%s model=%s -- check API key", agent_id, model)
         raise
+    except litellm.exceptions.Timeout as e:
+        logger.warning("LLM timeout for agent=%s model=%s, retrying once after 2s", agent_id, model)
+        await asyncio.sleep(2)
+        try:
+            async with _optional_span(span_collector, "llm_provider_call", agent_id=agent_id) as pspan:
+                response = await litellm.acompletion(**call_kwargs)
+                pspan["metadata"]["model"] = model
+                pspan["metadata"]["retry"] = "timeout"
+        except Exception:
+            raise
+        if not response.choices:
+            raise LLMError("Empty choices from provider on timeout retry") from e
+        content = (response.choices[0].message.content or "").strip() if response.choices[0].message else ""
     except litellm.exceptions.APIError as e:
         status = getattr(e, "status_code", "?")
         logger.error("LLM API error agent=%s model=%s status=%s: %s", agent_id, model, status, str(e))
