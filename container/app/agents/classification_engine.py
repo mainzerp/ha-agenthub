@@ -304,6 +304,7 @@ class ClassificationEngine:
                     target_agent, condensed, confidence = classifications[0]
                     if (
                         target_agent not in (_FALLBACK_AGENT, _CANCEL_INTERACTION_AGENT, "send-agent")
+                        and target_agent not in _INTERNAL_ONLY_AGENTS
                         and confidence is not None
                     ):
                         try:

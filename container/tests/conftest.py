@@ -152,6 +152,16 @@ async def _clear_settings_cache():
 
 
 @pytest.fixture(autouse=True)
+def _clear_visibility_rules_cache():
+    """Clear the in-memory visibility rules cache between tests."""
+    from app.entity.visibility import invalidate_visibility_rules_cache
+
+    invalidate_visibility_rules_cache()
+    yield
+    invalidate_visibility_rules_cache()
+
+
+@pytest.fixture(autouse=True)
 async def _reset_write_conn():
     """Close the shared global write connection so it never leaks across loops."""
     yield

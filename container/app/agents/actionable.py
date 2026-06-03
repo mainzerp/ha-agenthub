@@ -139,6 +139,7 @@ class ActionableAgent(BaseAgent):
         agent_id = self.agent_card.agent_id
         resolved: list[tuple[str, str]] = []
         seen_ids: set[str] = set()
+        cached_visible_entries: list[Any] | None = None
 
         for mention in mentions:
             if len(resolved) >= 3:
@@ -150,10 +151,14 @@ class ActionableAgent(BaseAgent):
                     self._entity_matcher,
                     agent_id,
                     allowed_domains=self._allowed_domains,
+                    visible_entries=cached_visible_entries,
                 )
             except Exception:
                 logger.debug("Entity resolution failed for mention %r", mention, exc_info=True)
                 continue
+
+            if cached_visible_entries is None:
+                cached_visible_entries = result.get("_visible_entries")
 
             entity_id = result.get("entity_id")
             friendly_name = result.get("friendly_name")

@@ -179,6 +179,37 @@ class TestResolveRelevantEntities:
         assert result == []
 
     @pytest.mark.asyncio
+    async def test_reuses_visible_entries_across_mentions(self):
+        """Cross-mention visible_entries caching: only the first call lists the index."""
+        agent = LightAgent()
+        task = make_agent_task(description="turn on the kitchen light and the bedroom light and the living room light")
+
+        call_count = 0
+
+        async def _fake_resolve(query, *args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                assert kwargs.get("visible_entries") is None
+            else:
+                assert kwargs.get("visible_entries") is not None
+            return {
+                "entity_id": f"light.{query.replace(' ', '_')}",
+                "friendly_name": query,
+                "_visible_entries": ["mock_entry"],
+            }
+
+        with patch(
+            "app.agents.actionable.resolve_entity_deterministic_first",
+            new_callable=AsyncMock,
+            side_effect=_fake_resolve,
+        ):
+            result = await agent._resolve_relevant_entities(task)
+
+        assert len(result) == 3
+        assert call_count == 3
+
+    @pytest.mark.asyncio
     async def test_conditional_clauses_resolve_both_target_and_condition_entity(self):
         agent = LightAgent()
         task = make_agent_task(description="if outdoor brightness is dark, turn on the kitchen light")
