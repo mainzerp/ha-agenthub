@@ -1,12 +1,17 @@
 # Version
 
-**Current Version:** 1.37.3
+**Current Version:** 1.37.4
 
 ## Recent Changes
 
-Track changes since `v1.37.3` here.
+Track changes since `v1.37.4` here.
 
 ## Version History
+
+### 1.37.4 (PATCH) -- LiteLLM env var, Timeout retry
+
+- fix(llm): use LITELLM_LOG env var instead of deprecated set_verbose.
+- fix(llm): add single retry on litellm.exceptions.Timeout with 2s backoff for intermittent Groq connection refusals.
 
 ### 1.37.3 (PATCH) -- LiteLLM debug logging, rate limit increase, dependency fix
 
