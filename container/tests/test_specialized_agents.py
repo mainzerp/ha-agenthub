@@ -2285,15 +2285,6 @@ class TestGeneralAgentWithTools:
 
 
 class TestRewriteAgent:
-    @pytest.fixture(autouse=True)
-    def _reset_personality_cache(self):
-        """Reset the _get_personality_cached globals between tests."""
-        from app.agents import orchestrator as orch_mod
-
-        orch_mod._PERSONALITY_CACHE_TS = -999999.0
-        orch_mod._PERSONALITY_CACHE_VALUE = ""
-        yield
-
     @patch("app.agents.rewrite.SettingsRepository.get_value", new_callable=AsyncMock, return_value="")
     @patch("app.llm.client.complete", new_callable=AsyncMock, return_value="I've turned on the light for you.")
     async def test_rewrite_returns_rephrased_text(self, mock_complete, mock_settings):
