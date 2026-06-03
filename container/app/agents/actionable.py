@@ -343,8 +343,8 @@ class ActionableAgent(BaseAgent):
                 response = await self._call_llm(messages)
         except asyncio.CancelledError:
             raise
-        except Exception:
-            logger.exception("LLM call failed for %s", agent_id)
+        except Exception as e:
+            logger.error("LLM call failed for %s: %s", agent_id, str(e)[:200])
             return self._error_result(
                 AgentErrorCode.LLM_ERROR,
                 "The language model could not complete this request. Please try again.",

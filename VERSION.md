@@ -1,12 +1,17 @@
 # Version
 
-**Current Version:** 1.37.1
+**Current Version:** 1.37.2
 
 ## Recent Changes
 
-Track changes since `v1.37.1` here.
+Track changes since `v1.37.2` here.
 
 ## Version History
+
+### 1.37.2 (PATCH) -- Improved LLM error logging, restructured orchestrator prompt
+
+- fix(llm): capture APIError status_code and message in LiteLLM error logging for faster provider debugging.
+- refactor(prompt): restructured orchestrator prompt with clear section hierarchy, expanded routing rules, 11 format examples, and safety rules.
 
 ### 1.37.1 (PATCH) -- Restore classification prompt examples, improve logging
 
