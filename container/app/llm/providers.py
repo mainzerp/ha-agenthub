@@ -10,6 +10,7 @@ PROVIDER_SECRET_MAP: dict[str, str] = {
     "groq": "groq_api_key",
     "openai": "openai_api_key",
     "anthropic": "anthropic_api_key",
+    "cerebras": "cerebras_api_key",
     "custom_openai": "custom_openai_api_key",
 }
 
