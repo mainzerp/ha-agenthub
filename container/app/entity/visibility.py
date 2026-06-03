@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Protocol
@@ -54,12 +55,46 @@ def _parse_rules(rules: Sequence[Mapping[str, Any]]) -> _VisibilityRules:
     return parsed
 
 
+_rules_cache: dict[str, _VisibilityRules | None] = {}
+_rules_cache_lock = asyncio.Lock()
+
+
+async def _get_cached_rules(
+    agent_id: str,
+    repository=EntityVisibilityRepository,
+) -> _VisibilityRules | None:
+    """Fetch visibility rules with in-memory caching."""
+    cached = _rules_cache.get(agent_id)
+    if cached is not None or agent_id in _rules_cache:
+        return cached
+
+    async with _rules_cache_lock:
+        cached = _rules_cache.get(agent_id)
+        if cached is not None or agent_id in _rules_cache:
+            return cached
+
+        raw_rules = await repository.get_rules(agent_id)
+        rules = _parse_rules(raw_rules) if raw_rules else None
+        _rules_cache[agent_id] = rules
+        return rules
+
+
+def invalidate_visibility_rules_cache(agent_id: str | None = None) -> None:
+    """Invalidate the visibility rules cache."""
+    global _rules_cache
+    if agent_id is None:
+        _rules_cache.clear()
+    else:
+        _rules_cache.pop(agent_id, None)
+
+
 async def _passes_visibility_filters(
     entity_id: str,
     rules: _VisibilityRules,
     entity_index: EntityIndex | None,
     *,
     fail_closed_on_metadata_gap: bool,
+    preloaded_entry: Any = None,
 ) -> bool:
     domain = _domain_for(entity_id)
     if rules.domain_include and domain not in rules.domain_include:
@@ -67,8 +102,8 @@ async def _passes_visibility_filters(
     if rules.domain_exclude and domain in rules.domain_exclude:
         return False
 
-    entry_loaded = False
-    entry = None
+    entry_loaded = preloaded_entry is not None
+    entry = preloaded_entry
 
     async def get_entry():
         nonlocal entry_loaded, entry
@@ -90,7 +125,7 @@ async def _passes_visibility_filters(
         indexed_entry = await get_entry()
         if fail_closed_on_metadata_gap and indexed_entry is None:
             return False
-        area = indexed_entry.area if indexed_entry else None
+        area = getattr(indexed_entry, "area", None) if indexed_entry else None
         if rules.area_include and (area is None or area not in rules.area_include):
             return False
         if rules.area_exclude and area is not None and area in rules.area_exclude:
@@ -100,7 +135,7 @@ async def _passes_visibility_filters(
         indexed_entry = await get_entry()
         if fail_closed_on_metadata_gap and indexed_entry is None:
             return False
-        entity_device_class = indexed_entry.device_class if indexed_entry else None
+        entity_device_class = getattr(indexed_entry, "device_class", None) if indexed_entry else None
         if not entity_device_class or entity_device_class not in rules.device_class_include:
             return False
 
@@ -108,7 +143,7 @@ async def _passes_visibility_filters(
         indexed_entry = await get_entry()
         if fail_closed_on_metadata_gap and indexed_entry is None:
             return False
-        entity_device_class = indexed_entry.device_class if indexed_entry else None
+        entity_device_class = getattr(indexed_entry, "device_class", None) if indexed_entry else None
         if entity_device_class and entity_device_class in rules.device_class_exclude:
             return False
 
@@ -122,18 +157,21 @@ async def filter_visible_results[TVisibilityCandidate: VisibilityCandidate](
     repository=EntityVisibilityRepository,
 ) -> list[TVisibilityCandidate]:
     """Filter match results by the full per-agent entity visibility model."""
-    raw_rules = await repository.get_rules(agent_id)
-    if not raw_rules:
+    rules = await _get_cached_rules(agent_id, repository)
+    if rules is None:
         return results
 
-    rules = _parse_rules(raw_rules)
     filtered: list[TVisibilityCandidate] = []
     for result in results:
+        preloaded = None
+        if hasattr(result, "area") or hasattr(result, "device_class"):
+            preloaded = result
         if await _passes_visibility_filters(
             result.entity_id,
             rules,
             entity_index,
             fail_closed_on_metadata_gap=False,
+            preloaded_entry=preloaded,
         ):
             filtered.append(result)
 
@@ -158,11 +196,10 @@ async def entity_is_visible(
     if not entity_id:
         return False
 
-    raw_rules = await repository.get_rules(agent_id)
-    if not raw_rules:
+    rules = await _get_cached_rules(agent_id, repository)
+    if rules is None:
         return True
 
-    rules = _parse_rules(raw_rules)
     if entity_id in rules.entity_include:
         return True
     return await _passes_visibility_filters(

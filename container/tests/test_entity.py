@@ -1349,6 +1349,57 @@ class TestEntityIndexHelpers:
 
         assert [entry.entity_id for entry in entries] == ["light.keller"]
 
+    def test_list_entries_cache_hit(self):
+        """Second call with same domains should return cached result without hitting store."""
+        index, store = self._make_index()
+        store.get.return_value = {
+            "ids": ["light.kitchen"],
+            "metadatas": [
+                {"friendly_name": "Kitchen", "domain": "light", "area": "", "device_class": "", "aliases": ""}
+            ],
+        }
+
+        entries1 = index.list_entries(domains={"light"})
+        entries2 = index.list_entries(domains={"light"})
+
+        assert len(entries1) == 1
+        assert len(entries2) == 1
+        store.get.assert_called_once()
+
+    def test_list_entries_cache_returns_shallow_copy(self):
+        """Mutating the returned list should not affect the cache."""
+        index, store = self._make_index()
+        store.get.return_value = {
+            "ids": ["light.kitchen"],
+            "metadatas": [
+                {"friendly_name": "Kitchen", "domain": "light", "area": "", "device_class": "", "aliases": ""}
+            ],
+        }
+
+        entries1 = index.list_entries(domains={"light"})
+        entries1.clear()
+        entries2 = index.list_entries(domains={"light"})
+
+        assert len(entries2) == 1
+
+    def test_add_invalidates_list_entries_cache(self):
+        """add() must invalidate the list_entries cache so subsequent reads are fresh."""
+        index, store = self._make_index()
+        store.get.return_value = {
+            "ids": [],
+            "metadatas": [],
+        }
+
+        index.list_entries(domains={"light"})
+        assert store.get.call_count == 1
+
+        entry = make_entity_index_entry("light.new", "New Light")
+        index.add(entry)
+
+        # Cache should be invalidated; next list_entries must hit store again
+        index.list_entries(domains={"light"})
+        assert store.get.call_count == 3  # 1 list + 1 add prefetch + 1 re-list
+
 
 # ---------------------------------------------------------------------------
 # Entity index status tracking

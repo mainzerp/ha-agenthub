@@ -12,7 +12,6 @@ import re
 import unicodedata
 from typing import Any
 
-from app.entity.matcher import MatchResult
 from app.entity.visibility import entity_is_visible, filter_visible_results
 
 logger = logging.getLogger(__name__)
@@ -100,11 +99,10 @@ async def _filter_visible_entries(
 
     visible = await filter_visible_results(
         agent_id,
-        [MatchResult(entity_id=entry.entity_id, friendly_name=entry.friendly_name, score=1.0) for entry in entries],
+        entries,
         entity_index,
     )
-    visible_ids = {result.entity_id for result in visible}
-    return [entry for entry in entries if entry.entity_id in visible_ids]
+    return visible
 
 
 def rerank_matches_by_area(matches: list[Any], preferred_area_id: str | None) -> list[Any]:
@@ -241,6 +239,7 @@ async def resolve_entity_deterministic_first(
     enable_strip_device_noun: bool = False,
     enable_area_fallback: bool = False,
     preferred_domain: str | None = None,
+    visible_entries: list[Any] | None = None,
 ) -> dict[str, Any]:
     """Resolve an entity through deterministic stages before hybrid matching.
 
@@ -260,7 +259,12 @@ async def resolve_entity_deterministic_first(
         "resolution_path": "unresolved",
         "verbatim_terms_tried": ordered_terms,
     }
-    visible_entries: list[Any] = []
+    if visible_entries is None:
+        visible_entries = await _filter_visible_entries(
+            await _list_index_entries(entity_index, domains=allowed_domains),
+            entity_index,
+            agent_id,
+        )
 
     if entity_index and _supports_method(entity_index, "get_by_id"):
         for term in ordered_terms:
@@ -289,12 +293,6 @@ async def resolve_entity_deterministic_first(
                 ),
                 visible_entries,
             )
-
-    visible_entries = await _filter_visible_entries(
-        await _list_index_entries(entity_index, domains=allowed_domains),
-        entity_index,
-        agent_id,
-    )
     normalized_terms = {value for value in (_normalize_lookup_text(term) for term in ordered_terms) if value}
 
     ambiguous_result: dict[str, Any] | None = None

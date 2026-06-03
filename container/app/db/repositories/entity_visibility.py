@@ -31,6 +31,9 @@ class EntityVisibilityRepository:
                     "INSERT INTO entity_visibility_rules (agent_id, rule_type, rule_value) VALUES (?, ?, ?)",
                     (agent_id, rule["rule_type"], rule["rule_value"]),
                 )
+        from app.entity.visibility import invalidate_visibility_rules_cache
+
+        invalidate_visibility_rules_cache(agent_id)
 
     @staticmethod
     async def add_rule(agent_id: str, rule_type: str, rule_value: str) -> None:
@@ -39,6 +42,9 @@ class EntityVisibilityRepository:
                 "INSERT OR IGNORE INTO entity_visibility_rules (agent_id, rule_type, rule_value) VALUES (?, ?, ?)",
                 (agent_id, rule_type, rule_value),
             )
+        from app.entity.visibility import invalidate_visibility_rules_cache
+
+        invalidate_visibility_rules_cache(agent_id)
 
     @staticmethod
     async def remove_rule(agent_id: str, rule_type: str, rule_value: str) -> None:
@@ -47,6 +53,9 @@ class EntityVisibilityRepository:
                 "DELETE FROM entity_visibility_rules WHERE agent_id = ? AND rule_type = ? AND rule_value = ?",
                 (agent_id, rule_type, rule_value),
             )
+        from app.entity.visibility import invalidate_visibility_rules_cache
+
+        invalidate_visibility_rules_cache(agent_id)
 
     @staticmethod
     async def list_all() -> list[dict[str, Any]]:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 from datetime import UTC, datetime
 from functools import partial
 
@@ -54,6 +55,13 @@ class EntityIndex:
             "last_sync": None,
             "last_sync_duration_ms": 0,
         }
+        self._list_entries_cache: dict[frozenset[str] | None, list[EntityIndexEntry]] = {}
+        self._list_entries_cache_lock = threading.Lock()
+
+    def _invalidate_list_entries_cache(self) -> None:
+        """Clear the list_entries cache after any write operation."""
+        with self._list_entries_cache_lock:
+            self._list_entries_cache.clear()
 
     @staticmethod
     def _build_metadata(entry: EntityIndexEntry) -> dict:
@@ -151,11 +159,13 @@ class EntityIndex:
                 )
                 self._status["processed"] = min(start + len(batch), total)
                 self._status["progress"] = int(self._status["processed"] / total * 100)
+            self._invalidate_list_entries_cache()
             self._last_refresh = datetime.now(UTC).isoformat()
             self._status["state"] = "ready"
             self._status["progress"] = 100
             logger.info("Entity index populated with %d entities", total)
         except Exception as exc:
+            self._invalidate_list_entries_cache()
             self._status["state"] = "error"
             self._status["error"] = str(exc)
             logger.error("Entity index populate failed: %s", exc)
@@ -213,10 +223,12 @@ class EntityIndex:
             documents=[entry.embedding_text],
             metadatas=[self._build_metadata(entry)],
         )
+        self._invalidate_list_entries_cache()
 
     def remove(self, entity_id: str) -> None:
         """Remove an entity from the index."""
         self._store.delete(COLLECTION_ENTITY_INDEX, ids=[entity_id])
+        self._invalidate_list_entries_cache()
 
     def get_by_id(self, entity_id: str) -> EntityIndexEntry | None:
         """Retrieve a single entity by its ID, or None if not found."""
@@ -247,6 +259,12 @@ class EntityIndex:
 
     def list_entries(self, domains: set[str] | frozenset[str] | None = None) -> list[EntityIndexEntry]:
         """Return all indexed entities, optionally filtered by domain."""
+        cache_key = frozenset(domains) if domains else None
+        with self._list_entries_cache_lock:
+            cached = self._list_entries_cache.get(cache_key)
+            if cached is not None:
+                return list(cached)
+
         where: dict | None = None
         if domains:
             dlist = list(domains)
@@ -262,7 +280,10 @@ class EntityIndex:
             if domains and entry.domain not in domains:
                 continue
             entries.append(entry)
-        return entries
+
+        with self._list_entries_cache_lock:
+            self._list_entries_cache[cache_key] = entries
+        return list(entries)
 
     def clear(self) -> None:
         """Remove all entities from the index."""
@@ -271,6 +292,7 @@ class EntityIndex:
             all_data = self._store.get(COLLECTION_ENTITY_INDEX, include=[])
             if all_data["ids"]:
                 self._store.delete(COLLECTION_ENTITY_INDEX, ids=all_data["ids"])
+        self._invalidate_list_entries_cache()
         logger.info("Entity index cleared")
 
     def refresh(self, entities: list[EntityIndexEntry]) -> None:
@@ -279,6 +301,7 @@ class EntityIndex:
         self._status["progress"] = 0
         self.clear()
         self.populate(entities)
+        self._invalidate_list_entries_cache()
 
     def sync(self, entities: list[EntityIndexEntry]) -> dict:
         """Smart diff sync: upsert changed/new, remove deleted, skip unchanged.
@@ -379,6 +402,7 @@ class EntityIndex:
                 "last_sync_duration_ms": elapsed_ms,
             }
 
+            self._invalidate_list_entries_cache()
             logger.info(
                 "Entity sync complete: +%d ~%d -%d =%d (%dms)",
                 added,
@@ -390,6 +414,7 @@ class EntityIndex:
             return {"added": added, "updated": updated, "removed": removed, "unchanged": unchanged}
 
         except Exception as exc:
+            self._invalidate_list_entries_cache()
             self._status["state"] = prev_state if prev_state != "syncing" else "ready"
             self._status["error"] = str(exc)
             logger.error("Entity sync failed: %s", exc)
@@ -481,6 +506,7 @@ class EntityIndex:
                 ids=meta_only_ids,
                 metadatas=meta_only_metas,
             )
+        self._invalidate_list_entries_cache()
 
     # ------------------------------------------------------------------
     # Async wrappers (offload to thread pool via run_in_executor)

@@ -445,9 +445,6 @@ class CacheOrchestrator:
 
             return False, False
 
-        if self.is_actionable_routing_agent(target_agent):
-            return False, False
-
         try:
             await self._cache_manager.store_routing_async(
                 user_text,
