@@ -130,9 +130,7 @@ async def complete(
         raise
     except litellm.exceptions.APIError as e:
         status = getattr(e, "status_code", "?")
-        logger.error(
-            "LLM API error agent=%s model=%s status=%s: %s", agent_id, model, status, str(e)
-        )
+        logger.error("LLM API error agent=%s model=%s status=%s: %s", agent_id, model, status, str(e))
         raise
 
 
