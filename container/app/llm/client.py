@@ -19,8 +19,9 @@ class LLMError(Exception):
     """Raised when the LLM provider returns an unusable response."""
 
 
-# Suppress litellm's internal verbose logging unless user wants debug.
-litellm.suppress_debug_info = True
+# Enable litellm debug logging for provider troubleshooting.
+litellm.suppress_debug_info = False
+litellm.set_verbose = True
 
 # P3-11: backoff between the first LLM call and the single retry that
 # kicks in when the provider returns an empty completion (typically

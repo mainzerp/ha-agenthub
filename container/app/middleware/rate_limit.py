@@ -94,9 +94,9 @@ async def rate_limit_setup(request: Request) -> None:
 
 
 async def rate_limit_admin(request: Request) -> None:
-    """60 requests per minute per IP for /api/admin/* endpoints."""
+    """300 requests per minute per IP for /api/admin/* endpoints (relaxed for debugging)."""
     ip = _get_client_ip(request)
-    await _check_rate_limit(ip, max_requests=60, window_seconds=60, scope="admin")
+    await _check_rate_limit(ip, max_requests=300, window_seconds=60, scope="admin")
 
 
 class WsMessageRateLimiter:
