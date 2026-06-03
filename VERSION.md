@@ -1,12 +1,37 @@
 # Version
 
-**Current Version:** 1.37.5
+**Current Version:** 1.38.0
 
 ## Recent Changes
 
-Track changes since `v1.37.5` here.
+Track changes since `v1.38.0` here.
 
 ## Version History
+
+### 1.38.0 (MINOR) -- Orchestrator pipeline fixes and test coverage
+
+- fix(dispatch): RuntimeError fallback now returns general error speech instead of timeout speech.
+- fix(config): timeout value "0" is no longer silently overridden to 5s.
+- fix(registry): agent card cache invalidated on custom agent reload.
+- fix(registry): per-agent timeout cache now has 60s TTL.
+- feat(registry): O(1) agent card lookup via `_agent_cards_by_id` dict.
+- fix(registry): expanded `get_known_agents()` fallback to include all domain agents.
+- fix(registry): unified `BUILT_IN_AGENT_IDS` single source of truth.
+- fix(notification): consolidated `notification_dispatcher.py` into `background_actions.py` shim.
+- fix(streaming): cancel underlying stream generator on reader task cancellation.
+- fix(orchestrator): eliminated in-place mutation of `early_exit` dict.
+- fix(orchestrator): instance-level personality cache instead of module globals.
+- fix(orchestrator): `StreamingContext.collected_speech` uses `default_factory=list`.
+- fix(classification): do not cache repaired classifications.
+- fix(classification): regex word boundaries prevent agent ID over-matching.
+- fix(transport): preserve original exception traceback in `InProcessTransport`.
+- feat(custom-agent): per-custom-agent `timeout_sec` configuration in DB and API.
+- fix(dispatch): warn with agent ID on unknown result types in `normalize_agent_result`.
+- fix(dispatch): pass `SettingsRepository` instance instead of class reference.
+- fix(orchestrator): correct `cache_stored_response` span metadata.
+- fix(cache): removed redundant `cacheable` check in `store_after_dispatch`.
+- fix(docker): cap setuptools to `<82` to resolve torch dependency conflict.
+- test: added comprehensive test coverage for orchestrator, dispatch, registry, and scenarios.
 
 ### 1.37.5 (PATCH) -- Cerebras provider support
 
