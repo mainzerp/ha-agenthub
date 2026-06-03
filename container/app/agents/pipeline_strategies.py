@@ -490,13 +490,9 @@ class DefaultFinalizationStrategy(FinalizationStrategy):
                         speech += f"\n\n(Note: {failed_names} could not be reached.)"
 
                 ret_span["metadata"]["agent_response"] = speech
-                speech, voice_followup_effective = await self._merge_voice_followup_and_organic(
+                speech, voice_followup_effective = self._merge_voice_followup_and_organic(
                     speech,
                     agent_requested=agent_voice_followup,
-                    ctx=task.context if task else None,
-                    language=language,
-                    has_error=has_error,
-                    target_agent=target_agent,
                     mediated_followup=False,
                 )
                 ret_span["metadata"]["final_response"] = speech
