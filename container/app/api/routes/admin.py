@@ -984,6 +984,7 @@ async def test_llm_provider(payload: ProviderTestRequest):
         "groq": "groq/llama-3.1-8b-instant",
         "openrouter": "openrouter/openai/gpt-4o-mini",
         "anthropic": "anthropic/claude-3-haiku-20240307",
+        "cerebras": "cerebras/llama3.1-8b",
         "ollama": "ollama/llama3",
         "custom_openai": payload.model or "custom_openai/gpt-4o-mini",
     }
