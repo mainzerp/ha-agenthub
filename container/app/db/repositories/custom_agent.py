@@ -13,27 +13,12 @@ from app.db.schema import get_db_read, get_db_write
 logger = logging.getLogger(__name__)
 
 _CUSTOM_AGENT_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,62}$")
-_BUILTIN_AGENT_IDS = {
-    "orchestrator",
-    "light-agent",
-    "music-agent",
-    "general-agent",
-    "timer-agent",
-    "climate-agent",
-    "media-agent",
-    "scene-agent",
-    "automation-agent",
-    "security-agent",
-    "send-agent",
-    "rewrite-agent",
-    "filler-agent",
-    "calendar-agent",
-    "lists-agent",
-}
 
 
 def normalize_custom_agent_name(name: str) -> str:
     """Return the stable DB name used by custom agent IDs."""
+    from app.bootstrap._agents import BUILT_IN_AGENT_IDS
+
     raw = (name or "").strip().lower()
     normalized = re.sub(r"[^a-z0-9_-]+", "-", raw).strip("-_")
     if not normalized or not _CUSTOM_AGENT_NAME_RE.fullmatch(normalized):
@@ -41,7 +26,7 @@ def normalize_custom_agent_name(name: str) -> str:
     if normalized.startswith("custom-"):
         raise ValueError("Custom agent name must not include the custom- prefix")
     agent_id = f"custom-{normalized}"
-    if agent_id in _BUILTIN_AGENT_IDS:
+    if agent_id in BUILT_IN_AGENT_IDS:
         raise ValueError("Custom agent ID conflicts with a built-in agent")
     return normalized
 
@@ -253,7 +238,15 @@ class CustomAgentRepository:
     @staticmethod
     async def create(name: str, system_prompt: str, **kwargs: Any) -> None:
         name = CustomAgentRepository.normalize_name(name)
-        fields = {"description", "model_override", "mcp_tools", "entity_visibility", "intent_patterns", "enabled"}
+        fields = {
+            "description",
+            "model_override",
+            "timeout_sec",
+            "mcp_tools",
+            "entity_visibility",
+            "intent_patterns",
+            "enabled",
+        }
         data = {k: v for k, v in kwargs.items() if k in fields}
         for field in ("mcp_tools", "entity_visibility", "intent_patterns"):
             if field in data and isinstance(data[field], (list, dict)):
@@ -276,6 +269,7 @@ class CustomAgentRepository:
             "description",
             "system_prompt",
             "model_override",
+            "timeout_sec",
             "mcp_tools",
             "entity_visibility",
             "intent_patterns",
@@ -318,11 +312,13 @@ class CustomAgentRepository:
         enabled = bool(kwargs.get("enabled", True))
         description = kwargs.get("description") or ""
         model_override = cls._clean_model_override(kwargs.get("model_override"))
+        timeout_sec = kwargs.get("timeout_sec")
         row = {
             "name": name,
             "description": description,
             "system_prompt": system_prompt,
             "model_override": model_override,
+            "timeout_sec": timeout_sec,
             "mcp_tools": mcp_tools,
             "entity_visibility": visibility_rules,
             "intent_patterns": intent_patterns,
@@ -331,13 +327,14 @@ class CustomAgentRepository:
         async with get_db_write() as db:
             await db.execute(
                 "INSERT INTO custom_agents "
-                "(name, description, system_prompt, model_override, mcp_tools, entity_visibility, intent_patterns, enabled, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "(name, description, system_prompt, model_override, timeout_sec, mcp_tools, entity_visibility, intent_patterns, enabled, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     name,
                     description,
                     system_prompt,
                     model_override,
+                    timeout_sec,
                     json.dumps(mcp_tools) if mcp_tools else None,
                     json.dumps(visibility_rules) if visibility_rules else None,
                     json.dumps(intent_patterns) if intent_patterns else None,
@@ -355,6 +352,7 @@ class CustomAgentRepository:
             "description",
             "system_prompt",
             "model_override",
+            "timeout_sec",
             "mcp_tools",
             "entity_visibility",
             "intent_patterns",

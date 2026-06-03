@@ -1,4 +1,9 @@
-"""Domain-to-Agent mapping API endpoints."""
+"""Domain-to-Agent mapping API endpoints.
+
+Domain-agent maps control which agents can *see* entities from a given
+Home Assistant domain or device_class. They affect entity visibility
+filtering, not orchestrator routing decisions.
+"""
 
 from __future__ import annotations
 
@@ -8,6 +13,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel
 
+from app.bootstrap._agents import BUILT_IN_AGENT_IDS
 from app.cache.vector_store import COLLECTION_ENTITY_INDEX
 from app.db.repository import CustomAgentRepository, EntityVisibilityRepository
 from app.security.auth import require_admin_session
@@ -20,19 +26,11 @@ router = APIRouter(
     dependencies=[Depends(require_admin_session)],
 )
 
-BUILT_IN_AGENTS = [
-    "light-agent",
-    "music-agent",
-    "timer-agent",
-    "climate-agent",
-    "media-agent",
-    "scene-agent",
-    "automation-agent",
-    "security-agent",
-    "lists-agent",
-    "cover-agent",
-    "vacuum-agent",
-]
+BUILT_IN_AGENTS = sorted(
+    aid
+    for aid in BUILT_IN_AGENT_IDS
+    if aid not in {"orchestrator", "cancel-interaction", "rewrite-agent", "filler-agent"}
+)
 
 
 class SetDomainAgentsRequest(BaseModel):

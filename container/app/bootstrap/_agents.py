@@ -18,6 +18,29 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+BUILT_IN_AGENT_IDS: frozenset[str] = frozenset(
+    {
+        "orchestrator",
+        "light-agent",
+        "music-agent",
+        "general-agent",
+        "timer-agent",
+        "climate-agent",
+        "media-agent",
+        "scene-agent",
+        "automation-agent",
+        "security-agent",
+        "send-agent",
+        "rewrite-agent",
+        "filler-agent",
+        "calendar-agent",
+        "lists-agent",
+        "cover-agent",
+        "vacuum-agent",
+        "cancel-interaction",
+    }
+)
+
 
 async def setup_rewrite_agent(
     app: FastAPI,
@@ -46,7 +69,7 @@ async def setup_agents(
     Must be called after ``setup_rewrite_agent`` and MCP registrations.
     Requires ``app.state.mcp_tool_manager`` to be set.
     """
-    await install_all_agents(app)
+    orchestrator_instance = await install_all_agents(app)
 
     custom_loader = getattr(app.state, "custom_loader", None)
     if custom_loader is None:
@@ -65,3 +88,6 @@ async def setup_agents(
         reload_result = custom_loader.reload()
         if inspect.isawaitable(reload_result):
             await reload_result
+
+    if orchestrator_instance is not None:
+        orchestrator_instance._agent_registry.invalidate_caches()

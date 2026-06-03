@@ -174,6 +174,7 @@ async def _create_tables(db: aiosqlite.Connection) -> None:
             description TEXT,
             system_prompt TEXT NOT NULL,
             model_override TEXT,
+            timeout_sec INTEGER,
             mcp_tools TEXT,
             entity_visibility TEXT,
             intent_patterns TEXT,
@@ -1745,3 +1746,9 @@ async def _run_migrations(db: aiosqlite.Connection) -> None:
             "CREATE INDEX IF NOT EXISTS idx_trace_summary_conversation_id ON trace_summary(conversation_id)"
         )
         await db.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (36)")
+
+    if current_version < 37:
+        # Migration 37: Add per-custom-agent timeout configuration.
+        if not await _column_exists(db, "custom_agents", "timeout_sec"):
+            await db.execute("ALTER TABLE custom_agents ADD COLUMN timeout_sec INTEGER")
+        await db.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (37)")

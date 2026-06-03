@@ -78,9 +78,9 @@ class InProcessTransport(Transport):
         except TimeoutError:
             logger.warning("Agent %s timed out after %ds", agent_id, self._DEFAULT_TIMEOUT)
             raise
-        except Exception:
+        except Exception as e:
             logger.exception("Agent %s failed on handle_task", agent_id)
-            raise RuntimeError(f"Agent error: {agent_id}") from None
+            raise RuntimeError(f"Agent error: {agent_id}") from e
 
     async def stream(self, agent_id: str, task: AgentTask, request_id: str) -> AsyncGenerator[dict[str, Any], None]:
         handler = await self._registry._get_handler_for_transport(agent_id)

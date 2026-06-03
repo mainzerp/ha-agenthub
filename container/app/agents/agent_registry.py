@@ -80,8 +80,9 @@ class CachedAgentRegistry:
         self._registry = registry
         self._default_timeout = default_timeout
         self._max_dispatch_timeout = max_dispatch_timeout
-        self._per_agent_timeout_cache: dict[str, float] = {}
+        self._per_agent_timeout_cache = _TTLCache(maxsize=256, ttl=60.0)
         self._agent_card_cache = _TTLCache(maxsize=256, ttl=300.0)
+        self._agent_cards_by_id: dict[str, AgentCard] = {}
         self._known_agents_cache: tuple[float, set[str]] | None = None
         self._known_agents_ttl: float = 5.0
 
@@ -99,6 +100,7 @@ class CachedAgentRegistry:
         """Clear all caches so the next lookup hits the underlying registry."""
         self._per_agent_timeout_cache.clear()
         self._agent_card_cache.clear()
+        self._agent_cards_by_id.clear()
         self._known_agents_cache = None
 
     # ------------------------------------------------------------------
@@ -169,6 +171,11 @@ class CachedAgentRegistry:
         if cached is not None:
             return cached
 
+        card = self._agent_cards_by_id.get(agent_id)
+        if card is not None:
+            self._agent_card_cache[agent_id] = card
+            return card
+
         if self._registry is None:
             return None
 
@@ -178,10 +185,16 @@ class CachedAgentRegistry:
             logger.debug("Registry list_agents failed for %s", agent_id, exc_info=True)
             return None
 
-        for card in cards:
-            if getattr(card, "agent_id", None) == agent_id:
-                self._agent_card_cache[agent_id] = card
-                return card
+        for c in cards:
+            aid = getattr(c, "agent_id", None)
+            if aid:
+                self._agent_cards_by_id[aid] = c
+            if aid == agent_id:
+                card = c
+
+        if card is not None:
+            self._agent_card_cache[agent_id] = card
+            return card
         return None
 
     async def list_agents(self) -> list[AgentCard]:
@@ -189,19 +202,25 @@ class CachedAgentRegistry:
         if self._registry is None:
             return []
         try:
-            return list(await self._registry.list_agents())
+            cards = list(await self._registry.list_agents())
         except Exception:
             logger.debug("Registry list_agents failed", exc_info=True)
             return []
+        for c in cards:
+            aid = getattr(c, "agent_id", None)
+            if aid:
+                self._agent_cards_by_id[aid] = c
+        return cards
 
     async def get_known_agents(self, *, exclude: set[str] | frozenset[str] | None = None) -> set[str]:
         """Return set of currently registered agent IDs.
 
         Result is memoised for ``_known_agents_ttl`` seconds.
         """
-        fallback = {"light-agent", "music-agent", "general-agent", "cancel-interaction"}
         if self._registry is None:
-            return fallback
+            from app.bootstrap._agents import BUILT_IN_AGENT_IDS
+
+            return set(BUILT_IN_AGENT_IDS)
 
         now = time.monotonic()
         cached = self._known_agents_cache
@@ -215,6 +234,7 @@ class CachedAgentRegistry:
             logger.debug("Registry list_agents failed for known-agents", exc_info=True)
             agents = set()
 
+        # cancel-interaction is a pipeline-level directive, not a real agent.
         agents.add("cancel-interaction")
         self._known_agents_cache = (now, set(agents))
         return agents

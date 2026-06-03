@@ -402,47 +402,42 @@ class CacheOrchestrator:
             if isinstance(raw_service_data, dict) and "condition" in raw_service_data:
                 return False, False
 
-            if action_executed.get("cacheable", True):
-                entity_id = str(action_executed.get("entity_id") or "").strip()
-                action_name = str(action_executed.get("action") or "").strip().lower()
-                if entity_id and action_name:
-                    cached_service_data: dict[str, Any] = {}
-                    if isinstance(raw_service_data, dict):
-                        for key in _CACHED_SERVICE_DATA_KEYS:
-                            if key in raw_service_data:
-                                cached_service_data[key] = raw_service_data[key]
-                    domain = entity_id.split(".", 1)[0] if "." in entity_id else ""
-                    cached_action = CachedAction(
-                        service=f"{domain}/{action_name}" if domain else action_name,
-                        entity_id=entity_id,
-                        service_data=cached_service_data,
-                    )
-                    entry = ActionCacheEntry(
-                        query_text=user_text,
-                        language=language,
-                        agent_id=target_agent,
-                        condensed_task=condensed_task,
-                        confidence=confidence_value,
-                        response_text=speech,
-                        original_response_text=original_response_text or speech,
-                        cached_action=cached_action,
-                        entity_ids=entity_ids,
-                        origin_area_id=(
-                            task.context.area_id if used_origin_context and task and task.context else None
-                        ),
-                        origin_device_id=(
-                            task.context.device_id if used_origin_context and task and task.context else None
-                        ),
-                        executed_at=datetime.now(UTC).isoformat(),
-                    )
-                    try:
-                        await self._cache_manager.store_action_async(entry)
-                        return True, False
-                    except Exception:
-                        logger.warning("Failed to store action cache entry", exc_info=True)
-                        return False, False
-                return False, False
-
+            entity_id = str(action_executed.get("entity_id") or "").strip()
+            action_name = str(action_executed.get("action") or "").strip().lower()
+            if entity_id and action_name:
+                cached_service_data: dict[str, Any] = {}
+                if isinstance(raw_service_data, dict):
+                    for key in _CACHED_SERVICE_DATA_KEYS:
+                        if key in raw_service_data:
+                            cached_service_data[key] = raw_service_data[key]
+                domain = entity_id.split(".", 1)[0] if "." in entity_id else ""
+                cached_action = CachedAction(
+                    service=f"{domain}/{action_name}" if domain else action_name,
+                    entity_id=entity_id,
+                    service_data=cached_service_data,
+                )
+                entry = ActionCacheEntry(
+                    query_text=user_text,
+                    language=language,
+                    agent_id=target_agent,
+                    condensed_task=condensed_task,
+                    confidence=confidence_value,
+                    response_text=speech,
+                    original_response_text=original_response_text or speech,
+                    cached_action=cached_action,
+                    entity_ids=entity_ids,
+                    origin_area_id=(task.context.area_id if used_origin_context and task and task.context else None),
+                    origin_device_id=(
+                        task.context.device_id if used_origin_context and task and task.context else None
+                    ),
+                    executed_at=datetime.now(UTC).isoformat(),
+                )
+                try:
+                    await self._cache_manager.store_action_async(entry)
+                    return True, False
+                except Exception:
+                    logger.warning("Failed to store action cache entry", exc_info=True)
+                    return False, False
             return False, False
 
         try:
