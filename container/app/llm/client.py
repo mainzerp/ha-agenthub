@@ -129,10 +129,8 @@ async def complete(
     except litellm.exceptions.AuthenticationError:
         logger.error("Authentication failed for agent=%s model=%s -- check API key", agent_id, model)
         raise
-    except litellm.Timeout as e:
-        logger.warning(
-            "LLM timeout for agent=%s model=%s, retrying once after 2s", agent_id, model
-        )
+    except litellm.exceptions.Timeout as e:
+        logger.warning("LLM timeout for agent=%s model=%s, retrying once after 2s", agent_id, model)
         await asyncio.sleep(2)
         try:
             async with _optional_span(span_collector, "llm_provider_call", agent_id=agent_id) as pspan:
