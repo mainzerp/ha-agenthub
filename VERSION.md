@@ -1,12 +1,18 @@
 # Version
 
-**Current Version:** 1.37.2
+**Current Version:** 1.37.3
 
 ## Recent Changes
 
-Track changes since `v1.37.2` here.
+Track changes since `v1.37.3` here.
 
 ## Version History
+
+### 1.37.3 (PATCH) -- LiteLLM debug logging, rate limit increase, dependency fix
+
+- chore(litellm): enable verbose logging for Groq timeout debugging.
+- chore(rate-limit): increase admin API rate limit from 60 to 300 req/min for log retrieval.
+- fix(deps): revert litellm minimum to >=1.83.7 (1.83.11 does not exist on PyPI).
 
 ### 1.37.2 (PATCH) -- Improved LLM error logging, restructured orchestrator prompt
 

@@ -5,7 +5,7 @@ fastapi==0.135.3
 uvicorn[standard]==0.48.0
 
 # LLM integration
-litellm>=1.83.11,<2.0.0
+litellm>=1.83.7,<2.0.0
 
 # Embeddings (local)
 sentence-transformers==5.5.1
