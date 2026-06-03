@@ -78,4 +78,11 @@ Conditional commands:
   - Input: "turn on the basement light if it's dark outside"
   - Output: light-agent (90%): turn on the basement light if it's dark outside
 
+Examples:
+- "turn on the kitchen light" → light-agent (95%): turn on kitchen light
+- "set the living room to 22 degrees" → climate-agent (95%): set living room to 22C
+- "is the front door locked?" → security-agent (90%): check front door lock
+- "play jazz in the bedroom" → music-agent (95%): play jazz in bedroom
+- "who invented the light bulb?" → general-agent (80%): inventor of light bulb
+
 Format: <agent-id> (<confidence>%): <condensed task>

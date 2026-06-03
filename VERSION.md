@@ -1,12 +1,17 @@
 # Version
 
-**Current Version:** 1.37.0
+**Current Version:** 1.37.1
 
 ## Recent Changes
 
-Track changes since `v1.37.0` here.
+Track changes since `v1.37.1` here.
 
 ## Version History
+
+### 1.37.1 (PATCH) -- Restore classification prompt examples, improve logging
+
+- fix(classify): restore 5 minimal English-only format examples to orchestrator prompt. Examples removed in v1.36.2 caused parse failures on complex German inputs ("schalte das licht im keller ein" → general-agent fallback).
+- chore(logging): change classification LLM response log from debug to info for production visibility.
 
 ### 1.37.0 (MINOR) -- SQLite cache backend, dispatch delay logging
 

@@ -287,7 +287,7 @@ class ClassificationEngine:
             async with _optional_span(
                 span_collector, "classify.parse_and_sanitize", agent_id="orchestrator"
             ) as subspan:
-                logger.debug("Classification LLM response for '%s': %s", user_text[:60], repr(response[:300]))
+                logger.info("Classification LLM response for '%s': %s", user_text[:60], repr(response[:300]))
                 classifications = await self.parse_classification(response, user_text)
                 classifications = await self.sanitize_or_repair_classifications(
                     classifications,
