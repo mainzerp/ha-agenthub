@@ -13,6 +13,11 @@ from app.db.repository import AgentConfigRepository
 from app.llm.providers import resolve_provider_params
 from app.models.agent import AgentConfig
 
+try:
+    from litellm.exceptions import Timeout as LiteLLMTimeout
+except ImportError:
+    LiteLLMTimeout = None
+
 logger = logging.getLogger(__name__)
 
 
@@ -129,22 +134,43 @@ async def complete(
     except litellm.exceptions.AuthenticationError:
         logger.error("Authentication failed for agent=%s model=%s -- check API key", agent_id, model)
         raise
-    except litellm.exceptions.Timeout as e:
-        logger.warning("LLM timeout for agent=%s model=%s, retrying once after 2s", agent_id, model)
-        await asyncio.sleep(2)
-        try:
-            async with _optional_span(span_collector, "llm_provider_call", agent_id=agent_id) as pspan:
-                response = await litellm.acompletion(**call_kwargs)
-                pspan["metadata"]["model"] = model
-                pspan["metadata"]["retry"] = "timeout"
-        except Exception:
-            raise
-        if not response.choices:
-            raise LLMError("Empty choices from provider on timeout retry") from e
-        content = (response.choices[0].message.content or "").strip() if response.choices[0].message else ""
     except litellm.exceptions.APIError as e:
         status = getattr(e, "status_code", "?")
         logger.error("LLM API error agent=%s model=%s status=%s: %s", agent_id, model, status, str(e))
+        raise
+    except Exception as e:
+        if LiteLLMTimeout is not None and isinstance(e, LiteLLMTimeout):
+            logger.warning("LLM timeout for agent=%s model=%s, retrying once after 2s", agent_id, model)
+            await asyncio.sleep(2)
+            try:
+                async with _optional_span(span_collector, "llm_provider_call", agent_id=agent_id) as pspan:
+                    response = await litellm.acompletion(**call_kwargs)
+                    pspan["metadata"]["model"] = model
+                    pspan["metadata"]["retry"] = "timeout"
+            except Exception:
+                raise
+            if not response.choices:
+                raise LLMError("Empty choices from provider on timeout retry") from e
+            content = (response.choices[0].message.content or "").strip() if response.choices[0].message else ""
+            if not content:
+                finish_reason = response.choices[0].finish_reason if response.choices else "unknown"
+                logger.warning(
+                    "LLM response completely empty after timeout retry — "
+                    "agent=%s model=%s max_tokens=%s finish_reason=%s",
+                    agent_id, model, max_tokens, finish_reason,
+                )
+                raise ValueError(
+                    f"Empty LLM response for agent={agent_id} after timeout retry "
+                    f"(model={model} max_tokens={max_tokens} finish_reason={finish_reason})"
+                ) from e
+            if hasattr(response, "usage") and response.usage:
+                await track_token_usage(
+                    agent_id=agent_id,
+                    provider=model.split("/")[0] if "/" in model else "unknown",
+                    tokens_in=response.usage.prompt_tokens or 0,
+                    tokens_out=response.usage.completion_tokens or 0,
+                )
+            return content
         raise
 
 
