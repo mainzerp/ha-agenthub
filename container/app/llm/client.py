@@ -128,8 +128,11 @@ async def complete(
     except litellm.exceptions.AuthenticationError:
         logger.error("Authentication failed for agent=%s model=%s -- check API key", agent_id, model)
         raise
-    except litellm.exceptions.APIError:
-        logger.exception("LLM call failed for agent=%s model=%s", agent_id, model)
+    except litellm.exceptions.APIError as e:
+        status = getattr(e, "status_code", "?")
+        logger.error(
+            "LLM API error agent=%s model=%s status=%s: %s", agent_id, model, status, str(e)
+        )
         raise
 
 
