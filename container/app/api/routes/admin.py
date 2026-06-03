@@ -39,6 +39,7 @@ PROVIDER_SECRET_KEYS = {
     "openrouter": "openrouter_api_key",
     "groq": "groq_api_key",
     "anthropic": "anthropic_api_key",
+    "cerebras": "cerebras_api_key",
     "custom_openai": "custom_openai_api_key",
 }
 _ENTITY_ID_LOOKS_VALID_RE = re.compile(r"^[a-zA-Z0-9_]+\.[a-zA-Z0-9_]+$")
