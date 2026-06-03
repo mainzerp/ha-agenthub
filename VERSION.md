@@ -1,12 +1,16 @@
 # Version
 
-**Current Version:** 1.37.4
+**Current Version:** 1.37.5
 
 ## Recent Changes
 
-Track changes since `v1.37.4` here.
+Track changes since `v1.37.5` here.
 
 ## Version History
+
+### 1.37.5 (PATCH) -- Cerebras provider support
+
+- feat(llm): add Cerebras provider mapping (cerebras_api_key).
 
 ### 1.37.4 (PATCH) -- LiteLLM env var, Timeout retry
 
