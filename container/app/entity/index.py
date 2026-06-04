@@ -506,7 +506,8 @@ class EntityIndex:
                 ids=meta_only_ids,
                 metadatas=meta_only_metas,
             )
-        self._invalidate_list_entries_cache()
+        if to_upsert or meta_only_ids:
+            self._invalidate_list_entries_cache()
 
     # ------------------------------------------------------------------
     # Async wrappers (offload to thread pool via run_in_executor)
@@ -541,6 +542,11 @@ class EntityIndex:
         """Async wrapper -- offloads get_by_id() to thread pool."""
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, self.get_by_id, entity_id)
+
+    async def get_by_ids_async(self, entity_ids: list[str]) -> dict[str, EntityIndexEntry]:
+        """Async wrapper -- offloads get_by_ids() to thread pool."""
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, partial(self.get_by_ids, entity_ids))
 
     async def list_entries_async(
         self,
