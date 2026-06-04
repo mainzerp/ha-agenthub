@@ -55,13 +55,8 @@ class EntityIndex:
             "last_sync": None,
             "last_sync_duration_ms": 0,
         }
-        self._list_entries_cache: dict[frozenset[str] | None, list[EntityIndexEntry]] = {}
-        self._list_entries_cache_lock = threading.Lock()
-
-    def _invalidate_list_entries_cache(self) -> None:
-        """Clear the list_entries cache after any write operation."""
-        with self._list_entries_cache_lock:
-            self._list_entries_cache.clear()
+        self._primary: dict[str, EntityIndexEntry] = {}
+        self._primary_lock = threading.Lock()
 
     @staticmethod
     def _build_metadata(entry: EntityIndexEntry) -> dict:
@@ -159,13 +154,17 @@ class EntityIndex:
                 )
                 self._status["processed"] = min(start + len(batch), total)
                 self._status["progress"] = int(self._status["processed"] / total * 100)
-            self._invalidate_list_entries_cache()
+            with self._primary_lock:
+                self._primary.clear()
+                for e in entities:
+                    self._primary[e.entity_id] = e
             self._last_refresh = datetime.now(UTC).isoformat()
             self._status["state"] = "ready"
             self._status["progress"] = 100
             logger.info("Entity index populated with %d entities", total)
         except Exception as exc:
-            self._invalidate_list_entries_cache()
+            with self._primary_lock:
+                self._primary.clear()
             self._status["state"] = "error"
             self._status["error"] = str(exc)
             logger.error("Entity index populate failed: %s", exc)
@@ -210,6 +209,11 @@ class EntityIndex:
             ids = current.get("ids") or []
             metas = current.get("metadatas") or []
             if ids and metas and self._stored_hash(metas[0]) == entry.content_hash:
+                # Hash matches: skip ChromaDB upsert, but still update primary
+                # store because runtime state may have changed even though
+                # content_hash (identity fields) hasn't.
+                with self._primary_lock:
+                    self._primary[entry.entity_id] = entry
                 return
         except Exception:
             logger.debug(
@@ -223,67 +227,34 @@ class EntityIndex:
             documents=[entry.embedding_text],
             metadatas=[self._build_metadata(entry)],
         )
-        self._invalidate_list_entries_cache()
+        with self._primary_lock:
+            self._primary[entry.entity_id] = entry
 
     def remove(self, entity_id: str) -> None:
         """Remove an entity from the index."""
         self._store.delete(COLLECTION_ENTITY_INDEX, ids=[entity_id])
-        self._invalidate_list_entries_cache()
+        with self._primary_lock:
+            self._primary.pop(entity_id, None)
 
     def get_by_id(self, entity_id: str) -> EntityIndexEntry | None:
         """Retrieve a single entity by its ID, or None if not found."""
-        data = self._store.get(
-            COLLECTION_ENTITY_INDEX,
-            ids=[entity_id],
-            include=["metadatas"],
-        )
-        if not data["ids"]:
-            return None
-        meta = data["metadatas"][0]
-        return self._entry_from_metadata(entity_id, meta)
+        with self._primary_lock:
+            return self._primary.get(entity_id)
 
     def get_by_ids(self, entity_ids: list[str]) -> dict[str, EntityIndexEntry]:
         """Retrieve multiple entities by ID. Returns a mapping of entity_id -> entry."""
         if not entity_ids:
             return {}
-        data = self._store.get(
-            COLLECTION_ENTITY_INDEX,
-            ids=entity_ids,
-            include=["metadatas"],
-        )
-        result: dict[str, EntityIndexEntry] = {}
-        for eid, meta in zip(data.get("ids", []), data.get("metadatas", []), strict=False):
-            if meta is not None:
-                result[eid] = self._entry_from_metadata(eid, meta)
-        return result
+        with self._primary_lock:
+            return {eid: self._primary[eid] for eid in entity_ids if eid in self._primary}
 
     def list_entries(self, domains: set[str] | frozenset[str] | None = None) -> list[EntityIndexEntry]:
         """Return all indexed entities, optionally filtered by domain."""
-        cache_key = frozenset(domains) if domains else None
-        with self._list_entries_cache_lock:
-            cached = self._list_entries_cache.get(cache_key)
-            if cached is not None:
-                return list(cached)
-
-        where: dict | None = None
+        with self._primary_lock:
+            entries = list(self._primary.values())
         if domains:
-            dlist = list(domains)
-            where = {"domain": dlist[0]} if len(dlist) == 1 else {"domain": {"$in": dlist}}
-        data = self._store.get(
-            COLLECTION_ENTITY_INDEX,
-            include=["metadatas"],
-            where=where,
-        )
-        entries: list[EntityIndexEntry] = []
-        for entity_id, meta in zip(data.get("ids", []), data.get("metadatas", []), strict=False):
-            entry = self._entry_from_metadata(entity_id, meta)
-            if domains and entry.domain not in domains:
-                continue
-            entries.append(entry)
-
-        with self._list_entries_cache_lock:
-            self._list_entries_cache[cache_key] = entries
-        return list(entries)
+            entries = [e for e in entries if e.domain in domains]
+        return entries
 
     def clear(self) -> None:
         """Remove all entities from the index."""
@@ -292,7 +263,8 @@ class EntityIndex:
             all_data = self._store.get(COLLECTION_ENTITY_INDEX, include=[])
             if all_data["ids"]:
                 self._store.delete(COLLECTION_ENTITY_INDEX, ids=all_data["ids"])
-        self._invalidate_list_entries_cache()
+        with self._primary_lock:
+            self._primary.clear()
         logger.info("Entity index cleared")
 
     def refresh(self, entities: list[EntityIndexEntry]) -> None:
@@ -301,7 +273,6 @@ class EntityIndex:
         self._status["progress"] = 0
         self.clear()
         self.populate(entities)
-        self._invalidate_list_entries_cache()
 
     def sync(self, entities: list[EntityIndexEntry]) -> dict:
         """Smart diff sync: upsert changed/new, remove deleted, skip unchanged.
@@ -393,6 +364,12 @@ class EntityIndex:
             self._status["processed"] = total_entities
             self._status["progress"] = 100
 
+            # Rebuild primary store from HA source of truth
+            with self._primary_lock:
+                self._primary.clear()
+                for e in entities:
+                    self._primary[e.entity_id] = e
+
             self._sync_stats = {
                 "added": added,
                 "updated": updated,
@@ -402,7 +379,6 @@ class EntityIndex:
                 "last_sync_duration_ms": elapsed_ms,
             }
 
-            self._invalidate_list_entries_cache()
             logger.info(
                 "Entity sync complete: +%d ~%d -%d =%d (%dms)",
                 added,
@@ -414,7 +390,6 @@ class EntityIndex:
             return {"added": added, "updated": updated, "removed": removed, "unchanged": unchanged}
 
         except Exception as exc:
-            self._invalidate_list_entries_cache()
             self._status["state"] = prev_state if prev_state != "syncing" else "ready"
             self._status["error"] = str(exc)
             logger.error("Entity sync failed: %s", exc)
@@ -426,8 +401,10 @@ class EntityIndex:
 
     def get_stats(self) -> dict:
         """Return index statistics."""
+        with self._primary_lock:
+            primary_count = len(self._primary)
         return {
-            "count": self._store.count(COLLECTION_ENTITY_INDEX),
+            "count": primary_count,
             "last_refresh": self._last_refresh,
             "embedding_status": dict(self._status),
             "sync": dict(self._sync_stats),
@@ -506,8 +483,11 @@ class EntityIndex:
                 ids=meta_only_ids,
                 metadatas=meta_only_metas,
             )
-        if to_upsert or meta_only_ids:
-            self._invalidate_list_entries_cache()
+
+        # Always update primary store so runtime state is current
+        with self._primary_lock:
+            for e in deduped:
+                self._primary[e.entity_id] = e
 
     # ------------------------------------------------------------------
     # Async wrappers (offload to thread pool via run_in_executor)
