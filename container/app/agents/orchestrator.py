@@ -330,8 +330,8 @@ class OrchestratorAgent(BaseAgent):
     async def _get_personality_cached(self) -> str:
         """Return cached personality prompt with 300-second TTL."""
         now_ = time.monotonic()
-        cache_ts = getattr(self, "_personality_cache_ts", 0.0)
-        if now_ - cache_ts < _PERSONALITY_CACHE_TTL_SEC:
+        cache_ts = getattr(self, "_personality_cache_ts", None)
+        if cache_ts is not None and now_ - cache_ts < _PERSONALITY_CACHE_TTL_SEC:
             return getattr(self, "_personality_cache_value", "")
         try:
             personality = await SettingsRepository.get_value("personality.prompt", "")
