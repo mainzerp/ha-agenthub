@@ -189,6 +189,7 @@ def test_two_state_changed_events_trigger_a_single_upsert():
     # No additional upsert and no metadata-only update for state-only flip.
     assert store.upsert.call_count == 1
     store.update_metadata.assert_not_called()
+    assert index._primary["light.kitchen_ceiling"] is second
 
 
 def test_friendly_name_change_after_state_change_triggers_upsert():
@@ -229,3 +230,4 @@ def test_friendly_name_change_after_state_change_triggers_upsert():
 
     index.batch_add([second])
     assert store.upsert.call_count == 2
+    assert index._primary["light.kitchen_ceiling"].friendly_name == "Kitchen Ceiling Renamed"

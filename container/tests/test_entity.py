@@ -917,28 +917,25 @@ class TestEntityIndex:
         assert store.upsert.called
 
     def test_get_stats(self):
-        index, store = self._make_index()
-        store.count.return_value = 42
+        index, _store = self._make_index()
+        index._primary = {f"light.{i}": make_entity_index_entry(f"light.{i}", f"Light {i}") for i in range(42)}
         stats = index.get_stats()
         assert stats["count"] == 42
 
     def test_get_by_id_found(self):
         index, store = self._make_index()
-        store.get.return_value = {
-            "ids": ["light.kitchen"],
-            "metadatas": [
-                {"friendly_name": "Kitchen", "domain": "light", "area": "kitchen", "device_class": "", "aliases": ""}
-            ],
-        }
+        expected = make_entity_index_entry("light.kitchen", "Kitchen", area="kitchen")
+        index._primary = {"light.kitchen": expected}
         entry = index.get_by_id("light.kitchen")
         assert entry is not None
         assert entry.entity_id == "light.kitchen"
+        store.get.assert_not_called()
 
     def test_get_by_id_not_found(self):
         index, store = self._make_index()
-        store.get.return_value = {"ids": [], "metadatas": []}
         entry = index.get_by_id("light.missing")
         assert entry is None
+        store.get.assert_not_called()
 
     def test_warmup_issues_dummy_query(self):
         index, store = self._make_index()
@@ -1312,94 +1309,106 @@ class TestEntityIndexHelpers:
 
     def test_list_entries_returns_all_indexed_entities(self):
         index, store = self._make_index()
-        store.get.return_value = {
-            "ids": ["light.keller", "switch.keller_fan"],
-            "metadatas": [
-                {"friendly_name": "Keller", "domain": "light", "area": "Keller", "device_class": "", "aliases": ""},
-                {
-                    "friendly_name": "Keller Fan",
-                    "domain": "switch",
-                    "area": "Keller",
-                    "device_class": "",
-                    "aliases": "",
-                },
-            ],
+        index._primary = {
+            "light.keller": make_entity_index_entry("light.keller", "Keller", area="Keller"),
+            "switch.keller_fan": make_entity_index_entry(
+                "switch.keller_fan", "Keller Fan", area="Keller", domain="switch"
+            ),
         }
 
         entries = index.list_entries()
 
-        assert [entry.entity_id for entry in entries] == ["light.keller", "switch.keller_fan"]
+        assert {entry.entity_id for entry in entries} == {"light.keller", "switch.keller_fan"}
+        store.get.assert_not_called()
 
     def test_list_entries_can_filter_by_domain(self):
         index, store = self._make_index()
-        store.get.return_value = {
-            "ids": ["light.keller", "switch.keller_fan"],
-            "metadatas": [
-                {"friendly_name": "Keller", "domain": "light", "area": "Keller", "device_class": "", "aliases": ""},
-                {
-                    "friendly_name": "Keller Fan",
-                    "domain": "switch",
-                    "area": "Keller",
-                    "device_class": "",
-                    "aliases": "",
-                },
-            ],
+        index._primary = {
+            "light.keller": make_entity_index_entry("light.keller", "Keller", area="Keller"),
+            "switch.keller_fan": make_entity_index_entry(
+                "switch.keller_fan", "Keller Fan", area="Keller", domain="switch"
+            ),
         }
 
         entries = index.list_entries(domains={"light"})
 
         assert [entry.entity_id for entry in entries] == ["light.keller"]
+        store.get.assert_not_called()
 
-    def test_list_entries_cache_hit(self):
-        """Second call with same domains should return cached result without hitting store."""
+    def test_list_entries_reads_from_primary_store(self):
+        """list_entries() returns entities from the primary store, not ChromaDB."""
         index, store = self._make_index()
-        store.get.return_value = {
-            "ids": ["light.kitchen"],
-            "metadatas": [
-                {"friendly_name": "Kitchen", "domain": "light", "area": "", "device_class": "", "aliases": ""}
-            ],
+        entry1 = make_entity_index_entry("light.kitchen", "Kitchen Light")
+        entry2 = make_entity_index_entry("switch.bedroom", "Bedroom Switch")
+        index._primary = {
+            "light.kitchen": entry1,
+            "switch.bedroom": entry2,
         }
+        store.get.assert_not_called()
+        entries = index.list_entries()
+        assert len(entries) == 2
+        assert {e.entity_id for e in entries} == {"light.kitchen", "switch.bedroom"}
 
-        entries1 = index.list_entries(domains={"light"})
-        entries2 = index.list_entries(domains={"light"})
+    def test_list_entries_domain_filter_in_memory(self):
+        """Domain filtering happens in-memory against primary store."""
+        index, _store = self._make_index()
+        index._primary = {
+            "light.kitchen": make_entity_index_entry("light.kitchen", "Kitchen", domain="light"),
+            "switch.bedroom": make_entity_index_entry("switch.bedroom", "Bedroom", domain="switch"),
+        }
+        entries = index.list_entries(domains={"light"})
+        assert [e.entity_id for e in entries] == ["light.kitchen"]
 
-        assert len(entries1) == 1
-        assert len(entries2) == 1
-        store.get.assert_called_once()
-
-    def test_list_entries_cache_returns_shallow_copy(self):
-        """Mutating the returned list should not affect the cache."""
+    def test_get_by_id_reads_from_primary_store(self):
+        """get_by_id() returns from primary store without hitting ChromaDB."""
         index, store = self._make_index()
-        store.get.return_value = {
-            "ids": ["light.kitchen"],
-            "metadatas": [
-                {"friendly_name": "Kitchen", "domain": "light", "area": "", "device_class": "", "aliases": ""}
-            ],
-        }
+        entry = make_entity_index_entry("light.kitchen", "Kitchen Light")
+        index._primary = {"light.kitchen": entry}
+        result = index.get_by_id("light.kitchen")
+        assert result is entry
+        store.get.assert_not_called()
 
-        entries1 = index.list_entries(domains={"light"})
-        entries1.clear()
-        entries2 = index.list_entries(domains={"light"})
-
-        assert len(entries2) == 1
-
-    def test_add_invalidates_list_entries_cache(self):
-        """add() must invalidate the list_entries cache so subsequent reads are fresh."""
+    def test_get_by_ids_reads_from_primary_store(self):
+        """get_by_ids() returns from primary store without hitting ChromaDB."""
         index, store = self._make_index()
-        store.get.return_value = {
-            "ids": [],
-            "metadatas": [],
-        }
+        entry = make_entity_index_entry("light.kitchen", "Kitchen Light")
+        index._primary = {"light.kitchen": entry}
+        result = index.get_by_ids(["light.kitchen", "light.missing"])
+        assert result == {"light.kitchen": entry}
+        store.get.assert_not_called()
 
-        index.list_entries(domains={"light"})
-        assert store.get.call_count == 1
-
+    def test_add_updates_primary_store(self):
+        """add() inserts into primary store."""
+        index, store = self._make_index()
+        store.get.return_value = {"ids": [], "metadatas": []}
         entry = make_entity_index_entry("light.new", "New Light")
         index.add(entry)
+        assert index._primary["light.new"] is entry
 
-        # Cache should be invalidated; next list_entries must hit store again
-        index.list_entries(domains={"light"})
-        assert store.get.call_count == 3  # 1 list + 1 add prefetch + 1 re-list
+    def test_remove_deletes_from_primary_store(self):
+        """remove() deletes from primary store."""
+        index, _store = self._make_index()
+        entry = make_entity_index_entry("light.old", "Old Light")
+        index._primary = {"light.old": entry}
+        index.remove("light.old")
+        assert "light.old" not in index._primary
+
+    def test_populate_replaces_primary_store(self):
+        """populate() fully rebuilds primary store from entity list."""
+        index, _store = self._make_index()
+        index._primary = {"light.old": make_entity_index_entry("light.old", "Old")}
+        entities = [make_entity_index_entry("light.new", "New")]
+        index.populate(entities)
+        assert list(index._primary.keys()) == ["light.new"]
+
+    def test_clear_empties_primary_store(self):
+        """clear() removes all entries from primary store."""
+        index, store = self._make_index()
+        store.count.return_value = 0
+        store.get.return_value = {"ids": []}
+        index._primary = {"light.kitchen": make_entity_index_entry("light.kitchen", "Kitchen")}
+        index.clear()
+        assert index._primary == {}
 
 
 # ---------------------------------------------------------------------------
@@ -1490,6 +1499,8 @@ class TestEntityIndexSync:
         assert result["removed"] == 0
         assert result["unchanged"] == 0
         store.upsert.assert_called_once()
+        assert index._primary["light.kitchen"] is entities[0]
+        assert index._primary["light.bedroom"] is entities[1]
 
     def test_sync_removes_deleted_entities(self):
         """Entities in ChromaDB but not in HA list are removed."""
@@ -1508,6 +1519,8 @@ class TestEntityIndexSync:
 
         assert result["removed"] == 1
         store.delete.assert_called_once_with(COLLECTION_ENTITY_INDEX, ids=["light.old_deleted"])
+        assert "light.old_deleted" not in index._primary
+        assert index._primary["light.kitchen"] is entities[0]
 
     def test_sync_updates_changed_entities(self):
         """Entities with changed embedding_text are re-upserted."""
@@ -1532,6 +1545,7 @@ class TestEntityIndexSync:
         assert result["updated"] == 1
         assert result["unchanged"] == 0
         store.upsert.assert_called_once()
+        assert index._primary["light.kitchen"] is entities[0]
 
     def test_sync_skips_unchanged_entities(self):
         """Entities with identical doc + metadata are skipped (no upsert)."""
@@ -1550,6 +1564,7 @@ class TestEntityIndexSync:
         assert result["updated"] == 0
         store.upsert.assert_not_called()
         store.delete.assert_not_called()
+        assert index._primary["light.kitchen"] is entry
 
     def test_sync_empty_list_noop(self):
         """Syncing with an empty list returns all zeros."""
@@ -1588,6 +1603,7 @@ class TestEntityIndexSync:
         assert stats["added"] == 1
         assert stats["last_sync"] is not None
         assert stats["last_sync_duration_ms"] >= 0
+        assert index._primary["light.kitchen"] is entities[0]
 
     def test_sync_error_restores_state(self):
         """If sync fails, state is restored and error is logged."""
@@ -1633,14 +1649,19 @@ class TestEntityIndexSync:
         assert result["updated"] == 1
         assert result["added"] == 1
         assert result["removed"] == 1
+        assert index._primary["light.kitchen"] is existing_unchanged
+        assert index._primary["light.bedroom"] is new_entities[1]
+        assert index._primary["light.new_one"] is new_entities[2]
+        assert "light.deleted" not in index._primary
 
     def test_get_stats_includes_sync(self):
         """get_stats() includes sync stats."""
-        index, store = self._make_index()
-        store.count.return_value = 10
+        index, _store = self._make_index()
+        index._primary = {f"light.{i}": make_entity_index_entry(f"light.{i}", f"Light {i}") for i in range(10)}
         stats = index.get_stats()
         assert "sync" in stats
         assert stats["sync"]["last_sync"] is None  # No sync yet
+        assert stats["count"] == 10
 
 
 # ---------------------------------------------------------------------------
@@ -1826,6 +1847,7 @@ class TestEntityIndexAsync:
         assert len(ids) == 2
         assert "light.kitchen" in ids
         assert "light.bedroom" in ids
+        assert index._primary["light.kitchen"] is entries[1]  # last wins
 
     def test_batch_add_empty(self):
         index, store = self._make_index()
@@ -1844,6 +1866,7 @@ class TestEntityIndexAsync:
         index.batch_add([entry])
         store.upsert.assert_not_called()
         store.update_metadata.assert_not_called()
+        assert index._primary["light.kitchen"] is entry
 
     def test_batch_add_metadata_only_update(self):
         """Entity with same doc but different metadata uses update_metadata."""
@@ -1864,6 +1887,7 @@ class TestEntityIndexAsync:
         store.update_metadata.assert_called_once()
         call_kwargs = store.update_metadata.call_args
         assert call_kwargs[1]["ids"] == ["light.kitchen"]
+        assert index._primary["light.kitchen"] is entry
 
     def test_batch_add_doc_changed_triggers_upsert(self):
         """Entity with different embedding text triggers full upsert."""
@@ -1885,6 +1909,7 @@ class TestEntityIndexAsync:
         index.batch_add([entry])
         store.upsert.assert_called_once()
         store.update_metadata.assert_not_called()
+        assert index._primary["light.kitchen"] is entry
 
     def test_batch_add_new_entity_triggers_upsert(self):
         """Entity not in ChromaDB triggers full upsert."""
@@ -1893,6 +1918,7 @@ class TestEntityIndexAsync:
         store.get.return_value = {"ids": [], "documents": [], "metadatas": []}
         index.batch_add([entry])
         store.upsert.assert_called_once()
+        assert index._primary["light.new"] is entry
 
     def test_batch_add_mixed_operations(self):
         """Mixed batch: 1 unchanged, 1 metadata-only, 1 doc-changed, 1 new."""
@@ -1937,6 +1963,11 @@ class TestEntityIndexAsync:
         meta_ids = store.update_metadata.call_args[1]["ids"]
         assert meta_ids == ["light.meta_only"]
 
+        assert index._primary["light.unchanged"] is unchanged
+        assert index._primary["light.meta_only"] is meta_only
+        assert index._primary["light.doc_changed"] is doc_changed
+        assert index._primary["light.new_one"] is new_entry
+
     def test_batch_add_get_failure_falls_back_to_upsert(self):
         """If ChromaDB get() fails, all entries go through upsert."""
         index, store = self._make_index()
@@ -1949,6 +1980,8 @@ class TestEntityIndexAsync:
         store.upsert.assert_called_once()
         ids = store.upsert.call_args[1]["ids"]
         assert len(ids) == 2
+        assert index._primary["light.kitchen"] is entries[0]
+        assert index._primary["light.bedroom"] is entries[1]
 
     # ------------------------------------------------------------------
     # content_hash short-circuit (PART B of entity_index_push_dedup)
@@ -1986,6 +2019,7 @@ class TestEntityIndexAsync:
         index.batch_add([entry])
         store.upsert.assert_not_called()
         store.update_metadata.assert_not_called()
+        assert index._primary["light.kitchen"] is entry
 
     def test_batch_add_friendly_name_change_triggers_upsert(self):
         """Hash mismatch falls through to upsert."""
@@ -1999,6 +2033,7 @@ class TestEntityIndexAsync:
         }
         index.batch_add([new])
         store.upsert.assert_called_once()
+        assert index._primary["light.kitchen"] is new
 
     def test_add_skips_unchanged_via_content_hash(self):
         """add() short-circuits when stored content_hash matches."""
@@ -2010,6 +2045,7 @@ class TestEntityIndexAsync:
         }
         index.add(entry)
         store.upsert.assert_not_called()
+        assert index._primary["light.kitchen"] is entry
 
     def test_add_upserts_when_hash_missing(self):
         """add() falls through to upsert when no content_hash is stored."""
@@ -2021,6 +2057,7 @@ class TestEntityIndexAsync:
         }
         index.add(entry)
         store.upsert.assert_called_once()
+        assert index._primary["light.kitchen"] is entry
 
     def test_add_upserts_when_hash_differs(self):
         """add() upserts when stored hash differs from the new entry."""
@@ -2032,6 +2069,7 @@ class TestEntityIndexAsync:
         }
         index.add(entry)
         store.upsert.assert_called_once()
+        assert index._primary["light.kitchen"] is entry
 
     def test_add_falls_through_when_get_fails(self):
         """add() upserts when the pre-fetch raises (fail open)."""
@@ -2040,3 +2078,4 @@ class TestEntityIndexAsync:
         entry = make_entity_index_entry("light.kitchen", "Kitchen Light")
         index.add(entry)
         store.upsert.assert_called_once()
+        assert index._primary["light.kitchen"] is entry
