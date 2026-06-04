@@ -1,12 +1,16 @@
 # Version
 
-**Current Version:** 1.39.0
+**Current Version:** 1.39.1
 
 ## Recent Changes
 
-Track changes since `v1.39.0` here.
+Track changes since `v1.39.1` here.
 
 ## Version History
+
+### 1.39.1 (PATCH) -- Personality cache fix
+
+- fix(orchestrator): `_get_personality_cached` no longer treats uninitialized `0.0` cache timestamp as a valid hit. On fresh containers or CI runners where `time.monotonic() < 300`, this bug caused personality to be read as empty, breaking mediation entirely.
 
 ### 1.39.0 (MINOR) -- Mediation streaming for earlier TTS startup
 
