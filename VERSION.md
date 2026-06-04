@@ -1,12 +1,16 @@
 # Version
 
-**Current Version:** 1.39.1
+**Current Version:** 1.39.2
 
 ## Recent Changes
 
-Track changes since `v1.39.1` here.
+Track changes since `v1.39.2` here.
 
 ## Version History
+
+### 1.39.2 (PATCH) -- Complete personality cache fix
+
+- fix(orchestrator): remove eager `_personality_cache_ts = 0.0` initialization in `__init__`. The previous fix (1.39.1) changed `getattr` default to `None`, but `__init__` was still setting the attribute to `0.0`, so the cache was still treated as valid on fresh systems.
 
 ### 1.39.1 (PATCH) -- Personality cache fix
 
