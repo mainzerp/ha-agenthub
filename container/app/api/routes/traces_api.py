@@ -621,6 +621,7 @@ async def get_trace_detail(trace_id: str):
         "duration_ms": summary.get("routing_duration_ms"),
         "reasoning": summary.get("routing_reasoning"),
         "action_cache_hit": action_cache_hit,
+        "verbatim_terms": summary.get("verbatim_terms"),
     }
 
     # Enrich with multi-agent routing details from classify span
