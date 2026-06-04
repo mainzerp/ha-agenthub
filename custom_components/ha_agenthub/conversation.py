@@ -653,7 +653,7 @@ class HaAgentHubConversationEntity(
 
                     if data.get("done", False):
                         mediated = data.get("mediated_speech")
-                        if mediated:
+                        if mediated and not sentence_buffer.strip():
                             sentence_buffer = mediated
                         stream_sanitized = bool(data.get("sanitized", False))
                         voice_followup = bool(data.get("voice_followup", False))
@@ -876,7 +876,7 @@ class HaAgentHubConversationEntity(
                         stream_sanitized = bool(data.get("sanitized", False))
                         voice_followup = bool(data.get("voice_followup", False))
                         mediated = data.get("mediated_speech")
-                        if mediated:
+                        if mediated and not sentence_buffer.strip():
                             sentence_buffer = mediated
                         if sentence_buffer.strip():
                             await self._announce_sentence(
