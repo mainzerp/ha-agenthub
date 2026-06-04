@@ -1,12 +1,17 @@
 # Version
 
-**Current Version:** 1.40.0
+**Current Version:** 1.40.1
 
 ## Recent Changes
 
-Track changes since `v1.40.0` here.
+Track changes since `v1.40.1` here.
 
 ## Version History
+
+### 1.40.1 (PATCH) -- Trace entities display and double TTS fix
+
+- feat(traces): Persist `verbatim_terms` in `trace_summary` table with DB migration v38. Display extracted entities as badges in the Routing Decision card on the trace detail page.
+- fix(integration): Prevent double TTS announcement when `mediated_speech` arrives in the `done` frame while streaming tokens have already been announced. `mediated_speech` now only populates the buffer when it is empty.
 
 ### 1.40.0 (MINOR) -- Orchestrator-driven entity extraction
 
