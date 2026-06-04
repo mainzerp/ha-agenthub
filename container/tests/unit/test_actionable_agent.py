@@ -48,46 +48,6 @@ from app.agents.timer import TimerAgent  # noqa: E402
 from app.models.agent import AgentErrorCode  # noqa: E402
 
 # ---------------------------------------------------------------------------
-# _extract_entity_mentions
-# ---------------------------------------------------------------------------
-
-
-class TestExtractEntityMentions:
-    def test_basic_description(self):
-        mentions = ActionableAgent._extract_entity_mentions("turn on the kitchen light")
-        assert "kitchen light" in mentions
-
-    def test_quoted_phrases(self):
-        mentions = ActionableAgent._extract_entity_mentions('set "Living Room Lamp" to 50 percent')
-        assert "Living Room Lamp" in mentions
-
-    def test_single_quotes(self):
-        mentions = ActionableAgent._extract_entity_mentions("turn on 'Bedroom Light'")
-        assert "Bedroom Light" in mentions
-
-    def test_conditional_clause(self):
-        mentions = ActionableAgent._extract_entity_mentions(
-            "if outdoor brightness is dark, then turn on the kitchen light"
-        )
-        texts = [m.lower() for m in mentions]
-        assert "outdoor brightness is dark" in texts
-        assert "kitchen light" in texts
-
-    def test_strips_common_prefixes(self):
-        mentions = ActionableAgent._extract_entity_mentions("turn on the living room light")
-        assert "living room light" in mentions
-        assert "turn on" not in [m.lower() for m in mentions]
-
-    def test_deduplicates(self):
-        mentions = ActionableAgent._extract_entity_mentions("turn on the kitchen light and the kitchen light")
-        assert mentions.count("kitchen light") == 1
-
-    def test_ignores_filler_words(self):
-        mentions = ActionableAgent._extract_entity_mentions("turn it on")
-        assert "it" not in [m.lower() for m in mentions]
-
-
-# ---------------------------------------------------------------------------
 # _resolve_relevant_entities
 # ---------------------------------------------------------------------------
 
@@ -104,6 +64,7 @@ class TestResolveRelevantEntities:
     async def test_returns_correct_entities(self):
         agent = LightAgent()
         task = make_agent_task(description="turn on the kitchen light")
+        task.verbatim_terms = ["kitchen light"]
 
         with patch(
             "app.agents.actionable.resolve_entity_deterministic_first",
@@ -117,11 +78,13 @@ class TestResolveRelevantEntities:
         mock_resolve.assert_awaited_once()
         call_kwargs = mock_resolve.call_args.kwargs
         assert call_kwargs.get("allowed_domains") == frozenset({"light", "switch", "sensor"})
+        assert mock_resolve.call_args.args[0] == "kitchen light"
 
     @pytest.mark.asyncio
     async def test_limits_to_three(self):
         agent = LightAgent()
         task = make_agent_task(description="turn on light one, light two, light three, light four")
+        task.verbatim_terms = ["light one", "light two", "light three", "light four"]
 
         async def _fake_resolve(query, *args, **kwargs):
             return {"entity_id": f"light.{query.replace(' ', '_')}", "friendly_name": query}
@@ -139,6 +102,7 @@ class TestResolveRelevantEntities:
     async def test_deduplicates_by_entity_id(self):
         agent = LightAgent()
         task = make_agent_task(description="turn on the kitchen light and kitchen light")
+        task.verbatim_terms = ["kitchen light", "kitchen light"]
 
         with patch(
             "app.agents.actionable.resolve_entity_deterministic_first",
@@ -154,6 +118,7 @@ class TestResolveRelevantEntities:
     async def test_graceful_when_resolution_fails(self):
         agent = LightAgent()
         task = make_agent_task(description="turn on the unknown thing")
+        task.verbatim_terms = ["unknown thing"]
 
         with patch(
             "app.agents.actionable.resolve_entity_deterministic_first",
@@ -168,6 +133,7 @@ class TestResolveRelevantEntities:
     async def test_skips_unresolved_mentions(self):
         agent = LightAgent()
         task = make_agent_task(description="turn on the kitchen light")
+        task.verbatim_terms = ["kitchen light"]
 
         with patch(
             "app.agents.actionable.resolve_entity_deterministic_first",
@@ -183,6 +149,7 @@ class TestResolveRelevantEntities:
         """Cross-mention visible_entries caching: only the first call lists the index."""
         agent = LightAgent()
         task = make_agent_task(description="turn on the kitchen light and the bedroom light and the living room light")
+        task.verbatim_terms = ["kitchen light", "bedroom light", "living room light"]
 
         call_count = 0
 
@@ -213,6 +180,7 @@ class TestResolveRelevantEntities:
     async def test_conditional_clauses_resolve_both_target_and_condition_entity(self):
         agent = LightAgent()
         task = make_agent_task(description="if outdoor brightness is dark, turn on the kitchen light")
+        task.verbatim_terms = ["outdoor brightness", "kitchen light"]
 
         call_count = 0
 
@@ -233,6 +201,23 @@ class TestResolveRelevantEntities:
         entity_ids = [r[0] for r in result]
         assert "sensor.outdoor_brightness" in entity_ids
         assert "light.kitchen_ceiling" in entity_ids
+
+    @pytest.mark.asyncio
+    async def test_uses_description_fallback_when_verbatim_terms_empty(self):
+        agent = LightAgent()
+        task = make_agent_task(description="turn on the kitchen light")
+        task.verbatim_terms = []
+
+        with patch(
+            "app.agents.actionable.resolve_entity_deterministic_first",
+            new_callable=AsyncMock,
+            return_value={"entity_id": "light.kitchen_ceiling", "friendly_name": "Kitchen Ceiling"},
+        ) as mock_resolve:
+            result = await agent._resolve_relevant_entities(task)
+
+        assert len(result) == 1
+        mock_resolve.assert_awaited_once()
+        assert mock_resolve.call_args.args[0] == "turn on the kitchen light"
 
 
 # ---------------------------------------------------------------------------

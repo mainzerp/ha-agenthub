@@ -135,8 +135,8 @@ class CacheOrchestrator:
     @staticmethod
     def build_synthetic_classifications(
         routing: RoutingSkipOutcome,
-    ) -> list[tuple[str, str, float | None]]:
-        return [(routing.agent_id, routing.condensed_task, 1.0)]
+    ) -> list[tuple[str, str, float | None, list[str]]]:
+        return [(routing.agent_id, routing.condensed_task, 1.0, [])]
 
     async def try_cache_replay(
         self,

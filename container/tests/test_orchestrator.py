@@ -319,7 +319,7 @@ class TestOrchestratorAgent:
         classifications, routing_cached = await orch._classify("Breche bitte den Einminutentimer ab.")
         assert routing_cached is True
         assert classifications[0][0] == "timer-agent"
-        _, condensed, _ = classifications[0]
+        _, condensed, _, _ = classifications[0]
         assert condensed == "Breche bitte den Einminutentimer ab."
         assert "set timer" not in condensed.lower()
 
@@ -336,7 +336,7 @@ class TestOrchestratorAgent:
         )
         classifications, routing_cached = await orch._classify("cancel my timer", cache_result=stale_cache)
         assert routing_cached is True
-        _, condensed, _ = classifications[0]
+        _, condensed, _, _ = classifications[0]
         assert condensed == "cancel my timer"
 
     @patch("app.agents.orchestrator.SettingsRepository")
@@ -362,7 +362,7 @@ class TestOrchestratorAgent:
         mock_complete.return_value = "general-agent (95%): summarize today\nsend-agent (94%): send to Laura"
         classifications, routing_cached = await orch._classify("send today summary to Laura")
         assert routing_cached is False
-        assert [agent_id for agent_id, _, _ in classifications] == ["general-agent", "send-agent"]
+        assert [agent_id for agent_id, _, _, _ in classifications] == ["general-agent", "send-agent"]
         mock_complete.assert_awaited_once()
 
     @patch("app.agents.orchestrator.SettingsRepository")
@@ -431,6 +431,7 @@ class TestOrchestratorAgent:
         assert results[0][0] == "light-agent"
         assert results[0][1] == "Turn on kitchen light"
         assert results[0][2] is None  # None when no confidence in format
+        assert results[0][3] == []
 
     async def test_parse_classification_no_colon_falls_back(self):
         orch = OrchestratorAgent(dispatcher=AsyncMock())
@@ -439,6 +440,7 @@ class TestOrchestratorAgent:
         assert results[0][0] == "general-agent"
         assert results[0][1] == "original text"
         assert results[0][2] == 0.0
+        assert results[0][3] == []
 
     async def test_parse_classification_multi_line(self):
         orch = OrchestratorAgent(dispatcher=AsyncMock())
@@ -454,8 +456,10 @@ class TestOrchestratorAgent:
         assert len(results) == 2
         assert results[0][0] == "light-agent"
         assert results[0][2] == 0.95
+        assert results[0][3] == []
         assert results[1][0] == "music-agent"
         assert results[1][2] == 0.90
+        assert results[1][3] == []
 
     async def test_parse_classification_unknown_agent_skipped(self):
         orch = OrchestratorAgent(dispatcher=AsyncMock())
@@ -469,6 +473,7 @@ class TestOrchestratorAgent:
         results = await orch._parse_classification(response, "original")
         assert len(results) == 1
         assert results[0][0] == "light-agent"
+        assert results[0][3] == []
 
     async def test_parse_classification_cap_at_3(self):
         orch = OrchestratorAgent(dispatcher=AsyncMock())
@@ -484,6 +489,7 @@ class TestOrchestratorAgent:
         response = "light-agent (95%): a\nmusic-agent (90%): b\nclimate-agent (85%): c\ntimer-agent (80%): d"
         results = await orch._parse_classification(response, "original")
         assert len(results) == 3
+        assert results[0][3] == []
 
     async def test_parse_classification_dedup_same_agent(self):
         orch = OrchestratorAgent(dispatcher=AsyncMock())
@@ -500,6 +506,7 @@ class TestOrchestratorAgent:
         assert results[0][2] == 0.9
         assert "task one" in results[0][1]
         assert "task two" in results[0][1]
+        assert results[0][3] == []
 
     async def test_parse_classification_strips_embedded_duplicates(self):
         orch = OrchestratorAgent(dispatcher=AsyncMock())
@@ -520,6 +527,7 @@ class TestOrchestratorAgent:
         assert abs(results[0][2] - 0.96) < 1e-6
         assert "climate-agent (" not in results[0][1]
         assert results[0][1].count("living room temperature") == 1
+        assert results[0][3] == []
 
     async def test_parse_classification_preserves_non_english_entities(self):
         orch = OrchestratorAgent(dispatcher=AsyncMock())
@@ -533,6 +541,7 @@ class TestOrchestratorAgent:
         assert len(results) == 1
         assert "wohnzimmer" in results[0][1].lower()
         assert "living room" not in results[0][1].lower()
+        assert results[0][3] == []
 
     async def test_parse_classification_multi_line_unaffected(self):
         orch = OrchestratorAgent(dispatcher=AsyncMock())
@@ -550,6 +559,41 @@ class TestOrchestratorAgent:
         by_agent = {r[0]: r for r in results}
         assert by_agent["light-agent"][1] == "turn on the shelf"
         assert by_agent["music-agent"][1] == "play jazz"
+        assert results[0][3] == []
+        assert results[1][3] == []
+
+    async def test_parse_classification_extracts_entities(self):
+        orch = OrchestratorAgent(dispatcher=AsyncMock())
+        orch._registry = AsyncMock()
+        orch._registry.list_agents = AsyncMock(
+            return_value=[AgentCard(agent_id="light-agent", name="", description="", skills=[])]
+        )
+        response = "light-agent (95%): turn on kitchen light\n@entities: kitchen light"
+        results = await orch._parse_classification(response, "original")
+        assert len(results) == 1
+        assert results[0][0] == "light-agent"
+        assert results[0][3] == ["kitchen light"]
+
+    async def test_parse_classification_multi_entity_terms(self):
+        orch = OrchestratorAgent(dispatcher=AsyncMock())
+        orch._registry = AsyncMock()
+        orch._registry.list_agents = AsyncMock(
+            return_value=[AgentCard(agent_id="light-agent", name="", description="", skills=[])]
+        )
+        response = "light-agent (85%): schalte keller ein\n@entities: keller, licht"
+        results = await orch._parse_classification(response, "original")
+        assert results[0][3] == ["keller", "licht"]
+
+    async def test_parse_classification_orphan_entities_logged(self):
+        orch = OrchestratorAgent(dispatcher=AsyncMock())
+        orch._registry = AsyncMock()
+        orch._registry.list_agents = AsyncMock(
+            return_value=[AgentCard(agent_id="light-agent", name="", description="", skills=[])]
+        )
+        response = "@entities: orphan\nlight-agent (95%): turn on light"
+        results = await orch._parse_classification(response, "original")
+        assert len(results) == 1
+        assert results[0][3] == []  # orphan ignored
 
     async def test_classify_injects_language_hint_into_prompt(self):
         orch = OrchestratorAgent(dispatcher=AsyncMock())
@@ -2034,8 +2078,8 @@ class TestOrchestratorSequentialSend:
             ]
         )
         classifications = [
-            ("general-agent", "find lasagna recipe", 0.9),
-            ("send-agent", "send to Laura Handy", 0.95),
+            ("general-agent", "find lasagna recipe", 0.9, []),
+            ("send-agent", "send to Laura Handy", 0.95, []),
         ]
         user_text = "find lasagna recipe and send to Laura Handy"
         routed_to, speech, _result = await orchestrator._handle_sequential_send(
@@ -2066,8 +2110,8 @@ class TestOrchestratorSequentialSend:
             ]
         )
         classifications = [
-            ("general-agent", "find recipe", 0.9),
-            ("send-agent", "send to phone", 0.95),
+            ("general-agent", "find recipe", 0.9, []),
+            ("send-agent", "send to phone", 0.95, []),
         ]
         await orchestrator._handle_sequential_send(
             classifications,
@@ -2093,8 +2137,8 @@ class TestOrchestratorSequentialSend:
             )
         )
         classifications = [
-            ("general-agent", "find recipe", 0.9),
-            ("send-agent", "send to Laura Handy", 0.95),
+            ("general-agent", "find recipe", 0.9, []),
+            ("send-agent", "send to Laura Handy", 0.95, []),
         ]
         _routed_to, speech, _result = await orchestrator._handle_sequential_send(
             classifications,

@@ -41,7 +41,7 @@ class CacheReplayResult:
 class DispatchResult:
     """Result bag produced by the dispatch phase."""
 
-    classifications: list[tuple[str, str, float | None]]
+    classifications: list[tuple[str, str, float | None, list[str]]]
     target_agent: str
     routed_to: str
     speech: str
@@ -186,13 +186,13 @@ class PipelineDirector:
         language: str,
         span_collector,
         *,
-        pre_classified: tuple[list[tuple[str, str, float | None]], bool] | None = None,
+        pre_classified: tuple[list[tuple[str, str, float | None, list[str]]], bool] | None = None,
         routing_skip: Any | None = None,
         compound_bypass: bool = False,
         extended_metadata: bool = False,
         classify_reason: str | None = None,
         allow_classify_cache_lookup: bool = False,
-    ) -> tuple[list[tuple[str, str, float | None]], bool, str, str, float | None]:
+    ) -> tuple[list[tuple[str, str, float | None, list[str]]], bool, str, str, float | None]:
         return await self._classification_strategy.execute(
             task=task,
             user_text=user_text,
@@ -213,7 +213,7 @@ class PipelineDirector:
     async def run_dispatch(
         self,
         task: AgentTask,
-        classifications: list[tuple[str, str, float | None]],
+        classifications: list[tuple[str, str, float | None, list[str]]],
         user_text: str,
         conversation_id: str,
         turns: list[dict[str, Any]],
@@ -245,7 +245,7 @@ class PipelineDirector:
         conversation_id: str,
         turns: list[dict[str, Any]],
         span_collector,
-        classifications: list[tuple[str, str, float | None]],
+        classifications: list[tuple[str, str, float | None, list[str]]],
         voice_followup_requested: bool,
         used_origin_context: bool,
         confidence: float | None = None,
