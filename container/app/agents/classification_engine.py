@@ -289,7 +289,7 @@ class ClassificationEngine:
             ) as subspan:
                 logger.info("Classification LLM response for '%s': %s", user_text[:60], repr(response[:300]))
                 classifications = await self.parse_classification(response, user_text)
-                classifications, was_repaired = await self.sanitize_or_repair_classifications(
+                classifications, _was_repaired = await self.sanitize_or_repair_classifications(
                     classifications,
                     user_text=user_text,
                     conversation_id=conversation_id,
@@ -299,26 +299,6 @@ class ClassificationEngine:
                 subspan["span_name"] = "classify.parse_and_sanitize"
                 subspan["status"] = "ok"
             t_parse = time.perf_counter()
-            async with _optional_span(span_collector, "classify.cache_store", agent_id="orchestrator") as subspan:
-                if self._cache_manager and len(classifications) == 1 and not was_repaired:
-                    target_agent, condensed, confidence = classifications[0]
-                    if (
-                        target_agent not in (_FALLBACK_AGENT, _CANCEL_INTERACTION_AGENT, "send-agent")
-                        and target_agent not in _INTERNAL_ONLY_AGENTS
-                        and confidence is not None
-                    ):
-                        try:
-                            await self._cache_manager.store_routing_async(
-                                user_text,
-                                target_agent,
-                                confidence,
-                                condensed,
-                                language=language,
-                            )
-                        except Exception:
-                            logger.warning("Failed to store routing decision", exc_info=True)
-                subspan["span_name"] = "classify.cache_store"
-                subspan["status"] = "ok"
             t_store = time.perf_counter()
             logger.debug(
                 "classify timing: agents=%.1fms cache=%.1fms prompt=%.1fms turns=%.1fms llm=%.1fms parse=%.1fms store=%.1fms total=%.1fms",
