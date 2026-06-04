@@ -1,12 +1,25 @@
 # Version
 
-**Current Version:** 1.38.0
+**Current Version:** 1.39.0
 
 ## Recent Changes
 
-Track changes since `v1.38.0` here.
+Track changes since `v1.39.0` here.
 
 ## Version History
+
+### 1.39.0 (MINOR) -- Mediation streaming for earlier TTS startup
+
+- feat(streaming): add `complete_stream()` to LLM client for token-by-token streaming via litellm
+- feat(agents): add `_call_llm_stream()` to BaseAgent for agent-configured streaming
+- feat(orchestrator): add `_mediate_response_stream()` for streaming mediated tokens to client
+- feat(settings): add `orchestrator.mediation_streaming_enabled` default setting (default false)
+- feat(dashboard): add UI toggle for mediation streaming in settings page
+- feat(integration): add sentence buffering and `_spawn_sentence_stream` for streamed TTS announce
+- fix(orchestrator): `_mediate_response_stream` no longer drops `reminder_text` when personality is empty
+- fix(integration): remove dead unreachable `else` branch in `_process_via_ws`
+- test: add `test_llm_client_stream.py` covering `complete_stream` behavior
+- test: add 3 orchestrator tests covering `mediation_streaming_enabled=True` paths
 
 ### 1.38.0 (MINOR) -- Orchestrator pipeline fixes and test coverage
 
