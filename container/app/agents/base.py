@@ -262,3 +262,14 @@ class BaseAgent(ABC):
         from app.llm.client import complete
 
         return await complete(self.agent_card.agent_id, self._normalize_llm_messages(messages), **overrides)
+
+    async def _call_llm_stream(self, messages: list[dict], **overrides) -> AsyncGenerator[str, None]:
+        """Call the LLM in streaming mode using this agent's config."""
+        from app.llm.client import complete_stream
+
+        async for token in complete_stream(
+            self.agent_card.agent_id,
+            self._normalize_llm_messages(messages),
+            **overrides,
+        ):
+            yield token

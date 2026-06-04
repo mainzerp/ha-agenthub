@@ -807,6 +807,13 @@ async def _seed_defaults(db: aiosqlite.Connection) -> None:
             "orchestrator",
             "Probability (0.0-1.0) of appending a follow-up offer to successful responses",
         ),
+        (
+            "orchestrator.mediation_streaming_enabled",
+            "false",
+            "bool",
+            "orchestrator",
+            "Stream mediated tokens incrementally to the client for earlier TTS start",
+        ),
         # HA URL is normally set in setup; seed empty so admin UI can upsert
         # before first run and ``GET /api/admin/settings`` stays consistent.
         ("ha_url", "", "string", "ha", "Home Assistant base URL (http/https)"),
