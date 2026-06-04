@@ -102,7 +102,7 @@ relevant route before tuning.
 
 | Key | Default | Type | Description |
 |-----|---------|------|-------------|
-| `a2a.default_timeout` | `5` | int | Default agent timeout in seconds |
+| `a2a.default_timeout` | `10` | int | Default agent timeout in seconds (if the DB setting is absent, the code fallback is `5`). |
 | `a2a.max_iterations` | `3` | int | Max iterations per agent to prevent loops |
 | `a2a.max_dispatch_timeout` | `60` | int | Hard upper bound (seconds) on a single A2A dispatch, regardless of per-agent overrides. |
 | `agent.dispatch_timeout.<agent_id>` | (unset) | int | Per-agent dispatch timeout override; falls back to the agent's `AgentCard.timeout_sec` and then to `a2a.default_timeout`. Capped by `a2a.max_dispatch_timeout`. |
@@ -287,7 +287,7 @@ Aliases are managed in the `aliases` table and can be created/deleted from the a
 
 Cache thresholds and max entries are managed as SQLite settings (see Cache Settings above). Changes take effect immediately without restart.
 
-The routing cache and action cache use separate ChromaDB collections. Each entry stores the text embedding, metadata (agent ID, timestamp, hit count), and the cached decision or response.
+The routing cache and action cache use separate SQLite tables. Each entry stores the SHA-256 hash key, metadata (agent ID, timestamp, hit count), and the cached decision or response.
 
 Cache can be flushed per tier or entirely from the admin dashboard or via the API (`POST /api/admin/cache/flush`).
 

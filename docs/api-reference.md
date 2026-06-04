@@ -656,17 +656,6 @@ and `/api/admin/entity-index/refresh` endpoints documented above.
 Auth: admin session. Companions to the existing `/api/admin/traces`
 list and `/api/admin/traces/{trace_id}` detail endpoints.
 
-## Admin -- Analytics
-
-| Method | Path | Purpose |
-|--------|------|---------|
-| GET | `/api/admin/analytics/agents` | Per-agent request counts and latency. |
-| GET | `/api/admin/analytics/cache` | Cache hit-rate breakdown per tier. |
-| GET | `/api/admin/analytics/tokens` | Token-usage time series and totals. |
-| GET | `/api/admin/analytics/rewrite` | Rewrite-agent usage metrics. |
-
-Auth: admin session.
-
 ## Admin -- Dashboard overview
 
 | Method | Path | Purpose |

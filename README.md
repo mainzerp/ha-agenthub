@@ -4,7 +4,7 @@
   <img src="./custom_components/ha_agenthub/brand/logo.png" alt="HA-AgentHub Logo" width="200">
 </p>
 
-A multi-agent AI assistant for Home Assistant with container-based A2A orchestration, two-tier vector caching, hybrid entity matching, MCP tool integration, and a plugin system.
+A multi-agent AI assistant for Home Assistant with container-based A2A orchestration, two-tier caching, hybrid entity matching, MCP tool integration, and a plugin system.
 
 ![Test](https://img.shields.io/github/actions/workflow/status/mainzerp/ha-agenthub/ci.yml?branch=main&job=quality&label=Test&logo=github)
 ![Lint](https://img.shields.io/github/actions/workflow/status/mainzerp/ha-agenthub/ci.yml?branch=main&job=quality&label=Lint&logo=github)
@@ -15,9 +15,9 @@ A multi-agent AI assistant for Home Assistant with container-based A2A orchestra
 
 - **Multi-agent orchestration** -- 15+ specialized domain agents coordinated by a central orchestrator via the A2A protocol
 - **A2A protocol** -- JSON-RPC 2.0-based agent-to-agent communication with registry, dispatcher, and in-process transport
-- **Two-tier vector cache** -- Routing cache (skip intent classification) and action cache, formerly response cache (skip entire agent pipeline) using ChromaDB embeddings with configurable similarity thresholds
+- **Two-tier cache** -- Routing cache (skip intent classification) and action cache, formerly response cache (skip entire agent pipeline) using SQLite-backed SHA-256 exact hash matching
 - **Cache backup and restore** -- Export and import the routing and action caches as a portable JSON envelope via `/api/admin/cache/export` and `/api/admin/cache/import`
-- **Hybrid entity matching** -- Five-signal weighted matcher (Levenshtein, Jaro-Winkler, phonetic, embedding similarity, alias lookup) with LLM disambiguation fallback
+- **Hybrid entity matching** -- Five-signal weighted matcher (Levenshtein, Jaro-Winkler, phonetic, embedding similarity, alias lookup) with LLM disambiguation fallback. Agents can explicitly declare extracted entities via `@entities:` lines in their replies, replacing legacy regex heuristics with structured LLM-driven entity extraction
 - **MCP tool integration** -- Connect external tool servers via Model Context Protocol (stdio and SSE transports) and assign tools to agents
 - **Plugin system** -- Extend functionality with Python plugins that inspect registered agents, dispatch work back through the orchestrator, add routes, subscribe to events, and access settings/MCP integrations
 - **Admin dashboard** -- HTMX-powered admin dashboard for managing agents, entities, cache, MCP servers, analytics, traces, and plugins
@@ -26,6 +26,7 @@ A multi-agent AI assistant for Home Assistant with container-based A2A orchestra
 - **Setup wizard** -- Guided 5-step first-launch configuration (admin account, HA connection, API key, LLM providers, review)
 - **Analytics and tracing** -- Request counts, cache hit rates, latency tracking, token usage, and per-request trace span Gantt visualization, with per-turn tracing on `/ws/conversation`
 - **Voice experience** -- Filler / interim TTS, voice-followup, cancel-intent ("never mind"), and repeat-turn coalescing in the HA integration
+- **Mediation streaming** -- Begins TTS playback earlier by streaming mediated response tokens before the full reply is finalized
 - **Real-pipeline scenario tests** -- YAML-driven end-to-end test framework under `container/tests/scenarios/` exercising the full orchestrator pipeline against a curated HA snapshot
 - **Remote Logs API** -- In-memory ring-buffer log inspection with runtime level adjustment via admin endpoints
 - **Cache Management UI Enhancements** -- Per-entry cache deletion from the admin dashboard
@@ -44,7 +45,7 @@ A multi-agent AI assistant for Home Assistant with container-based A2A orchestra
 | **Vacuum Agent** | `vacuum` | Start, pause, stop, return to base, clean spot, set fan speed |
 | **Scene Agent** | `scene` | Scene activation |
 | **Timer Agent** | `timer`, `persistent_notification` | Timers, alarms, reminders |
-| **Automation Agent** | `automation` | Trigger automations |
+| **Automation Agent** | `automation` | Trigger, enable, disable, and query automations |
 | **Security Agent** | `alarm_control_panel`, `lock`, `camera`, `sensor`, `binary_sensor` | Arm/disarm, lock/unlock, camera status |
 | **Calendar Agent** | `calendar` | Query events, add reminders |
 | **Lists Agent** | `todo` | Shopping and todo list management |
@@ -77,7 +78,7 @@ Custom MCP servers can be added through the admin dashboard (stdio or SSE transp
 
 HA-AgentHub (repository: `ha-agenthub`) runs as a Docker container with a FastAPI backend. A Home Assistant custom integration (`custom_components/ha_agenthub/`) bridges turns to the container, streams responses back, and honors a small set of container-directed bridge actions such as native plain-timer delegation.
 
-All configuration, secrets, and state are stored in SQLite. ChromaDB provides vector storage for entity embeddings and cache embeddings. No configuration files are used at runtime.
+All configuration, secrets, and state are stored in SQLite. ChromaDB provides vector storage for entity embeddings; the routing and action caches are stored in SQLite with SHA-256 exact hash matching. No configuration files are used at runtime.
 
 See [docs/architecture.md](docs/architecture.md) for component diagrams, request flow, and detailed design.
 
@@ -86,8 +87,8 @@ See [docs/architecture.md](docs/architecture.md) for component diagrams, request
 ### Prerequisites
 
 - Docker Engine 20.10+ and Docker Compose v2
-- A running Home Assistant instance (2024.1.0+)
-- An LLM API key (OpenRouter, Groq, or Ollama)
+- A running Home Assistant instance (2025.1.0+)
+- An LLM API key (OpenRouter, Groq, Cerebras, or Ollama)
 
 ### 1. Clone and Start
 
@@ -197,7 +198,7 @@ pre-commit install
 ```
 
 Hooks are scoped to `container/` and pinned to the same ruff version
-CI uses (`v0.15.12`), so passing the hook locally guarantees a green
+CI uses (`v0.15.15`), so passing the hook locally guarantees a green
 `Lint` workflow.
 
 ### Project Structure

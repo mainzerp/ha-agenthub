@@ -136,8 +136,7 @@ includes the agent id, a prompt excerpt, and the scenario id. Common causes:
 
 ## Coverage status
 
-The corpus now covers the full 78-scenario matrix from
-`docs/SubAgent/real_scenario_tests_plan.md` (94 YAMLs total: 14 original
+The corpus now covers the full 78-scenario matrix (94 YAMLs total: 14 original
 plus 80 net-new). Per-agent breakdown:
 
 - light (13), climate (11), media (9), music (10), scene (5),

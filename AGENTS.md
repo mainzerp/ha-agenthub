@@ -30,7 +30,7 @@ Your job is to receive the user's request, delegate analysis and planning to spe
 This project provides specialized skills that contain domain-specific instructions, workflows, and bundled resources. Available skills include:
 
 - **agent-routing-debug**: Debug routing and cache problems in agent-assist.
-- **agenthub-logs**: Retrieve and filter application logs via the Admin API.
+- **agenthub-logs-live-environment**: Retrieve and filter application logs via the Admin API.
 - **ha-debug**: Debug Home Assistant entity resolution, cache, and log issues.
 - **kilo-config**: Guide for Kilo configuration, agents, skills, and worktrees.
 - **mcp-server-dev**: Add a new MCP server (tool provider) to agent-assist.
