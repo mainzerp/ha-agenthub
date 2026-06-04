@@ -204,6 +204,7 @@ The integration does not resolve entities, classify intent, or execute Home Assi
 | `automation-agent` | Automation enable, disable, and trigger flows | Registered when enabled |
 | `security-agent` | Locks, alarms, cameras, and related security queries | Registered when enabled |
 | `send-agent` | Delivery to notify targets and satellites | Registered when enabled |
+| `lists-agent` | Todo and shopping list management | Registered when enabled |
 | custom agents | Database-backed runtime agents | Loaded through the custom-agent loader |
 
 ### Helper and Internal Stages
@@ -412,7 +413,7 @@ docs/
   configuration.md
   deployment.md
   plugin-development.md
-  roadmap.md
+  TODO.md
   troubleshooting.md
   SubAgent/
 

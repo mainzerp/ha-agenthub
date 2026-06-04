@@ -4,10 +4,10 @@
 
 HA-AgentHub is a two-component system for natural language smart home control:
 
-1. **Docker Container** -- The AI backend running FastAPI with multi-agent orchestration, a two-tier vector cache, hybrid entity matching, MCP tool integration, and a plugin system.
+1. **Docker Container** -- The AI backend running FastAPI with multi-agent orchestration, a two-tier cache, hybrid entity matching, MCP tool integration, and a plugin system.
 2. **HA Custom Integration** -- A Home Assistant bridge (`custom_components/ha_agenthub/`) that forwards most turns to the container, streams responses back to Home Assistant's conversation system, and can honor container-directed native plain-timer delegation.
 
-All configuration, secrets, and state are stored in SQLite. ChromaDB provides vector storage for entity embeddings and cache embeddings. No configuration files are used at runtime -- everything is managed through the setup wizard and admin dashboard.
+All configuration, secrets, and state are stored in SQLite. ChromaDB provides vector storage for entity embeddings; the routing and action caches are stored in SQLite with SHA-256 exact hash matching. No configuration files are used at runtime -- everything is managed through the setup wizard and admin dashboard.
 
 ## Component Diagram
 
@@ -52,7 +52,7 @@ All configuration, secrets, and state are stored in SQLite. ChromaDB provides ve
 |  +----------------------------------------------+ |
 |  | SQLite (config, secrets, history, analytics) | |
 |  +----------------------------------------------+ |
-|  | ChromaDB (entity index, cache embeddings)    | |
+|  | ChromaDB (entity index embeddings)           | |
 |  +----------------------------------------------+ |
 +--------------------------------------------------+
 ```
@@ -103,12 +103,12 @@ For eligible plain timer start/cancel turns, the timer-agent may instead return 
 
 When an internal scheduler alarm fires with `briefing=true`, the
 background path stays orchestrator-owned: the scheduler emits an
-`alarm_notification` event, the orchestrator passes an
-`OrchestratorGateway` into `background_actions`, and the wake briefing
-composer gathers weather/news through A2A plus calendar/sensor facts
-through HA REST before overriding the spoken alarm text. This keeps the
-cross-agent boundary narrow and avoids direct peer-agent imports from
-the wake briefing module.
+`alarm_notification` event, the orchestrator dispatches through the
+ClassificationEngine, CacheOrchestrator, DispatchManager, and
+ConversationManager, and the wake briefing composer gathers weather/news
+through A2A plus calendar/sensor facts through HA REST before overriding
+the spoken alarm text. This keeps the cross-agent boundary narrow and
+avoids direct peer-agent imports from the wake briefing module.
 
 ### Send Agent and Sequential Dispatch
 
@@ -179,9 +179,8 @@ The action cache was named "response cache" in earlier versions.
 The legacy term still appears in the on-disk Chroma collection name
 for backward compatibility.
 
-The cache system uses ChromaDB to store SHA-256 hash keys of
-incoming requests. Lookup is by exact hash match (not semantic
-similarity):
+The cache system stores SHA-256 hash keys of incoming requests in
+SQLite. Lookup is by exact hash match (not semantic similarity):
 
 - **Routing Cache** -- Caches the mapping from user intent to target agent. A hit (exact SHA-256 hash match) skips LLM-based intent classification entirely. Max entries: 50,000 with LRU eviction.
 - **Action Cache** -- Caches full agent responses including executed actions.
@@ -208,7 +207,7 @@ By default, a weighted score above 0.60 returns a single confident match. Below 
 ## Data Storage
 
 - **SQLite** -- Primary store for all structured data: settings, agent configs, custom agents, aliases, MCP servers, secrets (Fernet-encrypted), admin accounts (bcrypt-hashed), setup state, conversations, analytics, and trace spans.
-- **ChromaDB** -- Vector store for entity index embeddings, routing cache embeddings, and action cache embeddings (the on-disk collection literal is still `response_cache` for backward compatibility). Persisted to disk at `/data/chromadb`.
+- **ChromaDB** -- Vector store for entity index embeddings only. Routing and action caches are stored in SQLite. The on-disk collection literal is still `response_cache` for backward compatibility. Persisted to disk at `/data/chromadb`.
 
 ## Plugin Architecture
 

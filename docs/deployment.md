@@ -3,7 +3,7 @@
 ## Prerequisites
 
 - **Docker Engine** 20.10+ and **Docker Compose** v2
-- **Home Assistant** 2024.1.0 or later
+- **Home Assistant** 2025.1.0 or later
 - An LLM API key from at least one provider:
   - [OpenRouter](https://openrouter.ai/) (recommended -- access to multiple models)
   - [Groq](https://groq.com/) (fast inference)
@@ -45,9 +45,11 @@ services:
       - CONTAINER_HOST=${CONTAINER_HOST:-0.0.0.0}
       - CONTAINER_PORT=${CONTAINER_PORT:-8080}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - LOG_DIR=${LOG_DIR:-/data/logs}
       - CHROMADB_PERSIST_DIR=${CHROMADB_PERSIST_DIR:-/data/chromadb}
       - SQLITE_DB_PATH=${SQLITE_DB_PATH:-/data/agent_assist.db}
       - HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-0}
+      - COOKIE_SECURE=${COOKIE_SECURE:-true}
     healthcheck:
       test:
         [
@@ -109,6 +111,7 @@ If you need to override defaults, create a `.env` file in the `container/` direc
 ```env
 CONTAINER_PORT=8080
 LOG_LEVEL=INFO
+LOG_DIR=/data/logs
 # Set to true when serving the dashboard behind HTTPS (reverse proxy or
 # direct TLS). Required so the admin session cookie is sent only over
 # secure connections. Leave false for plain-HTTP local development --
@@ -169,6 +172,7 @@ Enter API keys for one or more LLM providers:
 
 - **OpenRouter API Key** -- For access to GPT-4o-mini, Claude, and other models via a unified API.
 - **Groq API Key** -- For fast inference with Llama models (used by default for the orchestrator).
+- **Cerebras API Key** -- For fast inference with Llama models via Cerebras.
 - **Ollama URL** -- For local model inference (e.g., `http://localhost:11434`).
 
 > **Recommended models:**
@@ -281,7 +285,7 @@ ChromaDB vector data is stored at `CHROMADB_PERSIST_DIR` (default: `/data/chroma
 docker cp ha-agenthub:/data/chromadb ./backup_chromadb
 ```
 
-The entity index and cache can be rebuilt from scratch if the ChromaDB data is lost, but backing it up avoids a cold start.
+The entity index can be rebuilt from scratch if the ChromaDB data is lost, but backing it up avoids a cold start.
 
 ### Restore
 
