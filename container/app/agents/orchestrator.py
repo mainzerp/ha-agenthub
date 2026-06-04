@@ -159,8 +159,6 @@ class OrchestratorAgent(BaseAgent):
         self._mediation_temperature: float = 0.3
         self._mediation_max_tokens: int = 2048
         self._max_dispatch_timeout: float = 60.0
-        self._personality_cache_ts: float = 0.0
-        self._personality_cache_value: str = ""
         self._calendar_injector = None
         if ha_client is not None and entity_index is not None:
             from app.agents.calendar_injector import CalendarReminderInjector
