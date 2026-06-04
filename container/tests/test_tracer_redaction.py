@@ -140,6 +140,7 @@ async def test_create_trace_summary_sanitizes_sensitive_fields():
                 {"role": "user", "content": "api_key=sk-test-secret"},
                 {"role": "assistant", "content": "Open https://svc.example/path?code=654321"},
             ],
+            verbatim_terms=["light.kitchen", "switch.living_room"],
         )
 
     payload = mock_create.await_args.args[0]
@@ -152,6 +153,7 @@ async def test_create_trace_summary_sanitizes_sensitive_fields():
     assert "token=[REDACTED]" in payload["agent_instructions"]["tool"]
     assert payload["conversation_turns"][0]["content"] == "api_key=[REDACTED_TOKEN]"
     assert "code=[REDACTED]" in payload["conversation_turns"][1]["content"]
+    assert payload["verbatim_terms"] == ["light.kitchen", "switch.living_room"]
 
 
 async def test_call_llm_with_mcp_tools_records_sanitized_arguments_and_result():

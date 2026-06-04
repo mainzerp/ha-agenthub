@@ -716,6 +716,7 @@ class OrchestratorAgent(BaseAgent):
                 device_name=getattr(task_context, "device_name", None),
                 area_name=getattr(task_context, "area_name", None),
                 voice_followup=voice_followup,
+                verbatim_terms=classifications[0][3] if classifications else [],
             )
         except Exception:
             logger.warning("Failed to create trace summary", exc_info=True)
@@ -958,7 +959,7 @@ class OrchestratorAgent(BaseAgent):
         span["metadata"]["multi_agent"] = len(classifications) > 1
         if extended_metadata and len(classifications) > 1:
             span["metadata"]["all_classifications"] = {
-                a: {"task": t[:300], "confidence": c} for a, t, c, _ in classifications
+                a: {"task": t[:300], "confidence": c, "verbatim_terms": v} for a, t, c, v in classifications
             }
         if extra_metadata:
             span["metadata"].update(extra_metadata)

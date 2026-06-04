@@ -137,6 +137,19 @@
                                 x-text="traceDetail.routing_cached ? 'Routing Cached' : 'LLM'"></span>
                         </template>
                     </div>
+                    <div class="span-detail-row">
+                        <span class="span-detail-label">Extracted Entities</span>
+                        <template x-if="traceDetail.routing?.verbatim_terms && traceDetail.routing.verbatim_terms.length > 0">
+                            <span class="flex flex-wrap gap-xs">
+                                <template x-for="term in traceDetail.routing.verbatim_terms" :key="term">
+                                    <span class="badge badge-muted" x-text="term"></span>
+                                </template>
+                            </span>
+                        </template>
+                        <template x-if="!traceDetail.routing?.verbatim_terms || traceDetail.routing.verbatim_terms.length === 0">
+                            <span class="text-sm text-cloud">-</span>
+                        </template>
+                    </div>
                 </div>
             </div>
 

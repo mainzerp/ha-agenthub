@@ -346,6 +346,7 @@ async def _create_tables(db: aiosqlite.Connection) -> None:
             device_name TEXT,
             area_name TEXT,
             voice_followup INTEGER DEFAULT 0,
+            verbatim_terms TEXT,
             created_at TEXT NOT NULL DEFAULT (datetime('now'))
         )
     """)
@@ -1759,3 +1760,9 @@ async def _run_migrations(db: aiosqlite.Connection) -> None:
         if not await _column_exists(db, "custom_agents", "timeout_sec"):
             await db.execute("ALTER TABLE custom_agents ADD COLUMN timeout_sec INTEGER")
         await db.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (37)")
+
+    if current_version < 38:
+        # Migration 38: Add verbatim_terms column to trace_summary for entity extraction display.
+        if not await _column_exists(db, "trace_summary", "verbatim_terms"):
+            await db.execute("ALTER TABLE trace_summary ADD COLUMN verbatim_terms TEXT")
+        await db.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (38)")

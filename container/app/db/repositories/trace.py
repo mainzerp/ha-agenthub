@@ -127,6 +127,9 @@ class TraceSummaryRepository:
         conversation_turns = data.get("conversation_turns")
         if isinstance(conversation_turns, list):
             conversation_turns = json.dumps(conversation_turns)
+        verbatim_terms = data.get("verbatim_terms")
+        if isinstance(verbatim_terms, (list, dict)):
+            verbatim_terms = json.dumps(verbatim_terms)
         async with get_db_write() as db:
             await db.execute(
                 "INSERT INTO trace_summary "
@@ -134,8 +137,8 @@ class TraceSummaryRepository:
                 "agents, total_duration_ms, label, source, routing_agent, "
                 "routing_confidence, routing_duration_ms, routing_reasoning, "
                 "agent_instructions, conversation_turns, "
-                "device_id, area_id, device_name, area_name, voice_followup) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "device_id, area_id, device_name, area_name, voice_followup, verbatim_terms) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     data.get("trace_id"),
                     data.get("conversation_id"),
@@ -156,6 +159,7 @@ class TraceSummaryRepository:
                     data.get("device_name"),
                     data.get("area_name"),
                     data.get("voice_followup"),
+                    verbatim_terms,
                 ),
             )
 
@@ -207,6 +211,9 @@ class TraceSummaryRepository:
                 if row.get("conversation_turns"):
                     with contextlib.suppress(json.JSONDecodeError, TypeError):
                         row["conversation_turns"] = json.loads(row["conversation_turns"])
+                if row.get("verbatim_terms"):
+                    with contextlib.suppress(json.JSONDecodeError, TypeError):
+                        row["verbatim_terms"] = json.loads(row["verbatim_terms"])
             return rows
 
     @staticmethod
@@ -262,6 +269,9 @@ class TraceSummaryRepository:
             if result.get("conversation_turns"):
                 with contextlib.suppress(json.JSONDecodeError, TypeError):
                     result["conversation_turns"] = json.loads(result["conversation_turns"])
+            if result.get("verbatim_terms"):
+                with contextlib.suppress(json.JSONDecodeError, TypeError):
+                    result["verbatim_terms"] = json.loads(result["verbatim_terms"])
             return result
 
     @staticmethod
@@ -335,6 +345,9 @@ class TraceSummaryRepository:
                 if row.get("agent_instructions"):
                     with contextlib.suppress(json.JSONDecodeError, TypeError):
                         row["agent_instructions"] = json.loads(row["agent_instructions"])
+                if row.get("verbatim_terms"):
+                    with contextlib.suppress(json.JSONDecodeError, TypeError):
+                        row["verbatim_terms"] = json.loads(row["verbatim_terms"])
             return rows
 
     @staticmethod
