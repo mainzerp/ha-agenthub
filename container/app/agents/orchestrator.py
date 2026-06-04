@@ -78,7 +78,7 @@ class PipelinePreludeResult:
     detected_language: str
     lang_turns: list
     span_collector: Any
-    classifications: list[tuple[str, str, float | None]]
+    classifications: list[tuple[str, str, float | None, list[str]]]
     routing_cached: bool
     target_agent: str
     condensed_task: str
@@ -394,6 +394,7 @@ class OrchestratorAgent(BaseAgent):
         skip_dispatch_span: bool = False,
         *,
         resolved_language: str | None = None,
+        verbatim_terms: list[str] | None = None,
     ) -> tuple[str, str, dict[str, Any] | None]:
         return await self._dispatch_manager.dispatch_single(
             target_agent,
@@ -405,11 +406,12 @@ class OrchestratorAgent(BaseAgent):
             incoming_context=incoming_context,
             skip_dispatch_span=skip_dispatch_span,
             resolved_language=resolved_language,
+            verbatim_terms=verbatim_terms,
         )
 
     async def _handle_sequential_send(
         self,
-        classifications: list[tuple[str, str, float]],
+        classifications: list[tuple[str, str, float | None, list[str]]],
         user_text: str,
         conversation_id: str,
         turns: list[dict[str, Any]],
@@ -422,8 +424,8 @@ class OrchestratorAgent(BaseAgent):
 
         Returns (routed_to, speech, result_dict) like _dispatch_single.
         """
-        content_agents = [(a, t, c) for a, t, c in classifications if a != "send-agent"]
-        send_classification = next(((a, t, c) for a, t, c in classifications if a == "send-agent"), None)
+        content_agents = [(a, t, c, e) for a, t, c, e in classifications if a != "send-agent"]
+        send_classification = next(((a, t, c, e) for a, t, c, e in classifications if a == "send-agent"), None)
 
         if not send_classification:
             logger.warning("_handle_sequential_send called without send-agent classification")
@@ -436,14 +438,16 @@ class OrchestratorAgent(BaseAgent):
                 span_collector,
                 incoming_context=incoming_context,
                 resolved_language=resolved_language,
+                verbatim_terms=classifications[0][3] if classifications else [],
             )
 
-        _send_agent_id, send_task_text, _send_confidence = send_classification
+        _send_agent_id, send_task_text, _send_confidence, _send_entities = send_classification
 
         _content_result: dict[str, Any] | None = None
         content_dispatched = False
+        content_verbatim_terms: list[str] = []
         if content_agents:
-            content_aid, content_task, _ = content_agents[0]
+            content_aid, content_task, _, content_verbatim_terms = content_agents[0]
             content_dispatched = True
             content_language = resolved_language or (incoming_context.language if incoming_context else None) or "en"
             content_context = TaskContext(
@@ -484,6 +488,7 @@ class OrchestratorAgent(BaseAgent):
                     incoming_context=content_context,
                     skip_dispatch_span=True,
                     resolved_language=resolved_language,
+                    verbatim_terms=content_verbatim_terms,
                 )
                 span["metadata"]["content_agent"] = content_agent_id
                 span["metadata"]["content_length"] = len(content_speech or "")
@@ -540,6 +545,7 @@ class OrchestratorAgent(BaseAgent):
                 incoming_context=incoming_context,
                 skip_dispatch_span=True,
                 resolved_language=resolved_language,
+                verbatim_terms=[],
             )
             span["metadata"]["send_target"] = send_task_text
             span["metadata"]["content_from"] = content_agent_id
@@ -590,7 +596,7 @@ class OrchestratorAgent(BaseAgent):
     @staticmethod
     def _build_synthetic_classifications(
         routing: RoutingSkipOutcome,
-    ) -> list[tuple[str, str, float | None]]:
+    ) -> list[tuple[str, str, float | None, list[str]]]:
         return CacheOrchestrator.build_synthetic_classifications(routing)
 
     async def _cached_action_is_still_visible(self, agent_id: str, entity_id: str) -> bool:
@@ -668,7 +674,7 @@ class OrchestratorAgent(BaseAgent):
         target_agent: str,
         confidence: float | None,
         condensed_task: str,
-        classifications: list[tuple[str, str, float | None]],
+        classifications: list[tuple[str, str, float | None, list[str]]],
         turns: list[dict[str, Any]],
         *,
         task_context: TaskContext | None = None,
@@ -701,7 +707,7 @@ class OrchestratorAgent(BaseAgent):
                 condensed_task=condensed_task,
                 agents=agents,
                 source=getattr(span_collector, "source", "api"),
-                agent_instructions={aid: ctask for aid, ctask, _ in classifications}
+                agent_instructions={aid: ctask for aid, ctask, _, _ in classifications}
                 if len(classifications) > 1
                 else None,
                 conversation_turns=turns,
@@ -766,7 +772,7 @@ class OrchestratorAgent(BaseAgent):
         self,
         task: AgentTask,
         *,
-        pre_classified: tuple[list[tuple[str, str, float | None]], bool] | None = None,
+        pre_classified: tuple[list[tuple[str, str, float | None, list[str]]], bool] | None = None,
         classify_reason: str | None = None,
         allow_classify_cache_lookup: bool = False,
         extended_metadata: bool = False,
@@ -926,7 +932,7 @@ class OrchestratorAgent(BaseAgent):
     @staticmethod
     def _pipeline_record_classify_span(
         span,
-        classifications: list[tuple[str, str, float | None]],
+        classifications: list[tuple[str, str, float | None, list[str]]],
         user_text: str,
         condensed_task: str,
         confidence: float | None,
@@ -944,7 +950,7 @@ class OrchestratorAgent(BaseAgent):
         existing streaming behaviour exactly. Behaviour-preserving
         helper extracted in P1-1 iter 3.
         """
-        span["metadata"]["target_agent"] = ", ".join(a for a, _, _ in classifications)
+        span["metadata"]["target_agent"] = ", ".join(a for a, _, _, _ in classifications)
         span["metadata"]["user_input"] = user_text
         span["metadata"]["condensed_task"] = condensed_task
         span["metadata"]["confidence"] = confidence
@@ -952,7 +958,7 @@ class OrchestratorAgent(BaseAgent):
         span["metadata"]["multi_agent"] = len(classifications) > 1
         if extended_metadata and len(classifications) > 1:
             span["metadata"]["all_classifications"] = {
-                a: {"task": t[:300], "confidence": c} for a, t, c in classifications
+                a: {"task": t[:300], "confidence": c} for a, t, c, _ in classifications
             }
         if extra_metadata:
             span["metadata"].update(extra_metadata)
@@ -1006,7 +1012,7 @@ class OrchestratorAgent(BaseAgent):
         conversation_id: str,
         language: str,
         turns: list,
-        classifications: list[tuple[str, str, float | None]],
+        classifications: list[tuple[str, str, float | None, list[str]]],
         voice_followup_requested: bool,
         mediated_followup: bool = False,
         routed_to: str | None = None,
@@ -1082,7 +1088,7 @@ class OrchestratorAgent(BaseAgent):
         conversation_id: str,
         language: str,
         turns: list,
-        classifications: list[tuple[str, str, float | None]],
+        classifications: list[tuple[str, str, float | None, list[str]]],
         voice_followup_requested: bool,
         routed_to: str | None = None,
         mediation_agent: str | None = None,
@@ -1167,7 +1173,7 @@ class OrchestratorAgent(BaseAgent):
         task: AgentTask,
         *,
         streaming: bool,
-        _pre_classified: tuple[list[tuple[str, str, float | None]], bool] | None = None,
+        _pre_classified: tuple[list[tuple[str, str, float | None, list[str]]], bool] | None = None,
         _classify_reason: str | None = None,
         _allow_classify_cache_lookup: bool | None = None,
     ) -> AsyncGenerator[dict[str, Any], None]:
@@ -1210,7 +1216,7 @@ class OrchestratorAgent(BaseAgent):
         self,
         task: AgentTask,
         *,
-        _pre_classified: tuple[list[tuple[str, str, float | None]], bool] | None = None,
+        _pre_classified: tuple[list[tuple[str, str, float | None, list[str]]], bool] | None = None,
         _classify_reason: str | None = None,
         _allow_classify_cache_lookup: bool | None = None,
     ) -> dict[str, Any]:
@@ -1264,7 +1270,7 @@ class OrchestratorAgent(BaseAgent):
         self,
         task: AgentTask,
         *,
-        _pre_classified: tuple[list[tuple[str, str, float | None]], bool] | None = None,
+        _pre_classified: tuple[list[tuple[str, str, float | None, list[str]]], bool] | None = None,
         _classify_reason: str | None = None,
         _allow_classify_cache_lookup: bool | None = None,
     ) -> dict[str, Any]:
@@ -1426,7 +1432,7 @@ class OrchestratorAgent(BaseAgent):
                 ret_span["metadata"]["cache_stored_routing"] = False
                 await self._store_turn(conversation_id, user_text, full_speech, agent_id=target_agent)
                 if span_collector:
-                    clf = [(target_agent, condensed_task, confidence)]
+                    clf = [(target_agent, condensed_task, confidence, [])]
                     await self._create_trace(
                         span_collector,
                         conversation_id,
@@ -1455,8 +1461,8 @@ class OrchestratorAgent(BaseAgent):
             return
 
         # Multi-agent: yield progress marker, then fall back to non-streaming handle_task
-        is_sequential_send = any(a == "send-agent" for a, _, _ in classifications) and any(
-            a != "send-agent" for a, _, _ in classifications
+        is_sequential_send = any(a == "send-agent" for a, _, _, _ in classifications) and any(
+            a != "send-agent" for a, _, _, _ in classifications
         )
 
         # Sequential send: fall back to non-streaming, with filler support
@@ -1469,7 +1475,7 @@ class OrchestratorAgent(BaseAgent):
             }
 
             # Determine which content agent to check for filler
-            content_agent_ids = [a for a, _, _ in classifications if a != "send-agent"]
+            content_agent_ids = [a for a, _, _, _ in classifications if a != "send-agent"]
             content_agent_for_filler = content_agent_ids[0] if content_agent_ids else None
             seq_use_filler = (
                 await self._should_send_filler(content_agent_for_filler) if content_agent_for_filler else False
@@ -1569,7 +1575,7 @@ class OrchestratorAgent(BaseAgent):
                 "done": False,
                 "conversation_id": conversation_id,
                 "status": "multi_agent",
-                "agents": [a for a, _, _ in classifications],
+                "agents": [a for a, _, _, _ in classifications],
             }
             result = await self.handle_task(task, _pre_classified=(classifications, routing_cached))
             multi_final = {
@@ -1609,11 +1615,13 @@ class OrchestratorAgent(BaseAgent):
                     context.local_time = datetime.now(UTC).strftime("%Y-%m-%d %H:%M")
             except Exception:
                 logger.debug("Failed to populate home context for streaming", exc_info=True)
+        verbatim_terms = classifications[0][3] if classifications else []
         agent_task = AgentTask(
             description=condensed_task,
             user_text=user_text,
             conversation_id=conversation_id,
             context=context,
+            verbatim_terms=verbatim_terms,
         )
 
         # 3. Dispatch via A2A message/stream
@@ -1884,7 +1892,7 @@ class OrchestratorAgent(BaseAgent):
                 conversation_id=conversation_id,
                 language=language,
                 turns=turns,
-                classifications=[(target_agent, condensed_task, confidence)],
+                classifications=[(target_agent, condensed_task, confidence, [])],
                 voice_followup_requested=sc.stream_voice_followup,
                 mediated_followup=followup,
                 routed_to=target_agent,
@@ -1906,7 +1914,7 @@ class OrchestratorAgent(BaseAgent):
                 conversation_id=conversation_id,
                 language=language,
                 turns=turns,
-                classifications=[(target_agent, condensed_task, confidence)],
+                classifications=[(target_agent, condensed_task, confidence, [])],
                 voice_followup_requested=sc.stream_voice_followup,
                 routed_to=target_agent,
                 mediation_agent=target_agent,
@@ -2026,7 +2034,7 @@ class OrchestratorAgent(BaseAgent):
         conversation_id: str | None,
         span_collector=None,
         language: str = "en",
-    ) -> list[tuple[str, str, float | None]]:
+    ) -> list[tuple[str, str, float | None, list[str]]]:
         return await self._classification_engine.repair_send_agent_classifications(
             user_text,
             conversation_id=conversation_id,
@@ -2036,7 +2044,7 @@ class OrchestratorAgent(BaseAgent):
 
     async def _sanitize_or_repair_classifications(
         self,
-        classifications: list[tuple[str, str, float | None]],
+        classifications: list[tuple[str, str, float | None, list[str]]],
         *,
         user_text: str,
         conversation_id: str | None,
@@ -2044,7 +2052,7 @@ class OrchestratorAgent(BaseAgent):
         language: str = "en",
         allow_repair: bool = True,
         require_send_partner: bool = False,
-    ) -> list[tuple[str, str, float | None]]:
+    ) -> list[tuple[str, str, float | None, list[str]]]:
         result, _ = await self._classification_engine.sanitize_or_repair_classifications(
             classifications,
             user_text=user_text,
@@ -2068,7 +2076,7 @@ class OrchestratorAgent(BaseAgent):
         span_collector=None,
         language: str = "en",
         allow_cache_lookup: bool = True,
-    ) -> tuple[list[tuple[str, str, float | None]], bool]:
+    ) -> tuple[list[tuple[str, str, float | None, list[str]]], bool]:
         return await self._classification_engine.classify(
             user_text,
             cache_result=cache_result,
@@ -2081,7 +2089,9 @@ class OrchestratorAgent(BaseAgent):
             get_turns=self._get_turns,
         )
 
-    async def _parse_classification(self, response: str, original_text: str) -> list[tuple[str, str, float | None]]:
+    async def _parse_classification(
+        self, response: str, original_text: str
+    ) -> list[tuple[str, str, float | None, list[str]]]:
         return await self._classification_engine.parse_classification(response, original_text)
 
     async def _get_conversation_context_turn_limit(self) -> int:

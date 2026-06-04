@@ -61,13 +61,13 @@ class ClassificationStrategy(ABC):
         language: str,
         span_collector,
         *,
-        pre_classified: tuple[list[tuple[str, str, float | None]], bool] | None = None,
+        pre_classified: tuple[list[tuple[str, str, float | None, list[str]]], bool] | None = None,
         routing_skip: Any | None = None,
         compound_bypass: bool = False,
         extended_metadata: bool = False,
         classify_reason: str | None = None,
         allow_classify_cache_lookup: bool = False,
-    ) -> tuple[list[tuple[str, str, float | None]], bool, str, str, float | None]: ...
+    ) -> tuple[list[tuple[str, str, float | None, list[str]]], bool, str, str, float | None]: ...
 
 
 class DispatchStrategy(ABC):
@@ -77,7 +77,7 @@ class DispatchStrategy(ABC):
     async def execute(
         self,
         task: AgentTask,
-        classifications: list[tuple[str, str, float | None]],
+        classifications: list[tuple[str, str, float | None, list[str]]],
         user_text: str,
         conversation_id: str,
         turns: list[dict[str, Any]],
@@ -100,7 +100,7 @@ class FinalizationStrategy(ABC):
         conversation_id: str,
         turns: list[dict[str, Any]],
         span_collector,
-        classifications: list[tuple[str, str, float | None]],
+        classifications: list[tuple[str, str, float | None, list[str]]],
         voice_followup_requested: bool,
         used_origin_context: bool,
         confidence: float | None = None,
@@ -177,13 +177,13 @@ class DefaultClassificationStrategy(ClassificationStrategy):
         language: str,
         span_collector,
         *,
-        pre_classified: tuple[list[tuple[str, str, float | None]], bool] | None = None,
+        pre_classified: tuple[list[tuple[str, str, float | None, list[str]]], bool] | None = None,
         routing_skip: Any | None = None,
         compound_bypass: bool = False,
         extended_metadata: bool = False,
         classify_reason: str | None = None,
         allow_classify_cache_lookup: bool = False,
-    ) -> tuple[list[tuple[str, str, float | None]], bool, str, str, float | None]:
+    ) -> tuple[list[tuple[str, str, float | None, list[str]]], bool, str, str, float | None]:
         from app.analytics.tracer import _optional_span
 
         next_classify_extra: dict[str, object] = {}
@@ -201,7 +201,7 @@ class DefaultClassificationStrategy(ClassificationStrategy):
 
         if pre_classified is not None:
             classifications, routing_cached = pre_classified
-            target_agent, condensed_task, confidence = classifications[0]
+            target_agent, condensed_task, confidence, _entities = classifications[0]
             if synthetic_preclassified:
                 async with _optional_span(span_collector, "classify", agent_id="orchestrator") as span:
                     self._pipeline_record_classify_span(
@@ -228,7 +228,7 @@ class DefaultClassificationStrategy(ClassificationStrategy):
                         load_prompt_async=self._load_prompt_async,
                         get_turns=self._get_turns,
                     )
-                    target_agent, condensed_task, confidence = classifications[0]
+                    target_agent, condensed_task, confidence, _entities = classifications[0]
                     self._pipeline_record_classify_span(
                         span,
                         classifications,
@@ -259,7 +259,7 @@ class DefaultDispatchStrategy(DispatchStrategy):
     async def execute(
         self,
         task: AgentTask,
-        classifications: list[tuple[str, str, float | None]],
+        classifications: list[tuple[str, str, float | None, list[str]]],
         user_text: str,
         conversation_id: str,
         turns: list[dict[str, Any]],
@@ -267,8 +267,8 @@ class DefaultDispatchStrategy(DispatchStrategy):
         language: str,
         incoming_context,
     ) -> DispatchResult:
-        is_sequential_send = any(a == "send-agent" for a, _, _ in classifications) and any(
-            a != "send-agent" for a, _, _ in classifications
+        is_sequential_send = any(a == "send-agent" for a, _, _, _ in classifications) and any(
+            a != "send-agent" for a, _, _, _ in classifications
         )
 
         failed_agents: list[tuple[str, str]] = []
@@ -306,6 +306,7 @@ class DefaultDispatchStrategy(DispatchStrategy):
         if len(classifications) == 1:
             target_agent = classifications[0][0]
             condensed_task = classifications[0][1]
+            verbatim_terms = classifications[0][3]
             agent_id, speech, result = await self._dispatch_manager.dispatch_single(
                 target_agent,
                 condensed_task,
@@ -315,6 +316,7 @@ class DefaultDispatchStrategy(DispatchStrategy):
                 span_collector,
                 incoming_context=incoming_context,
                 resolved_language=language,
+                verbatim_terms=verbatim_terms,
             )
             action_executed = (result or {}).get("action_executed")
             routed_to = agent_id
@@ -349,8 +351,9 @@ class DefaultDispatchStrategy(DispatchStrategy):
                 span_collector,
                 incoming_context=incoming_context,
                 resolved_language=language,
+                verbatim_terms=entities,
             )
-            for aid, ctask, _ in classifications
+            for aid, ctask, _, entities in classifications
         ]
         dispatch_results = await asyncio.gather(*dispatch_coros, return_exceptions=True)
 
@@ -440,7 +443,7 @@ class DefaultFinalizationStrategy(FinalizationStrategy):
         conversation_id: str,
         turns: list[dict[str, Any]],
         span_collector,
-        classifications: list[tuple[str, str, float | None]],
+        classifications: list[tuple[str, str, float | None, list[str]]],
         voice_followup_requested: bool,
         used_origin_context: bool,
         confidence: float | None = None,

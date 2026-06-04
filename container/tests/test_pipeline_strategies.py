@@ -155,8 +155,8 @@ class TestDefaultDispatchStrategyMultiAgent:
             ]
         )
         classifications = [
-            ("light-agent", "turn on light", 0.95),
-            ("music-agent", "play jazz", 0.90),
+            ("light-agent", "turn on light", 0.95, []),
+            ("music-agent", "play jazz", 0.90, []),
         ]
         task = _make_task("turn on light and play jazz")
         result = await strategy.execute(
@@ -184,8 +184,8 @@ class TestDefaultDispatchStrategyMultiAgent:
             ]
         )
         classifications = [
-            ("light-agent", "turn on light", 0.95),
-            ("music-agent", "play jazz", 0.90),
+            ("light-agent", "turn on light", 0.95, []),
+            ("music-agent", "play jazz", 0.90, []),
         ]
         task = _make_task("turn on light and play jazz")
         result = await strategy.execute(
@@ -209,8 +209,8 @@ class TestDefaultDispatchStrategyMultiAgent:
             ]
         )
         classifications = [
-            ("light-agent", "turn on light", 0.95),
-            ("music-agent", "play jazz", 0.90),
+            ("light-agent", "turn on light", 0.95, []),
+            ("music-agent", "play jazz", 0.90, []),
         ]
         task = _make_task("turn on light and play jazz")
         result = await strategy.execute(
@@ -233,8 +233,8 @@ class TestDefaultDispatchStrategyMultiAgent:
             ]
         )
         classifications = [
-            ("light-agent", "turn on light", 0.95),
-            ("music-agent", "play jazz", 0.90),
+            ("light-agent", "turn on light", 0.95, []),
+            ("music-agent", "play jazz", 0.90, []),
         ]
         task = _make_task("turn on light and play jazz")
         result = await strategy.execute(
@@ -257,8 +257,8 @@ class TestDefaultDispatchStrategyMultiAgent:
             ]
         )
         classifications = [
-            ("light-agent", "turn on light", 0.95),
-            ("music-agent", "play jazz", 0.90),
+            ("light-agent", "turn on light", 0.95, []),
+            ("music-agent", "play jazz", 0.90, []),
         ]
         task = _make_task("turn on light and play jazz")
         result = await strategy.execute(
@@ -281,8 +281,8 @@ class TestDefaultDispatchStrategyMultiAgent:
             ]
         )
         classifications = [
-            ("light-agent", "turn on light", 0.95),
-            ("music-agent", "play jazz", 0.90),
+            ("light-agent", "turn on light", 0.95, []),
+            ("music-agent", "play jazz", 0.90, []),
         ]
         task = _make_task("turn on light and play jazz")
         result = await strategy.execute(

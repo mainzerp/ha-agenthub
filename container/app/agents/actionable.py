@@ -25,15 +25,6 @@ logger = logging.getLogger(__name__)
 _JSON_FENCE_RE = re.compile(r"```json\s*\n?.*?\n?\s*```", re.DOTALL)
 _RAW_JSON_OBJ_RE = re.compile(r'\{[^{}]*"action"\s*:.*?\}', re.DOTALL)
 
-# Lightweight entity mention extraction patterns
-_DOUBLE_QUOTED_RE = re.compile(r'"([^"]+)"')
-_SINGLE_QUOTED_RE = re.compile(r"'([^']+)'")
-_DELIMITER_RE = re.compile(r"[;,.]|(?:\band\b)|(?:\bor\b)|(?:\bif\b)|(?:\bthen\b)|(?:\bwhen\b)", re.IGNORECASE)
-_STRIP_PREFIX_RE = re.compile(
-    r"^(turn\s+(?:on|off|up|down)|set|toggle|open|close|stop|lock|unlock|arm|disarm|activate|make|get|is|are|was|were|the|a|an|das|die|der|den|dem|ein|eine|einer|einen|in|im|at|to|of|from|with)\s+",
-    re.IGNORECASE,
-)
-
 
 def strip_json_blocks(text: str) -> str:
     """Remove JSON code fences and raw JSON action objects from text."""
@@ -61,80 +52,18 @@ class ActionableAgent(BaseAgent):
         self._current_task: AgentTask | None = None
         self._current_task_context: TaskContext | None = None
 
-    @staticmethod
-    def _extract_entity_mentions(text: str) -> list[str]:
-        """Extract potential entity mentions from task description using lightweight heuristics.
-
-        Splits by common delimiters, extracts quoted phrases, and strips common
-        leading verbs/articles to produce candidate entity names.
-        """
-        if not text:
-            return []
-
-        mentions: list[str] = []
-
-        # Quoted phrases (double and single quotes)
-        for match in _DOUBLE_QUOTED_RE.finditer(text):
-            mention = match.group(1).strip()
-            if mention:
-                mentions.append(mention)
-        for match in _SINGLE_QUOTED_RE.finditer(text):
-            mention = match.group(1).strip()
-            if mention:
-                mentions.append(mention)
-
-        # Split by delimiters and process each chunk
-        parts = _DELIMITER_RE.split(text)
-        for part in parts:
-            if not part:
-                continue
-            part = part.strip()
-            # Iteratively strip common prefixes
-            for _ in range(3):
-                stripped = _STRIP_PREFIX_RE.sub("", part)
-                if stripped == part:
-                    break
-                part = stripped
-            if part and len(part) > 1:
-                lower = part.lower()
-                if lower not in {
-                    "on",
-                    "off",
-                    "up",
-                    "down",
-                    "it",
-                    "them",
-                    "here",
-                    "there",
-                    "an",
-                    "aus",
-                    "ein",
-                    "hier",
-                    "da",
-                    "dark",
-                    "bright",
-                    "hot",
-                    "cold",
-                }:
-                    mentions.append(part)
-
-        # Deduplicate preserving order
-        seen: set[str] = set()
-        result: list[str] = []
-        for m in mentions:
-            key = m.lower()
-            if key not in seen:
-                seen.add(key)
-                result.append(m)
-        return result
-
     async def _resolve_relevant_entities(self, task: AgentTask) -> list[tuple[str, str]]:
-        """Resolve up to 3 unique entity mentions from the task description.
+        """Resolve up to 3 unique entity mentions from verbatim_terms or description fallback.
 
         Returns a list of (entity_id, friendly_name) tuples.
         """
-        mentions = self._extract_entity_mentions(task.description)
-        if not mentions:
+        terms = list(task.verbatim_terms or [])
+        # Fallback: if orchestrator didn't populate verbatim_terms,
+        # use the full condensed task as a single query
+        if not terms and task.description:
+            terms = [task.description]
+
+        if not terms:
             return []
 
         agent_id = self.agent_card.agent_id
@@ -142,12 +71,12 @@ class ActionableAgent(BaseAgent):
         seen_ids: set[str] = set()
         cached_visible_entries: list[Any] | None = None
 
-        for mention in mentions:
+        for term in terms:
             if len(resolved) >= 3:
                 break
             try:
                 result = await resolve_entity_deterministic_first(
-                    mention,
+                    term,
                     self._entity_index,
                     self._entity_matcher,
                     agent_id,
@@ -155,7 +84,7 @@ class ActionableAgent(BaseAgent):
                     visible_entries=cached_visible_entries,
                 )
             except Exception:
-                logger.debug("Entity resolution failed for mention %r", mention, exc_info=True)
+                logger.debug("Entity resolution failed for term %r", term, exc_info=True)
                 continue
 
             if cached_visible_entries is None:

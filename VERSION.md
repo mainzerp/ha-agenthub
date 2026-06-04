@@ -1,12 +1,23 @@
 # Version
 
-**Current Version:** 1.39.2
+**Current Version:** 1.40.0
 
 ## Recent Changes
 
-Track changes since `v1.39.2` here.
+Track changes since `v1.40.0` here.
 
 ## Version History
+
+### 1.40.0 (MINOR) -- Orchestrator-driven entity extraction
+
+- feat(orchestrator): Classification LLM now extracts entity names and outputs them on `@entities:` lines after each classification line. This gives agents clean, deterministic entity names for exact-match resolution instead of relying on hardcoded regex heuristics.
+- feat(classification): Extend classification tuple from 3 to 4 elements `(agent_id, condensed_task, confidence, entities_list)`. Parser handles `@entities:` lines, orphan lines, and dedup merging.
+- feat(dispatch): Thread `verbatim_terms` through the entire orchestrator pipeline (`PipelinePreludeResult`, `DefaultDispatchStrategy`, `dispatch_manager`, `AgentTask`).
+- feat(agent): `ActionableAgent._resolve_relevant_entities()` now consumes `task.verbatim_terms` for deterministic resolution. Falls back to `task.description` when `verbatim_terms` is empty.
+- refactor(agent): Remove `_extract_entity_mentions()` and all associated regex constants (`_DOUBLE_QUOTED_RE`, `_SINGLE_QUOTED_RE`, `_DELIMITER_RE`, `_STRIP_PREFIX_RE`). Entity extraction is now fully LLM-driven.
+- test(orchestrator): Add 3 new parser tests covering `@entities` extraction, multi-entity terms, and orphan handling.
+- test(actionable): Remove `TestExtractEntityMentions` class. Update `TestResolveRelevantEntities` for `verbatim_terms` with fallback test.
+- fix(tests): Update 4 test files for new 4-tuple classification shape.
 
 ### 1.39.2 (PATCH) -- Complete personality cache fix
 

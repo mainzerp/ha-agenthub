@@ -147,6 +147,7 @@ class DispatchManager:
         skip_dispatch_span: bool = False,
         *,
         resolved_language: str | None = None,
+        verbatim_terms: list[str] | None = None,
     ) -> tuple[str, str, dict[str, Any] | None]:
         """Dispatch a single task to one agent and return (agent_id, speech, result_dict)."""
         t_dispatch = time.perf_counter()
@@ -195,6 +196,7 @@ class DispatchManager:
             user_text=user_text,
             conversation_id=conversation_id,
             context=context,
+            verbatim_terms=verbatim_terms or [],
         )
         request = JsonRpcRequest(
             method="message/send",

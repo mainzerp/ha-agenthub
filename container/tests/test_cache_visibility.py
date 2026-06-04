@@ -293,8 +293,8 @@ class TestSequentialSendContentFailure:
 
         with patch.object(orch, "_dispatch_single", side_effect=fake_dispatch_single) as mock_ds:
             classifications = [
-                ("general-agent", "summarize today", 0.9),
-                ("send-agent", "telegram", 0.9),
+                ("general-agent", "summarize today", 0.9, []),
+                ("send-agent", "telegram", 0.9, []),
             ]
             routed_to, speech, result = await orch._handle_sequential_send(
                 classifications,
@@ -330,8 +330,8 @@ class TestSequentialSendContentFailure:
 
         with patch.object(orch, "_dispatch_single", side_effect=fake_dispatch_single) as mock_ds:
             classifications = [
-                ("general-agent", "summarize today", 0.9),
-                ("send-agent", "telegram", 0.9),
+                ("general-agent", "summarize today", 0.9, []),
+                ("send-agent", "telegram", 0.9, []),
             ]
             _routed_to, speech, result = await orch._handle_sequential_send(
                 classifications,
@@ -358,8 +358,8 @@ class TestSequentialSendContentFailure:
 
         with patch.object(orch, "_dispatch_single", side_effect=fake_dispatch_single) as mock_ds:
             classifications = [
-                ("general-agent", "summarize", 0.9),
-                ("send-agent", "telegram", 0.9),
+                ("general-agent", "summarize", 0.9, []),
+                ("send-agent", "telegram", 0.9, []),
             ]
             _routed, speech, result = await orch._handle_sequential_send(
                 classifications,
@@ -396,8 +396,8 @@ class TestSequentialSendContentFailure:
 
         with patch.object(orch, "_dispatch_single", side_effect=fake_dispatch_single):
             classifications = [
-                ("general-agent", "summarize today", 0.9),
-                ("send-agent", "telegram", 0.9),
+                ("general-agent", "summarize today", 0.9, []),
+                ("send-agent", "telegram", 0.9, []),
             ]
             _routed, speech, result = await orch._handle_sequential_send(
                 classifications,

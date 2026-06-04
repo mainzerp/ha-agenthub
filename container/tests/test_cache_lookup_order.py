@@ -123,7 +123,7 @@ async def test_routing_miss_falls_through_to_live_classify():
     orch = _make_orchestrator(MagicMock())
     orch._cache_orchestrator.try_cache_replay = AsyncMock(return_value=(None, None))
     orch._classification_engine.classify = AsyncMock(
-        return_value=([("light-agent", "Turn on kitchen light", 0.95)], False)
+        return_value=([("light-agent", "Turn on kitchen light", 0.95, [])], False)
     )
     orch._dispatch_manager.dispatch_single = AsyncMock(
         return_value=("light-agent", "Live dispatch speech", {"speech": "Live dispatch speech"})
