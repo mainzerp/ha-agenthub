@@ -1,8 +1,9 @@
 import asyncio
+import contextlib
 import json
 import logging
 import os
-from collections.abc import Callable
+from collections.abc import AsyncGenerator, Callable
 from typing import Any
 
 import litellm
@@ -174,6 +175,104 @@ async def complete(
                     tokens_out=response.usage.completion_tokens or 0,
                 )
             return content
+        raise
+
+
+async def complete_stream(
+    agent_id: str,
+    messages: list[dict],
+    **overrides: Any,
+) -> AsyncGenerator[str, None]:
+    """Stream LLM completion tokens via litellm.acompletion(stream=True).
+
+    Yields individual content tokens (strings). The caller must
+    reconstruct the full response if needed.
+
+    Raises LLMError on empty choices or unrecoverable API errors.
+    Does NOT retry on empty response (incompatible with streaming).
+    """
+    span_collector = overrides.pop("span_collector", None)
+    row = await AgentConfigRepository.get(agent_id)
+    if row is None:
+        raise ValueError(f"No config found for agent: {agent_id}")
+    config = AgentConfig(**row)
+
+    model = overrides.get("model") or config.model
+    if model is None:
+        raise ValueError(f"No model configured for agent: {agent_id}")
+    max_tokens = overrides.get("max_tokens", config.max_tokens)
+    temperature = overrides.get("temperature", config.temperature)
+    reasoning_effort = overrides.get("reasoning_effort") or config.reasoning_effort
+
+    provider_params = await resolve_provider_params(model)
+
+    logger.debug(
+        "LLM stream call: agent=%s model=%s tokens=%s temp=%s",
+        agent_id,
+        model,
+        max_tokens,
+        temperature,
+    )
+
+    call_kwargs = dict(
+        model=model,
+        messages=messages,
+        max_tokens=max_tokens,
+        temperature=temperature,
+        timeout=config.timeout,
+        stream=True,
+        **provider_params,
+    )
+    if reasoning_effort:
+        call_kwargs["reasoning_effort"] = reasoning_effort
+        call_kwargs["drop_params"] = True
+
+    # Attempt usage tracking via stream_options; skip if unsupported.
+    with contextlib.suppress(TypeError, ValueError):
+        call_kwargs["stream_options"] = {"include_usage": True}
+
+    try:
+        async with _optional_span(span_collector, "llm_provider_call", agent_id=agent_id) as pspan:
+            pspan["metadata"]["model"] = model
+            pspan["metadata"]["provider"] = model.split("/")[0] if "/" in model else "unknown"
+            pspan["metadata"]["streamed"] = True
+            response = await litellm.acompletion(**call_kwargs)
+
+        async for chunk in response:
+            if not chunk.choices:
+                raise LLMError("Empty choices from provider during stream")
+            delta = chunk.choices[0].delta
+            content = getattr(delta, "content", None)
+            if content:
+                yield content
+            if chunk.choices[0].finish_reason == "length":
+                logger.warning(
+                    "LLM stream truncated (finish_reason=length) for agent=%s model=%s max_tokens=%s",
+                    agent_id,
+                    model,
+                    max_tokens,
+                )
+
+        # Token usage may be delivered in a final chunk with empty choices.
+        if hasattr(response, "usage") and response.usage:
+            await track_token_usage(
+                agent_id=agent_id,
+                provider=model.split("/")[0] if "/" in model else "unknown",
+                tokens_in=response.usage.prompt_tokens or 0,
+                tokens_out=response.usage.completion_tokens or 0,
+            )
+    except litellm.exceptions.AuthenticationError:
+        logger.error("Authentication failed for agent=%s model=%s -- check API key", agent_id, model)
+        raise
+    except litellm.exceptions.APIError as e:
+        status = getattr(e, "status_code", "?")
+        logger.error("LLM stream API error agent=%s model=%s status=%s: %s", agent_id, model, status, str(e))
+        raise
+    except Exception as e:
+        if LiteLLMTimeout is not None and isinstance(e, LiteLLMTimeout):
+            logger.warning("LLM stream timeout for agent=%s model=%s", agent_id, model)
+            raise
+        logger.error("LLM stream error agent=%s model=%s: %s", agent_id, model, str(e))
         raise
 
 

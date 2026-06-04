@@ -2348,6 +2348,63 @@ class TestStreamMediatedSpeech:
         assert final[0].get("mediated_speech") is not None
         assert final[0]["mediated_speech"] == "Light is on."
 
+    async def test_stream_mediate_with_reminder_empty_personality(self):
+        """Empty personality with a reminder yields the reminder directly."""
+        orch, _, _ = self._make_orchestrator()
+        with patch.object(orch, "_get_personality_cached", new_callable=AsyncMock, return_value=""):
+            tokens = [
+                t
+                async for t in orch._mediate_response_stream(
+                    agent_speech="Light is on.",
+                    user_text="turn on light",
+                    agent_id="light-agent",
+                    reminder_text="Don't forget your meeting!",
+                )
+            ]
+        assert tokens == ["Don't forget your meeting!"]
+
+    async def test_stream_mediate_with_personality_yields_tokens(self):
+        """Non-empty personality streams tokens from the LLM."""
+        orch, _, _ = self._make_orchestrator()
+
+        async def _mock_llm_stream(messages, **kwargs):
+            yield "Hey! "
+            yield "The light is on."
+
+        with (
+            patch.object(orch, "_get_personality_cached", new_callable=AsyncMock, return_value="You are friendly"),
+            patch.object(
+                orch,
+                "_load_prompt_async",
+                new_callable=AsyncMock,
+                return_value="System: {personality} {language} {organic_followup_hint}",
+            ),
+            patch.object(orch, "_call_llm_stream", _mock_llm_stream),
+        ):
+            tokens = [
+                t
+                async for t in orch._mediate_response_stream(
+                    agent_speech="Light is on.",
+                    user_text="turn on light",
+                    agent_id="light-agent",
+                )
+            ]
+        assert tokens == ["Hey! ", "The light is on."]
+
+    async def test_stream_mediate_empty_personality_and_reminder(self):
+        """Empty personality and no reminder yields nothing."""
+        orch, _, _ = self._make_orchestrator()
+        with patch.object(orch, "_get_personality_cached", new_callable=AsyncMock, return_value=""):
+            tokens = [
+                t
+                async for t in orch._mediate_response_stream(
+                    agent_speech="Light is on.",
+                    user_text="turn on light",
+                    agent_id="light-agent",
+                )
+            ]
+        assert tokens == []
+
     def test_stream_token_model_with_mediated_speech(self):
         """StreamToken accepts and serializes mediated_speech field."""
         token = StreamToken(token="", done=True, conversation_id="c1", mediated_speech="Hello!")

@@ -959,6 +959,116 @@ class OrchestratorAgent(BaseAgent):
         if extra_metadata:
             span["metadata"].update(extra_metadata)
 
+    async def _prepare_mediation_inputs(
+        self,
+        task: AgentTask,
+        has_error: bool,
+        language: str,
+    ) -> tuple[str | None, bool]:
+        """Return (reminder_text, allow_organic_followup)."""
+        reminder_text: str | None = None
+        if self._calendar_injector is not None and not has_error:
+            try:
+                reminder_text = await self._calendar_injector.inject_reminders(
+                    utterance=task.description,
+                    device_id=task.context.device_id if task.context else None,
+                    area_id=task.context.area_id if task.context else None,
+                    user_id=task.context.user_id if task.context else None,
+                    language=(task.context.language if task.context else language) or language,
+                )
+            except Exception:
+                logger.debug("Calendar reminder injection failed", exc_info=True)
+
+        allow_organic_followup = False
+        if task.context and task.context.source == "ha" and not has_error:
+            try:
+                enabled_raw = await SettingsRepository.get_value("orchestrator.organic_followup_enabled", "false")
+                if (enabled_raw or "false").lower() == "true":
+                    raw_p = await SettingsRepository.get_value("orchestrator.organic_followup_probability", "0.08")
+                    p = float(raw_p or "0.08")
+                    allow_organic_followup = random.random() < p
+            except (TypeError, ValueError):
+                pass
+
+        return reminder_text, allow_organic_followup
+
+    async def _finalize_post_mediation(
+        self,
+        *,
+        task: AgentTask,
+        user_text: str,
+        target_agent: str,
+        confidence: float | None,
+        condensed_task: str,
+        mediated_speech: str,
+        original_speech: str,
+        action_executed,
+        has_error: bool,
+        span_collector,
+        conversation_id: str,
+        language: str,
+        turns: list,
+        classifications: list[tuple[str, str, float | None]],
+        voice_followup_requested: bool,
+        mediated_followup: bool = False,
+        routed_to: str | None = None,
+        skip_response_cache: bool = False,
+        used_origin_context: bool = False,
+        ret_span: dict | None = None,
+    ) -> tuple[str, bool]:
+        """Run post-mediation finalization: merge voice followup, store cache/turn/trace."""
+        if routed_to is None:
+            routed_to = target_agent
+        cache_stored_action = False
+        cache_stored_routing = False
+        cache_stored_response = False
+
+        speech, voice_followup_effective = self._merge_voice_followup_and_organic(
+            mediated_speech,
+            agent_requested=voice_followup_requested,
+            mediated_followup=mediated_followup,
+        )
+        if ret_span is not None:
+            ret_span["metadata"]["final_response"] = speech
+            ret_span["metadata"]["mediated"] = speech != original_speech
+            ret_span["metadata"]["voice_followup"] = voice_followup_effective
+        if not skip_response_cache and target_agent != _CANCEL_INTERACTION_AGENT:
+            cache_stored_action, cache_stored_routing = await self._store_after_dispatch(
+                user_text=user_text,
+                language=language,
+                target_agent=target_agent,
+                condensed_task=condensed_task,
+                confidence=confidence,
+                speech=speech,
+                original_response_text=original_speech,
+                action_executed=action_executed,
+                has_error=has_error,
+                task=task,
+                merged_multi_agent=False,
+                used_origin_context=used_origin_context,
+            )
+            cache_stored_response = cache_stored_action
+        if ret_span is not None:
+            ret_span["metadata"]["cache_stored_action"] = cache_stored_action
+            ret_span["metadata"]["cache_stored_response"] = cache_stored_response
+            ret_span["metadata"]["cache_stored_routing"] = cache_stored_routing
+        await self._store_turn(conversation_id, user_text, speech, agent_id=routed_to)
+        if span_collector:
+            await self._create_trace(
+                span_collector,
+                conversation_id,
+                user_text,
+                speech,
+                target_agent,
+                confidence,
+                condensed_task,
+                classifications,
+                turns,
+                task_context=task.context,
+                voice_followup=voice_followup_effective,
+            )
+        return speech, voice_followup_effective
+
     async def _finalize_single_agent_response(
         self,
         *,
@@ -1004,36 +1114,13 @@ class OrchestratorAgent(BaseAgent):
         if mediation_agent is None:
             mediation_agent = target_agent
         original_speech = speech
-        cache_stored_action = False
-        cache_stored_routing = False
-        cache_stored_response = False
         async with _optional_span(span_collector, "return", agent_id="orchestrator") as ret_span:
             ret_span["metadata"]["from_agent"] = routed_to
             ret_span["metadata"]["agent_response"] = speech
-            # Fetch calendar reminder so the mediation LLM can weave it in naturally
-            reminder_text: str | None = None
-            if self._calendar_injector is not None and not has_error:
-                try:
-                    reminder_text = await self._calendar_injector.inject_reminders(
-                        utterance=task.description,
-                        device_id=task.context.device_id if task.context else None,
-                        area_id=task.context.area_id if task.context else None,
-                        user_id=task.context.user_id if task.context else None,
-                        language=(task.context.language if task.context else "en") or "en",
-                    )
-                except Exception:
-                    logger.debug("Calendar reminder injection failed", exc_info=True)
 
-            allow_organic_followup = False
-            if task.context and task.context.source == "ha" and not has_error:
-                try:
-                    enabled_raw = await SettingsRepository.get_value("orchestrator.organic_followup_enabled", "false")
-                    if (enabled_raw or "false").lower() == "true":
-                        raw_p = await SettingsRepository.get_value("orchestrator.organic_followup_probability", "0.08")
-                        p = float(raw_p or "0.08")
-                        allow_organic_followup = random.random() < p
-                except (TypeError, ValueError):
-                    pass
+            reminder_text, allow_organic_followup = await self._prepare_mediation_inputs(
+                task, has_error=has_error, language=language
+            )
 
             should_mediate = target_agent != _CANCEL_INTERACTION_AGENT and (
                 not has_error or not skip_mediation_on_error
@@ -1053,49 +1140,29 @@ class OrchestratorAgent(BaseAgent):
                 # No mediation path -- append reminder directly as fallback
                 separator = " " if speech and speech[-1] in ".!?" else ". "
                 speech = f"{speech}{separator}{reminder_text}" if speech else reminder_text
-            speech, voice_followup_effective = self._merge_voice_followup_and_organic(
-                speech,
-                agent_requested=voice_followup_requested,
+
+            return await self._finalize_post_mediation(
+                task=task,
+                user_text=user_text,
+                target_agent=target_agent,
+                confidence=confidence,
+                condensed_task=condensed_task,
+                mediated_speech=speech,
+                original_speech=original_speech,
+                action_executed=action_executed,
+                has_error=has_error,
+                span_collector=span_collector,
+                conversation_id=conversation_id,
+                language=language,
+                turns=turns,
+                classifications=classifications,
+                voice_followup_requested=voice_followup_requested,
                 mediated_followup=mediated_followup,
+                routed_to=routed_to,
+                skip_response_cache=skip_response_cache,
+                used_origin_context=used_origin_context,
+                ret_span=ret_span,
             )
-            ret_span["metadata"]["final_response"] = speech
-            ret_span["metadata"]["mediated"] = speech != original_speech
-            ret_span["metadata"]["voice_followup"] = voice_followup_effective
-            if not skip_response_cache and target_agent != _CANCEL_INTERACTION_AGENT:
-                cache_stored_action, cache_stored_routing = await self._store_after_dispatch(
-                    user_text=user_text,
-                    language=language,
-                    target_agent=target_agent,
-                    condensed_task=condensed_task,
-                    confidence=confidence,
-                    speech=speech,
-                    original_response_text=original_speech,
-                    action_executed=action_executed,
-                    has_error=has_error,
-                    task=task,
-                    merged_multi_agent=False,
-                    used_origin_context=used_origin_context,
-                )
-                cache_stored_response = cache_stored_action
-            ret_span["metadata"]["cache_stored_action"] = cache_stored_action
-            ret_span["metadata"]["cache_stored_response"] = cache_stored_response
-            ret_span["metadata"]["cache_stored_routing"] = cache_stored_routing
-            await self._store_turn(conversation_id, user_text, speech, agent_id=routed_to)
-            if span_collector:
-                await self._create_trace(
-                    span_collector,
-                    conversation_id,
-                    user_text,
-                    speech,
-                    target_agent,
-                    confidence,
-                    condensed_task,
-                    classifications,
-                    turns,
-                    task_context=task.context,
-                    voice_followup=voice_followup_effective,
-                )
-        return speech, voice_followup_effective
 
     async def _run_pipeline(
         self,
@@ -1758,26 +1825,96 @@ class OrchestratorAgent(BaseAgent):
             # response instead of surfacing a transport-level stream error.
             sc.stream_error = None
         has_error = sc.stream_error is not None
-        full_speech, vf_eff = await self._finalize_single_agent_response(
-            task=task,
-            user_text=user_text,
-            target_agent=target_agent,
-            confidence=confidence,
-            condensed_task=condensed_task,
-            speech=full_speech,
-            action_executed=sc.action_executed,
-            has_error=has_error,
-            span_collector=span_collector,
-            conversation_id=conversation_id,
-            language=language,
-            turns=turns,
-            classifications=[(target_agent, condensed_task, confidence)],
-            voice_followup_requested=sc.stream_voice_followup,
-            routed_to=target_agent,
-            mediation_agent=target_agent,
-            skip_mediation_on_error=False,
-            used_origin_context=used_origin_context,
+
+        # Check if mediation streaming is enabled
+        mediation_streaming_enabled_raw = await SettingsRepository.get_value(
+            "orchestrator.mediation_streaming_enabled", "false"
         )
+        mediation_streaming_enabled = (mediation_streaming_enabled_raw or "false").lower() == "true"
+
+        personality = await self._get_personality_cached()
+        reminder_text, allow_organic_followup = await self._prepare_mediation_inputs(
+            task, has_error=has_error, language=language
+        )
+
+        should_mediate = (
+            target_agent != _CANCEL_INTERACTION_AGENT
+            and (sc.stream_error is None or True)  # streaming path always mediates
+            and (personality.strip() or reminder_text)
+        )
+
+        if mediation_streaming_enabled and should_mediate and full_speech.strip():
+            # Stream mediated tokens to the client
+            mediated_tokens: list[str] = []
+            async for token in self._mediate_response_stream(
+                agent_speech=full_speech,
+                user_text=user_text,
+                agent_id=target_agent,
+                language=language,
+                span_collector=span_collector,
+                reminder_text=reminder_text,
+                allow_organic_followup=allow_organic_followup,
+            ):
+                if token:
+                    mediated_tokens.append(token)
+                    yield {
+                        "token": token,
+                        "done": False,
+                        "conversation_id": conversation_id,
+                    }
+
+            # Post-process the collected mediated text
+            collected_mediated = "".join(mediated_tokens)
+            mediated = strip_parenthetical_asides(collected_mediated) if collected_mediated.strip() else full_speech
+            followup = False
+            if isinstance(mediated, str) and mediated.endswith("[FOLLOWUP]"):
+                mediated = mediated[: -len("[FOLLOWUP]")].rstrip()
+                followup = True
+
+            # Run post-mediation finalization
+            full_speech, vf_eff = await self._finalize_post_mediation(
+                task=task,
+                user_text=user_text,
+                target_agent=target_agent,
+                confidence=confidence,
+                condensed_task=condensed_task,
+                mediated_speech=mediated,
+                original_speech="".join(sc.collected_speech),
+                action_executed=sc.action_executed,
+                has_error=has_error,
+                span_collector=span_collector,
+                conversation_id=conversation_id,
+                language=language,
+                turns=turns,
+                classifications=[(target_agent, condensed_task, confidence)],
+                voice_followup_requested=sc.stream_voice_followup,
+                mediated_followup=followup,
+                routed_to=target_agent,
+                skip_response_cache=False,
+                used_origin_context=used_origin_context,
+            )
+        else:
+            # Existing blocking path
+            full_speech, vf_eff = await self._finalize_single_agent_response(
+                task=task,
+                user_text=user_text,
+                target_agent=target_agent,
+                confidence=confidence,
+                condensed_task=condensed_task,
+                speech=full_speech,
+                action_executed=sc.action_executed,
+                has_error=has_error,
+                span_collector=span_collector,
+                conversation_id=conversation_id,
+                language=language,
+                turns=turns,
+                classifications=[(target_agent, condensed_task, confidence)],
+                voice_followup_requested=sc.stream_voice_followup,
+                routed_to=target_agent,
+                mediation_agent=target_agent,
+                skip_mediation_on_error=False,
+                used_origin_context=used_origin_context,
+            )
 
         # Yield final done chunk with mediated_speech (always included)
         mediated_text = strip_markdown(full_speech)
@@ -2112,6 +2249,76 @@ class OrchestratorAgent(BaseAgent):
                 separator = " " if agent_speech and agent_speech[-1] in ".!?" else ". "
                 return (f"{agent_speech}{separator}{reminder_text}" if agent_speech else reminder_text), False
             return agent_speech, False
+
+    async def _mediate_response_stream(
+        self,
+        agent_speech: str,
+        user_text: str,
+        agent_id: str,
+        language: str = "en",
+        span_collector=None,
+        reminder_text: str | None = None,
+        allow_organic_followup: bool = False,
+    ) -> AsyncGenerator[str, None]:
+        """Streaming variant of _mediate_response.
+
+        Yields mediated tokens as the LLM generates them.
+        The caller must collect tokens and run post-processing
+        (strip_parenthetical_asides, [FOLLOWUP] detection) on the
+        complete text. This method does NOT return the followup flag.
+        """
+        personality = await self._get_personality_cached()
+        if not personality.strip():
+            # No personality -- nothing to stream mediate.
+            # If a reminder exists, yield it as the only token so the caller
+            # can append it to the speech (matching the blocking path behaviour).
+            if reminder_text:
+                yield reminder_text
+            return
+
+        if not agent_speech or not agent_speech.strip():
+            return
+
+        try:
+            system_prompt = await self._load_prompt_async("mediate")
+            personality_text = personality.strip() if personality and personality.strip() else ""
+            system_prompt = system_prompt.replace("{personality}", personality_text)
+            system_prompt = system_prompt.replace("{language}", language or "en")
+            system_prompt = system_prompt.replace(
+                "{organic_followup_hint}",
+                "You may add a natural follow-up question at the end. Append [FOLLOWUP] if you do."
+                if allow_organic_followup
+                else "Do not add any follow-up questions.",
+            ).strip()
+            user_content = (
+                f"User asked:\n{self._wrap_user_input(user_text)}\nAgent ({agent_id}) responded: {agent_speech}"
+            )
+            if reminder_text:
+                user_content += f"\nReminder to weave in: {reminder_text}"
+            user_content += f"\n\nRephrase in {language}:"
+            messages = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_content},
+            ]
+            overrides: dict[str, Any] = {
+                "temperature": self._mediation_temperature,
+                "max_tokens": self._mediation_max_tokens,
+            }
+            if self._mediation_model:
+                overrides["model"] = self._mediation_model
+            async with _optional_span(span_collector, "mediation", agent_id="orchestrator") as span:
+                span["metadata"]["personality_active"] = True
+                span["metadata"]["language"] = language or "en"
+                span["metadata"]["original_length"] = len(agent_speech)
+                span["metadata"]["streamed"] = True
+                async for token in self._call_llm_stream(messages, span_collector=span_collector, **overrides):
+                    if token:
+                        yield token
+        except Exception:
+            logger.warning(
+                "Response mediation stream failed, caller should fall back to _mediate_response", exc_info=True
+            )
+            return
 
     @staticmethod
     def _strip_seq_rule(prompt: str) -> str:

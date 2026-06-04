@@ -54,6 +54,14 @@ PUSH_FINAL_WAIT_SECONDS = 45.0
 MAX_POST_FILLER_WAIT_SECONDS = 8.0
 
 
+def _is_sentence_boundary(text: str) -> bool:
+    """Return True if text ends with a sentence boundary and has at least one word."""
+    if not text or not text.strip():
+        return False
+    stripped = text.rstrip()
+    return stripped[-1] in ".!?\n"
+
+
 class _WsDroppedAfterSendError(Exception):
     """Request was written to the WebSocket; REST fallback would duplicate server work."""
 
@@ -552,12 +560,17 @@ class HaAgentHubConversationEntity(
         gate_key: str,
         key: str,
     ) -> None:
-        """Read the post-filler final response and push it after idle."""
-        final_text: str | None = None
-        final_parts: list[str] = []
+        """Read the post-filler final response and push it after idle.
+
+        V4b: supports incremental mediated tokens. Sentences are buffered
+        until the satellite returns to idle, then announced as they arrive.
+        """
+        sentence_buffer = ""
+        pending_sentences: list[str] = []
         observed_idle = asyncio.Event()
         aborted_new_turn = False
         voice_followup = False
+        stream_sanitized = False
         unsub: Callable[[], None] | None = None
 
         def _on_state(event) -> None:
@@ -624,21 +637,42 @@ class HaAgentHubConversationEntity(
 
                     token_text = data.get("token", "")
                     if token_text:
-                        final_parts.append(token_text)
+                        sentence_buffer += token_text
+                        if _is_sentence_boundary(sentence_buffer):
+                            clean = sentence_buffer.strip()
+                            if observed_idle.is_set() and not aborted_new_turn:
+                                await self._announce_sentence(
+                                    satellite_entity_id,
+                                    clean,
+                                    stream_sanitized,
+                                    gate_key,
+                                )
+                            else:
+                                pending_sentences.append(clean)
+                            sentence_buffer = ""
+
                     if data.get("done", False):
                         mediated = data.get("mediated_speech")
                         if mediated:
-                            final_parts = [mediated]
+                            sentence_buffer = mediated
                         stream_sanitized = bool(data.get("sanitized", False))
                         voice_followup = bool(data.get("voice_followup", False))
-                        raw = "".join(final_parts)
-                        final_text = raw if stream_sanitized else _strip_markdown(raw)
-                        final_text = (final_text or "").strip()
+                        if sentence_buffer.strip():
+                            clean = sentence_buffer.strip()
+                            if observed_idle.is_set() and not aborted_new_turn:
+                                await self._announce_sentence(
+                                    satellite_entity_id,
+                                    clean,
+                                    stream_sanitized,
+                                    gate_key,
+                                )
+                            else:
+                                pending_sentences.append(clean)
                         logger.info(
-                            "ha-agenthub: post-filler push received final key=%s sat=%s final_chars=%d",
+                            "ha-agenthub: post-filler push received final key=%s sat=%s pending_sentences=%d",
                             gate_key,
                             satellite_entity_id,
-                            len(final_text),
+                            len(pending_sentences),
                         )
                         break
                 elif msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
@@ -649,9 +683,6 @@ class HaAgentHubConversationEntity(
                         msg.type,
                     )
                     break
-
-            if final_text is None or not final_text:
-                return
 
             if not satellite_entity_id:
                 logger.warning(
@@ -683,38 +714,12 @@ class HaAgentHubConversationEntity(
                 )
                 return
 
-            # Prime Directive 1 exception (tolerated):
-            # This assist_satellite.announce call runs after the filler-first
-            # pipeline has completed and the satellite has returned to idle.
-            # It is part of the HA Assist lifecycle: the primary response was
-            # already streamed via the pipeline, and this push delivers the
-            # final text to a satellite that is no longer actively listening.
-            # The background-task stability is ensured by the observed_idle
-            # gate and aborted_new_turn checks above.
-            try:
-                logger.info(
-                    "ha-agenthub: post-filler push dispatching announce key=%s sat=%s final_chars=%d",
-                    gate_key,
-                    satellite_entity_id,
-                    len(final_text),
+            # Flush any pending sentences that arrived before idle
+            for sentence in pending_sentences:
+                await self._announce_sentence(
+                    satellite_entity_id, sentence, stream_sanitized, gate_key
                 )
-                await self.hass.services.async_call(
-                    "assist_satellite",
-                    "announce",
-                    {
-                        "entity_id": satellite_entity_id,
-                        "message": final_text,
-                        "preannounce": False,
-                    },
-                    blocking=False,
-                )
-            except (aiohttp.ClientError, OSError):
-                logger.warning(
-                    "ha-agenthub: assist_satellite.announce failed in push key=%s sat=%s",
-                    gate_key,
-                    satellite_entity_id,
-                    exc_info=True,
-                )
+
             if voice_followup and satellite_entity_id and not aborted_new_turn:
                 try:
                     await self.hass.services.async_call(
@@ -770,6 +775,219 @@ class HaAgentHubConversationEntity(
             if current is asyncio.current_task():
                 self._inflight_pushes.pop(key, None)
 
+    def _spawn_sentence_stream(
+        self,
+        *,
+        local_ws: aiohttp.ClientWebSocketResponse,
+        gate_key: str,
+        satellite_entity_id: str | None,
+        initial_buffer: str = "",
+    ) -> None:
+        """Spawn a background task to stream remaining sentences via satellite announce."""
+        key = satellite_entity_id or f"__no_sat__:{gate_key}"
+        previous = self._inflight_pushes.get(key)
+        if previous is not None and not previous.done():
+            logger.info(
+                "ha-agenthub: cancelling previous sentence stream key=%s sat=%s",
+                gate_key,
+                satellite_entity_id,
+            )
+            previous.cancel()
+        task = self._entry.async_create_background_task(
+            self.hass,
+            self._sentence_stream_task(
+                local_ws=local_ws,
+                satellite_entity_id=satellite_entity_id,
+                gate_key=gate_key,
+                key=key,
+                initial_buffer=initial_buffer,
+            ),
+            name=f"ha_agenthub_sentence_stream:{key}",
+        )
+        self._inflight_pushes[key] = task
+
+    async def _sentence_stream_task(
+        self,
+        *,
+        local_ws: aiohttp.ClientWebSocketResponse,
+        satellite_entity_id: str | None,
+        gate_key: str,
+        key: str,
+        initial_buffer: str = "",
+    ) -> None:
+        """Read remaining mediated tokens and announce sentence by sentence."""
+        sentence_buffer = initial_buffer
+        voice_followup = False
+        stream_sanitized = False
+
+        try:
+            deadline_final = time.monotonic() + PUSH_FINAL_WAIT_SECONDS
+            while True:
+                remaining = deadline_final - time.monotonic()
+                if remaining <= 0:
+                    logger.warning(
+                        "ha-agenthub: sentence stream timed out waiting for final frame key=%s sat=%s",
+                        gate_key,
+                        satellite_entity_id,
+                    )
+                    break
+                try:
+                    msg = await asyncio.wait_for(local_ws.receive(), timeout=remaining)
+                except asyncio.TimeoutError:
+                    continue
+
+                if msg.type == aiohttp.WSMsgType.TEXT:
+                    try:
+                        data = json.loads(msg.data)
+                    except json.JSONDecodeError:
+                        logger.warning(
+                            "ha-agenthub: ignoring malformed WS message in sentence stream key=%s",
+                            gate_key,
+                        )
+                        continue
+
+                    if data.get("filler_push") is not None:
+                        logger.info(
+                            "ha-agenthub: ignoring filler in sentence stream key=%s",
+                            gate_key,
+                        )
+                        continue
+                    if data.get("directive"):
+                        logger.info(
+                            "ha-agenthub: sentence stream received directive, skipping announce key=%s sat=%s",
+                            gate_key,
+                            satellite_entity_id,
+                        )
+                        break
+
+                    token_text = data.get("token", "")
+                    if token_text:
+                        sentence_buffer += token_text
+                        if _is_sentence_boundary(sentence_buffer):
+                            await self._announce_sentence(
+                                satellite_entity_id,
+                                sentence_buffer.strip(),
+                                stream_sanitized,
+                                gate_key,
+                            )
+                            sentence_buffer = ""
+
+                    if data.get("done", False):
+                        stream_sanitized = bool(data.get("sanitized", False))
+                        voice_followup = bool(data.get("voice_followup", False))
+                        mediated = data.get("mediated_speech")
+                        if mediated:
+                            sentence_buffer = mediated
+                        if sentence_buffer.strip():
+                            await self._announce_sentence(
+                                satellite_entity_id,
+                                sentence_buffer.strip(),
+                                stream_sanitized,
+                                gate_key,
+                            )
+                        break
+                elif msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
+                    logger.warning(
+                        "ha-agenthub: sentence stream WS closed before final key=%s sat=%s type=%s",
+                        gate_key,
+                        satellite_entity_id,
+                        msg.type,
+                    )
+                    break
+
+            if voice_followup and satellite_entity_id:
+                try:
+                    await self.hass.services.async_call(
+                        "assist_satellite",
+                        "start_conversation",
+                        {
+                            "entity_id": satellite_entity_id,
+                            "start_message": "",
+                            "preannounce": False,
+                        },
+                        blocking=False,
+                    )
+                    logger.info(
+                        "ha-agenthub: sentence stream triggered voice follow-up key=%s sat=%s",
+                        gate_key,
+                        satellite_entity_id,
+                    )
+                except (aiohttp.ClientError, OSError):
+                    logger.warning(
+                        "ha-agenthub: assist_satellite.start_conversation failed in sentence stream key=%s sat=%s",
+                        gate_key,
+                        satellite_entity_id,
+                        exc_info=True,
+                    )
+        except asyncio.CancelledError:
+            logger.info(
+                "ha-agenthub: sentence stream cancelled key=%s sat=%s",
+                gate_key,
+                satellite_entity_id,
+            )
+            raise
+        except (HomeAssistantError, aiohttp.ClientError, OSError, asyncio.TimeoutError):
+            logger.warning(
+                "ha-agenthub: sentence stream raised unexpectedly key=%s sat=%s",
+                gate_key,
+                satellite_entity_id,
+                exc_info=True,
+            )
+        finally:
+            try:
+                if local_ws is not None and not local_ws.closed:
+                    await local_ws.close()
+            except (aiohttp.ClientError, OSError):
+                logger.exception(
+                    "ha-agenthub: local_ws close raised in sentence stream"
+                )
+            current = self._inflight_pushes.get(key)
+            if current is asyncio.current_task():
+                self._inflight_pushes.pop(key, None)
+
+    async def _announce_sentence(
+        self,
+        satellite_entity_id: str | None,
+        text: str,
+        sanitized: bool,
+        gate_key: str,
+    ) -> None:
+        """Announce a single sentence via assist_satellite."""
+        if not satellite_entity_id:
+            logger.warning(
+                "ha-agenthub: no satellite to announce sentence on key=%s",
+                gate_key,
+            )
+            return
+        try:
+            clean = text if sanitized else _strip_markdown(text)
+            clean = (clean or "").strip()
+            if not clean:
+                return
+            logger.info(
+                "ha-agenthub: announcing sentence key=%s sat=%s chars=%d",
+                gate_key,
+                satellite_entity_id,
+                len(clean),
+            )
+            await self.hass.services.async_call(
+                "assist_satellite",
+                "announce",
+                {
+                    "entity_id": satellite_entity_id,
+                    "message": clean,
+                    "preannounce": False,
+                },
+                blocking=False,
+            )
+        except (aiohttp.ClientError, OSError):
+            logger.warning(
+                "ha-agenthub: assist_satellite.announce failed for sentence key=%s sat=%s",
+                gate_key,
+                satellite_entity_id,
+                exc_info=True,
+            )
+
     async def _process_via_ws(
         self, user_input: conversation.ConversationInput
     ) -> conversation.ConversationResult:
@@ -800,6 +1018,8 @@ class HaAgentHubConversationEntity(
             # carries the flag explicitly. Default False so legacy
             # backends fall through the local strip pass.
             stream_sanitized = False
+            voice_followup = False
+            sentence_buffer = ""
 
             while True:
                 msg = await asyncio.wait_for(self._ws.receive(), timeout=30.0)
@@ -849,7 +1069,29 @@ class HaAgentHubConversationEntity(
 
                     token_text = data.get("token", "")
                     if token_text:
-                        speech_parts.append(token_text)
+                        sentence_buffer += token_text
+                        if _is_sentence_boundary(sentence_buffer):
+                            response = intent.IntentResponse(
+                                language=user_input.language or "en"
+                            )
+                            response.async_set_speech(
+                                _strip_markdown(sentence_buffer.strip())
+                            )
+                            satellite = self._resolve_satellite_entity(device_id)
+                            local_ws = self._ws
+                            self._ws = None
+                            self._spawn_sentence_stream(
+                                local_ws=local_ws,
+                                gate_key=gate_key,
+                                satellite_entity_id=satellite,
+                                initial_buffer="",
+                            )
+                            self._ws_last_active = time.monotonic()
+                            return conversation.ConversationResult(
+                                response=response,
+                                conversation_id=user_input.conversation_id,
+                            )
+
                     if data.get("done", False):
                         received_done = True
                         stream_err = data.get("error")
@@ -859,6 +1101,8 @@ class HaAgentHubConversationEntity(
                         mediated = data.get("mediated_speech")
                         if mediated:
                             speech_parts = [mediated]
+                        elif sentence_buffer:
+                            speech_parts.append(sentence_buffer)
                         # P3-1: backend signals sanitization on the done
                         # frame. Honour it for both ``mediated_speech``
                         # and accumulated tokens (the orchestrator
