@@ -189,6 +189,7 @@ class TestEntityMatcher:
             return result
 
         mock_index.get_by_ids = MagicMock(side_effect=_get_by_ids)
+        mock_index.get_by_ids_async = AsyncMock(side_effect=_get_by_ids)
         mock_alias_resolver = AsyncMock(spec=AliasResolver)
         matcher = EntityMatcher(mock_index, mock_alias_resolver)
         matcher._weights = {

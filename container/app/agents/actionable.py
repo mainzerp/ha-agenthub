@@ -16,6 +16,7 @@ from typing import Any
 from app.agents.action_executor import parse_action
 from app.agents.base import BaseAgent
 from app.agents.decorator import agent
+from app.analytics.tracer import _optional_span
 from app.entity.deterministic_resolver import resolve_entity_deterministic_first
 from app.models.agent import ActionExecuted, AgentCard, AgentError, AgentErrorCode, AgentTask, TaskContext, TaskResult
 
@@ -317,10 +318,15 @@ class ActionableAgent(BaseAgent):
 
         # Inject relevant entity states (compact single-line format, after output rules)
         try:
-            resolved_entities = await self._resolve_relevant_entities(task)
-            _t1 = time.perf_counter()
-            entity_state_context = await self._build_relevant_entity_state_context(resolved_entities)
-            _t2 = time.perf_counter()
+            async with _optional_span(span_collector, "entity_resolution", agent_id=agent_id) as er_span:
+                resolved_entities = await self._resolve_relevant_entities(task)
+                _t1 = time.perf_counter()
+                entity_state_context = await self._build_relevant_entity_state_context(resolved_entities)
+                _t2 = time.perf_counter()
+                er_span["metadata"]["resolved_count"] = len(resolved_entities)
+                er_span["metadata"]["has_state_context"] = entity_state_context is not None
+                er_span["metadata"]["resolve_ms"] = round((_t1 - _t0) * 1000, 1)
+                er_span["metadata"]["state_fetch_ms"] = round((_t2 - _t1) * 1000, 1)
             if entity_state_context:
                 system_prompt += f"\n\nContext: {entity_state_context}"
         except Exception:

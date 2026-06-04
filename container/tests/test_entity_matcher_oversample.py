@@ -18,6 +18,7 @@ from app.entity.matcher import EntityMatcher
 def _make_matcher() -> EntityMatcher:
     entity_index = MagicMock()
     entity_index.get_by_ids = MagicMock(return_value={})
+    entity_index.get_by_ids_async = AsyncMock(return_value={})
     matcher = EntityMatcher(entity_index=entity_index, alias_resolver=object())
     matcher._top_n = 3
     matcher._oversample_factor = 20

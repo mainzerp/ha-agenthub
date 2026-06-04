@@ -333,7 +333,10 @@ class EntityMatcher:
 
         # Batch-fetch metadata for all candidates to avoid N+1 ChromaDB calls.
         candidate_ids = list(results.keys())
-        entry_map = self._entity_index.get_by_ids(candidate_ids)
+        if hasattr(self._entity_index, "get_by_ids_async"):
+            entry_map = await self._entity_index.get_by_ids_async(candidate_ids)
+        else:
+            entry_map = self._entity_index.get_by_ids(candidate_ids)
 
         for result in results.values():
             weighted_sum = 0.0
