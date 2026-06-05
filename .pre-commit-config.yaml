@@ -46,6 +46,7 @@ repos:
         language: system
         entry: bash
         args: ["-c", "cd container && python -m pytest tests/ -q --tb=short -x"]
+        files: ^container/
         pass_filenames: false
         stages: [pre-push]
 
@@ -54,5 +55,6 @@ repos:
         language: system
         entry: python
         args: ["-m", "pytest", "custom_components/tests/", "-q", "--tb=short", "-x"]
+        files: ^custom_components/
         pass_filenames: false
         stages: [pre-push]
