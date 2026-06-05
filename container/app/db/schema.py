@@ -18,7 +18,16 @@ from app.defaults import CACHE_DEFAULTS, DEFAULT_LOCAL_EMBEDDING_MODEL
 logger = logging.getLogger(__name__)
 
 _write_conn: aiosqlite.Connection | None = None
-_write_lock = asyncio.Lock()
+_write_lock: asyncio.Lock | None = None
+
+
+def _get_write_lock() -> asyncio.Lock:
+    """Return the module-level write lock, creating it lazily in the current event loop."""
+    global _write_lock
+    if _write_lock is None:
+        _write_lock = asyncio.Lock()
+    return _write_lock
+
 
 _DB_WRITE_MAX_RETRIES = 3
 _DB_WRITE_BASE_DELAY = 0.5
@@ -95,7 +104,7 @@ async def get_db_write() -> AsyncGenerator[aiosqlite.Connection, None]:
     Acquires _write_lock to serialize writes and begins an explicit
     transaction so that every block inside the context is atomic.
     """
-    async with _write_lock:
+    async with _get_write_lock():
         db = await _get_or_create_write_connection()
         await db.execute("BEGIN")
         try:
