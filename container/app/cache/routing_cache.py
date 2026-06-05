@@ -43,12 +43,13 @@ class RoutingCache(_BaseCache[RoutingCacheEntry]):
             max_entries_key="cache.routing.max_entries",
             max_entries_default=50000,
         )
-        exact_raw = await self._get_setting(
+        threshold_raw = await self._get_setting(
             "cache.routing.semantic_threshold",
-            "true",
+            "1.0",
             legacy_keys=("cache.routing.threshold",),
         )
-        self._exact_match_only = self._coerce_bool(exact_raw, True)
+        threshold = self._coerce_float(threshold_raw, 1.0)
+        self._exact_match_only = threshold >= 1.0
 
     async def reload_config(self) -> None:
         await self.load_config()

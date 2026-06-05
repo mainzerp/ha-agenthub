@@ -155,3 +155,55 @@ class TestCacheOrchestratorEdgeCases:
         assert result == (False, False)
         cm.store_routing_async.assert_not_called()
         cm.store_action_async.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_successful_action_without_entity_id_stores_routing(self):
+        co, cm = _make_cache_orchestrator()
+        with (
+            patch.object(co, "_get_bool_setting_impl", new=AsyncMock(return_value=True)),
+            patch.object(co, "legacy_pipeline_enabled", return_value=False),
+        ):
+            result = await co.store_after_dispatch(
+                user_text="set a timer for 5 minutes",
+                language="en",
+                target_agent="timer-agent",
+                condensed_task="set timer for 5 minutes",
+                confidence=0.95,
+                speech="Timer set for 5 minutes.",
+                original_response_text="Timer set for 5 minutes.",
+                action_executed={
+                    "success": True,
+                    "action": "timer.start",
+                },
+                has_error=False,
+                task=AgentTask(description="set a timer", user_text="set a timer"),
+            )
+        assert result == (False, True)
+        cm.store_routing_async.assert_awaited_once()
+        cm.store_action_async.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_successful_action_without_action_name_stores_routing(self):
+        co, cm = _make_cache_orchestrator()
+        with (
+            patch.object(co, "_get_bool_setting_impl", new=AsyncMock(return_value=True)),
+            patch.object(co, "legacy_pipeline_enabled", return_value=False),
+        ):
+            result = await co.store_after_dispatch(
+                user_text="turn on the light",
+                language="en",
+                target_agent="light-agent",
+                condensed_task="turn on light",
+                confidence=0.95,
+                speech="Light turned on.",
+                original_response_text="Light turned on.",
+                action_executed={
+                    "success": True,
+                    "entity_id": "light.kitchen",
+                },
+                has_error=False,
+                task=AgentTask(description="turn on light", user_text="turn on light"),
+            )
+        assert result == (False, True)
+        cm.store_routing_async.assert_awaited_once()
+        cm.store_action_async.assert_not_called()

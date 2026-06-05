@@ -438,7 +438,6 @@ class CacheOrchestrator:
                 except Exception:
                     logger.warning("Failed to store action cache entry", exc_info=True)
                     return False, False
-            return False, False
 
         try:
             await self._cache_manager.store_routing_async(

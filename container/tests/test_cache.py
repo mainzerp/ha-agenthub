@@ -475,8 +475,56 @@ class TestRoutingCacheExtended:
         with patch("app.cache._base_cache.SettingsRepository") as mock_base:
             mock_base.get_value = AsyncMock(side_effect=_get_value)
             await cache.load_config()
-        assert cache._exact_match_only is True
+        assert cache._exact_match_only is False
         assert cache._max_entries == 1000
+
+    @pytest.mark.asyncio
+    async def test_load_config_exact_match_only_with_float_threshold(self):
+        cache, _store = self._make_cache()
+
+        async def _get_value(key, default=None):
+            return {
+                "cache.routing.enabled": "true",
+                "cache.routing.max_entries": "1000",
+                "cache.routing.semantic_threshold": "0.92",
+            }.get(key, default)
+
+        with patch("app.cache._base_cache.SettingsRepository") as mock_base:
+            mock_base.get_value = AsyncMock(side_effect=_get_value)
+            await cache.load_config()
+        assert cache._exact_match_only is False
+
+    @pytest.mark.asyncio
+    async def test_load_config_exact_match_only_with_threshold_one(self):
+        cache, _store = self._make_cache()
+
+        async def _get_value(key, default=None):
+            return {
+                "cache.routing.enabled": "true",
+                "cache.routing.max_entries": "1000",
+                "cache.routing.semantic_threshold": "1.0",
+            }.get(key, default)
+
+        with patch("app.cache._base_cache.SettingsRepository") as mock_base:
+            mock_base.get_value = AsyncMock(side_effect=_get_value)
+            await cache.load_config()
+        assert cache._exact_match_only is True
+
+    @pytest.mark.asyncio
+    async def test_load_config_exact_match_only_with_bool_true(self):
+        cache, _store = self._make_cache()
+
+        async def _get_value(key, default=None):
+            return {
+                "cache.routing.enabled": "true",
+                "cache.routing.max_entries": "1000",
+                "cache.routing.semantic_threshold": "true",
+            }.get(key, default)
+
+        with patch("app.cache._base_cache.SettingsRepository") as mock_base:
+            mock_base.get_value = AsyncMock(side_effect=_get_value)
+            await cache.load_config()
+        assert cache._exact_match_only is True
 
     def test_routing_cache_rejects_corrupted_condensed_task(self, caplog):
         cache, store = self._make_cache()
@@ -735,6 +783,54 @@ class TestActionCacheExtended:
         assert "hit_threshold" not in stats
         assert "partial_threshold" not in stats
 
+    @pytest.mark.asyncio
+    async def test_load_config_exact_match_only_with_float_threshold(self):
+        cache, _store = self._make_cache()
+
+        async def _get_value(key, default=None):
+            return {
+                "cache.action.enabled": "true",
+                "cache.action.max_entries": "1000",
+                "cache.action.semantic_threshold": "0.92",
+            }.get(key, default)
+
+        with patch("app.cache._base_cache.SettingsRepository") as mock_base:
+            mock_base.get_value = AsyncMock(side_effect=_get_value)
+            await cache.load_config()
+        assert cache._exact_match_only is False
+
+    @pytest.mark.asyncio
+    async def test_load_config_exact_match_only_with_threshold_one(self):
+        cache, _store = self._make_cache()
+
+        async def _get_value(key, default=None):
+            return {
+                "cache.action.enabled": "true",
+                "cache.action.max_entries": "1000",
+                "cache.action.semantic_threshold": "1.0",
+            }.get(key, default)
+
+        with patch("app.cache._base_cache.SettingsRepository") as mock_base:
+            mock_base.get_value = AsyncMock(side_effect=_get_value)
+            await cache.load_config()
+        assert cache._exact_match_only is True
+
+    @pytest.mark.asyncio
+    async def test_load_config_exact_match_only_with_bool_true(self):
+        cache, _store = self._make_cache()
+
+        async def _get_value(key, default=None):
+            return {
+                "cache.action.enabled": "true",
+                "cache.action.max_entries": "1000",
+                "cache.action.semantic_threshold": "true",
+            }.get(key, default)
+
+        with patch("app.cache._base_cache.SettingsRepository") as mock_base:
+            mock_base.get_value = AsyncMock(side_effect=_get_value)
+            await cache.load_config()
+        assert cache._exact_match_only is True
+
     def test_store_uses_deterministic_id(self):
         """Calling store() twice with same query should upsert same ID."""
         cache, store = self._make_cache()
@@ -942,9 +1038,9 @@ class TestCacheManagerExtended:
             mock_cms.get_value = AsyncMock(side_effect=_get_value)
             await manager.initialize()
 
-        assert manager._routing_cache._exact_match_only is True
+        assert manager._routing_cache._exact_match_only is False
         assert manager._routing_cache._max_entries == 50000
-        assert manager._action_cache._exact_match_only is True
+        assert manager._action_cache._exact_match_only is False
         assert manager._action_cache._max_entries == 50000
         assert manager._rewrite_enabled is False
 
@@ -971,9 +1067,9 @@ class TestCacheManagerExtended:
             mock_cms.get_value = AsyncMock(side_effect=_get_value)
             await manager.reload_config()
 
-        assert manager._routing_cache._exact_match_only is True
+        assert manager._routing_cache._exact_match_only is False
         assert manager._routing_cache._max_entries == 50000
-        assert manager._action_cache._exact_match_only is True
+        assert manager._action_cache._exact_match_only is False
         assert manager._action_cache._max_entries == 50000
         assert manager._rewrite_enabled is False
 

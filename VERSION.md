@@ -1,12 +1,18 @@
 # Version
 
-**Current Version:** 1.40.2
+**Current Version:** 1.40.3
 
 ## Recent Changes
 
-Track changes since `v1.40.2` here.
+Track changes since `v1.40.3` here.
 
 ## Version History
+
+### 1.40.3 (PATCH) -- Fix routing cache storage for actions without entity_id, semantic threshold coercion
+
+- fix(cache): `store_after_dispatch` no longer returns early for successful non-readonly actions without `entity_id` (timers, reminders, alarms). These now fall through to routing cache storage instead of producing no cache entry at all.
+- fix(cache): `load_config()` in `RoutingCache` and `ActionCache` now interprets `semantic_threshold` as a float value instead of coercing it through `_coerce_bool`. `_exact_match_only` is derived from `threshold >= 1.0`.
+- test(cache): add 2 tests for routing cache storage with missing entity_id/action_name. Add 6 tests for `load_config` with float/bool threshold values. Update 3 existing assertions for corrected float threshold behavior.
 
 ### 1.40.2 (PATCH) -- Complete trace entities display and double TTS fix
 
