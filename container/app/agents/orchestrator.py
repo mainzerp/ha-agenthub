@@ -961,6 +961,7 @@ class OrchestratorAgent(BaseAgent):
             span["metadata"]["all_classifications"] = {
                 a: {"task": t[:300], "confidence": c, "verbatim_terms": v} for a, t, c, v in classifications
             }
+        span["metadata"]["verbatim_terms"] = classifications[0][3] if classifications else []
         if extra_metadata:
             span["metadata"].update(extra_metadata)
 
@@ -1433,7 +1434,7 @@ class OrchestratorAgent(BaseAgent):
                 ret_span["metadata"]["cache_stored_routing"] = False
                 await self._store_turn(conversation_id, user_text, full_speech, agent_id=target_agent)
                 if span_collector:
-                    clf = [(target_agent, condensed_task, confidence, [])]
+                    clf = classifications
                     await self._create_trace(
                         span_collector,
                         conversation_id,
@@ -1893,7 +1894,7 @@ class OrchestratorAgent(BaseAgent):
                 conversation_id=conversation_id,
                 language=language,
                 turns=turns,
-                classifications=[(target_agent, condensed_task, confidence, [])],
+                classifications=classifications,
                 voice_followup_requested=sc.stream_voice_followup,
                 mediated_followup=followup,
                 routed_to=target_agent,
@@ -1915,7 +1916,7 @@ class OrchestratorAgent(BaseAgent):
                 conversation_id=conversation_id,
                 language=language,
                 turns=turns,
-                classifications=[(target_agent, condensed_task, confidence, [])],
+                classifications=classifications,
                 voice_followup_requested=sc.stream_voice_followup,
                 routed_to=target_agent,
                 mediation_agent=target_agent,

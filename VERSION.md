@@ -1,12 +1,18 @@
 # Version
 
-**Current Version:** 1.40.1
+**Current Version:** 1.40.2
 
 ## Recent Changes
 
-Track changes since `v1.40.1` here.
+Track changes since `v1.40.2` here.
 
 ## Version History
+
+### 1.40.2 (PATCH) -- Complete trace entities display and double TTS fix
+
+- fix(orchestrator): preserve `verbatim_terms` through streaming single-agent finalization. Previously `_handle_task_stream_impl` reconstructed `classifications` with hardcoded `[]`, dropping extracted entities from the trace. (1897, 1919, 1437)
+- fix(orchestrator): record `verbatim_terms` in classify span metadata for single-agent routes. Previously only multi-agent routes with `extended_metadata=True` captured it. (964)
+- fix(integration): prevent double TTS when streaming tokens already announced all complete sentences. The v1.40.1 guard only protected non-empty buffers; empty buffers still caused `mediated_speech` (full text) to be re-announced. Added `announced_any` flag to `_sentence_stream_task` and `_post_filler_push_task`. (conversation.py)
 
 ### 1.40.1 (PATCH) -- Trace entities display and double TTS fix
 
