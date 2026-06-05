@@ -597,6 +597,7 @@ class HaAgentHubConversationEntity(
                 except (ValueError, KeyError):
                     logger.debug("ha-agenthub: state seed lookup failed", exc_info=True)
 
+            announced_any = False
             deadline_final = time.monotonic() + PUSH_FINAL_WAIT_SECONDS
             while True:
                 remaining = deadline_final - time.monotonic()
@@ -650,10 +651,15 @@ class HaAgentHubConversationEntity(
                             else:
                                 pending_sentences.append(clean)
                             sentence_buffer = ""
+                            announced_any = True
 
                     if data.get("done", False):
                         mediated = data.get("mediated_speech")
-                        if mediated and not sentence_buffer.strip():
+                        if (
+                            mediated
+                            and not sentence_buffer.strip()
+                            and not announced_any
+                        ):
                             sentence_buffer = mediated
                         stream_sanitized = bool(data.get("sanitized", False))
                         voice_followup = bool(data.get("voice_followup", False))
@@ -821,6 +827,7 @@ class HaAgentHubConversationEntity(
         stream_sanitized = False
 
         try:
+            announced_any = False
             deadline_final = time.monotonic() + PUSH_FINAL_WAIT_SECONDS
             while True:
                 remaining = deadline_final - time.monotonic()
@@ -871,12 +878,17 @@ class HaAgentHubConversationEntity(
                                 gate_key,
                             )
                             sentence_buffer = ""
+                            announced_any = True
 
                     if data.get("done", False):
                         stream_sanitized = bool(data.get("sanitized", False))
                         voice_followup = bool(data.get("voice_followup", False))
                         mediated = data.get("mediated_speech")
-                        if mediated and not sentence_buffer.strip():
+                        if (
+                            mediated
+                            and not sentence_buffer.strip()
+                            and not announced_any
+                        ):
                             sentence_buffer = mediated
                         if sentence_buffer.strip():
                             await self._announce_sentence(
