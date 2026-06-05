@@ -5,8 +5,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from app.db.repository import AgentMcpToolsRepository, McpServerRepository, SettingsRepository
-from app.ha_client.auth import get_ha_token
+from app.db.repository import AgentMcpToolsRepository, McpServerRepository
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
@@ -15,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 
 async def setup_mcp(app: FastAPI, source: str) -> None:
-    """Load MCP servers from DB, register built-in DuckDuckGo, Wikipedia, and HA Action servers.
+    """Load MCP servers from DB, register built-in DuckDuckGo, Wikipedia servers.
 
     Assumes ``app.state.mcp_registry`` and ``app.state.mcp_tool_manager`` are set.
     """
@@ -86,46 +85,3 @@ async def setup_mcp(app: FastAPI, source: str) -> None:
                 "Setup init (%s): Wikipedia MCP server registered but failed to connect",
                 source,
             )
-
-    try:
-        ha_url = await SettingsRepository.get_value("ha_url")
-        ha_token = await get_ha_token()
-    except Exception:
-        ha_url = None
-        ha_token = None
-    if ha_url and ha_token:
-        ha_action_server = await McpServerRepository.get("ha-action")
-        if ha_action_server is None:
-            logger.info("Setup init (%s): registering built-in HA action MCP server", source)
-            connected = await mcp_registry.add_server(
-                name="ha-action",
-                transport="stdio",
-                command_or_url="python -m app.mcp.servers.ha_action_server",
-                env_vars={"HA_URL": ha_url, "HA_TOKEN": ha_token},
-            )
-            if connected:
-                try:
-                    tools = await mcp_tool_manager.refresh_server("ha-action")
-                    for tool in tools:
-                        await AgentMcpToolsRepository.assign_tool(
-                            "general-agent",
-                            "ha-action",
-                            tool["name"],
-                        )
-                    logger.info("Assigned %d HA action tools to general-agent", len(tools))
-                except Exception:
-                    logger.warning(
-                        "Setup init (%s): failed to auto-assign HA action tools",
-                        source,
-                        exc_info=True,
-                    )
-            else:
-                logger.warning(
-                    "Setup init (%s): HA action MCP server registered but failed to connect",
-                    source,
-                )
-    else:
-        logger.info(
-            "Setup init (%s): skipping HA action MCP server -- HA not yet configured",
-            source,
-        )
