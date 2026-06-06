@@ -1851,6 +1851,7 @@ class OrchestratorAgent(BaseAgent):
             and (personality.strip() or reminder_text)
         )
 
+        tokens_were_streamed = False
         if mediation_streaming_enabled and should_mediate and full_speech.strip():
             # Stream mediated tokens to the client
             mediated_tokens: list[str] = []
@@ -1878,6 +1879,9 @@ class OrchestratorAgent(BaseAgent):
             if isinstance(mediated, str) and mediated.endswith("[FOLLOWUP]"):
                 mediated = mediated[: -len("[FOLLOWUP]")].rstrip()
                 followup = True
+
+            if mediated_tokens:
+                tokens_were_streamed = True
 
             # Run post-mediation finalization
             full_speech, vf_eff = await self._finalize_post_mediation(
@@ -1924,16 +1928,18 @@ class OrchestratorAgent(BaseAgent):
                 used_origin_context=used_origin_context,
             )
 
-        # Yield final done chunk with mediated_speech (always included)
+        # Yield final done chunk; mediated_speech is only included when tokens
+        # were not already streamed, avoiding duplicate TTS output.
         mediated_text = strip_markdown(full_speech)
-        final_chunk = {
+        final_chunk: dict[str, Any] = {
             "token": "",
             "done": True,
             "conversation_id": conversation_id,
-            "mediated_speech": mediated_text,
             "routed_to": target_agent,
             "sanitized": True,
         }
+        if not tokens_were_streamed:
+            final_chunk["mediated_speech"] = mediated_text
         if sc.stream_error:
             final_chunk["error"] = sc.stream_error
         if vf_eff:
