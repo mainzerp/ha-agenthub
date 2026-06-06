@@ -1,12 +1,16 @@
 # Version
 
-**Current Version:** 1.40.4
+**Current Version:** 1.40.5
 
 ## Recent Changes
 
-Track changes since `v1.40.4` here.
+Track changes since `v1.40.5` here.
 
 ## Version History
+
+### 1.40.5 (PATCH) -- Prevent duplicate TTS when mediation tokens are streamed
+
+- fix(orchestrator): when `mediation_streaming_enabled=True`, the final `done` chunk no longer includes `mediated_speech` if mediated tokens were already streamed to the client. This prevents the HA integration from announcing the same text twice — once via the streamed tokens and once via the `mediated_speech` fallback in the `done` frame.
 
 ### 1.40.4 (PATCH) -- Tool-call sanitization and trace UI fix
 
