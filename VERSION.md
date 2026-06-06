@@ -1,10 +1,20 @@
 # Version
 
-**Current Version:** 1.40.3
+**Current Version:** 1.40.4
 
 ## Recent Changes
 
-Track changes since `v1.40.3` here.
+Track changes since `v1.40.4` here.
+
+## Version History
+
+### 1.40.4 (PATCH) -- Tool-call sanitization and trace UI fix
+
+- feat(llm): add `_sanitize_tool_name()` helper in `client.py` to repair malformed tool call names from LLMs that hallucinate special tokens (e.g. `web_search<|channel|>commentary` → `web_search`). Uses exact match, prefix extraction, and fuzzy matching.
+- feat(llm): `complete_with_tools()` now validates every tool call name before it enters conversation history. Invalid names are sanitized or replaced with a fallback, and a clear error message is returned to the LLM so it can retry.
+- feat(llm): handle "all tool calls invalid" edge case gracefully — appends a synthetic assistant message and continues the conversation instead of crashing.
+- test(llm): add 6 unit tests for `_sanitize_tool_name` and 5 integration tests for `complete_with_tools` sanitization behavior.
+- fix(traces): serialize tool call arguments as JSON string in trace detail API to prevent `[object Object]` display in the dashboard UI.
 
 ## Version History
 

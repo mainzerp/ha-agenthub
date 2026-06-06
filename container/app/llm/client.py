@@ -1,8 +1,10 @@
 import asyncio
 import contextlib
+import difflib
 import json
 import logging
 import os
+import re
 from collections.abc import AsyncGenerator, Callable
 from typing import Any
 
@@ -34,6 +36,21 @@ os.environ["LITELLM_LOG"] = "DEBUG"
 # transient rate limiting). Kept short because the call site is in
 # the request hot path.
 _LLM_EMPTY_RESPONSE_RETRY_DELAY_SEC = 1.0
+
+
+def _sanitize_tool_name(name: str, valid_names: set[str]) -> str | None:
+    """Return a valid tool name, or None if the name cannot be repaired."""
+    if name in valid_names:
+        return name
+    match = re.match(r"^([a-zA-Z0-9_-]+)", name)
+    if match:
+        prefix = match.group(1)
+        if prefix in valid_names:
+            return prefix
+    close = difflib.get_close_matches(name, valid_names, n=1, cutoff=0.5)
+    if close:
+        return close[0]
+    return None
 
 
 async def complete(
@@ -375,32 +392,100 @@ async def complete_with_tools(
                 return ""
             return content
 
-        # Append the assistant message with tool_calls to the conversation
-        msgs.append(msg)
+        # Validate and sanitize tool call names before they enter conversation history
+        valid_names = {t["function"]["name"] for t in tools}
+        fixed_calls = []
+        invalid_map: dict[str, str] = {}
 
-        async def _run_one_tool(tc) -> tuple[str | None, str]:
+        for tc in tool_calls:
+            original_name = tc.function.name
+            fixed = _sanitize_tool_name(original_name, valid_names)
+            if fixed is not None:
+                if fixed != original_name:
+                    logger.warning(
+                        "Sanitized tool name '%s' -> '%s' for agent=%s",
+                        original_name,
+                        fixed,
+                        agent_id,
+                    )
+                tc.function.name = fixed
+                fixed_calls.append(tc)
+            else:
+                logger.warning(
+                    "Invalid tool name '%s' from agent=%s; closest valid tools: %s",
+                    original_name,
+                    agent_id,
+                    ", ".join(sorted(valid_names)) if valid_names else "none",
+                )
+                fallback = difflib.get_close_matches(original_name, valid_names, n=1, cutoff=0.1)
+                fallback_name = fallback[0] if fallback else (next(iter(valid_names)) if valid_names else None)
+                if fallback_name is not None:
+                    tc.function.name = fallback_name
+                    invalid_map[tc.id] = original_name
+                    fixed_calls.append(tc)
+
+        # Edge case: every tool call was invalid and no fallback exists (empty tools list)
+        if not fixed_calls:
+            error_text = (
+                f"The model generated invalid tool call names "
+                f"({[tc.function.name for tc in tool_calls]}). "
+                f"No valid tools are available."
+            )
+            msgs.append({"role": "assistant", "content": error_text})
+            continue
+
+        # Rebuild assistant message as a clean dict so invalid names never enter history
+        assistant_msg: dict[str, Any] = {
+            "role": "assistant",
+            "content": msg.content,
+        }
+        if getattr(msg, "refusal", None):
+            assistant_msg["refusal"] = msg.refusal
+        if fixed_calls:
+            assistant_msg["tool_calls"] = [
+                {
+                    "id": tc.id,
+                    "type": "function",
+                    "function": {
+                        "name": tc.function.name,
+                        "arguments": tc.function.arguments,
+                    },
+                }
+                for tc in fixed_calls
+            ]
+        msgs.append(assistant_msg)
+
+        async def _run_one_tool(tc, _invalid_map=invalid_map, _valid_names=valid_names) -> tuple[str | None, str]:
             fn_name = tc.function.name
-            try:
-                fn_args = json.loads(tc.function.arguments) if tc.function.arguments else {}
-            except (json.JSONDecodeError, TypeError):
-                fn_args = {}
-                logger.warning("Failed to parse tool arguments for '%s'", fn_name)
+            if tc.id in _invalid_map:
+                original = _invalid_map[tc.id]
+                result_str = (
+                    f"Error: invalid tool name '{original}'. "
+                    f"Available tools: {', '.join(sorted(_valid_names))}. "
+                    f"Please use one of the listed tool names."
+                )
+            else:
+                try:
+                    fn_args = json.loads(tc.function.arguments) if tc.function.arguments else {}
+                except (json.JSONDecodeError, TypeError):
+                    fn_args = {}
+                    logger.warning("Failed to parse tool arguments for '%s'", fn_name)
 
-            logger.debug("Executing tool '%s' with args: %s", fn_name, fn_args)
+                logger.debug("Executing tool '%s' with args: %s", fn_name, fn_args)
 
-            try:
-                result_str = await tool_executor(fn_name, fn_args)
-            except asyncio.CancelledError:
-                raise
-            except Exception as e:
-                logger.warning("Tool executor '%s' raised: %s", fn_name, e)
-                result_str = f"Tool error: {e}"
+                try:
+                    result_str = await tool_executor(fn_name, fn_args)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:
+                    logger.warning("Tool executor '%s' raised: %s", fn_name, e)
+                    result_str = f"Tool error: {e}"
             return tc.id, result_str
 
         # Parallel execution: all tool_calls for this round run concurrently.
         # ``asyncio.gather`` preserves completion order matching the input awaitables,
         # so tool messages stay aligned with ``tool_calls`` order for the API.
-        tool_results = await asyncio.gather(*[_run_one_tool(tc) for tc in tool_calls])
+        tool_results = await asyncio.gather(*[_run_one_tool(tc) for tc in fixed_calls])
 
         for tool_call_id, result_str in tool_results:
             msgs.append(
