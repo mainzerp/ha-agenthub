@@ -288,11 +288,14 @@ async def get_trace_detail(trace_id: str):
             if agent_id and tool_span.get("agent_id") != agent_id:
                 continue
             tool_meta = tool_span.get("metadata") or {}
+            _task = tool_meta.get("arguments") or tool_meta.get("argument_keys", [])
+            if isinstance(_task, dict):
+                _task = json.dumps(_task, ensure_ascii=False, indent=2)
             agent_communication.append(
                 {
                     "from_agent": tool_span.get("agent_id", "agent"),
                     "to_agent": "tool: " + str(tool_meta.get("tool_name", "?")),
-                    "task": tool_meta.get("arguments") or tool_meta.get("argument_keys", []),
+                    "task": _task,
                     "response": tool_meta.get("result", ""),
                     "is_tool_call": True,
                     "tool_server": tool_meta.get("server_name", ""),

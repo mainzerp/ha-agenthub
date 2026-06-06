@@ -426,6 +426,38 @@ class TestLLMReasoningEffort:
         assert "drop_params" not in all_kwargs
 
 
+class TestSanitizeToolName:
+    def test_exact_match_returns_unchanged(self):
+        from app.llm.client import _sanitize_tool_name
+
+        assert _sanitize_tool_name("web_search", {"web_search"}) == "web_search"
+
+    def test_strips_special_token_suffix(self):
+        from app.llm.client import _sanitize_tool_name
+
+        assert _sanitize_tool_name("web_search<|channel|>commentary", {"web_search"}) == "web_search"
+
+    def test_strips_garbage_after_valid_name(self):
+        from app.llm.client import _sanitize_tool_name
+
+        assert _sanitize_tool_name("web_search!extra", {"web_search"}) == "web_search"
+
+    def test_fuzzy_match_typo(self):
+        from app.llm.client import _sanitize_tool_name
+
+        assert _sanitize_tool_name("web_seach", {"web_search", "wikipedia_search"}) == "web_search"
+
+    def test_returns_none_when_unrepairable(self):
+        from app.llm.client import _sanitize_tool_name
+
+        assert _sanitize_tool_name("completely_random", {"web_search"}) is None
+
+    def test_empty_name_returns_none(self):
+        from app.llm.client import _sanitize_tool_name
+
+        assert _sanitize_tool_name("", {"web_search"}) is None
+
+
 class TestCompleteWithTools:
     @patch("litellm.acompletion", new_callable=AsyncMock)
     @patch("app.llm.client.resolve_provider_params", new_callable=AsyncMock, return_value={})
@@ -599,6 +631,255 @@ class TestCompleteWithTools:
             max_tool_rounds=2,
         )
         assert result == "Forced answer"
+
+    @patch("litellm.acompletion", new_callable=AsyncMock)
+    @patch("app.llm.client.resolve_provider_params", new_callable=AsyncMock, return_value={})
+    @patch("app.llm.client.AgentConfigRepository")
+    async def test_sanitizes_invalid_tool_name_and_executes_corrected_tool(
+        self, mock_repo, mock_params, mock_acompletion
+    ):
+        """Invalid tool name is sanitized before execution."""
+        mock_repo.get = AsyncMock(
+            return_value={
+                "agent_id": "general-agent",
+                "model": "groq/test",
+                "max_tokens": 256,
+                "temperature": 0.2,
+            }
+        )
+        tool_call = MagicMock()
+        tool_call.id = "call_123"
+        tool_call.function.name = "web_search<|channel|>commentary"
+        tool_call.function.arguments = '{"query": "latest news"}'
+
+        first_response = MagicMock()
+        first_response.choices = [MagicMock()]
+        first_response.choices[0].message.content = None
+        first_response.choices[0].message.tool_calls = [tool_call]
+
+        second_response = MagicMock()
+        second_response.choices = [MagicMock()]
+        second_response.choices[0].message.content = "Here are the latest news..."
+        second_response.choices[0].message.tool_calls = None
+
+        mock_acompletion.side_effect = [first_response, second_response]
+
+        tool_executor = AsyncMock(return_value='[{"title": "News"}]')
+
+        from app.llm.client import complete_with_tools
+
+        result = await complete_with_tools(
+            "general-agent",
+            [{"role": "user", "content": "what's the news?"}],
+            tools=[{"type": "function", "function": {"name": "web_search", "parameters": {}}}],
+            tool_executor=tool_executor,
+        )
+        assert result == "Here are the latest news..."
+        tool_executor.assert_awaited_once_with("web_search", {"query": "latest news"})
+
+    @patch("litellm.acompletion", new_callable=AsyncMock)
+    @patch("app.llm.client.resolve_provider_params", new_callable=AsyncMock, return_value={})
+    @patch("app.llm.client.AgentConfigRepository")
+    async def test_returns_error_to_llm_for_unfixable_tool_name(self, mock_repo, mock_params, mock_acompletion):
+        """Unfixable tool name feeds an error back into the conversation."""
+        mock_repo.get = AsyncMock(
+            return_value={
+                "agent_id": "general-agent",
+                "model": "groq/test",
+                "max_tokens": 256,
+                "temperature": 0.2,
+            }
+        )
+        tool_call = MagicMock()
+        tool_call.id = "call_123"
+        tool_call.function.name = "totally_bogus"
+        tool_call.function.arguments = "{}"
+
+        first_response = MagicMock()
+        first_response.choices = [MagicMock()]
+        first_response.choices[0].message.content = None
+        first_response.choices[0].message.tool_calls = [tool_call]
+
+        second_response = MagicMock()
+        second_response.choices = [MagicMock()]
+        second_response.choices[0].message.content = "I cannot help with that."
+        second_response.choices[0].message.tool_calls = None
+
+        mock_acompletion.side_effect = [first_response, second_response]
+
+        tool_executor = AsyncMock()
+
+        from app.llm.client import complete_with_tools
+
+        result = await complete_with_tools(
+            "general-agent",
+            [{"role": "user", "content": "test"}],
+            tools=[{"type": "function", "function": {"name": "web_search", "parameters": {}}}],
+            tool_executor=tool_executor,
+        )
+        assert result == "I cannot help with that."
+        tool_executor.assert_not_awaited()
+
+        second_call = mock_acompletion.call_args_list[1]
+        second_messages = second_call.kwargs["messages"]
+        tool_messages = [m for m in second_messages if m.get("role") == "tool"]
+        assert len(tool_messages) == 1
+        assert "invalid tool name 'totally_bogus'" in tool_messages[0]["content"]
+        assert "web_search" in tool_messages[0]["content"]
+
+    @patch("litellm.acompletion", new_callable=AsyncMock)
+    @patch("app.llm.client.resolve_provider_params", new_callable=AsyncMock, return_value={})
+    @patch("app.llm.client.AgentConfigRepository")
+    async def test_handles_mixed_valid_and_invalid_tool_calls(self, mock_repo, mock_params, mock_acompletion):
+        """Valid and invalid tool calls in one round are handled separately."""
+        mock_repo.get = AsyncMock(
+            return_value={
+                "agent_id": "general-agent",
+                "model": "groq/test",
+                "max_tokens": 256,
+                "temperature": 0.2,
+            }
+        )
+        tc_a = MagicMock()
+        tc_a.id = "call_valid"
+        tc_a.function.name = "web_search"
+        tc_a.function.arguments = '{"query": "news"}'
+
+        tc_b = MagicMock()
+        tc_b.id = "call_invalid"
+        tc_b.function.name = "bad_name"
+        tc_b.function.arguments = "{}"
+
+        first_response = MagicMock()
+        first_response.choices = [MagicMock()]
+        first_response.choices[0].message.content = None
+        first_response.choices[0].message.tool_calls = [tc_a, tc_b]
+
+        second_response = MagicMock()
+        second_response.choices = [MagicMock()]
+        second_response.choices[0].message.content = "Mixed result"
+        second_response.choices[0].message.tool_calls = None
+
+        mock_acompletion.side_effect = [first_response, second_response]
+
+        tool_executor = AsyncMock(return_value="search result")
+
+        from app.llm.client import complete_with_tools
+
+        result = await complete_with_tools(
+            "general-agent",
+            [{"role": "user", "content": "test"}],
+            tools=[{"type": "function", "function": {"name": "web_search", "parameters": {}}}],
+            tool_executor=tool_executor,
+        )
+        assert result == "Mixed result"
+        tool_executor.assert_awaited_once_with("web_search", {"query": "news"})
+
+        second_call = mock_acompletion.call_args_list[1]
+        second_messages = second_call.kwargs["messages"]
+        tool_messages = [m for m in second_messages if m.get("role") == "tool"]
+        assert len(tool_messages) == 2
+        contents = [m["content"] for m in tool_messages]
+        assert "search result" in contents
+        assert any("invalid tool name 'bad_name'" in c for c in contents)
+
+    @patch("litellm.acompletion", new_callable=AsyncMock)
+    @patch("app.llm.client.resolve_provider_params", new_callable=AsyncMock, return_value={})
+    @patch("app.llm.client.AgentConfigRepository")
+    async def test_does_not_crash_when_all_tool_calls_are_invalid(self, mock_repo, mock_params, mock_acompletion):
+        """All-invalid tool calls continue the conversation without crashing."""
+        mock_repo.get = AsyncMock(
+            return_value={
+                "agent_id": "general-agent",
+                "model": "groq/test",
+                "max_tokens": 256,
+                "temperature": 0.2,
+            }
+        )
+        tc1 = MagicMock()
+        tc1.id = "call_1"
+        tc1.function.name = "bogus_one"
+        tc1.function.arguments = "{}"
+
+        tc2 = MagicMock()
+        tc2.id = "call_2"
+        tc2.function.name = "bogus_two"
+        tc2.function.arguments = "{}"
+
+        first_response = MagicMock()
+        first_response.choices = [MagicMock()]
+        first_response.choices[0].message.content = None
+        first_response.choices[0].message.tool_calls = [tc1, tc2]
+
+        second_response = MagicMock()
+        second_response.choices = [MagicMock()]
+        second_response.choices[0].message.content = "I cannot use those tools."
+        second_response.choices[0].message.tool_calls = None
+
+        mock_acompletion.side_effect = [first_response, second_response]
+
+        tool_executor = AsyncMock()
+
+        from app.llm.client import complete_with_tools
+
+        result = await complete_with_tools(
+            "general-agent",
+            [{"role": "user", "content": "test"}],
+            tools=[{"type": "function", "function": {"name": "web_search", "parameters": {}}}],
+            tool_executor=tool_executor,
+        )
+        assert result == "I cannot use those tools."
+        tool_executor.assert_not_awaited()
+        assert mock_acompletion.await_count == 2
+
+    @patch("litellm.acompletion", new_callable=AsyncMock)
+    @patch("app.llm.client.resolve_provider_params", new_callable=AsyncMock, return_value={})
+    @patch("app.llm.client.AgentConfigRepository")
+    async def test_invalid_tool_name_never_appears_in_conversation_history(
+        self, mock_repo, mock_params, mock_acompletion
+    ):
+        """Sanitized name replaces the invalid one in conversation history."""
+        mock_repo.get = AsyncMock(
+            return_value={
+                "agent_id": "general-agent",
+                "model": "groq/test",
+                "max_tokens": 256,
+                "temperature": 0.2,
+            }
+        )
+        tool_call = MagicMock()
+        tool_call.id = "call_123"
+        tool_call.function.name = "web_search<|channel|>commentary"
+        tool_call.function.arguments = '{"query": "latest news"}'
+
+        first_response = MagicMock()
+        first_response.choices = [MagicMock()]
+        first_response.choices[0].message.content = None
+        first_response.choices[0].message.tool_calls = [tool_call]
+
+        second_response = MagicMock()
+        second_response.choices = [MagicMock()]
+        second_response.choices[0].message.content = "Done"
+        second_response.choices[0].message.tool_calls = None
+
+        mock_acompletion.side_effect = [first_response, second_response]
+
+        tool_executor = AsyncMock(return_value="result")
+
+        from app.llm.client import complete_with_tools
+
+        await complete_with_tools(
+            "general-agent",
+            [{"role": "user", "content": "test"}],
+            tools=[{"type": "function", "function": {"name": "web_search", "parameters": {}}}],
+            tool_executor=tool_executor,
+        )
+
+        second_call = mock_acompletion.call_args_list[1]
+        second_messages = second_call.kwargs["messages"]
+        messages_str = str(second_messages)
+        assert "web_search<|channel|>commentary" not in messages_str
+        assert "web_search" in messages_str
 
 
 # ---------------------------------------------------------------------------
