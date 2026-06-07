@@ -446,6 +446,18 @@
                                 <span class="text-mono" x-text="selectedSpan.metadata.model"></span>
                             </div>
                         </template>
+                        <template x-if="selectedSpan.metadata && selectedSpan.metadata.ttft_ms">
+                            <div class="span-detail-row">
+                                <span class="span-detail-label">TTFT</span>
+                                <span class="text-mono" x-text="selectedSpan.metadata.ttft_ms + 'ms'"></span>
+                            </div>
+                        </template>
+                        <template x-if="selectedSpan.metadata && selectedSpan.metadata.tps">
+                            <div class="span-detail-row">
+                                <span class="span-detail-label">TPS</span>
+                                <span class="text-mono" x-text="selectedSpan.metadata.tps"></span>
+                            </div>
+                        </template>
                         <template x-if="selectedSpan.metadata && selectedSpan.metadata.tool_name">
                             <div class="span-detail-row">
                                 <span class="span-detail-label">Tool</span>
@@ -521,12 +533,14 @@
                                     <th>Agent</th>
                                     <th>Span</th>
                                     <th>Duration</th>
+                                    <th>TTFT</th>
+                                    <th>TPS</th>
                                     <th>Status</th>
                                     <th>Response</th>
                                 </tr>
                             </thead>
                             <tbody>
-                                <template x-for="exec in traceDetail.agent_executions" :key="exec.agent_id + exec.span_name">
+                                <template x-for="(exec, execIdx) in traceDetail.agent_executions" :key="exec.agent_id + exec.span_name + execIdx">
                                     <tr>
                                         <td>
                                             <span class="badge" :class="'badge-' + dashAgentClass(exec.agent_id)"
@@ -534,6 +548,8 @@
                                         </td>
                                         <td class="text-mono text-xs" x-text="exec.span_name"></td>
                                         <td class="text-mono" x-text="exec.duration_ms ? Math.round(exec.duration_ms) + 'ms' : '-'"></td>
+                                        <td class="text-mono" x-text="exec.ttft_ms ? Math.round(exec.ttft_ms) + 'ms' : '-'"></td>
+                                        <td class="text-mono" x-text="exec.tps ? exec.tps.toFixed(1) : '-'"></td>
                                         <td>
                                             <span :class="exec.status === 'error' ? 'badge badge-red' : 'badge badge-green'"
                                                   x-text="exec.status"></span>

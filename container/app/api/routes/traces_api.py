@@ -40,6 +40,7 @@ _included_span_names = {
     "dispatch_content",
     "dispatch_send",
     "classify",
+    "llm_provider_call",
     "return",
     "rewrite",
     "ha_action",
@@ -238,16 +239,19 @@ async def get_trace_detail(trace_id: str):
     for span in spans:
         if span.get("agent_id") and span["span_name"] in _included_span_names:
             meta = span.get("metadata") or {}
-            agent_executions.append(
-                {
-                    "agent_id": span["agent_id"],
-                    "span_name": span["span_name"],
-                    "duration_ms": span["duration_ms"],
-                    "status": span["status"],
-                    "response": _build_response(span["span_name"], meta),
-                    "created_at": span.get("created_at"),
-                }
-            )
+            exec_entry = {
+                "agent_id": span["agent_id"],
+                "span_name": span["span_name"],
+                "duration_ms": span["duration_ms"],
+                "status": span["status"],
+                "response": _build_response(span["span_name"], meta),
+                "created_at": span.get("created_at"),
+            }
+            if meta.get("ttft_ms") is not None:
+                exec_entry["ttft_ms"] = meta["ttft_ms"]
+            if meta.get("tps") is not None:
+                exec_entry["tps"] = meta["tps"]
+            agent_executions.append(exec_entry)
 
     # Build inter-agent communication from spans
     agent_communication = []
