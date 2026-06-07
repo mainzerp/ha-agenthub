@@ -214,8 +214,12 @@ async def analytics_tokens(
         limit=10000,
     )
 
-    by_agent: dict[str, dict] = defaultdict(lambda: {"tokens_in": 0, "tokens_out": 0, "calls": 0})
-    by_provider: dict[str, dict] = defaultdict(lambda: {"tokens_in": 0, "tokens_out": 0, "calls": 0})
+    by_agent: dict[str, dict] = defaultdict(
+        lambda: {"tokens_in": 0, "tokens_out": 0, "calls": 0, "ttft_ms_values": [], "tps_values": []}
+    )
+    by_provider: dict[str, dict] = defaultdict(
+        lambda: {"tokens_in": 0, "tokens_out": 0, "calls": 0, "ttft_ms_values": [], "tps_values": []}
+    )
 
     for e in events:
         data = e.get("data")
@@ -233,6 +237,22 @@ async def analytics_tokens(
         by_provider[provider]["tokens_in"] += tokens_in
         by_provider[provider]["tokens_out"] += tokens_out
         by_provider[provider]["calls"] += 1
+
+        ttft = data.get("ttft_ms")
+        tps_val = data.get("tps")
+        if ttft is not None:
+            by_agent[agent]["ttft_ms_values"].append(ttft)
+            by_provider[provider]["ttft_ms_values"].append(ttft)
+        if tps_val is not None:
+            by_agent[agent]["tps_values"].append(tps_val)
+            by_provider[provider]["tps_values"].append(tps_val)
+
+    for bucket in (by_agent, by_provider):
+        for key in bucket:
+            ttft_vals = bucket[key].pop("ttft_ms_values", [])
+            tps_vals = bucket[key].pop("tps_values", [])
+            bucket[key]["avg_ttft_ms"] = round(sum(ttft_vals) / len(ttft_vals), 2) if ttft_vals else None
+            bucket[key]["avg_tps"] = round(sum(tps_vals) / len(tps_vals), 2) if tps_vals else None
 
     return {
         "by_agent": dict(by_agent),

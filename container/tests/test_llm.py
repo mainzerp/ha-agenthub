@@ -923,6 +923,41 @@ class TestLLMProviderSpans:
     @patch("litellm.acompletion", new_callable=AsyncMock)
     @patch("app.llm.client.resolve_provider_params", new_callable=AsyncMock, return_value={})
     @patch("app.llm.client.AgentConfigRepository")
+    async def test_complete_span_metadata_includes_ttft_and_tps(self, mock_repo, mock_params, mock_acompletion):
+        from app.analytics.tracer import SpanCollector
+
+        mock_repo.get = AsyncMock(
+            return_value={
+                "agent_id": "light-agent",
+                "enabled": True,
+                "model": "openrouter/openai/gpt-4o-mini",
+                "timeout": 5,
+                "max_iterations": 3,
+                "temperature": 0.7,
+                "max_tokens": 256,
+                "description": "Light agent",
+            }
+        )
+        choice = MagicMock()
+        choice.message.content = "Done!"
+        usage = MagicMock()
+        usage.prompt_tokens = 5
+        usage.completion_tokens = 10
+        mock_acompletion.return_value = MagicMock(choices=[choice], usage=usage)
+
+        collector = SpanCollector("trace-ttft-tps")
+        from app.llm.client import complete
+
+        result = await complete("light-agent", [{"role": "user", "content": "test"}], span_collector=collector)
+        assert result == "Done!"
+        prov_spans = [s for s in collector._spans if s["span_name"] == "llm_provider_call"]
+        assert len(prov_spans) == 1
+        assert prov_spans[0]["metadata"]["ttft_ms"] >= 0
+        assert prov_spans[0]["metadata"]["tps"] > 0
+
+    @patch("litellm.acompletion", new_callable=AsyncMock)
+    @patch("app.llm.client.resolve_provider_params", new_callable=AsyncMock, return_value={})
+    @patch("app.llm.client.AgentConfigRepository")
     async def test_complete_works_without_span_collector(self, mock_repo, mock_params, mock_acompletion):
         mock_repo.get = AsyncMock(
             return_value={

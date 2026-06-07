@@ -52,6 +52,23 @@ async def _async_iter(items):
         yield item
 
 
+class _AsyncIterWithUsage:
+    def __init__(self, items, usage):
+        self._items = items
+        self.usage = usage
+
+    def __aiter__(self):
+        self._idx = 0
+        return self
+
+    async def __anext__(self):
+        if self._idx >= len(self._items):
+            raise StopAsyncIteration
+        item = self._items[self._idx]
+        self._idx += 1
+        return item
+
+
 class TestCompleteStream:
     @patch("litellm.acompletion", new_callable=AsyncMock)
     @patch("app.llm.client.resolve_provider_params", new_callable=AsyncMock, return_value={})
@@ -191,3 +208,43 @@ class TestCompleteStream:
         assert len(prov_spans) == 1
         assert prov_spans[0]["metadata"]["model"] == "openrouter/openai/gpt-4o-mini"
         assert prov_spans[0]["metadata"]["streamed"] is True
+
+    @patch("litellm.acompletion", new_callable=AsyncMock)
+    @patch("app.llm.client.resolve_provider_params", new_callable=AsyncMock, return_value={})
+    @patch("app.llm.client.AgentConfigRepository")
+    async def test_complete_stream_span_metadata_includes_ttft_and_tps(self, mock_repo, mock_params, mock_acompletion):
+        from app.analytics.tracer import SpanCollector
+
+        mock_repo.get = AsyncMock(
+            return_value={
+                "agent_id": "light-agent",
+                "enabled": True,
+                "model": "openrouter/openai/gpt-4o-mini",
+                "timeout": 5,
+                "max_iterations": 3,
+                "temperature": 0.7,
+                "max_tokens": 256,
+                "description": "Light agent",
+            }
+        )
+        usage = MagicMock()
+        usage.prompt_tokens = 5
+        usage.completion_tokens = 4
+        mock_acompletion.return_value = _AsyncIterWithUsage(
+            [
+                _FakeChunk("Hello "),
+                _FakeChunk("world"),
+            ],
+            usage=usage,
+        )
+
+        collector = SpanCollector("trace-stream-ttft-tps")
+        async for _token in complete_stream(
+            "light-agent", [{"role": "user", "content": "hi"}], span_collector=collector
+        ):
+            pass
+
+        prov_spans = [s for s in collector._spans if s["span_name"] == "llm_provider_call"]
+        assert len(prov_spans) == 1
+        assert prov_spans[0]["metadata"]["ttft_ms"] >= 0
+        assert prov_spans[0]["metadata"]["tps"] > 0

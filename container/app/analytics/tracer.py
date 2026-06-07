@@ -67,8 +67,10 @@ _SAFE_METADATA_KEYS = {
     "success",
     "target",
     "target_agent",
+    "tps",
     "to_agent",
     "tool_name",
+    "ttft_ms",
 }
 
 _SENSITIVE_QUERY_MARKERS = (*_SENSITIVE_KEY_MARKERS, "code", "key", "auth")

@@ -58,13 +58,20 @@ async def track_token_usage(
     provider: str,
     tokens_in: int,
     tokens_out: int,
+    ttft_ms: float | None = None,
+    tps: float | None = None,
 ) -> None:
     """Track LLM token usage."""
     try:
+        data = {"provider": provider, "tokens_in": tokens_in, "tokens_out": tokens_out}
+        if ttft_ms is not None:
+            data["ttft_ms"] = round(ttft_ms, 2)
+        if tps is not None:
+            data["tps"] = round(tps, 2)
         await AnalyticsRepository.insert(
             event_type="token_usage",
             agent_id=agent_id,
-            data={"provider": provider, "tokens_in": tokens_in, "tokens_out": tokens_out},
+            data=data,
         )
     except Exception:
         logger.warning("Failed to track token usage event", exc_info=True)

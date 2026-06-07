@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import re
+import time
 from collections.abc import AsyncGenerator, Callable
 from typing import Any
 
@@ -88,9 +89,25 @@ async def complete(
             call_kwargs["reasoning_effort"] = reasoning_effort
             call_kwargs["drop_params"] = True
         async with _optional_span(span_collector, "llm_provider_call", agent_id=agent_id) as pspan:
+            t0 = time.perf_counter()
             response = await litellm.acompletion(**call_kwargs)
+            ttft_ms = (time.perf_counter() - t0) * 1000
             pspan["metadata"]["model"] = model
             pspan["metadata"]["provider"] = model.split("/")[0] if "/" in model else "unknown"
+            tps = None
+            if hasattr(response, "usage") and response.usage and response.usage.completion_tokens:
+                tps = response.usage.completion_tokens / (ttft_ms / 1000.0) if ttft_ms > 0 else None
+            if hasattr(response, "usage") and response.usage:
+                await track_token_usage(
+                    agent_id=agent_id,
+                    provider=model.split("/")[0] if "/" in model else "unknown",
+                    tokens_in=response.usage.prompt_tokens or 0,
+                    tokens_out=response.usage.completion_tokens or 0,
+                    ttft_ms=round(ttft_ms, 2),
+                    tps=round(tps, 2) if tps else None,
+                )
+            pspan["metadata"]["ttft_ms"] = round(ttft_ms, 2)
+            pspan["metadata"]["tps"] = round(tps, 2) if tps else None
         if not response.choices:
             raise LLMError("Empty choices from provider")
         if response.choices[0].finish_reason == "length":
@@ -112,9 +129,25 @@ async def complete(
             )
             await asyncio.sleep(_LLM_EMPTY_RESPONSE_RETRY_DELAY_SEC)
             async with _optional_span(span_collector, "llm_provider_call", agent_id=agent_id) as pspan:
+                t0 = time.perf_counter()
                 response = await litellm.acompletion(**call_kwargs)
+                ttft_ms = (time.perf_counter() - t0) * 1000
                 pspan["metadata"]["model"] = model
                 pspan["metadata"]["retry"] = True
+                tps = None
+                if hasattr(response, "usage") and response.usage and response.usage.completion_tokens:
+                    tps = response.usage.completion_tokens / (ttft_ms / 1000.0) if ttft_ms > 0 else None
+                if hasattr(response, "usage") and response.usage:
+                    await track_token_usage(
+                        agent_id=agent_id,
+                        provider=model.split("/")[0] if "/" in model else "unknown",
+                        tokens_in=response.usage.prompt_tokens or 0,
+                        tokens_out=response.usage.completion_tokens or 0,
+                        ttft_ms=round(ttft_ms, 2),
+                        tps=round(tps, 2) if tps else None,
+                    )
+                pspan["metadata"]["ttft_ms"] = round(ttft_ms, 2)
+                pspan["metadata"]["tps"] = round(tps, 2) if tps else None
             if not response.choices:
                 raise LLMError("Empty choices from provider on retry")
             if response.choices[0].finish_reason == "length":
@@ -141,13 +174,6 @@ async def complete(
                 f"Empty LLM response for agent={agent_id} after retry "
                 f"(model={model} max_tokens={max_tokens} finish_reason={finish_reason})"
             )
-        if hasattr(response, "usage") and response.usage:
-            await track_token_usage(
-                agent_id=agent_id,
-                provider=model.split("/")[0] if "/" in model else "unknown",
-                tokens_in=response.usage.prompt_tokens or 0,
-                tokens_out=response.usage.completion_tokens or 0,
-            )
         return content
     except litellm.exceptions.AuthenticationError:
         logger.error("Authentication failed for agent=%s model=%s -- check API key", agent_id, model)
@@ -162,9 +188,25 @@ async def complete(
             await asyncio.sleep(2)
             try:
                 async with _optional_span(span_collector, "llm_provider_call", agent_id=agent_id) as pspan:
+                    t0 = time.perf_counter()
                     response = await litellm.acompletion(**call_kwargs)
+                    ttft_ms = (time.perf_counter() - t0) * 1000
                     pspan["metadata"]["model"] = model
                     pspan["metadata"]["retry"] = "timeout"
+                    tps = None
+                    if hasattr(response, "usage") and response.usage and response.usage.completion_tokens:
+                        tps = response.usage.completion_tokens / (ttft_ms / 1000.0) if ttft_ms > 0 else None
+                    if hasattr(response, "usage") and response.usage:
+                        await track_token_usage(
+                            agent_id=agent_id,
+                            provider=model.split("/")[0] if "/" in model else "unknown",
+                            tokens_in=response.usage.prompt_tokens or 0,
+                            tokens_out=response.usage.completion_tokens or 0,
+                            ttft_ms=round(ttft_ms, 2),
+                            tps=round(tps, 2) if tps else None,
+                        )
+                    pspan["metadata"]["ttft_ms"] = round(ttft_ms, 2)
+                    pspan["metadata"]["tps"] = round(tps, 2) if tps else None
             except Exception:
                 raise
             if not response.choices:
@@ -184,13 +226,6 @@ async def complete(
                     f"Empty LLM response for agent={agent_id} after timeout retry "
                     f"(model={model} max_tokens={max_tokens} finish_reason={finish_reason})"
                 ) from e
-            if hasattr(response, "usage") and response.usage:
-                await track_token_usage(
-                    agent_id=agent_id,
-                    provider=model.split("/")[0] if "/" in model else "unknown",
-                    tokens_in=response.usage.prompt_tokens or 0,
-                    tokens_out=response.usage.completion_tokens or 0,
-                )
             return content
         raise
 
@@ -253,31 +288,47 @@ async def complete_stream(
             pspan["metadata"]["model"] = model
             pspan["metadata"]["provider"] = model.split("/")[0] if "/" in model else "unknown"
             pspan["metadata"]["streamed"] = True
+
+            t_call = time.perf_counter()
             response = await litellm.acompletion(**call_kwargs)
 
-        async for chunk in response:
-            if not chunk.choices:
-                raise LLMError("Empty choices from provider during stream")
-            delta = chunk.choices[0].delta
-            content = getattr(delta, "content", None)
-            if content:
-                yield content
-            if chunk.choices[0].finish_reason == "length":
-                logger.warning(
-                    "LLM stream truncated (finish_reason=length) for agent=%s model=%s max_tokens=%s",
-                    agent_id,
-                    model,
-                    max_tokens,
-                )
+            first_chunk_time = None
+            last_chunk_time = None
+            async for chunk in response:
+                if not chunk.choices:
+                    raise LLMError("Empty choices from provider during stream")
+                delta = chunk.choices[0].delta
+                content = getattr(delta, "content", None)
+                if content:
+                    yield content
+                if first_chunk_time is None:
+                    first_chunk_time = time.perf_counter()
+                last_chunk_time = time.perf_counter()
+                if chunk.choices[0].finish_reason == "length":
+                    logger.warning(
+                        "LLM stream truncated (finish_reason=length) for agent=%s model=%s max_tokens=%s",
+                        agent_id,
+                        model,
+                        max_tokens,
+                    )
 
-        # Token usage may be delivered in a final chunk with empty choices.
-        if hasattr(response, "usage") and response.usage:
-            await track_token_usage(
-                agent_id=agent_id,
-                provider=model.split("/")[0] if "/" in model else "unknown",
-                tokens_in=response.usage.prompt_tokens or 0,
-                tokens_out=response.usage.completion_tokens or 0,
-            )
+            ttft_ms = (first_chunk_time - t_call) * 1000 if first_chunk_time else None
+            stream_ms = (last_chunk_time - first_chunk_time) * 1000 if first_chunk_time and last_chunk_time else None
+
+            # Token usage may be delivered in a final chunk with empty choices.
+            if hasattr(response, "usage") and response.usage:
+                tokens_out = response.usage.completion_tokens or 0
+                tps = tokens_out / (stream_ms / 1000.0) if stream_ms and stream_ms > 0 else None
+                await track_token_usage(
+                    agent_id=agent_id,
+                    provider=model.split("/")[0] if "/" in model else "unknown",
+                    tokens_in=response.usage.prompt_tokens or 0,
+                    tokens_out=tokens_out,
+                    ttft_ms=round(ttft_ms, 2) if ttft_ms else None,
+                    tps=round(tps, 2) if tps else None,
+                )
+                pspan["metadata"]["ttft_ms"] = round(ttft_ms, 2) if ttft_ms else None
+                pspan["metadata"]["tps"] = round(tps, 2) if tps else None
     except litellm.exceptions.AuthenticationError:
         logger.error("Authentication failed for agent=%s model=%s -- check API key", agent_id, model)
         raise
@@ -356,16 +407,25 @@ async def complete_with_tools(
             tool_call_kwargs["reasoning_effort"] = reasoning_effort
             tool_call_kwargs["drop_params"] = True
         async with _optional_span(span_collector, "llm_provider_call", agent_id=agent_id) as pspan:
+            t0 = time.perf_counter()
             response = await litellm.acompletion(**tool_call_kwargs)
+            ttft_ms = (time.perf_counter() - t0) * 1000
             pspan["metadata"]["model"] = model
             pspan["metadata"]["round"] = _round + 1
-        if hasattr(response, "usage") and response.usage:
-            await track_token_usage(
-                agent_id=agent_id,
-                provider=model.split("/")[0] if "/" in model else "unknown",
-                tokens_in=response.usage.prompt_tokens or 0,
-                tokens_out=response.usage.completion_tokens or 0,
-            )
+            tps = None
+            if hasattr(response, "usage") and response.usage and response.usage.completion_tokens:
+                tps = response.usage.completion_tokens / (ttft_ms / 1000.0) if ttft_ms > 0 else None
+            if hasattr(response, "usage") and response.usage:
+                await track_token_usage(
+                    agent_id=agent_id,
+                    provider=model.split("/")[0] if "/" in model else "unknown",
+                    tokens_in=response.usage.prompt_tokens or 0,
+                    tokens_out=response.usage.completion_tokens or 0,
+                    ttft_ms=round(ttft_ms, 2),
+                    tps=round(tps, 2) if tps else None,
+                )
+            pspan["metadata"]["ttft_ms"] = round(ttft_ms, 2)
+            pspan["metadata"]["tps"] = round(tps, 2) if tps else None
         if not response.choices:
             raise LLMError("Empty choices from provider")
         msg = response.choices[0].message
@@ -514,17 +574,26 @@ async def complete_with_tools(
         final_kwargs["reasoning_effort"] = reasoning_effort
         final_kwargs["drop_params"] = True
     async with _optional_span(span_collector, "llm_provider_call", agent_id=agent_id) as pspan:
+        t0 = time.perf_counter()
         response = await litellm.acompletion(**final_kwargs)
+        ttft_ms = (time.perf_counter() - t0) * 1000
         pspan["metadata"]["model"] = model
         pspan["metadata"]["round"] = max_tool_rounds + 1
         pspan["metadata"]["forced_final"] = True
-    if hasattr(response, "usage") and response.usage:
-        await track_token_usage(
-            agent_id=agent_id,
-            provider=model.split("/")[0] if "/" in model else "unknown",
-            tokens_in=response.usage.prompt_tokens or 0,
-            tokens_out=response.usage.completion_tokens or 0,
-        )
+        tps = None
+        if hasattr(response, "usage") and response.usage and response.usage.completion_tokens:
+            tps = response.usage.completion_tokens / (ttft_ms / 1000.0) if ttft_ms > 0 else None
+        if hasattr(response, "usage") and response.usage:
+            await track_token_usage(
+                agent_id=agent_id,
+                provider=model.split("/")[0] if "/" in model else "unknown",
+                tokens_in=response.usage.prompt_tokens or 0,
+                tokens_out=response.usage.completion_tokens or 0,
+                ttft_ms=round(ttft_ms, 2),
+                tps=round(tps, 2) if tps else None,
+            )
+        pspan["metadata"]["ttft_ms"] = round(ttft_ms, 2)
+        pspan["metadata"]["tps"] = round(tps, 2) if tps else None
     if not response.choices:
         raise LLMError("Empty choices from provider")
     if response.choices[0].finish_reason == "length":
