@@ -1,12 +1,23 @@
 # Version
 
-**Current Version:** 1.40.5
+**Current Version:** 1.41.0
 
 ## Recent Changes
 
-Track changes since `v1.40.5` here.
+Track changes since `v1.41.0` here.
 
 ## Version History
+
+### 1.41.0 (MINOR) -- TTFT and TPS tracking for LLM provider calls
+
+- feat(llm): instrument `complete()`, `complete_stream()`, and `complete_with_tools()` with `time.perf_counter()` to measure TTFT (time-to-first-token) and TPS (tokens-per-second)
+- feat(analytics): extend `track_token_usage()` to accept `ttft_ms` and `tps` parameters
+- feat(analytics): whitelist `ttft_ms` and `tps` in tracer `_SAFE_METADATA_KEYS`
+- feat(analytics): aggregate TTFT/TPS averages in `/api/admin/analytics/tokens` endpoint
+- feat(traces): add `llm_provider_call` to Agent Executions table in trace detail API
+- feat(dashboard): add TTFT and TPS columns to Agent Executions table in trace detail UI
+- fix(dashboard): use unique Alpine.js keys (`execIdx`) when multiple `llm_provider_call` spans exist for the same agent
+- test(llm): add tests for non-streaming and streaming span metadata with TTFT/TPS
 
 ### 1.40.5 (PATCH) -- Prevent duplicate TTS when mediation tokens are streamed
 
