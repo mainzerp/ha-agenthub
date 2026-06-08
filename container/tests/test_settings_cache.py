@@ -11,7 +11,7 @@ import pytest
 from app.db.repositories import settings as settings_mod
 from app.db.repository import SettingsRepository
 
-pytestmark = pytest.mark.asyncio
+pytestmark = [pytest.mark.asyncio, pytest.mark.integration]
 
 
 def _counting_get_db_read(real):

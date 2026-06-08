@@ -2467,6 +2467,7 @@ class TestDynamicAgent:
         assert "Büro" in user_messages[-1]["content"]
         assert next(msg for msg in messages if msg["role"] == "assistant")["content"] == "assistant response"
 
+    @pytest.mark.integration
     async def test_handle_task_uses_real_custom_agent_config_lookup(self, db_repository, mock_litellm):
         from app.db.repository import AgentConfigRepository, CustomAgentRepository
 
@@ -2657,6 +2658,7 @@ class TestCustomAgentLoader:
         assert registered_agent._mcp_tool_assignments == [{"server_name": "ddg", "tool_name": "web_search"}]
         assert registered_agent._entity_visibility == [{"rule_type": "domain_include", "rule_value": "light"}]
 
+    @pytest.mark.integration
     async def test_legacy_row_name_registers_with_normalized_runtime_id(self, db_repository, mock_litellm):
         from app.a2a.registry import AgentRegistry
         from app.db.repository import AgentConfigRepository, get_db_write
@@ -2701,6 +2703,7 @@ class TestCustomAgentLoader:
         assert result.speech == "Sure, I turned on the light."
         assert mock_litellm.acompletion.await_args.kwargs["model"] == "ollama/weather-model"
 
+    @pytest.mark.integration
     async def test_disabled_custom_agent_not_routable_and_clears_runtime_assignments(self, db_repository):
         from app.a2a.registry import AgentRegistry
         from app.db.repository import (
@@ -2731,6 +2734,7 @@ class TestCustomAgentLoader:
         assert cfg is not None
         assert cfg["enabled"] == 0
 
+    @pytest.mark.integration
     async def test_deleted_custom_agent_not_routable_and_deletes_runtime_state(self, db_repository):
         from app.a2a.registry import AgentRegistry
         from app.db.repository import (

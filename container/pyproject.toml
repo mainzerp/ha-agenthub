@@ -3,15 +3,24 @@ asyncio_mode = "auto"
 testpaths = ["tests"]
 pythonpath = ["."]
 timeout = 60
+timeout_func_only = true
 markers = [
     "integration: marks tests as integration tests (deselect with '-m \"not integration\"')",
     "real_scenarios: marks YAML-driven real-pipeline end-to-end scenarios (deselect with '-m \"not real_scenarios\"')",
+]
+filterwarnings = [
+    "error::DeprecationWarning:app.*",
+    "error::PendingDeprecationWarning:app.*",
+    "ignore::DeprecationWarning:aiosqlite.*",
+    "ignore::pytest.PytestUnraisableExceptionWarning",
 ]
 
 [tool.pytest-cov]
 source = ["app"]
 omit = [
     "app/dashboard/static/*",
+    "app/mcp/client_legacy.py",
+    "app/mcp/servers/duckduckgo_server.py",
     "tests/*",
 ]
 
@@ -19,13 +28,15 @@ omit = [
 source = ["app"]
 omit = [
     "app/dashboard/static/*",
+    "app/mcp/client_legacy.py",
+    "app/mcp/servers/duckduckgo_server.py",
     "tests/*",
 ]
 
 [tool.coverage.report]
 show_missing = true
 skip_empty = true
-fail_under = 73
+fail_under = 80
 exclude_lines = [
     "pragma: no cover",
     "if TYPE_CHECKING:",

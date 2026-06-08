@@ -271,6 +271,7 @@ class TestDashboardTemplateRendering:
         assert '<option value="sse">sse</option>' in html
         assert '<option value="http">' not in html
 
+    @pytest.mark.integration
     async def test_dashboard_respects_root_path(self, db_repository):
         app = _build_dashboard_app(override_session=True)
         with patch(
@@ -297,6 +298,7 @@ class TestDashboardTemplateRendering:
                 assert login_resp.status_code == 200
                 assert 'action="/proxy/dashboard/login"' in login_resp.text
 
+    @pytest.mark.integration
     async def test_login_redirect_respects_root_path(self, db_repository):
         app = _build_dashboard_app(override_session=False)
         with patch(

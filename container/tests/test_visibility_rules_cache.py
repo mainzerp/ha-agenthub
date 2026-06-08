@@ -140,6 +140,7 @@ class TestVisibilityPreloadedEntry:
 
 
 class TestVisibilityRepositoryInvalidation:
+    @pytest.mark.integration
     async def test_set_rules_invalidates_cache(self, db_repository):
         from app.db.repositories.entity_visibility import EntityVisibilityRepository
         from app.entity.visibility import _get_cached_rules
@@ -154,6 +155,7 @@ class TestVisibilityRepositoryInvalidation:
 
         assert "agent-1" not in _rules_cache
 
+    @pytest.mark.integration
     async def test_add_rule_invalidates_cache(self, db_repository):
         from app.db.repositories.entity_visibility import EntityVisibilityRepository
         from app.entity.visibility import _get_cached_rules
@@ -166,6 +168,7 @@ class TestVisibilityRepositoryInvalidation:
 
         assert "agent-1" not in _rules_cache
 
+    @pytest.mark.integration
     async def test_remove_rule_invalidates_cache(self, db_repository):
         from app.db.repositories.entity_visibility import EntityVisibilityRepository
         from app.entity.visibility import _get_cached_rules
