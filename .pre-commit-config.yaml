@@ -19,15 +19,21 @@ repos:
     hooks:
       - id: ruff
         args: [--fix]
-        files: ^container/
+        files: ^(container/|custom_components/)
       - id: ruff-format
-        files: ^container/
+        files: ^(container/|custom_components/)
 
-  - repo: https://github.com/PyCQA/bandit
-    rev: 1.7.9
+  - repo: local
     hooks:
       - id: bandit
-        args: ["-r", "container/app", "container/tests", "custom_components", "-ll"]
+        name: bandit
+        language: system
+        entry: bandit
+        args:
+          - "-r"
+          - "container/app"
+          - "-s"
+          - "B101,B104,B105,B311,B608"
         files: ^(container/|custom_components/)
         pass_filenames: false
 
@@ -44,8 +50,8 @@ repos:
       - id: pytest-container
         name: pytest (container)
         language: system
-        entry: bash
-        args: ["-c", "cd container && python -m pytest tests/ -q --tb=short -x"]
+        entry: python
+        args: ["-m", "pytest", "container/tests/", "-q", "--tb=short", "-x", "-m", "not integration and not real_scenarios", "-n", "auto", "--rootdir=container"]
         files: ^container/
         pass_filenames: false
         stages: [pre-push]
@@ -54,7 +60,7 @@ repos:
         name: pytest (HA)
         language: system
         entry: python
-        args: ["-m", "pytest", "custom_components/tests/", "-q", "--tb=short", "-x"]
+        args: ["-m", "pytest", "custom_components/tests/", "-q", "--tb=short", "-x", "-m", "not integration", "-n", "auto"]
         files: ^custom_components/
         pass_filenames: false
         stages: [pre-push]

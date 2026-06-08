@@ -6,6 +6,7 @@ import json
 import time
 
 import aiosqlite
+import pytest
 
 from app.db.repository import (
     AdminAccountRepository,
@@ -21,6 +22,8 @@ from app.db.repository import (
     SetupStateRepository,
     TraceSummaryRepository,
 )
+
+pytestmark = pytest.mark.integration
 
 # ---------------------------------------------------------------------------
 # Schema creation

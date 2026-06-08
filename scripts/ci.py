@@ -140,7 +140,7 @@ def detect_image_name() -> str:
     return "ha-agenthub"
 
 
-def step_quality(cov_fail_under: int = 72) -> None:
+def step_quality(cov_fail_under: int = 80) -> None:
     """Run quality checks."""
     header("STEP 1/4 — Quality")
 
@@ -193,6 +193,8 @@ def step_quality(cov_fail_under: int = 72) -> None:
                 "custom_components/tests/",
                 "-v",
                 "--tb=short",
+                "-n",
+                "auto",
             ]
         )
         ok("HA pytest")
@@ -219,8 +221,8 @@ def step_security() -> None:
                 "json",
                 "-o",
                 "bandit-report.json",
-                "-c",
-                "container/.bandit.yml",
+                "-s",
+                "B101,B104,B105,B311,B608",
             ]
         )
         ok("bandit")

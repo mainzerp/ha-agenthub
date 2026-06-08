@@ -18,7 +18,7 @@ import pytest
 from app.agents.timer_scheduler import TimerScheduler
 from app.db.repository import ScheduledTimersRepository
 
-pytestmark = pytest.mark.asyncio
+pytestmark = [pytest.mark.asyncio, pytest.mark.integration]
 
 
 def _dispatch_event_type(dispatcher_mock):

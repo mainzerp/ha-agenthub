@@ -459,6 +459,7 @@ class TestAgentMcpToolAssignment:
             assert tools[0]["name"] == "web_search"
             assert tools[0]["_server_name"] == "duckduckgo-search"
 
+    @pytest.mark.integration
     async def test_get_tools_for_custom_agent_uses_runtime_assignments(self, db_repository):
         """Custom agents get MCP tools from agent_mcp_tools after runtime sync."""
         from app.db.repository import CustomAgentRepository
@@ -483,6 +484,7 @@ class TestAgentMcpToolAssignment:
         assert tools[0]["name"] == "web_search"
         assert tools[0]["_server_name"] == "duckduckgo-search"
 
+    @pytest.mark.integration
     async def test_get_tools_for_custom_agent_reuses_descriptor_cache(self, db_repository):
         """Custom agents use the same cached MCP descriptor path as built-ins."""
         from app.db.repository import CustomAgentRepository
@@ -508,6 +510,7 @@ class TestAgentMcpToolAssignment:
         assert first[0]["name"] == "web_search"
         assert mock_client.list_tools.await_count == 1
 
+    @pytest.mark.integration
     async def test_disabled_custom_agent_has_no_active_mcp_tools(self, db_repository):
         """Disabled custom agents do not fall back to stale custom_agents.mcp_tools JSON."""
         from app.db.repository import CustomAgentRepository
@@ -543,6 +546,7 @@ class TestMcpServerAdminApiAuth:
     require an authenticated admin session. Unauthenticated access to
     ``POST /api/admin/mcp-servers`` must be rejected with 401."""
 
+    @pytest.mark.integration
     async def test_add_mcp_server_requires_session(self, db_repository):
         import httpx
 
@@ -565,6 +569,7 @@ class TestMcpServerAdminApiAuth:
                 )
                 assert resp.status_code == 401
 
+    @pytest.mark.integration
     async def test_add_mcp_server_rejects_http_transport(self, db_repository):
         import httpx
 

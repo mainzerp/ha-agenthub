@@ -10,4 +10,5 @@ respx>=0.23.1
 ruff==0.15.15
 mypy>=2.1.0
 pip-audit>=2.10.0
+bandit==1.7.9
 tzdata>=2024.1

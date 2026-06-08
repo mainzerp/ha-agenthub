@@ -733,6 +733,7 @@ class TestAdminSettingsEndpoints:
         )
         assert resp.status_code == 422
 
+    @pytest.mark.integration
     async def test_post_wake_briefing_test_returns_preview(self, db_repository):
         async def _fake_compose(gateway, alarm_payload, **kwargs):
             settings_repo = kwargs["settings_repo"]

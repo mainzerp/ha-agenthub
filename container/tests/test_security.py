@@ -464,6 +464,7 @@ class TestSessionSerializerRaceCondition:
 class TestBruteForceRateLimit:
     """Rate limiting on /dashboard/login must trigger after N attempts."""
 
+    @pytest.mark.integration
     async def test_login_rate_limit_blocks_after_5_attempts(self, db_repository):
         from app.middleware.rate_limit import reset_rate_limit_store
 
@@ -511,6 +512,7 @@ class TestBruteForceRateLimit:
 
 
 class TestSettingsAllowlist:
+    @pytest.mark.integration
     async def test_update_unknown_key_rejected(self, db_repository):
         """Updating a non-existent settings key should return 400."""
         app = build_integration_test_app(
@@ -535,6 +537,7 @@ class TestSettingsAllowlist:
                 assert resp.status_code == 400
                 assert "Unknown setting key" in resp.json().get("detail", "")
 
+    @pytest.mark.integration
     async def test_single_setting_unknown_key_rejected(self, db_repository):
         """PUT /settings/{key} should reject non-existent keys."""
         app = build_integration_test_app(
