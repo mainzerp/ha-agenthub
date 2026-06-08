@@ -22,7 +22,7 @@ aiohttp>=3.13.3,<4.0.0
 httpx==0.28.1
 
 # Data validation
-pydantic==2.12.5
+pydantic==2.13.4
 pydantic-settings==2.14.1
 
 # MCP integration
