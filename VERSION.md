@@ -1,10 +1,19 @@
 # Version
 
-**Current Version:** 1.41.0
+**Current Version:** 1.41.1
 
 ## Recent Changes
 
-Track changes since `v1.41.0` here.
+Track changes since `v1.41.1` here.
+
+### 1.41.1 (PATCH) -- Dependency updates and test infrastructure expansion
+
+- chore(deps-dev): update pytest-asyncio requirement to >=1.4.0 (#46)
+- chore(deps): bump pydantic from 2.12.5 to 2.13.4 (#45)
+- chore(deps): bump mcp from 1.27.1 to 1.27.2 (#43)
+- chore(deps-dev): update pytest-timeout requirement to >=2.4.0 (#44)
+- chore(deps): update ddgs requirement to >=9.14.4,<10.0.0 (#42)
+- test: add 133 tests and improve test infrastructure across calendar executor, timer executor, admin routes, analytics API, cache API, HA client helpers, MCP client, and more
 
 ## Version History
 
