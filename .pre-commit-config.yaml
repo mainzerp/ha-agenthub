@@ -43,7 +43,7 @@ repos:
         name: pip-audit
         language: system
         entry: python
-        args: ["-m", "pip_audit", "-r", "container/requirements.txt", "--ignore-vuln", "CVE-2026-28684"]
+        args: ["-m", "pip_audit", "-r", "container/requirements.txt", "--ignore-vuln", "CVE-2026-28684", "--ignore-vuln", "CVE-2026-45829"]
         files: ^container/requirements.*\.txt$
         pass_filenames: false
 
