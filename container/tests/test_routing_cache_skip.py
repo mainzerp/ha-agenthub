@@ -316,6 +316,44 @@ async def test_conditional_action_is_not_stored():
 
 
 @pytest.mark.asyncio
+async def test_routing_hit_rejected_when_referenced_entity_invisible():
+    """F2 / T1: a routing-cache hit referencing a now-invisible entity must be
+    invalidated and fall through to live orchestration."""
+    cache_manager = MagicMock()
+    cache_manager.try_replay_action = AsyncMock(return_value=None)
+    stale_outcome = RoutingSkipOutcome(
+        kind="routing_hit",
+        entry_id="stale-entry-id",
+        agent_id="light-agent",
+        condensed_task="Turn on kitchen and living room lights",
+        similarity=0.99,
+        entity_ids=["light.kitchen", "light.living_room"],
+    )
+    cache_manager.try_routing_skip = AsyncMock(return_value=stale_outcome)
+    cache_manager.invalidate_routing = MagicMock()
+
+    orch = _make_orchestrator(cache_manager)
+    orch._get_known_agents = AsyncMock(return_value={"light-agent", "general-agent"})
+
+    def _entity_visible(agent_id: str, entity_id: str, entity_index, **kwargs) -> bool:
+        return entity_id != "light.living_room"
+
+    with patch(
+        "app.agents.cache_orchestrator.entity_is_visible",
+        new=AsyncMock(side_effect=_entity_visible),
+    ):
+        action_replay, routing_skip = await orch._try_cache_replay(
+            task=_make_task("turn on the lights"),
+            user_text="turn on the lights",
+            language="en",
+        )
+
+    assert action_replay is None
+    assert routing_skip is None
+    cache_manager.invalidate_routing.assert_called_once_with("stale-entry-id")
+
+
+@pytest.mark.asyncio
 async def test_conditional_action_in_service_data_is_not_stored():
     """Defensive: actions whose service_data contains a condition key must not be stored."""
     orch = OrchestratorAgent.__new__(OrchestratorAgent)

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -178,3 +178,27 @@ class TestHasMeaningfulTimerName:
 
     def test_empty_name(self):
         assert ba._has_meaningful_timer_name("", "timer.kitchen") is False
+
+
+class TestBackgroundActionsSafePromptRendering:
+    @pytest.mark.asyncio
+    async def test_timer_fallback_message_tolerates_braces_in_name(self):
+        """Fallback timer messages must not fail when the timer name contains braces."""
+        with (
+            patch.object(ba, "_load_notification_profile", new=AsyncMock(return_value={"persistent_enabled": True})),
+            patch.object(ba, "_resolve_notification_language", new=AsyncMock(return_value="en")),
+            patch.object(ba, "_resolve_notification_audio_target", new=AsyncMock(return_value=(None, None))),
+            patch.object(ba, "_generate_tts_message", new=AsyncMock(return_value=None)),
+            patch.object(ba, "_notify_persistent", new=AsyncMock()) as mock_persistent,
+        ):
+            await ba.dispatch_timer_notification(
+                ha_client=AsyncMock(),
+                timer_name="Pasta {special}",
+                entity_id="timer.pasta_special",
+                metadata=MagicMock(duration="10 min"),
+                entity_index=None,
+            )
+
+        mock_persistent.assert_awaited_once()
+        message = mock_persistent.await_args[0][2]
+        assert "Pasta {special}" in message

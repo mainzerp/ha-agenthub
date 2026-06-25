@@ -211,6 +211,11 @@ def _patch_aiosqlite_worker_thread():
     """
     import aiosqlite.core
 
+    # Newer aiosqlite versions do not expose a module-level worker thread helper.
+    if not hasattr(aiosqlite.core, "_connection_worker_thread"):
+        yield
+        return
+
     _original = aiosqlite.core._connection_worker_thread
 
     def _patched(tx: aiosqlite.core._TxQueue):
@@ -243,6 +248,11 @@ def _patch_aiosqlite_del():
     ``close()`` has completed.  This is a test-artifact only; production code
     always uses ``async with`` or explicit ``await conn.close()``.
     """
+    # Newer aiosqlite versions do not define __del__ on Connection.
+    if not hasattr(aiosqlite.Connection, "__del__"):
+        yield
+        return
+
     _original_del = aiosqlite.Connection.__del__
 
     def _patched_del(self):

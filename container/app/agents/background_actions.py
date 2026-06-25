@@ -10,6 +10,7 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
+from app.agents.base import _load_prompt_path, _prompt_path, _render_prompt_template
 from app.db.repository import SettingsRepository
 from app.models.agent import BackgroundEvent, TaskContext
 from app.security.sanitization import wrap_user_input
@@ -336,7 +337,10 @@ async def dispatch_timer_notification(
     )
     if not message:
         if has_meaningful_name:
-            message = _FALLBACK_MESSAGES.get(lang_key, _FALLBACK_MESSAGES["en"]).format(name=timer_name)
+            message = _render_prompt_template(
+                _FALLBACK_MESSAGES.get(lang_key, _FALLBACK_MESSAGES["en"]),
+                name=timer_name,
+            )
         else:
             message = _GENERIC_FALLBACK_MESSAGES.get(lang_key, _GENERIC_FALLBACK_MESSAGES["en"])
 
@@ -407,7 +411,10 @@ async def dispatch_alarm_notification(
         "de": "Alarm {name} ist ausgeloest",
         "en": "Alarm {name} has triggered",
     }
-    message = alarm_messages.get(lang_key, alarm_messages["en"]).format(name=alarm_name)
+    message = _render_prompt_template(
+        alarm_messages.get(lang_key, alarm_messages["en"]),
+        name=alarm_name,
+    )
     spoken_message = (custom_message or "").strip() or message
 
     if profile.get("tts_enabled", True):
@@ -466,9 +473,11 @@ async def _generate_tts_message(
         return None
 
     lang_instruction = "German" if language.startswith("de") else "English"
-    from app.agents.base import _load_prompt_path, _prompt_path
 
-    system_prompt = _load_prompt_path(_prompt_path("timer_announcement")).format(language=lang_instruction)
+    system_prompt = _render_prompt_template(
+        _load_prompt_path(_prompt_path("timer_announcement")),
+        language=lang_instruction,
+    )
     context_parts = [f"Timer name:\n{wrap_user_input(timer_name)}"]
     if duration:
         context_parts.append(f"Duration:\n{wrap_user_input(duration)}")

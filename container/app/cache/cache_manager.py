@@ -6,7 +6,7 @@ import asyncio
 import contextlib
 import logging
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from app.analytics.collector import track_cache_event, track_rewrite
@@ -32,6 +32,7 @@ class CacheResult:
     rewrite_applied: bool = False
     rewrite_latency_ms: float | None = None
     original_response_text: str | None = None
+    entity_ids: list[str] | None = None
 
 
 @dataclass
@@ -57,6 +58,7 @@ class RoutingSkipOutcome:
     condensed_task: str
     similarity: float
     language: str = "en"
+    entity_ids: list[str] = field(default_factory=list)
 
 
 class CacheManager:
@@ -134,6 +136,7 @@ class CacheManager:
                 agent_id=routing.agent_id,
                 condensed_task=routing.condensed_task,
                 similarity=routing.similarity,
+                entity_ids=routing.entity_ids,
             )
         except Exception:
             logger.warning("Cache lookup failed, bypassing cache", exc_info=True)
@@ -145,7 +148,6 @@ class CacheManager:
         query_text: str,
         language: str = "en",
         requesting_agent_id: str = "orchestrator",
-        resolve_entity,
         check_visibility,
         execute_cached_action,
     ) -> ActionReplayOutcome | None:
@@ -168,23 +170,23 @@ class CacheManager:
         if getattr(entry, "context_dependent", False):
             return None
 
-        entity_id = entry.cached_action.entity_id
-        if entity_id:
-            # Re-validation: only check visibility, skip re-resolution.
-            # The cached entity_id is already valid from the first run.
-            try:
-                visible = await check_visibility(
-                    entry.agent_id if entry.agent_id is not None else requesting_agent_id, entity_id
-                )
-            except Exception:
-                logger.warning("Action cache visibility recheck failed", exc_info=True)
-                visible = False
-            if not visible:
-                with contextlib.suppress(Exception):
-                    if entry_id is not None:
-                        await asyncio.to_thread(self._action_cache.invalidate_by_entry_id, entry_id)
-                await track_cache_event(tier="action", hit_type="miss")
-                return None
+        # Re-validation: check visibility for every entity referenced by the
+        # cached entry, not just the primary action target.
+        cached_agent_id = entry.agent_id if entry.agent_id is not None else requesting_agent_id
+        entity_ids_to_check = list(dict.fromkeys([entry.cached_action.entity_id, *(entry.entity_ids or [])]))
+        try:
+            visibility_results = await asyncio.gather(
+                *[check_visibility(cached_agent_id, eid) for eid in entity_ids_to_check if eid]
+            )
+        except Exception:
+            logger.warning("Action cache visibility recheck failed", exc_info=True)
+            visibility_results = [False]
+        if not all(visibility_results):
+            with contextlib.suppress(Exception):
+                if entry_id is not None:
+                    await asyncio.to_thread(self._action_cache.invalidate_by_entry_id, entry_id)
+            await track_cache_event(tier="action", hit_type="miss")
+            return None
 
         try:
             replay_result = await execute_cached_action(entry.cached_action)
@@ -250,6 +252,7 @@ class CacheManager:
             condensed_task=entry.condensed_task or entry.query_text,
             similarity=similarity,
             language=entry.language,
+            entity_ids=entry.entity_ids or [],
         )
 
     async def apply_rewrite(

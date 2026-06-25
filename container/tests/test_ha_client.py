@@ -549,12 +549,12 @@ class TestHAConfigFlow:
         flow.hass.config_entries.async_update_entry.assert_any_call(
             entry,
             title=entry.title,
-            data={"url": "http://old.local", "api_key": "stored-token"},
-            options={
-                "name": entry.title,
+            data={
                 "url": "http://ha.local",
                 "api_key": "stored-token",
+                "name": entry.title,
             },
+            options={"ws_receive_timeout": 120.0},
         )
 
     async def test_options_flow_schema_uses_blank_password_field(self):

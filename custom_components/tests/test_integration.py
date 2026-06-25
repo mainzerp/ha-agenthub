@@ -4,6 +4,7 @@ These tests mock homeassistant dependencies so the integration can be exercised
 without installing the full HA core package.
 """
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
@@ -314,3 +315,204 @@ class TestWebSocketReconnect:
     def test_idle_threshold_gt_heartbeat(self):
         const = self._get_reconnect_constants()
         assert const.WS_IDLE_THRESHOLD > const.WS_HEARTBEAT_INTERVAL
+
+
+# ---------------------------------------------------------------------------
+# 5.3.6 WebSocket receive timeout is configurable via options
+# ---------------------------------------------------------------------------
+
+
+class TestWsReceiveTimeout:
+    def _make_entity(self, options: dict | None = None):
+        from custom_components.ha_agenthub.conversation import (
+            HaAgentHubConversationEntity,
+        )
+
+        entry = MagicMock()
+        entry.entry_id = "test-entry"
+        entry.options = options or {}
+        entry.async_create_background_task = MagicMock(return_value=MagicMock())
+        entry.async_on_unload = MagicMock()
+        return HaAgentHubConversationEntity(entry, "http://example.com", "key")
+
+    @pytest.mark.asyncio
+    async def test_default_timeout_used_when_no_option_set(self):
+        from custom_components.ha_agenthub.const import DEFAULT_WS_RECEIVE_TIMEOUT
+
+        entity = self._make_entity()
+        entity._ws = MagicMock()
+        entity._ws.send_json = AsyncMock()
+        entity._ws.receive = AsyncMock(
+            return_value=MagicMock(type=1, data='{"done": true, "token": "hi"}')
+        )
+
+        user_input = MagicMock()
+        user_input.conversation_id = "c1"
+        user_input.text = "hello"
+        user_input.language = "en"
+        user_input.device_id = None
+
+        with (
+            patch(
+                "custom_components.ha_agenthub.conversation.aiohttp.WSMsgType",
+                type("WSMsgType", (), {"TEXT": 1}),
+            ),
+            patch(
+                "custom_components.ha_agenthub.conversation.asyncio.wait_for",
+                new=AsyncMock(),
+            ) as mock_wait,
+        ):
+            mock_wait.return_value = entity._ws.receive.return_value
+            await entity._process_via_ws(user_input)
+
+        timeout = mock_wait.call_args.kwargs["timeout"]
+        assert timeout == DEFAULT_WS_RECEIVE_TIMEOUT
+
+    @pytest.mark.asyncio
+    async def test_timeout_read_from_entry_options(self):
+        from custom_components.ha_agenthub.const import CONF_WS_RECEIVE_TIMEOUT
+
+        entity = self._make_entity({CONF_WS_RECEIVE_TIMEOUT: 200})
+        entity._ws = MagicMock()
+        entity._ws.send_json = AsyncMock()
+        entity._ws.receive = AsyncMock(
+            return_value=MagicMock(type=1, data='{"done": true, "token": "hi"}')
+        )
+
+        user_input = MagicMock()
+        user_input.conversation_id = "c1"
+        user_input.text = "hello"
+        user_input.language = "en"
+        user_input.device_id = None
+
+        with (
+            patch(
+                "custom_components.ha_agenthub.conversation.aiohttp.WSMsgType",
+                type("WSMsgType", (), {"TEXT": 1}),
+            ),
+            patch(
+                "custom_components.ha_agenthub.conversation.asyncio.wait_for",
+                new=AsyncMock(),
+            ) as mock_wait,
+        ):
+            mock_wait.return_value = entity._ws.receive.return_value
+            await entity._process_via_ws(user_input)
+
+        timeout = mock_wait.call_args.kwargs["timeout"]
+        assert timeout == 200.0
+
+
+# ---------------------------------------------------------------------------
+# 5.3.7 Reconnect scheduling is debounced
+# ---------------------------------------------------------------------------
+
+
+class TestReconnectDebounce:
+    def _make_entity(self):
+        from custom_components.ha_agenthub.conversation import (
+            HaAgentHubConversationEntity,
+        )
+
+        entry = MagicMock()
+        entry.entry_id = "test-entry"
+        entry.async_create_background_task = MagicMock(return_value=MagicMock())
+        entry.async_on_unload = MagicMock()
+        return HaAgentHubConversationEntity(entry, "http://example.com", "key")
+
+    @pytest.mark.asyncio
+    async def test_schedule_reconnect_sets_event_and_does_not_spawn_task(self):
+        entity = self._make_entity()
+        entity._reconnect_requested.clear()
+        entity._schedule_reconnect()
+        assert entity._reconnect_requested.is_set()
+        entry = entity._entry
+        entry.async_create_background_task.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_reconnect_loop_handles_multiple_requests_without_overlapping(self):
+        entity = self._make_entity()
+        entity._ws = None
+        connect_calls = []
+
+        async def fake_connect():
+            connect_calls.append(1)
+            entity._ws = MagicMock()
+            entity._ws.closed = False
+            return True
+
+        entity._connect_ws = AsyncMock(side_effect=fake_connect)
+        entity._reconnect_requested.clear()
+
+        # async_create_background_task is mocked; run the coroutine manually.
+        task = asyncio.create_task(entity._reconnect_loop())
+        await asyncio.sleep(0.05)
+        entity._schedule_reconnect()
+        entity._schedule_reconnect()
+        entity._schedule_reconnect()
+        await asyncio.sleep(0.05)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+        assert len(connect_calls) == 1
+
+
+# ---------------------------------------------------------------------------
+# 5.3.8 Config entry source of truth for URL and API key
+# ---------------------------------------------------------------------------
+
+
+class TestConfigEntrySourceOfTruth:
+    @pytest.fixture
+    def hass(self):
+        hass = MagicMock()
+        hass.data = {}
+        return hass
+
+    @pytest.mark.asyncio
+    async def test_setup_entry_prefers_data_over_options(self, hass):
+        from custom_components.ha_agenthub import async_setup_entry
+        from custom_components.ha_agenthub.const import DOMAIN
+        from homeassistant.const import CONF_API_KEY, CONF_URL
+
+        entry = MagicMock()
+        entry.entry_id = "e1"
+        entry.title = "HA-AgentHub"
+        entry.data = {CONF_URL: "http://data.local", CONF_API_KEY: "data-key"}
+        entry.options = {CONF_URL: "http://options.local", CONF_API_KEY: "options-key"}
+        entry.async_on_unload = MagicMock()
+        hass.config_entries.async_forward_entry_setups = AsyncMock(return_value=True)
+
+        result = await async_setup_entry(hass, entry)
+        assert result is True
+        stored = hass.data[DOMAIN][entry.entry_id]
+        assert stored["url"] == "http://data.local"
+        assert stored["api_key"] == "data-key"
+
+    @pytest.mark.asyncio
+    async def test_migrate_entry_moves_url_and_api_key_from_options_to_data(self, hass):
+        from custom_components.ha_agenthub import async_migrate_entry
+        from custom_components.ha_agenthub.const import CONF_NAME
+        from homeassistant.const import CONF_API_KEY, CONF_URL
+
+        entry = MagicMock()
+        entry.entry_id = "e1"
+        entry.version = 2
+        entry.data = {CONF_NAME: "HA-AgentHub"}
+        entry.options = {CONF_URL: "http://options.local", CONF_API_KEY: "options-key"}
+        entry.unique_id = "http://options.local"
+
+        def update_entry(entry, **kwargs):
+            for key, value in kwargs.items():
+                setattr(entry, key, value)
+
+        hass.config_entries.async_update_entry = MagicMock(side_effect=update_entry)
+
+        result = await async_migrate_entry(hass, entry)
+        assert result is True
+        assert entry.version == 3
+        assert entry.data[CONF_URL] == "http://options.local"
+        assert entry.data[CONF_API_KEY] == "options-key"
+        assert entry.options == {}

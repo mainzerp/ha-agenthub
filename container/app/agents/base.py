@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from abc import ABC, abstractmethod
 from collections.abc import AsyncGenerator, Iterable
 from pathlib import Path
@@ -76,6 +77,27 @@ async def _load_prompt_path_async(path: Path) -> str:
     if cached is not None:
         return cached
     return await asyncio.to_thread(_load_prompt_path, path)
+
+
+_PLACEHOLDER_RE = re.compile(r"\{(\w+)\}")
+
+
+def _render_prompt_template(template: str, **variables: str) -> str:
+    """Substitute ``{name}`` placeholders without interpreting braces in values.
+
+    This is a minimal, safe alternative to ``str.format()``: dynamic values
+    that contain ``{`` or ``}`` are inserted verbatim and cannot trigger
+    ``KeyError`` / ``IndexError`` or consume other placeholders.
+    """
+
+    def _replace(match: re.Match[str]) -> str:
+        key = match.group(1)
+        if key in variables:
+            return variables[key]
+        # Leave unknown placeholders untouched.
+        return match.group(0)
+
+    return _PLACEHOLDER_RE.sub(_replace, template)
 
 
 def preload_prompt_cache(prompt_names: Iterable[str] | None = None) -> None:

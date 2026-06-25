@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import logging
 import random
 import time
@@ -29,8 +28,14 @@ from app.analytics.collector import track_request
 from app.analytics.tracer import _optional_span
 from app.cache.cache_manager import ActionReplayOutcome, RoutingSkipOutcome
 from app.db.repository import SettingsRepository
-from app.ha_client.home_context import home_context_provider
-from app.models.agent import AgentCard, AgentTask, TaskContext
+from app.ha_client.home_context import populate_task_context_home_context
+from app.models.agent import (
+    CANCEL_INTERACTION_AGENT,
+    FALLBACK_AGENT,
+    AgentCard,
+    AgentTask,
+    TaskContext,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -43,25 +48,11 @@ _MAX_CONVERSATION_CONTEXT_TURNS = 20
 _MAX_CONVERSATIONS = 1000
 _CONVERSATION_TTL_SECONDS = 1800  # 30 minutes
 
-# Fallback agent when classification fails
-_FALLBACK_AGENT = "general-agent"
-# cancel-interaction is a pipeline-level directive, not a real agent.
-# It signals that the user wants to abort the current voice/chat turn.
-_CANCEL_INTERACTION_AGENT = "cancel-interaction"
-
 
 _CANNED_TIMEOUT_SPEECH = "I couldn't process that request in time."
 _CANNED_GENERAL_ERROR_SPEECH = "I couldn't process that request right now."
 
 _PERSONALITY_CACHE_TTL_SEC: float = 300.0
-
-
-async def _get_personality_cached(settings_repo) -> str:
-    """Return personality prompt (no caching at module level; kept for backward compat)."""
-    try:
-        return await settings_repo.get_value("personality.prompt", "")
-    except Exception:
-        return ""
 
 
 @dataclass
@@ -195,6 +186,7 @@ class OrchestratorAgent(BaseAgent):
             get_turns=self._conversation_manager.get_turns,
             wrap_user_input=self._wrap_user_input,
             append_conversation_turn_messages=self._append_conversation_turn_messages,
+            entity_index=entity_index,
         )
         self._cache_orchestrator = CacheOrchestrator(
             cache_manager=cache_manager,
@@ -333,6 +325,8 @@ class OrchestratorAgent(BaseAgent):
             return getattr(self, "_personality_cache_value", "")
         try:
             personality = await SettingsRepository.get_value("personality.prompt", "")
+        except asyncio.CancelledError:
+            raise
         except Exception:
             personality = ""
         self._personality_cache_ts = now_
@@ -463,20 +457,7 @@ class OrchestratorAgent(BaseAgent):
             )
 
             if self._ha_client:
-                try:
-                    from zoneinfo import ZoneInfo
-
-                    home_ctx = await home_context_provider.get(self._ha_client)
-                    content_context.timezone = home_ctx.timezone
-                    content_context.location_name = home_ctx.location_name
-                    try:
-                        tz = ZoneInfo(home_ctx.timezone)
-                        now = datetime.now(tz)
-                        content_context.local_time = now.strftime("%Y-%m-%d %H:%M")
-                    except Exception:
-                        content_context.local_time = datetime.now(UTC).strftime("%Y-%m-%d %H:%M")
-                except Exception:
-                    logger.debug("Failed to populate home context for sequential send", exc_info=True)
+                await populate_task_context_home_context(content_context, self._ha_client)
             async with _optional_span(span_collector, "dispatch_content", agent_id=content_aid) as span:
                 content_agent_id, content_speech, _content_result = await self._dispatch_single(
                     content_aid,
@@ -718,6 +699,8 @@ class OrchestratorAgent(BaseAgent):
                 voice_followup=voice_followup,
                 verbatim_terms=classifications[0][3] if classifications else [],
             )
+        except asyncio.CancelledError:
+            raise
         except Exception:
             logger.warning("Failed to create trace summary", exc_info=True)
 
@@ -982,6 +965,8 @@ class OrchestratorAgent(BaseAgent):
                     user_id=task.context.user_id if task.context else None,
                     language=(task.context.language if task.context else language) or language,
                 )
+            except asyncio.CancelledError:
+                raise
             except Exception:
                 logger.debug("Calendar reminder injection failed", exc_info=True)
 
@@ -1038,7 +1023,7 @@ class OrchestratorAgent(BaseAgent):
             ret_span["metadata"]["final_response"] = speech
             ret_span["metadata"]["mediated"] = speech != original_speech
             ret_span["metadata"]["voice_followup"] = voice_followup_effective
-        if not skip_response_cache and target_agent != _CANCEL_INTERACTION_AGENT:
+        if not skip_response_cache and target_agent != CANCEL_INTERACTION_AGENT:
             cache_stored_action, cache_stored_routing = await self._store_after_dispatch(
                 user_text=user_text,
                 language=language,
@@ -1128,9 +1113,7 @@ class OrchestratorAgent(BaseAgent):
                 task, has_error=has_error, language=language
             )
 
-            should_mediate = target_agent != _CANCEL_INTERACTION_AGENT and (
-                not has_error or not skip_mediation_on_error
-            )
+            should_mediate = target_agent != CANCEL_INTERACTION_AGENT and (not has_error or not skip_mediation_on_error)
             mediated_followup = False
             if should_mediate:
                 speech, mediated_followup = await self._mediate_response(
@@ -1413,12 +1396,12 @@ class OrchestratorAgent(BaseAgent):
         confidence = prelude.confidence
         used_origin_context = prelude.used_origin_context
 
-        if len(classifications) == 1 and target_agent == _CANCEL_INTERACTION_AGENT:
-            async with _optional_span(span_collector, "dispatch", agent_id=_CANCEL_INTERACTION_AGENT) as span:
+        if len(classifications) == 1 and target_agent == CANCEL_INTERACTION_AGENT:
+            async with _optional_span(span_collector, "dispatch", agent_id=CANCEL_INTERACTION_AGENT) as span:
                 full_speech = await generate_cancel_speech(detected_language, user_text)
                 latency_ms = (time.perf_counter() - t0_request) * 1000
                 span["metadata"]["latency_ms"] = latency_ms
-                await track_request(_CANCEL_INTERACTION_AGENT, cache_hit=False, latency_ms=latency_ms)
+                await track_request(CANCEL_INTERACTION_AGENT, cache_hit=False, latency_ms=latency_ms)
             async with _optional_span(span_collector, "return", agent_id="orchestrator") as ret_span:
                 ret_span["metadata"]["from_agent"] = target_agent
                 ret_span["metadata"]["agent_response"] = full_speech
@@ -1603,20 +1586,7 @@ class OrchestratorAgent(BaseAgent):
             context.source = task.context.source
             context.injection_detected = task.context.injection_detected
         if self._ha_client:
-            try:
-                from zoneinfo import ZoneInfo
-
-                home_ctx = await home_context_provider.get(self._ha_client)
-                context.timezone = home_ctx.timezone
-                context.location_name = home_ctx.location_name
-                try:
-                    tz = ZoneInfo(home_ctx.timezone)
-                    now = datetime.now(tz)
-                    context.local_time = now.strftime("%Y-%m-%d %H:%M")
-                except Exception:
-                    context.local_time = datetime.now(UTC).strftime("%Y-%m-%d %H:%M")
-            except Exception:
-                logger.debug("Failed to populate home context for streaming", exc_info=True)
+            await populate_task_context_home_context(context, self._ha_client)
         verbatim_terms = classifications[0][3] if classifications else []
         agent_task = AgentTask(
             description=condensed_task,
@@ -1765,10 +1735,20 @@ class OrchestratorAgent(BaseAgent):
                     await _process_chunk(item)
             finally:
                 reader_task.cancel()
-                with contextlib.suppress(asyncio.CancelledError, Exception):
+                try:
                     await stream_iter.aclose()
-                with contextlib.suppress(asyncio.CancelledError, Exception):
+                except asyncio.CancelledError:
+                    pass
+                except Exception:
+                    logger.debug("stream_iter.aclose() raised during cleanup", exc_info=True)
+                try:
                     await asyncio.wait_for(reader_task, timeout=5.0)
+                except asyncio.CancelledError:
+                    pass
+                except TimeoutError:
+                    pass
+                except Exception:
+                    logger.debug("reader_task cleanup raised", exc_info=True)
 
         async with _optional_span(span_collector, "dispatch", agent_id=target_agent) as span:
             _t_stream_start = time.perf_counter()
@@ -1826,7 +1806,7 @@ class OrchestratorAgent(BaseAgent):
 
         # 4. Store conversation turn and create trace summary
         full_speech = "".join(sc.collected_speech)
-        if sc.stream_error is not None and target_agent == _FALLBACK_AGENT:
+        if sc.stream_error is not None and target_agent == FALLBACK_AGENT:
             if not full_speech.strip():
                 full_speech = _CANNED_GENERAL_ERROR_SPEECH
             # For the fallback general-agent path, return a single user-facing
@@ -1846,7 +1826,7 @@ class OrchestratorAgent(BaseAgent):
         )
 
         should_mediate = (
-            target_agent != _CANCEL_INTERACTION_AGENT
+            target_agent != CANCEL_INTERACTION_AGENT
             and (sc.stream_error is None or True)  # streaming path always mediates
             and (personality.strip() or reminder_text)
         )
@@ -1997,6 +1977,8 @@ class OrchestratorAgent(BaseAgent):
                 logger.warning("Filler agent returned empty speech; no filler will be spoken")
                 return None
             return speech.strip()
+        except asyncio.CancelledError:
+            raise
         except Exception:
             logger.warning("Filler agent invocation failed", exc_info=True)
             return None
@@ -2176,6 +2158,8 @@ class OrchestratorAgent(BaseAgent):
                 overrides["model"] = self._mediation_model
             result = await self._call_llm(messages, span_collector=span_collector, **overrides)
             return result.strip() if result and result.strip() else self._format_fallback(agent_responses)
+        except asyncio.CancelledError:
+            raise
         except Exception:
             logger.warning("Multi-agent response merge failed, using fallback format", exc_info=True)
             fallback = self._format_fallback(agent_responses)
@@ -2259,6 +2243,8 @@ class OrchestratorAgent(BaseAgent):
                 mediated = mediated[: -len("[FOLLOWUP]")].rstrip()
                 followup = True
             return mediated, followup
+        except asyncio.CancelledError:
+            raise
         except Exception:
             logger.warning("Response mediation failed, using original speech", exc_info=True)
             if reminder_text:
@@ -2330,6 +2316,8 @@ class OrchestratorAgent(BaseAgent):
                 async for token in self._call_llm_stream(messages, span_collector=span_collector, **overrides):
                     if token:
                         yield token
+        except asyncio.CancelledError:
+            raise
         except Exception:
             logger.warning(
                 "Response mediation stream failed, caller should fall back to _mediate_response", exc_info=True

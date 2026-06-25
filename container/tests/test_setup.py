@@ -344,6 +344,36 @@ class TestSetupStepSubmissions:
             assert resp.status_code == 303
             assert "/dashboard/" in resp.headers.get("location", "")
 
+    async def test_step5_does_not_complete_when_runtime_init_fails(self, setup_client: httpx.AsyncClient):
+        with (
+            patch(
+                "app.setup.routes.SetupStateRepository.set_step_completed",
+                new_callable=AsyncMock,
+            ) as mock_complete,
+            patch(
+                "app.setup.routes.ensure_setup_runtime_initialized",
+                new_callable=AsyncMock,
+                side_effect=RuntimeError("HA unavailable"),
+            ) as mock_init,
+            patch(
+                "app.setup.routes.SetupStateRepository.get_all_steps",
+                new_callable=AsyncMock,
+                return_value=[
+                    {"step": "admin_password", "completed": True},
+                    {"step": "ha_connection", "completed": True},
+                    {"step": "container_api_key", "completed": True},
+                    {"step": "llm_providers", "completed": True},
+                    {"step": "review_complete", "completed": False},
+                ],
+            ),
+        ):
+            resp = await csrf_post(setup_client, "/setup/step/5", get_url="/setup/step/5")
+
+        mock_init.assert_awaited_once()
+        mock_complete.assert_not_awaited()
+        assert resp.status_code == 500
+        assert "Runtime initialization failed" in resp.text
+
     async def test_step5_review_excludes_review_complete(self, setup_client: httpx.AsyncClient):
         """Step 5 review page should not show the 'review_complete' meta-step."""
         with patch(

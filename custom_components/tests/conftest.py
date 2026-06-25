@@ -31,7 +31,7 @@ class _MockOptionsFlow:
 
 
 class _MockConversationEntityFeature:
-    pass
+    CONTROL = "control"
 
 
 class _MockConversationEntity:
@@ -80,9 +80,12 @@ def _mock_homeassistant_deps():
             "ConversationEntityFeature": _MockConversationEntityFeature,
             "ConversationResult": _MockConversationResult,
         },
-        "homeassistant.helpers.device_registry": MagicMock(),
+        "homeassistant.helpers.device_registry": {
+            "DeviceInfo": MagicMock,
+            "DeviceEntryType": type("DeviceEntryType", (), {"SERVICE": "service"}),
+        },
         "homeassistant.helpers.entity_registry": MagicMock(),
-        "homeassistant.helpers.intent": MagicMock(),
+        "homeassistant.helpers.intent": {"IntentResponse": MagicMock},
         "homeassistant.helpers.entity_platform": {
             "AddConfigEntryEntitiesCallback": _MockAddConfigEntryEntitiesCallback,
         },
@@ -95,6 +98,7 @@ def _mock_homeassistant_deps():
             "ClientTimeout": MagicMock,
             "ClientError": Exception,
             "ClientWebSocketResponse": MagicMock,
+            "WSMsgType": type("WSMsgType", (), {"TEXT": 1}),
         },
     }
     created = []

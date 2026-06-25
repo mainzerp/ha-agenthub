@@ -11,7 +11,6 @@ import contextlib
 import logging
 import time
 from collections.abc import Awaitable, Callable
-from datetime import UTC, datetime
 from typing import Any
 
 from app.a2a.protocol import JsonRpcRequest
@@ -20,13 +19,10 @@ from app.agents.cancel_speech import generate_cancel_speech
 from app.analytics.collector import track_agent_timeout, track_request
 from app.analytics.tracer import _optional_span
 from app.db.repository import SettingsRepository
-from app.ha_client.home_context import home_context_provider
-from app.models.agent import AgentTask, TaskContext
+from app.ha_client.home_context import populate_task_context_home_context
+from app.models.agent import CANCEL_INTERACTION_AGENT, FALLBACK_AGENT, AgentTask, TaskContext
 
 logger = logging.getLogger(__name__)
-
-_FALLBACK_AGENT = "general-agent"
-_CANCEL_INTERACTION_AGENT = "cancel-interaction"
 
 _CANNED_TIMEOUT_SPEECH = "I couldn't process that request in time."
 _CANNED_GENERAL_ERROR_SPEECH = "I couldn't process that request right now."
@@ -106,16 +102,16 @@ class DispatchManager:
         the original target is already the fallback agent or the fallback
         itself timed out.
         """
-        if target_agent == _FALLBACK_AGENT:
+        if target_agent == FALLBACK_AGENT:
             return None
 
         if request.params is None:
             request.params = {}
-        request.params["agent_id"] = _FALLBACK_AGENT
+        request.params["agent_id"] = FALLBACK_AGENT
         try:
             t_fb = time.perf_counter()
-            fb_timeout = await self.resolve_dispatch_timeout(_FALLBACK_AGENT)
-            async with _optional_span(span_collector, "dispatch_fallback", agent_id=_FALLBACK_AGENT) as fb_span:
+            fb_timeout = await self.resolve_dispatch_timeout(FALLBACK_AGENT)
+            async with _optional_span(span_collector, "dispatch_fallback", agent_id=FALLBACK_AGENT) as fb_span:
                 response = await asyncio.wait_for(
                     self._dispatcher.dispatch(request),
                     timeout=fb_timeout,
@@ -125,12 +121,12 @@ class DispatchManager:
                 fb_span["metadata"]["from_agent"] = target_agent
                 fb_span["metadata"]["reason"] = reason
                 fb_span["metadata"]["dispatch_timeout_sec"] = fb_timeout
-                fb_result_data = self.normalize_agent_result(response, agent_id=_FALLBACK_AGENT)
+                fb_result_data = self.normalize_agent_result(response, agent_id=FALLBACK_AGENT)
                 fb_span["metadata"]["agent_response"] = fb_result_data.get("speech") or ""
-            await track_request(_FALLBACK_AGENT, cache_hit=False, latency_ms=fb_latency_ms)
-            return _FALLBACK_AGENT, response
+            await track_request(FALLBACK_AGENT, cache_hit=False, latency_ms=fb_latency_ms)
+            return FALLBACK_AGENT, response
         except TimeoutError:
-            await track_agent_timeout(_FALLBACK_AGENT, int(fb_timeout))
+            await track_agent_timeout(FALLBACK_AGENT, int(fb_timeout))
             return None
         except RuntimeError:
             return None
@@ -163,33 +159,20 @@ class DispatchManager:
         if resolved_language:
             context.language = resolved_language
 
-        if target_agent == _CANCEL_INTERACTION_AGENT:
-            async with _optional_span(span_collector, "dispatch", agent_id=_CANCEL_INTERACTION_AGENT) as span:
+        if target_agent == CANCEL_INTERACTION_AGENT:
+            async with _optional_span(span_collector, "dispatch", agent_id=CANCEL_INTERACTION_AGENT) as span:
                 speech = await generate_cancel_speech(context.language, user_text)
                 latency_ms = (time.perf_counter() - t_dispatch) * 1000
                 span["metadata"]["latency_ms"] = latency_ms
                 await track_request(
-                    _CANCEL_INTERACTION_AGENT,
+                    CANCEL_INTERACTION_AGENT,
                     cache_hit=False,
                     latency_ms=latency_ms,
                 )
-                return _CANCEL_INTERACTION_AGENT, speech, {"speech": speech, "action_executed": None}
+                return CANCEL_INTERACTION_AGENT, speech, {"speech": speech, "action_executed": None}
 
         if self._ha_client:
-            try:
-                from zoneinfo import ZoneInfo
-
-                home_ctx = await home_context_provider.get(self._ha_client)
-                context.timezone = home_ctx.timezone
-                context.location_name = home_ctx.location_name
-                try:
-                    tz = ZoneInfo(home_ctx.timezone)
-                    now = datetime.now(tz)
-                    context.local_time = now.strftime("%Y-%m-%d %H:%M")
-                except Exception:
-                    context.local_time = datetime.now(UTC).strftime("%Y-%m-%d %H:%M")
-            except Exception:
-                logger.debug("Failed to populate home context", exc_info=True)
+            await populate_task_context_home_context(context, self._ha_client)
 
         agent_task = AgentTask(
             description=condensed_task,
@@ -256,15 +239,15 @@ class DispatchManager:
                 "Agent %s error: %s -- falling back to %s",
                 target_agent,
                 str(exc),
-                _FALLBACK_AGENT,
+                FALLBACK_AGENT,
             )
             fb_result = await self.dispatch_fallback(request, target_agent, span_collector, "agent_error")
             if fb_result is not None:
                 target_agent, response = fb_result
-            elif target_agent == _FALLBACK_AGENT:
+            elif target_agent == FALLBACK_AGENT:
                 error_code = str(exc)[:64]
                 return (
-                    _FALLBACK_AGENT,
+                    FALLBACK_AGENT,
                     _CANNED_GENERAL_ERROR_SPEECH,
                     {
                         "speech": _CANNED_GENERAL_ERROR_SPEECH,

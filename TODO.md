@@ -83,4 +83,4 @@ Items prefixed with `DONE` are already implemented in the current codebase and a
 
 ---
 
-*Last updated: 2026-05-08*
+*Last updated: 2026-06-25*

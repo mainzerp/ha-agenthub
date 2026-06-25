@@ -35,6 +35,8 @@ from .const import (
     RECONNECT_MAX_DELAY,
     WS_HEARTBEAT_INTERVAL,
     WS_IDLE_THRESHOLD,
+    CONF_WS_RECEIVE_TIMEOUT,
+    DEFAULT_WS_RECEIVE_TIMEOUT,
 )
 
 logger = logging.getLogger(__name__)
@@ -116,8 +118,9 @@ def _strip_markdown(text: str) -> str:
     (see ``ConversationResponse`` / ``StreamToken``). When that flag is
     True, ``_build_result`` skips this pass and treats the backend as
     the single source of truth. The implementation is kept in lock-step
-    with the backend so legacy containers (< 0.18.35) and filler tokens
-    (which are emitted unsanitized) still produce TTS-friendly output.
+    with the backend so containers that do not advertise ``sanitized``
+    and filler tokens (which are emitted unsanitized) still produce
+    TTS-friendly output.
     """
     if not text:
         return text
@@ -195,7 +198,8 @@ class HaAgentHubConversationEntity(
         self._coalesce_window_sec: float = 0.25
         # V4: at most one in-flight post-filler push task per satellite.
         self._inflight_pushes: dict[str, asyncio.Task] = {}
-        self._reconnect_immediate_task: asyncio.Task | None = None
+        # Debounced reconnect request flag for the background reconnect loop.
+        self._reconnect_requested = asyncio.Event()
         # (removed dead reentrancy guard -- was _push_in_progress_satellites)
         self._attr_device_info = dr.DeviceInfo(
             identifiers={(DOMAIN, entry.entry_id)},
@@ -238,12 +242,6 @@ class HaAgentHubConversationEntity(
         if hasattr(self, "_reconnect_task") and self._reconnect_task:
             self._reconnect_task.cancel()
             self._reconnect_task = None
-        if (
-            hasattr(self, "_reconnect_immediate_task")
-            and self._reconnect_immediate_task
-        ):
-            self._reconnect_immediate_task.cancel()
-            self._reconnect_immediate_task = None
         for sat_id, task in list(self._inflight_pushes.items()):
             task.cancel()
         self._inflight_pushes.clear()
@@ -319,15 +317,25 @@ class HaAgentHubConversationEntity(
                             self._reconnect_delay * 2, RECONNECT_MAX_DELAY
                         )
                         logger.debug("Reconnect in %.1fs", delay)
-                        await asyncio.sleep(delay)
+                        await self._wait_for_reconnect(delay)
                         continue
-                # Connection is alive -- sleep before checking again
-                await asyncio.sleep(30)
+                # Connection is alive -- wait until a reconnect is explicitly
+                # requested or the keep-alive poll interval elapses.
+                await self._wait_for_reconnect(30)
             except asyncio.CancelledError:
                 raise
             except Exception:
                 logger.exception("Unexpected error in reconnect loop")
                 await asyncio.sleep(5)
+
+    async def _wait_for_reconnect(self, timeout: float) -> None:
+        """Wait for a reconnect request, but time out after ``timeout`` seconds."""
+        try:
+            await asyncio.wait_for(self._reconnect_requested.wait(), timeout=timeout)
+        except asyncio.TimeoutError:
+            pass
+        else:
+            self._reconnect_requested.clear()
 
     async def _ensure_connected(self) -> bool:
         """Ensure WebSocket is connected, reconnect if needed."""
@@ -360,15 +368,15 @@ class HaAgentHubConversationEntity(
         return connected
 
     def _schedule_reconnect(self) -> None:
-        """Schedule an immediate background WS reconnect."""
+        """Signal the background reconnect loop to try again soon.
+
+        Instead of spawning a competing immediate task, this resets the
+        backoff and wakes the existing reconnect loop.  That prevents
+        overlapping reconnect attempts and reduces log noise after a WS
+        failure that falls back to REST.
+        """
         self._reconnect_delay = RECONNECT_BASE_DELAY
-        if self._reconnect_immediate_task is not None:
-            self._reconnect_immediate_task.cancel()
-        self._reconnect_immediate_task = self._entry.async_create_background_task(
-            self.hass,
-            self._connect_ws(),
-            name="ha_agenthub_ws_immediate_reconnect",
-        )
+        self._reconnect_requested.set()
 
     async def _async_handle_message(
         self,
@@ -1034,7 +1042,10 @@ class HaAgentHubConversationEntity(
             sentence_buffer = ""
 
             while True:
-                msg = await asyncio.wait_for(self._ws.receive(), timeout=30.0)
+                timeout = self._entry.options.get(
+                    CONF_WS_RECEIVE_TIMEOUT, DEFAULT_WS_RECEIVE_TIMEOUT
+                )
+                msg = await asyncio.wait_for(self._ws.receive(), timeout=float(timeout))
                 if msg.type == aiohttp.WSMsgType.TEXT:
                     try:
                         data = json.loads(msg.data)

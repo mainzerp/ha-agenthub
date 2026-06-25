@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -11,6 +11,7 @@ from app.agents.lists_executor import (
     _format_item,
     execute_lists_action,
 )
+from tests.helpers import make_entity_index_entry
 
 
 def _make_mock_entity_index(entries=None):
@@ -117,6 +118,96 @@ class TestListLists:
         assert result["success"] is True
         assert "Shopping List" in result["speech"]
         assert result["metadata"]["lists"][0]["entity_id"] == "todo.shopping_list"
+
+
+class TestListListsVisibility:
+    """Tests that list_lists and default list selection respect visibility."""
+
+    @pytest.fixture()
+    def _visible_todo_entries(self):
+        return [
+            make_entity_index_entry("todo.shopping_list", "Shopping List", domain="todo", area="kitchen"),
+            make_entity_index_entry("todo.work_list", "Work List", domain="todo", area="office"),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_list_lists_filters_hidden_lists(self, ha_client, entity_matcher, _visible_todo_entries):
+        index = _make_mock_entity_index(_visible_todo_entries)
+
+        async def _rules(agent_id: str):
+            if agent_id == "restricted-lists-agent":
+                return [{"rule_type": "area_include", "rule_value": "kitchen"}]
+            return []
+
+        with patch(
+            "app.entity.visibility.EntityVisibilityRepository.get_rules",
+            new=AsyncMock(side_effect=_rules),
+        ):
+            result = await execute_lists_action(
+                {"action": "list_lists"},
+                ha_client,
+                index,
+                entity_matcher,
+                agent_id="restricted-lists-agent",
+            )
+
+        assert result["success"] is True
+        assert "Shopping List" in result["speech"]
+        assert "Work List" not in result["speech"]
+        assert len(result["metadata"]["lists"]) == 1
+        assert result["metadata"]["lists"][0]["entity_id"] == "todo.shopping_list"
+
+    @pytest.mark.asyncio
+    async def test_default_list_selection_respects_visibility(self, ha_client, entity_matcher, _visible_todo_entries):
+        index = _make_mock_entity_index(_visible_todo_entries)
+        ha_client.call_service = AsyncMock(
+            return_value={"todo.shopping_list": {"items": [{"summary": "Milk", "status": "needs_action"}]}}
+        )
+
+        async def _rules(agent_id: str):
+            if agent_id == "restricted-lists-agent":
+                return [{"rule_type": "area_include", "rule_value": "kitchen"}]
+            return []
+
+        with patch(
+            "app.entity.visibility.EntityVisibilityRepository.get_rules",
+            new=AsyncMock(side_effect=_rules),
+        ):
+            result = await execute_lists_action(
+                {"action": "list_items", "entity": ""},
+                ha_client,
+                index,
+                entity_matcher,
+                agent_id="restricted-lists-agent",
+            )
+
+        assert result["success"] is True
+        assert "Shopping List" in result["speech"]
+        assert "Milk" in result["speech"]
+
+    @pytest.mark.asyncio
+    async def test_cannot_read_items_from_hidden_list(self, ha_client, entity_matcher, _visible_todo_entries):
+        index = _make_mock_entity_index(_visible_todo_entries)
+
+        async def _rules(agent_id: str):
+            if agent_id == "restricted-lists-agent":
+                return [{"rule_type": "area_include", "rule_value": "kitchen"}]
+            return []
+
+        with patch(
+            "app.entity.visibility.EntityVisibilityRepository.get_rules",
+            new=AsyncMock(side_effect=_rules),
+        ):
+            result = await execute_lists_action(
+                {"action": "list_items", "entity": "work list"},
+                ha_client,
+                index,
+                entity_matcher,
+                agent_id="restricted-lists-agent",
+            )
+
+        assert result["success"] is False
+        assert "Could not find" in result["speech"]
 
 
 class TestListItems:

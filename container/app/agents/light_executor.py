@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
@@ -15,6 +16,7 @@ from app.agents.action_executor import (
     resolve_and_validate_entity,
 )
 from app.agents.executor_state_check import _state_matches
+from app.entity.visibility import entity_is_visible
 from app.ha_client.history_query import execute_recorder_history_query
 from app.ha_client.rest import allow_internal_ha_service_calls
 from app.models.agent import TaskContext
@@ -254,6 +256,8 @@ async def execute_light_action(
             ha_client,
             entity_index,
             entity_matcher,
+            agent_id=agent_id,
+            allowed_domains=_ALLOWED_DOMAINS,
             preferred_area_id=preferred_area_id,
         )
         if error is not None:
@@ -462,7 +466,11 @@ async def _query_light_entity_history(
     )
 
 
-async def _list_lights(ha_client: Any) -> dict:
+async def _list_lights(
+    ha_client: Any,
+    agent_id: str | None = None,
+    entity_index: Any = None,
+) -> dict:
     try:
         states = await ha_client.get_states()
     except Exception as exc:
@@ -475,11 +483,18 @@ async def _list_lights(ha_client: Any) -> dict:
             "cacheable": False,
         }
 
+    candidate_states = [s for s in states if s.get("entity_id", "").startswith(("light.", "switch."))]
+    if agent_id and entity_index is not None:
+        visibility = await asyncio.gather(
+            *[entity_is_visible(agent_id, s.get("entity_id", ""), entity_index) for s in candidate_states]
+        )
+        candidate_states = [s for s, ok in zip(candidate_states, visibility, strict=True) if ok]
+
     lights_on = []
     lights_off = []
     switches_on = []
     switches_off = []
-    for s in states:
+    for s in candidate_states:
         eid = s.get("entity_id", "")
         state = s.get("state", "unknown")
         name = s.get("attributes", {}).get("friendly_name", eid)
@@ -540,7 +555,7 @@ async def _handle_light_read_action(
             preferred_area_id=preferred_area_id,
         )
     if action_name == "list_lights":
-        return await _list_lights(ha_client)
+        return await _list_lights(ha_client, agent_id=agent_id, entity_index=entity_index)
     if action_name == "query_entity_history":
         return await _query_light_entity_history(
             entity_query,

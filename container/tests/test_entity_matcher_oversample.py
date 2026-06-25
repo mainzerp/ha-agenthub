@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.entity.matcher import EntityMatcher
+from app.entity.matcher import EntityMatcher, MatchResult
 
 
 def _make_matcher() -> EntityMatcher:
@@ -183,3 +183,52 @@ async def test_query_normalization_regression():
 
     assert captured, "_normalize_for_containment was not called"
     assert captured[0] == "kitchen", f"expected 'kitchen', got {captured[0]!r}"
+
+
+@pytest.mark.asyncio
+async def test_hidden_entities_excluded_before_scoring():
+    """Visibility filtering must run before Levenshtein/phonetic scoring."""
+    matcher = _make_matcher()
+    matcher._weights = {
+        "levenshtein": 0.2,
+        "jaro_winkler": 0.2,
+        "phonetic": 0.2,
+        "embedding": 0.2,
+        "alias": 0.2,
+    }
+    matcher._confidence_threshold = 0.0
+
+    visible = MatchResult(
+        entity_id="light.visible",
+        friendly_name="Visible Light",
+        score=0.0,
+        signal_scores={"embedding": 0.5},
+    )
+
+    with (
+        patch("app.entity.matcher.AliasSignal.score", new=AsyncMock(return_value=None)),
+        patch(
+            "app.entity.matcher.EmbeddingSignal.score",
+            new=AsyncMock(
+                return_value=[
+                    ("light.hidden", "Hidden Light", 0.95),
+                    ("light.visible", "Visible Light", 0.5),
+                ]
+            ),
+        ) as embed_mock,
+        patch("app.entity.matcher.LevenshteinSignal.score", return_value=0.0) as lev_mock,
+        patch.object(
+            matcher,
+            "_apply_visibility_rules",
+            new=AsyncMock(return_value=[visible]),
+        ) as vis_mock,
+    ):
+        results = await matcher._match_query("hidden light", agent_id="restricted")
+
+    embed_mock.assert_awaited_once()
+    vis_mock.assert_awaited_once()
+    called_ids = {r.entity_id for r in vis_mock.await_args.args[1]}
+    assert called_ids == {"light.hidden", "light.visible"}
+    assert not any(r.entity_id == "light.hidden" for r in results)
+    scored_friendly_names = {call.args[1] for call in lev_mock.call_args_list}
+    assert "Hidden Light" not in scored_friendly_names

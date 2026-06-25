@@ -10,13 +10,110 @@ side; HA parity is verified manually from the PR description.
 
 from __future__ import annotations
 
+import sys
+import types
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 
 from app.agents.sanitize import strip_markdown, strip_parenthetical_asides
 
 CORPUS_PATH = Path(__file__).parent / "data" / "sanitize_corpus.txt"
+
+
+def _ensure_ha_module_mocks():
+    """Stub out Home Assistant modules so the integration's conversation.py can import.
+
+    Matches the lessons.md pattern: mock voluptuous and homeassistant.helpers.selector
+    (plus the other HA modules the integration imports) before importing custom_components.
+    """
+    ha_modules = [
+        "homeassistant",
+        "homeassistant.components",
+        "homeassistant.components.assist_pipeline",
+        "homeassistant.components.conversation",
+        "homeassistant.config_entries",
+        "homeassistant.const",
+        "homeassistant.core",
+        "homeassistant.exceptions",
+        "homeassistant.helpers",
+        "homeassistant.helpers.device_registry",
+        "homeassistant.helpers.entity_registry",
+        "homeassistant.helpers.intent",
+        "homeassistant.helpers.selector",
+        "homeassistant.helpers.entity_platform",
+        "voluptuous",
+    ]
+    for mod in ha_modules:
+        if mod not in sys.modules:
+            sys.modules[mod] = MagicMock()
+
+    # Provide attributes required by the integration.
+    sys.modules["homeassistant.const"].MATCH_ALL = "__ALL__"
+    sys.modules["homeassistant.const"].CONF_URL = "url"
+    sys.modules["homeassistant.const"].CONF_API_KEY = "api_key"
+    sys.modules["homeassistant.const"].CONF_NAME = "name"
+    sys.modules["homeassistant.const"].Platform = types.SimpleNamespace(CONVERSATION="conversation")
+
+    sys.modules["homeassistant.core"].HomeAssistant = type("HomeAssistant", (), {})
+    sys.modules["homeassistant.exceptions"].HomeAssistantError = Exception
+
+    sys.modules["homeassistant.config_entries"].ConfigEntry = type("ConfigEntry", (), {})
+    sys.modules["homeassistant.config_entries"].ConfigFlow = type("ConfigFlow", (), {})
+    sys.modules["homeassistant.config_entries"].ConfigFlowResult = dict
+    sys.modules["homeassistant.config_entries"].OptionsFlow = type("OptionsFlow", (), {})
+
+    conv_mod = sys.modules["homeassistant.components.conversation"]
+    conv_mod.ConversationEntityFeature = types.SimpleNamespace(CONTROL=1)
+    conv_mod.ConversationEntity = type("ConversationEntity", (), {})
+    conv_mod.ConversationResult = type("ConversationResult", (), {})
+
+    assist_mod = sys.modules["homeassistant.components.assist_pipeline"]
+    assist_mod.PipelineEvent = type("PipelineEvent", (), {})
+
+    dr_mod = sys.modules["homeassistant.helpers.device_registry"]
+    dr_mod.DeviceEntry = type("DeviceEntry", (), {})
+    er_mod = sys.modules["homeassistant.helpers.entity_registry"]
+    er_mod.RegistryEntry = type("RegistryEntry", (), {})
+    er_mod.async_get = MagicMock(return_value=MagicMock())
+
+    intent_mod = sys.modules["homeassistant.helpers.intent"]
+    intent_mod.IntentResponse = type("IntentResponse", (), {})
+
+    platform_mod = sys.modules["homeassistant.helpers.entity_platform"]
+    platform_mod.AddConfigEntryEntitiesCallback = type("AddConfigEntryEntitiesCallback", (), {})
+
+    selector_mod = sys.modules["homeassistant.helpers.selector"]
+    selector_mod.TextSelector = lambda config=None: config
+    selector_mod.TextSelectorConfig = type("TextSelectorConfig", (), {})
+    selector_mod.TextSelectorType = types.SimpleNamespace(PASSWORD="password", URL="url")
+
+    voluptuous_mod = sys.modules["voluptuous"]
+    voluptuous_mod.Schema = lambda schema: types.SimpleNamespace(schema=schema)
+    voluptuous_mod.Required = lambda schema, default=None: ("required", schema, default)
+    voluptuous_mod.Optional = lambda schema, default=None: ("optional", schema, default)
+    voluptuous_mod.In = lambda values: values
+
+
+@pytest.fixture(scope="module")
+def integration_strip_markdown():
+    """Import the HA integration's _strip_markdown after mocking HA deps."""
+    _ensure_ha_module_mocks()
+
+    # Ensure the workspace root is on sys.path so custom_components is importable.
+    workspace_root = str(Path(__file__).resolve().parents[2])
+    if workspace_root not in sys.path:
+        sys.path.insert(0, workspace_root)
+
+    from custom_components.ha_agenthub.conversation import _strip_markdown
+
+    yield _strip_markdown
+
+    # Best-effort cleanup so other tests are not affected.
+    for key in list(sys.modules):
+        if key.startswith("custom_components"):
+            del sys.modules[key]
 
 
 def _load_cases() -> list[tuple[str, str]]:
@@ -61,6 +158,12 @@ def test_strip_markdown_corpus(input_text: str, expected_text: str) -> None:
 
 def test_corpus_is_nonempty() -> None:
     assert len(CASES) >= 10, "corpus should cover the main markdown constructs"
+
+
+@pytest.mark.parametrize("input_text,expected_text", CASES)
+def test_integration_strip_markdown_parity(input_text: str, expected_text: str, integration_strip_markdown) -> None:
+    """FLOW-MED-4: HA integration _strip_markdown must match the container sanitizer."""
+    assert integration_strip_markdown(input_text) == expected_text
 
 
 class TestStripMarkdown:

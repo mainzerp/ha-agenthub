@@ -224,13 +224,28 @@ async def save_llm_keys(
     ],
 )
 async def complete_setup(request: Request):
-    """Step 5: Mark setup complete and trigger post-setup initialization."""
+    """Step 5: Trigger post-setup initialization and only mark setup complete on success."""
     logger.info("Setup wizard completed, triggering post-setup initialization")
+    steps = await SetupStateRepository.get_all_steps()
+    step_map = {s["step"]: s["completed"] for s in steps}
     try:
         await ensure_setup_runtime_initialized(request.app)
-        await SetupStateRepository.set_step_completed("review_complete")
     except Exception:
-        logger.warning("Post-setup runtime initialization failed", exc_info=True)
+        logger.exception("Post-setup runtime initialization failed")
+        return templates.TemplateResponse(
+            request,
+            "step5.html",
+            context={
+                "step_num": 5,
+                "total_steps": len(STEP_ORDER),
+                "steps": {k: v for k, v in step_map.items() if k != "review_complete"},
+                "csrf_token": ensure_csrf_token(request),
+                "error": "Runtime initialization failed. Check the container logs and try again.",
+            },
+            status_code=500,
+        )
+
+    await SetupStateRepository.set_step_completed("review_complete")
     return RedirectResponse(url="/dashboard/", status_code=303)
 
 

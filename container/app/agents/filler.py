@@ -5,9 +5,8 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from app.agents.base import BaseAgent
+from app.agents.base import BaseAgent, _render_prompt_template
 from app.agents.decorator import agent
-from app.agents.orchestrator import _get_personality_cached
 from app.db.repository import SettingsRepository
 from app.models.agent import AgentCard, AgentTask, TaskResult
 
@@ -82,10 +81,11 @@ class FillerAgent(BaseAgent):
                 language = task.context.language or "en"
 
             # Load personality prompt fresh each call
-            personality = await _get_personality_cached(SettingsRepository)
+            personality = await SettingsRepository.get_value("personality.prompt", "")
 
             language_name = _LANGUAGE_NAMES.get(language, language)
-            system_prompt = (await self._load_prompt_async("filler")).format(
+            system_prompt = _render_prompt_template(
+                await self._load_prompt_async("filler"),
                 personality=personality or "",
                 language=language_name,
             )

@@ -6,6 +6,7 @@ agent description building, and classification repair.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -18,13 +19,11 @@ import litellm
 from app.agents.agent_registry import CachedAgentRegistry
 from app.analytics.tracer import _optional_span
 from app.cache.cache_manager import CacheManager
+from app.entity.visibility import entity_is_visible
 from app.llm.client import LLMError
+from app.models.agent import FALLBACK_AGENT, INTERNAL_ONLY_AGENTS
 
 logger = logging.getLogger(__name__)
-
-_FALLBACK_AGENT = "general-agent"
-_CANCEL_INTERACTION_AGENT = "cancel-interaction"
-_INTERNAL_ONLY_AGENTS: frozenset[str] = frozenset({"orchestrator", "rewrite-agent", "filler-agent"})
 
 
 class _RecoverableClassificationError(RuntimeError):
@@ -92,6 +91,7 @@ class ClassificationEngine:
         get_turns: Callable[[str | None], Awaitable[list[dict[str, Any]]]] | None = None,
         wrap_user_input: Callable[[str], str] | None = None,
         append_conversation_turn_messages: Callable[[list[dict], list[dict], Any], None] | None = None,
+        entity_index: Any | None = None,
     ) -> None:
         self._agent_registry = agent_registry
         self._cache_manager = cache_manager
@@ -100,9 +100,42 @@ class ClassificationEngine:
         self._get_turns = get_turns
         self._wrap_user_input = wrap_user_input or (lambda x: x)
         self._append_conversation_turn_messages = append_conversation_turn_messages or (lambda msgs, turns, **kw: None)
+        self._entity_index = entity_index
 
     async def _get_known_agents(self) -> set[str]:
         return await self._agent_registry.get_known_agents()
+
+    async def _routing_cache_hit_is_valid(self, agent_id: str, entity_ids: list[str] | None) -> bool:
+        """Validate a routing-cache hit: agent registered and entities visible."""
+        if not agent_id:
+            return False
+        known_agents = await self._get_known_agents()
+        if agent_id not in known_agents:
+            return False
+        if isinstance(entity_ids, list) and entity_ids and self._entity_index is not None:
+            try:
+                visibility = await asyncio.gather(
+                    *[
+                        entity_is_visible(
+                            agent_id,
+                            entity_id,
+                            self._entity_index,
+                            fail_closed_on_metadata_gap=True,
+                        )
+                        for entity_id in entity_ids
+                    ]
+                )
+                if not all(visibility):
+                    return False
+            except Exception:
+                logger.debug(
+                    "Routing-cache visibility check failed for agent=%s entities=%s",
+                    agent_id,
+                    entity_ids,
+                    exc_info=True,
+                )
+                return False
+        return True
 
     @property
     def agent_registry(self) -> CachedAgentRegistry:
@@ -130,7 +163,7 @@ class ClassificationEngine:
 
         lines = []
         for card in cards:
-            if card.agent_id in _INTERNAL_ONLY_AGENTS:
+            if card.agent_id in INTERNAL_ONLY_AGENTS:
                 continue
             skills_str = ", ".join(card.skills) if card.skills else ""
             if skills_str:
@@ -193,16 +226,22 @@ class ClassificationEngine:
         async with _optional_span(span_collector, "classify.cache_lookup", agent_id="orchestrator") as subspan:
             if cache_result is not None:
                 if cache_result.hit_type == "routing_hit" and cache_result.agent_id:
-                    if cache_result.agent_id == "send-agent" or cache_result.agent_id in _INTERNAL_ONLY_AGENTS:
+                    if cache_result.agent_id == "send-agent" or cache_result.agent_id in INTERNAL_ONLY_AGENTS:
                         logger.debug(
                             "Ignoring invalid routing cache hit: %s for '%s'", cache_result.agent_id, user_text[:80]
                         )
-                    else:
+                    elif await self._routing_cache_hit_is_valid(cache_result.agent_id, cache_result.entity_ids):
                         logger.debug("Routing cache hit: %s for '%s'", cache_result.agent_id, user_text[:80])
                         condensed = user_text
                         subspan["span_name"] = "classify.cache_lookup"
                         subspan["status"] = "ok"
                         return [(cache_result.agent_id, condensed, 1.0, [])], True
+                    else:
+                        logger.debug(
+                            "Rejecting stale routing cache hit: %s for '%s'",
+                            cache_result.agent_id,
+                            user_text[:80],
+                        )
             elif allow_cache_lookup and self._cache_manager:
                 try:
                     cache_result = await self._cache_manager.process(
@@ -210,18 +249,24 @@ class ClassificationEngine:
                         language=language,
                     )
                     if cache_result.hit_type == "routing_hit" and cache_result.agent_id:
-                        if cache_result.agent_id == "send-agent" or cache_result.agent_id in _INTERNAL_ONLY_AGENTS:
+                        if cache_result.agent_id == "send-agent" or cache_result.agent_id in INTERNAL_ONLY_AGENTS:
                             logger.debug(
                                 "Ignoring invalid routing cache hit: %s for '%s'",
                                 cache_result.agent_id,
                                 user_text[:80],
                             )
-                        else:
+                        elif await self._routing_cache_hit_is_valid(cache_result.agent_id, cache_result.entity_ids):
                             logger.debug("Routing cache hit: %s for '%s'", cache_result.agent_id, user_text[:80])
                             condensed = user_text
                             subspan["span_name"] = "classify.cache_lookup"
                             subspan["status"] = "ok"
                             return [(cache_result.agent_id, condensed, 1.0, [])], True
+                        else:
+                            logger.debug(
+                                "Rejecting stale routing cache hit: %s for '%s'",
+                                cache_result.agent_id,
+                                user_text[:80],
+                            )
                 except Exception:
                     logger.warning("Routing cache check failed, proceeding with LLM", exc_info=True)
             subspan["span_name"] = "classify.cache_lookup"
@@ -229,7 +274,7 @@ class ClassificationEngine:
         t_cache = time.perf_counter()
 
         if _load_prompt is None or _call_llm is None:
-            return [(_FALLBACK_AGENT, user_text, 0.0, [])], False
+            return [(FALLBACK_AGENT, user_text, 0.0, [])], False
 
         async with _optional_span(
             span_collector, "classify.prompt_and_descriptions", agent_id="orchestrator"
@@ -324,13 +369,13 @@ class ClassificationEngine:
             logger.error(
                 "Intent classification failed (%s), falling back to %s",
                 type(exc).__name__,
-                _FALLBACK_AGENT,
+                FALLBACK_AGENT,
                 exc_info=True,
             )
-            return [(_FALLBACK_AGENT, user_text, 0.0, [])], False
+            return [(FALLBACK_AGENT, user_text, 0.0, [])], False
         except Exception:
-            logger.exception("Intent classification failed, falling back to %s", _FALLBACK_AGENT)
-            return [(_FALLBACK_AGENT, user_text, 0.0, [])], False
+            logger.exception("Intent classification failed, falling back to %s", FALLBACK_AGENT)
+            return [(FALLBACK_AGENT, user_text, 0.0, [])], False
 
     async def parse_classification(
         self, response: str, original_text: str
@@ -411,7 +456,7 @@ class ClassificationEngine:
             entities_per_result.append([])
 
         if not results:
-            return [(_FALLBACK_AGENT, original_text, 0.0, [])]
+            return [(FALLBACK_AGENT, original_text, 0.0, [])]
 
         seen: dict[str, tuple[str, float | None, list[str], list[str]]] = {}
         for (agent_id, condensed, confidence), entities_list in zip(results, entities_per_result, strict=True):
@@ -513,7 +558,7 @@ class ClassificationEngine:
         Returns ``(classifications, was_repaired)`` where ``was_repaired`` is
         ``True`` when the repair LLM was invoked.
         """
-        filtered = [c for c in classifications if c[0] not in _INTERNAL_ONLY_AGENTS]
+        filtered = [c for c in classifications if c[0] not in INTERNAL_ONLY_AGENTS]
         if not filtered:
             raise _RecoverableClassificationError("I couldn't determine the right agent for that request.")
 

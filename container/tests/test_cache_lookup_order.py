@@ -220,14 +220,7 @@ async def test_routing_disabled_still_consults_action():
     manager._action_cache.lookup_with_id = MagicMock(return_value=("action-1", action_entry, 1.0))
     orch = _make_orchestrator(manager)
 
-    with (
-        patch("app.cache.cache_manager.track_cache_event", new_callable=AsyncMock),
-        patch(
-            "app.agents.cache_orchestrator.resolve_entity_deterministic_first",
-            new_callable=AsyncMock,
-            return_value={"entity_id": action_entry.cached_action.entity_id},
-        ),
-    ):
+    with patch("app.cache.cache_manager.track_cache_event", new_callable=AsyncMock):
         action_hit, routing_hit = await orch._try_cache_replay(
             task=_make_task("turn on kitchen light"),
             user_text="turn on kitchen light",

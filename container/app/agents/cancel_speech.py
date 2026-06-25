@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from app.agents.base import _load_prompt_path_async, _prompt_path
+from app.agents.base import _load_prompt_path_async, _prompt_path, _render_prompt_template
 from app.llm.client import complete
 from app.security.sanitization import wrap_user_input
 
@@ -50,7 +50,7 @@ async def generate_cancel_speech(language: str | None, user_text: str | None) ->
 
     try:
         prompt_template = await _load_prompt_path_async(_prompt_path("cancel_speech"))
-        system_prompt = prompt_template.format(language=language_name)
+        system_prompt = _render_prompt_template(prompt_template, language=language_name)
         user_payload = wrap_user_input((user_text or "").strip()[:200] or "(dismiss)")
         result = await asyncio.wait_for(
             complete(
