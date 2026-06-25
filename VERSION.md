@@ -1,10 +1,21 @@
 # Version
 
-**Current Version:** 1.41.1
+**Current Version:** 1.41.2
 
 ## Recent Changes
 
-Track changes since `v1.41.1` here.
+Track changes since `v1.41.2` here.
+
+### 1.41.2 (PATCH) -- Dependency updates
+
+- chore(deps): bump actions/checkout from 6 to 7 (#52)
+- chore(deps): update aiohttp requirement from >=3.13.3 to >=3.14.1 in /container (#51)
+- chore(deps): bump uvicorn from 0.48.0 to 0.49.0 in /container (#50)
+- chore(deps-dev): update pip-audit requirement from >=2.10.0 to >=2.10.1 in /container (#49)
+- chore(deps-dev): update tzdata requirement from >=2024.1 to >=2026.2 in /container (#48)
+- chore(deps-dev): bump bandit from 1.7.9 to 1.9.4 in /container (#47)
+
+## Version History
 
 ### 1.41.1 (PATCH) -- Dependency updates and test infrastructure expansion
 
@@ -14,8 +25,6 @@ Track changes since `v1.41.1` here.
 - chore(deps-dev): update pytest-timeout requirement to >=2.4.0 (#44)
 - chore(deps): update ddgs requirement to >=9.14.4,<10.0.0 (#42)
 - test: add 133 tests and improve test infrastructure across calendar executor, timer executor, admin routes, analytics API, cache API, HA client helpers, MCP client, and more
-
-## Version History
 
 ### 1.41.0 (MINOR) -- TTFT and TPS tracking for LLM provider calls
 
