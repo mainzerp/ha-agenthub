@@ -2,7 +2,7 @@
 
 # Web framework
 fastapi==0.135.3
-uvicorn[standard]==0.48.0
+uvicorn[standard]==0.49.0
 
 # LLM integration
 litellm>=1.83.7,<2.0.0
@@ -18,7 +18,7 @@ rapidfuzz==3.14.5
 pyphonetics==0.5.3
 
 # HTTP clients (async)
-aiohttp>=3.13.3,<4.0.0
+aiohttp>=3.14.1,<4.0.0
 httpx==0.28.1
 
 # Data validation
