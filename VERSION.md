@@ -1,10 +1,37 @@
 # Version
 
-**Current Version:** 1.41.2
+**Current Version:** 1.42.0
 
 ## Recent Changes
 
-Track changes since `v1.41.2` here.
+Track changes since `v1.42.0` here.
+
+## Version History
+
+### 1.42.0 (MINOR) -- Architectural audit: visibility, security, bridge reliability, and quality
+
+- fix(visibility): enforce per-agent visibility in light_executor, lists_executor, and action_executor condition resolution
+- fix(visibility): apply visibility filtering before hybrid scoring in EntityMatcher
+- fix(cache): recheck visibility of all cached entity IDs on action-cache replay
+- fix(cache): add validity check on routing-cache hits for agent registration and entity visibility
+- fix(security): harden WebSocket client-IP extraction against spoofed X-Forwarded-For
+- fix(security): make WebSocket per-IP connection counter thread-safe and self-healing
+- fix(security): return 401 instead of 500 when API-key retrieval fails
+- fix(async): re-raise CancelledError explicitly and narrow broad except Exception blocks
+- fix(async): stop suppressing Exception alongside CancelledError in cleanup paths
+- fix(sse): fix racy queue drop in SSE publisher
+- feat(bridge): log WebSocket origin rejections with descriptive close reasons
+- feat(bridge): make integration WebSocket receive timeout configurable
+- feat(bridge): debounce integration reconnect scheduling
+- fix(setup): prevent setup wizard completion when runtime init fails
+- fix(prompts): render prompt templates safely when values contain braces
+- fix(config): unify HA config entry source of truth for URL and API key
+- refactor(quality): centralize duplicated agent-id constants
+- refactor(quality): remove dead module-level _get_personality_cached helper
+- refactor(quality): extract shared home-context population helper
+- refactor(cache): remove dead resolve_entity parameter from action-cache replay
+- test: add WebSocket origin/connection-limit tests and sanitizer parity test
+- docs: update project-definition, VERSION, and TODO to reflect current state
 
 ### 1.41.2 (PATCH) -- Dependency updates
 
