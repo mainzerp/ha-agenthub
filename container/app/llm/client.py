@@ -175,6 +175,8 @@ async def complete(
                 f"(model={model} max_tokens={max_tokens} finish_reason={finish_reason})"
             )
         return content
+    except asyncio.CancelledError:
+        raise
     except litellm.exceptions.AuthenticationError:
         logger.error("Authentication failed for agent=%s model=%s -- check API key", agent_id, model)
         raise
@@ -207,6 +209,8 @@ async def complete(
                         )
                     pspan["metadata"]["ttft_ms"] = round(ttft_ms, 2)
                     pspan["metadata"]["tps"] = round(tps, 2) if tps else None
+            except asyncio.CancelledError:
+                raise
             except Exception:
                 raise
             if not response.choices:
@@ -329,6 +333,8 @@ async def complete_stream(
                 )
                 pspan["metadata"]["ttft_ms"] = round(ttft_ms, 2) if ttft_ms else None
                 pspan["metadata"]["tps"] = round(tps, 2) if tps else None
+    except asyncio.CancelledError:
+        raise
     except litellm.exceptions.AuthenticationError:
         logger.error("Authentication failed for agent=%s model=%s -- check API key", agent_id, model)
         raise

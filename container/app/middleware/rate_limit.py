@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from collections.abc import Mapping
 
 from fastapi import HTTPException, Request
 
@@ -56,19 +57,30 @@ async def _check_rate_limit(identifier: str, max_requests: int, window_seconds: 
             )
 
 
-def _get_client_ip(request: Request) -> str:
-    direct = request.client.host if request.client else "unknown"
-    forwarded = request.headers.get("x-forwarded-for")
-    if not forwarded or direct not in _TRUSTED_PROXIES:
-        return direct
-    # Walk from the right, skipping trusted proxies, to find the actual client IP.
-    # This prevents spoofed leftmost IPs from bypassing rate limits.
+def get_client_ip_from_headers(headers: Mapping[str, str], direct_ip: str) -> str:
+    """Return the client IP using rightmost-trusted-proxy logic.
+
+    ``direct_ip`` is the immediately-visible peer address. The
+    ``X-Forwarded-For`` chain is only trusted when that peer is itself a
+    configured trusted proxy; otherwise a client could spoof any leftmost
+    IP. Walks the chain from right to left and returns the first
+    non-trusted address, falling back to the rightmost proxy address if
+    every hop is trusted.
+    """
+    forwarded = headers.get("x-forwarded-for")
+    if not forwarded or direct_ip not in _TRUSTED_PROXIES:
+        return direct_ip
     ips = [ip.strip() for ip in forwarded.split(",")]
     for ip in reversed(ips):
         if ip and ip not in _TRUSTED_PROXIES:
             return ip
     # If every IP in the chain is trusted, fall back to the immediate proxy.
-    return ips[-1] if ips else direct
+    return ips[-1] if ips else direct_ip
+
+
+def _get_client_ip(request: Request) -> str:
+    direct = request.client.host if request.client else "unknown"
+    return get_client_ip_from_headers(request.headers, direct)
 
 
 async def rate_limit_conversation(request: Request) -> None:

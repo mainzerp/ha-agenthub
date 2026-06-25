@@ -23,6 +23,7 @@ from app.api.routes import admin as admin_routes
 from app.api.routes import conversation as conversation_routes
 from app.api.routes import dashboard_api as dashboard_api_routes
 from app.api.routes import health as health_routes
+from app.api.routes.conversation import reset_active_ws_connections
 from app.config import settings
 from app.dashboard.routes import router as dashboard_router
 from app.db.repository import SettingsRepository, SetupStateRepository
@@ -95,6 +96,7 @@ async def lifespan(app: FastAPI):
     # --- Startup ---
     _configure_logging()
     logger.info("Starting agent-assist container")
+    reset_active_ws_connections()
     await init_db()
 
     from app.security.encryption import get_fernet, is_fernet_key_present
@@ -163,8 +165,12 @@ async def lifespan(app: FastAPI):
 
         parsed = urlparse(ha_client._base_url)
         app.state.allowed_ws_origins = {f"{parsed.scheme}://{parsed.netloc}"}
+        logger.info("Allowed WebSocket origins: %s", sorted(app.state.allowed_ws_origins))
     else:
         app.state.allowed_ws_origins = set()
+        logger.warning(
+            "No allowed WebSocket origins configured; WebSocket connections will be rejected until setup is complete"
+        )
 
     # Register default notification profile if not set
     existing_notif = await SettingsRepository.get_value("notification.profile")

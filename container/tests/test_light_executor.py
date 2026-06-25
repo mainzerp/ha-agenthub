@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sys
 from contextlib import asynccontextmanager
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -668,6 +668,69 @@ class TestEntityMatchSpan:
         assert len(em_spans) == 1
         assert em_spans[0]["metadata"]["resolution_path"] == "exact_friendly_name"
         assert em_spans[0]["metadata"]["top_entity_id"] == "light.keller"
+
+
+# ---------------------------------------------------------------------------
+# Visibility filtering on list_lights
+# ---------------------------------------------------------------------------
+
+
+class TestListLightsVisibility:
+    """Tests that list_lights respects per-agent visibility rules."""
+
+    @pytest.mark.asyncio
+    async def test_restricted_agent_cannot_enumerate_hidden_light(self):
+        """A restricted agent must not see a light entity it is not allowed to see."""
+        client = AsyncMock()
+        client.get_states = AsyncMock(
+            return_value=[
+                {"entity_id": "light.kitchen", "state": "on", "attributes": {"friendly_name": "Kitchen Light"}},
+                {"entity_id": "switch.kitchen", "state": "on", "attributes": {"friendly_name": "Kitchen Switch"}},
+            ]
+        )
+
+        async def _rules(agent_id: str):
+            if agent_id == "restricted-light-agent":
+                return [{"rule_type": "domain_include", "rule_value": "switch"}]
+            return []
+
+        with patch(
+            "app.entity.visibility.EntityVisibilityRepository.get_rules",
+            new=AsyncMock(side_effect=_rules),
+        ):
+            result = await execute_light_action(
+                {"action": "list_lights", "entity": ""},
+                client,
+                MagicMock(),
+                MagicMock(),
+                agent_id="restricted-light-agent",
+            )
+
+        assert result["success"] is True
+        assert "Kitchen Switch" in result["speech"]
+        assert "Kitchen Light" not in result["speech"]
+
+    @pytest.mark.asyncio
+    async def test_unrestricted_agent_lists_all_lights_and_switches(self):
+        """Without visibility rules all lights and switches are enumerated."""
+        client = AsyncMock()
+        client.get_states = AsyncMock(
+            return_value=[
+                {"entity_id": "light.kitchen", "state": "on", "attributes": {"friendly_name": "Kitchen Light"}},
+                {"entity_id": "switch.kitchen", "state": "on", "attributes": {"friendly_name": "Kitchen Switch"}},
+            ]
+        )
+
+        result = await execute_light_action(
+            {"action": "list_lights", "entity": ""},
+            client,
+            MagicMock(),
+            MagicMock(),
+        )
+
+        assert result["success"] is True
+        assert "Kitchen Light" in result["speech"]
+        assert "Kitchen Switch" in result["speech"]
 
 
 # ---------------------------------------------------------------------------

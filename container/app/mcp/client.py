@@ -17,7 +17,6 @@ The legacy direct-context implementation is preserved as
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import ipaddress
 import logging
 import re
@@ -188,6 +187,8 @@ class MCPClient:
                     self._name,
                 )
                 return False
+        except asyncio.CancelledError:
+            raise
         except TimeoutError:
             logger.error(
                 "Connection to MCP server '%s' timed out after %ds",
@@ -326,8 +327,12 @@ class MCPClient:
     async def _abort_owner(self) -> None:
         if self._owner_task is not None and not self._owner_task.done():
             self._owner_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError, Exception):
+            try:
                 await self._owner_task
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                logger.debug("MCP owner task cleanup raised", exc_info=True)
         self._owner_task = None
         self._req_q = None
 
@@ -356,8 +361,14 @@ class MCPClient:
                     if self._owner_task is None:
                         raise RuntimeError("MCP client not initialized") from None
                     self._owner_task.cancel()
-                    with contextlib.suppress(asyncio.CancelledError, Exception):
+                    try:
                         await self._owner_task
+                    except asyncio.CancelledError:
+                        pass
+                    except Exception:
+                        logger.debug("MCP disconnect owner task cleanup raised", exc_info=True)
+        except asyncio.CancelledError:
+            raise
         except Exception:
             logger.warning("Error disconnecting from MCP server '%s'", self._name, exc_info=True)
         finally:
@@ -388,6 +399,8 @@ class MCPClient:
                 }
                 for tool in result.tools
             ]
+        except asyncio.CancelledError:
+            raise
         except Exception:
             logger.error("Failed to list tools from MCP server '%s'", self._name, exc_info=True)
             return []
@@ -400,6 +413,8 @@ class MCPClient:
             if self._has_owner():
                 return await self._submit(_CALL_TOOL, (tool_name, arguments))
             return await self._session.call_tool(tool_name, arguments=arguments or {})
+        except asyncio.CancelledError:
+            raise
         except Exception:
             logger.error(
                 "Failed to call tool '%s' on MCP server '%s'",

@@ -181,3 +181,44 @@ class TestEvaluateCondition:
         assert observed == "ON"
         assert entity_id == "light.kitchen"
         assert error is None
+
+    @pytest.mark.asyncio
+    async def test_condition_passes_agent_id_and_allowed_domains(self, ha_client, entity_index, entity_matcher):
+        with patch(
+            "app.agents.action_executor.resolve_entity_deterministic_first",
+            new=AsyncMock(return_value={"entity_id": "light.kitchen", "friendly_name": "Kitchen Light"}),
+        ) as mock_resolve:
+            cond = ActionCondition(entity="kitchen light", state="on", operator="eq")
+            passed, _observed, _entity_id, _error = await _evaluate_condition(
+                cond,
+                ha_client,
+                entity_index,
+                entity_matcher,
+                agent_id="light-agent",
+                allowed_domains=frozenset({"light", "switch"}),
+            )
+        assert passed is True
+        mock_resolve.assert_awaited_once()
+        kwargs = mock_resolve.await_args.kwargs
+        assert kwargs.get("agent_id") == "light-agent"
+        assert kwargs.get("allowed_domains") == frozenset({"light", "switch"})
+
+    @pytest.mark.asyncio
+    async def test_hidden_condition_entity_fails_condition(self, ha_client, entity_index, entity_matcher):
+        with patch(
+            "app.agents.action_executor.resolve_entity_deterministic_first",
+            new=AsyncMock(return_value={"entity_id": None, "friendly_name": "kitchen light", "speech": "Not visible"}),
+        ):
+            cond = ActionCondition(entity="kitchen light", state="on", operator="eq")
+            passed, observed, entity_id, error = await _evaluate_condition(
+                cond,
+                ha_client,
+                entity_index,
+                entity_matcher,
+                agent_id="restricted-light-agent",
+                allowed_domains=frozenset({"light"}),
+            )
+        assert passed is False
+        assert observed is None
+        assert entity_id is None
+        assert error is not None

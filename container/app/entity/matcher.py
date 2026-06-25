@@ -309,6 +309,11 @@ class EntityMatcher:
                             signal_scores={"embedding": emb_score},
                         )
 
+        # Apply entity visibility filtering before any scoring so hidden
+        # entities are never scored or returned.
+        if agent_id:
+            results = {r.entity_id: r for r in await self._apply_visibility_rules(agent_id, list(results.values()))}
+
         # 3. Levenshtein signal -- compare query against each candidate friendly_name
         for _entity_id, result in results.items():
             if result.friendly_name:
@@ -412,10 +417,6 @@ class EntityMatcher:
             filtered.sort(key=_sort_key)
         else:
             filtered.sort(key=lambda r: r.score, reverse=True)
-
-        # Apply entity visibility filtering if agent_id is provided
-        if agent_id:
-            filtered = await self._apply_visibility_rules(agent_id, filtered)
 
         top_results = filtered[: self._top_n]
 

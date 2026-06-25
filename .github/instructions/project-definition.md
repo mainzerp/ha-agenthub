@@ -101,7 +101,7 @@ Current runtime notes:
 | ASGI server | Uvicorn | Container application server |
 | LLM integration | litellm | Provider abstraction for local and hosted LLMs |
 | Local embeddings | `intfloat/multilingual-e5-small` | Seeded default local embedding model |
-| Vector storage | ChromaDB | Entity index plus routing and action cache persistence |
+| Vector storage | ChromaDB | Entity index persistence; routing and action caches moved to SQLite in v1.37.0 |
 | Structured data | SQLite + aiosqlite | Settings, secrets, traces, analytics, users, history, custom agents |
 | Agent protocol | A2A over JSON-RPC 2.0 envelopes | Current transport is in-process |
 | Entity matching | rapidfuzz, pyphonetics, embedding search, optional LLM expansion | Deterministic resolution runs before hybrid fallback |
@@ -263,14 +263,13 @@ Current seeded defaults that materially affect matching:
 
 ### Strategy
 
-HA-AgentHub currently uses two persistent vector-backed cache tiers:
+HA-AgentHub currently uses two persistent SQLite-backed cache tiers:
 
 1. **Routing cache**: stores query-to-agent routing decisions and condensed tasks.
 2. **Action cache**: the public name for the user-facing replay tier that stores speech plus replayable cached actions.
 
 Compatibility note:
 
-- internal collection names still use `response_cache` for backward compatibility on the Chroma side
 - runtime settings keys are canonical `cache.action.*` and `cache.routing.*` after migration 23
 - there is no partial-threshold tier; partial matches do not short-circuit live execution
 

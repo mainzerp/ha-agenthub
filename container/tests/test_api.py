@@ -421,7 +421,7 @@ class TestConversationEndpoints:
         ws.close = AsyncMock()
 
         await ws_conversation(ws)
-        ws.close.assert_awaited_once_with(code=1008, reason="Invalid origin")
+        ws.close.assert_awaited_once_with(code=1008, reason="Origin https://evil.com not allowed")
 
     async def test_ws_conversation_accepts_allowed_origin(self):
         from contextlib import suppress
@@ -455,7 +455,7 @@ class TestConversationEndpoints:
         ws.close = AsyncMock()
 
         await ws_conversation(ws)
-        ws.close.assert_awaited_once_with(code=1008, reason="Invalid origin")
+        ws.close.assert_awaited_once_with(code=1008, reason="Setup incomplete: no WebSocket origins configured")
 
     async def test_ws_conversation_enforces_per_ip_connection_limit(self):
         """Step 18: exceeding max connections per IP must reject with 1008."""

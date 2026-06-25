@@ -14,7 +14,7 @@ import time
 from typing import Any
 
 from app.agents.action_executor import parse_action
-from app.agents.base import BaseAgent
+from app.agents.base import BaseAgent, _render_prompt_template
 from app.agents.decorator import agent
 from app.analytics.tracer import _optional_span
 from app.entity.deterministic_resolver import resolve_entity_deterministic_first
@@ -83,6 +83,8 @@ class ActionableAgent(BaseAgent):
                     allowed_domains=self._allowed_domains,
                     visible_entries=cached_visible_entries,
                 )
+            except asyncio.CancelledError:
+                raise
             except Exception:
                 logger.debug("Entity resolution failed for term %r", term, exc_info=True)
                 continue
@@ -116,6 +118,8 @@ class ActionableAgent(BaseAgent):
                     entry = await self._entity_index.get_by_id_async(entity_id)
                     if entry is not None:
                         state_value = getattr(entry, "state", None)
+                except asyncio.CancelledError:
+                    raise
                 except Exception:
                     logger.debug("get_by_id_async failed for %s", entity_id, exc_info=True)
             # Fallback to HA client
@@ -124,6 +128,8 @@ class ActionableAgent(BaseAgent):
                     state_resp = await self._ha_client.get_state(entity_id)
                     if isinstance(state_resp, dict):
                         state_value = state_resp.get("state")
+                except asyncio.CancelledError:
+                    raise
                 except Exception:
                     logger.debug("ha_client.get_state failed for %s", entity_id, exc_info=True)
             if state_value is not None:
@@ -153,7 +159,7 @@ class ActionableAgent(BaseAgent):
         messages = [
             {
                 "role": "system",
-                "content": self._load_prompt("entity_not_found").format(language=language),
+                "content": _render_prompt_template(self._load_prompt("entity_not_found"), language=language),
             },
             {
                 "role": "user",
@@ -171,6 +177,8 @@ class ActionableAgent(BaseAgent):
                 if result and result.strip()
                 else f"I could not find '{entity_query}'. Which device did you mean?"
             )
+        except asyncio.CancelledError:
+            raise
         except Exception:
             logger.warning("Not-found clarification LLM call failed", exc_info=True)
             return f"I could not find '{entity_query}'. Which device did you mean?"
@@ -258,6 +266,8 @@ class ActionableAgent(BaseAgent):
                 er_span["metadata"]["state_fetch_ms"] = round((_t2 - _t1) * 1000, 1)
             if entity_state_context:
                 system_prompt += f"\n\nContext: {entity_state_context}"
+        except asyncio.CancelledError:
+            raise
         except Exception:
             logger.debug("Entity state injection failed for %s", agent_id, exc_info=True)
 
@@ -401,6 +411,8 @@ class ActionableAgent(BaseAgent):
                         ),
                     ),
                 )
+            except asyncio.CancelledError:
+                raise
             except Exception:
                 logger.exception("Action execution failed for %s action=%s", agent_id, action)
                 entity = action.get("entity", "the device")

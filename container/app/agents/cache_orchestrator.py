@@ -18,16 +18,11 @@ from app.analytics.collector import track_cache_event
 from app.analytics.tracer import _optional_span
 from app.cache.cache_manager import ActionReplayOutcome, CacheManager, RoutingSkipOutcome
 from app.db.repository import SettingsRepository
-from app.entity.deterministic_resolver import resolve_entity_deterministic_first
 from app.entity.visibility import entity_is_visible
-from app.models.agent import AgentTask
+from app.models.agent import CANCEL_INTERACTION_AGENT, FALLBACK_AGENT, INTERNAL_ONLY_AGENTS, AgentTask
 from app.models.cache import ActionCacheEntry, CachedAction
 
 logger = logging.getLogger(__name__)
-
-_FALLBACK_AGENT = "general-agent"
-_CANCEL_INTERACTION_AGENT = "cancel-interaction"
-_INTERNAL_ONLY_AGENTS: frozenset[str] = frozenset({"orchestrator", "rewrite-agent", "filler-agent"})
 
 _CACHED_SERVICE_DATA_KEYS: frozenset[str] = frozenset(
     {
@@ -118,8 +113,8 @@ class CacheOrchestrator:
     @staticmethod
     def is_actionable_routing_agent(target_agent: str) -> bool:
         return (
-            target_agent not in (_FALLBACK_AGENT, _CANCEL_INTERACTION_AGENT, "send-agent")
-            and target_agent not in _INTERNAL_ONLY_AGENTS
+            target_agent not in (FALLBACK_AGENT, CANCEL_INTERACTION_AGENT, "send-agent")
+            and target_agent not in INTERNAL_ONLY_AGENTS
         )
 
     @staticmethod
@@ -158,26 +153,11 @@ class CacheOrchestrator:
         _check_vis = check_visibility or self.cached_action_is_still_visible
         _exec_action = exec_cached_action or self.execute_cached_action
 
-        async def _resolve_entity(current_text: str, target_agent: str) -> str | None:
-            if not self._entity_index:
-                return None
-            context = getattr(task, "context", None)
-            resolution = await resolve_entity_deterministic_first(
-                current_text,
-                self._entity_index,
-                None,
-                target_agent,
-                preferred_area_id=getattr(context, "area_id", None),
-                verbatim_terms=[],
-            )
-            return resolution.get("entity_id")
-
         async with _optional_span(span_collector, "cache_lookup", agent_id="orchestrator") as cache_span:
             action_hit = await self._cache_manager.try_replay_action(
                 query_text=user_text,
                 language=language,
                 requesting_agent_id=requesting_agent_id,
-                resolve_entity=_resolve_entity,
                 check_visibility=_check_vis,
                 execute_cached_action=_exec_action,
             )
@@ -193,13 +173,10 @@ class CacheOrchestrator:
                 language=language,
             )
             if routing_hit is not None:
-                known_agents: set[str] = set()
-                if self._agent_registry is not None:
-                    known_agents = await self._agent_registry.get_known_agents()
-                if routing_hit.agent_id not in known_agents:
+                if not await self._routing_hit_is_still_valid(routing_hit):
                     with contextlib.suppress(Exception):
                         await asyncio.to_thread(self._cache_manager.invalidate_routing, routing_hit.entry_id)
-                    cache_span["metadata"]["hit_type"] = "routing_stale_agent"
+                    cache_span["metadata"]["hit_type"] = "routing_invalid"
                     cache_span["metadata"]["cached_agent_id"] = routing_hit.agent_id
                     cache_span["metadata"]["cache_tier"] = "both_miss"
                     return None, None
@@ -239,6 +216,47 @@ class CacheOrchestrator:
                 exc_info=True,
             )
             return False
+
+    async def _routing_hit_is_still_valid(self, routing_hit: RoutingSkipOutcome) -> bool:
+        """Validate a routing-cache hit before it is allowed to skip classification.
+
+        The cached target agent must still be registered and every entity
+        referenced by the cached routing decision must still be visible to
+        that agent. Fail-closed on any error.
+        """
+        if not routing_hit.agent_id:
+            return False
+        if self._agent_registry is not None:
+            known_agents = await self._agent_registry.get_known_agents()
+            if routing_hit.agent_id not in known_agents:
+                return False
+        entity_ids = getattr(routing_hit, "entity_ids", None)
+        if isinstance(entity_ids, list) and entity_ids:
+            if self._entity_index is None:
+                return False
+            try:
+                visibility = await asyncio.gather(
+                    *[
+                        entity_is_visible(
+                            routing_hit.agent_id,
+                            entity_id,
+                            self._entity_index,
+                            fail_closed_on_metadata_gap=True,
+                        )
+                        for entity_id in entity_ids
+                    ]
+                )
+            except Exception:
+                logger.debug(
+                    "Routing-cache visibility check failed for agent=%s entities=%s",
+                    routing_hit.agent_id,
+                    routing_hit.entity_ids,
+                    exc_info=True,
+                )
+                return False
+            if not all(visibility):
+                return False
+        return True
 
     async def finalize_action_replay_hit(
         self,
@@ -363,7 +381,7 @@ class CacheOrchestrator:
             return False, False
         if not await self._get_bool_setting_impl("cache.enabled", True):
             return False, False
-        if target_agent in (_CANCEL_INTERACTION_AGENT, "send-agent") or target_agent in _INTERNAL_ONLY_AGENTS:
+        if target_agent in (CANCEL_INTERACTION_AGENT, "send-agent") or target_agent in INTERNAL_ONLY_AGENTS:
             return False, False
 
         entity_ids: list[str] = []

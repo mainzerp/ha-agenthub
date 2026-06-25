@@ -403,5 +403,30 @@ class TestSequentialSendFiller:
 
 
 # ---------------------------------------------------------------------------
+# Safe prompt rendering with braces in values
+# ---------------------------------------------------------------------------
+
+
+class TestFillerSafePromptRendering:
+    @patch("app.agents.filler.SettingsRepository")
+    @patch("app.llm.client.complete", new_callable=AsyncMock, return_value="One moment.")
+    async def test_filler_tolerates_braces_in_personality(self, mock_complete, mock_settings):
+        mock_settings.get_value = AsyncMock(return_value="Personality with {braces}")
+        agent = FillerAgent()
+        task = AgentTask(
+            description="generate_filler:general-agent",
+            user_text="what is the weather",
+            context=TaskContext(language="en"),
+        )
+        result = await agent.handle_task(task)
+        assert result.speech == "One moment."
+
+        messages = mock_complete.call_args[0][1]
+        system_prompt = messages[0]["content"]
+        assert "Personality with {braces}" in system_prompt
+        assert "English" in system_prompt
+
+
+# ---------------------------------------------------------------------------
 # Language detection
 # ---------------------------------------------------------------------------

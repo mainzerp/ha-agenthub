@@ -8,7 +8,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_URL, CONF_API_KEY, Platform
 from homeassistant.core import HomeAssistant
 
-from .const import DOMAIN, INTEGRATION_TITLE
+from .const import CONF_NAME, DOMAIN, INTEGRATION_TITLE
 
 # Config entries created by the old ``agent_assist`` integration.
 _LEGACY_ENTRY_TITLES = frozenset({"Agent Assist"})
@@ -27,9 +27,9 @@ def _normalize_url(url: str) -> str:
 
 async def async_migrate_entry(hass: HomeAssistant, config_entry: ConfigEntry) -> bool:
     """Migrate old config entries to the current version."""
-    if config_entry.version > 2:
+    if config_entry.version > 3:
         logger.error(
-            "HA-AgentHub config entry version %d is newer than supported (max 2). "
+            "HA-AgentHub config entry version %d is newer than supported (max 3). "
             "Skipping migration.",
             config_entry.version,
         )
@@ -52,6 +52,30 @@ async def async_migrate_entry(hass: HomeAssistant, config_entry: ConfigEntry) ->
             old_unique_id,
             new_unique_id,
         )
+    if config_entry.version == 2:
+        # P3-6: URL/API key are the source of truth in entry.data. Move any
+        # values that were previously written to entry.options by older options
+        # flows back into entry.data and clear them from options.
+        options = dict(config_entry.options or {})
+        data = dict(config_entry.data or {})
+        migrated = False
+        for key in (CONF_URL, CONF_API_KEY, CONF_NAME):
+            if key in options:
+                data.setdefault(key, options.pop(key))
+                migrated = True
+        if migrated:
+            hass.config_entries.async_update_entry(
+                config_entry,
+                data=data,
+                options=options,
+            )
+        hass.config_entries.async_update_entry(
+            config_entry,
+            version=3,
+        )
+        logger.info(
+            "Migrated HA-AgentHub config entry from version 2 to 3 (URL/API key moved to entry.data)"
+        )
     return True
 
 
@@ -69,8 +93,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     entry.async_on_unload(entry.add_update_listener(_async_reload_entry_on_update))
 
-    url = entry.options.get(CONF_URL, entry.data.get(CONF_URL, ""))
-    api_key = entry.options.get(CONF_API_KEY, entry.data.get(CONF_API_KEY, ""))
+    # P3-6: URL and API key are the single source of truth in entry.data.
+    # Options-based URL/API key are migrated to data by async_migrate_entry.
+    url = entry.data.get(CONF_URL, "")
+    api_key = entry.data.get(CONF_API_KEY, "")
+    if not url:
+        # Fall back to options only for entries that have not been migrated yet.
+        url = entry.options.get(CONF_URL, "")
+        api_key = entry.options.get(CONF_API_KEY, "")
     if not url:
         logger.error("HA-AgentHub config entry missing required URL")
         return False

@@ -56,7 +56,14 @@ async def require_api_key(request: Request) -> str:
     if not auth_header or not auth_header.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Unauthorized")
     provided_key = auth_header[7:]
-    stored_key = await retrieve_secret(API_KEY_SECRET_NAME)
+    try:
+        stored_key = await retrieve_secret(API_KEY_SECRET_NAME)
+    except RuntimeError:
+        # Fernet key rotation or corruption makes the stored API key
+        # undecryptable. Treat this as an authentication failure rather
+        # than an internal server error so callers get a clean 401.
+        logger.warning("API key retrieval failed (possible Fernet key rotation); rejecting request")
+        raise HTTPException(status_code=401, detail="Unauthorized") from None
     if stored_key is None or not hmac.compare_digest(provided_key, stored_key):
         raise HTTPException(status_code=401, detail="Unauthorized")
     return provided_key

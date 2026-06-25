@@ -502,6 +502,8 @@ async def _evaluate_condition(
     ha_client: Any,
     entity_index: Any,
     entity_matcher: Any,
+    agent_id: str | None = None,
+    allowed_domains: frozenset[str] | None = None,
     preferred_area_id: str | None = None,
 ) -> tuple[bool, str | None, str | None, Exception | None]:
     """Evaluate a pre-action condition against the current HA state.
@@ -519,8 +521,8 @@ async def _evaluate_condition(
             entity_query,
             entity_index,
             entity_matcher,
-            agent_id=None,
-            allowed_domains=None,
+            agent_id=agent_id,
+            allowed_domains=allowed_domains,
             preferred_area_id=preferred_area_id,
             enable_strip_device_noun=True,
             enable_area_fallback=True,

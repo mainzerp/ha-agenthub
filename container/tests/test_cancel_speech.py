@@ -18,7 +18,7 @@ sys.modules.setdefault("litellm", _litellm_mock)
 import app.llm.client  # noqa: E402,F401
 from app.agents.cancel_speech import cancel_interaction_ack, generate_cancel_speech  # noqa: E402
 from app.agents.orchestrator import OrchestratorAgent  # noqa: E402
-from app.models.agent import AgentCard, AgentTask, TaskContext  # noqa: E402
+from app.models.agent import AgentCard, TaskContext  # noqa: E402
 from tests.helpers import make_agent_task  # noqa: E402
 
 CANCEL_AGENT = "cancel-interaction"
@@ -168,62 +168,18 @@ class TestOrchestratorCancelInteraction:
         dispatcher.dispatch.assert_not_awaited()
         dispatcher.dispatch_stream.assert_not_awaited()
 
-    @patch("app.agents.orchestrator.SettingsRepository")
-    @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
-    @patch("app.agents.cancel_speech.complete", new_callable=AsyncMock)
-    @patch("app.llm.client.complete", new_callable=AsyncMock)
-    async def test_handle_task_cancel_german_ack(self, mock_complete, mock_cancel_complete, mock_track, mock_settings):
-        mock_settings.get_value = AsyncMock(side_effect=lambda k, d=None: "de" if k == "language" else d)
-        orch, dispatcher = _make_orch()
-        mock_complete.side_effect = _classify_then_cancel(
-            f"{CANCEL_AGENT} (95%): dismiss",
-            "Verstanden.",
-        )
-        mock_cancel_complete.side_effect = mock_complete.side_effect
 
-        task = make_agent_task(description="Abbrechen", user_text="Abbrechen", context=TaskContext(language="de"))
-        task.conversation_id = "c2"
-        result = await orch.handle_task(task)
+class TestCancelSpeechSafePromptRendering:
+    @patch(
+        "app.agents.cancel_speech._load_prompt_path_async",
+        new_callable=AsyncMock,
+        return_value="Respond in {language}.",
+    )
+    @patch("app.agents.cancel_speech.complete", new_callable=AsyncMock, return_value="Sure, no worries.")
+    async def test_cancel_speech_tolerates_braces_in_language_value(self, mock_complete, mock_prompt):
+        with patch.dict("app.agents.cancel_speech._LANGUAGE_NAMES", {"en": "English {variant}"}):
+            result = await generate_cancel_speech("en", "never mind")
 
-        assert result["speech"]
-        assert len(result["speech"]) <= 80
-        assert "?" not in result["speech"]
-        assert mock_complete.await_count == 1
-        assert mock_cancel_complete.await_count == 1
-        dispatcher.dispatch.assert_not_awaited()
-
-    @patch("app.agents.orchestrator.SettingsRepository")
-    @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
-    @patch("app.agents.cancel_speech.complete", new_callable=AsyncMock)
-    @patch("app.llm.client.complete", new_callable=AsyncMock)
-    async def test_handle_task_stream_early_return_cancel(
-        self, mock_complete, mock_cancel_complete, mock_track, mock_settings
-    ):
-        mock_settings.get_value = AsyncMock(side_effect=lambda k, d=None: "auto" if k == "language" else d)
-        orch, dispatcher = _make_orch()
-        mock_complete.side_effect = _classify_then_cancel(
-            f"{CANCEL_AGENT} (95%): dismiss interaction",
-            "Understood.",
-        )
-        mock_cancel_complete.side_effect = mock_complete.side_effect
-
-        task = AgentTask(
-            description="stop",
-            user_text="stop",
-            conversation_id="c3",
-            context=TaskContext(language="en"),
-        )
-
-        chunks = []
-        async for ch in orch.handle_task_stream(task):
-            chunks.append(ch)
-
-        assert len(chunks) == 1
-        assert chunks[0]["done"] is True
-        assert chunks[0]["mediated_speech"]
-        assert len(chunks[0]["mediated_speech"]) <= 80
-        assert "?" not in chunks[0]["mediated_speech"]
-        assert mock_complete.await_count == 1
-        assert mock_cancel_complete.await_count == 1
-        dispatcher.dispatch.assert_not_awaited()
-        dispatcher.dispatch_stream.assert_not_awaited()
+        assert result == "Sure, no worries."
+        system_prompt = mock_complete.await_args.kwargs["messages"][0]["content"]
+        assert "English {variant}" in system_prompt

@@ -49,8 +49,6 @@ Track changes since `v1.41.2` here.
 - test(llm): add 6 unit tests for `_sanitize_tool_name` and 5 integration tests for `complete_with_tools` sanitization behavior.
 - fix(traces): serialize tool call arguments as JSON string in trace detail API to prevent `[object Object]` display in the dashboard UI.
 
-## Version History
-
 ### 1.40.3 (PATCH) -- Fix routing cache storage for actions without entity_id, semantic threshold coercion
 
 - fix(cache): `store_after_dispatch` no longer returns early for successful non-readonly actions without `entity_id` (timers, reminders, alarms). These now fall through to routing cache storage instead of producing no cache entry at all.

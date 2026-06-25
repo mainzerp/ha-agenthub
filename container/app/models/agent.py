@@ -16,6 +16,15 @@ BackgroundEventType = Literal[
     "voice_followup",
 ]
 
+# Canonical agent identifiers used across the orchestration pipeline.
+FALLBACK_AGENT = "general-agent"
+# cancel-interaction is a pipeline-level directive, not a real agent.
+# It signals that the user wants to abort the current voice/chat turn.
+CANCEL_INTERACTION_AGENT = "cancel-interaction"
+# Agents that are internal to the orchestrator pipeline and should not be
+# exposed as routable targets or stored in routing/action caches.
+INTERNAL_ONLY_AGENTS: frozenset[str] = frozenset({"orchestrator", "rewrite-agent", "filler-agent"})
+
 
 class BackgroundEvent(BaseModel):
     """Structured internal event carried by a background orchestrator turn."""

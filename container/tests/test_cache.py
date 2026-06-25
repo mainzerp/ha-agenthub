@@ -210,7 +210,6 @@ class TestCacheManager:
             result = await manager.try_replay_action(
                 query_text=entry.query_text,
                 language=entry.language,
-                resolve_entity=AsyncMock(return_value="light.kitchen"),
                 check_visibility=AsyncMock(return_value=True),
                 execute_cached_action=AsyncMock(return_value={"success": True, "entity_id": "light.kitchen"}),
             )
@@ -235,7 +234,6 @@ class TestCacheManager:
         result = await manager.try_replay_action(
             query_text=entry.query_text,
             language=entry.language,
-            resolve_entity=AsyncMock(return_value="light.kitchen"),
             check_visibility=AsyncMock(return_value=True),
             execute_cached_action=AsyncMock(return_value={"success": True, "entity_id": "light.kitchen"}),
         )
@@ -252,7 +250,6 @@ class TestCacheManager:
         result = await manager.try_replay_action(
             query_text=entry.query_text,
             language=entry.language,
-            resolve_entity=AsyncMock(return_value="light.kitchen"),
             check_visibility=AsyncMock(return_value=True),
             execute_cached_action=AsyncMock(return_value=None),
         )

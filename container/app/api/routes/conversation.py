@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
@@ -14,7 +15,7 @@ from fastapi.responses import StreamingResponse
 
 from app.a2a.protocol import JsonRpcRequest
 from app.analytics.tracer import SpanCollector
-from app.middleware.rate_limit import WsMessageRateLimiter, rate_limit_conversation
+from app.middleware.rate_limit import WsMessageRateLimiter, get_client_ip_from_headers, rate_limit_conversation
 from app.models.agent import AgentTask, TaskContext
 from app.models.conversation import ActionResult, ConversationRequest, ConversationResponse, StreamToken
 from app.security.auth import require_api_key, require_api_key_ws
@@ -29,27 +30,41 @@ _MAX_WS_MESSAGE_SIZE = 10_000
 
 # Per-IP WebSocket connection limit (Step 18)
 _MAX_WS_CONNECTIONS_PER_IP = 5
+# Safety cap on the number of distinct IPs tracked simultaneously
+_MAX_WS_TRACKED_IPS = 10_000
+
 _active_ws_connections: dict[str, int] = {}
+_active_ws_lock: asyncio.Lock | None = None
+_active_ws_lock_loop_id: int | None = None
+
+
+def _get_active_ws_lock() -> asyncio.Lock:
+    """Return the per-IP connection lock, (re)creating it for the running loop."""
+    global _active_ws_lock, _active_ws_lock_loop_id
+    loop = asyncio.get_running_loop()
+    if _active_ws_lock is None or _active_ws_lock_loop_id != id(loop):
+        _active_ws_lock = asyncio.Lock()
+        _active_ws_lock_loop_id = id(loop)
+    return _active_ws_lock
+
 
 # The dispatcher is set by main.py during startup
 _dispatcher = None
 
 
+def reset_active_ws_connections() -> None:
+    """Reset the per-IP WebSocket connection counter.
+
+    Called at application startup so a restarted process does not inherit
+    stale counts from a previous runtime.
+    """
+    _active_ws_connections.clear()
+
+
 def _get_ws_client_ip(websocket: WebSocket) -> str:
     """Return the client IP for a WebSocket, respecting X-Forwarded-For."""
     direct = websocket.client.host if websocket.client else "unknown"
-    forwarded = websocket.headers.get("x-forwarded-for")
-    if not forwarded:
-        return direct
-    # Simple rightmost-non-trusted logic: if there's a forwarded chain,
-    # use the leftmost IP as the client (common for single-proxy setups).
-    # For more robust handling this should align with _get_client_ip in
-    # rate_limit.py, but WebSocket lacks the full Request interface.
-    ips = [ip.strip() for ip in forwarded.split(",")]
-    for ip in ips:
-        if ip and ip != direct:
-            return ip
-    return direct
+    return get_client_ip_from_headers(websocket.headers, direct)
 
 
 def set_dispatcher(dispatcher) -> None:
@@ -225,15 +240,25 @@ async def ws_conversation(
     origin = websocket.headers.get("origin")
     allowed: set[str] = getattr(websocket.app.state, "allowed_ws_origins", set())
     if origin and (not allowed or origin not in allowed):
-        await websocket.close(code=1008, reason="Invalid origin")
+        if not allowed:
+            reason = "Setup incomplete: no WebSocket origins configured"
+            logger.warning("Rejected WebSocket connection: allowed origins list is empty (setup incomplete)")
+        else:
+            reason = f"Origin {origin} not allowed"
+            logger.warning("Rejected WebSocket connection from disallowed origin: %s", origin)
+        await websocket.close(code=1008, reason=reason)
         return
     # Enforce per-IP WebSocket connection limit (Step 18)
     client_ip = _get_ws_client_ip(websocket)
-    current_count = _active_ws_connections.get(client_ip, 0)
-    if current_count >= _MAX_WS_CONNECTIONS_PER_IP:
-        await websocket.close(code=1008, reason="Connection limit exceeded")
-        return
-    _active_ws_connections[client_ip] = current_count + 1
+    async with _get_active_ws_lock():
+        current_count = _active_ws_connections.get(client_ip, 0)
+        if current_count >= _MAX_WS_CONNECTIONS_PER_IP:
+            await websocket.close(code=1008, reason="Connection limit exceeded")
+            return
+        # Bound total tracked IPs to prevent unbounded memory growth.
+        if len(_active_ws_connections) >= _MAX_WS_TRACKED_IPS and client_ip not in _active_ws_connections:
+            _active_ws_connections.pop(next(iter(_active_ws_connections)), None)
+        _active_ws_connections[client_ip] = current_count + 1
     # FLOW-WS-TURN-1: ``/ws/conversation`` is a persistent socket
     # carrying many independent HA conversation turns. The
     # TracingMiddleware deliberately does NOT create a connection-
@@ -343,6 +368,13 @@ async def ws_conversation(
         logger.debug("WebSocket client disconnected")
     finally:
         # Decrement per-IP connection count (Step 18)
-        _active_ws_connections[client_ip] = max(0, _active_ws_connections.get(client_ip, 1) - 1)
-        if _active_ws_connections[client_ip] == 0:
-            _active_ws_connections.pop(client_ip, None)
+        async with _get_active_ws_lock():
+            current = _active_ws_connections.get(client_ip, 0)
+            if current > 0:
+                _active_ws_connections[client_ip] = current - 1
+            else:
+                # Counter was already zero or missing; never go negative.
+                _active_ws_connections[client_ip] = 0
+                logger.warning("WebSocket connection count for %s was already zero on disconnect", client_ip)
+            if _active_ws_connections[client_ip] == 0:
+                _active_ws_connections.pop(client_ip, None)

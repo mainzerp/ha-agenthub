@@ -270,6 +270,8 @@ class HARestClient:
             if not should_fallback:
                 raise
             original_exc = exc
+        except asyncio.CancelledError:
+            raise
         except Exception as exc:
             if not return_response:
                 raise
@@ -301,6 +303,8 @@ class HARestClient:
             resp = await self._client.get("/api/config")
             resp.raise_for_status()
             return resp.json()
+        except asyncio.CancelledError:
+            raise
         except Exception:
             logger.warning("Failed to fetch HA config", exc_info=True)
             return {}
@@ -323,6 +327,8 @@ class HARestClient:
             resp.raise_for_status()
             rendered = (resp.text or "").strip()
             return rendered or None
+        except asyncio.CancelledError:
+            raise
         except Exception:
             logger.debug("Template render failed for %r", template, exc_info=True)
             return None
@@ -406,6 +412,8 @@ class HARestClient:
                     name = row.get("name")
                     if aid and name:
                         result[aid] = name
+            except asyncio.CancelledError:
+                raise
             except Exception:
                 logger.debug("Failed to parse area_registry template output", exc_info=True)
         self._registry_cache_put("area_registry", result)
@@ -439,6 +447,8 @@ class HARestClient:
                         cleaned = [str(a) for a in aliases if isinstance(a, str) and a]
                         if cleaned:
                             result[eid] = cleaned
+            except asyncio.CancelledError:
+                raise
             except Exception:
                 logger.debug("Failed to parse entity_aliases template output", exc_info=True)
         self._registry_cache_put("entity_aliases", result)
@@ -472,6 +482,8 @@ class HARestClient:
                     name = row.get("name")
                     if eid and name:
                         result[eid] = str(name)
+            except asyncio.CancelledError:
+                raise
             except Exception:
                 logger.debug("Failed to parse device_names template output", exc_info=True)
         self._registry_cache_put("device_names", result)
@@ -503,6 +515,8 @@ class HARestClient:
                     aid = row.get("area")
                     if eid and aid:
                         result[eid] = str(aid)
+            except asyncio.CancelledError:
+                raise
             except Exception:
                 logger.debug("Failed to parse entity_areas template output", exc_info=True)
         self._registry_cache_put("entity_areas", result)
@@ -526,6 +540,8 @@ class HARestClient:
         if ws is not None and ws.is_connected():
             try:
                 result = await ws.get_hidden_entity_ids()
+            except asyncio.CancelledError:
+                raise
             except Exception:
                 logger.debug("WebSocket get_hidden_entity_ids failed", exc_info=True)
         else:
@@ -546,6 +562,8 @@ class HARestClient:
             return cached or None
         try:
             cfg = await self.get_config()
+        except asyncio.CancelledError:
+            raise
         except Exception:
             cfg = {}
         lang = cfg.get("language") if isinstance(cfg, dict) else None
@@ -630,6 +648,8 @@ class HARestClient:
         if observer is not None and observer.is_connected():
             try:
                 future = observer.register_state_waiter(entity_id, expected=expected)
+            except asyncio.CancelledError:
+                raise
             except Exception:
                 logger.debug(
                     "Failed to register WS state waiter for %s",
@@ -639,6 +659,10 @@ class HARestClient:
                 future = None
         try:
             yield result
+        except asyncio.CancelledError:
+            if future is not None and observer is not None:
+                observer.cancel_state_waiter(entity_id, future)
+            raise
         except Exception:
             if future is not None and observer is not None:
                 observer.cancel_state_waiter(entity_id, future)
@@ -687,6 +711,8 @@ class HARestClient:
         while True:
             try:
                 state_resp = await self.get_state(entity_id)
+            except asyncio.CancelledError:
+                raise
             except Exception:
                 logger.debug(
                     "get_state polling failed for %s",

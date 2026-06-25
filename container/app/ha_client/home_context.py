@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from datetime import UTC, datetime
 from typing import Any
 
 from pydantic import BaseModel
@@ -98,3 +99,30 @@ class HomeContextProvider:
 
 
 home_context_provider = HomeContextProvider()
+
+
+async def populate_task_context_home_context(context: Any, ha_client: Any) -> None:
+    """Populate timezone, location_name, and local_time on a TaskContext.
+
+    Reads from the cached HomeContext provider and formats ``local_time``
+    in the home timezone. Failures are logged at debug level and swallowed
+    so that a missing HA config does not block the request.
+    """
+    try:
+        from zoneinfo import ZoneInfo
+
+        home_ctx = await home_context_provider.get(ha_client)
+        context.timezone = home_ctx.timezone
+        context.location_name = home_ctx.location_name
+        try:
+            tz = ZoneInfo(home_ctx.timezone)
+            now = datetime.now(tz)
+            context.local_time = now.strftime("%Y-%m-%d %H:%M")
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            context.local_time = datetime.now(UTC).strftime("%Y-%m-%d %H:%M")
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        logger.debug("Failed to populate home context", exc_info=True)

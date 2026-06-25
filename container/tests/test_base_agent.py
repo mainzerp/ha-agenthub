@@ -328,5 +328,43 @@ class TestAgentConfigReasoningEffort:
 
 
 # ---------------------------------------------------------------------------
+# Safe prompt template rendering
+# ---------------------------------------------------------------------------
+
+
+class TestRenderPromptTemplate:
+    """Task 3.5 — _render_prompt_template must tolerate braces in values."""
+
+    def test_replaces_known_placeholders(self):
+        from app.agents.base import _render_prompt_template
+
+        assert _render_prompt_template("Hello {name}", name="world") == "Hello world"
+
+    def test_leaves_unknown_braces_unchanged(self):
+        from app.agents.base import _render_prompt_template
+
+        assert _render_prompt_template("{known} and {unknown}", known="x") == "x and {unknown}"
+
+    def test_braces_in_values_are_not_interpreted(self):
+        from app.agents.base import _render_prompt_template
+
+        result = _render_prompt_template(
+            "Respond in {language}. Rules: {rules}",
+            language="en",
+            rules="Use {json} syntax",
+        )
+        assert result == "Respond in en. Rules: Use {json} syntax"
+
+    def test_no_key_error_for_brace_only_values(self):
+        from app.agents.base import _render_prompt_template
+
+        result = _render_prompt_template(
+            "Value is {value}",
+            value="{not_a_placeholder}",
+        )
+        assert result == "Value is {not_a_placeholder}"
+
+
+# ---------------------------------------------------------------------------
 # Climate Executor
 # ---------------------------------------------------------------------------

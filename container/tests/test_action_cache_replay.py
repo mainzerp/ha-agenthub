@@ -77,7 +77,6 @@ async def test_exact_text_hit_replays_without_classify():
         result = await manager.try_replay_action(
             query_text=entry.query_text,
             language=entry.language,
-            resolve_entity=AsyncMock(return_value=entry.cached_action.entity_id),
             check_visibility=AsyncMock(return_value=True),
             execute_cached_action=execute_cached_action,
         )
@@ -100,7 +99,6 @@ async def test_no_exact_match_no_replay():
     result = await manager.try_replay_action(
         query_text="switch on the kitchen lamp",
         language="en",
-        resolve_entity=AsyncMock(),
         check_visibility=AsyncMock(),
         execute_cached_action=execute_cached_action,
     )
@@ -119,7 +117,6 @@ async def test_visibility_recheck_failure_invalidates_row():
     result = await manager.try_replay_action(
         query_text=entry.query_text,
         language=entry.language,
-        resolve_entity=AsyncMock(return_value=entry.cached_action.entity_id),
         check_visibility=AsyncMock(return_value=False),
         execute_cached_action=AsyncMock(return_value={"success": True}),
     )
@@ -138,7 +135,6 @@ async def test_transient_replay_miss_does_not_invalidate():
     result = await manager.try_replay_action(
         query_text=entry.query_text,
         language=entry.language,
-        resolve_entity=AsyncMock(return_value=entry.cached_action.entity_id),
         check_visibility=AsyncMock(return_value=True),
         execute_cached_action=AsyncMock(return_value=None),
     )
@@ -213,3 +209,27 @@ async def test_full_hit_rewrite_receives_user_text():
     assert call_args[0][0] is action_hit
     assert call_args[1]["user_text"] == "Keller einschalten"
     assert result["speech"] == "German speech"
+
+
+@pytest.mark.asyncio
+async def test_multi_target_visibility_recheck_invalidates_when_secondary_entity_revoked():
+    manager = _make_manager()
+    entry = make_action_cache_entry(
+        query_text="turn on kitchen and living room lights",
+        entity_ids=["light.kitchen", "light.living_room"],
+    )
+    manager._action_cache.lookup_with_id = MagicMock(return_value=("entry-1", entry, 1.0))
+    manager._action_cache.invalidate_by_entry_id = MagicMock()
+
+    def _check_visibility(agent_id: str, entity_id: str) -> bool:
+        return entity_id != "light.living_room"
+
+    result = await manager.try_replay_action(
+        query_text=entry.query_text,
+        language=entry.language,
+        check_visibility=AsyncMock(side_effect=_check_visibility),
+        execute_cached_action=AsyncMock(return_value={"success": True}),
+    )
+
+    assert result is None
+    manager._action_cache.invalidate_by_entry_id.assert_called_once()

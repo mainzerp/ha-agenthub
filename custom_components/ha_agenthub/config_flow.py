@@ -24,9 +24,11 @@ from homeassistant.helpers.selector import (
 )
 
 from .const import (
-    DOMAIN,
     CONF_NAME,
+    CONF_WS_RECEIVE_TIMEOUT,
     DEFAULT_CONTAINER_URL,
+    DEFAULT_WS_RECEIVE_TIMEOUT,
+    DOMAIN,
     HEALTH_PATH,
     INTEGRATION_TITLE,
 )
@@ -72,6 +74,12 @@ def _build_options_schema(current: dict[str, Any]) -> vol.Schema:
                 CONF_URL, default=current.get(CONF_URL, DEFAULT_CONTAINER_URL)
             ): TextSelector(TextSelectorConfig(type=TextSelectorType.URL)),
             vol.Optional(CONF_API_KEY, default=""): _password_selector(),
+            vol.Optional(
+                CONF_WS_RECEIVE_TIMEOUT,
+                default=current.get(
+                    CONF_WS_RECEIVE_TIMEOUT, DEFAULT_WS_RECEIVE_TIMEOUT
+                ),
+            ): TextSelector(),
         }
     )
 
@@ -109,7 +117,7 @@ async def _validate_connection(url: str, api_key: str) -> str | None:
 class HaAgentHubConfigFlow(ConfigFlow, domain=DOMAIN):
     """Config flow for HA-AgentHub."""
 
-    VERSION = 2
+    VERSION = 3
 
     @staticmethod
     def async_get_options_flow(config_entry: ConfigEntry) -> HaAgentHubOptionsFlow:
@@ -238,11 +246,22 @@ class HaAgentHubOptionsFlow(OptionsFlow):
                     self.hass.config_entries.async_update_entry(
                         self._entry,
                         title=name,
-                        data=self._entry.data,
-                        options={
+                        data={
+                            **self._entry.data,
                             CONF_NAME: name,
                             CONF_URL: url,
                             CONF_API_KEY: api_key,
+                        },
+                        options={
+                            CONF_WS_RECEIVE_TIMEOUT: float(
+                                user_input.get(
+                                    CONF_WS_RECEIVE_TIMEOUT,
+                                    current.get(
+                                        CONF_WS_RECEIVE_TIMEOUT,
+                                        DEFAULT_WS_RECEIVE_TIMEOUT,
+                                    ),
+                                )
+                            ),
                         },
                     )
                     return self.async_create_entry(data={})

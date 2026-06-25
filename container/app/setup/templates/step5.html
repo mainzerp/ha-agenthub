@@ -20,6 +20,9 @@
         </tbody>
     </table>
 </div>
+{% if error %}
+<div class="alert alert-error mb-md">{{ error }}</div>
+{% endif %}
 <form method="post" action="/setup/step/5">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <button type="submit" class="btn btn-primary">Complete Setup</button>

@@ -13,7 +13,6 @@ is not in scope; the container ships a single worker today.
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import json
 import logging
 from collections.abc import AsyncGenerator
@@ -56,9 +55,14 @@ async def _publish(topic: str, payload: dict) -> None:
     dead = []
     message = json.dumps(payload)
     for q in subscribers:
-        if q.full():
-            with contextlib.suppress(asyncio.QueueEmpty):
-                q.get_nowait()  # drop oldest
+        # Drop oldest events until there is room (or the queue is empty).
+        # The ``full()`` snapshot is racy, so ``put_nowait`` below still
+        # handles ``QueueFull`` as the failure path.
+        while q.full():
+            try:
+                q.get_nowait()
+            except asyncio.QueueEmpty:
+                break
         try:
             q.put_nowait(message)
         except asyncio.QueueFull:

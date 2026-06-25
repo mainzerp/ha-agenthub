@@ -9,6 +9,7 @@ import logging
 from typing import Any
 
 from app.entity.deterministic_resolver import resolve_entity_deterministic_first
+from app.entity.visibility import filter_visible_results
 
 logger = logging.getLogger(__name__)
 
@@ -86,6 +87,8 @@ async def _resolve_todo_entity(
                 entries = await entity_index.list_entries_async(domains=_TODO_DOMAINS)
             elif hasattr(entity_index, "list_entries"):
                 entries = entity_index.list_entries(domains=_TODO_DOMAINS)
+        if agent_id and entries:
+            entries = await filter_visible_results(agent_id, entries, entity_index)
         if entries:
             first = entries[0]
             return str(getattr(first, "entity_id", "")), str(getattr(first, "friendly_name", "")), None
@@ -185,6 +188,9 @@ async def _list_lists(entity_index: Any, entity_matcher: Any, agent_id: str | No
             entries = await entity_index.list_entries_async(domains=_TODO_DOMAINS)
         elif hasattr(entity_index, "list_entries"):
             entries = entity_index.list_entries(domains=_TODO_DOMAINS)
+
+    if agent_id and entries:
+        entries = await filter_visible_results(agent_id, entries, entity_index)
 
     if not entries:
         return {
