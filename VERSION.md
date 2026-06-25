@@ -1,12 +1,19 @@
 # Version
 
-**Current Version:** 1.42.0
+**Current Version:** 1.42.1
 
 ## Recent Changes
 
-Track changes since `v1.42.0` here.
+Track changes since `v1.42.1` here.
 
 ## Version History
+
+### 1.42.1 (PATCH) -- Security dependency updates
+
+- chore(deps): bump cryptography 48.0.0 -> 48.0.1 (GHSA-537c-gmf6-5ccf)
+- chore(deps): bump python-multipart 0.0.29 -> 0.0.31 (CVE-2026-53539, CVE-2026-53540)
+- chore(deps): bump pydantic-settings 2.14.1 -> 2.14.2 (GHSA-4xgf-cpjx-pc3j)
+- chore(ci): add CVE-2026-45829 to pip-audit ignore list (chromadb 1.5.9, no upstream fix yet)
 
 ### 1.42.0 (MINOR) -- Architectural audit: visibility, security, bridge reliability, and quality
 
@@ -41,8 +48,6 @@ Track changes since `v1.42.0` here.
 - chore(deps-dev): update pip-audit requirement from >=2.10.0 to >=2.10.1 in /container (#49)
 - chore(deps-dev): update tzdata requirement from >=2024.1 to >=2026.2 in /container (#48)
 - chore(deps-dev): bump bandit from 1.7.9 to 1.9.4 in /container (#47)
-
-## Version History
 
 ### 1.41.1 (PATCH) -- Dependency updates and test infrastructure expansion
 
