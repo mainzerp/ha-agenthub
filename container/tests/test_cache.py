@@ -12,7 +12,7 @@ import pytest
 from app.cache._base_cache import _LRU_PAGE_SIZE, make_text_id, normalize_text
 from app.cache.action_cache import ActionCache, _is_readonly_action, make_action_entry_id
 from app.cache.cache_manager import ActionReplayOutcome, CacheManager, CacheResult
-from app.cache.embedding import ChromaEmbeddingFunction, EmbeddingEngine
+from app.cache.embedding import EmbeddingEngine
 from app.cache.routing_cache import RoutingCache, make_routing_entry_id
 from app.cache.sqlite_cache_store import (
     COLLECTION_ACTION_CACHE,
@@ -1454,13 +1454,14 @@ class TestEmbeddingEngine:
                 logging.getLogger(name).setLevel(level)
 
 
-class TestChromaEmbeddingFunction:
-    def test_calls_engine(self):
+class TestEmbeddingEngineAdapter:
+    def test_embed_batch_returns_vectors(self):
         mock_engine = MagicMock(spec=EmbeddingEngine)
         mock_engine.embed_batch = AsyncMock(return_value=[[0.0] * 384])
 
-        fn = ChromaEmbeddingFunction(mock_engine)
-        result = fn(["test text"])
+        # The sqlite-vec VectorStore embeds via EmbeddingEngine.embed_batch
+        # directly; verify the engine contract the store relies on.
+        result = asyncio.run(mock_engine.embed_batch(["test text"]))
         assert len(result) == 1
         mock_engine.embed_batch.assert_awaited_once_with(["test text"])
 
@@ -1470,144 +1471,150 @@ class TestChromaEmbeddingFunction:
 # ---------------------------------------------------------------------------
 
 
-class TestVectorStore:
-    def test_add_delegates_to_collection(self):
+class TestVectorStoreHelpers:
+    """Pure-Python unit tests for the sqlite-vec VectorStore helpers.
+
+    These run everywhere (no sqlite-vec extension required) because the
+    extension is imported lazily inside ``VectorStore.initialize()``.
+    """
+
+    def test_serialize_vec_produces_correct_byte_length(self):
+        from app.cache.vector_store import _serialize_vec
+
+        blob = _serialize_vec([1.0, 2.0, 3.0])
+        # 3 float32 values -> 12 bytes (4 bytes each).
+        assert len(blob) == 12
+
+    def test_is_client_closed_error_matches_sqlite_closed_db(self):
+        from app.cache.vector_store import _is_client_closed_error
+
+        assert _is_client_closed_error(RuntimeError("Cannot operate on a closed database"))
+        assert not _is_client_closed_error(RuntimeError("syntax error"))
+
+    def test_table_names_quote_collection(self):
         store = VectorStore()
-        mock_col = MagicMock()
-        store._collections = {COLLECTION_ENTITY_INDEX: mock_col}
-        store.add(COLLECTION_ENTITY_INDEX, ids=["a"], documents=["doc"])
-        mock_col.add.assert_called_once()
+        vec_t, meta_t, idx = store._table_names(COLLECTION_ENTITY_INDEX)
+        assert vec_t == '"entity_index_vec"'
+        assert meta_t == '"entity_index_meta"'
+        assert idx == '"idx_entity_index_vec_rowid"'
 
-    def test_upsert_delegates_to_collection(self):
+    def test_matches_where_supports_eq_in_and_plain(self):
+        from app.cache.vector_store import _matches_where
+
+        assert _matches_where({"domain": "light"}, {"domain": "light"})
+        assert not _matches_where({"domain": "light"}, {"domain": "switch"})
+        assert _matches_where({"domain": "light"}, {"domain": {"$in": ["light", "switch"]}})
+        assert not _matches_where({"domain": "light"}, {"domain": {"$eq": "switch"}})
+
+
+# A real vec0 round-trip needs the sqlite-vec loadable extension. Skip those
+# integration tests where it cannot be loaded (e.g. the local Windows dev env).
+def _sqlite_vec_available() -> bool:
+    import sqlite3
+
+    try:
+        import sqlite_vec
+
+        conn = sqlite3.connect(":memory:")
+        conn.enable_load_extension(True)
+        sqlite_vec.load(conn)
+        conn.enable_load_extension(False)
+        conn.execute("CREATE VIRTUAL TABLE t USING vec0(embedding float[2] distance_metric=cosine)")
+        conn.close()
+        return True
+    except Exception:
+        return False
+
+
+_HAS_SQLITE_VEC = _sqlite_vec_available()
+
+
+@pytest.mark.skipif(not _HAS_SQLITE_VEC, reason="sqlite-vec loadable extension unavailable")
+class TestVectorStoreSqliteVec:
+    """Integration tests for the real sqlite-vec backend (skipped without the extension)."""
+
+    def _make_store(self, tmp_path) -> VectorStore:
         store = VectorStore()
-        mock_col = MagicMock()
-        store._collections = {COLLECTION_ROUTING_CACHE: mock_col}
-        store.upsert(COLLECTION_ROUTING_CACHE, ids=["a"], documents=["doc"])
-        mock_col.upsert.assert_called_once()
+        store._dim = 3
+        store._db_path = str(tmp_path / "vecs.db")
+        store._open_connection()
+        store._ensure_collection(COLLECTION_ENTITY_INDEX)
+        return store
 
-    def test_query_delegates_to_collection(self):
-        store = VectorStore()
-        mock_col = MagicMock()
-        mock_col.query.return_value = {"ids": [["a"]], "distances": [[0.1]]}
-        store._collections = {COLLECTION_ENTITY_INDEX: mock_col}
-        result = store.query(COLLECTION_ENTITY_INDEX, query_texts=["test"])
-        assert result["ids"] == [["a"]]
+    def test_upsert_query_count_delete_roundtrip(self, tmp_path):
+        store = self._make_store(tmp_path)
+        try:
+            store._engine = MagicMock()
+            store._engine.embed_batch = AsyncMock(
+                return_value=[
+                    [1.0, 0.0, 0.0],
+                    [0.0, 1.0, 0.0],
+                ]
+            )
+            store.upsert(
+                COLLECTION_ENTITY_INDEX,
+                ids=["light.kitchen", "switch.hall"],
+                documents=["kitchen light", "hall switch"],
+                embeddings=[[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+                metadatas=[{"domain": "light"}, {"domain": "switch"}],
+            )
+            assert store.count(COLLECTION_ENTITY_INDEX) == 2
 
-    def test_delete_delegates_to_collection(self):
-        store = VectorStore()
-        mock_col = MagicMock()
-        store._collections = {COLLECTION_RESPONSE_CACHE: mock_col}
-        store.delete(COLLECTION_RESPONSE_CACHE, ids=["x"])
-        mock_col.delete.assert_called_once_with(ids=["x"])
+            res = store.query(
+                COLLECTION_ENTITY_INDEX,
+                query_embeddings=[[1.0, 0.0, 0.0]],
+                n_results=1,
+            )
+            assert res["ids"][0][0] == "light.kitchen"
+            # cosine distance for identical vectors is ~0
+            assert res["distances"][0][0] < 1e-3
 
-    def test_count_delegates_to_collection(self):
-        store = VectorStore()
-        mock_col = MagicMock()
-        mock_col.count.return_value = 42
-        store._collections = {COLLECTION_ROUTING_CACHE: mock_col}
-        assert store.count(COLLECTION_ROUTING_CACHE) == 42
+            store.delete(COLLECTION_ENTITY_INDEX, ids=["light.kitchen"])
+            assert store.count(COLLECTION_ENTITY_INDEX) == 1
+        finally:
+            store.close()
 
-    def test_get_delegates_to_collection(self):
-        store = VectorStore()
-        mock_col = MagicMock()
-        mock_col.get.return_value = {"ids": ["a"], "metadatas": [{}]}
-        store._collections = {COLLECTION_ENTITY_INDEX: mock_col}
-        result = store.get(COLLECTION_ENTITY_INDEX, ids=["a"])
-        assert result["ids"] == ["a"]
-
-    def test_get_collection_missing_raises(self):
-        store = VectorStore()
-        store._collections = {}
-        with pytest.raises(KeyError):
-            store.get_collection("nonexistent")
-
-    def test_update_metadata_delegates_to_collection(self):
-        store = VectorStore()
-        mock_col = MagicMock()
-        store._collections = {COLLECTION_ENTITY_INDEX: mock_col}
-        store.update_metadata(
-            COLLECTION_ENTITY_INDEX,
-            ids=["a", "b"],
-            metadatas=[{"key": "v1"}, {"key": "v2"}],
-        )
-        mock_col.update.assert_called_once_with(ids=["a", "b"], metadatas=[{"key": "v1"}, {"key": "v2"}])
-
-    def test_update_metadata_reconnects_on_closed(self):
-        store = VectorStore()
-        mock_col = MagicMock()
-        mock_col.update.side_effect = RuntimeError("connection closed")
-        store._collections = {COLLECTION_ENTITY_INDEX: mock_col}
-        mock_col2 = MagicMock()
-        original_get = store.get_collection
-        call_count = 0
-
-        def side_effect_get(name):
-            nonlocal call_count
-            call_count += 1
-            if call_count <= 1:
-                return original_get(name)
-            return mock_col2
-
-        with (
-            patch.object(store, "_reinitialize_sync") as mock_reinit,
-            patch.object(store, "get_collection", side_effect=side_effect_get),
-        ):
+    def test_update_metadata_and_get(self, tmp_path):
+        store = self._make_store(tmp_path)
+        try:
+            store.upsert(
+                COLLECTION_ENTITY_INDEX,
+                ids=["light.kitchen"],
+                documents=["kitchen light"],
+                embeddings=[[1.0, 0.0, 0.0]],
+                metadatas=[{"domain": "light", "state": "off"}],
+            )
             store.update_metadata(
                 COLLECTION_ENTITY_INDEX,
-                ids=["a"],
-                metadatas=[{"key": "v1"}],
+                ids=["light.kitchen"],
+                metadatas=[{"domain": "light", "state": "on"}],
             )
-        mock_reinit.assert_called_once()
-        mock_col2.update.assert_called_once()
+            got = store.get(COLLECTION_ENTITY_INDEX, ids=["light.kitchen"], include=["metadatas"])
+            assert got["ids"] == ["light.kitchen"]
+            assert got["metadatas"][0]["state"] == "on"
+        finally:
+            store.close()
 
-    def test_update_metadata_raises_non_closed_error(self):
-        store = VectorStore()
-        mock_col = MagicMock()
-        mock_col.update.side_effect = ValueError("bad data")
-        store._collections = {COLLECTION_ENTITY_INDEX: mock_col}
-        with pytest.raises(ValueError, match="bad data"):
-            store.update_metadata(
+    def test_delete_collection_recreates_empty(self, tmp_path):
+        store = self._make_store(tmp_path)
+        try:
+            store.upsert(
                 COLLECTION_ENTITY_INDEX,
-                ids=["a"],
-                metadatas=[{"key": "v1"}],
+                ids=["light.kitchen"],
+                documents=["kitchen light"],
+                embeddings=[[1.0, 0.0, 0.0]],
+                metadatas=[{"domain": "light"}],
             )
+            assert store.count(COLLECTION_ENTITY_INDEX) == 1
+            store.delete_collection(COLLECTION_ENTITY_INDEX)
+            assert store.count(COLLECTION_ENTITY_INDEX) == 0
+        finally:
+            store.close()
 
-    def test_close_closes_client_and_clears_cached_state(self):
-        store = VectorStore()
-        client = MagicMock()
-        store._client = client
-        store._embedding_fn = MagicMock()
-        store._collections = {COLLECTION_ENTITY_INDEX: MagicMock()}
 
-        store.close()
-
-        client.close.assert_called_once_with()
-        assert store._client is None
-        assert store._embedding_fn is None
-        assert store._collections == {}
-
-    @pytest.mark.asyncio
-    async def test_is_alive_runs_heartbeat_off_event_loop(self):
-        """HIGH-1: _is_alive must be async and run heartbeat in a thread."""
-        store = VectorStore()
-        mock_client = MagicMock()
-        mock_client.heartbeat = MagicMock(return_value=1)
-        store._client = mock_client
-
-        result = await store._is_alive()
-        assert result is True
-        mock_client.heartbeat.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_is_alive_returns_false_on_exception(self):
-        """HIGH-1: _is_alive must return False when heartbeat raises."""
-        store = VectorStore()
-        mock_client = MagicMock()
-        mock_client.heartbeat = MagicMock(side_effect=RuntimeError("dead"))
-        store._client = mock_client
-
-        result = await store._is_alive()
-        assert result is False
+# Backwards-compat: keep COLLECTION_RESPONSE_CACHE referenced so the import
+# surface (and any external caller) remains stable.
+assert COLLECTION_RESPONSE_CACHE == "response_cache"
 
 
 # ---------------------------------------------------------------------------

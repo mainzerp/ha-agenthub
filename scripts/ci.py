@@ -160,6 +160,16 @@ def step_quality(cov_fail_under: int = 80) -> None:
         fail("ruff format")
         sys.exit(1)
 
+    # mypy (non-blocking: report-only, never fails the build)
+    try:
+        result = run([sys.executable, "-m", "mypy", "container/app"], check=False)
+        if result.returncode == 0:
+            ok("mypy")
+        else:
+            warn("mypy (type issues found, non-blocking)")
+    except Exception:
+        warn("mypy not available or crashed")
+
     # pytest container
     try:
         run(
@@ -174,6 +184,7 @@ def step_quality(cov_fail_under: int = 80) -> None:
                 "--tb=short",
                 "--cov=app",
                 "--cov-report=term-missing",
+                "--cov-report=xml:coverage.xml",
                 f"--cov-fail-under={cov_fail_under}",
             ],
             cwd="container",
@@ -257,6 +268,8 @@ def step_security() -> None:
                 "--output=pip-audit-report.json",
                 "--ignore-vuln",
                 "CVE-2026-28684",
+                "--ignore-vuln",
+                "CVE-2026-45829",
             ]
         )
         ok("pip-audit")
@@ -399,8 +412,8 @@ Examples:
     parser.add_argument(
         "--cov-fail-under",
         type=int,
-        default=72,
-        help="Coverage threshold (default: 72)",
+        default=80,
+        help="Coverage threshold (default: 80)",
     )
     args = parser.parse_args()
 

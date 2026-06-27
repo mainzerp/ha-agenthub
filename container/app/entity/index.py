@@ -1,4 +1,4 @@
-"""Pre-embedded entity index using ChromaDB."""
+"""Pre-embedded entity index backed by the sqlite-vec VectorStore."""
 
 from __future__ import annotations
 
@@ -16,11 +16,11 @@ logger = logging.getLogger(__name__)
 BATCH_SIZE = 500
 
 # 0.23.0: bump when EntityIndexEntry / embedding_text shape changes so
-# stale ChromaDB collections (built before the new fields existed) are
+# stale vector collections (built before the new fields existed) are
 # fully rebuilt on startup. Persisted under setting key
 # ``entity_index.schema_version``.
 #
-# v3: adds ``content_hash`` to Chroma metadata so the WebSocket push
+# v3: adds ``content_hash`` to vector metadata so the WebSocket push
 # path can short-circuit redundant re-embeddings when only the runtime
 # state of an entity changes (its identity-bearing fields are
 # unchanged). Existing v2 collections are dropped and rebuilt on first
@@ -35,7 +35,7 @@ INDEX_SCHEMA_VERSION = 5
 
 
 class EntityIndex:
-    """Pre-embedded entity index backed by ChromaDB."""
+    """Pre-embedded entity index backed by the sqlite-vec VectorStore."""
 
     def __init__(self, vector_store: VectorStore) -> None:
         self._store = vector_store
@@ -60,7 +60,7 @@ class EntityIndex:
 
     @staticmethod
     def _build_metadata(entry: EntityIndexEntry) -> dict:
-        """Build ChromaDB metadata dict from an EntityIndexEntry."""
+        """Build vector metadata dict from an EntityIndexEntry."""
         import json as _json
 
         return {
@@ -80,7 +80,7 @@ class EntityIndex:
 
     @staticmethod
     def _stored_hash(meta: dict | None) -> str | None:
-        """Extract the stored ``content_hash`` from Chroma metadata, if any."""
+        """Extract the stored ``content_hash`` from vector metadata, if any."""
         if not meta:
             return None
         value = meta.get("content_hash")
@@ -88,7 +88,7 @@ class EntityIndex:
 
     @staticmethod
     def _entry_from_metadata(entity_id: str, meta: dict) -> EntityIndexEntry:
-        """Build an EntityIndexEntry from stored Chroma metadata."""
+        """Build an EntityIndexEntry from stored vector metadata."""
         import json as _json
 
         aliases_raw = meta.get("aliases", "") or ""
@@ -209,7 +209,7 @@ class EntityIndex:
             ids = current.get("ids") or []
             metas = current.get("metadatas") or []
             if ids and metas and self._stored_hash(metas[0]) == entry.content_hash:
-                # Hash matches: skip ChromaDB upsert, but still update primary
+                # Hash matches: skip the vector upsert, but still update primary
                 # store because runtime state may have changed even though
                 # content_hash (identity fields) hasn't.
                 with self._primary_lock:
@@ -293,7 +293,7 @@ class EntityIndex:
             # Build map of incoming entities
             ha_map: dict[str, EntityIndexEntry] = {e.entity_id: e for e in entities}
 
-            # Fetch all current entries from ChromaDB
+            # Fetch all current entries from the vector store
             current_data = self._store.get(
                 COLLECTION_ENTITY_INDEX,
                 include=["documents", "metadatas"],
@@ -303,9 +303,9 @@ class EntityIndex:
             current_metas = current_data.get("metadatas", [])
 
             # Build lookup: entity_id -> (document, metadata)
-            chroma_map: dict[str, tuple[str, dict]] = {}
+            stored_map: dict[str, tuple[str, dict]] = {}
             for i, eid in enumerate(current_ids):
-                chroma_map[eid] = (current_docs[i], current_metas[i])
+                stored_map[eid] = (current_docs[i], current_metas[i])
 
             to_upsert: list[EntityIndexEntry] = []
             added = 0
@@ -313,8 +313,8 @@ class EntityIndex:
             unchanged = 0
 
             for entity_id, entry in ha_map.items():
-                if entity_id in chroma_map:
-                    old_doc, old_meta = chroma_map[entity_id]
+                if entity_id in stored_map:
+                    old_doc, old_meta = stored_map[entity_id]
                     new_doc = entry.embedding_text
                     # Use content_hash (excludes volatile state) instead of full
                     # metadata comparison to avoid re-embedding on every restart.
@@ -327,7 +327,7 @@ class EntityIndex:
                     to_upsert.append(entry)
                     added += 1
 
-            # Find entities to remove (in ChromaDB but not in HA)
+            # Find entities to remove (in the index but not in HA)
             to_remove = [eid for eid in current_ids if eid not in ha_map]
             removed = len(to_remove)
 
@@ -423,7 +423,7 @@ class EntityIndex:
             seen[e.entity_id] = e
         deduped = list(seen.values())
 
-        # Fetch current docs/metadata from ChromaDB to diff
+        # Fetch current docs/metadata from the vector store to diff
         all_ids = [e.entity_id for e in deduped]
         try:
             current = self._store.get(
@@ -535,12 +535,3 @@ class EntityIndex:
         """Async wrapper -- offloads list_entries() to thread pool."""
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, partial(self.list_entries, domains=domains))
-
-    def warmup(self) -> None:
-        """Force-load the HNSW index into memory by issuing a dummy query."""
-        self.search("warmup", n_results=1)
-
-    async def warmup_async(self) -> None:
-        """Async wrapper -- offloads warmup() to thread pool."""
-        loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(None, self.warmup)

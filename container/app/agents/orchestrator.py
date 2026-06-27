@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from app.a2a._request import build_stream_request
 from app.a2a.protocol import JsonRpcRequest
 from app.agents.agent_registry import CachedAgentRegistry
 from app.agents.base import BaseAgent
@@ -21,7 +22,9 @@ from app.agents.classification_engine import ClassificationEngine, _RecoverableC
 from app.agents.conversation_manager import ConversationManager
 from app.agents.decorator import agent
 from app.agents.dispatch_manager import DispatchManager
+from app.agents.filler_coordinator import FillerCoordinator
 from app.agents.language_detect import detect_user_language
+from app.agents.mediation import MediationService
 from app.agents.sanitize import strip_markdown, strip_parenthetical_asides
 from app.agents.task_pipeline import PipelineDirector
 from app.analytics.collector import track_request
@@ -216,6 +219,37 @@ class OrchestratorAgent(BaseAgent):
             create_trace=self._create_trace,
             finalize_single_agent_response=self._finalize_single_agent_response,
         )
+
+    @property
+    def _mediation(self) -> MediationService:
+        """Lazily-created MediationService.
+
+        Laziness (rather than eager construction in ``__init__``) preserves the
+        ``OrchestratorAgent.__new__(...)`` construction pattern used by some unit
+        tests: those build a bare instance and set only the ``_mediation_*``
+        attributes, then call ``_mediate_response``. An eager ``__init__``
+        assignment would be absent in that case and raise ``AttributeError``.
+        The service holds no own state, so creating it on first access is free.
+        """
+        cached = self.__dict__.get("_mediation_service")
+        if cached is None:
+            cached = MediationService(self)
+            self.__dict__["_mediation_service"] = cached
+        return cached
+
+    @property
+    def _filler_coord(self) -> FillerCoordinator:
+        """Lazily-created FillerCoordinator (see :attr:`_mediation`)."""
+        cached = self.__dict__.get("_filler_coord_service")
+        if cached is None:
+            cached = FillerCoordinator(
+                settings_repo=SettingsRepository,
+                agent_registry=self._agent_registry,
+                dispatcher=self._dispatcher,
+                dispatch_manager=self._dispatch_manager,
+            )
+            self.__dict__["_filler_coord_service"] = cached
+        return cached
 
     def apply_pipeline_strategies(self, strategies: dict[str, Any]) -> None:
         """Apply strategy overrides from PluginContext to PipelineDirector.
@@ -574,12 +608,6 @@ class OrchestratorAgent(BaseAgent):
             exec_cached_action=self._execute_cached_action,
         )
 
-    @staticmethod
-    def _build_synthetic_classifications(
-        routing: RoutingSkipOutcome,
-    ) -> list[tuple[str, str, float | None, list[str]]]:
-        return CacheOrchestrator.build_synthetic_classifications(routing)
-
     async def _cached_action_is_still_visible(self, agent_id: str, entity_id: str) -> bool:
         return await self._cache_orchestrator.cached_action_is_still_visible(agent_id, entity_id)
 
@@ -599,10 +627,6 @@ class OrchestratorAgent(BaseAgent):
             span_collector,
             task=task,
         )
-
-    @staticmethod
-    def _is_readonly_action_result(action_executed) -> bool:
-        return CacheOrchestrator._is_readonly_action_result(action_executed)
 
     async def _store_after_dispatch(
         self,
@@ -634,14 +658,6 @@ class OrchestratorAgent(BaseAgent):
             merged_multi_agent=merged_multi_agent,
             used_origin_context=used_origin_context,
         )
-
-    @staticmethod
-    def _is_actionable_routing_agent(target_agent: str) -> bool:
-        return CacheOrchestrator.is_actionable_routing_agent(target_agent)
-
-    @staticmethod
-    def _bool_setting_default(default: bool) -> str:
-        return CacheOrchestrator.bool_setting_default(default)
 
     async def _get_bool_setting(self, key: str, default: bool) -> bool:
         return await self._cache_orchestrator._get_bool_setting_impl(key, default)
@@ -1597,14 +1613,11 @@ class OrchestratorAgent(BaseAgent):
         )
 
         # 3. Dispatch via A2A message/stream
-        request = JsonRpcRequest(
-            method="message/stream",
-            params={
-                "agent_id": target_agent,
-                "task": agent_task,
-                "_span_collector": span_collector,
-            },
-            id=conversation_id or "orchestrator-stream",
+        request = build_stream_request(
+            target_agent,
+            agent_task,
+            request_id=conversation_id or "orchestrator-stream",
+            span_collector=span_collector,
         )
 
         t0_dispatch = time.perf_counter()
@@ -1929,66 +1942,31 @@ class OrchestratorAgent(BaseAgent):
         yield final_chunk
 
     async def _should_send_filler(self, target_agent: str) -> bool:
-        """Check if filler is enabled and the target agent is expected to be slow."""
-        try:
-            val = await SettingsRepository.get_value("filler.enabled", "false")
-            enabled = (val or "false").lower() == "true"
-        except (ValueError, TypeError):
-            enabled = False
-        if not enabled:
-            return False
-        card = await self._agent_registry.get_agent_card(target_agent)
-        if card is None:
-            return False
-        return card.expected_latency == "high"
+        """Check if filler is enabled and the target agent is expected to be slow.
+
+        Delegates to :class:`~app.agents.filler_coordinator.FillerCoordinator`;
+        kept as a thin wrapper so direct unit tests and the in-place race
+        orchestration (which reads it off the instance) keep working unchanged.
+        """
+        return await self._filler_coord.should_send_filler(target_agent)
 
     async def _get_filler_threshold_ms(self) -> int:
-        """Read filler threshold from DB (live, not cached)."""
-        try:
-            val = await SettingsRepository.get_value("filler.threshold_ms", "1000")
-            return int(val or "1000")
-        except (ValueError, TypeError):
-            return 1000
+        """Read filler threshold from DB (live, not cached).
+
+        Delegates to :class:`~app.agents.filler_coordinator.FillerCoordinator`.
+        """
+        return await self._filler_coord.get_filler_threshold_ms()
 
     async def _invoke_filler_agent(self, user_text: str, target_agent: str, language: str) -> str | None:
         """Call the filler-agent via the A2A dispatcher to generate a filler phrase.
 
+        Delegates to :class:`~app.agents.filler_coordinator.FillerCoordinator`.
         Returns the filler text or None if generation fails.
         """
-        try:
-            context = TaskContext(language=language)
-            filler_task = AgentTask(
-                description=f"generate_filler:{target_agent}",
-                user_text=user_text,
-                context=context,
-            )
-            request = JsonRpcRequest(
-                method="message/send",
-                params={
-                    "agent_id": "filler-agent",
-                    "task": filler_task,
-                },
-                id=f"filler-{uuid.uuid4().hex[:8]}",
-            )
-            response = await self._dispatcher.dispatch(request)
-            result_data = self._dispatch_manager.normalize_agent_result(response, agent_id="filler-agent")
-            speech = result_data.get("speech", "")
-            if not speech or not speech.strip():
-                logger.warning("Filler agent returned empty speech; no filler will be spoken")
-                return None
-            return speech.strip()
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            logger.warning("Filler agent invocation failed", exc_info=True)
-            return None
+        return await self._filler_coord.invoke_filler_agent(user_text, target_agent, language)
 
     async def _execute_cached_action(self, cached_action) -> dict[str, Any] | None:
         return await self._cache_orchestrator.execute_cached_action(cached_action)
-
-    @staticmethod
-    def _cancel_interaction_description_line() -> str:
-        return ClassificationEngine.cancel_interaction_description_line()
 
     @staticmethod
     def _is_background_turn(task: AgentTask) -> bool:
@@ -2016,43 +1994,6 @@ class OrchestratorAgent(BaseAgent):
             entity_index=self._entity_index,
             gateway=self._dispatcher,
         )
-
-    async def _repair_send_agent_classifications(
-        self,
-        user_text: str,
-        *,
-        conversation_id: str | None,
-        span_collector=None,
-        language: str = "en",
-    ) -> list[tuple[str, str, float | None, list[str]]]:
-        return await self._classification_engine.repair_send_agent_classifications(
-            user_text,
-            conversation_id=conversation_id,
-            span_collector=span_collector,
-            language=language,
-        )
-
-    async def _sanitize_or_repair_classifications(
-        self,
-        classifications: list[tuple[str, str, float | None, list[str]]],
-        *,
-        user_text: str,
-        conversation_id: str | None,
-        span_collector=None,
-        language: str = "en",
-        allow_repair: bool = True,
-        require_send_partner: bool = False,
-    ) -> list[tuple[str, str, float | None, list[str]]]:
-        result, _ = await self._classification_engine.sanitize_or_repair_classifications(
-            classifications,
-            user_text=user_text,
-            conversation_id=conversation_id,
-            span_collector=span_collector,
-            language=language,
-            allow_repair=allow_repair,
-            require_send_partner=require_send_partner,
-        )
-        return result
 
     async def _build_agent_descriptions(self) -> str:
         return await self._classification_engine.build_agent_descriptions()
@@ -2084,9 +2025,6 @@ class OrchestratorAgent(BaseAgent):
     ) -> list[tuple[str, str, float | None, list[str]]]:
         return await self._classification_engine.parse_classification(response, original_text)
 
-    async def _get_conversation_context_turn_limit(self) -> int:
-        return await self._conversation_manager._get_conversation_context_turn_limit()
-
     async def _get_turns(self, conversation_id: str | None) -> list[dict[str, Any]]:
         return await self._conversation_manager.get_turns(conversation_id)
 
@@ -2105,74 +2043,28 @@ class OrchestratorAgent(BaseAgent):
         span_collector=None,
         reminder_text: str | None = None,
     ) -> str:
-        """Merge multiple agent responses into a single natural answer via LLM.
+        """Merge multiple agent responses into a single natural answer.
 
-        Always calls LLM regardless of personality settings.
-        Includes personality prompt if configured.
-        If reminder_text is given, the LLM weaves it in naturally.
-        Falls back to bracket-prefixed format on failure.
+        Delegates to :class:`~app.agents.mediation.MediationService`; kept as a
+        thin wrapper so the ``PipelineDirector`` callback and the direct unit
+        tests (``orch._merge_responses(...)``) keep working unchanged.
         """
-        if not agent_responses:
-            return "I couldn't process that request."
-
-        # Only one response: return it directly (append reminder as fallback)
-        if len(agent_responses) == 1:
-            speech = agent_responses[0][1] or "I couldn't process that request."
-            if reminder_text:
-                separator = " " if speech and speech[-1] in ".!?" else ". "
-                return f"{speech}{separator}{reminder_text}" if speech else reminder_text
-            return speech
-
-        # Build structured summary of each agent response
-        summary_parts = []
-        for agent_id, speech, acted in agent_responses:
-            status = "[action executed]" if acted else "[no action executed]"
-            if speech and speech.strip():
-                summary_parts.append(f"- {agent_id} {status}: {speech}")
-            else:
-                summary_parts.append(f"- {agent_id} {status}: (no response)")
-        agent_summary = "\n".join(summary_parts)
-
-        try:
-            personality = await self._get_personality_cached()
-
-            system_content = await self._load_prompt_async("merge")
-            personality_text = personality.strip() if personality and personality.strip() else ""
-            system_content = system_content.replace("{personality}", personality_text).strip()
-
-            user_content = f"User asked:\n{self._wrap_user_input(user_text)}\n\nAgent responses:\n{agent_summary}\n\n"
-            if reminder_text:
-                user_content += f"Reminder to weave in: {reminder_text}\n\n"
-            user_content += "Combine into one natural response:"
-
-            messages = [
-                {"role": "system", "content": system_content},
-                {"role": "user", "content": user_content},
-            ]
-
-            overrides: dict[str, Any] = {
-                "temperature": self._mediation_temperature,
-                "max_tokens": self._mediation_max_tokens,
-            }
-            if self._mediation_model:
-                overrides["model"] = self._mediation_model
-            result = await self._call_llm(messages, span_collector=span_collector, **overrides)
-            return result.strip() if result and result.strip() else self._format_fallback(agent_responses)
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            logger.warning("Multi-agent response merge failed, using fallback format", exc_info=True)
-            fallback = self._format_fallback(agent_responses)
-            if reminder_text:
-                separator = " " if fallback and fallback[-1] in ".!?" else ". "
-                return f"{fallback}{separator}{reminder_text}" if fallback else reminder_text
-            return fallback
+        return await self._mediation.merge_responses(
+            agent_responses,
+            user_text,
+            span_collector=span_collector,
+            reminder_text=reminder_text,
+        )
 
     @staticmethod
     def _format_fallback(agent_responses: list[tuple[str, str, bool]]) -> str:
-        """Fallback formatting when LLM merge fails."""
-        parts = [f"[{aid}] {sp}" for aid, sp, _ in agent_responses if sp and sp.strip()]
-        return "\n\n".join(parts) if parts else "I couldn't process that request."
+        """Fallback formatting when LLM merge fails.
+
+        Delegates to :class:`~app.agents.mediation.MediationService.format_fallback`;
+        kept as a staticmethod so ``OrchestratorAgent._format_fallback(...)``
+        (called by unit tests) keeps working unchanged.
+        """
+        return MediationService.format_fallback(agent_responses)
 
     async def _mediate_response(
         self,
@@ -2186,71 +2078,25 @@ class OrchestratorAgent(BaseAgent):
     ) -> tuple[str, bool]:
         """Optionally mediate the domain agent response with personality.
 
-        When personality.prompt is non-empty, passes the agent speech through
-        a lightweight LLM call to apply the configured personality.
-        If reminder_text is given, the LLM weaves it in naturally.
-        Falls back to the original speech (+ appended reminder) on any failure.
+        Delegates to :class:`~app.agents.mediation.MediationService`; kept as a
+        thin wrapper so direct unit tests (``orch._mediate_response(...)``) and
+        internal call sites keep working unchanged. The service resolves its
+        collaborators (personality cache, prompt loader, LLM client, mediation
+        overrides) through this orchestrator at call time, preserving the
+        ``patch.object(orch, ...)`` seams exercised by the tests.
 
         Returns:
             Tuple of (mediated_speech, followup_needed).
         """
-        personality = await self._get_personality_cached()
-        if not personality.strip():
-            if reminder_text:
-                separator = " " if agent_speech and agent_speech[-1] in ".!?" else ". "
-                return (f"{agent_speech}{separator}{reminder_text}" if agent_speech else reminder_text), False
-            return agent_speech, False
-
-        if not agent_speech or not agent_speech.strip():
-            return agent_speech, False
-
-        try:
-            system_prompt = await self._load_prompt_async("mediate")
-            personality_text = personality.strip() if personality and personality.strip() else ""
-            system_prompt = system_prompt.replace("{personality}", personality_text)
-            system_prompt = system_prompt.replace("{language}", language or "en")
-            system_prompt = system_prompt.replace(
-                "{organic_followup_hint}",
-                "You may add a natural follow-up question at the end. Append [FOLLOWUP] if you do."
-                if allow_organic_followup
-                else "Do not add any follow-up questions.",
-            ).strip()
-            user_content = (
-                f"User asked:\n{self._wrap_user_input(user_text)}\nAgent ({agent_id}) responded: {agent_speech}"
-            )
-            if reminder_text:
-                user_content += f"\nReminder to weave in: {reminder_text}"
-            user_content += f"\n\nRephrase in {language}:"
-            messages = [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_content},
-            ]
-            overrides: dict[str, Any] = {
-                "temperature": self._mediation_temperature,
-                "max_tokens": self._mediation_max_tokens,
-            }
-            if self._mediation_model:
-                overrides["model"] = self._mediation_model
-            async with _optional_span(span_collector, "mediation", agent_id="orchestrator") as span:
-                result = await self._call_llm(messages, span_collector=span_collector, **overrides)
-                span["metadata"]["personality_active"] = True
-                span["metadata"]["language"] = language or "en"
-                span["metadata"]["original_length"] = len(agent_speech)
-                span["metadata"]["mediated_length"] = len(result.strip()) if result else 0
-            mediated = strip_parenthetical_asides(result) if result and result.strip() else agent_speech
-            followup = False
-            if isinstance(mediated, str) and mediated.endswith("[FOLLOWUP]"):
-                mediated = mediated[: -len("[FOLLOWUP]")].rstrip()
-                followup = True
-            return mediated, followup
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            logger.warning("Response mediation failed, using original speech", exc_info=True)
-            if reminder_text:
-                separator = " " if agent_speech and agent_speech[-1] in ".!?" else ". "
-                return (f"{agent_speech}{separator}{reminder_text}" if agent_speech else reminder_text), False
-            return agent_speech, False
+        return await self._mediation.mediate_response(
+            agent_speech,
+            user_text,
+            agent_id,
+            language=language,
+            span_collector=span_collector,
+            reminder_text=reminder_text,
+            allow_organic_followup=allow_organic_followup,
+        )
 
     async def _mediate_response_stream(
         self,
@@ -2264,65 +2110,23 @@ class OrchestratorAgent(BaseAgent):
     ) -> AsyncGenerator[str, None]:
         """Streaming variant of _mediate_response.
 
-        Yields mediated tokens as the LLM generates them.
+        Delegates to :class:`~app.agents.mediation.MediationService`; kept as a
+        thin wrapper so direct unit tests (``orch._mediate_response_stream(...)``)
+        keep working unchanged. Yields mediated tokens as the LLM generates them.
         The caller must collect tokens and run post-processing
-        (strip_parenthetical_asides, [FOLLOWUP] detection) on the
-        complete text. This method does NOT return the followup flag.
+        (strip_parenthetical_asides, [FOLLOWUP] detection) on the complete text.
+        This method does NOT return the followup flag.
         """
-        personality = await self._get_personality_cached()
-        if not personality.strip():
-            # No personality -- nothing to stream mediate.
-            # If a reminder exists, yield it as the only token so the caller
-            # can append it to the speech (matching the blocking path behaviour).
-            if reminder_text:
-                yield reminder_text
-            return
-
-        if not agent_speech or not agent_speech.strip():
-            return
-
-        try:
-            system_prompt = await self._load_prompt_async("mediate")
-            personality_text = personality.strip() if personality and personality.strip() else ""
-            system_prompt = system_prompt.replace("{personality}", personality_text)
-            system_prompt = system_prompt.replace("{language}", language or "en")
-            system_prompt = system_prompt.replace(
-                "{organic_followup_hint}",
-                "You may add a natural follow-up question at the end. Append [FOLLOWUP] if you do."
-                if allow_organic_followup
-                else "Do not add any follow-up questions.",
-            ).strip()
-            user_content = (
-                f"User asked:\n{self._wrap_user_input(user_text)}\nAgent ({agent_id}) responded: {agent_speech}"
-            )
-            if reminder_text:
-                user_content += f"\nReminder to weave in: {reminder_text}"
-            user_content += f"\n\nRephrase in {language}:"
-            messages = [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_content},
-            ]
-            overrides: dict[str, Any] = {
-                "temperature": self._mediation_temperature,
-                "max_tokens": self._mediation_max_tokens,
-            }
-            if self._mediation_model:
-                overrides["model"] = self._mediation_model
-            async with _optional_span(span_collector, "mediation", agent_id="orchestrator") as span:
-                span["metadata"]["personality_active"] = True
-                span["metadata"]["language"] = language or "en"
-                span["metadata"]["original_length"] = len(agent_speech)
-                span["metadata"]["streamed"] = True
-                async for token in self._call_llm_stream(messages, span_collector=span_collector, **overrides):
-                    if token:
-                        yield token
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            logger.warning(
-                "Response mediation stream failed, caller should fall back to _mediate_response", exc_info=True
-            )
-            return
+        async for token in self._mediation.mediate_response_stream(
+            agent_speech,
+            user_text,
+            agent_id,
+            language=language,
+            span_collector=span_collector,
+            reminder_text=reminder_text,
+            allow_organic_followup=allow_organic_followup,
+        ):
+            yield token
 
     @staticmethod
     def _strip_seq_rule(prompt: str) -> str:

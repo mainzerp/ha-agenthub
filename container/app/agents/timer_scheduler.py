@@ -7,7 +7,7 @@ runs one ``asyncio.Task`` per pending timer for wall-clock firing
 independent of any HA timer.* helper.
 
 Replaces the obsolete HA ``timer.*`` helper-pool model that lived in
-``timer_executor.py`` and ``delayed_tasks.py`` prior to 0.26.0.
+``timer_executor/`` and ``delayed_tasks.py`` prior to 0.26.0.
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ from datetime import datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from app.a2a.protocol import JsonRpcRequest
+from app.a2a._request import build_send_request
 from app.db.repository import ScheduledTimersRepository
 from app.models.agent import AgentTask, BackgroundEvent, TaskContext
 
@@ -198,13 +198,10 @@ class TimerScheduler:
             conversation_id=conversation_id,
             context=event_context,
         )
-        request = JsonRpcRequest(
-            method="message/send",
-            params={
-                "agent_id": "orchestrator",
-                "task": task,
-            },
-            id=request_id or task.conversation_id or f"scheduler-{uuid.uuid4().hex}",
+        request = build_send_request(
+            "orchestrator",
+            task,
+            request_id=request_id or task.conversation_id or f"scheduler-{uuid.uuid4().hex}",
         )
         try:
             response = await self._dispatcher.dispatch(request)

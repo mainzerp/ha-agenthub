@@ -8,12 +8,12 @@ from typing import TYPE_CHECKING
 
 import aiosqlite
 
+from app.bootstrap._tasks import spawn_background
 from app.cache.vector_store import COLLECTION_ENTITY_INDEX
 from app.db.repository import SettingsRepository
 from app.defaults import DEFAULT_LOCAL_EMBEDDING_MODEL
 from app.entity.index import EntityIndex
 from app.entity.ingest import parse_ha_states, state_to_entity_index_entry
-from app.util.tasks import spawn
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
@@ -132,10 +132,10 @@ async def _resolve_active_embedding_model() -> str:
         return ""
 
 
-def _is_chroma_dimension_error(exc: BaseException) -> bool:
-    """Heuristic: detect HNSW dimension / compaction failures from Chroma."""
+def _is_dimension_error(exc: BaseException) -> bool:
+    """Heuristic: detect sqlite-vec / vec0 dimension-mismatch failures."""
     msg = str(exc).lower()
-    return "compaction" in msg or "hnsw" in msg or "dimension" in msg or "dimensionality" in msg
+    return "dimension" in msg or "dimensionality" in msg or "vec0" in msg
 
 
 async def _wait_for_ws_connection(app: FastAPI, timeout: float = 8.0) -> bool:
@@ -214,7 +214,7 @@ async def _prime_entity_index(app: FastAPI, ha_client: HARestClient, entity_inde
             try:
                 vector_store.delete_collection(COLLECTION_ENTITY_INDEX)
                 logger.warning(
-                    "Dropped Chroma collection %s before rebuild "
+                    "Dropped vector collection %s before rebuild "
                     "(force_rebuild=%s, model_changed=%s, existing_count=%d, "
                     "active_model=%r, stored_model=%r)",
                     COLLECTION_ENTITY_INDEX,
@@ -228,7 +228,7 @@ async def _prime_entity_index(app: FastAPI, ha_client: HARestClient, entity_inde
                 force_rebuild = True
             except Exception:
                 logger.warning(
-                    "Failed to drop Chroma collection %s before rebuild",
+                    "Failed to drop vector collection %s before rebuild",
                     COLLECTION_ENTITY_INDEX,
                     exc_info=True,
                 )
@@ -249,11 +249,11 @@ async def _prime_entity_index(app: FastAPI, ha_client: HARestClient, entity_inde
             try:
                 await entity_index.populate_async(entities)
             except Exception as exc:
-                if not _is_chroma_dimension_error(exc):
+                if not _is_dimension_error(exc):
                     raise
                 logger.warning(
-                    "Entity index populate failed with chroma compaction/HNSW "
-                    "error -- dropping collection %s and retrying once: %s",
+                    "Entity index populate failed with a vector dimension "
+                    "mismatch -- dropping collection %s and retrying once: %s",
                     COLLECTION_ENTITY_INDEX,
                     exc,
                 )
@@ -299,11 +299,10 @@ async def _prime_entity_index(app: FastAPI, ha_client: HARestClient, entity_inde
         except Exception:
             logger.debug("User alias load failed", exc_info=True)
         try:
-            await entity_index.warmup_async()
             _t_end = _time.monotonic()
-            logger.info("Entity index HNSW warm-up completed (total prime: %.1fs)", _t_end - _t0)
+            logger.info("Entity index prime complete (total: %.1fs)", _t_end - _t0)
         except Exception:
-            logger.debug("Entity index warm-up failed", exc_info=True)
+            logger.debug("Entity index prime timing log failed", exc_info=True)
     except Exception:
         logger.warning("Failed to prime entity index in background", exc_info=True)
 
@@ -318,7 +317,7 @@ async def schedule_entity_index_prime(
     task = getattr(app.state, "entity_index_init_task", None)
     if task is not None and not task.done():
         return False
-    app.state.entity_index_init_task = spawn(_prime_entity_index(app, ha_client, entity_index, vector_store))
+    spawn_background(app, _prime_entity_index(app, ha_client, entity_index, vector_store), "entity_index_init_task")
     return True
 
 
@@ -593,8 +592,8 @@ async def setup_entity_observers(
         ws_client.on_event("area_registry_updated", on_area_registry_updated)
 
         app.state.ws_client = ws_client
-        app.state.ws_task = spawn(ws_client.run())
-        app.state.flush_task = spawn(_flush_entity_updates())
+        spawn_background(app, ws_client.run(), "ws_task")
+        spawn_background(app, _flush_entity_updates(), "flush_task")
 
     if ha_client is not None and ws_client is not None:
         ha_client.set_state_observer(ws_client)
@@ -640,8 +639,8 @@ async def setup_entity_observers(
         except Exception:
             logger.warning("Deferred hidden-entity sync failed", exc_info=True)
 
-    spawn(_deferred_hidden_entity_sync())
+    spawn_background(app, _deferred_hidden_entity_sync(), "deferred_hidden_sync")
 
     sync_task = getattr(app.state, "sync_task", None)
     if sync_task is None or sync_task.done():
-        app.state.sync_task = spawn(_periodic_entity_sync(app))
+        spawn_background(app, _periodic_entity_sync(app), "sync_task")

@@ -415,7 +415,7 @@ Track changes since `v1.42.1` here.
 
 - feat(dashboard): add expandable detail panel to cache management page showing response text, cached action JSON, entity IDs, and metadata for both routing and action cache tiers
 
-### 1.25.1 (PATCH)
+### 1.25.1 (PATCH) -- Sanitize parenthetical meta-commentary before TTS
 
 - fix(sanitize): strip parenthetical meta-commentary from rewrite-agent and mediation paths before TTS output
 - fix(prompts): add prompt-level prevention against parenthetical explanations in rewrite.txt and mediate.txt
@@ -440,7 +440,7 @@ Track changes since `v1.42.1` here.
 - chore(css): add Google Fonts `display=swap` parameter
 - chore(css): add fluid `clamp()` font sizing for stat card values
 
-### 1.24.2 (PATCH)
+### 1.24.2 (PATCH) -- HA REST client fixes and mypy error resolution
 
 - fix(ha): validate response body in `HARestClient.test_connection()` -- now checks for `{"message": "API running."}` instead of only HTTP 200
 - fix(ha): correct `get_services()` docstring from "service list" to "service dict"
@@ -512,8 +512,6 @@ Track changes since `v1.42.1` here.
 ### 1.22.1 (PATCH) -- Suppress organic follow-up on cancel-interaction
 
 - fix(orchestrator): suppress organic voice follow-up when the routed agent is `cancel-interaction`. Previously, the probabilistic follow-up offer ("Darf es noch etwas sein?" / "Is there anything else I can help with?") was incorrectly appended after a cancel intent.
-
-### 1.21.1 (PATCH) -- CI/CD pipeline and Docker security hardening
 
 ### 1.21.1 (PATCH) -- CI/CD pipeline and Docker security hardening
 

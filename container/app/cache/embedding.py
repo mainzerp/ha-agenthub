@@ -3,12 +3,9 @@
 from __future__ import annotations
 
 import asyncio
-import concurrent.futures
 import logging
 import os
 from contextlib import contextmanager
-
-import chromadb
 
 from app.db.repository import SettingsRepository
 from app.defaults import DEFAULT_LOCAL_EMBEDDING_MODEL
@@ -154,24 +151,6 @@ class EmbeddingEngine:
                 last_exc = exc
                 raise RuntimeError(f"External embedding failed: {exc}") from exc
         raise RuntimeError(f"External embedding rate-limited after retries: {last_exc}") from last_exc
-
-
-class ChromaEmbeddingFunction(chromadb.EmbeddingFunction[list[str]]):
-    """Adapter wrapping EmbeddingEngine for ChromaDB's EmbeddingFunction interface."""
-
-    def __init__(self, engine: EmbeddingEngine) -> None:
-        self._engine = engine
-
-    def __call__(self, input: list[str]) -> list[list[float]]:  # type: ignore[override]
-        coro = self._engine.embed_batch(input)
-        try:
-            asyncio.get_running_loop()
-        except RuntimeError:
-            return asyncio.run(coro)
-        # Avoid blocking the event loop thread with .result() (deadlock).
-        # Run the coroutine in a fresh background thread instead.
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-            return pool.submit(asyncio.run, coro).result()
 
 
 _engine: EmbeddingEngine | None = None

@@ -16,6 +16,7 @@ import httpx
 
 from app.db.repository import SettingsRepository
 from app.ha_client.auth import get_auth_headers
+from app.ha_client.websocket import WebSocketResetError
 
 if TYPE_CHECKING:
     from app.ha_client.websocket import HAWebSocketClient
@@ -134,7 +135,9 @@ class HARestClient:
             )
             try:
                 await old.aclose()
-            except Exception:
+            except asyncio.CancelledError:
+                raise
+            except (httpx.HTTPError, OSError):
                 logger.debug("Failed to close old HA REST client", exc_info=True)
             return
 
@@ -272,7 +275,7 @@ class HARestClient:
             original_exc = exc
         except asyncio.CancelledError:
             raise
-        except Exception as exc:
+        except (httpx.RequestError, ValueError) as exc:
             if not return_response:
                 raise
             original_exc = exc
@@ -305,7 +308,7 @@ class HARestClient:
             return resp.json()
         except asyncio.CancelledError:
             raise
-        except Exception:
+        except (httpx.HTTPError, ValueError):
             logger.warning("Failed to fetch HA config", exc_info=True)
             return {}
 
@@ -329,7 +332,7 @@ class HARestClient:
             return rendered or None
         except asyncio.CancelledError:
             raise
-        except Exception:
+        except (httpx.HTTPError, ValueError):
             logger.debug("Template render failed for %r", template, exc_info=True)
             return None
 
@@ -414,7 +417,7 @@ class HARestClient:
                         result[aid] = name
             except asyncio.CancelledError:
                 raise
-            except Exception:
+            except (ValueError, TypeError):
                 logger.debug("Failed to parse area_registry template output", exc_info=True)
         self._registry_cache_put("area_registry", result)
         return result
@@ -449,7 +452,7 @@ class HARestClient:
                             result[eid] = cleaned
             except asyncio.CancelledError:
                 raise
-            except Exception:
+            except (ValueError, TypeError):
                 logger.debug("Failed to parse entity_aliases template output", exc_info=True)
         self._registry_cache_put("entity_aliases", result)
         return result
@@ -484,7 +487,7 @@ class HARestClient:
                         result[eid] = str(name)
             except asyncio.CancelledError:
                 raise
-            except Exception:
+            except (ValueError, TypeError):
                 logger.debug("Failed to parse device_names template output", exc_info=True)
         self._registry_cache_put("device_names", result)
         return result
@@ -517,7 +520,7 @@ class HARestClient:
                         result[eid] = str(aid)
             except asyncio.CancelledError:
                 raise
-            except Exception:
+            except (ValueError, TypeError):
                 logger.debug("Failed to parse entity_areas template output", exc_info=True)
         self._registry_cache_put("entity_areas", result)
         return result
@@ -564,7 +567,7 @@ class HARestClient:
             cfg = await self.get_config()
         except asyncio.CancelledError:
             raise
-        except Exception:
+        except (httpx.HTTPError, ValueError):
             cfg = {}
         lang = cfg.get("language") if isinstance(cfg, dict) else None
         result = str(lang) if isinstance(lang, str) and lang else ""
@@ -678,7 +681,7 @@ class HARestClient:
             except asyncio.CancelledError:
                 observer.cancel_state_waiter(entity_id, future)
                 raise
-            except Exception:
+            except WebSocketResetError:
                 logger.debug(
                     "WS state waiter for %s raised, falling back to polling",
                     entity_id,
@@ -713,7 +716,7 @@ class HARestClient:
                 state_resp = await self.get_state(entity_id)
             except asyncio.CancelledError:
                 raise
-            except Exception:
+            except (httpx.HTTPError, ValueError):
                 logger.debug(
                     "get_state polling failed for %s",
                     entity_id,

@@ -33,7 +33,7 @@ router = APIRouter(
 #   music_executor.py      -> music-agent
 #   scene_executor.py      -> scene-agent
 #   security_executor.py   -> security-agent
-#   timer_executor.py      -> timer-agent
+#   timer_executor/        -> timer-agent
 AGENT_ALLOWED_DOMAINS: dict[str, frozenset[str]] = {
     "light-agent": frozenset({"light", "switch", "sensor"}),
     "climate-agent": frozenset({"climate", "sensor", "weather"}),

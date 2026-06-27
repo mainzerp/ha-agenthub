@@ -18,6 +18,8 @@ class Settings(BaseSettings):
     container_host: str = "0.0.0.0"
     container_port: int = 8080
     log_level: str = "INFO"
+    # On-disk directory for the sqlite-vec entity-vector DB and cache.db.
+    # Kept under the original name to avoid env-var churn; no longer ChromaDB.
     chromadb_persist_dir: str = "/data/chromadb"
     sqlite_db_path: str = "/data/agent_assist.db"
     fernet_key_path: str = "/data/.fernet_key"

@@ -3,7 +3,7 @@
 Regression test for CRIT-2 (deep code review): a single shared aiosqlite
 connection on the read path serialized all reads through the same SQLite
 cursor; concurrent calls could trip thread-safety. Reads are now per-call
-connections (see app/db/schema.py).
+connections (see app/db/schema/).
 """
 
 from __future__ import annotations

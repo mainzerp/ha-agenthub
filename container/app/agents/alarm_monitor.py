@@ -9,7 +9,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from app.a2a.protocol import JsonRpcRequest
+from app.a2a._request import build_send_request
 from app.models.agent import AgentTask, BackgroundEvent, TaskContext
 
 logger = logging.getLogger(__name__)
@@ -142,10 +142,10 @@ class AlarmMonitor:
                 user_text=f"Dispatch alarm notification for {friendly_name}",
                 context=event_context,
             )
-            request = JsonRpcRequest(
-                method="message/send",
-                params={"agent_id": "orchestrator", "task": task},
-                id=str(uuid.uuid4()),
+            request = build_send_request(
+                "orchestrator",
+                task,
+                request_id=str(uuid.uuid4()),
             )
             await self._dispatcher.dispatch(request)
         except Exception:

@@ -1,12 +1,12 @@
 """Tests for the drop-and-rebuild logic in `_prime_entity_index`.
 
-Covers the 0.23.0 behaviour added to `app.runtime_setup` that drops and
-re-creates the Chroma `entity_index` collection when the embedding
+Covers the 0.23.0 behaviour added to `app.bootstrap._entity` that drops and
+re-creates the vector `entity_index` collection when the embedding
 model identifier or `INDEX_SCHEMA_VERSION` differs from what was
 persisted on the previous successful build. Without this, swapping the
 default embedding model (e.g. to `intfloat/multilingual-e5-small`)
-leaves the on-disk HNSW segment locked to the old vector dimension and
-every upsert fails with a Chroma compaction error.
+leaves the on-disk sqlite-vec `vec0` table locked to the old vector
+dimension and every upsert fails with a vec0 dimension-mismatch error.
 """
 
 from __future__ import annotations
@@ -182,8 +182,8 @@ async def test_prime_does_not_drop_when_schema_and_model_match():
 
 
 @pytest.mark.asyncio
-async def test_prime_drops_and_retries_on_chroma_compaction_error():
-    """First populate raises a compaction/HNSW error; code drops + retries once."""
+async def test_prime_drops_and_retries_on_vector_dimension_error():
+    """First populate raises a vec0 dimension-mismatch error; code drops + retries once."""
     from app.bootstrap import _entity as runtime_setup
 
     app = _make_app_state()
@@ -192,7 +192,7 @@ async def test_prime_drops_and_retries_on_chroma_compaction_error():
     # Empty existing collection -> populate path (no model mismatch needed).
     vs = _make_vector_store(count=0)
 
-    err = RuntimeError("Error in compaction: Failed to apply logs to the hnsw segment writer")
+    err = RuntimeError("vec0 INSERT failed: Vector has 768 dimensions, expected 384")
     ei.populate_async = AsyncMock(side_effect=[err, None])
 
     settings_values = {
@@ -215,6 +215,6 @@ async def test_prime_drops_and_retries_on_chroma_compaction_error():
         await runtime_setup._prime_entity_index(app, ha, ei, vs)
 
     # One drop happens up-front because count==0 with entities to index;
-    # a second drop happens after the compaction error during populate.
+    # a second drop happens after the dimension error during populate.
     assert vs.delete_collection.call_count == 2
     assert ei.populate_async.await_count == 2

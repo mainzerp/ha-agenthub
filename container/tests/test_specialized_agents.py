@@ -1162,7 +1162,7 @@ class TestTimerExecutor:
                 }
             ]
         )
-        with _patch("app.agents.timer_executor._get_scheduler", return_value=scheduler):
+        with _patch("app.agents.timer_executor._helpers._get_scheduler", return_value=scheduler):
             result = await execute_timer_action(
                 {"action": "query_timer", "entity": "kitchen timer"},
                 AsyncMock(),
@@ -1179,7 +1179,7 @@ class TestTimerExecutor:
 
         scheduler = MagicMock()
         scheduler.list = AsyncMock(return_value=[])
-        with _patch("app.agents.timer_executor._get_scheduler", return_value=scheduler):
+        with _patch("app.agents.timer_executor._helpers._get_scheduler", return_value=scheduler):
             result = await execute_timer_action(
                 {"action": "query_timer", "entity": "kitchen timer"},
                 AsyncMock(),
@@ -1196,7 +1196,7 @@ class TestTimerExecutor:
 
         scheduler = MagicMock()
         scheduler.list = AsyncMock(return_value=[])
-        with _patch("app.agents.timer_executor._get_scheduler", return_value=scheduler):
+        with _patch("app.agents.timer_executor._helpers._get_scheduler", return_value=scheduler):
             result = await execute_timer_action(
                 {"action": "list_timers", "entity": ""},
                 AsyncMock(),
@@ -1222,7 +1222,7 @@ class TestTimerExecutor:
                 }
             ]
         )
-        with _patch("app.agents.timer_executor._get_scheduler", return_value=scheduler):
+        with _patch("app.agents.timer_executor._helpers._get_scheduler", return_value=scheduler):
             result = await execute_timer_action(
                 {"action": "list_timers", "entity": ""},
                 AsyncMock(),
@@ -1240,7 +1240,7 @@ class TestTimerExecutor:
         scheduler = MagicMock()
         scheduler.cancel = AsyncMock(return_value=1)
         scheduler.schedule = AsyncMock(return_value="new-id")
-        with _patch("app.agents.timer_executor._get_scheduler", return_value=scheduler):
+        with _patch("app.agents.timer_executor._helpers._get_scheduler", return_value=scheduler):
             result = await execute_timer_action(
                 {
                     "action": "snooze_timer",
@@ -1264,7 +1264,7 @@ class TestTimerExecutor:
         scheduler = MagicMock()
         scheduler.schedule = AsyncMock(return_value="alarm-123")
 
-        with _patch("app.agents.timer_executor._get_scheduler", return_value=scheduler):
+        with _patch("app.agents.timer_executor._helpers._get_scheduler", return_value=scheduler):
             result = await execute_timer_action(
                 {"action": "set_datetime", "entity": "Morning Alarm", "parameters": {"time": "07:00:00"}},
                 AsyncMock(),
@@ -1294,7 +1294,7 @@ class TestTimerExecutor:
         scheduler = MagicMock()
         scheduler.schedule = AsyncMock(return_value="alarm-briefing")
 
-        with _patch("app.agents.timer_executor._get_scheduler", return_value=scheduler):
+        with _patch("app.agents.timer_executor._helpers._get_scheduler", return_value=scheduler):
             result = await execute_timer_action(
                 {
                     "action": "set_datetime",
@@ -1321,7 +1321,7 @@ class TestTimerExecutor:
         scheduler = MagicMock()
         scheduler.schedule = AsyncMock(return_value="alarm-no-briefing")
 
-        with _patch("app.agents.timer_executor._get_scheduler", return_value=scheduler):
+        with _patch("app.agents.timer_executor._helpers._get_scheduler", return_value=scheduler):
             result = await execute_timer_action(
                 {"action": "set_datetime", "entity": "Alarm", "parameters": {"time": "07:00:00"}},
                 AsyncMock(),
@@ -1345,7 +1345,7 @@ class TestTimerExecutor:
         now = datetime.now().replace(microsecond=0)
         past_time = (now - timedelta(minutes=1)).strftime("%H:%M:%S")
 
-        with _patch("app.agents.timer_executor._get_scheduler", return_value=scheduler):
+        with _patch("app.agents.timer_executor._helpers._get_scheduler", return_value=scheduler):
             result = await execute_timer_action(
                 {"action": "set_datetime", "entity": "Alarm", "parameters": {"time": past_time}},
                 AsyncMock(),
@@ -1367,8 +1367,8 @@ class TestTimerExecutor:
         now_ts = int(datetime(2026, 1, 15, 8, 0, 0, tzinfo=UTC).timestamp())
 
         with (
-            _patch("app.agents.timer_executor._get_scheduler", return_value=scheduler),
-            _patch("app.agents.timer_executor.time.time", return_value=now_ts),
+            _patch("app.agents.timer_executor._helpers._get_scheduler", return_value=scheduler),
+            _patch("app.agents.timer_executor._alarms.time.time", return_value=now_ts),
         ):
             result = await execute_timer_action(
                 {"action": "set_datetime", "entity": "Alarm", "parameters": {"time": "10:00:00"}},
@@ -1395,7 +1395,7 @@ class TestTimerExecutor:
         )
         scheduler.cancel = AsyncMock(return_value=1)
 
-        with _patch("app.agents.timer_executor._get_scheduler", return_value=scheduler):
+        with _patch("app.agents.timer_executor._helpers._get_scheduler", return_value=scheduler):
             list_result = await execute_timer_action(
                 {"action": "list_alarms", "entity": ""},
                 AsyncMock(),
@@ -1431,7 +1431,7 @@ class TestTimerExecutor:
         scheduler = MagicMock()
         scheduler.schedule = AsyncMock(return_value="alarm-safe")
 
-        with _patch("app.agents.timer_executor._get_scheduler", return_value=scheduler):
+        with _patch("app.agents.timer_executor._helpers._get_scheduler", return_value=scheduler):
             result = await execute_timer_action(
                 {"action": "set_datetime", "entity": "Alarm", "parameters": {"time": "07:00:00"}},
                 AsyncMock(),
@@ -1453,8 +1453,8 @@ class TestTimerExecutor:
         now_ts = int(datetime(2026, 1, 15, 8, 0, 0, tzinfo=UTC).timestamp())
 
         with (
-            _patch("app.agents.timer_executor._get_scheduler", return_value=scheduler),
-            _patch("app.agents.timer_executor.time.time", return_value=now_ts),
+            _patch("app.agents.timer_executor._helpers._get_scheduler", return_value=scheduler),
+            _patch("app.agents.timer_executor._alarms.time.time", return_value=now_ts),
         ):
             result = await execute_timer_action(
                 {
@@ -1489,7 +1489,7 @@ class TestTimerExecutor:
         scheduler = MagicMock()
         scheduler.schedule = AsyncMock(return_value="alarm-rec-weekly")
 
-        with _patch("app.agents.timer_executor._get_scheduler", return_value=scheduler):
+        with _patch("app.agents.timer_executor._helpers._get_scheduler", return_value=scheduler):
             result = await execute_timer_action(
                 {
                     "action": "set_datetime",
@@ -1524,7 +1524,7 @@ class TestTimerExecutor:
         scheduler = MagicMock()
         scheduler.schedule = AsyncMock(return_value="alarm-should-not-schedule")
 
-        with _patch("app.agents.timer_executor._get_scheduler", return_value=scheduler):
+        with _patch("app.agents.timer_executor._helpers._get_scheduler", return_value=scheduler):
             result = await execute_timer_action(
                 {
                     "action": "set_datetime",
@@ -1563,7 +1563,7 @@ class TestTimerExecutor:
             ]
         )
 
-        with _patch("app.agents.timer_executor._get_scheduler", return_value=scheduler):
+        with _patch("app.agents.timer_executor._helpers._get_scheduler", return_value=scheduler):
             result = await execute_timer_action(
                 {"action": "list_alarms", "entity": ""},
                 AsyncMock(),
@@ -1587,7 +1587,7 @@ class TestTimerExecutor:
         scheduler.list = AsyncMock(return_value=[{"id": "alarm-1", "logical_name": "Wake", "fires_at": 9999999999}])
         scheduler.cancel = AsyncMock(return_value=1)
 
-        with _patch("app.agents.timer_executor._get_scheduler", return_value=scheduler):
+        with _patch("app.agents.timer_executor._helpers._get_scheduler", return_value=scheduler):
             result = await execute_timer_action(
                 {"action": "cancel_alarm", "entity": "", "parameters": {"id": "alarm-1"}},
                 AsyncMock(),
@@ -1612,7 +1612,7 @@ class TestTimerExecutor:
         )
         scheduler.cancel = AsyncMock(return_value=0)
 
-        with _patch("app.agents.timer_executor._get_scheduler", return_value=scheduler):
+        with _patch("app.agents.timer_executor._helpers._get_scheduler", return_value=scheduler):
             result = await execute_timer_action(
                 {"action": "cancel_alarm", "entity": "morning alarm", "parameters": {}},
                 AsyncMock(),
@@ -1656,7 +1656,7 @@ class TestTimerExecutor:
         )
         scheduler.cancel = AsyncMock(return_value=1)
 
-        with _patch("app.agents.timer_executor._get_scheduler", return_value=scheduler):
+        with _patch("app.agents.timer_executor._helpers._get_scheduler", return_value=scheduler):
             result = await execute_timer_action(
                 {"action": "cancel_alarm", "entity": "Wecker", "parameters": {"time": "14:35:00"}},
                 AsyncMock(),
@@ -1687,7 +1687,7 @@ class TestTimerExecutor:
         )
         scheduler.cancel = AsyncMock(return_value=1)
 
-        with _patch("app.agents.timer_executor._get_scheduler", return_value=scheduler):
+        with _patch("app.agents.timer_executor._helpers._get_scheduler", return_value=scheduler):
             result = await execute_timer_action(
                 {
                     "action": "cancel_alarm",
@@ -1728,7 +1728,7 @@ class TestTimerExecutor:
         )
         scheduler.cancel = AsyncMock(return_value=1)
 
-        with _patch("app.agents.timer_executor._get_scheduler", return_value=scheduler):
+        with _patch("app.agents.timer_executor._helpers._get_scheduler", return_value=scheduler):
             result = await execute_timer_action(
                 {
                     "action": "cancel_alarm",

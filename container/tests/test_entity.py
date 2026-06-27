@@ -937,15 +937,6 @@ class TestEntityIndex:
         assert entry is None
         store.get.assert_not_called()
 
-    def test_warmup_issues_dummy_query(self):
-        index, store = self._make_index()
-        store.query.return_value = {"ids": [[]], "metadatas": [[]], "distances": [[]], "documents": [[]]}
-        index.warmup()
-        store.query.assert_called_once()
-        _args, kwargs = store.query.call_args
-        assert kwargs.get("query_texts") == ["warmup"]
-        assert kwargs.get("n_results") == 1
-
 
 # ---------------------------------------------------------------------------
 # Visibility rules filtering

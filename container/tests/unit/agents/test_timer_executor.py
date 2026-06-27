@@ -30,7 +30,7 @@ pytestmark = pytest.mark.asyncio
 class TestSchedulerUnavailable:
     async def test_dispatch_scheduler_none_returns_503(self):
         """_get_scheduler returning None yields unavailable message."""
-        with patch("app.agents.timer_executor._get_scheduler", return_value=None):
+        with patch("app.agents.timer_executor._helpers._get_scheduler", return_value=None):
             result = await execute_timer_action(
                 {
                     "action": "start_timer",
@@ -76,7 +76,7 @@ class TestCancelTimerErrors:
         scheduler = MagicMock()
         scheduler.list = AsyncMock(return_value=[])
         scheduler.cancel = AsyncMock(return_value=0)
-        with patch("app.agents.timer_executor._get_scheduler", return_value=scheduler):
+        with patch("app.agents.timer_executor._helpers._get_scheduler", return_value=scheduler):
             result = await execute_timer_action(
                 {"action": "cancel_timer", "entity": "", "parameters": {}},
                 AsyncMock(),
@@ -155,7 +155,7 @@ class TestCancelAlarmErrors:
         """cancel_alarm reports not_found when no alarm matches by id."""
         scheduler = MagicMock()
         scheduler.list = AsyncMock(return_value=[])
-        with patch("app.agents.timer_executor._get_scheduler", return_value=scheduler):
+        with patch("app.agents.timer_executor._helpers._get_scheduler", return_value=scheduler):
             result = await execute_timer_action(
                 {
                     "action": "cancel_alarm",
@@ -190,7 +190,7 @@ class TestCancelAlarmErrors:
                 },
             ]
         )
-        with patch("app.agents.timer_executor._get_scheduler", return_value=scheduler):
+        with patch("app.agents.timer_executor._helpers._get_scheduler", return_value=scheduler):
             result = await execute_timer_action(
                 {
                     "action": "cancel_alarm",
@@ -338,7 +338,7 @@ class TestHandleReadAction:
 
 class TestQueryTimer:
     async def test_query_timer_scheduler_none(self):
-        with patch("app.agents.timer_executor._get_scheduler", return_value=None):
+        with patch("app.agents.timer_executor._helpers._get_scheduler", return_value=None):
             result = await execute_timer_action(
                 {"action": "query_timer", "entity": "Kitchen", "parameters": {}},
                 AsyncMock(),
@@ -352,7 +352,7 @@ class TestQueryTimer:
 
 class TestListAlarms:
     async def test_list_alarms_scheduler_none(self):
-        with patch("app.agents.timer_executor._get_scheduler", return_value=None):
+        with patch("app.agents.timer_executor._helpers._get_scheduler", return_value=None):
             result = await execute_timer_action(
                 {"action": "list_alarms", "entity": "", "parameters": {}},
                 AsyncMock(),
@@ -366,7 +366,7 @@ class TestListAlarms:
     async def test_list_alarms_empty_rows(self):
         scheduler = MagicMock()
         scheduler.list = AsyncMock(return_value=[])
-        with patch("app.agents.timer_executor._get_scheduler", return_value=scheduler):
+        with patch("app.agents.timer_executor._helpers._get_scheduler", return_value=scheduler):
             result = await execute_timer_action(
                 {"action": "list_alarms", "entity": "", "parameters": {}},
                 AsyncMock(),
@@ -382,7 +382,7 @@ class TestSetAlarmErrors:
     async def test_set_alarm_invalid_datetime(self):
         scheduler = MagicMock()
         scheduler.schedule = AsyncMock(return_value="alarm-id")
-        with patch("app.agents.timer_executor._get_scheduler", return_value=scheduler):
+        with patch("app.agents.timer_executor._helpers._get_scheduler", return_value=scheduler):
             result = await execute_timer_action(
                 {"action": "set_datetime", "entity": "", "parameters": {"datetime": "bad-date"}},
                 AsyncMock(),
@@ -398,7 +398,7 @@ class TestCancelAlarmBranches:
     async def test_cancel_alarm_no_selectors(self):
         scheduler = MagicMock()
         scheduler.list = AsyncMock(return_value=[])
-        with patch("app.agents.timer_executor._get_scheduler", return_value=scheduler):
+        with patch("app.agents.timer_executor._helpers._get_scheduler", return_value=scheduler):
             result = await execute_timer_action(
                 {"action": "cancel_alarm", "entity": "", "parameters": {}},
                 AsyncMock(),
@@ -412,7 +412,7 @@ class TestCancelAlarmBranches:
     async def test_cancel_alarm_name_no_match(self):
         scheduler = MagicMock()
         scheduler.list = AsyncMock(return_value=[])
-        with patch("app.agents.timer_executor._get_scheduler", return_value=scheduler):
+        with patch("app.agents.timer_executor._helpers._get_scheduler", return_value=scheduler):
             result = await execute_timer_action(
                 {"action": "cancel_alarm", "entity": "", "parameters": {"name": "Missing"}},
                 AsyncMock(),
@@ -442,7 +442,7 @@ class TestCancelAlarmBranches:
                 },
             ]
         )
-        with patch("app.agents.timer_executor._get_scheduler", return_value=scheduler):
+        with patch("app.agents.timer_executor._helpers._get_scheduler", return_value=scheduler):
             result = await execute_timer_action(
                 {"action": "cancel_alarm", "entity": "", "parameters": {"name": "Morning"}},
                 AsyncMock(),
@@ -467,7 +467,7 @@ class TestCancelAlarmBranches:
                 },
             ]
         )
-        with patch("app.agents.timer_executor._get_scheduler", return_value=scheduler):
+        with patch("app.agents.timer_executor._helpers._get_scheduler", return_value=scheduler):
             result = await execute_timer_action(
                 {"action": "cancel_alarm", "entity": "", "parameters": {"name": "Morning"}},
                 AsyncMock(),
@@ -480,7 +480,7 @@ class TestCancelAlarmBranches:
         scheduler.cancel.assert_awaited_once_with(id_="a1")
 
     async def test_cancel_alarm_scheduler_none(self):
-        with patch("app.agents.timer_executor._get_scheduler", return_value=None):
+        with patch("app.agents.timer_executor._helpers._get_scheduler", return_value=None):
             result = await execute_timer_action(
                 {"action": "cancel_alarm", "entity": "", "parameters": {}},
                 AsyncMock(),
@@ -494,7 +494,7 @@ class TestCancelAlarmBranches:
     async def test_cancel_alarm_invalid_selectors(self):
         scheduler = MagicMock()
         scheduler.list = AsyncMock(return_value=[])
-        with patch("app.agents.timer_executor._get_scheduler", return_value=scheduler):
+        with patch("app.agents.timer_executor._helpers._get_scheduler", return_value=scheduler):
             result = await execute_timer_action(
                 {"action": "cancel_alarm", "entity": "", "parameters": {"datetime": "bad-date"}},
                 AsyncMock(),
@@ -508,7 +508,7 @@ class TestCancelAlarmBranches:
 
 class TestStartTimerWithNotification:
     async def test_start_timer_with_notification_scheduler_none(self):
-        with patch("app.agents.timer_executor._get_scheduler", return_value=None):
+        with patch("app.agents.timer_executor._helpers._get_scheduler", return_value=None):
             result = await execute_timer_action(
                 {
                     "action": "start_timer_with_notification",
@@ -526,7 +526,7 @@ class TestStartTimerWithNotification:
 
 class TestDelayedAction:
     async def test_delayed_action_scheduler_none(self):
-        with patch("app.agents.timer_executor._get_scheduler", return_value=None):
+        with patch("app.agents.timer_executor._helpers._get_scheduler", return_value=None):
             result = await execute_timer_action(
                 {
                     "action": "delayed_action",
@@ -548,7 +548,7 @@ class TestDelayedAction:
 
 class TestSleepTimer:
     async def test_sleep_timer_scheduler_none(self):
-        with patch("app.agents.timer_executor._get_scheduler", return_value=None):
+        with patch("app.agents.timer_executor._helpers._get_scheduler", return_value=None):
             result = await execute_timer_action(
                 {
                     "action": "sleep_timer",
@@ -567,7 +567,7 @@ class TestSleepTimer:
 class TestPauseOrResume:
     async def test_resume_timer(self):
         scheduler = MagicMock()
-        with patch("app.agents.timer_executor._get_scheduler", return_value=scheduler):
+        with patch("app.agents.timer_executor._helpers._get_scheduler", return_value=scheduler):
             result = await execute_timer_action(
                 {"action": "resume_timer", "entity": "Kitchen", "parameters": {}},
                 AsyncMock(),
