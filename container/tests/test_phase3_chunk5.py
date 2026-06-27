@@ -43,25 +43,20 @@ class TestSanitizedFlagDefault:
 
 
 class TestVectorStoreReinitLock:
-    def test_concurrent_reinit_only_creates_one_client(self):
+    def test_concurrent_reinit_only_opens_one_connection(self):
         store = VectorStore()
-        store._embedding_fn = MagicMock()
-        # First call must rebuild; later calls within the same critical
-        # section must be no-ops because _is_alive returns True after
-        # the first PersistentClient was assigned.
-        client_calls: list[object] = []
+        store._conn = None
+        opens: list[int] = []
+        sentinel = object()
 
-        class _FakeClient:
-            def __init__(self, **_: object) -> None:
-                client_calls.append(self)
+        def _fake_open(self):
+            opens.append(1)
+            self._conn = sentinel
 
-            def heartbeat(self) -> int:
-                return 1
-
-            def get_or_create_collection(self, **_: object) -> object:
-                return MagicMock()
-
-        with patch("app.cache.vector_store.chromadb.PersistentClient", _FakeClient):
+        with (
+            patch.object(VectorStore, "_open_connection", _fake_open),
+            patch.object(VectorStore, "_ensure_collection"),
+        ):
             barrier = threading.Barrier(5)
 
             def _reinit() -> None:
@@ -74,24 +69,22 @@ class TestVectorStoreReinitLock:
             for t in threads:
                 t.join()
 
-        # Exactly one PersistentClient instance was created across 5
-        # threads; the lock + double-check guard collapsed the rest.
-        assert len(client_calls) == 1
-        assert store._client is client_calls[0]
+        # Exactly one connection was opened across 5 threads; the lock +
+        # double-check guard collapsed the rest.
+        assert len(opens) == 1
+        assert store._conn is sentinel
 
-    def test_reinit_lock_skips_when_client_already_alive(self):
-        """If the client is already alive, reinit becomes a no-op."""
+    def test_reinit_lock_skips_when_connection_already_open(self):
+        """If the connection is already open, reinit becomes a no-op."""
         store = VectorStore()
-        store._embedding_fn = MagicMock()
         existing = MagicMock()
-        existing.heartbeat.return_value = 1
-        store._client = existing
+        store._conn = existing
 
-        with patch("app.cache.vector_store.chromadb.PersistentClient") as _mk_client:
+        with patch.object(VectorStore, "_open_connection") as mock_open:
             store._reinitialize_sync()
 
-        _mk_client.assert_not_called()
-        assert store._client is existing
+        mock_open.assert_not_called()
+        assert store._conn is existing
 
 
 # ---------------------------------------------------------------------------

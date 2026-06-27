@@ -2,385 +2,49 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
-import os
-import time
 from contextlib import asynccontextmanager
-from logging.handlers import RotatingFileHandler
-from pathlib import Path
 
 from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from app.a2a.dispatcher import Dispatcher
-from app.a2a.registry import registry
-from app.a2a.transport import InProcessTransport
-from app.agents.custom_loader import CustomAgentLoader
-from app.agents.decorator import install_all_agents
 from app.api.routes import admin as admin_routes
 from app.api.routes import conversation as conversation_routes
 from app.api.routes import dashboard_api as dashboard_api_routes
 from app.api.routes import health as health_routes
-from app.api.routes.conversation import reset_active_ws_connections
+from app.bootstrap._logging import _configure_logging, _ensure_log_buffer_handler
+from app.bootstrap._shutdown import teardown
+from app.bootstrap._startup import setup_application
 from app.config import settings
 from app.dashboard.routes import router as dashboard_router
-from app.db.repository import SettingsRepository, SetupStateRepository
-from app.db.schema import init_db
 from app.middleware.auth import SetupRedirectMiddleware, apply_auth_dependencies
 from app.middleware.rate_limit import rate_limit_admin
 from app.middleware.tracing import TracingMiddleware
 from app.setup.routes import router as setup_router
-from app.util.log_buffer import LogBuffer, LogBufferHandler, get_log_buffer, set_log_buffer
+
+# ``_configure_logging`` and ``_ensure_log_buffer_handler`` moved to
+# ``app.bootstrap._logging``; they are re-exported here (via ``__all__``) so
+# existing callers and the unit tests that do
+# ``from app.main import _configure_logging, _ensure_log_buffer_handler``
+# keep working unchanged.
+__all__ = ["_configure_logging", "_ensure_log_buffer_handler"]
 
 logger = logging.getLogger(__name__)
 
 
-def _ensure_log_buffer_handler() -> None:
-    """Ensure root logger has the correct level and log buffer handler.
-
-    Uvicorn or other libraries may reconfigure logging after our lifespan
-    starts, wiping handlers or changing the root level.  This helper re-
-    attaches the buffer handler and restores the configured level whenever
-    it is called.
-    """
-    level = getattr(logging, settings.log_level.upper(), logging.INFO)
-    root = logging.getLogger()
-
-    root.setLevel(level)
-
-    # Re-attach buffer handler if missing.
-    has_buffer = any(isinstance(h, LogBufferHandler) for h in root.handlers)
-    if not has_buffer:
-        log_buffer = get_log_buffer()
-        if log_buffer is None:
-            log_buffer = LogBuffer(capacity=10000)
-            set_log_buffer(log_buffer)
-        buffer_handler = LogBufferHandler(log_buffer)
-        root.addHandler(buffer_handler)
-
-
-def _configure_logging() -> None:
-    """Configure structured logging based on settings."""
-    log_format = "%(asctime)s %(levelname)s [%(name)s] %(message)s"
-    level = getattr(logging, settings.log_level.upper(), logging.INFO)
-    root = logging.getLogger()
-    root.setLevel(level)
-
-    # Only add StreamHandler if root has no handlers yet.
-    # Avoid force=True which wipes handlers that uvicorn or other
-    # libraries may have already configured.
-    if not any(isinstance(h, logging.StreamHandler) for h in root.handlers):
-        stream_handler = logging.StreamHandler()
-        stream_handler.setFormatter(logging.Formatter(log_format))
-        root.addHandler(stream_handler)
-
-    # Add RotatingFileHandler for persistent logs.
-    log_dir = os.environ.get("LOG_DIR", "/data/logs")
-    os.makedirs(log_dir, exist_ok=True)
-    file_handler = RotatingFileHandler(
-        os.path.join(log_dir, "app.log"),
-        maxBytes=50 * 1024 * 1024,
-        backupCount=5,
-    )
-    file_handler.setFormatter(logging.Formatter(log_format))
-    root.addHandler(file_handler)
-
-    _ensure_log_buffer_handler()
-
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Startup and shutdown events."""
-    # --- Startup ---
-    _configure_logging()
-    logger.info("Starting agent-assist container")
-    reset_active_ws_connections()
-    await init_db()
+    """Startup and shutdown events.
 
-    from app.security.encryption import get_fernet, is_fernet_key_present
-
-    if is_fernet_key_present():
-        logger.warning(
-            "IMPORTANT: Back up your Fernet key at /data/.fernet_key. "
-            "Loss of this file makes all encrypted secrets (HA token, LLM keys, API key) unrecoverable."
-        )
-
-    # Eager-load Fernet key off the event loop so the cold-path sync
-    # file I/O happens during startup instead of on the first request.
-    await asyncio.to_thread(get_fernet)
-
-    # Check if setup is complete before initializing HA-dependent components
-    setup_complete = await SetupStateRepository.is_complete()
-    app.state.setup_runtime_init_lock = asyncio.Lock()
-    app.state.setup_runtime_initialized = False
-
-    # FLOW-SETUP-1 (P1-2): core A2A + MCP primitives must exist regardless
-    # of setup-completion so setup-wizard requests can still be dispatched.
-    # These also back the shared ``_initialize_setup_dependent_services``
-    # helper used by both this lifespan and the post-wizard re-init path.
-    transport = InProcessTransport(registry)
-    dispatcher = Dispatcher(registry, transport)
-    conversation_routes.set_dispatcher(dispatcher)
-    dashboard_api_routes.set_chat_dispatcher(dispatcher)
-    admin_routes.set_registry(registry)
-
-    from app.mcp.registry import MCPServerRegistry
-    from app.mcp.tools import MCPToolManager
-
-    mcp_registry = MCPServerRegistry()
-    mcp_tool_manager = MCPToolManager(mcp_registry)
-
-    app.state.registry = registry
-    app.state.dispatcher = dispatcher
-    app.state.mcp_registry = mcp_registry
-    app.state.mcp_tool_manager = mcp_tool_manager
-
-    if setup_complete:
-        # Delegate to the shared helper -- populates ha_client,
-        # entity_index, cache_manager, registers all agents, wires
-        # the HA WebSocket client, and starts background tasks.
-        from app.runtime_setup import _initialize_setup_dependent_services
-
-        await _initialize_setup_dependent_services(app, source="lifespan")
-        app.state.setup_runtime_initialized = True
-    else:
-        # Setup wizard path: register the core agents with None HA deps
-        # so the A2A surface is usable enough to serve the wizard.
-        await install_all_agents(app)
-
-        custom_loader = app.state.custom_loader = CustomAgentLoader(
-            registry,
-            ha_client=None,
-            entity_index=None,
-            mcp_tool_manager=mcp_tool_manager,
-        )
-        await custom_loader.load_all()
-
-    # Populate allowed WebSocket origins from HA URL
-    ha_client = getattr(app.state, "ha_client", None)
-    if ha_client is not None and getattr(ha_client, "_base_url", None):
-        from urllib.parse import urlparse
-
-        parsed = urlparse(ha_client._base_url)
-        app.state.allowed_ws_origins = {f"{parsed.scheme}://{parsed.netloc}"}
-        logger.info("Allowed WebSocket origins: %s", sorted(app.state.allowed_ws_origins))
-    else:
-        app.state.allowed_ws_origins = set()
-        logger.warning(
-            "No allowed WebSocket origins configured; WebSocket connections will be rejected until setup is complete"
-        )
-
-    # Register default notification profile if not set
-    existing_notif = await SettingsRepository.get_value("notification.profile")
-    if existing_notif is None:
-        import json as _json
-
-        await SettingsRepository.set(
-            "notification.profile",
-            _json.dumps(
-                {
-                    "tts_enabled": True,
-                    "tts_engine": "tts.google_translate_say",
-                    "persistent_enabled": True,
-                    "push_enabled": False,
-                    "push_targets": [],
-                    "voice_followup_enabled": True,
-                    "tts_to_listen_delay": 4.0,
-                    "chime_enabled": True,
-                    "chime_url": "media-source://media_source/local/notification.mp3",
-                }
-            ),
-            value_type="json",
-            category="notification",
-            description="Timer/alarm notification profile: channels and targets",
-        )
-
-    # Store on app.state for access elsewhere if needed. The
-    # ``_initialize_setup_dependent_services`` helper already wrote
-    # ``ha_client``/``entity_index``/``cache_manager``/``entity_matcher``/
-    # ``alias_resolver``/``custom_loader``/``ws_client``/
-    # ``sync_task``/``alarm_monitor`` when setup was complete. For the
-    # non-setup path those stay ``None``/absent which downstream routes
-    # already tolerate.
-    app.state.startup_time = time.time()
-    app.state.entity_index_init_task = getattr(app.state, "entity_index_init_task", None)
-    for _attr in (
-        "ha_client",
-        "entity_index",
-        "cache_manager",
-        "entity_matcher",
-        "alias_resolver",
-        "ws_client",
-        "sync_task",
-        "alarm_monitor",
-        "timer_scheduler",
-    ):
-        if not hasattr(app.state, _attr):
-            setattr(app.state, _attr, None)
-
-    # --- Plugin System (Batch F) ---
-    from app.plugins.base import PluginContext
-    from app.plugins.hooks import LifecyclePhase
-    from app.plugins.loader import PluginLoader
-
-    plugin_context = PluginContext(
-        agent_registry=registry,
-        dispatcher=dispatcher,
-        mcp_registry=mcp_registry,
-        settings_repo=SettingsRepository,
-        app=app,
-    )
-    plugin_dir = str(Path(__file__).resolve().parent.parent / "plugins")
-    plugin_loader = PluginLoader(plugin_dir, plugin_context)
-    await plugin_loader.discover_and_load()
-
-    try:
-        await plugin_loader.run_lifecycle(LifecyclePhase.CONFIGURE)
-    except Exception:
-        logger.warning("Plugin CONFIGURE phase crashed for one or more plugins (continuing startup)", exc_info=True)
-
-    try:
-        await plugin_loader.run_lifecycle(LifecyclePhase.STARTUP)
-    except Exception:
-        logger.warning("Plugin STARTUP phase crashed for one or more plugins (continuing startup)", exc_info=True)
-
-    try:
-        await plugin_loader.run_lifecycle(LifecyclePhase.READY)
-    except Exception:
-        logger.warning("Plugin READY phase crashed for one or more plugins (continuing startup)", exc_info=True)
-
-    app.state.plugin_loader = plugin_loader
-
-    # Wire pipeline EventBus to OrchestratorAgent
-    orchestrator_agent = await registry._get_handler_for_transport("orchestrator")
-    if orchestrator_agent is not None:
-        orchestrator_agent._event_bus = plugin_loader.event_bus
-        if plugin_context.pipeline_strategies:
-            orchestrator_agent.apply_pipeline_strategies(plugin_context.pipeline_strategies)
-
-    if not settings.cookie_secure:
-        logger.warning(
-            "COOKIE_SECURE is disabled. Admin session and CSRF cookies "
-            "will be sent over plain HTTP. Enable COOKIE_SECURE for production."
-        )
-    logger.info("Startup complete (setup_complete=%s)", setup_complete)
-
-    # Re-ensure log buffer handler after all startup code -- uvicorn or
-    # other libraries may have reconfigured logging during startup.
-    _ensure_log_buffer_handler()
-
-    # Start a lightweight guard task that re-attaches the buffer handler
-    # if something removes it at runtime (e.g. a library calling
-    # logging.config.dictConfig).
-    async def _log_buffer_guard() -> None:
-        while True:
-            await asyncio.sleep(10)
-            _ensure_log_buffer_handler()
-
-    app.state.log_buffer_guard_task = asyncio.create_task(_log_buffer_guard(), name="log_buffer_guard")
-
-    # Start SSE tickers for live dashboard updates
-    from app.api.routes.sse import register_sse_tickers
-
-    register_sse_tickers(app)
-
+    Startup is delegated to :func:`app.bootstrap._startup.setup_application`
+    and shutdown to :func:`app.bootstrap._shutdown.teardown`. Both preserve
+    the previous inline behavior and ordering exactly; they were extracted so
+    this function is a short orchestrator rather than a ~300-line method.
+    """
+    await setup_application(app)
     yield
-
-    # --- Shutdown ---
-    logger.info("Shutting down agent-assist container")
-
-    # Plugin shutdown (isolated -- errors must not block remaining cleanup)
-    try:
-        await plugin_loader.run_lifecycle(LifecyclePhase.SHUTDOWN)
-    except Exception:
-        logger.warning("Plugin shutdown error (continuing cleanup)", exc_info=True)
-
-    purge_task = getattr(app.state, "purge_task", None)
-    flush_task = getattr(app.state, "flush_task", None)
-    ws_task = getattr(app.state, "ws_task", None)
-    sync_task = getattr(app.state, "sync_task", None)
-    alarm_monitor = getattr(app.state, "alarm_monitor", None)
-    ws_client = getattr(app.state, "ws_client", None)
-    ha_client = getattr(app.state, "ha_client", None)
-    cache_manager = getattr(app.state, "cache_manager", None)
-    entity_index_init_task = getattr(app.state, "entity_index_init_task", None)
-    timer_scheduler = getattr(app.state, "timer_scheduler", None)
-
-    if alarm_monitor:
-        await alarm_monitor.stop()
-
-    if timer_scheduler:
-        try:
-            await timer_scheduler.stop()
-        except Exception:
-            logger.warning("TimerScheduler.stop failed", exc_info=True)
-
-    if ws_client:
-        await ws_client.disconnect()
-
-    # Cancel background tasks and await them to ensure cleanup completes
-    tasks_to_cancel = []
-    if purge_task and not purge_task.done():
-        purge_task.cancel()
-        tasks_to_cancel.append(purge_task)
-    if flush_task and not flush_task.done():
-        flush_task.cancel()
-        tasks_to_cancel.append(flush_task)
-    if ws_task and not ws_task.done():
-        ws_task.cancel()
-        tasks_to_cancel.append(ws_task)
-    if sync_task and not sync_task.done():
-        sync_task.cancel()
-        tasks_to_cancel.append(sync_task)
-    if entity_index_init_task and not entity_index_init_task.done():
-        entity_index_init_task.cancel()
-        tasks_to_cancel.append(entity_index_init_task)
-    validator_task = getattr(app.state, "cache_validator_task", None)
-    if validator_task and not validator_task.done():
-        validator_task.cancel()
-        tasks_to_cancel.append(validator_task)
-    if tasks_to_cancel:
-        await asyncio.gather(*tasks_to_cancel, return_exceptions=True)
-
-    # Cancel SSE ticker tasks with timeout
-    sse_ticker_tasks = getattr(app.state, "sse_ticker_tasks", [])
-    for task in sse_ticker_tasks:
-        if not task.done():
-            task.cancel()
-    if sse_ticker_tasks:
-        try:
-            await asyncio.wait_for(asyncio.gather(*sse_ticker_tasks, return_exceptions=True), timeout=5.0)
-        except TimeoutError:
-            logger.warning("SSE ticker tasks did not shut down within 5 seconds")
-
-    # Flush buffered cache hit-count updates before closing stores
-    try:
-        if cache_manager:
-            cache_manager.flush_pending()
-    except Exception:
-        logger.warning("Cache flush_pending failed at shutdown", exc_info=True)
-
-    from app.cache.vector_store import close_vector_store
-
-    mcp_tool_manager.invalidate_all()
-    await mcp_registry.disconnect_all()
-    if ha_client:
-        await ha_client.close()
-    close_vector_store()
-
-    cache_store = getattr(app.state, "cache_store", None)
-    if cache_store is not None:
-        try:
-            cache_store.close()
-        except Exception:
-            logger.warning("Failed to close SQLite cache store", exc_info=True)
-
-    from app.db.schema import close_db
-
-    await close_db()
-    logger.info("Shutdown complete")
+    await teardown(app)
 
 
 def create_app() -> FastAPI:

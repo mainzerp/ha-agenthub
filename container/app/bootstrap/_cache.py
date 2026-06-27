@@ -5,8 +5,8 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
+from app.bootstrap._tasks import spawn_background
 from app.cache.cache_manager import CacheManager
-from app.util.tasks import spawn
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
@@ -52,7 +52,7 @@ async def setup_cache(
 
     purge_task = getattr(app.state, "purge_task", None)
     if purge_task is None or purge_task.done():
-        app.state.purge_task = spawn(_purge_stale_response_cache(cache_manager))
+        spawn_background(app, _purge_stale_response_cache(cache_manager), "purge_task")
 
     cache_validator = getattr(app.state, "cache_validator", None)
     if cache_validator is None:
@@ -69,6 +69,6 @@ async def setup_cache(
 
     validator_task = getattr(app.state, "cache_validator_task", None)
     if validator_task is None or validator_task.done():
-        app.state.cache_validator_task = spawn(cache_validator.run_periodic(), name="cache_validator")
+        spawn_background(app, cache_validator.run_periodic(), "cache_validator_task", name="cache_validator")
 
     return cache_manager

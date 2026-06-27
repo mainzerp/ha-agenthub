@@ -13,6 +13,7 @@ import time
 from collections.abc import Awaitable, Callable
 from typing import Any
 
+from app.a2a._request import build_send_request
 from app.a2a.protocol import JsonRpcRequest
 from app.agents.agent_registry import CachedAgentRegistry
 from app.agents.cancel_speech import generate_cancel_speech
@@ -181,14 +182,11 @@ class DispatchManager:
             context=context,
             verbatim_terms=verbatim_terms or [],
         )
-        request = JsonRpcRequest(
-            method="message/send",
-            params={
-                "agent_id": target_agent,
-                "task": agent_task,
-                "_span_collector": span_collector,
-            },
-            id=conversation_id or "orchestrator-dispatch",
+        request = build_send_request(
+            target_agent,
+            agent_task,
+            request_id=conversation_id or "orchestrator-dispatch",
+            span_collector=span_collector,
         )
         try:
             t0 = time.perf_counter()

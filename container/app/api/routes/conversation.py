@@ -13,6 +13,7 @@ from typing import Literal, cast
 from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
 
+from app.a2a._request import build_send_request, build_stream_request
 from app.a2a.protocol import JsonRpcRequest
 from app.analytics.tracer import SpanCollector
 from app.middleware.rate_limit import WsMessageRateLimiter, get_client_ip_from_headers, rate_limit_conversation
@@ -132,15 +133,20 @@ def _build_a2a_request(
     )
     request_id = str(uuid.uuid4())
     # Route all requests through the orchestrator for intent classification
-    a2a_request = JsonRpcRequest(
-        method=method,
-        params={
-            "agent_id": "orchestrator",
-            "task": task,
-            "_span_collector": span_collector,
-        },
-        id=request_id,
-    )
+    if method == "message/stream":
+        a2a_request = build_stream_request(
+            "orchestrator",
+            task,
+            request_id=request_id,
+            span_collector=span_collector,
+        )
+    else:
+        a2a_request = build_send_request(
+            "orchestrator",
+            task,
+            request_id=request_id,
+            span_collector=span_collector,
+        )
     return a2a_request, task
 
 

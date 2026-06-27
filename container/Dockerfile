@@ -44,6 +44,8 @@ COPY app/ ./app/
 RUN addgroup --system app && adduser --system --ingroup app app \
     && mkdir -p /data/chromadb /data/hf_cache \
     && chown -R app:app /data /app
+# /data/chromadb now holds the sqlite-vec entity-vector DB + cache.db
+# (kept under the legacy name to avoid env-var churn).
 
 # Entrypoint: fix permissions on mounted volumes then drop to non-root
 COPY entrypoint.sh /entrypoint.sh

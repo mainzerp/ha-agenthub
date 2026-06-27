@@ -202,6 +202,8 @@ async def _trigger_conversation_continuation_on_registry_device(
             "Conversation continuation triggered (registry device_id=%s, e.g. Companion)",
             device_registry_id,
         )
+    except asyncio.CancelledError:
+        raise
     except Exception as exc:
         body = ""
         if hasattr(exc, "response") and exc.response is not None:
@@ -296,7 +298,10 @@ async def _resolve_notification_language(ha_client: Any, metadata: Any = None) -
 
     try:
         ha_language = await ha_client.get_user_language() if ha_client else None
+    except asyncio.CancelledError:
+        raise
     except Exception:
+        logger.debug("Failed to resolve HA user language, falling back to default", exc_info=True)
         ha_language = None
     resolved = str(ha_language or "").strip()
     return resolved or "en"
@@ -505,6 +510,8 @@ async def _generate_tts_message(
             return result.strip()
         logger.warning("LLM returned empty TTS message, falling back to static template")
         return None
+    except asyncio.CancelledError:
+        raise
     except Exception:
         logger.warning("LLM TTS message generation failed, falling back to static template", exc_info=True)
         return None
@@ -528,6 +535,8 @@ async def _play_chime(
         )
         logger.info("Chime played on %s", media_player_entity)
         await asyncio.sleep(_CHIME_TO_TTS_DELAY)
+    except asyncio.CancelledError:
+        raise
     except Exception:
         logger.warning("Chime playback failed on %s, continuing with TTS", media_player_entity, exc_info=True)
 
@@ -550,6 +559,8 @@ async def _notify_tts(
             },
         )
         logger.info("TTS notification sent to %s: %s", media_player_entity, message)
+    except asyncio.CancelledError:
+        raise
     except Exception:
         logger.warning("TTS notification failed on %s, trying legacy tts.say", media_player_entity, exc_info=True)
         try:
@@ -561,6 +572,8 @@ async def _notify_tts(
                 media_player_entity,
                 {"message": message},
             )
+        except asyncio.CancelledError:
+            raise
         except Exception:
             logger.error("TTS fallback also failed on %s", media_player_entity, exc_info=True)
 
@@ -580,6 +593,8 @@ async def _notify_satellite_announce(
             },
         )
         logger.info("Assist satellite announce sent to %s", satellite_entity)
+    except asyncio.CancelledError:
+        raise
     except Exception:
         logger.warning("Assist satellite announce failed on %s", satellite_entity, exc_info=True)
 
@@ -596,6 +611,8 @@ async def _notify_persistent(
             None,
             {"message": message, "title": timer_name},
         )
+    except asyncio.CancelledError:
+        raise
     except Exception:
         logger.error("persistent_notification failed for %s", timer_name, exc_info=True)
 
@@ -624,6 +641,8 @@ async def _notify_push(
                 },
             )
             logger.info("Push notification sent to %s", target)
+        except asyncio.CancelledError:
+            raise
         except Exception:
             logger.error("Push notification failed for target %s", target, exc_info=True)
 
@@ -645,6 +664,8 @@ async def _load_notification_profile() -> dict:
         if raw:
             profile = _json.loads(raw)
             defaults.update(profile)
+    except asyncio.CancelledError:
+        raise
     except Exception:
         logger.warning("Failed to load notification profile, using defaults", exc_info=True)
     return defaults
@@ -667,6 +688,8 @@ async def _resolve_satellite_device(
             for entry in entries:
                 if _normalize_area_for_match(getattr(entry, "area", None)) == normalized_area:
                     return entry.entity_id
+        except asyncio.CancelledError:
+            raise
         except Exception:
             logger.warning(
                 "EntityIndex satellite lookup failed for area %s",
@@ -683,6 +706,8 @@ async def _resolve_satellite_device(
             state_area = state.get("attributes", {}).get("area_id")
             if _normalize_area_for_match(state_area) == normalized_area:
                 return entity_id
+    except asyncio.CancelledError:
+        raise
     except Exception:
         logger.warning("Failed to resolve satellite for area %s", area, exc_info=True)
     return None
@@ -723,6 +748,8 @@ async def _resolve_media_player_from_origin_device(
             resp = await client.post("/api/template", json={"template": template})
             resp.raise_for_status()
             rendered = (resp.text or "").strip()
+    except asyncio.CancelledError:
+        raise
     except Exception:
         logger.debug(
             "Failed to resolve media_player from origin device %s",
@@ -760,6 +787,8 @@ async def _resolve_satellite_from_origin_device(
             resp = await client.post("/api/template", json={"template": template})
             resp.raise_for_status()
             rendered = (resp.text or "").strip()
+    except asyncio.CancelledError:
+        raise
     except Exception:
         logger.debug(
             "Failed to resolve assist_satellite from origin device %s",
@@ -793,6 +822,8 @@ async def _resolve_media_player_from_area(
             for entry in entries:
                 if _normalize_area_for_match(getattr(entry, "area", None)) == normalized_area:
                     return entry.entity_id
+        except asyncio.CancelledError:
+            raise
         except Exception:
             logger.warning("EntityIndex media_player lookup failed for area %s", area, exc_info=True)
 
@@ -805,6 +836,8 @@ async def _resolve_media_player_from_area(
             state_area = state.get("attributes", {}).get("area_id")
             if _normalize_area_for_match(state_area) == normalized_area:
                 return entity_id
+    except asyncio.CancelledError:
+        raise
     except Exception:
         logger.warning("State scan media_player lookup failed for area %s", area, exc_info=True)
     return None
@@ -881,6 +914,8 @@ async def _resolve_ha_device_id(
             resp = await client.post("/api/template", json={"template": template})
             resp.raise_for_status()
             rendered = (resp.text or "").strip()
+    except asyncio.CancelledError:
+        raise
     except Exception:
         logger.debug("Failed to resolve device_id for %s", entity_id, exc_info=True)
         return None
@@ -934,6 +969,8 @@ async def _trigger_conversation_continuation(
             area,
             device_id or "<unresolved>",
         )
+    except asyncio.CancelledError:
+        raise
     except Exception:
         logger.warning(
             "Failed to trigger conversation continuation on %s -- user must use wake word for follow-up",

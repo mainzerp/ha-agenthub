@@ -64,3 +64,12 @@ repos:
         files: ^custom_components/
         pass_filenames: false
         stages: [pre-push]
+
+      - id: mypy
+        name: mypy (non-blocking)
+        language: system
+        entry: python
+        args: ["-c", "import subprocess, sys; r = subprocess.run(['mypy', 'container/app']); sys.exit(0)"]
+        files: ^container/
+        pass_filenames: false
+        stages: [pre-push]

@@ -707,7 +707,7 @@ class TestTimerExecutorVerification:
 
         scheduler = MagicMock()
         scheduler.schedule = AsyncMock(return_value="timer-id-abc")
-        with patch("app.agents.timer_executor._get_scheduler", return_value=scheduler):
+        with patch("app.agents.timer_executor._helpers._get_scheduler", return_value=scheduler):
             result = await execute_timer_action(
                 {
                     "action": "start_timer",
@@ -748,7 +748,7 @@ class TestTimerExecutorVerification:
 
         scheduler = MagicMock()
         scheduler.cancel = AsyncMock(return_value=1)
-        with patch("app.agents.timer_executor._get_scheduler", return_value=scheduler):
+        with patch("app.agents.timer_executor._helpers._get_scheduler", return_value=scheduler):
             result = await execute_timer_action(
                 {"action": "cancel_timer", "entity": "pasta"},
                 _make_ha_client(call_result=[], observed_state=None),
@@ -769,7 +769,7 @@ class TestTimerExecutorVerification:
         scheduler = MagicMock()
         scheduler.cancel = AsyncMock(return_value=0)
         scheduler.list = AsyncMock(return_value=[])
-        with patch("app.agents.timer_executor._get_scheduler", return_value=scheduler):
+        with patch("app.agents.timer_executor._helpers._get_scheduler", return_value=scheduler):
             result = await execute_timer_action(
                 {"action": "cancel_timer", "entity": "pasta"},
                 _make_ha_client(call_result=[], observed_state=None),
@@ -799,7 +799,7 @@ class TestTimerExecutorVerification:
         scheduler.cancel = AsyncMock(return_value=1)
         scheduler.schedule = AsyncMock(return_value="t-002")
 
-        with patch("app.agents.timer_executor._get_scheduler", return_value=scheduler):
+        with patch("app.agents.timer_executor._helpers._get_scheduler", return_value=scheduler):
             result = await execute_timer_action(
                 {"action": "extend_timer", "entity": "pasta", "parameters": {"duration": "00:01:00"}},
                 _make_ha_client(call_result=[], observed_state=None),
@@ -835,7 +835,7 @@ class TestTimerExecutorVerification:
         scheduler.cancel = AsyncMock(return_value=1)
         scheduler.schedule = AsyncMock(return_value="t-004")
 
-        with patch("app.agents.timer_executor._get_scheduler", return_value=scheduler):
+        with patch("app.agents.timer_executor._helpers._get_scheduler", return_value=scheduler):
             result = await execute_timer_action(
                 {"action": "extend_timer", "entity": "", "parameters": {"duration": "00:02:00"}},
                 _make_ha_client(call_result=[], observed_state=None),
@@ -854,7 +854,7 @@ class TestTimerExecutorVerification:
         scheduler = MagicMock()
         scheduler.list = AsyncMock(return_value=[])
 
-        with patch("app.agents.timer_executor._get_scheduler", return_value=scheduler):
+        with patch("app.agents.timer_executor._helpers._get_scheduler", return_value=scheduler):
             result = await execute_timer_action(
                 {"action": "extend_timer", "entity": "", "parameters": {"duration": "00:01:00"}},
                 _make_ha_client(call_result=[], observed_state=None),
@@ -897,7 +897,7 @@ class TestTimerExecutorVerification:
         scheduler.cancel = AsyncMock(side_effect=[0, 1])
         scheduler.list = AsyncMock(return_value=[stored_row])
 
-        with patch("app.agents.timer_executor._get_scheduler", return_value=scheduler):
+        with patch("app.agents.timer_executor._helpers._get_scheduler", return_value=scheduler):
             result = await execute_timer_action(
                 {"action": "cancel_timer", "entity": "Einminutentimer"},
                 _make_ha_client(call_result=[], observed_state=None),
@@ -919,7 +919,7 @@ class TestTimerExecutorVerification:
         scheduler.cancel = AsyncMock(return_value=1)
         scheduler.list = AsyncMock()
 
-        with patch("app.agents.timer_executor._get_scheduler", return_value=scheduler):
+        with patch("app.agents.timer_executor._helpers._get_scheduler", return_value=scheduler):
             result = await execute_timer_action(
                 {"action": "cancel_timer", "entity": "pasta"},
                 _make_ha_client(call_result=[], observed_state=None),

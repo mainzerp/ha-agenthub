@@ -3,7 +3,7 @@
 from app.cache.action_cache import ActionCache
 from app.cache.cache_manager import ActionReplayOutcome, CacheManager, CacheResult, RoutingSkipOutcome
 from app.cache.cache_validator import ActionCacheValidator
-from app.cache.embedding import ChromaEmbeddingFunction, EmbeddingEngine, get_embedding_engine
+from app.cache.embedding import EmbeddingEngine, get_embedding_engine
 from app.cache.routing_cache import RoutingCache
 from app.cache.sqlite_cache_store import SqliteCacheStore
 from app.cache.vector_store import VectorStore, get_vector_store
@@ -14,7 +14,6 @@ __all__ = [
     "ActionReplayOutcome",
     "CacheManager",
     "CacheResult",
-    "ChromaEmbeddingFunction",
     "EmbeddingEngine",
     "RoutingCache",
     "RoutingSkipOutcome",

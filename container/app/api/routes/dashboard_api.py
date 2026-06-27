@@ -20,7 +20,7 @@ from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
-from app.a2a.protocol import JsonRpcRequest
+from app.a2a._request import build_send_request, build_stream_request
 from app.db.repository import (
     AgentConfigRepository,
     AnalyticsRepository,
@@ -715,14 +715,11 @@ async def admin_chat(request: Request, payload: ChatRequest) -> dict[str, Any]:
         # pin to a previous request's area.
         context=TaskContext(language=language, source="chat", injection_detected=prepared_text.injection_detected),
     )
-    a2a_request = JsonRpcRequest(
-        method="message/send",
-        params={
-            "agent_id": "orchestrator",
-            "task": task,
-            "_span_collector": span_collector,
-        },
-        id=str(uuid.uuid4()),
+    a2a_request = build_send_request(
+        "orchestrator",
+        task,
+        request_id=str(uuid.uuid4()),
+        span_collector=span_collector,
     )
     try:
         response = await _dispatcher.dispatch(a2a_request)
@@ -755,14 +752,11 @@ async def admin_chat_stream(request: Request, payload: ChatRequest):
         conversation_id=payload.conversation_id,
         context=TaskContext(language=language, source="chat", injection_detected=prepared_text.injection_detected),
     )
-    a2a_request = JsonRpcRequest(
-        method="message/stream",
-        params={
-            "agent_id": "orchestrator",
-            "task": task,
-            "_span_collector": span_collector,
-        },
-        id=str(uuid.uuid4()),
+    a2a_request = build_stream_request(
+        "orchestrator",
+        task,
+        request_id=str(uuid.uuid4()),
+        span_collector=span_collector,
     )
 
     async def generate():

@@ -41,14 +41,18 @@ async def test_embed_batch_rate_limit_retries_with_asyncio_sleep():
     assert result == [[0.1, 0.2, 0.3]]
 
 
-class TestChromaEmbeddingFunction:
-    """CRIT-3: ChromaEmbeddingFunction must not deadlock when called from the event loop."""
+class TestEmbeddingEngineCallsEngine:
+    """EmbeddingEngine.embed_batch must be awaitable from sync contexts (sqlite-vec VectorStore shim).
 
-    def test_call_from_event_loop_does_not_deadlock(self):
-        """Calling __call__ from the event loop thread must complete without deadlock."""
+    The sqlite-vec VectorStore embeds query/document text synchronously via
+    the same event-loop-safe shim the old ChromaEmbeddingFunction used. These
+    tests verify EmbeddingEngine.embed_batch is callable from both a thread
+    (no running loop) and the event-loop thread without deadlocking.
+    """
+
+    def test_embed_batch_from_thread_does_not_deadlock(self):
         import asyncio
-
-        from app.cache.embedding import ChromaEmbeddingFunction, EmbeddingEngine
+        import threading
 
         engine = EmbeddingEngine()
         engine._provider = "local"
@@ -57,20 +61,22 @@ class TestChromaEmbeddingFunction:
             return [[0.1, 0.2, 0.3]]
 
         engine.embed_batch = _fake_embed
-        fn = ChromaEmbeddingFunction(engine)
 
-        async def _run():
-            return fn(["hello"])
+        results = []
 
-        result = asyncio.run(_run())
-        assert len(result) == 1
-        assert list(result[0]) == [0.1, 0.2, 0.3]
+        def _target():
+            coro = engine.embed_batch(["hello"])
+            results.append(asyncio.run(coro))
 
-    def test_call_from_thread_does_not_deadlock(self):
-        """Calling __call__ from a non-event-loop thread must complete without deadlock."""
-        import threading
+        t = threading.Thread(target=_target)
+        t.start()
+        t.join(timeout=5)
+        assert not t.is_alive(), "Thread deadlocked"
+        assert len(results) == 1
+        assert list(results[0][0]) == [0.1, 0.2, 0.3]
 
-        from app.cache.embedding import ChromaEmbeddingFunction, EmbeddingEngine
+    def test_embed_batch_from_event_loop_does_not_deadlock(self):
+        import asyncio
 
         engine = EmbeddingEngine()
         engine._provider = "local"
@@ -79,16 +85,10 @@ class TestChromaEmbeddingFunction:
             return [[0.4, 0.5, 0.6]]
 
         engine.embed_batch = _fake_embed
-        fn = ChromaEmbeddingFunction(engine)
 
-        results = []
+        async def _run():
+            return await engine.embed_batch(["world"])
 
-        def _target():
-            results.append(fn(["world"]))
-
-        t = threading.Thread(target=_target)
-        t.start()
-        t.join(timeout=5)
-        assert not t.is_alive(), "Thread deadlocked"
-        assert len(results) == 1
-        assert list(results[0][0]) == [0.4, 0.5, 0.6]
+        result = asyncio.run(_run())
+        assert len(result) == 1
+        assert list(result[0]) == [0.4, 0.5, 0.6]
