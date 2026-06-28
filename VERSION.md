@@ -1,12 +1,20 @@
 # Version
 
-**Current Version:** 1.42.1
+**Current Version:** 1.42.2
 
 ## Recent Changes
 
-Track changes since `v1.42.1` here.
+Track changes since `v1.42.2` here.
 
 ## Version History
+
+### 1.42.2 (PATCH) -- Dependency updates
+
+- chore(deps): bump fastapi from 0.135.3 to 0.138.1 in /container (10f06a2)
+- chore(deps): bump cryptography from 48.0.1 to 49.0.0 in /container (e26fb15)
+- chore(deps): bump sentence-transformers from 5.5.1 to 5.6.0 in /container (ed11d78)
+- chore(deps-dev): update pytest requirement from >=9.0.3 to >=9.1.1 in /container (55e3dd5)
+- chore(deps-dev): bump ruff from 0.15.15 to 0.15.20 in /container (da279e0)
 
 ### 1.42.1 (PATCH) -- Security dependency updates
 
