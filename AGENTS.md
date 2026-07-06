@@ -1,4 +1,6 @@
-# HA-AgentHub Agent Instructions
+# Orchestrator Instructions (Coding Agent)
+
+> **NOTE:** This file contains instructions for the coding agent (Kilo/Orchestrator) and is **not part of the HA-AgentHub application**. It does not define app behavior, runtime logic, or user-facing functionality.
 
 > **CRITICAL: `.github/instructions/prime-directives.md` contains project-specific architectural and correctness rules. They define what the codebase must enforce at runtime. Read and respect them when analyzing, changing, or implementing any part of this project. They are non-negotiable and override all other guidance.**
 >
