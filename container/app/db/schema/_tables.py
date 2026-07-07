@@ -217,6 +217,7 @@ async def _create_tables(db: aiosqlite.Connection) -> None:
             area_name TEXT,
             voice_followup INTEGER DEFAULT 0,
             verbatim_terms TEXT,
+            cache_hit_type TEXT,
             created_at TEXT NOT NULL DEFAULT (datetime('now'))
         )
     """)

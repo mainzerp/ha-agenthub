@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, patch
 
 import httpx
@@ -123,3 +124,87 @@ class TestExportTracesAndUpdateLabel:
                 # Update label (missing)
                 resp = await client.put("/api/admin/traces/missing/label", json={"label": "reviewed"})
                 assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+class TestCacheHitVisibility:
+    """The traces API must surface cache-hit status in both list and detail."""
+
+    @staticmethod
+    async def _seed(trace_id: str, cache_hit_type: str | None) -> None:
+        from app.db.repository import TraceSpanRepository, TraceSummaryRepository
+
+        await TraceSummaryRepository.create(
+            {
+                "trace_id": trace_id,
+                "conversation_id": f"conv-{trace_id}",
+                "user_input": "turn on the kitchen light",
+                "final_response": "Done.",
+                "agents": ["light-agent"],
+                "source": "ws",
+                "routing_agent": "light-agent",
+                "routing_confidence": 1.0,
+                "cache_hit_type": cache_hit_type,
+            }
+        )
+        now = datetime.now(UTC).isoformat()
+        if cache_hit_type == "action_hit":
+            # Action hit: return span carries action_cache_hit; no classify span.
+            await TraceSpanRepository.insert(
+                trace_id, "cache_lookup", now, 1.0, agent_id="orchestrator", metadata={"hit_type": "action_hit"}
+            )
+            await TraceSpanRepository.insert(
+                trace_id,
+                "return",
+                now,
+                2.0,
+                agent_id="orchestrator",
+                metadata={"action_cache_hit": True, "response_cache_hit": False, "from_agent": "light-agent"},
+            )
+        else:
+            # Routing hit: classify span carries routing_cached=True.
+            await TraceSpanRepository.insert(
+                trace_id, "cache_lookup", now, 1.0, agent_id="orchestrator", metadata={"hit_type": "routing_hit"}
+            )
+            await TraceSpanRepository.insert(
+                trace_id,
+                "classify",
+                now,
+                3.0,
+                agent_id="orchestrator",
+                metadata={"routing_cached": True, "target_agent": "light-agent"},
+            )
+
+    async def test_list_surfaces_cache_hit_type(self, db_repository):
+        await self._seed("trace-action", "action_hit")
+        await self._seed("trace-routing", "routing_hit")
+
+        app = _build_app()
+        async for client in _client_for(app):
+            resp = await client.get("/api/admin/traces")
+            assert resp.status_code == 200
+            rows = {r["trace_id"]: r for r in resp.json()["traces"]}
+            assert rows["trace-action"]["cache_hit_type"] == "action_hit"
+            assert rows["trace-routing"]["cache_hit_type"] == "routing_hit"
+
+    async def test_detail_surfaces_action_cache_hit(self, db_repository):
+        await self._seed("trace-action", "action_hit")
+
+        app = _build_app()
+        async for client in _client_for(app):
+            resp = await client.get("/api/admin/traces/trace-action")
+            assert resp.status_code == 200
+            body = resp.json()
+            assert body["cache_hit_type"] == "action_hit"
+            assert body["routing"]["action_cache_hit"] is True
+
+    async def test_detail_surfaces_routing_cached(self, db_repository):
+        await self._seed("trace-routing", "routing_hit")
+
+        app = _build_app()
+        async for client in _client_for(app):
+            resp = await client.get("/api/admin/traces/trace-routing")
+            assert resp.status_code == 200
+            body = resp.json()
+            assert body["cache_hit_type"] == "routing_hit"
+            assert body["routing_cached"] is True

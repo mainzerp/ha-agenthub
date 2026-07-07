@@ -384,3 +384,69 @@ async def test_conditional_action_in_service_data_is_not_stored():
     assert (stored_action, stored_routing) == (False, False)
     orch._cache_manager.store_action_async.assert_not_awaited()
     orch._cache_manager.store_routing_async.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_routing_skip_finalization_writes_trace_summary_row():
+    """REGRESSION: a routing-cache hit reaches the normal _create_trace
+    finalization site and writes a trace_summary row carrying routing
+    provenance and cache_hit_type='routing_hit'.
+
+    Pins Step 2: the routing-skip turn does not short-circuit before
+    finalization, so create_trace_summary is awaited.
+    """
+    from app.analytics.tracer import SpanCollector
+
+    orch = _make_orchestrator(MagicMock())
+    orch._store_turn = AsyncMock()
+
+    span_collector = SpanCollector("routing-skip-trace")
+    # Span shape produced by the real routing-hit path: a cache_lookup span
+    # tagged routing_hit, plus the synthetic classify span (routing_cached=True)
+    # emitted by run_classification on a routing skip.
+    span_collector._spans.extend(
+        [
+            {
+                "span_name": "cache_lookup",
+                "agent_id": "orchestrator",
+                "metadata": {"hit_type": "routing_hit", "cached_agent_id": "light-agent"},
+                "duration_ms": 2.0,
+            },
+            {
+                "span_name": "classify",
+                "agent_id": "orchestrator",
+                "metadata": {"routing_cached": True, "target_agent": "light-agent"},
+                "duration_ms": 3.0,
+            },
+        ]
+    )
+
+    user_text = "turn on kitchen light"
+    with patch("app.analytics.tracer.create_trace_summary", new_callable=AsyncMock) as mock_summary:
+        await orch._finalize_post_mediation(
+            task=_make_task(user_text),
+            user_text=user_text,
+            target_agent="light-agent",
+            confidence=0.97,
+            condensed_task="Turn on kitchen light",
+            mediated_speech="Live dispatch speech",
+            original_speech="Live dispatch speech",
+            action_executed=None,
+            has_error=False,
+            span_collector=span_collector,
+            conversation_id="conv-routing-cache",
+            language="en",
+            turns=[],
+            classifications=[("light-agent", "Turn on kitchen light", 0.97, [])],
+            voice_followup_requested=False,
+            skip_response_cache=True,
+        )
+
+    mock_summary.assert_awaited_once()
+    kwargs = mock_summary.await_args.kwargs
+    assert kwargs["routing_agent"] == "light-agent"
+    assert kwargs["routing_confidence"] == 0.97
+    assert kwargs["condensed_task"] == "Turn on kitchen light"
+    assert kwargs["cache_hit_type"] == "routing_hit"
+    # classify span present -> routing_duration_ms recorded (not None)
+    assert kwargs["routing_duration_ms"] is not None

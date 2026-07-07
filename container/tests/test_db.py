@@ -1049,6 +1049,83 @@ class TestMigrationV22:
 
 
 # ---------------------------------------------------------------------------
+# Schema migration v39 -- trace_summary cache_hit_type column
+# ---------------------------------------------------------------------------
+
+
+class TestMigrationV39:
+    async def test_migration_v39_adds_cache_hit_type_column_idempotently(self, db_repository):
+        from app.db.schema import _run_migrations
+
+        async with aiosqlite.connect(str(db_repository)) as db:
+            db.row_factory = aiosqlite.Row
+            # Simulate a pre-v39 DB: rebuild trace_summary without cache_hit_type.
+            await db.execute("ALTER TABLE trace_summary RENAME TO trace_summary_old")
+            await db.execute(
+                """
+                CREATE TABLE trace_summary (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    trace_id TEXT NOT NULL UNIQUE,
+                    conversation_id TEXT,
+                    user_input TEXT,
+                    final_response TEXT,
+                    agents TEXT,
+                    total_duration_ms REAL,
+                    label TEXT,
+                    source TEXT,
+                    routing_agent TEXT,
+                    routing_confidence REAL,
+                    routing_duration_ms REAL,
+                    routing_reasoning TEXT,
+                    agent_instructions TEXT,
+                    conversation_turns TEXT,
+                    device_id TEXT,
+                    area_id TEXT,
+                    device_name TEXT,
+                    area_name TEXT,
+                    voice_followup INTEGER DEFAULT 0,
+                    verbatim_terms TEXT,
+                    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+                )
+                """
+            )
+            await db.execute(
+                """
+                INSERT INTO trace_summary (
+                    id, trace_id, conversation_id, user_input, final_response, agents,
+                    total_duration_ms, label, source, routing_agent, routing_confidence,
+                    routing_duration_ms, routing_reasoning, agent_instructions,
+                    conversation_turns, device_id, area_id, device_name, area_name,
+                    voice_followup, verbatim_terms, created_at
+                )
+                SELECT
+                    id, trace_id, conversation_id, user_input, final_response, agents,
+                    total_duration_ms, label, source, routing_agent, routing_confidence,
+                    routing_duration_ms, routing_reasoning, agent_instructions,
+                    conversation_turns, device_id, area_id, device_name, area_name,
+                    voice_followup, verbatim_terms, created_at
+                FROM trace_summary_old
+                """
+            )
+            await db.execute("DROP TABLE trace_summary_old")
+            await db.execute("DELETE FROM schema_version WHERE version >= 39")
+            await db.commit()
+
+            await _run_migrations(db)
+            await _run_migrations(db)
+            await db.commit()
+
+            columns = await (await db.execute("PRAGMA table_info(trace_summary)")).fetchall()
+            schema_versions = await (
+                await db.execute("SELECT version FROM schema_version WHERE version = 39")
+            ).fetchall()
+
+        column_names = {row[1] for row in columns}
+        assert "cache_hit_type" in column_names
+        assert len(schema_versions) == 1
+
+
+# ---------------------------------------------------------------------------
 # SendDeviceMappingRepository
 # ---------------------------------------------------------------------------
 
