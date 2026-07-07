@@ -340,15 +340,14 @@ class CacheOrchestrator:
                     speech,
                     target_agent,
                     1.0,
-                    None,
                     user_text,
-                    [("orchestrator", user_text, 1.0)],
+                    [(target_agent, user_text, 1.0, [])],
                     prior_turns,
                     task_context=task_context,
                     voice_followup=vf_effective,
                 )
             except Exception:
-                logger.warning("Failed to create trace summary", exc_info=True)
+                logger.warning("action-replay _create_trace failed", exc_info=True)
 
         return {
             "speech": speech,

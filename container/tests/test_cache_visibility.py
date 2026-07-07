@@ -448,3 +448,58 @@ class TestActionCacheTraceDualWrite:
         meta = return_spans[-1].get("metadata") or {}
         assert meta.get("action_cache_hit") is True
         assert meta.get("response_cache_hit") is False
+
+    async def test_action_hit_writes_trace_summary_row_with_provenance(self):
+        """REGRESSION: an action-cache hit must reach create_trace_summary.
+
+        Previously the ``_create_trace(...)`` call in
+        ``finalize_action_replay_hit`` passed 10 positional args to a
+        9-positional signature, raising ``TypeError`` that the swallowing
+        ``except`` hid, so no ``trace_summary`` row was written. This pins
+        the row-write and the routing provenance/cache_hit_type.
+        """
+        orch, _dispatcher, cache_manager, _ha_client = _make_orchestrator()
+        cached = make_cached_action(service="light/turn_on", entity_id="light.kitchen")
+        hit = ActionReplayOutcome(
+            kind="full_hit",
+            entry_id="action-2",
+            agent_id="light-agent",
+            response_text="Done.",
+            replay_result={"success": True},
+            similarity=1.0,
+            cached_action=cached,
+        )
+
+        from app.analytics.tracer import SpanCollector
+
+        span_collector = SpanCollector("action-hit-trace")
+        # Mirror the cache_lookup span emitted by the real try_cache_replay on
+        # an action hit, so _create_trace can derive cache_hit_type.
+        span_collector._spans.append(
+            {
+                "span_name": "cache_lookup",
+                "agent_id": "orchestrator",
+                "metadata": {"hit_type": "action_hit"},
+                "duration_ms": 1.0,
+            }
+        )
+        orch._get_turns = AsyncMock(return_value=[])
+        orch._store_turn = AsyncMock()
+        cache_manager.apply_rewrite = AsyncMock(return_value="Done.")
+
+        user_text = "turn on the kitchen light"
+        with patch("app.analytics.tracer.create_trace_summary", new_callable=AsyncMock) as mock_summary:
+            await orch._finalize_action_replay_hit(
+                hit,
+                "conv-1",
+                user_text,
+                span_collector,
+            )
+
+        mock_summary.assert_awaited_once()
+        kwargs = mock_summary.await_args.kwargs
+        assert kwargs["routing_agent"] == "light-agent"
+        assert kwargs["routing_confidence"] == 1.0
+        assert kwargs["condensed_task"] == user_text
+        assert "light-agent" in kwargs["agents"]
+        assert kwargs["cache_hit_type"] == "action_hit"

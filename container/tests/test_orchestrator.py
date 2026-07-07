@@ -1025,9 +1025,10 @@ class TestOrchestratorAgent:
         task = _make_task("turn on light")
         task.span_collector = collector
         task.conversation_id = "conv-resp-hit"
-        with patch("app.analytics.tracer.create_trace_summary", new_callable=AsyncMock):
+        with patch("app.analytics.tracer.create_trace_summary", new_callable=AsyncMock) as mock_summary:
             result = await orch.handle_task(task)
         assert result["speech"] == "Light is on."
+        mock_summary.assert_awaited_once()
         span_names = [s["span_name"] for s in collector._spans]
         assert "cache_lookup" in span_names
         assert "return" in span_names

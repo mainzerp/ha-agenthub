@@ -134,6 +134,7 @@ async def export_traces(
             "Area",
             "Voice Followup",
             "Conversation Turns",
+            "Cache Hit",
         ]
     )
     for row in rows:
@@ -164,6 +165,7 @@ async def export_traces(
                 area,
                 voice_followup,
                 conv_turns_str,
+                row.get("cache_hit_type", ""),
             ]
         )
 
@@ -679,6 +681,7 @@ async def get_trace_detail(trace_id: str):
         "agent_executions": agent_executions,
         "agent_communication": agent_communication,
         "routing_cached": routing_cached,
+        "cache_hit_type": summary.get("cache_hit_type"),
         "conversation_turns": summary.get("conversation_turns") or [],
     }
 

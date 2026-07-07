@@ -137,8 +137,8 @@ class TraceSummaryRepository:
                 "agents, total_duration_ms, label, source, routing_agent, "
                 "routing_confidence, routing_duration_ms, routing_reasoning, "
                 "agent_instructions, conversation_turns, "
-                "device_id, area_id, device_name, area_name, voice_followup, verbatim_terms) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "device_id, area_id, device_name, area_name, voice_followup, verbatim_terms, cache_hit_type) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     data.get("trace_id"),
                     data.get("conversation_id"),
@@ -160,6 +160,7 @@ class TraceSummaryRepository:
                     data.get("area_name"),
                     data.get("voice_followup"),
                     verbatim_terms,
+                    data.get("cache_hit_type"),
                 ),
             )
 

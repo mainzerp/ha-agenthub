@@ -799,6 +799,14 @@ async def _migrate_to_38(db: aiosqlite.Connection) -> None:
     await db.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (38)")
 
 
+async def _migrate_to_39(db: aiosqlite.Connection) -> None:
+    # Migration 39: Add cache_hit_type column to trace_summary to distinguish
+    # cache-hit turns (action_hit / routing_hit / routing_invalid / miss) in the list view.
+    if not await _column_exists(db, "trace_summary", "cache_hit_type"):
+        await db.execute("ALTER TABLE trace_summary ADD COLUMN cache_hit_type TEXT")
+    await db.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (39)")
+
+
 # Ordered registry of (version, migration_callable). Each migration records
 # its own version marker. Applied in ascending order for versions greater
 # than the current schema version.
@@ -840,6 +848,7 @@ MIGRATIONS: list[tuple[int, Callable[[aiosqlite.Connection], Awaitable[None]]]] 
     (36, _migrate_to_36),
     (37, _migrate_to_37),
     (38, _migrate_to_38),
+    (39, _migrate_to_39),
 ]
 
 

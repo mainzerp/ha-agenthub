@@ -686,10 +686,12 @@ class OrchestratorAgent(BaseAgent):
             from app.analytics.tracer import create_trace_summary
 
             classify_duration = None
+            cache_hit_type = None
             for s in span_collector.get_spans():
-                if s.get("span_name") == "classify":
+                if s.get("span_name") == "classify" and classify_duration is None:
                     classify_duration = s.get("duration_ms")
-                    break
+                if s.get("span_name") == "cache_lookup":
+                    cache_hit_type = (s.get("metadata") or {}).get("hit_type")
             agents = list({s.get("agent_id") for s in span_collector.get_spans() if s.get("agent_id")})
             if "orchestrator" not in agents:
                 agents.insert(0, "orchestrator")
@@ -714,6 +716,7 @@ class OrchestratorAgent(BaseAgent):
                 area_name=getattr(task_context, "area_name", None),
                 voice_followup=voice_followup,
                 verbatim_terms=classifications[0][3] if classifications else [],
+                cache_hit_type=cache_hit_type,
             )
         except asyncio.CancelledError:
             raise

@@ -1,12 +1,22 @@
 # Version
 
-**Current Version:** 1.42.2
+**Current Version:** 1.42.3
 
 ## Recent Changes
 
-Track changes since `v1.42.2` here.
+- fix(traces): correct arity in action-cache `_create_trace` call so cached-action turns now write a `trace_summary` row (were silently dropped via a swallowed `TypeError`)
+- fix(traces): make the action-replay trace `except` warning explicit so future signature mismatches surface
+- feat(traces): add nullable `cache_hit_type` column to `trace_summary` (schema v39) to distinguish action-hit / routing-hit turns in the list view, CSV export, and detail endpoint
+- chore(deps): bump fastapi 0.138.1 -> 0.139.0, mcp 1.27.2 -> 1.28.1, python-multipart 0.0.31 -> 0.0.32, Pillow >= 12.3.0
 
 ## Version History
+
+### 1.42.3 (PATCH) -- Trace visibility for cached turns
+
+- fix(traces): action-cache replay hit now reaches `create_trace_summary` (was passing 10 positional args to a 9-positional `_create_trace` signature; the resulting `TypeError` was swallowed by a bare `except`, so no `trace_summary` row was written and cached turns were invisible in the trace list / 404 in detail)
+- fix(traces): annotate the action-replay fire-and-forget `except` with an explicit warning message
+- feat(traces): add `cache_hit_type` column to `trace_summary` (migration v39) populated from the existing `cache_lookup` span metadata; surfaced in the traces list (`SELECT *`), CSV export, and detail endpoint so cache-hit turns are badgeable in the list view
+- chore(deps): bump fastapi 0.138.1 -> 0.139.0, mcp 1.27.2 -> 1.28.1, python-multipart 0.0.31 -> 0.0.32, Pillow >= 12.3.0
 
 ### 1.42.2 (PATCH) -- Dependency updates
 
