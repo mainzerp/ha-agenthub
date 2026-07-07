@@ -17,10 +17,11 @@ These are the only settings that use environment variables. All other configurat
 | `CONTAINER_HOST` | `0.0.0.0` | Host address the server binds to. |
 | `CONTAINER_PORT` | `8080` | Port the server listens on. |
 | `LOG_LEVEL` | `INFO` | Logging level (`DEBUG`, `INFO`, `WARNING`, `ERROR`). |
-| `CHROMADB_PERSIST_DIR` | `/data/chromadb` | ChromaDB vector store persistence directory. |
+| `LOG_DIR` | `/data/logs` | Directory for persistent rotating file logs. |
+| `CHROMADB_PERSIST_DIR` | `/data/chromadb` | Legacy path used by sqlite-vec entity-index data. |
 | `SQLITE_DB_PATH` | `/data/agent_assist.db` | SQLite database file path. |
 | `FERNET_KEY_PATH` | `/data/.fernet_key` | Path to the Fernet encryption key. Backup target. |
-| `COOKIE_SECURE` | `false` | Set to `true` when serving the dashboard behind HTTPS so the admin session and CSRF cookies are restricted to TLS. Setting it on plain HTTP silently breaks login (browser drops the cookie). |
+| `COOKIE_SECURE` | `false` | Set to `true` when serving the dashboard behind HTTPS so the admin session and CSRF cookies are restricted to TLS. Setting it on plain HTTP silently breaks login (browser drops the cookie). (Production compose defaults this to `true`; the in-app fallback is also `true` in `app/config.py`.) |
 | `HF_HUB_OFFLINE` | `0` | When `1`, disables Hugging Face Hub network calls so the local embedding model loads strictly from the cached weights baked into the image. |
 | `HA_AGENTHUB_TAG` | `latest` | Tag used by `container/docker-compose.yml` when pulling `ghcr.io/mainzerp/ha-agenthub`. Override to pin a release. |
 | `CORS_ORIGINS` | `""` | Comma-separated list of allowed CORS origins. |
@@ -41,6 +42,8 @@ The export and import API surface uses the `action` tier name.
 
 | Key | Default | Type | Description |
 |-----|---------|------|-------------|
+| `cache.enabled` | `true` | bool | Enable cache lookups and writes globally |
+| `cache.compound_utterance_bypass` | `true` | bool | Bypass cache lookup for structurally compound utterances |
 | `cache.routing.enabled` | `true` | bool | Enable the routing cache tier |
 | `cache.routing.semantic_threshold` | `0.92` | float | Legacy threshold setting; the routing cache uses exact SHA-256 hash match lookup. This value is retained for backward compatibility. |
 | `cache.routing.max_entries` | `50000` | int | Maximum routing cache entries (LRU eviction) |
@@ -49,6 +52,18 @@ The export and import API surface uses the `action` tier name.
 | `cache.action.max_entries` | `50000` | int | Maximum action cache entries (LRU eviction) |
 | `cache.lru.trigger_fraction` | `0.95` | float | Early-eviction trigger fraction of `max_entries` |
 | `cache.lru.eviction_interval` | `100` | int | Operations between LRU eviction sweeps |
+
+### Cache Validator Settings
+
+| Key | Default | Type | Description |
+|-----|---------|------|-------------|
+| `cache.validator.enabled` | `true` | bool | Enable periodic action-cache validation |
+| `cache.validator.interval_minutes` | `60` | int | Minutes between validation scans (`0` = disabled) |
+| `cache.validator.model` | (empty) | string | LLM model for cache validator response regeneration (empty = template only) |
+| `cache.validator.temperature` | `0.2` | float | Temperature for cache validator LLM regeneration |
+| `cache.validator.reasoning_effort` | `low` | string | Reasoning effort for cache validator LLM calls |
+| `cache.validator.max_tokens` | `1024` | int | Max tokens for cache validator LLM regeneration |
+| `cache.validator.batch_size` | `10` | int | Number of cache entries to validate in a single LLM batch call |
 
 ### Embedding Settings
 
@@ -66,6 +81,10 @@ The export and import API surface uses the `action` tier name.
 | `entity_matching.confidence_threshold` | `0.60` | float | Minimum confidence score for entity match |
 | `entity_matching.top_n_candidates` | `3` | int | Number of candidates for LLM disambiguation |
 | `entity_matching.oversample_factor` | `20` | int | Embedding shortlist multiplier when agent visibility/preferred-domain hints are present |
+| `entity_matching.expansion.enabled` | `true` | bool | Enable on-demand LLM expansion of cold query tokens |
+| `entity_matching.expansion.ttl_seconds` | `2592000` | int | Query synonym cache TTL in seconds (default 30 days) |
+| `entity_matching.expansion.max_cache_rows` | `5000` | int | Query synonym cache LRU cap |
+| `entity_matching.log_misses` | `true` | bool | Emit structured matcher-miss diagnostics |
 
 ### Rewrite Agent Settings
 
@@ -75,8 +94,8 @@ control model selection and sampling for the rewrite call itself.
 
 | Key | Default | Type | Description |
 |-----|---------|------|-------------|
-| `rewrite.model` | (empty) | string | LLM model used by the rewrite/mediation pass over cached or finalised speech. |
-| `rewrite.temperature` | `0.7` | float | Sampling temperature for the rewrite call. |
+| `rewrite.model` | `groq/llama-3.1-8b-instant` | string | LLM model used by the rewrite/mediation pass over cached or finalised speech. |
+| `rewrite.temperature` | `0.8` | float | Sampling temperature for the rewrite call. |
 
 Managed via `GET/PUT /api/admin/rewrite/config` and the dashboard
 "Rewrite" page.
@@ -90,7 +109,7 @@ have moved to per-route logic in `container/app/api/routes/conversation.py`
 and are no longer the canonical knob. Verify behaviour against the
 relevant route before tuning.
 
-> **Note:** `communication.streaming_mode` is deprecated. Streaming behavior is now controlled per-route in the conversation handlers. This setting remains in the database for backward compatibility but no longer affects routing.
+> **Note:** `communication.streaming_mode` is deprecated and no longer read at runtime; streaming behavior is controlled per-route in the conversation handlers. This setting remains in the database for backward compatibility but no longer affects routing.
 
 | Key | Default | Type | Description |
 |-----|---------|------|-------------|
@@ -128,7 +147,8 @@ relevant route before tuning.
 |-----|---------|------|-------------|
 | `mediation.model` | (empty) | string | LLM model used by the mediation pass. Empty disables mediation. |
 | `mediation.temperature` | `0.3` | float | Sampling temperature for the mediation call. |
-| `mediation.max_tokens` | `2048` | int | Maximum tokens for the mediation reply. |
+| `mediation.max_tokens` | `8192` | int | Maximum tokens for the mediation reply. |
+| `orchestrator.mediation_streaming_enabled` | `false` | bool | Stream mediated tokens incrementally to the client for earlier TTS start. |
 
 ### Personality Settings
 
@@ -157,6 +177,9 @@ Managed via `GET/PUT /api/admin/personality/config` and the dashboard
 | Key | Default | Type | Description |
 |-----|---------|------|-------------|
 | `general.conversation_context_turns` | `3` | int | Number of prior conversation turns retained for recent runtime context; honored by the orchestrator and clamped to `1..20` |
+| `agents.actionable.primary_text_source` | `original_when_translated` | string | Primary user message for actionable agents: `original_when_translated` or `description_first` |
+| `orchestrator.organic_followup_enabled` | `false` | bool | Offer a follow-up prompt after successful voice responses |
+| `orchestrator.organic_followup_probability` | `0.08` | float | Probability (0.0-1.0) of appending a follow-up offer to successful responses |
 
 ## Agent Configuration
 
@@ -178,41 +201,6 @@ Default routable agents: `orchestrator`, `light-agent`, `music-agent`,
 `timer-agent`, `climate-agent`, `media-agent`, `scene-agent`,
 `automation-agent`, `security-agent`, `general-agent`, `send-agent`
 (delivers messages to phones, satellites, and notification targets).
-
-### Native Assist plain timers vs AgentHub timer features
-
-The HA-AgentHub conversation entity supports an opt-in delegation that
-allows eligible **plain timer** start/cancel turns to be delegated to
-Home Assistant's built-in default conversation agent
-(`conversation.home_assistant`) after the container returns a native
-delegation directive.
-
-- Toggle: integration **Options** -> "Use native Home Assistant Assist
-  for plain timers (start/cancel only)". Default is **off** -- existing
-  installations are unaffected until the option is enabled per config
-  entry.
-- Frozen native verb set: timer **start** (with a relative duration)
-  and **cancel** only. Pause, resume, status queries, list, and
-  increase/decrease still go to AgentHub.
-- Routing decision: the integration no longer applies any
-  hardcoded keyword or regex list to the utterance. When the opt-in is
-  enabled, the integration marks each turn as eligible (additive JSON
-  field plus REST header), the timer-agent sees that hint in its normal
-  LLM prompt, and the container returns
-  `directive=delegate_native_plain_timer` only when the timer-agent
-  selects that native path. The decision is bias-to-false: anything
-  ambiguous, multi-intent, or with
-  reminder/notification/alarm/sleep/delayed-action/absolute-
-  time/helper/device-target semantics stays on the AgentHub path.
-- Native plain timers live in HA's transient Assist timer manager and
-  therefore **do not appear in the AgentHub-managed admin timer
-  dashboard** in the AgentHub UI. They also do not flow through the
-  helper notification/event surfaces.
-- AgentHub remains the owner of all advanced timer-like features:
-  reminders, delayed actions, sleep timers, alarms, notification-
-  enhanced timers, explicit internal timers, device-targeted
-  timers, and any compound or multi-intent timer request. These always
-  stay on the AgentHub path even when the native option is enabled.
 
 ### Wake briefing for internal alarms
 
@@ -236,12 +224,34 @@ security sentinel work.
 
 The orchestrator uses a lower temperature (0.3) for consistent intent classification.
 
+| Key | Default | Type | Description |
+|-----|---------|------|-------------|
+| `wake_briefing.enabled` | `true` | bool | Enable LLM-composed wake briefings for internal alarms |
+| `wake_briefing.sources.weather` | `true` | bool | Include weather summary in wake briefings |
+| `wake_briefing.sources.date` | `true` | bool | Include current date and weekday in wake briefings |
+| `wake_briefing.sources.news` | `true` | bool | Include news headlines in wake briefings |
+| `wake_briefing.sources.calendar` | `true` | bool | Include calendar events for the next 24 hours in wake briefings |
+| `wake_briefing.sources.sensors` | `false` | bool | Include configured sensor states in wake briefings |
+| `wake_briefing.sensor_entities` | `[]` | json | List of sensor `entity_id`s to read for wake briefings |
+| `wake_briefing.news_query` | `top news today` | string | User text dispatched to general-agent for news |
+| `wake_briefing.news_count` | `3` | int | Requested number of news headlines |
+| `wake_briefing.timeout_seconds` | `10` | int | Total budget for composing a wake briefing before falling back |
+| `wake_briefing.composer_prompt` | (see seeded default) | string | System prompt for the wake-briefing composer LLM |
+
 Internal helper agents (`filler-agent`, `rewrite-agent`,
 `mediation`, `notification-dispatcher`, `cancel-speech`,
-`language-detect`, `sanitize`, `delayed-tasks`, `alarm-monitor`)
+`language-detect`, `sanitize`, `alarm-monitor`)
 participate in the pipeline but are not user-routable
 intent targets and are not listed in the dashboard's intent-routing
 configuration.
+
+### Calendar Settings
+
+| Key | Default | Type | Description |
+|-----|---------|------|-------------|
+| `calendar.reminder_injection.enabled` | `true` | bool | Enable proactive calendar reminder injection into orchestrator responses |
+| `calendar.reminder_injection.offsets` | `[1440, 60, 15]` | json | Reminder offset markers in minutes |
+| `calendar.reminder_injection.lookahead_hours` | `24` | int | How many hours ahead to look for upcoming calendar events |
 
 ## Custom Agents
 
@@ -278,7 +288,7 @@ Entity matching signal weights are stored in the `entity_matching_config` table 
 - **Levenshtein distance** -- Fuzzy string matching
 - **Jaro-Winkler similarity** -- String similarity favoring prefix matches
 - **Phonetic matching** -- Soundex/Metaphone for sound-alike names
-- **Embedding similarity** -- ChromaDB vector cosine similarity
+- **Embedding similarity** -- sqlite-vec vector cosine similarity
 - **Alias lookup** -- Exact match from the aliases table
 
 Aliases are managed in the `aliases` table and can be created/deleted from the admin dashboard. Example: alias "nightstand lamp" resolves to `light.bedroom_nightstand`.
@@ -290,6 +300,11 @@ Cache thresholds and max entries are managed as SQLite settings (see Cache Setti
 The routing cache and action cache use separate SQLite tables. Each entry stores the SHA-256 hash key, metadata (agent ID, timestamp, hit count), and the cached decision or response.
 
 Cache can be flushed per tier or entirely from the admin dashboard or via the API (`POST /api/admin/cache/flush`).
+
+## Analytics
+
+Stored traces and dashboard trace detail expose per-span time-to-first-token (`ttft_ms`) and tokens-per-second (`tps`).
+The `/api/admin/analytics/tokens` endpoint aggregates average TTFT/TPS across requests, grouped by agent and provider.
 
 ## MCP Server Configuration
 

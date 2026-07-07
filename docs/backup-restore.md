@@ -11,7 +11,7 @@ The following files are stored on the Docker volume
 |------|-------------|----------------|
 | `/data/.fernet_key` | Encryption key for all secrets | ALL encrypted secrets unrecoverable |
 | `/data/agent_assist.db` | SQLite database (settings, traces, conversations) | All configuration and history lost |
-| `/data/chromadb/` | Vector database (entity index, cache) | Rebuilt on next entity sync; cache lost |
+| `/data/chromadb/` | sqlite-vec entity-index data (legacy path) | Rebuilt on next entity sync |
 
 The Docker volume name and the in-container paths are independent:
 the SQLite filename did not change in the container rename, so

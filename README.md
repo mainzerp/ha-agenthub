@@ -13,22 +13,27 @@ A multi-agent AI assistant for Home Assistant with container-based A2A orchestra
 
 ## Features
 
-- **Multi-agent orchestration** -- 15+ specialized domain agents coordinated by a central orchestrator via the A2A protocol
-- **A2A protocol** -- JSON-RPC 2.0-based agent-to-agent communication with registry, dispatcher, and in-process transport
+- **Multi-agent orchestration** -- 13 specialized domain agents coordinated by a central orchestrator via the A2A protocol
+- **A2A protocol** -- direct in-process agent-to-agent communication with registry, dispatcher, and transport
 - **Two-tier cache** -- Routing cache (skip intent classification) and action cache, formerly response cache (skip entire agent pipeline) using SQLite-backed SHA-256 exact hash matching
 - **Cache backup and restore** -- Export and import the routing and action caches as a portable JSON envelope via `/api/admin/cache/export` and `/api/admin/cache/import`
+- **Action-cache validator** -- Background validation of action-cache entries with configurable model/batch size, exposed via `/api/admin/cache/validate`
+- **Conditional actions** -- `ActionableAgent` skips redundant service calls when the current HA state already matches the requested end state
 - **Hybrid entity matching** -- Five-signal weighted matcher (Levenshtein, Jaro-Winkler, phonetic, embedding similarity, alias lookup) with LLM disambiguation fallback. Agents can explicitly declare extracted entities via `@entities:` lines in their replies, replacing legacy regex heuristics with structured LLM-driven entity extraction
 - **MCP tool integration** -- Connect external tool servers via Model Context Protocol (stdio and SSE transports) and assign tools to agents
 - **Plugin system** -- Extend functionality with Python plugins that inspect registered agents, dispatch work back through the orchestrator, add routes, subscribe to events, and access settings/MCP integrations
-- **Admin dashboard** -- HTMX-powered admin dashboard for managing agents, entities, cache, MCP servers, analytics, traces, and plugins
+- **Admin dashboard** -- HTMX-powered admin dashboard for managing chat, persons, personality, system health, calendar, timers, send devices, logs, custom agents, agents, entities, cache, MCP servers, analytics, traces, and plugins
 - **Custom agents** -- Create LLM-powered agents via the dashboard with custom system prompts, model selection, MCP tools, and intent patterns
 - **Rewrite agent** -- Optional response variation for cached responses (driven by the personality prompt) to avoid repetitive answers
 - **Setup wizard** -- Guided 5-step first-launch configuration (admin account, HA connection, API key, LLM providers, review)
+- **First-class LLM providers** -- OpenRouter, Groq, Cerebras, and Ollama supported out of the box
 - **Analytics and tracing** -- Request counts, cache hit rates, latency tracking, token usage, and per-request trace span Gantt visualization, with per-turn tracing on `/ws/conversation`
-- **Voice experience** -- Filler / interim TTS, voice-followup, cancel-intent ("never mind"), and repeat-turn coalescing in the HA integration
+- **TTFT/TPS instrumentation** -- Per-request time-to-first-token and tokens-per-second metrics surfaced in traces and analytics
+- **Voice experience** -- Filler-first return, post-filler push, sentence-by-sentence streaming, voice-followup, cancel-intent ("never mind"), and repeat-turn coalescing in the HA integration
 - **Mediation streaming** -- Begins TTS playback earlier by streaming mediated response tokens before the full reply is finalized
-- **Real-pipeline scenario tests** -- YAML-driven end-to-end test framework under `container/tests/scenarios/` exercising the full orchestrator pipeline against a curated HA snapshot
+- **Real-pipeline scenario tests** -- YAML scenarios and HA snapshots under `container/tests/data/scenarios/` (runner in `container/tests/scenarios/`) exercising the full orchestrator pipeline against a curated HA snapshot
 - **Remote Logs API** -- In-memory ring-buffer log inspection with runtime level adjustment via admin endpoints
+- **Persistent file logs** -- `RotatingFileHandler` writes to `LOG_DIR`/app.log (default `/data/logs/app.log`) in addition to the in-memory Remote Logs API
 - **Cache Management UI Enhancements** -- Per-entry cache deletion from the admin dashboard
 
 ## Agents
@@ -38,17 +43,17 @@ A multi-agent AI assistant for Home Assistant with container-based A2A orchestra
 | Agent | HA Domains | Capabilities |
 |-------|-----------|-------------|
 | **Light Agent** | `light`, `switch`, `sensor` (illuminance) | On/off, toggle, brightness, color, color temperature |
-| **Climate Agent** | `climate`, `fan`, `humidifier`, `sensor`, `weather` | Temperature, HVAC mode, fan speed, humidity, weather queries |
+| **Climate Agent** | `climate`, `weather`, `sensor` | Temperature, HVAC mode, fan speed, humidity, weather queries |
 | **Media Agent** | `media_player` | Playback, volume, source selection |
 | **Music Agent** | `media_player` | Music-focused playback (radio, playlists) |
 | **Cover Agent** | `cover` | Open, close, stop, set position, tilt control |
 | **Vacuum Agent** | `vacuum` | Start, pause, stop, return to base, clean spot, set fan speed |
 | **Scene Agent** | `scene` | Scene activation |
-| **Timer Agent** | `timer`, `persistent_notification` | Timers, alarms, reminders |
-| **Automation Agent** | `automation` | Trigger, enable, disable, and query automations |
-| **Security Agent** | `alarm_control_panel`, `lock`, `camera`, `sensor`, `binary_sensor` | Arm/disarm, lock/unlock, camera status |
+| **Timer Agent** | `timer`, `input_datetime`, `input_boolean` | Timers, alarms, reminders |
+| **Automation Agent** | `automation`, `script` | Trigger, enable, disable, and query automations |
+| **Security Agent** | `lock`, `binary_sensor`, `alarm_control_panel` | Arm/disarm, lock/unlock, camera status |
 | **Calendar Agent** | `calendar` | Query events, add reminders |
-| **Lists Agent** | `todo` | Shopping and todo list management |
+| **Lists Agent** | `todo`, `shopping_list` | Shopping and todo list management |
 | **Send Agent** | — | Deliver content to phones, satellites, and notification targets |
 
 ### Infrastructure Agents
@@ -59,9 +64,14 @@ A multi-agent AI assistant for Home Assistant with container-based A2A orchestra
 | **General Agent** | Fallback for general questions, web search, and unroutable requests |
 | **Rewrite Agent** | Response variation for cached hits to avoid repetitive answers |
 | **Filler Agent** | Generate interim TTS filler phrases while agents compute |
-| **Cancel Speech** | LLM-generated acknowledgement for dismiss intents ("never mind") |
-| **Wake Briefing Composer** | Compose spoken morning briefings for internal alarms |
-| **Alarm Monitor** | Monitor internal alarms and trigger wake briefings |
+
+### Runtime services / pipeline helpers
+
+These helpers run inside the container pipeline but are **not** registered as A2A agents:
+
+- **Cancel Speech** -- LLM-generated acknowledgement for dismiss intents ("never mind")
+- **Wake Briefing Composer** -- Compose spoken morning briefings for internal alarms
+- **Alarm Monitor** -- Monitor internal alarms and trigger wake briefings
 
 ### MCP Tools
 
@@ -76,9 +86,9 @@ Custom MCP servers can be added through the admin dashboard (stdio or SSE transp
 
 ## Architecture
 
-HA-AgentHub (repository: `ha-agenthub`) runs as a Docker container with a FastAPI backend. A Home Assistant custom integration (`custom_components/ha_agenthub/`) bridges turns to the container, streams responses back, and honors a small set of container-directed bridge actions such as native plain-timer delegation.
+HA-AgentHub (repository: `ha-agenthub`) runs as a Docker container with a FastAPI backend. A Home Assistant custom integration (`custom_components/ha_agenthub/`) bridges turns to the container, streams responses back, and honors a small set of container-directed bridge actions.
 
-All configuration, secrets, and state are stored in SQLite. ChromaDB provides vector storage for entity embeddings; the routing and action caches are stored in SQLite with SHA-256 exact hash matching. No configuration files are used at runtime.
+All configuration, secrets, and state are stored in SQLite. sqlite-vec provides vector storage for entity embeddings (moved from ChromaDB in v1.37.0); the routing and action caches are stored in SQLite with SHA-256 exact hash matching. No configuration files are used at runtime.
 
 See [docs/architecture.md](docs/architecture.md) for component diagrams, request flow, and detailed design.
 
@@ -197,9 +207,8 @@ pip install pre-commit
 pre-commit install
 ```
 
-Hooks are scoped to `container/` and pinned to the same ruff version
-CI uses (`v0.15.15`), so passing the hook locally guarantees a green
-`Lint` workflow.
+Hooks are scoped to `container/` and pinned to ruff `v0.15.15`; dev
+requirements install `ruff==0.15.20`, which is what CI runs.
 
 ### Project Structure
 
@@ -210,7 +219,7 @@ container/          Docker container (FastAPI backend)
     agents/         Specialized agents + orchestrator
     analytics/      Analytics aggregation and queries
     api/routes/     REST/SSE/WebSocket endpoints
-    cache/          Two-tier vector cache (routing + action)
+    cache/          Two-tier exact-hash cache (routing + action)
     dashboard/      Admin dashboard (HTMX + Jinja2 templates)
     db/             SQLite schema + repository
     entity/         Hybrid entity matcher
@@ -226,10 +235,10 @@ container/          Docker container (FastAPI backend)
     util/           Shared helpers
   plugins/          User plugins directory
   tests/            Test suite (incl. real-pipeline scenarios)
-    scenarios/        YAML-driven real-pipeline end-to-end tests
+    scenarios/        YAML scenarios and HA snapshots under `container/tests/data/scenarios/` (runner in `container/tests/scenarios/`)
     data/             Test fixtures and curated HA snapshots
 custom_components/  HA custom integration
-  ha_agenthub/      HA bridge and native plain-timer delegation seam
+  ha_agenthub/      HA bridge
     brand/            Brand icons and images for HACS
     translations/     UI translation files (en.json, de.json, etc.)
 ```

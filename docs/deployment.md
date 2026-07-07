@@ -72,9 +72,11 @@ Key points:
   (`ghcr.io/mainzerp/ha-agenthub`); CI publishes `:latest` on every
   push to `main`.
 - Pin a release by setting `HA_AGENTHUB_TAG` (for example,
-  `HA_AGENTHUB_TAG=1.19.4 docker compose up -d`).
+  `HA_AGENTHUB_TAG=1.42.2 docker compose up -d`).
 - The `ha-agenthub-data` named volume persists the SQLite database,
-  the Fernet key, and ChromaDB across container restarts.
+  the Fernet key, and sqlite-vec entity-index data across container restarts.
+- `CHROMADB_PERSIST_DIR` is a legacy environment variable name; it now
+  points to the sqlite-vec entity-index data directory (default `/data/chromadb`).
 - `start_period: 120s` accommodates the local embedding model warm-up
   and entity-index priming on first start.
 - `HF_HUB_OFFLINE=1` disables Hugging Face network calls so the embedding model loads strictly from cached weights baked into the image. The compose default is `0` (online). Set to `1` for air-gapped installs.
@@ -173,7 +175,9 @@ Enter API keys for one or more LLM providers:
 - **OpenRouter API Key** -- For access to GPT-4o-mini, Claude, and other models via a unified API.
 - **Groq API Key** -- For fast inference with Llama models (used by default for the orchestrator).
 - **Cerebras API Key** -- For fast inference with Llama models via Cerebras.
+- **Anthropic API Key** -- For Claude models via the Anthropic API.
 - **Ollama URL** -- For local model inference (e.g., `http://localhost:11434`).
+- **Custom OpenAI-compatible endpoint** -- Base URL and API key for any OpenAI-compatible provider.
 
 > **Recommended models:**
 > - All agents: `openai/gpt-oss-20b` with reasoning effort set to `Low`.
@@ -253,7 +257,7 @@ docker compose up -d
 ```
 
 Pin a release by exporting `HA_AGENTHUB_TAG` before pulling (for
-example `HA_AGENTHUB_TAG=1.19.4`).
+example `HA_AGENTHUB_TAG=1.42.2`).
 
 For the local-build stack (`docker-compose_local.yml`):
 
@@ -277,15 +281,15 @@ To back up from the volume:
 docker cp ha-agenthub:/data/agent_assist.db ./backup_agent_assist.db
 ```
 
-### ChromaDB Data
+### sqlite-vec Entity-Index Data
 
-ChromaDB vector data is stored at `CHROMADB_PERSIST_DIR` (default: `/data/chromadb`). Back up this directory for faster restarts (avoids re-indexing entities).
+sqlite-vec entity-index data is stored at `CHROMADB_PERSIST_DIR` (default: `/data/chromadb`). Back up this directory for faster restarts (avoids re-indexing entities).
 
 ```bash
 docker cp ha-agenthub:/data/chromadb ./backup_chromadb
 ```
 
-The entity index can be rebuilt from scratch if the ChromaDB data is lost, but backing it up avoids a cold start.
+The entity index can be rebuilt from scratch if the sqlite-vec data is lost, but backing it up avoids a cold start.
 
 ### Restore
 
