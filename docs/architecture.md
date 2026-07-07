@@ -5,9 +5,9 @@
 HA-AgentHub is a two-component system for natural language smart home control:
 
 1. **Docker Container** -- The AI backend running FastAPI with multi-agent orchestration, a two-tier cache, hybrid entity matching, MCP tool integration, and a plugin system.
-2. **HA Custom Integration** -- A Home Assistant bridge (`custom_components/ha_agenthub/`) that forwards most turns to the container, streams responses back to Home Assistant's conversation system, and can honor container-directed native plain-timer delegation.
+2. **HA Custom Integration** -- A Home Assistant bridge (`custom_components/ha_agenthub/`) that forwards most turns to the container and streams responses back to Home Assistant's conversation system.
 
-All configuration, secrets, and state are stored in SQLite. ChromaDB provides vector storage for entity embeddings; the routing and action caches are stored in SQLite with SHA-256 exact hash matching. No configuration files are used at runtime -- everything is managed through the setup wizard and admin dashboard.
+All configuration, secrets, and state are stored in SQLite. sqlite-vec provides vector storage for entity embeddings; the routing and action caches are stored in SQLite with SHA-256 exact hash matching. No configuration files are used at runtime -- everything is managed through the setup wizard and admin dashboard.
 
 ## Component Diagram
 
@@ -16,8 +16,8 @@ All configuration, secrets, and state are stored in SQLite. ChromaDB provides ve
 |  Home Assistant                                   |
 |  +--------------------------------------------+  |
 |  |  ha_agenthub custom integration            |  |
-|  |  (conversation agent -- HA bridge + native |
-|  |   timer delegate seam)                     |  |
+|  |  (conversation agent -- HA bridge)         |  |
+|  |                                            |  |
 |  +---------------------+----------------------+  |
 +-------------------------|-------------------------+
                           | REST / SSE / WebSocket
@@ -52,27 +52,28 @@ All configuration, secrets, and state are stored in SQLite. ChromaDB provides ve
 |  +----------------------------------------------+ |
 |  | SQLite (config, secrets, history, analytics) | |
 |  +----------------------------------------------+ |
-|  | ChromaDB (entity index embeddings)           | |
+|  | sqlite-vec (entity index embeddings)         | |
 |  +----------------------------------------------+ |
 +--------------------------------------------------+
 ```
 
 ## A2A Protocol
 
-Agents communicate via a JSON-RPC 2.0-based Agent-to-Agent (A2A) protocol:
+Agents communicate via an in-process Agent-to-Agent (A2A) message boundary:
 
 - **Registry** (`a2a/registry.py`) -- Maintains agent cards describing each agent's ID, name, description, skills, and endpoint.
-- **Dispatcher** (`a2a/dispatcher.py`) -- Routes JSON-RPC requests to agents by method (`message/send`, `message/stream`, `agent/discover`, `agent/list`).
-- **Transport** (`a2a/transport.py`) -- In-process transport calls agent handlers directly within the container. The transport abstraction allows for future HTTP-based transport.
+- **Dispatcher** (`a2a/dispatcher.py`) -- Routes A2A task dispatches to agents by card and intent.
+- **Transport** (`a2a/transport.py`) -- `InProcessTransport` invokes agent handlers directly with async function calls (`handler.handle_task`, `handler.handle_task_stream`) within the container. The transport abstraction allows for future HTTP-based transport.
 
 Each agent publishes an **Agent Card** containing its ID, capabilities, and supported intents. The orchestrator uses these cards to make routing decisions.
 
 ### Agent Inventory
 
-Twelve routable domain agents are reachable from intent classification:
-`orchestrator` plus `light`, `music`, `climate`, `media`, `timer`,
-`scene`, `automation`, `security`, `general`, `calendar`, `lists`,
-and `send` (delivery to phones, satellites, and notify targets).
+Thirteen specialized domain agents are reachable from intent classification:
+`light`, `climate`, `media`, `music`, `cover`, `vacuum`, `scene`, `timer`,
+`automation`, `security`, `calendar`, `lists`, and `send` (delivery to phones,
+satellites, and notify targets). A `general-agent` fallback handles general
+questions and unroutable requests.
 
 Internal A2A-registered helper agents: filler-agent and rewrite-agent. The mediation pass is baked into the orchestrator agent. Runtime services and utility modules (not A2A agents) include language detection, input sanitization, cancel-speech detection, notification dispatch, timer scheduling, and alarm monitoring.
 
@@ -86,7 +87,7 @@ route to them through the same dispatcher boundary as built-in agents.
 
 1. User speaks a command in Home Assistant (e.g., "turn on the bedroom light").
 2. The HA custom integration sends the text to the container via `POST /api/conversation` (or SSE/WebSocket).
-3. The API layer authenticates the request (Bearer token) and builds an A2A `message/send` request targeting the orchestrator.
+3. The API layer authenticates the request (Bearer token) and builds an A2A task dispatch targeting the orchestrator.
 4. **Orchestrator agent** receives the request:
    a. Checks the **routing cache** -- if an identical request was recently routed, reuses the cached routing decision (exact SHA-256 hash match).
    b. If cache miss, calls the LLM for **intent classification** to select the target agent.
@@ -122,7 +123,7 @@ appropriate `assist_satellite.*` service.
 
 Multi-step intents ("close the blinds and tell me how warm it got
 in the bedroom today") are sequenced by the orchestrator: each step
-is dispatched as its own A2A `message/send` against the chosen
+is dispatched as its own A2A task against the chosen
 domain agent, with subsequent steps receiving the previous step's
 result as context. Per-action domain filtering in the executors
 ensures, for example, that a `camera_turn_on` step
@@ -136,6 +137,15 @@ emits short interim tokens marked with `StreamToken.is_filler=true`.
 The HA integration speaks these immediately while the real reply
 continues to be generated. Once the real first token arrives, the
 filler stops emitting and the stream continues normally.
+
+### Mediation Streaming
+
+When `orchestrator.mediation_streaming_enabled` is `true`, the
+mediation pass can stream rewritten response tokens to TTS as they
+are produced, rather than waiting for the full mediated reply to be
+finalized. The orchestrator still emits the final `mediated_speech`
+on the terminal event, but compatible integrations can start
+speaking mediated tokens earlier.
 
 ### Language Detection and Per-Agent Directive
 
@@ -158,6 +168,19 @@ collector to the orchestrator dispatch, and flushes a synthesised
 legacy bug where every per-turn duration was overwritten
 with the entire connection lifetime.
 
+### WebSocket / Dispatch Hardening (v1.42.0)
+
+Several hardening measures guard the WebSocket and A2A dispatch paths:
+
+- **WebSocket origin validation** -- The set `app.state.allowed_ws_origins`
+  controls acceptable WebSocket origins. An empty set rejects all origins.
+- **Per-IP connection limits** -- WebSocket connections are capped per client
+  IP, with hardened client-IP extraction that resists spoofed `X-Forwarded-For`
+  values.
+- **Per-agent dispatch timeout overrides** -- Settings shaped as
+  `agent.dispatch_timeout.<agent_id>` override individual agent timeouts and are
+  capped by the global `a2a.max_dispatch_timeout`.
+
 ### Recorder-History Tool
 
 A recorder-history MCP tool exposes Home Assistant's long-term
@@ -176,7 +199,7 @@ matrix.
 ## Two-Tier Cache
 
 The action cache was named "response cache" in earlier versions.
-The legacy term still appears in the on-disk Chroma collection name
+The legacy term still appears in the on-disk sqlite-vec collection name
 for backward compatibility.
 
 The cache system stores SHA-256 hash keys of incoming requests in
@@ -198,7 +221,7 @@ The hybrid entity matcher combines five signals with configurable weights:
 |--------|--------|---------|
 | Fuzzy string | Levenshtein + Jaro-Winkler | "bedroom lite" ~ "bedroom light" |
 | Phonetic | Soundex + Metaphone | "bedroom lite" sounds like "bedroom light" |
-| Embedding | ChromaDB vector similarity | Semantic closeness |
+| Embedding | sqlite-vec vector similarity | Semantic closeness |
 | Alias | Exact lookup from DB | "nightstand lamp" = `light.bedroom_nightstand` |
 | Domain | HA entity domain filtering | "light" commands only match `light.*` entities |
 
@@ -207,7 +230,7 @@ By default, a weighted score above 0.60 returns a single confident match. Below 
 ## Data Storage
 
 - **SQLite** -- Primary store for all structured data: settings, agent configs, custom agents, aliases, MCP servers, secrets (Fernet-encrypted), admin accounts (bcrypt-hashed), setup state, conversations, analytics, and trace spans.
-- **ChromaDB** -- Vector store for entity index embeddings only. Routing and action caches are stored in SQLite. The on-disk collection literal is still `response_cache` for backward compatibility. Persisted to disk at `/data/chromadb`.
+- **sqlite-vec** -- Vector store for entity index embeddings only. Routing and action caches are stored in SQLite. The on-disk collection literal is still `response_cache` for backward compatibility. Persisted to disk under `/data`.
 
 ## Plugin Architecture
 

@@ -41,7 +41,7 @@ Returns container health status. No authentication required.
 ```json
 {
   "status": "ok",
-  "version": "1.19.4",
+  "version": "1.42.2",
   "log_level": "INFO"
 }
 ```
@@ -162,7 +162,7 @@ Get all settings grouped by category.
 {
   "settings": {
     "cache": [
-      {"key": "cache.routing.threshold", "value": "0.92", "value_type": "float", "category": "cache", "description": "..."}
+      {"key": "cache.routing.semantic_threshold", "value": "0.92", "value_type": "float", "category": "cache", "description": "..."}
     ],
     "embedding": [...],
     "entity_matching": [...]
@@ -180,8 +180,8 @@ Update multiple settings.
 
 ```json
 {
-  "cache.routing.threshold": "0.90",
-  "cache.action.threshold": "0.90"
+  "cache.routing.semantic_threshold": "0.90",
+  "cache.action.semantic_threshold": "0.90"
 }
 ```
 
@@ -381,8 +381,8 @@ Set visibility rules for an agent.
 ```json
 {
   "rules": [
-    {"rule_type": "domain", "rule_value": "light"},
-    {"rule_type": "area", "rule_value": "bedroom"}
+    {"rule_type": "domain_include", "rule_value": "light"},
+    {"rule_type": "area_include", "rule_value": "bedroom"}
   ]
 }
 ```
@@ -460,6 +460,18 @@ importable.
 Delete a single cache entry by its ID.
 
 Auth: admin session. Added in 1.19.4.
+
+### POST /api/admin/cache/validate
+
+Trigger an on-demand validation sweep of the action cache.
+The validator samples entries and uses an LLM judge to detect stale
+or incorrect cached responses. Results are written to the validation
+history.
+
+### GET /api/admin/cache/validate/history
+
+Return recent cache-validation results, including run time, sample
+count, and any flagged entries.
 
 ---
 
@@ -695,6 +707,7 @@ integration reacts to specifically:
 | `4401` | Authentication failed (missing or invalid API key during the WebSocket handshake). The integration falls back to REST. |
 | `4408` | Idle/heartbeat timeout. The integration reconnects with backoff. |
 | `1011` | Server-side error during a turn. The integration reconnects and retries the turn over REST if a final response was not received. |
+| `1008` | Origin rejection / policy violation. The origin was not in `app.state.allowed_ws_origins` or another policy was violated. |
 | `1000` | Normal close (initiated by the client or container shutdown). |
 
 The contract is exercised by the integration tests in
@@ -738,6 +751,35 @@ Time-series request counts in Chart.js-compatible format.
 **Query parameters:**
 - `hours` -- Time window
 - `bucket_minutes` -- Bucket size (default: 60)
+
+### GET /api/admin/analytics/agents
+
+Per-agent request counts and hit/miss summaries.
+
+### GET /api/admin/analytics/cache
+
+Cache-tier summary: hits, misses, hit rate, and invalidations.
+
+### GET /api/admin/analytics/tokens
+
+Token-generation performance metrics, including `avg_ttft_ms` and
+`avg_tps`.
+
+**Query parameters:**
+- `hours` -- Time window (default: 24)
+
+### GET /api/admin/analytics/errors
+
+Aggregated error counts by type/agent over the requested window.
+
+### GET /api/admin/analytics/cache/tiers
+
+Detailed per-tier analytics for routing and action caches.
+
+### GET /api/admin/analytics/rewrite
+
+Rewrite-agent usage statistics (how often cached responses were
+rewritten for variety).
 
 ---
 

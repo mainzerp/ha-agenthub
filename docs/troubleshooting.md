@@ -77,15 +77,26 @@ Navigate to `http://<host>:8080/setup/` and use the "Test" button for each provi
 
 **Common causes:**
 
-- ChromaDB directory not writable: Check that the volume mount for `/data/chromadb` exists and is writable.
-- Embedding engine not initialized: Check container startup logs for embedding-related errors.
+- Cache disabled globally: Verify `cache.enabled`, `cache.routing.enabled`, and `cache.action.enabled` are `true` in the admin dashboard.
+- Compound-utterance bypass: Structurally compound utterances intentionally bypass the cache via `cache.compound_utterance_bypass`.
+- SQLite cache tables missing or inaccessible: The routing cache and action cache live in the SQLite database (`/data/agent_assist.db`). Check startup logs for schema/DB errors.
+- sqlite-vec entity index not initialized: The action cache relies on the entity index; check the Entity Index dashboard page and startup logs for embedding or vec0 errors.
 - Thresholds too high: Lower the routing cache threshold (default: 0.92) or action cache threshold (default: 0.95) in the admin dashboard.
 
-**Verify ChromaDB:**
+**Verify cache tables and entity index:**
 
 ```bash
-docker exec ha-agenthub ls -la /data/chromadb
+docker exec ha-agenthub python -c "
+import sqlite3
+conn = sqlite3.connect('/data/agent_assist.db')
+print('Tables:', conn.execute(\"SELECT name FROM sqlite_master WHERE type='table'\").fetchall())
+print('Routing rows:', conn.execute('SELECT COUNT(*) FROM routing_cache').fetchone()[0])
+print('Action rows:', conn.execute('SELECT COUNT(*) FROM action_cache').fetchone()[0])
+conn.close()
+"
 ```
+
+The `/data/chromadb` directory is the legacy path that now holds sqlite-vec entity-index data. It is not used for cache storage.
 
 ## Setup Wizard Issues
 
@@ -102,6 +113,8 @@ conn.commit()
 conn.close()
 "
 ```
+
+This clears the wizard progress and causes the setup wizard to run again on the next request.
 
 Then restart the container:
 
@@ -162,12 +175,6 @@ docker compose restart ha-agenthub
 
 **Fix:** Check the `voice_followup` field in the conversation response. The orchestrator sets `ConversationResult.continue_conversation` based on the turn context. Since 1.19.2, this behavior has been refined; ensure your HA integration is up to date.
 
-## Timer-Agent Domain Issues
-
-**Symptoms:** Timer-related commands for `calendar` or `input_datetime` entities no longer work.
-
-**Fix:** Since 1.19.0/1.19.1, the `calendar` and `input_datetime` domains were removed from the timer-agent. These entities are now handled by the calendar-agent and automation-agent respectively. If you had custom visibility rules targeting these domains for the timer-agent, update them or run schema migration v29 if available.
-
 ## Entity Not Found with LLM Clarification
 
 **Symptoms:** The assistant asks clarifying questions instead of acting when an entity is not found.
@@ -222,7 +229,7 @@ orchestrator's terminal span.
 
 **Symptoms:** Every turn delivered over `/ws/conversation` shows the same, ever-growing `total_duration_ms` on the dashboard waterfall.
 
-**Cause:** This was a bug in legacy versions where the connection-level WebSocket trace duration overwrote each turn's value. It has been fixed since version 1.0.0.
+**Cause:** This was a bug in legacy versions where the connection-level WebSocket trace duration overwrote each turn's value. It has been fixed in version 1.36.2.
 
 **Fix:** Ensure you are running the latest container image. Reload the Traces page; cached browser state may keep showing old values until the page is hard-refreshed and the trace list reloaded.
 
