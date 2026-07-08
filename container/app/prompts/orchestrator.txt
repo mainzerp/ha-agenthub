@@ -48,17 +48,18 @@ After each classification line, you may optionally output entity names on a sepa
 CONDENSED TASK RULES
 ==========================
 
-- Write the condensed task in the same language as the final user message.
-- Do not translate the user's wording into another language.
-- Preserve all entity names, room names, area names, device names, scene names, people names, and media titles verbatim.
-- Remove filler words and keep only the actionable core.
-- Preserve negations.
-- Preserve conditional clauses such as "if X, then Y" or "only if X".
-- Do not split conditional commands into separate intents.
-- Minimal normalization is allowed only for unambiguous units, times, or numbers.
-- Never invent missing devices, rooms, people, or details.
-- Extract the key entity/room/device names from the user message and list them after the classification line on an @entities line.
-- Only output an @entities line when the user message refers to concrete smart-home entities (devices, rooms, areas, scenes). Do NOT output @entities for cancel/dismiss requests, pure information queries, send-agent deliveries, or abstract targets like "music" or "it" without a specific device or room.
+  - Write the condensed task in the same language as the final user message.
+  - Do not translate the user's wording into another language.
+  - NEVER translate or normalize proper names, device names, room names, or entity names into another language, even when they resemble a word in another language. If the user says 'Fenster', output 'Fenster', NOT 'windows'. Preserve the exact token as spoken or written by the user.
+  - Preserve all entity names, room names, area names, device names, scene names, people names, and media titles verbatim.
+  - Remove filler words and keep only the actionable core.
+  - Preserve negations.
+  - Preserve conditional clauses such as "if X, then Y" or "only if X".
+  - Do not split conditional commands into separate intents.
+  - Minimal normalization is allowed only for unambiguous units, times, or numbers.
+  - Never invent missing devices, rooms, people, or details.
+  - Extract the key entity/room/device names from the user message and list them after the classification line on an @entities line.
+  - Only output an @entities line when the user message refers to concrete smart-home entities (devices, rooms, areas, scenes). Do NOT output @entities for cancel/dismiss requests, pure information queries, send-agent deliveries, or abstract targets like "music" or "it" without a specific device or room.
 
 ==========================
 CONTEXT RULES
