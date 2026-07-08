@@ -1,15 +1,34 @@
 # Version
 
-**Current Version:** 1.42.3
+**Current Version:** 1.43.0
 
 ## Recent Changes
 
-- fix(traces): correct arity in action-cache `_create_trace` call so cached-action turns now write a `trace_summary` row (were silently dropped via a swallowed `TypeError`)
-- fix(traces): make the action-replay trace `except` warning explicit so future signature mismatches surface
-- feat(traces): add nullable `cache_hit_type` column to `trace_summary` (schema v39) to distinguish action-hit / routing-hit turns in the list view, CSV export, and detail endpoint
-- chore(deps): bump fastapi 0.138.1 -> 0.139.0, mcp 1.27.2 -> 1.28.1, python-multipart 0.0.31 -> 0.0.32, Pillow >= 12.3.0
+(tracking changes since 1.43.0)
 
 ## Version History
+
+### 1.43.0 (MINOR) -- System-wide prompt review and deferred hardening
+
+- feat(prompts): merge path now detects `[FOLLOWUP]` tag and feeds `voice_followup` flag (MEDIUM-10)
+- feat(prompts): centralize `[FOLLOWUP]` parsing in `_strip_followup_tag` helper, removing duplicated inline parsing
+- fix(prompts): remove parser-breaking numbered `[SEQ]` example from orchestrator prompt (HIGH-6)
+- fix(prompts): remove unrendered `{language}` placeholder from climate/cover prompts (HIGH-3)
+- fix(prompts): remove unsupported conditional examples from non-light agents; fix light condition example (HIGH-4/5)
+- fix(prompts): add `entity` field to action examples missing it (MEDIUM-4)
+- fix(prompts): standardize output-format wording across domain agents (MEDIUM-5)
+- fix(prompts): rewrite lists.txt German examples to English per Directive 13 (HIGH-7)
+- fix(prompts): add TTS-safety and injection-resistance clauses to merge/mediate/rewrite/filler/entity_not_found/calendar_reminder/wake_briefing (MEDIUM-1/2)
+- fix(prompts): fix timer.txt contradictions: duplicate few-shot, resume capability, "Negative examples" header, non-ISO date (HIGH-10/MEDIUM-15)
+- fix(agents): make ActionableAgent injected output-rules block agent-family-aware; reconcile plain-text fallback for calendar/lists (HIGH-8/MEDIUM-5/MEDIUM-12)
+- fix(agents): gate condition instructions on light-only support (HIGH-4)
+- fix(agents): standardize `{language}` substitution to human-readable names via `language_code_to_name` helper (MEDIUM-3)
+- fix(agents): wrap user-derived content in entity_not_found and calendar_reminder with input delimiters (MEDIUM-2)
+- fix(agents): render send.py prompt with single-pass `_render_prompt_template` instead of order-dependent `.replace()` chain (LOW-18)
+- fix(agents): preserve deterministic disambiguation speech by gating LLM not-found overwrite on `*_ambiguous` resolution_path (LOW-15)
+- fix(agents): load wake_briefing.txt as canonical default composer prompt; delete dead followup_detection.txt (HIGH-1/2)
+- refactor(prompts): rename `SECURITY:` guardrail heading to `SAFETY:` in 14 prompts to avoid domain collision (LOW-14)
+- tests: add/extend tests for merge followup detection, send injection resistance, and ambiguous resolution preservation
 
 ### 1.42.3 (PATCH) -- Trace visibility for cached turns
 
