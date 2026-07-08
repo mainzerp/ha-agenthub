@@ -50,7 +50,7 @@ CONDENSED TASK RULES
 
   - Write the condensed task in the same language as the final user message.
   - Do not translate the user's wording into another language.
-  - NEVER translate or normalize proper names, device names, room names, or entity names into another language, even when they resemble a word in another language. If the user says 'Fenster', output 'Fenster', NOT 'windows'. Preserve the exact token as spoken or written by the user.
+  - NEVER translate or normalize proper names, device names, room names, or entity names into another language; preserve the exact token as spoken or written by the user.
   - Preserve all entity names, room names, area names, device names, scene names, people names, and media titles verbatim.
   - Remove filler words and keep only the actionable core.
   - Preserve negations.
