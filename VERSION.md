@@ -1,12 +1,16 @@
 # Version
 
-**Current Version:** 1.44.1
+**Current Version:** 1.44.2
 
 ## Recent Changes
 
-(tracking changes since 1.44.1)
+(tracking changes since 1.44.2)
 
 ## Version History
+
+### 1.44.2 (PATCH) -- Orchestrator language constraint cleanup
+
+- fix(prompts): remove hardcoded German example from orchestrator language constraint; keep NEVER-translate rule language-agnostic and example-free
 
 ### 1.44.1 (PATCH) -- Entity resolution latency hotfix
 
