@@ -267,6 +267,9 @@ async def _seed_defaults(db: aiosqlite.Connection) -> None:
         ),
         (
             "wake_briefing.composer_prompt",
+            # Default is also in prompts/wake_briefing.txt; this seed is for
+            # backward compat with existing installs. When this setting is
+            # empty, wake_briefing.py loads the canonical prompt file instead.
             "You compose a short friendly spoken morning briefing from a JSON facts object. Mention the date and weekday, weather, calendar, news headlines, and any sensor readings the user configured. Keep it under 90 spoken seconds. Reply in the user's language.",
             "string",
             "agents",

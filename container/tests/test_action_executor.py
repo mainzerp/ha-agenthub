@@ -1153,3 +1153,33 @@ class TestResolveAndValidateEntity:
         assert result["entity_id"] is None
         assert result["not_found_result"] is not None
         assert "Multiple entities match" in result["not_found_result"]["speech"]
+
+    @pytest.mark.asyncio
+    async def test_resolve_and_validate_entity_propagates_resolution_path_for_ambiguous(self, entity_index):
+        """LOW-15: an ambiguous resolution must surface resolution_path (ending
+        in '_ambiguous') on not_found_result.metadata so the actionable layer can
+        gate the generic LLM not-found overwrite."""
+        entity_index.list_entries_async = AsyncMock(
+            return_value=[
+                make_entity_index_entry("light.kitchen_1", "Kitchen", area="Kitchen"),
+                make_entity_index_entry("light.kitchen_2", "Kitchen", area="Kitchen"),
+            ]
+        )
+        matcher = MagicMock(spec=EntityMatcher)
+        matcher.match = AsyncMock(return_value=[])
+
+        result = await resolve_and_validate_entity(
+            "Kitchen",
+            entity_index,
+            matcher,
+            None,
+            frozenset({"light"}),
+            lambda eid: True,
+        )
+
+        assert result["entity_id"] is None
+        not_found = result["not_found_result"]
+        assert not_found is not None
+        metadata = not_found.get("metadata") or {}
+        resolution_path = metadata.get("resolution_path") or ""
+        assert resolution_path.endswith("_ambiguous")

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 
-from app.agents.base import BaseAgent
+from app.agents.base import BaseAgent, language_code_to_name
 from app.agents.decorator import agent
 from app.agents.sanitize import strip_parenthetical_asides
 from app.db.repository import SettingsRepository
@@ -59,14 +59,14 @@ class RewriteAgent(BaseAgent):
             personality = ""
         personality_text = personality.strip() if personality else ""
         system_prompt = system_prompt.replace("{personality}", personality_text)
-        system_prompt = system_prompt.replace("{language}", language or "en").strip()
+        system_prompt = system_prompt.replace("{language}", language_code_to_name(language)).strip()
         if user_text:
             user_content = f"User asked:\n{self._wrap_user_input(user_text)}\nAgent responded: {cached_text}"
         else:
             user_content = f"Agent responded: {cached_text}"
         if reminder_text:
             user_content += f"\nReminder to weave in: {reminder_text}"
-        user_content += f"\n\nRephrase in {language}:"
+        user_content += "\n\nRephrase:"
         messages = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_content},

@@ -826,3 +826,52 @@ class TestHandleTaskExecution:
         assert result.action_executed is not None
         assert result.action_executed.success is False
         assert result.error is None
+
+    @pytest.mark.asyncio
+    async def test_ambiguous_resolution_not_overwritten_by_llm_clarification(self):
+        """LOW-15: when the resolver already produced a targeted disambiguation
+        speech (resolution_path ending in '_ambiguous'), the generic LLM
+        not-found clarification must NOT overwrite it."""
+        agent = LightAgent()
+        task = make_agent_task(description="turn on Keller")
+
+        ambiguity_speech = "Multiple entities match 'Keller'. Please be more specific."
+        with (
+            patch.object(agent, "_load_prompt_async", new_callable=AsyncMock, return_value="You are a light agent."),
+            patch.object(
+                agent,
+                "_call_llm",
+                new_callable=AsyncMock,
+                return_value='{"action": "turn_on", "entity": "Keller"}',
+            ),
+            patch.object(
+                agent,
+                "_do_execute",
+                new_callable=AsyncMock,
+                return_value={
+                    "success": False,
+                    "entity_id": None,
+                    "error": None,
+                    "speech": ambiguity_speech,
+                    "metadata": {"resolution_path": "exact_friendly_name_ambiguous"},
+                },
+            ),
+            patch.object(
+                agent,
+                "_generate_not_found_speech",
+                new_callable=AsyncMock,
+                return_value="Which light did you mean?",
+            ) as mock_not_found_speech,
+            patch.object(agent, "_resolve_relevant_entities", new_callable=AsyncMock, return_value=[]),
+        ):
+            agent._ha_client = AsyncMock()
+            agent._entity_index = None
+            agent._entity_matcher = None
+
+            result = await agent.handle_task(task)
+
+        mock_not_found_speech.assert_not_awaited()
+        assert result.speech == ambiguity_speech
+        assert result.action_executed is not None
+        assert result.action_executed.success is False
+        assert result.error is None

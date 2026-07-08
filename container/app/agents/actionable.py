@@ -14,7 +14,7 @@ import time
 from typing import Any
 
 from app.agents.action_executor import parse_action
-from app.agents.base import BaseAgent, _render_prompt_template
+from app.agents.base import BaseAgent, _render_prompt_template, language_code_to_name
 from app.agents.decorator import agent
 from app.analytics.tracer import _optional_span
 from app.entity.deterministic_resolver import resolve_entity_deterministic_first
@@ -45,6 +45,7 @@ class ActionableAgent(BaseAgent):
     _prompt_name: str = ""
     _clarify_on_not_found: bool = True
     _allowed_domains: frozenset[str] | None = None
+    _supports_conditions: bool = False
 
     def __init__(self, ha_client=None, entity_index=None, entity_matcher=None) -> None:
         super().__init__(ha_client=ha_client, entity_index=entity_index)
@@ -159,12 +160,14 @@ class ActionableAgent(BaseAgent):
         messages = [
             {
                 "role": "system",
-                "content": _render_prompt_template(self._load_prompt("entity_not_found"), language=language),
+                "content": _render_prompt_template(
+                    self._load_prompt("entity_not_found"), language=language_code_to_name(language)
+                ),
             },
             {
                 "role": "user",
                 "content": (
-                    f'The user asked: "{task.description}"\n'
+                    f"The user asked: {self._wrap_user_input(task.description)}\n"
                     f'No device named "{entity_query}" was found. '
                     "Generate a brief clarifying question asking the user to specify which device they mean."
                 ),
@@ -239,19 +242,22 @@ class ActionableAgent(BaseAgent):
         if time_location:
             system_prompt += f"\n\n{time_location}"
 
-        # Generic state-aware and conditional instruction block (Phase 3)
+        # Generic state-aware output rules (Phase 3). The conditional block is
+        # appended only for agents whose executor evaluates the condition field.
         system_prompt += (
             "\n\nOutput rules:\n"
-            "- ALWAYS output a JSON action block for every request. NEVER respond with plain text only.\n"
-            "- Execute the action the user explicitly requested (turn_on, turn_off, open_cover, etc.).\n"
+            "- ALWAYS output a JSON action block when an action is determinable; otherwise respond with natural text only.\n"
+            "- Execute the action the user explicitly requested, using only the actions documented in your prompt above.\n"
             "- The injected entity states above are for context only. Do NOT describe them in your response.\n"
-            '- Only use toggle when the user explicitly says "toggle".\n'
-            "\n"
-            "Conditional actions:\n"
-            '- When the user says "if X, then Y", use the optional "condition" field.\n'
-            "- The condition references another entity by name and an expected state.\n"
-            '- Example JSON: {"action": "turn_on", "entity": "Keller", "condition": {"entity": "outdoor brightness", "state": "dark"}}'
+            '- Only use toggle when the user explicitly says "toggle".'
         )
+        if self._supports_conditions:
+            system_prompt += (
+                "\n\nConditional actions:\n"
+                '- When the user says "if X, then Y", use the optional "condition" field.\n'
+                "- The condition references another entity by name and an expected state.\n"
+                '- Example JSON: {"action": "turn_on", "entity": "Keller", "condition": {"entity": "outdoor brightness", "state": "dark"}}'
+            )
 
         # Inject relevant entity states (compact single-line format, after output rules)
         try:
@@ -343,12 +349,19 @@ class ActionableAgent(BaseAgent):
 
                 _t4 = time.perf_counter()
 
-                # Entity not found: replace hardcoded speech with LLM-generated clarifying question
+                # Entity not found: replace hardcoded speech with LLM-generated clarifying question.
+                # LOW-15: skip the generic LLM clarification when the resolver already produced a
+                # targeted disambiguation speech ("Multiple entities match ..."), signalled by a
+                # resolution_path ending in "_ambiguous". Otherwise the deterministic message would
+                # be overwritten by a vague "which device did you mean?" question.
+                resolution_path = (result.get("metadata") or {}).get("resolution_path") or ""
+                is_ambiguous = resolution_path.endswith("_ambiguous")
                 if (
                     self._clarify_on_not_found
                     and not result.get("success")
                     and result.get("entity_id") is None
                     and not result.get("error")
+                    and not is_ambiguous
                 ):
                     entity_query = action.get("entity", "")
                     result = {
@@ -549,7 +562,7 @@ class _ConfigurableDomainAgent(ActionableAgent):
     executor_name="execute_light_action",
 )
 class LightAgent(_ConfigurableDomainAgent):
-    pass
+    _supports_conditions = True
 
 
 @agent(

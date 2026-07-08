@@ -471,6 +471,7 @@ class DefaultFinalizationStrategy(FinalizationStrategy):
                 ret_span["metadata"]["from_agent"] = routed_to
                 if not agent_responses and failed_agents:
                     speech = "I'm sorry, I couldn't complete that request. All agents encountered errors."
+                    mediated_followup = False
                 else:
                     reminder_text = None
                     if self._calendar_injector is not None and not has_error:
@@ -485,7 +486,7 @@ class DefaultFinalizationStrategy(FinalizationStrategy):
                         except Exception:
                             logger.debug("Calendar reminder injection failed", exc_info=True)
 
-                    speech = await self._merge_responses(
+                    speech, mediated_followup = await self._merge_responses(
                         agent_responses, user_text, span_collector=span_collector, reminder_text=reminder_text
                     )
                     if failed_agents:
@@ -496,7 +497,7 @@ class DefaultFinalizationStrategy(FinalizationStrategy):
                 speech, voice_followup_effective = self._merge_voice_followup_and_organic(
                     speech,
                     agent_requested=agent_voice_followup,
-                    mediated_followup=False,
+                    mediated_followup=mediated_followup,
                 )
                 ret_span["metadata"]["final_response"] = speech
                 ret_span["metadata"]["mediated"] = (speech != original_speech) or len(classifications) > 1

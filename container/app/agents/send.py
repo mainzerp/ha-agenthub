@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import re
 
-from app.agents.base import BaseAgent
+from app.agents.base import BaseAgent, _render_prompt_template
 from app.agents.decorator import agent
 from app.analytics.tracer import _optional_span
 from app.db.repository import SendDeviceMappingRepository, SettingsRepository
@@ -147,10 +147,11 @@ class SendAgent(BaseAgent):
         try:
             prompt_template = await self._load_prompt_async("send")
             wrapped_content = self._wrap_user_input(content)
-            prompt = (
-                prompt_template.replace("{delivery_type}", delivery_type)
-                .replace("{target_name}", target_name)
-                .replace("{content}", wrapped_content)
+            prompt = _render_prompt_template(
+                prompt_template,
+                delivery_type=delivery_type,
+                target_name=target_name,
+                content=wrapped_content,
             )
             messages = [
                 {"role": "system", "content": prompt},

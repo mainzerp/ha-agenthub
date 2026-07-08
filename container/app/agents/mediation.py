@@ -30,10 +30,25 @@ import logging
 from collections.abc import AsyncGenerator
 from typing import Any
 
+from app.agents.base import language_code_to_name
 from app.agents.sanitize import strip_parenthetical_asides
 from app.analytics.tracer import _optional_span
 
 logger = logging.getLogger(__name__)
+
+
+def _strip_followup_tag(text: str | None) -> tuple[str | None, bool]:
+    """Strip a trailing [FOLLOWUP] tag; report whether one was present.
+
+    Non-string input is returned unchanged with followup=False, matching the
+    previous inline ``isinstance(mediated, str)`` guard used at the streaming
+    post-process site.
+    """
+    if not isinstance(text, str):
+        return text, False
+    if text.endswith("[FOLLOWUP]"):
+        return text[: -len("[FOLLOWUP]")].rstrip(), True
+    return text, False
 
 
 class MediationService:
@@ -52,7 +67,7 @@ class MediationService:
         user_text: str,
         span_collector=None,
         reminder_text: str | None = None,
-    ) -> str:
+    ) -> tuple[str, bool]:
         """Merge multiple agent responses into a single natural answer via LLM.
 
         Always calls LLM regardless of personality settings.
@@ -61,15 +76,15 @@ class MediationService:
         Falls back to bracket-prefixed format on failure.
         """
         if not agent_responses:
-            return "I couldn't process that request."
+            return "I couldn't process that request.", False
 
         # Only one response: return it directly (append reminder as fallback)
         if len(agent_responses) == 1:
             speech = agent_responses[0][1] or "I couldn't process that request."
             if reminder_text:
                 separator = " " if speech and speech[-1] in ".!?" else ". "
-                return f"{speech}{separator}{reminder_text}" if speech else reminder_text
-            return speech
+                return (f"{speech}{separator}{reminder_text}" if speech else reminder_text), False
+            return speech, False
 
         # Build structured summary of each agent response
         summary_parts = []
@@ -107,7 +122,9 @@ class MediationService:
             if self._orch._mediation_model:
                 overrides["model"] = self._orch._mediation_model
             result = await self._orch._call_llm(messages, span_collector=span_collector, **overrides)
-            return result.strip() if result and result.strip() else self.format_fallback(agent_responses)
+            merged = result.strip() if result and result.strip() else self.format_fallback(agent_responses)
+            merged, followup = _strip_followup_tag(merged)
+            return merged, followup
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -115,8 +132,8 @@ class MediationService:
             fallback = self.format_fallback(agent_responses)
             if reminder_text:
                 separator = " " if fallback and fallback[-1] in ".!?" else ". "
-                return f"{fallback}{separator}{reminder_text}" if fallback else reminder_text
-            return fallback
+                return (f"{fallback}{separator}{reminder_text}" if fallback else reminder_text), False
+            return fallback, False
 
     @staticmethod
     def format_fallback(agent_responses: list[tuple[str, str, bool]]) -> str:
@@ -162,7 +179,7 @@ class MediationService:
             system_prompt = await self._orch._load_prompt_async("mediate")
             personality_text = personality.strip() if personality and personality.strip() else ""
             system_prompt = system_prompt.replace("{personality}", personality_text)
-            system_prompt = system_prompt.replace("{language}", language or "en")
+            system_prompt = system_prompt.replace("{language}", language_code_to_name(language))
             system_prompt = system_prompt.replace(
                 "{organic_followup_hint}",
                 "You may add a natural follow-up question at the end. Append [FOLLOWUP] if you do."
@@ -192,10 +209,7 @@ class MediationService:
                 span["metadata"]["original_length"] = len(agent_speech)
                 span["metadata"]["mediated_length"] = len(result.strip()) if result else 0
             mediated = strip_parenthetical_asides(result) if result and result.strip() else agent_speech
-            followup = False
-            if isinstance(mediated, str) and mediated.endswith("[FOLLOWUP]"):
-                mediated = mediated[: -len("[FOLLOWUP]")].rstrip()
-                followup = True
+            mediated, followup = _strip_followup_tag(mediated)
             return mediated, followup
         except asyncio.CancelledError:
             raise
@@ -239,7 +253,7 @@ class MediationService:
             system_prompt = await self._orch._load_prompt_async("mediate")
             personality_text = personality.strip() if personality and personality.strip() else ""
             system_prompt = system_prompt.replace("{personality}", personality_text)
-            system_prompt = system_prompt.replace("{language}", language or "en")
+            system_prompt = system_prompt.replace("{language}", language_code_to_name(language))
             system_prompt = system_prompt.replace(
                 "{organic_followup_hint}",
                 "You may add a natural follow-up question at the end. Append [FOLLOWUP] if you do."

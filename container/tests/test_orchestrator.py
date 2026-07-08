@@ -34,6 +34,7 @@ sys.modules.setdefault("litellm", _litellm_mock)
 
 import app.llm.client  # noqa: E402,F401 -- force module load for patch targets
 from app.agents.general import GeneralAgent  # noqa: E402
+from app.agents.mediation import _strip_followup_tag  # noqa: E402
 from app.agents.orchestrator import OrchestratorAgent  # noqa: E402
 from app.agents.send import _CONTENT_SEPARATOR, SendAgent  # noqa: E402
 from app.models.agent import (  # noqa: E402
@@ -1620,8 +1621,9 @@ class TestMergeResponsesActionStatus:
             ("light-agent", "Light is on.", True),
             ("music-agent", "Could not play music.", False),
         ]
-        result = await orch._merge_responses(agent_responses, "turn on light and play music")
-        assert result == "Merged result."
+        speech, followup = await orch._merge_responses(agent_responses, "turn on light and play music")
+        assert speech == "Merged result."
+        assert followup is False
 
         # Check the messages sent to the LLM contain action status markers
         call_messages = mock_complete.call_args[0][1]
@@ -3126,6 +3128,28 @@ class TestFollowupDetection:
         assert speech == "Done, light is on."
         assert followup is False
 
+    @patch("app.agents.orchestrator.SettingsRepository")
+    @patch("app.llm.client.complete", new_callable=AsyncMock)
+    async def test_merge_responses_extracts_followup_tag(self, mock_complete, mock_settings):
+        """Merge output ending with [FOLLOWUP] is stripped and flag is set."""
+        orch = self._make_orchestrator()
+        mock_settings.get_value = AsyncMock(return_value="You are a friendly assistant.")
+        mock_complete.return_value = "Done. Should I dim it too?[FOLLOWUP]"
+        agent_responses = [
+            ("light-agent", "Light is on.", True),
+            ("music-agent", "Playing jazz.", False),
+        ]
+        speech, followup = await orch._merge_responses(agent_responses, "turn on light and play jazz")
+        assert speech == "Done. Should I dim it too?"
+        assert followup is True
+
+    def test_strip_followup_tag_helper(self):
+        """_strip_followup_tag strips a trailing tag and reports presence."""
+        assert _strip_followup_tag("Done.[FOLLOWUP]") == ("Done.", True)
+        assert _strip_followup_tag("Done.") == ("Done.", False)
+        assert _strip_followup_tag(None) == (None, False)
+        assert _strip_followup_tag(123) == (123, False)
+
     def test_merge_uses_mediated_followup(self):
         """When mediated_followup=True, voice_followup=True regardless of agent_requested."""
         orch = self._make_orchestrator()
@@ -3307,7 +3331,9 @@ class TestOrchestratorPhase3Gaps:
         result = await orch._merge_responses(
             agent_responses, "turn on light and play jazz", reminder_text="Meeting in 5 minutes."
         )
-        assert result == "Merged with reminder."
+        speech, followup = result
+        assert speech == "Merged with reminder."
+        assert followup is False
         call_messages = mock_complete.call_args[0][1]
         user_content = call_messages[1]["content"]
         assert "Meeting in 5 minutes." in user_content

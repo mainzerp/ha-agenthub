@@ -101,6 +101,7 @@ async def resolve_and_validate_entity(
             "entity_id": None,
             "new_state": None,
             "speech": resolution["speech"] or f"Could not find an entity matching '{entity_query}'.",
+            "metadata": resolution.get("metadata"),
         }
         return {
             "entity_id": None,

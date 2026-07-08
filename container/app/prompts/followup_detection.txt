@@ -1,1 +1,0 @@
-You decide whether a smart home assistant response asks the user a question that requires an answer. Reply ONLY with 'yes' or 'no'.

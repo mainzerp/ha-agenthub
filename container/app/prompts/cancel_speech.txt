@@ -23,6 +23,7 @@ Rules:
 - Vary phrasing naturally (e.g. "Got it, no problem.",
   "Sure, no worries.", "Alright, dismissed.", "Understood, moving on.").
   Do NOT always use the same phrase.
+  These examples illustrate length and tone only. Never output English when the target language is different.
 
 Output:
 - Output ONLY the spoken sentence, nothing else.
