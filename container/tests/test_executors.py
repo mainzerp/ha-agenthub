@@ -740,6 +740,41 @@ class TestAutomationExecutorQueries:
         assert not result["success"]
         assert "Failed" in result["speech"]
 
+    async def test_query_automation_state_with_direct_entity_id(self):
+        ha = AsyncMock()
+        ha.get_state = AsyncMock(
+            return_value={
+                "state": "on",
+                "attributes": {"last_triggered": "2024-01-15T10:30:00", "friendly_name": "Morning Routine"},
+            }
+        )
+        result = await execute_automation_action(
+            {"action": "query_automation_state", "entity_id": "automation.morning_routine"},
+            ha,
+            None,
+            None,
+            agent_id="automation-agent",
+        )
+        assert result["success"]
+        assert result["entity_id"] == "automation.morning_routine"
+        assert result["metadata"]["resolution_path"] == "llm_entity_id"
+        ha.get_state.assert_awaited_once_with("automation.morning_routine")
+
+    async def test_query_automation_state_direct_entity_id_wrong_domain_falls_back(self):
+        ha = AsyncMock()
+        matcher = AsyncMock()
+        matcher.match = AsyncMock(return_value=[])
+        result = await execute_automation_action(
+            {"action": "query_automation_state", "entity_id": "light.kitchen"},
+            ha,
+            None,
+            matcher,
+            agent_id="automation-agent",
+        )
+        assert not result["success"]
+        assert "Could not find" in result["speech"]
+        ha.get_state.assert_not_awaited()
+
     async def test_list_automations(self):
         ha = AsyncMock()
         ha.get_states = AsyncMock(
@@ -1059,6 +1094,38 @@ class TestAutomationExecutorCrud:
         )
         assert result["success"] is False
 
+    async def test_get_automation_config_with_direct_entity_id(self):
+        ha = AsyncMock()
+        ha.get_state = AsyncMock(
+            return_value={
+                "state": "on",
+                "attributes": {"id": "motion_sensor_001", "friendly_name": "Motion Sensor"},
+            }
+        )
+        ha.get_automation_config = AsyncMock(
+            return_value={
+                "alias": "Motion Sensor",
+                "trigger": [{"platform": "state"}],
+                "condition": [],
+                "action": [{"service": "light.turn_on"}],
+            }
+        )
+        result = await execute_automation_action(
+            {
+                "action": "get_automation_config",
+                "entity_id": "automation.motion_sensor",
+                "parameters": {},
+            },
+            ha,
+            None,
+            None,
+            agent_id="automation-agent",
+        )
+        assert result["success"] is True
+        assert result["entity_id"] == "automation.motion_sensor"
+        assert result["metadata"]["resolution_path"] == "llm_entity_id"
+        ha.get_state.assert_awaited_once_with("automation.motion_sensor")
+
     async def test_list_automations_shows_agenthub_marker(self):
         ha = AsyncMock()
         ha.get_states = AsyncMock(
@@ -1105,6 +1172,31 @@ class TestSceneExecutorQueries:
         matcher.match = AsyncMock(return_value=[])
         result = await execute_scene_action(
             {"action": "query_scene", "entity": "nonexistent scene"},
+            AsyncMock(),
+            None,
+            matcher,
+            agent_id="scene-agent",
+        )
+        assert not result["success"]
+        assert "Could not find" in result["speech"]
+
+    async def test_query_scene_with_direct_entity_id(self):
+        result = await execute_scene_action(
+            {"action": "query_scene", "entity_id": "scene.movie_night"},
+            AsyncMock(),
+            None,
+            None,
+            agent_id="scene-agent",
+        )
+        assert result["success"]
+        assert result["entity_id"] == "scene.movie_night"
+        assert result["metadata"]["resolution_path"] == "llm_entity_id"
+
+    async def test_query_scene_direct_entity_id_wrong_domain_falls_back(self):
+        matcher = AsyncMock()
+        matcher.match = AsyncMock(return_value=[])
+        result = await execute_scene_action(
+            {"action": "query_scene", "entity_id": "light.kitchen"},
             AsyncMock(),
             None,
             matcher,
@@ -1317,6 +1409,46 @@ class TestMusicExecutorQueries:
         assert not result["success"]
         assert "Failed" in result["speech"]
 
+    async def test_query_music_state_with_direct_entity_id(self):
+        ha = AsyncMock()
+        ha.get_state = AsyncMock(
+            return_value={
+                "state": "playing",
+                "attributes": {
+                    "media_title": "Bohemian Rhapsody",
+                    "media_artist": "Queen",
+                    "volume_level": 0.5,
+                    "friendly_name": "Kitchen Speaker",
+                },
+            }
+        )
+        result = await execute_music_action(
+            {"action": "query_music_state", "entity_id": "media_player.kitchen"},
+            ha,
+            None,
+            None,
+            agent_id="music-agent",
+        )
+        assert result["success"]
+        assert result["entity_id"] == "media_player.kitchen"
+        assert result["metadata"]["resolution_path"] == "llm_entity_id"
+        ha.get_state.assert_awaited_once_with("media_player.kitchen")
+
+    async def test_query_music_state_direct_entity_id_wrong_domain_falls_back(self):
+        ha = AsyncMock()
+        matcher = AsyncMock()
+        matcher.match = AsyncMock(return_value=[])
+        result = await execute_music_action(
+            {"action": "query_music_state", "entity_id": "light.kitchen"},
+            ha,
+            None,
+            matcher,
+            agent_id="music-agent",
+        )
+        assert not result["success"]
+        assert "Could not find" in result["speech"]
+        ha.get_state.assert_not_awaited()
+
     async def test_list_music_players(self):
         ha = AsyncMock()
         ha.get_states = AsyncMock(
@@ -1476,6 +1608,46 @@ class TestMediaExecutorQueries:
         )
         assert not result["success"]
         assert "Failed" in result["speech"]
+
+    async def test_query_media_state_with_direct_entity_id(self):
+        ha = AsyncMock()
+        ha.get_state = AsyncMock(
+            return_value={
+                "state": "playing",
+                "attributes": {
+                    "media_title": "Movie",
+                    "source": "HDMI 1",
+                    "volume_level": 0.6,
+                    "friendly_name": "Living Room TV",
+                },
+            }
+        )
+        result = await execute_media_action(
+            {"action": "query_media_state", "entity_id": "media_player.living_room_tv"},
+            ha,
+            None,
+            None,
+            agent_id="media-agent",
+        )
+        assert result["success"]
+        assert result["entity_id"] == "media_player.living_room_tv"
+        assert result["metadata"]["resolution_path"] == "llm_entity_id"
+        ha.get_state.assert_awaited_once_with("media_player.living_room_tv")
+
+    async def test_query_media_state_direct_entity_id_wrong_domain_falls_back(self):
+        ha = AsyncMock()
+        matcher = AsyncMock()
+        matcher.match = AsyncMock(return_value=[])
+        result = await execute_media_action(
+            {"action": "query_media_state", "entity_id": "light.kitchen"},
+            ha,
+            None,
+            matcher,
+            agent_id="media-agent",
+        )
+        assert not result["success"]
+        assert "Could not find" in result["speech"]
+        ha.get_state.assert_not_awaited()
 
     async def test_list_media_players(self):
         ha = AsyncMock()

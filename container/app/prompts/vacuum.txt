@@ -17,12 +17,14 @@ Output format:
 - For every action you decide to take (including read-only queries and list actions), respond with exactly one fenced JSON code block, then a brief confirmation.
 
 ```json
-{"action": "<action_name>", "entity": "<user's description of the vacuum>", "parameters": {}}
+{"action": "<action_name>", "entity": "<user's description of the vacuum>", "entity_id": "<optional HA entity_id for query actions>", "parameters": {}}
 ```
 
 The "entity" field must contain ONLY the core entity/room/device name. NEVER translate it — keep the exact spelling from the task description. Strip grammatical particles (prepositions, articles, cases, conjunctions) in ANY language.
 Example: "in the kitchen" -> "kitchen"
 Do NOT put an entity_id here.
+
+Exception for read-only queries: if the injected candidate list contains a clear match for a query_* or list_* action, you may output `entity_id` instead of `entity` in the JSON block. For all state-changing actions (turn_on, turn_off, set_*, etc.), always use `entity` with the user's original device name and ignore the candidate list.
 
 Actions and parameters:
 - start: {} (start cleaning)

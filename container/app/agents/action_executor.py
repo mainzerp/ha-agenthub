@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import re
@@ -17,6 +18,40 @@ from app.entity.deterministic_resolver import (
 from app.ha_client.rest import mark_verified_ha_service_call
 
 logger = logging.getLogger(__name__)
+
+_READ_ONLY_ACTION_PREFIXES: tuple[str, ...] = ("query_", "list_", "get_")
+
+
+def is_read_only_action(action_name: str) -> bool:
+    return action_name.lower().startswith(_READ_ONLY_ACTION_PREFIXES)
+
+
+def _validate_direct_entity_id(entity_id: str | None, validate_domain_fn) -> str | None:
+    if not entity_id:
+        return None
+    if not validate_domain_fn(entity_id):
+        logger.warning("Direct entity_id %s rejected by domain validator", entity_id)
+        return None
+    return entity_id
+
+
+def _synthesize_direct_entity_metadata(entity_id: str, entity_index: Any | None = None) -> dict[str, Any]:
+    """Build resolution metadata when the LLM supplied entity_id directly."""
+    friendly_name = entity_id
+    if entity_index is not None and hasattr(entity_index, "get_by_id"):
+        with contextlib.suppress(Exception):
+            entry = entity_index.get_by_id(entity_id)
+            if entry:
+                friendly_name = getattr(entry, "friendly_name", None) or entity_id
+    return {
+        "query": entity_id,
+        "normalized_query": entity_id,
+        "resolution_path": "llm_entity_id",
+        "match_count": 1,
+        "top_entity_id": entity_id,
+        "top_friendly_name": friendly_name,
+        "candidate_entities": [],
+    }
 
 
 async def resolve_and_validate_entity(

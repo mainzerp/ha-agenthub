@@ -6,6 +6,8 @@ import logging
 from typing import Any
 
 from app.agents.action_executor import (
+    _synthesize_direct_entity_metadata,
+    _validate_direct_entity_id,
     build_verified_speech,
     call_service_with_verification,
     resolve_and_validate_entity,
@@ -137,6 +139,7 @@ async def execute_cover_action(
             preferred_area_id=preferred_area_id,
             task_context=task_context,
             verbatim_terms=verbatim_terms,
+            action=action,
         )
 
     # Validate action name
@@ -250,23 +253,30 @@ async def _query_cover_state(
     *,
     preferred_area_id: str | None = None,
     verbatim_terms: list[str] | None = None,
+    action: dict | None = None,
 ) -> dict:
-    resolved = await resolve_and_validate_entity(
-        entity_query,
-        entity_index,
-        entity_matcher,
-        agent_id,
-        _COVER_READ_DOMAINS,
-        _validate_domain,
-        preferred_area_id=preferred_area_id,
-        verbatim_terms=verbatim_terms,
-        span_collector=span_collector,
-    )
-    if resolved["not_found_result"] is not None:
-        result = resolved["not_found_result"]
-        result["cacheable"] = False
-        return result
-    entity_id = resolved["entity_id"]
+    entity_id_direct = _validate_direct_entity_id(action.get("entity_id") if action else None, _validate_domain)
+    if entity_id_direct:
+        entity_id = entity_id_direct
+        resolution_metadata = _synthesize_direct_entity_metadata(entity_id, entity_index)
+    else:
+        resolved = await resolve_and_validate_entity(
+            entity_query,
+            entity_index,
+            entity_matcher,
+            agent_id,
+            _COVER_READ_DOMAINS,
+            _validate_domain,
+            preferred_area_id=preferred_area_id,
+            verbatim_terms=verbatim_terms,
+            span_collector=span_collector,
+        )
+        if resolved["not_found_result"] is not None:
+            result = resolved["not_found_result"]
+            result["cacheable"] = False
+            return result
+        entity_id = resolved["entity_id"]
+        resolution_metadata = resolved["resolution"].get("metadata", {})
 
     try:
         state_resp = await ha_client.get_state(entity_id)
@@ -277,6 +287,7 @@ async def _query_cover_state(
                 "new_state": None,
                 "speech": f"Could not retrieve state for {entity_id}.",
                 "cacheable": False,
+                "metadata": resolution_metadata,
             }
         speech = _format_cover_state(entity_id, state_resp)
         return {
@@ -285,6 +296,7 @@ async def _query_cover_state(
             "new_state": state_resp.get("state"),
             "speech": speech,
             "cacheable": False,
+            "metadata": resolution_metadata,
         }
     except Exception as exc:
         logger.error("State query failed for %s", entity_id, exc_info=True)
@@ -294,6 +306,7 @@ async def _query_cover_state(
             "new_state": None,
             "speech": f"Failed to query cover status: {exc}",
             "cacheable": False,
+            "metadata": resolution_metadata,
         }
 
 
@@ -392,6 +405,7 @@ async def _handle_cover_read_action(
     preferred_area_id: str | None = None,
     task_context: TaskContext | None = None,
     verbatim_terms: list[str] | None = None,
+    action: dict | None = None,
 ) -> dict:
     params = parameters or {}
     if action_name == "query_cover_state":
@@ -404,6 +418,7 @@ async def _handle_cover_read_action(
             span_collector=span_collector,
             preferred_area_id=preferred_area_id,
             verbatim_terms=verbatim_terms,
+            action=action,
         )
     if action_name == "list_covers":
         return await _list_covers(ha_client)

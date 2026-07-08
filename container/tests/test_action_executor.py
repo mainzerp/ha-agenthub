@@ -187,6 +187,13 @@ class TestParseAction:
         assert result is not None
         assert result["entity_id"] == "light.kitchen"
 
+    def test_parse_action_accepts_entity_id_for_query_action(self):
+        response = '{"action": "query_light_state", "entity_id": "light.kitchen"}'
+        result = parse_action(response)
+        assert result is not None
+        assert result["action"] == "query_light_state"
+        assert result["entity_id"] == "light.kitchen"
+
     def test_parse_action_allows_entityless_list_actions(self):
         """P2-6 (FLOW-PARSE-1): aggregation actions (``list_lights``,
         ``list_timers``, ``list_lists`` etc.) legitimately omit an entity; they must
@@ -1042,7 +1049,24 @@ class TestClimateExecutorWeatherActions:
 # resolve_and_validate_entity tests
 # ---------------------------------------------------------------------------
 
-from app.agents.action_executor import resolve_and_validate_entity  # noqa: E402
+from app.agents.action_executor import (  # noqa: E402
+    is_read_only_action,
+    resolve_and_validate_entity,
+)
+
+
+class TestIsReadOnlyAction:
+    def test_query_prefix(self):
+        assert is_read_only_action("query_light_state") is True
+
+    def test_list_prefix(self):
+        assert is_read_only_action("list_lights") is True
+
+    def test_get_prefix(self):
+        assert is_read_only_action("get_state") is True
+
+    def test_state_changing_prefix(self):
+        assert is_read_only_action("turn_on") is False
 
 
 class TestResolveAndValidateEntity:
@@ -1183,3 +1207,44 @@ class TestResolveAndValidateEntity:
         metadata = not_found.get("metadata") or {}
         resolution_path = metadata.get("resolution_path") or ""
         assert resolution_path.endswith("_ambiguous")
+
+    @pytest.mark.asyncio
+    async def test_resolve_and_validate_entity_includes_candidate_entities_metadata(self, entity_index):
+        matcher = MagicMock(spec=EntityMatcher)
+        match_results = [
+            MatchResult(
+                entity_id="light.kitchen", friendly_name="Kitchen Light", score=0.95, signal_scores={"name": 0.95}
+            ),
+            MatchResult(
+                entity_id="light.living_room",
+                friendly_name="Living Room Light",
+                score=0.85,
+                signal_scores={"name": 0.85},
+            ),
+            MatchResult(
+                entity_id="light.bedroom", friendly_name="Bedroom Light", score=0.75, signal_scores={"name": 0.75}
+            ),
+        ]
+        matcher.match = AsyncMock(return_value=match_results)
+
+        result = await resolve_and_validate_entity(
+            "kitchen light",
+            entity_index,
+            matcher,
+            "light-agent",
+            frozenset({"light"}),
+            lambda eid: True,
+        )
+
+        resolution = result["resolution"]
+        metadata = resolution["metadata"]
+        assert "candidate_entities" in metadata
+        candidates = metadata["candidate_entities"]
+        assert len(candidates) == 3
+        for candidate in candidates:
+            assert "entity_id" in candidate
+            assert "friendly_name" in candidate
+            assert "domain" in candidate
+            assert "score" in candidate
+            assert "signal_scores" in candidate
+        assert candidates[0]["entity_id"] == "light.kitchen"

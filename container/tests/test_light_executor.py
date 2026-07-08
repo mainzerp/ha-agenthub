@@ -786,6 +786,44 @@ class TestReadActionCacheable:
 
 
 # ---------------------------------------------------------------------------
+# Direct entity_id query tests
+# ---------------------------------------------------------------------------
+
+
+class TestQueryLightStateDirectEntityId:
+    """Tests for query_light_state with a direct entity_id from the LLM."""
+
+    @pytest.mark.asyncio
+    async def test_query_light_state_with_direct_entity_id(self):
+        ha_client = AsyncMock()
+        ha_client.get_state = AsyncMock(
+            return_value={"state": "on", "attributes": {"friendly_name": "Kitchen Light", "brightness": 200}}
+        )
+        action = {"action": "query_light_state", "entity_id": "light.kitchen"}
+        result = await execute_light_action(action, ha_client, MagicMock(), MagicMock())
+
+        assert result["success"] is True
+        assert result["entity_id"] == "light.kitchen"
+        assert result["metadata"]["resolution_path"] == "llm_entity_id"
+        ha_client.get_state.assert_awaited_once_with("light.kitchen")
+
+    @pytest.mark.asyncio
+    async def test_query_light_state_direct_entity_id_wrong_domain_falls_back(self):
+        ha_client = AsyncMock()
+        matcher = AsyncMock()
+        matcher.match = AsyncMock(return_value=[])
+        index = MagicMock()
+        index.search = MagicMock(return_value=[])
+
+        action = {"action": "query_light_state", "entity_id": "climate.living_room"}
+        result = await execute_light_action(action, ha_client, index, matcher)
+
+        assert result["success"] is False
+        assert "Could not find" in result["speech"]
+        ha_client.get_state.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
 # Conditional action tests
 # ---------------------------------------------------------------------------
 

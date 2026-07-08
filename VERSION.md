@@ -1,12 +1,20 @@
 # Version
 
-**Current Version:** 1.43.0
+**Current Version:** 1.44.0
 
 ## Recent Changes
 
-(tracking changes since 1.43.0)
+(tracking changes since 1.44.0)
 
 ## Version History
+
+### 1.44.0 (MINOR) -- Query Top-3 Entity Matcher Candidate Injection
+
+- feat(entity): serialize top-N entity matcher candidates into `resolution.metadata["candidate_entities"]` in hybrid matcher path
+- feat(agents): inject candidate entity list into ActionableAgent system prompt for read-only `query_*` / `list_*` actions
+- feat(agents): accept direct `entity_id` in query actions across light, climate, cover, security, vacuum, media, music, scene, and automation executors
+- feat(prompts): update domain prompts to allow `entity_id` output for read-only queries while keeping `entity` required for state-changing actions
+- test(agents): add resolver metadata, direct entity_id parsing, candidate injection, and per-domain query executor tests
 
 ### 1.43.0 (MINOR) -- System-wide prompt review and deferred hardening
 

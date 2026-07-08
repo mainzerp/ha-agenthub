@@ -228,3 +228,70 @@ class TestExecuteClimateAction:
         assert result["new_state"] == "off"
         assert "already off" in result["speech"]
         ha_client.call_service.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# Direct entity_id query tests
+# ---------------------------------------------------------------------------
+
+
+class TestQueryClimateStateDirectEntityId:
+    """Tests for query_climate_state with a direct entity_id from the LLM."""
+
+    @pytest.mark.asyncio
+    async def test_query_climate_state_with_direct_entity_id(self):
+        ha_client = AsyncMock()
+        ha_client.get_state = AsyncMock(
+            return_value={
+                "state": "heat",
+                "attributes": {"friendly_name": "Living Room", "current_temperature": 21.5, "temperature": 23},
+            }
+        )
+        action = {"action": "query_climate_state", "entity_id": "climate.living_room"}
+        result = await execute_climate_action(action, ha_client, MagicMock(), MagicMock())
+
+        assert result["success"] is True
+        assert result["entity_id"] == "climate.living_room"
+        assert result["metadata"]["resolution_path"] == "llm_entity_id"
+        ha_client.get_state.assert_awaited_once_with("climate.living_room")
+
+    @pytest.mark.asyncio
+    async def test_query_climate_state_direct_entity_id_wrong_domain_falls_back(self):
+        ha_client = AsyncMock()
+        matcher = AsyncMock()
+        matcher.match = AsyncMock(return_value=[])
+        index = MagicMock()
+        index.search = MagicMock(return_value=[])
+
+        action = {"action": "query_climate_state", "entity_id": "light.kitchen"}
+        result = await execute_climate_action(action, ha_client, index, matcher)
+
+        assert result["success"] is False
+        assert "Could not find" in result["speech"]
+        ha_client.get_state.assert_not_awaited()
+
+
+class TestQueryWeatherDirectEntityId:
+    """Tests for query_weather with a direct entity_id from the LLM."""
+
+    @pytest.mark.asyncio
+    async def test_query_weather_with_direct_entity_id(self):
+        ha_client = AsyncMock()
+        ha_client.get_state = AsyncMock(
+            return_value={
+                "state": "sunny",
+                "attributes": {
+                    "friendly_name": "Home",
+                    "temperature": 22,
+                    "temperature_unit": "C",
+                    "humidity": 60,
+                },
+            }
+        )
+        action = {"action": "query_weather", "entity_id": "weather.home"}
+        result = await execute_climate_action(action, ha_client, MagicMock(), MagicMock())
+
+        assert result["success"] is True
+        assert result["entity_id"] == "weather.home"
+        assert result["metadata"]["resolution_path"] == "llm_entity_id"
+        ha_client.get_state.assert_awaited_once_with("weather.home")

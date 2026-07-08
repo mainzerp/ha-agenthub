@@ -12,6 +12,8 @@ from app.agents.action_executor import (
     ActionCondition,
     _ensure_str,
     _evaluate_condition,
+    _synthesize_direct_entity_metadata,
+    _validate_direct_entity_id,
     call_service_with_verification,
     resolve_and_validate_entity,
 )
@@ -187,6 +189,7 @@ async def execute_light_action(
             parameters=action.get("parameters") or {},
             preferred_area_id=preferred_area_id,
             task_context=task_context,
+            action=action,
         )
 
     # Validate action name
@@ -370,26 +373,33 @@ async def _query_light_state(
     span_collector=None,
     *,
     preferred_area_id: str | None = None,
+    action: dict | None = None,
 ) -> dict:
-    resolved = await resolve_and_validate_entity(
-        entity_query,
-        entity_index,
-        entity_matcher,
-        agent_id,
-        _ALLOWED_DOMAINS,
-        _validate_domain,
-        preferred_area_id=preferred_area_id,
-        enable_strip_device_noun=True,
-        enable_area_fallback=True,
-        preferred_domain="light",
-        span_collector=span_collector,
-        require_matcher=True,
-    )
-    if resolved["not_found_result"] is not None:
-        result = resolved["not_found_result"]
-        result["cacheable"] = False
-        return result
-    entity_id = resolved["entity_id"]
+    entity_id_direct = _validate_direct_entity_id(action.get("entity_id") if action else None, _validate_domain)
+    if entity_id_direct:
+        entity_id = entity_id_direct
+        resolution_metadata = _synthesize_direct_entity_metadata(entity_id, entity_index)
+    else:
+        resolved = await resolve_and_validate_entity(
+            entity_query,
+            entity_index,
+            entity_matcher,
+            agent_id,
+            _ALLOWED_DOMAINS,
+            _validate_domain,
+            preferred_area_id=preferred_area_id,
+            enable_strip_device_noun=True,
+            enable_area_fallback=True,
+            preferred_domain="light",
+            span_collector=span_collector,
+            require_matcher=True,
+        )
+        if resolved["not_found_result"] is not None:
+            result = resolved["not_found_result"]
+            result["cacheable"] = False
+            return result
+        entity_id = resolved["entity_id"]
+        resolution_metadata = resolved["resolution"].get("metadata", {})
 
     try:
         state_resp = await ha_client.get_state(entity_id)
@@ -400,6 +410,7 @@ async def _query_light_state(
                 "new_state": None,
                 "speech": f"Could not retrieve state for {entity_id}.",
                 "cacheable": False,
+                "metadata": resolution_metadata,
             }
         speech = _format_light_state(entity_id, state_resp)
         return {
@@ -408,6 +419,7 @@ async def _query_light_state(
             "new_state": state_resp.get("state"),
             "speech": speech,
             "cacheable": False,
+            "metadata": resolution_metadata,
         }
     except Exception as exc:
         logger.error("State query failed for %s", entity_id, exc_info=True)
@@ -417,6 +429,7 @@ async def _query_light_state(
             "new_state": None,
             "speech": f"Failed to query light status: {exc}",
             "cacheable": False,
+            "metadata": resolution_metadata,
         }
 
 
@@ -543,6 +556,7 @@ async def _handle_light_read_action(
     parameters: dict[str, Any] | None = None,
     preferred_area_id: str | None = None,
     task_context: TaskContext | None = None,
+    action: dict | None = None,
 ) -> dict:
     if action_name == "query_light_state":
         return await _query_light_state(
@@ -553,6 +567,7 @@ async def _handle_light_read_action(
             agent_id,
             span_collector=span_collector,
             preferred_area_id=preferred_area_id,
+            action=action,
         )
     if action_name == "list_lights":
         return await _list_lights(ha_client, agent_id=agent_id, entity_index=entity_index)

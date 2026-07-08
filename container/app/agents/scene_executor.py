@@ -6,6 +6,8 @@ import logging
 from typing import Any
 
 from app.agents.action_executor import (
+    _synthesize_direct_entity_metadata,
+    _validate_direct_entity_id,
     call_service_with_verification,
     resolve_and_validate_entity,
 )
@@ -74,6 +76,7 @@ async def execute_scene_action(
             span_collector=span_collector,
             preferred_area_id=preferred_area_id,
             verbatim_terms=verbatim_terms,
+            action=action,
         )
 
     # Validate action name
@@ -150,25 +153,33 @@ async def _query_scene(
     *,
     preferred_area_id: str | None = None,
     verbatim_terms: list[str] | None = None,
+    action: dict | None = None,
 ) -> dict:
-    resolved = await resolve_and_validate_entity(
-        entity_query,
-        entity_index,
-        entity_matcher,
-        agent_id,
-        _ALLOWED_DOMAINS,
-        _validate_domain,
-        preferred_area_id=preferred_area_id,
-        verbatim_terms=verbatim_terms,
-        span_collector=span_collector,
-    )
-    if resolved["not_found_result"] is not None:
-        result = resolved["not_found_result"]
-        result["speech"] = result["speech"].replace("an entity", "a scene")
-        result["cacheable"] = False
-        return result
-    entity_id = resolved["entity_id"]
-    friendly_name = resolved["friendly_name"]
+    entity_id_direct = _validate_direct_entity_id(action.get("entity_id") if action else None, _validate_domain)
+    if entity_id_direct:
+        entity_id = entity_id_direct
+        friendly_name = _synthesize_direct_entity_metadata(entity_id, entity_index).get("top_friendly_name", entity_id)
+        resolution_metadata = _synthesize_direct_entity_metadata(entity_id, entity_index)
+    else:
+        resolved = await resolve_and_validate_entity(
+            entity_query,
+            entity_index,
+            entity_matcher,
+            agent_id,
+            _ALLOWED_DOMAINS,
+            _validate_domain,
+            preferred_area_id=preferred_area_id,
+            verbatim_terms=verbatim_terms,
+            span_collector=span_collector,
+        )
+        if resolved["not_found_result"] is not None:
+            result = resolved["not_found_result"]
+            result["speech"] = result["speech"].replace("an entity", "a scene")
+            result["cacheable"] = False
+            return result
+        entity_id = resolved["entity_id"]
+        friendly_name = resolved["friendly_name"]
+        resolution_metadata = resolved["resolution"].get("metadata", {})
 
     return {
         "success": True,
@@ -176,6 +187,7 @@ async def _query_scene(
         "new_state": None,
         "speech": f"Scene found: {friendly_name} ({entity_id}).",
         "cacheable": False,
+        "metadata": resolution_metadata,
     }
 
 
@@ -211,6 +223,7 @@ async def _handle_scene_read_action(
     *,
     preferred_area_id: str | None = None,
     verbatim_terms: list[str] | None = None,
+    action: dict | None = None,
 ) -> dict:
     if action_name == "query_scene":
         return await _query_scene(
@@ -222,6 +235,7 @@ async def _handle_scene_read_action(
             span_collector=span_collector,
             preferred_area_id=preferred_area_id,
             verbatim_terms=verbatim_terms,
+            action=action,
         )
     if action_name == "list_scenes":
         return await _list_scenes(ha_client)
