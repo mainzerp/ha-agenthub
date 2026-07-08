@@ -194,3 +194,44 @@ class TestExecuteCoverAction:
         assert result["new_state"] == "closed"
         assert "already closed" in result["speech"]
         ha_client.call_service.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# Direct entity_id query tests
+# ---------------------------------------------------------------------------
+
+
+class TestQueryCoverStateDirectEntityId:
+    """Tests for query_cover_state with a direct entity_id from the LLM."""
+
+    @pytest.mark.asyncio
+    async def test_query_cover_state_with_direct_entity_id(self):
+        ha_client = AsyncMock()
+        ha_client.get_state = AsyncMock(
+            return_value={
+                "state": "open",
+                "attributes": {"friendly_name": "Living Room Blinds", "current_position": 80},
+            }
+        )
+        action = {"action": "query_cover_state", "entity_id": "cover.living_room_blinds"}
+        result = await execute_cover_action(action, ha_client, MagicMock(), MagicMock())
+
+        assert result["success"] is True
+        assert result["entity_id"] == "cover.living_room_blinds"
+        assert result["metadata"]["resolution_path"] == "llm_entity_id"
+        ha_client.get_state.assert_awaited_once_with("cover.living_room_blinds")
+
+    @pytest.mark.asyncio
+    async def test_query_cover_state_direct_entity_id_wrong_domain_falls_back(self):
+        ha_client = AsyncMock()
+        matcher = AsyncMock()
+        matcher.match = AsyncMock(return_value=[])
+        index = MagicMock()
+        index.search = MagicMock(return_value=[])
+
+        action = {"action": "query_cover_state", "entity_id": "light.kitchen"}
+        result = await execute_cover_action(action, ha_client, index, matcher)
+
+        assert result["success"] is False
+        assert "Could not find" in result["speech"]
+        ha_client.get_state.assert_not_awaited()

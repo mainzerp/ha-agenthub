@@ -487,6 +487,76 @@ class TestHandleTaskInnerInjection:
         system_msg = mock_llm.call_args.args[0][0]["content"]
         assert "Output rules:" in system_msg
 
+    @pytest.mark.asyncio
+    async def test_query_candidate_context_injected_into_system_prompt(self):
+        agent = LightAgent()
+        task = make_agent_task(description="is the kitchen light on?")
+        task.verbatim_terms = ["kitchen light"]
+
+        matcher = AsyncMock()
+        match_result = MagicMock()
+        match_result.entity_id = "light.kitchen_ceiling"
+        match_result.friendly_name = "Kitchen Ceiling"
+        match_result.score = 0.95
+        matcher.match = AsyncMock(return_value=[match_result])
+
+        index = AsyncMock()
+        index.get_by_id_async = AsyncMock(return_value=None)
+
+        with (
+            patch.object(agent, "_load_prompt_async", new_callable=AsyncMock, return_value="You are a light agent."),
+            patch.object(
+                agent,
+                "_call_llm",
+                new_callable=AsyncMock,
+                return_value='{"action": "query_light_state", "entity_id": "light.kitchen_ceiling"}',
+            ) as mock_llm,
+            patch.object(agent, "_resolve_relevant_entities", new_callable=AsyncMock, return_value=[]),
+            patch.object(agent, "_do_execute", new_callable=AsyncMock, return_value={"speech": "OK", "success": True}),
+        ):
+            agent._entity_index = index
+            agent._entity_matcher = matcher
+            agent._ha_client = AsyncMock()
+
+            await agent.handle_task(task)
+
+        system_msg = mock_llm.call_args.args[0][0]["content"]
+        assert "Candidate entities for 'kitchen light'" in system_msg
+        assert "Kitchen Ceiling (light.kitchen_ceiling)" in system_msg
+        matcher.match.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_query_candidate_context_skipped_when_no_candidates(self):
+        agent = LightAgent()
+        task = make_agent_task(description="is the kitchen light on?")
+        task.verbatim_terms = ["kitchen light"]
+
+        matcher = AsyncMock()
+        matcher.match = AsyncMock(return_value=[])
+
+        index = AsyncMock()
+
+        with (
+            patch.object(agent, "_load_prompt_async", new_callable=AsyncMock, return_value="You are a light agent."),
+            patch.object(
+                agent,
+                "_call_llm",
+                new_callable=AsyncMock,
+                return_value='{"action": "query_light_state", "entity_id": "light.kitchen_ceiling"}',
+            ) as mock_llm,
+            patch.object(agent, "_resolve_relevant_entities", new_callable=AsyncMock, return_value=[]),
+            patch.object(agent, "_do_execute", new_callable=AsyncMock, return_value={"speech": "OK", "success": True}),
+        ):
+            agent._entity_index = index
+            agent._entity_matcher = matcher
+            agent._ha_client = AsyncMock()
+
+            await agent.handle_task(task)
+
+        system_msg = mock_llm.call_args.args[0][0]["content"]
+        assert "Candidate entities for" not in system_msg
+        matcher.match.assert_awaited_once()
+
 
 # ---------------------------------------------------------------------------
 # handle_task execution paths

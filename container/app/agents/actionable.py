@@ -46,6 +46,7 @@ class ActionableAgent(BaseAgent):
     _clarify_on_not_found: bool = True
     _allowed_domains: frozenset[str] | None = None
     _supports_conditions: bool = False
+    _inject_query_candidates: bool = True
 
     def __init__(self, ha_client=None, entity_index=None, entity_matcher=None) -> None:
         super().__init__(ha_client=ha_client, entity_index=entity_index)
@@ -139,6 +140,54 @@ class ActionableAgent(BaseAgent):
         if not lines:
             return None
         return ", ".join(lines)
+
+    async def _build_query_candidate_context(self, task: AgentTask) -> str | None:
+        """Build a candidate-entity block for query actions."""
+        if self._entity_matcher is None or self._entity_index is None:
+            return None
+
+        terms = list(task.verbatim_terms or [])
+        if not terms and task.description:
+            terms = [task.description]
+        if not terms:
+            return None
+
+        agent_id = self.agent_card.agent_id
+        preferred_domains = tuple(sorted(self._allowed_domains)) if self._allowed_domains else None
+        lines: list[str] = []
+
+        for term in terms:
+            try:
+                matches = await self._entity_matcher.match(
+                    term,
+                    agent_id=agent_id,
+                    preferred_domains=preferred_domains,
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.debug("Candidate match failed for term %r", term, exc_info=True)
+                continue
+
+            if not matches:
+                continue
+
+            lines.append(f"Candidate entities for '{term}' (choose the best match):")
+            for idx, match in enumerate(matches, start=1):
+                entity_id = getattr(match, "entity_id", "") or ""
+                friendly_name = getattr(match, "friendly_name", "") or entity_id
+                score = round(float(getattr(match, "score", 0.0) or 0.0), 2)
+                lines.append(f"{idx}. {friendly_name} ({entity_id}) - score {score}")
+
+        if not lines:
+            return None
+
+        lines.append("")
+        lines.append(
+            "For query_* and list_* actions, you may emit the exact entity_id in the JSON action block using the 'entity_id' field instead of 'entity'. "
+            "For state-changing actions, ignore this list and use the user's original entity name in the 'entity' field."
+        )
+        return "\n".join(lines)
 
     async def _do_execute(self, action, ha_client, entity_index, entity_matcher, *, agent_id, span_collector=None):
         """Execute the parsed action. Subclasses must override."""
@@ -276,6 +325,16 @@ class ActionableAgent(BaseAgent):
             raise
         except Exception:
             logger.debug("Entity state injection failed for %s", agent_id, exc_info=True)
+
+        if self._inject_query_candidates and self._entity_matcher is not None:
+            try:
+                candidate_context = await self._build_query_candidate_context(task)
+                if candidate_context:
+                    system_prompt += f"\n\n{candidate_context}"
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.debug("Query candidate injection failed for %s", agent_id, exc_info=True)
 
         messages = [{"role": "system", "content": system_prompt}]
 

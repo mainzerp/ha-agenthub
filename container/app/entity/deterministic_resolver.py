@@ -38,6 +38,33 @@ _TRAILING_DEVICE_NOUNS: frozenset[str] = frozenset(
 )
 
 
+def _serialize_match_candidates(matches: list[Any], entity_index: Any | None = None) -> list[dict[str, Any]]:
+    """Serialize a list of MatchResult candidates for metadata/logging."""
+    candidates: list[dict[str, Any]] = []
+    for match in matches:
+        entity_id = getattr(match, "entity_id", "") or ""
+        domain = entity_id.split(".", 1)[0] if "." in entity_id else ""
+        entry = None
+        if entity_index is not None and hasattr(entity_index, "get_by_id"):
+            try:
+                entry = entity_index.get_by_id(entity_id)
+            except Exception:
+                entry = None
+        candidates.append(
+            {
+                "entity_id": entity_id,
+                "friendly_name": getattr(match, "friendly_name", "") or entity_id,
+                "domain": domain,
+                "area": getattr(entry, "area", None) if entry else None,
+                "score": round(float(getattr(match, "score", 0.0) or 0.0), 4),
+                "signal_scores": {
+                    k: round(float(v), 4) for k, v in (getattr(match, "signal_scores", {}) or {}).items()
+                },
+            }
+        )
+    return candidates
+
+
 def _supports_method(obj: Any, method_name: str) -> bool:
     """Return True when an object or its mock spec exposes a callable method."""
     method = getattr(obj, method_name, None)
@@ -494,6 +521,7 @@ async def resolve_entity_deterministic_first(
             metadata["top_friendly_name"] = chosen.friendly_name or chosen.entity_id
             metadata["top_score"] = getattr(chosen, "score", 0.0)
             metadata["signal_scores"] = getattr(chosen, "signal_scores", {})
+            metadata["candidate_entities"] = _serialize_match_candidates(filtered_matches, entity_index)
             return _with_visible_entries(
                 _build_resolution_result(
                     entity_query=entity_query,

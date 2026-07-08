@@ -219,3 +219,41 @@ class TestExecuteSecurityAction:
         assert result["new_state"] == "locked"
         assert "already" in result["speech"]
         ha_client.call_service.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# Direct entity_id query tests
+# ---------------------------------------------------------------------------
+
+
+class TestQuerySecurityStateDirectEntityId:
+    """Tests for query_security_state with a direct entity_id from the LLM."""
+
+    @pytest.mark.asyncio
+    async def test_query_security_state_with_direct_entity_id(self):
+        ha_client = AsyncMock()
+        ha_client.get_state = AsyncMock(
+            return_value={"state": "locked", "attributes": {"friendly_name": "Front Door Lock"}}
+        )
+        action = {"action": "query_security_state", "entity_id": "lock.front_door"}
+        result = await execute_security_action(action, ha_client, MagicMock(), MagicMock())
+
+        assert result["success"] is True
+        assert result["entity_id"] == "lock.front_door"
+        assert result["metadata"]["resolution_path"] == "llm_entity_id"
+        ha_client.get_state.assert_awaited_once_with("lock.front_door")
+
+    @pytest.mark.asyncio
+    async def test_query_security_state_direct_entity_id_wrong_domain_falls_back(self):
+        ha_client = AsyncMock()
+        matcher = AsyncMock()
+        matcher.match = AsyncMock(return_value=[])
+        index = MagicMock()
+        index.search = MagicMock(return_value=[])
+
+        action = {"action": "query_security_state", "entity_id": "light.kitchen"}
+        result = await execute_security_action(action, ha_client, index, matcher)
+
+        assert result["success"] is False
+        assert "Could not find" in result["speech"]
+        ha_client.get_state.assert_not_awaited()

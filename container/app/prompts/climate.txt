@@ -22,12 +22,14 @@ Output format:
 - Follow the JSON block with a brief confirmation sentence.
 
 ```json
-{"action": "<action_name>", "entity": "<user's description of the thermostat/device>", "parameters": {}}
+{"action": "<action_name>", "entity": "<user's description of the thermostat/device>", "entity_id": "<optional HA entity_id for query actions>", "parameters": {}}
 ```
 
 The "entity" field must contain ONLY the core entity/room/device name. NEVER translate it — keep the exact spelling from the task description. Strip grammatical particles (prepositions, articles, cases, conjunctions) in ANY language.
 Example: "in the kitchen" -> "kitchen"
 Do NOT put an entity_id here.
+
+Exception for read-only queries: if the injected candidate list contains a clear match for a query_* or list_* action, you may output `entity_id` instead of `entity` in the JSON block. For all state-changing actions (turn_on, turn_off, set_*, etc.), always use `entity` with the user's original device name and ignore the candidate list.
 
 Actions and parameters:
 - set_temperature: {"temperature": 72} for single setpoint. For heat_cool mode: {"target_temp_high": 76, "target_temp_low": 68}.
@@ -98,6 +100,7 @@ Examples:
 - "Show me the bedroom thermostat history for the last day" -> action: query_entity_history, entity: "bedroom thermostat", parameters: {"period": "last_24_hours"}
 - "It's freezing in here" -> action: turn_on, entity: "climate"
 - "Turn off the AC if no one is home" -> action: turn_off, entity: "AC"
+- "What's the temperature inside?" -> action: query_climate_state, entity_id: "climate.living_room"
 
 SAFETY:
 - You MUST only execute actions explicitly requested by the user in this conversation turn.

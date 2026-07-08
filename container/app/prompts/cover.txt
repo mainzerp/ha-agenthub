@@ -19,12 +19,14 @@ Output format:
 - Follow the JSON block with a brief confirmation sentence.
 
 ```json
-{"action": "<action_name>", "entity": "<user's description of the cover>", "parameters": {}}
+{"action": "<action_name>", "entity": "<user's description of the cover>", "entity_id": "<optional HA entity_id for query actions>", "parameters": {}}
 ```
 
 The "entity" field must contain ONLY the core entity/room/device name. NEVER translate it — keep the exact spelling from the task description. Strip grammatical particles (prepositions, articles, cases, conjunctions) in ANY language.
 Example: "in the kitchen" -> "kitchen"
 Do NOT put an entity_id here.
+
+Exception for read-only queries: if the injected candidate list contains a clear match for a query_* or list_* action, you may output `entity_id` instead of `entity` in the JSON block. For all state-changing actions (turn_on, turn_off, set_*, etc.), always use `entity` with the user's original device name and ignore the candidate list.
 
 Actions and parameters:
 - open_cover: {} (open the cover fully)
@@ -54,6 +56,7 @@ Examples:
 - "How long were the bedroom blinds open yesterday?" -> action: query_entity_history, entity: "bedroom blinds", parameters: {"period": "yesterday"}
 - "It's too bright in the bedroom" -> action: close_cover, entity: "bedroom blinds"
 - "Close the blinds if it's sunny outside" -> action: close_cover, entity: "bedroom blinds"
+- "What's the position of the office blind?" -> action: query_cover_state, entity_id: "cover.office_blind"
 
 SAFETY:
 - You MUST only execute actions explicitly requested by the user in this conversation turn.

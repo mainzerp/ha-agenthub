@@ -7,6 +7,8 @@ from typing import Any
 
 from app.agents.action_executor import (
     _ensure_str,
+    _synthesize_direct_entity_metadata,
+    _validate_direct_entity_id,
     build_verified_speech,
     call_service_with_verification,
 )
@@ -124,6 +126,7 @@ async def execute_media_action(
             span_collector=span_collector,
             preferred_area_id=preferred_area_id,
             verbatim_terms=verbatim_terms,
+            action=action,
         )
 
     mapping = _MEDIA_ACTION_MAP.get(action_name)
@@ -266,42 +269,49 @@ async def _query_media_state(
     *,
     preferred_area_id: str | None = None,
     verbatim_terms: list[str] | None = None,
+    action: dict | None = None,
 ) -> dict:
-    resolution = {
-        "entity_id": None,
-        "friendly_name": entity_query,
-        "speech": None,
-        "metadata": {"query": entity_query, "match_count": 0, "resolution_path": "not_attempted"},
-    }
-    try:
-        if entity_index or entity_matcher:
-            async with _optional_span(span_collector, "entity_match", agent_id=agent_id) as em_span:
-                resolution = await resolve_entity_deterministic_first(
-                    entity_query,
-                    entity_index,
-                    entity_matcher,
-                    agent_id,
-                    allowed_domains=_ACTION_DOMAINS,
-                    preferred_area_id=preferred_area_id,
-                    verbatim_terms=verbatim_terms,
-                )
-                em_span["metadata"] = resolution["metadata"]
-    except Exception:
-        logger.warning("Entity resolution failed for '%s'", entity_query, exc_info=True)
+    entity_id_direct = _validate_direct_entity_id(action.get("entity_id") if action else None, _validate_domain)
+    if entity_id_direct:
+        entity_id = entity_id_direct
+        resolution_metadata = _synthesize_direct_entity_metadata(entity_id, entity_index)
+    else:
+        resolution = {
+            "entity_id": None,
+            "friendly_name": entity_query,
+            "speech": None,
+            "metadata": {"query": entity_query, "match_count": 0, "resolution_path": "not_attempted"},
+        }
+        try:
+            if entity_index or entity_matcher:
+                async with _optional_span(span_collector, "entity_match", agent_id=agent_id) as em_span:
+                    resolution = await resolve_entity_deterministic_first(
+                        entity_query,
+                        entity_index,
+                        entity_matcher,
+                        agent_id,
+                        allowed_domains=_ACTION_DOMAINS,
+                        preferred_area_id=preferred_area_id,
+                        verbatim_terms=verbatim_terms,
+                    )
+                    em_span["metadata"] = resolution["metadata"]
+        except Exception:
+            logger.warning("Entity resolution failed for '%s'", entity_query, exc_info=True)
 
-    entity_id = _ensure_str(resolution["entity_id"])
-    resolution["friendly_name"]
-    if entity_id and not _validate_domain(entity_id):
-        logger.warning("Resolved entity %s not in allowed domains %s", entity_id, _ALLOWED_DOMAINS)
-        entity_id = None
+        entity_id = _ensure_str(resolution["entity_id"])
+        if entity_id and not _validate_domain(entity_id):
+            logger.warning("Resolved entity %s not in allowed domains %s", entity_id, _ALLOWED_DOMAINS)
+            entity_id = None
+        resolution_metadata = resolution.get("metadata", {})
 
     if not entity_id:
         return {
             "success": False,
             "entity_id": None,
             "new_state": None,
-            "speech": resolution["speech"] or f"Could not find an entity matching '{entity_query}'.",
+            "speech": resolution.get("speech") or f"Could not find an entity matching '{entity_query}'.",
             "cacheable": False,
+            "metadata": resolution_metadata,
         }
 
     try:
@@ -313,6 +323,7 @@ async def _query_media_state(
                 "new_state": None,
                 "speech": f"Could not retrieve state for {entity_id}.",
                 "cacheable": False,
+                "metadata": resolution_metadata,
             }
         speech = _format_media_state(entity_id, state_resp)
         return {
@@ -321,6 +332,7 @@ async def _query_media_state(
             "new_state": state_resp.get("state"),
             "speech": speech,
             "cacheable": False,
+            "metadata": resolution_metadata,
         }
     except Exception as exc:
         logger.error("State query failed for %s", entity_id, exc_info=True)
@@ -330,6 +342,7 @@ async def _query_media_state(
             "new_state": None,
             "speech": f"Failed to query media player status: {exc}",
             "cacheable": False,
+            "metadata": resolution_metadata,
         }
 
 
@@ -375,6 +388,7 @@ async def _handle_media_read_action(
     *,
     preferred_area_id: str | None = None,
     verbatim_terms: list[str] | None = None,
+    action: dict | None = None,
 ) -> dict:
     if action_name == "query_media_state":
         return await _query_media_state(
@@ -386,6 +400,7 @@ async def _handle_media_read_action(
             span_collector=span_collector,
             preferred_area_id=preferred_area_id,
             verbatim_terms=verbatim_terms,
+            action=action,
         )
     if action_name == "list_media_players":
         return await _list_media_players(ha_client)

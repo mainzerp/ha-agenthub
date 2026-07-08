@@ -9,6 +9,8 @@ from typing import Any
 
 from app.agents.action_executor import (
     _ensure_str,
+    _synthesize_direct_entity_metadata,
+    _validate_direct_entity_id,
     build_verified_speech,
     call_service_with_verification,
 )
@@ -158,6 +160,7 @@ async def execute_automation_action(
             agent_id,
             span_collector=span_collector,
             verbatim_terms=verbatim_terms,
+            action=action,
         )
 
     # Validate action name
@@ -270,41 +273,48 @@ async def _query_automation_state(
     span_collector=None,
     *,
     verbatim_terms: list[str] | None = None,
+    action: dict | None = None,
 ) -> dict:
-    resolution = {
-        "entity_id": None,
-        "friendly_name": entity_query,
-        "speech": None,
-        "metadata": {"query": entity_query, "match_count": 0, "resolution_path": "not_attempted"},
-    }
-    try:
-        if entity_index or entity_matcher:
-            async with _optional_span(span_collector, "entity_match", agent_id=agent_id) as em_span:
-                resolution = await resolve_entity_deterministic_first(
-                    entity_query,
-                    entity_index,
-                    entity_matcher,
-                    agent_id,
-                    allowed_domains=_ACTION_DOMAINS,
-                    verbatim_terms=verbatim_terms,
-                )
-                em_span["metadata"] = resolution["metadata"]
-    except Exception:
-        logger.warning("Entity resolution failed for '%s'", entity_query, exc_info=True)
+    entity_id_direct = _validate_direct_entity_id(action.get("entity_id") if action else None, _validate_domain)
+    if entity_id_direct:
+        entity_id = entity_id_direct
+        resolution_metadata = _synthesize_direct_entity_metadata(entity_id, entity_index)
+    else:
+        resolution = {
+            "entity_id": None,
+            "friendly_name": entity_query,
+            "speech": None,
+            "metadata": {"query": entity_query, "match_count": 0, "resolution_path": "not_attempted"},
+        }
+        try:
+            if entity_index or entity_matcher:
+                async with _optional_span(span_collector, "entity_match", agent_id=agent_id) as em_span:
+                    resolution = await resolve_entity_deterministic_first(
+                        entity_query,
+                        entity_index,
+                        entity_matcher,
+                        agent_id,
+                        allowed_domains=_ACTION_DOMAINS,
+                        verbatim_terms=verbatim_terms,
+                    )
+                    em_span["metadata"] = resolution["metadata"]
+        except Exception:
+            logger.warning("Entity resolution failed for '%s'", entity_query, exc_info=True)
 
-    entity_id = _ensure_str(resolution["entity_id"])
-    resolution["friendly_name"]
-    if entity_id and not _validate_domain(entity_id):
-        logger.warning("Resolved entity %s not in allowed domains %s", entity_id, _ALLOWED_DOMAINS)
-        entity_id = None
+        entity_id = _ensure_str(resolution["entity_id"])
+        if entity_id and not _validate_domain(entity_id):
+            logger.warning("Resolved entity %s not in allowed domains %s", entity_id, _ALLOWED_DOMAINS)
+            entity_id = None
+        resolution_metadata = resolution.get("metadata", {})
 
     if not entity_id:
         return {
             "success": False,
             "entity_id": None,
             "new_state": None,
-            "speech": resolution["speech"] or f"Could not find an entity matching '{entity_query}'.",
+            "speech": resolution.get("speech") or f"Could not find an entity matching '{entity_query}'.",
             "cacheable": False,
+            "metadata": resolution_metadata,
         }
 
     try:
@@ -316,6 +326,7 @@ async def _query_automation_state(
                 "new_state": None,
                 "speech": f"Could not retrieve state for {entity_id}.",
                 "cacheable": False,
+                "metadata": resolution_metadata,
             }
         speech = _format_automation_state(entity_id, state_resp)
         return {
@@ -324,6 +335,7 @@ async def _query_automation_state(
             "new_state": state_resp.get("state"),
             "speech": speech,
             "cacheable": False,
+            "metadata": resolution_metadata,
         }
     except Exception as exc:
         logger.error("State query failed for %s", entity_id, exc_info=True)
@@ -333,6 +345,7 @@ async def _query_automation_state(
             "new_state": None,
             "speech": f"Failed to query automation status: {exc}",
             "cacheable": False,
+            "metadata": resolution_metadata,
         }
 
 
@@ -385,6 +398,7 @@ async def _handle_automation_read_action(
     span_collector=None,
     *,
     verbatim_terms: list[str] | None = None,
+    action: dict | None = None,
 ) -> dict:
     if action_name == "query_automation_state":
         return await _query_automation_state(
@@ -395,6 +409,7 @@ async def _handle_automation_read_action(
             agent_id,
             span_collector=span_collector,
             verbatim_terms=verbatim_terms,
+            action=action,
         )
     if action_name == "list_automations":
         return await _list_automations(ha_client)
@@ -445,6 +460,7 @@ async def _handle_automation_config_action(
             agent_id,
             span_collector=span_collector,
             verbatim_terms=verbatim_terms,
+            action=action,
         )
     return {"success": False, "entity_id": "", "new_state": None, "speech": f"Unknown config action: {action_name}"}
 
@@ -589,20 +605,29 @@ async def _get_automation_config(
     span_collector=None,
     *,
     verbatim_terms: list[str] | None = None,
+    action: dict | None = None,
 ) -> dict:
-    resolution = await _resolve_automation_entity(
-        entity_query,
-        ha_client,
-        entity_index,
-        entity_matcher,
-        agent_id,
-        span_collector=span_collector,
-        verbatim_terms=verbatim_terms,
-    )
-    if not resolution["success"]:
-        return resolution
-    entity_id = resolution["entity_id"]
-    friendly_name = resolution["friendly_name"]
+    entity_id_direct = _validate_direct_entity_id(action.get("entity_id") if action else None, _validate_domain)
+    if entity_id_direct:
+        entity_id = entity_id_direct
+        friendly_name = _synthesize_direct_entity_metadata(entity_id, entity_index).get("top_friendly_name", entity_id)
+        resolution_metadata = _synthesize_direct_entity_metadata(entity_id, entity_index)
+    else:
+        resolution = await _resolve_automation_entity(
+            entity_query,
+            ha_client,
+            entity_index,
+            entity_matcher,
+            agent_id,
+            span_collector=span_collector,
+            verbatim_terms=verbatim_terms,
+        )
+        if not resolution["success"]:
+            return resolution
+        entity_id = resolution["entity_id"]
+        friendly_name = resolution["friendly_name"]
+        resolution_metadata = {}
+
     config_id = await _resolve_config_id_from_entity(entity_id, ha_client)
     if not config_id:
         return {
@@ -610,6 +635,7 @@ async def _get_automation_config(
             "entity_id": entity_id,
             "new_state": None,
             "speech": f"Could not find an editable configuration for '{friendly_name}'.",
+            "metadata": resolution_metadata,
         }
     try:
         config = await ha_client.get_automation_config(config_id)
@@ -619,6 +645,7 @@ async def _get_automation_config(
                 "entity_id": entity_id,
                 "new_state": None,
                 "speech": f"Could not retrieve configuration for '{friendly_name}'.",
+                "metadata": resolution_metadata,
             }
         alias = config.get("alias", friendly_name)
         triggers = config.get("triggers") or config.get("trigger") or []
@@ -633,7 +660,7 @@ async def _get_automation_config(
             "entity_id": entity_id,
             "new_state": None,
             "speech": speech,
-            "metadata": {"config": config},
+            "metadata": {**resolution_metadata, "config": config},
         }
     except Exception as exc:
         logger.error("Failed to get automation config %s: %s", config_id, exc, exc_info=True)
@@ -642,6 +669,7 @@ async def _get_automation_config(
             "entity_id": entity_id,
             "new_state": None,
             "speech": f"Failed to retrieve automation config: {exc}",
+            "metadata": resolution_metadata,
         }
 
 
