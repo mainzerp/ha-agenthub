@@ -5,7 +5,13 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from app.agents.base import _load_prompt_path_async, _prompt_path, _render_prompt_template
+from app.agents.base import (
+    _LANGUAGE_NAMES,  # noqa: F401 -- re-exported for test compat
+    _load_prompt_path_async,
+    _prompt_path,
+    _render_prompt_template,
+    language_code_to_name,
+)
 from app.llm.client import complete
 from app.security.sanitization import wrap_user_input
 
@@ -13,10 +19,7 @@ logger = logging.getLogger(__name__)
 
 _CANCEL_LLM_TIMEOUT_SEC = 1.5
 _CANCEL_MAX_CHARS = 80
-_LANGUAGE_NAMES: dict[str, str] = {
-    "de": "German (Deutsch)",
-    "en": "English",
-}
+_CANCEL_MAX_WORDS = 10
 
 
 def cancel_interaction_ack(language: str | None) -> str:
@@ -33,6 +36,8 @@ def _is_acceptable(text: str) -> bool:
         return False
     if len(stripped.split()) < 3:
         return False
+    if len(stripped.split()) > _CANCEL_MAX_WORDS:
+        return False
     if len(stripped) > _CANCEL_MAX_CHARS:
         return False
     if "?" in stripped or "\n" in stripped or "\r" in stripped:
@@ -45,8 +50,7 @@ def _is_acceptable(text: str) -> bool:
 async def generate_cancel_speech(language: str | None, user_text: str | None) -> str:
     """Return an LLM-generated cancel acknowledgement with safe fallback."""
     fallback = cancel_interaction_ack(language)
-    lang_code = (language or "en").lower().split("-", 1)[0]
-    language_name = _LANGUAGE_NAMES.get(lang_code, language or "English")
+    language_name = language_code_to_name(language)
 
     try:
         prompt_template = await _load_prompt_path_async(_prompt_path("cancel_speech"))

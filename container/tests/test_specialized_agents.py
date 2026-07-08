@@ -1781,11 +1781,10 @@ class TestTimerPromptSnapshot:
         prompt = self._read_prompt()
         for needle in (
             "Set a timer for 3 minutes.",
-            "Set a timer for 5 minutes.",
+            "Set a timer for 5 minutes",
             "Stop the timer.",
             "Cancel the timer.",
             "3-minute timer",
-            "5-minute timer",
             "and remind me to check the oven",
             "and stop the music",
             "Set the kitchen timer for 5 minutes.",
@@ -1801,6 +1800,7 @@ class TestTimerPromptSnapshot:
             "use set_datetime with recurrence",
         ):
             assert needle in prompt, f"missing required few-shot substring: {needle}"
+        assert "5-minute timer" not in prompt
 
     def test_prompt_contains_weekday_mapping_guidance(self):
         prompt = self._read_prompt()
@@ -2359,7 +2359,8 @@ class TestRewriteAgent:
         assert "User asked:" in messages[1]["content"]
         assert "Keller einschalten" in messages[1]["content"]
         assert "Agent responded:" in messages[1]["content"]
-        assert "Rephrase in de:" in messages[1]["content"]
+        assert "Rephrase:" in messages[1]["content"]
+        assert "Rephrase in de:" not in messages[1]["content"]
 
     @patch("app.agents.rewrite.SettingsRepository.get_value", new_callable=AsyncMock, return_value="")
     @patch("app.llm.client.complete", new_callable=AsyncMock, return_value="Rephrased text.")
@@ -2377,7 +2378,7 @@ class TestRewriteAgent:
         agent = RewriteAgent()
         await agent.rewrite("...", language="de")
         messages = mock_complete.call_args[0][1]
-        assert "respond in de" in messages[0]["content"] or "in de" in messages[0]["content"]
+        assert "German (Deutsch)" in messages[0]["content"]
 
 
 # ---------------------------------------------------------------------------

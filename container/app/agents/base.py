@@ -44,6 +44,7 @@ _KNOWN_PROMPT_NAMES = (
     "send",
     "timer",
     "vacuum",
+    "wake_briefing",
 )
 
 
@@ -98,6 +99,36 @@ def _render_prompt_template(template: str, **variables: str) -> str:
         return match.group(0)
 
     return _PLACEHOLDER_RE.sub(_replace, template)
+
+
+_LANGUAGE_NAMES: dict[str, str] = {
+    "de": "German (Deutsch)",
+    "en": "English",
+    "fr": "French (Francais)",
+    "es": "Spanish (Espanol)",
+    "it": "Italian (Italiano)",
+    "nl": "Dutch (Nederlands)",
+    "pt": "Portuguese (Portugues)",
+    "pl": "Polish (Polski)",
+    "ru": "Russian",
+    "ja": "Japanese",
+    "zh": "Chinese",
+    "ko": "Korean",
+    "sv": "Swedish (Svenska)",
+    "da": "Danish (Dansk)",
+    "no": "Norwegian (Norsk)",
+    "fi": "Finnish (Suomi)",
+    "cs": "Czech (Cestina)",
+    "tr": "Turkish (Turkce)",
+    "uk": "Ukrainian",
+    "ar": "Arabic",
+}
+
+
+def language_code_to_name(code: str | None) -> str:
+    """Map a language code (e.g. 'de', 'de-DE', 'en') to a full name (e.g. 'German (Deutsch)')."""
+    primary = (code or "en").lower().split("-", 1)[0]
+    return _LANGUAGE_NAMES.get(primary, primary)
 
 
 def preload_prompt_cache(prompt_names: Iterable[str] | None = None) -> None:

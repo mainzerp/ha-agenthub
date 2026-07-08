@@ -5,7 +5,12 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from app.agents.base import BaseAgent, _render_prompt_template
+from app.agents.base import (
+    _LANGUAGE_NAMES,  # noqa: F401 -- re-exported for test compat
+    BaseAgent,
+    _render_prompt_template,
+    language_code_to_name,
+)
 from app.agents.decorator import agent
 from app.db.repository import SettingsRepository
 from app.models.agent import AgentCard, AgentTask, TaskResult
@@ -16,30 +21,6 @@ logger = logging.getLogger(__name__)
 # while the real agent is still working; if Groq is itself slow, give
 # up rather than block the streaming path.
 _FILLER_LLM_TIMEOUT_SEC = 3.0
-
-# Common ISO-639-1 codes to full language names
-_LANGUAGE_NAMES: dict[str, str] = {
-    "de": "German (Deutsch)",
-    "en": "English",
-    "fr": "French (Francais)",
-    "es": "Spanish (Espanol)",
-    "it": "Italian (Italiano)",
-    "nl": "Dutch (Nederlands)",
-    "pt": "Portuguese (Portugues)",
-    "pl": "Polish (Polski)",
-    "ru": "Russian",
-    "ja": "Japanese",
-    "zh": "Chinese",
-    "ko": "Korean",
-    "sv": "Swedish (Svenska)",
-    "da": "Danish (Dansk)",
-    "no": "Norwegian (Norsk)",
-    "fi": "Finnish (Suomi)",
-    "cs": "Czech (Cestina)",
-    "tr": "Turkish (Turkce)",
-    "uk": "Ukrainian",
-    "ar": "Arabic",
-}
 
 
 @agent(
@@ -83,7 +64,7 @@ class FillerAgent(BaseAgent):
             # Load personality prompt fresh each call
             personality = await SettingsRepository.get_value("personality.prompt", "")
 
-            language_name = _LANGUAGE_NAMES.get(language, language)
+            language_name = language_code_to_name(language)
             system_prompt = _render_prompt_template(
                 await self._load_prompt_async("filler"),
                 personality=personality or "",

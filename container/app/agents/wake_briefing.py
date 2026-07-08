@@ -8,6 +8,7 @@ import logging
 import time
 import uuid
 from datetime import UTC, datetime, timedelta, tzinfo
+from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -21,6 +22,12 @@ from app.models.agent import TaskContext
 logger = logging.getLogger(__name__)
 
 _WAKE_BRIEFING_AGENT_ID = "wake-briefing-composer"
+
+# Canonical composer prompt file. Used as the default when the
+# ``wake_briefing.composer_prompt`` setting is empty. Loaded directly (not via
+# ``app.agents.base``) to preserve the module's gateway-boundary isolation
+# enforced by tests/test_wake_briefing.py::test_wake_briefing_module_uses_gateway_boundary_only.
+_PROMPT_FILE = Path(__file__).resolve().parent.parent / "prompts" / "wake_briefing.txt"
 
 
 def _fallback_alarm_message(alarm_payload: dict[str, Any]) -> str:
@@ -337,11 +344,9 @@ async def _compose_wake_briefing_inner(
         if not facts:
             raise RuntimeError("Wake briefing facts are empty")
 
-        composer_prompt = await _get_setting(
-            settings_repo,
-            "wake_briefing.composer_prompt",
-            "You compose a short friendly spoken morning briefing from a JSON facts object. Mention the date and weekday, weather, calendar, news headlines, and any sensor readings the user configured. Keep it under 90 spoken seconds. Reply in the user's language.",
-        )
+        composer_prompt = await _get_setting(settings_repo, "wake_briefing.composer_prompt", "")
+        if not composer_prompt.strip():
+            composer_prompt = (await asyncio.to_thread(_PROMPT_FILE.read_text, encoding="utf-8")).strip()
         system_prompt = f"{composer_prompt}\nUser language: {language}. Reply in that language."
 
         complete_kwargs: dict[str, Any] = {

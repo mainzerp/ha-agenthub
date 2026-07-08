@@ -13,13 +13,14 @@ from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from app.agents.base import _load_prompt_path, _prompt_path
+from app.agents.base import _load_prompt_path, _prompt_path, language_code_to_name
 from app.agents.user_identity import UserIdentityResolver
 from app.db.repository import (
     CalendarEntitySettingsRepository,
     CalendarReminderStateRepository,
     SettingsRepository,
 )
+from app.security.sanitization import wrap_user_input
 
 logger = logging.getLogger(__name__)
 
@@ -212,9 +213,9 @@ class CalendarReminderInjector:
                 when = f"in {offset} minutes"
 
             user_content = (
-                f"Event: '{summary}'\n"
+                f"Event: {wrap_user_input(summary)}\n"
                 f"Time until start: {when}\n"
-                f"Language: {language}\n\n"
+                f"Language: {language_code_to_name(language)}\n\n"
                 f"Write a brief, natural reminder sentence."
             )
 

@@ -24,7 +24,7 @@ from app.agents.decorator import agent
 from app.agents.dispatch_manager import DispatchManager
 from app.agents.filler_coordinator import FillerCoordinator
 from app.agents.language_detect import detect_user_language
-from app.agents.mediation import MediationService
+from app.agents.mediation import MediationService, _strip_followup_tag
 from app.agents.sanitize import strip_markdown, strip_parenthetical_asides
 from app.agents.task_pipeline import PipelineDirector
 from app.analytics.collector import track_request
@@ -1871,10 +1871,7 @@ class OrchestratorAgent(BaseAgent):
             # Post-process the collected mediated text
             collected_mediated = "".join(mediated_tokens)
             mediated = strip_parenthetical_asides(collected_mediated) if collected_mediated.strip() else full_speech
-            followup = False
-            if isinstance(mediated, str) and mediated.endswith("[FOLLOWUP]"):
-                mediated = mediated[: -len("[FOLLOWUP]")].rstrip()
-                followup = True
+            mediated, followup = _strip_followup_tag(mediated)
 
             if mediated_tokens:
                 tokens_were_streamed = True
@@ -2045,7 +2042,7 @@ class OrchestratorAgent(BaseAgent):
         user_text: str,
         span_collector=None,
         reminder_text: str | None = None,
-    ) -> str:
+    ) -> tuple[str, bool]:
         """Merge multiple agent responses into a single natural answer.
 
         Delegates to :class:`~app.agents.mediation.MediationService`; kept as a
