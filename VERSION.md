@@ -1,12 +1,18 @@
 # Version
 
-**Current Version:** 1.44.0
+**Current Version:** 1.44.1
 
 ## Recent Changes
 
-(tracking changes since 1.44.0)
+(tracking changes since 1.44.1)
 
 ## Version History
+
+### 1.44.1 (PATCH) -- Entity resolution latency hotfix
+
+- fix(prompts): harden orchestrator prompt so entity/room/device names in `@entities` and condensed task are NEVER translated; preserve the user's language verbatim
+- fix(entity): cache query embeddings in `EmbeddingEngine` so repeated matcher calls for the same text (pre-LLM resolve, candidate injection, post-LLM entity match) reuse the same embedding vector
+- test(cache): add unit tests for embedding cache hit, eviction, TTL, and provider/model isolation
 
 ### 1.44.0 (MINOR) -- Query Top-3 Entity Matcher Candidate Injection
 

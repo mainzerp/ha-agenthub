@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import time
+from collections import OrderedDict
 from contextlib import contextmanager
 
 from app.db.repository import SettingsRepository
@@ -18,6 +20,53 @@ _MODEL_LOAD_LOGGER_LEVELS = (
     ("transformers.modeling_utils", logging.ERROR),
     ("sentence_transformers.base.model", logging.WARNING),
 )
+
+
+class _EmbeddingCache:
+    """In-memory LRU + TTL cache for text embeddings.
+
+    Keys are ``(provider, model, text)`` so that embeddings from different
+    providers or models do not collide.
+    """
+
+    def __init__(self, maxsize: int = 1024, ttl: float = 300.0) -> None:
+        self._maxsize = maxsize
+        self._ttl = ttl
+        self._cache: OrderedDict[tuple[str, str, str], tuple[list[float], float]] = OrderedDict()
+
+    def _is_expired(self, timestamp: float) -> bool:
+        return time.monotonic() - timestamp > self._ttl
+
+    def _evict_expired(self) -> None:
+        now = time.monotonic()
+        expired = [key for key, (_embedding, timestamp) in self._cache.items() if now - timestamp > self._ttl]
+        for key in expired:
+            del self._cache[key]
+
+    def get(self, provider: str, model: str, text: str) -> list[float] | None:
+        """Return a cached embedding if it exists and has not expired."""
+        self._evict_expired()
+        key = (provider, model, text)
+        if key in self._cache:
+            embedding, timestamp = self._cache[key]
+            if not self._is_expired(timestamp):
+                self._cache.move_to_end(key)
+                return embedding
+            del self._cache[key]
+        return None
+
+    def set(self, provider: str, model: str, text: str, embedding: list[float]) -> None:
+        """Store an embedding, evicting expired or oldest entries if needed."""
+        self._evict_expired()
+        key = (provider, model, text)
+        self._cache[key] = (embedding, time.monotonic())
+        self._cache.move_to_end(key)
+        if len(self._cache) > self._maxsize:
+            self._cache.popitem(last=False)
+
+    def clear(self) -> None:
+        """Drop all cached embeddings."""
+        self._cache.clear()
 
 
 @contextmanager
@@ -41,6 +90,7 @@ class EmbeddingEngine:
         self._provider: str | None = None
         self._model_name: str | None = None
         self._local_model = None  # SentenceTransformer instance, lazy-loaded
+        self._cache = _EmbeddingCache()
 
     async def _load_config(self) -> None:
         """Read embedding.provider and embedding.*_model from settings table."""
@@ -112,10 +162,33 @@ class EmbeddingEngine:
         return (await self.embed_batch([text]))[0]
 
     async def embed_batch(self, texts: list[str]) -> list[list[float]]:
-        """Embed a batch of texts."""
-        if self._provider == "local":
-            return await asyncio.to_thread(self._embed_local, texts)
-        return await self._embed_external(texts)
+        """Embed a batch of texts, using the in-memory cache when possible."""
+        provider = self._provider or "unknown"
+        model = self._model_name or "unknown"
+
+        results: list[list[float] | None] = [None] * len(texts)
+        missing_texts: list[str] = []
+        missing_indices: list[int] = []
+
+        for i, text in enumerate(texts):
+            cached = self._cache.get(provider, model, text)
+            if cached is not None:
+                results[i] = cached
+            else:
+                missing_texts.append(text)
+                missing_indices.append(i)
+
+        if missing_texts:
+            if self._provider == "local":
+                computed = await asyncio.to_thread(self._embed_local, missing_texts)
+            else:
+                computed = await self._embed_external(missing_texts)
+
+            for idx, text, embedding in zip(missing_indices, missing_texts, computed, strict=True):
+                self._cache.set(provider, model, text, embedding)
+                results[idx] = embedding
+
+        return results  # type: ignore[return-value]
 
     def _embed_local(self, texts: list[str]) -> list[list[float]]:
         """Use sentence-transformers for local embedding."""
