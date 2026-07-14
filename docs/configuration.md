@@ -14,20 +14,16 @@ These are the only settings that use environment variables. All other configurat
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `CONTAINER_HOST` | `0.0.0.0` | Host address the server binds to. |
-| `CONTAINER_PORT` | `8080` | Port the server listens on. |
 | `LOG_LEVEL` | `INFO` | Logging level (`DEBUG`, `INFO`, `WARNING`, `ERROR`). |
 | `LOG_DIR` | `/data/logs` | Directory for persistent rotating file logs. |
 | `CHROMADB_PERSIST_DIR` | `/data/chromadb` | Legacy path used by sqlite-vec entity-index data. |
 | `SQLITE_DB_PATH` | `/data/agent_assist.db` | SQLite database file path. |
 | `FERNET_KEY_PATH` | `/data/.fernet_key` | Path to the Fernet encryption key. Backup target. |
 | `COOKIE_SECURE` | `true` | Set to `true` when serving the dashboard behind HTTPS so the admin session and CSRF cookies are restricted to TLS. Setting it on plain HTTP silently breaks login (browser drops the cookie). Local development should override it to `false`. (Production compose defaults this to `true`; the in-app fallback is also `true` in `app/config.py`.) |
-| `HF_HUB_OFFLINE` | `0` | When `1`, disables Hugging Face Hub network calls so the local embedding model loads strictly from the cached weights baked into the image. |
-| `HA_AGENTHUB_TAG` | `latest` | Tag used by `container/docker-compose.yml` when pulling `ghcr.io/mainzerp/ha-agenthub`. Override to pin a release. |
 | `CORS_ORIGINS` | `""` | Comma-separated list of allowed CORS origins. |
 | `TRUSTED_PROXIES` | `""` | Comma-separated list of trusted proxy IPs for correct client-IP extraction behind a reverse proxy. |
 
-Environment variables are loaded by Pydantic `BaseSettings` in `app/config.py` and support `.env` file loading. `HF_HUB_OFFLINE` and `HA_AGENTHUB_TAG` are read by the compose file rather than by the application.
+Environment variables are loaded by Pydantic `BaseSettings` in `app/config.py` and support `.env` file loading.
 
 ## SQLite Settings Reference
 
