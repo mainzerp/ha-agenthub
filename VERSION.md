@@ -6,6 +6,7 @@
 
 (tracking changes since 1.44.2)
 
+- docs: synchronize documentation with current version 1.44.2 -- update version examples, provider lists, model recommendations, COOKIE_SECURE default, A2A references, cache invalidation rules, and plugin context docs
 - docs: add `docs/user-guide.md` with dashboard walkthrough, embedded screenshots, and common UI workflows
 
 ## Version History

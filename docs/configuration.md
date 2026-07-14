@@ -21,7 +21,7 @@ These are the only settings that use environment variables. All other configurat
 | `CHROMADB_PERSIST_DIR` | `/data/chromadb` | Legacy path used by sqlite-vec entity-index data. |
 | `SQLITE_DB_PATH` | `/data/agent_assist.db` | SQLite database file path. |
 | `FERNET_KEY_PATH` | `/data/.fernet_key` | Path to the Fernet encryption key. Backup target. |
-| `COOKIE_SECURE` | `false` | Set to `true` when serving the dashboard behind HTTPS so the admin session and CSRF cookies are restricted to TLS. Setting it on plain HTTP silently breaks login (browser drops the cookie). (Production compose defaults this to `true`; the in-app fallback is also `true` in `app/config.py`.) |
+| `COOKIE_SECURE` | `true` | Set to `true` when serving the dashboard behind HTTPS so the admin session and CSRF cookies are restricted to TLS. Setting it on plain HTTP silently breaks login (browser drops the cookie). Local development should override it to `false`. (Production compose defaults this to `true`; the in-app fallback is also `true` in `app/config.py`.) |
 | `HF_HUB_OFFLINE` | `0` | When `1`, disables Hugging Face Hub network calls so the local embedding model loads strictly from the cached weights baked into the image. |
 | `HA_AGENTHUB_TAG` | `latest` | Tag used by `container/docker-compose.yml` when pulling `ghcr.io/mainzerp/ha-agenthub`. Override to pin a release. |
 | `CORS_ORIGINS` | `""` | Comma-separated list of allowed CORS origins. |
@@ -121,7 +121,7 @@ relevant route before tuning.
 
 | Key | Default | Type | Description |
 |-----|---------|------|-------------|
-| `a2a.default_timeout` | `10` | int | Default agent timeout in seconds (if the DB setting is absent, the code fallback is `5`). |
+| `a2a.default_timeout` | `10` | int | Default agent timeout in seconds. Seeded database default is `10`; code fallback if the DB setting is absent is `5`. |
 | `a2a.max_iterations` | `3` | int | Max iterations per agent to prevent loops |
 | `a2a.max_dispatch_timeout` | `60` | int | Hard upper bound (seconds) on a single A2A dispatch, regardless of per-agent overrides. |
 | `agent.dispatch_timeout.<agent_id>` | (unset) | int | Per-agent dispatch timeout override; falls back to the agent's `AgentCard.timeout_sec` and then to `a2a.default_timeout`. Capped by `a2a.max_dispatch_timeout`. |
@@ -195,7 +195,7 @@ Each agent has per-agent settings stored in the `agent_configs` table:
 | `max_tokens` | `1024` | Maximum tokens per LLM response |
 | `reasoning_effort` | (empty) | Optional reasoning-effort hint forwarded to providers that accept it (`Low`, `Medium`, `High`). |
 
-> **Model recommendation:** For routable agents, use `openai/gpt-oss-120b` and set `reasoning_effort` to `Low`. For the filler and rewrite agents, use `llama-3.1-8b-instant`.
+> **Model recommendation:** For **routable agents**, use `openai/gpt-oss-120b` and set `reasoning_effort` to `Low`. For **filler and rewrite agents**, use `llama-3.1-8b-instant`.
 
 Default routable agents: `orchestrator`, `light-agent`, `music-agent`,
 `timer-agent`, `climate-agent`, `media-agent`, `scene-agent`,

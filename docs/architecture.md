@@ -61,9 +61,9 @@ All configuration, secrets, and state are stored in SQLite. sqlite-vec provides 
 
 Agents communicate via an in-process Agent-to-Agent (A2A) message boundary:
 
-- **Registry** (`a2a/registry.py`) -- Maintains agent cards describing each agent's ID, name, description, skills, and endpoint.
-- **Dispatcher** (`a2a/dispatcher.py`) -- Routes A2A task dispatches to agents by card and intent.
-- **Transport** (`a2a/transport.py`) -- `InProcessTransport` invokes agent handlers directly with async function calls (`handler.handle_task`, `handler.handle_task_stream`) within the container. The transport abstraction allows for future HTTP-based transport.
+- **Registry** -- Maintains agent cards describing each agent's ID, name, description, skills, and endpoint. The current implementation keeps the registry in `app/a2a/registry.py`, with agent cards and handler instances stored in-memory.
+- **Dispatcher** -- Routes A2A task dispatches to agents by card and intent (`app/a2a/dispatcher.py`).
+- **Transport** -- `InProcessTransport` invokes agent handlers directly with async function calls (`handler.handle_task`, `handler.handle_task_stream`) within the container (`app/a2a/transport.py`). The transport abstraction allows for future HTTP-based transport.
 
 Each agent publishes an **Agent Card** containing its ID, capabilities, and supported intents. The orchestrator uses these cards to make routing decisions.
 
@@ -211,7 +211,7 @@ SQLite. Lookup is by exact hash match (not semantic similarity):
   - **Miss**: No cache involvement; the request proceeds through the full agent pipeline.
   - Max entries: 50,000 with LRU eviction.
 
-Cache entries are reactively invalidated when an executed action fails.
+Cache entries are reactively invalidated when an executed action fails. Entries are also invalidated when relevant entity fields change (name, `area_id`, `device_id`, hidden, disabled, aliases, labels) and visibility is rechecked on action-cache replay.
 
 ## Entity Matching
 
@@ -238,7 +238,7 @@ Plugins extend the system without modifying core code:
 
 - Plugins are Python files in `container/plugins/` discovered at startup.
 - Each plugin subclasses `BasePlugin` and implements lifecycle hooks: `configure`, `startup`, `ready`, `shutdown`.
-- The `PluginContext` provides a read-only agent catalog, the orchestrator gateway, MCP registry access, settings access, and restricted route helpers; the old direct registry and raw `app` escape hatches are removed.
+- The `PluginContext` provides a read-only agent catalog, A2A dispatcher access, MCP registry access, settings access, and restricted route helpers; the old direct registry and raw `app` escape hatches are removed.
 - Plugins can inspect registered agents, dispatch work through the orchestrator, add routes, subscribe to events via the event bus, and read/write settings.
 - Plugin failures are isolated -- one plugin crashing does not affect others.
 

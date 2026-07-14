@@ -78,10 +78,10 @@ Navigate to `http://<host>:8080/setup/` and use the "Test" button for each provi
 **Common causes:**
 
 - Cache disabled globally: Verify `cache.enabled`, `cache.routing.enabled`, and `cache.action.enabled` are `true` in the admin dashboard.
-- Compound-utterance bypass: Structurally compound utterances intentionally bypass the cache via `cache.compound_utterance_bypass`.
+- Compound-utterance bypass: Structurally compound utterances intentionally bypass the cache via `cache.compound_utterance_bypass`. If you expect exact matches to be cached, avoid compound-utterance bypass or test with simple, single-intent utterances.
 - SQLite cache tables missing or inaccessible: The routing cache and action cache live in the SQLite database (`/data/agent_assist.db`). Check startup logs for schema/DB errors.
 - sqlite-vec entity index not initialized: The action cache relies on the entity index; check the Entity Index dashboard page and startup logs for embedding or vec0 errors.
-- Thresholds too high: Lower the routing cache threshold (default: 0.92) or action cache threshold (default: 0.95) in the admin dashboard.
+- Threshold settings: `cache.routing.semantic_threshold` and `cache.action.semantic_threshold` are legacy values retained for backward compatibility. The caches use exact SHA-256 hash matching, so threshold values do not affect hit behavior.
 
 **Verify cache tables and entity index:**
 
@@ -155,7 +155,7 @@ docker compose restart ha-agenthub
 
 **Symptoms:** The Logs page in the admin dashboard is empty or shows only old entries.
 
-**Fix:** The remote logs endpoint reads from an in-memory ring buffer. Restarting the container clears the buffer. To adjust logger levels at runtime, use the admin dashboard Logs page or call `POST /api/admin/logs/levels` with the desired logger name and level (`DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`).
+**Fix:** The remote logs endpoint reads from an in-memory ring buffer. Restarting the container clears the buffer. In addition, persistent rotating file logs are written to `LOG_DIR/app.log` (default `/data/logs/app.log`) and survive container restarts; use `docker exec` or copy that file for post-restart debugging. To adjust logger levels at runtime, use the admin dashboard Logs page or call `POST /api/admin/logs/levels` with the desired logger name and level (`DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`).
 
 ## Multilingual Orchestrator Behavior
 

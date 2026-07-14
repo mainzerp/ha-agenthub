@@ -72,7 +72,7 @@ Key points:
   (`ghcr.io/mainzerp/ha-agenthub`); CI publishes `:latest` on every
   push to `main`.
 - Pin a release by setting `HA_AGENTHUB_TAG` (for example,
-  `HA_AGENTHUB_TAG=1.42.2 docker compose up -d`).
+  `HA_AGENTHUB_TAG=1.44.2 docker compose up -d`).
 - The `ha-agenthub-data` named volume persists the SQLite database,
   the Fernet key, and sqlite-vec entity-index data across container restarts.
 - `CHROMADB_PERSIST_DIR` is a legacy environment variable name; it now
@@ -180,8 +180,8 @@ Enter API keys for one or more LLM providers:
 - **Custom OpenAI-compatible endpoint** -- Base URL and API key for any OpenAI-compatible provider.
 
 > **Recommended models:**
-> - All agents: `openai/gpt-oss-20b` with reasoning effort set to `Low`.
-> - Filler and rewrite agents: `llama-3.1-8b-instant` (fast, low-cost).
+> - **Routable agents** (orchestrator, light-agent, climate-agent, etc.): `openai/gpt-oss-120b` with `reasoning_effort` set to `Low`.
+> - **Filler and rewrite agents**: `llama-3.1-8b-instant` (fast, low-cost).
 
 Use the "Test" button for each provider to verify the key works. Keys are stored encrypted in SQLite.
 
@@ -257,7 +257,7 @@ docker compose up -d
 ```
 
 Pin a release by exporting `HA_AGENTHUB_TAG` before pulling (for
-example `HA_AGENTHUB_TAG=1.42.2`).
+example `HA_AGENTHUB_TAG=1.44.2`).
 
 For the local-build stack (`docker-compose_local.yml`):
 
