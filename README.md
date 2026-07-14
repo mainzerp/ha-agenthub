@@ -126,6 +126,8 @@ Open `http://<docker-host>:8080/setup/` in your browser and follow the 5-step wi
 4. Configure LLM provider(s)
 5. Review and complete
 
+After setup, the dashboard is available at `/dashboard/`. See the [User Guide](docs/user-guide.md) for a walkthrough of every page, embedded screenshots, and common workflows.
+
 ### 3. Install the HA Integration
 
 **Via HACS (recommended):**
