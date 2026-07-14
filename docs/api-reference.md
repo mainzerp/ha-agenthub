@@ -41,7 +41,7 @@ Returns container health status. No authentication required.
 ```json
 {
   "status": "ok",
-  "version": "1.42.2",
+  "version": "1.44.2",
   "log_level": "INFO"
 }
 ```

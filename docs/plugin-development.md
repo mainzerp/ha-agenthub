@@ -5,8 +5,8 @@ This document covers how to develop plugins for HA-AgentHub.
 ## Overview
 
 Plugins extend HA-AgentHub without modifying core code. They can inspect
-registered agents through `ctx.agent_catalog`, dispatch work through
-`ctx.orchestrator_gateway`, subscribe to events, read/write settings,
+registered agents through `ctx.agent_registry`, dispatch work through
+the A2A dispatcher, subscribe to events, read/write settings,
 interact with MCP servers, and add API routes.
 
 Plugins live as individual `.py` files in the `container/plugins/` directory.
@@ -98,8 +98,7 @@ hooks. It provides access to:
 
 | Attribute              | Type                  | Description                                   |
 |------------------------|-----------------------|-----------------------------------------------|
-| `agent_catalog`        | `AgentCatalog`        | Read-only discovery of registered agents      |
-| `orchestrator_gateway` | `OrchestratorGateway` | Dispatch text or background work to the orchestrator |
+| `agent_registry`       | `AgentRegistry`       | Read-only discovery of registered agents      |
 | `mcp_registry`         | `MCPServerRegistry`   | Access MCP server connections                 |
 | `settings`             | `SettingsRepository` (class) | Read/write system settings. The attribute holds the SettingsRepository class; methods such as get_value are classmethods, so await ctx.settings.get_value(...) works as documented. |
 | `event_bus`            | `EventBus`            | Subscribe/publish plugin events               |
@@ -127,24 +126,23 @@ class WeatherPlugin(BasePlugin):
         return "1.0.0"
 
     async def ready(self, ctx: PluginContext) -> None:
-        agents = await ctx.agent_catalog.list_agents()
+        agents = await ctx.agent_registry.list_agents()
         if not any(card.agent_id == "general-agent" for card in agents):
             return
 
         async def on_weather_request(data: dict) -> None:
-            question = data.get("question", "What is the weather today?")
-            await ctx.orchestrator_gateway.dispatch_text(
-                question,
-                user_text=question,
-                conversation_id=data.get("conversation_id"),
-            )
+            # Plugin-originated work can be dispatched back through the A2A
+            # dispatcher (ctx.dispatcher). Construct a proper AgentTask and
+            # dispatch to the desired agent, or publish an event for another
+            # component to handle.
+            pass
 
         ctx.event_bus.subscribe("weather.request", on_weather_request)
 ```
 
-Use `ctx.agent_catalog` when you need to inspect what the runtime has
-registered, and use `ctx.orchestrator_gateway` when plugin-originated work
-should re-enter the normal A2A/orchestrator flow.
+Use `ctx.agent_registry` when you need to inspect what the runtime has
+registered, and use the A2A dispatcher (`ctx.dispatcher`) when plugin-
+originated work should re-enter the normal A2A/orchestrator flow.
 
 ### Reading/Writing Settings
 

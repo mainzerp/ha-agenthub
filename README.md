@@ -15,7 +15,7 @@ A multi-agent AI assistant for Home Assistant with container-based A2A orchestra
 
 - **Multi-agent orchestration** -- 13 specialized domain agents coordinated by a central orchestrator via the A2A protocol
 - **A2A protocol** -- direct in-process agent-to-agent communication with registry, dispatcher, and transport
-- **Two-tier cache** -- Routing cache (skip intent classification) and action cache, formerly response cache (skip entire agent pipeline) using SQLite-backed SHA-256 exact hash matching
+- **Two-tier cache** -- Routing cache (skip intent classification) and action cache, formerly response cache (caches the full agent response after the pipeline runs) using SQLite-backed SHA-256 exact hash matching
 - **Cache backup and restore** -- Export and import the routing and action caches as a portable JSON envelope via `/api/admin/cache/export` and `/api/admin/cache/import`
 - **Action-cache validator** -- Background validation of action-cache entries with configurable model/batch size, exposed via `/api/admin/cache/validate`
 - **Conditional actions** -- `ActionableAgent` skips redundant service calls when the current HA state already matches the requested end state
@@ -26,7 +26,7 @@ A multi-agent AI assistant for Home Assistant with container-based A2A orchestra
 - **Custom agents** -- Create LLM-powered agents via the dashboard with custom system prompts, model selection, MCP tools, and intent patterns
 - **Rewrite agent** -- Optional response variation for cached responses (driven by the personality prompt) to avoid repetitive answers
 - **Setup wizard** -- Guided 5-step first-launch configuration (admin account, HA connection, API key, LLM providers, review)
-- **First-class LLM providers** -- OpenRouter, Groq, Cerebras, and Ollama supported out of the box
+- **First-class LLM providers** -- OpenRouter, Groq, Cerebras, Anthropic, and Ollama supported out of the box
 - **Analytics and tracing** -- Request counts, cache hit rates, latency tracking, token usage, and per-request trace span Gantt visualization, with per-turn tracing on `/ws/conversation`
 - **TTFT/TPS instrumentation** -- Per-request time-to-first-token and tokens-per-second metrics surfaced in traces and analytics
 - **Voice experience** -- Filler-first return, post-filler push, sentence-by-sentence streaming, voice-followup, cancel-intent ("never mind"), and repeat-turn coalescing in the HA integration
@@ -98,7 +98,7 @@ See [docs/architecture.md](docs/architecture.md) for component diagrams, request
 
 - Docker Engine 20.10+ and Docker Compose v2
 - A running Home Assistant instance (2025.1.0+)
-- An LLM API key (OpenRouter, Groq, Cerebras, or Ollama)
+- An LLM API key (OpenRouter, Groq, Cerebras, Anthropic, or Ollama)
 
 ### 1. Clone and Start
 
