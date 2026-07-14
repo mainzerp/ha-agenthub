@@ -6,8 +6,8 @@
 
 A multi-agent AI assistant for Home Assistant with container-based A2A orchestration, two-tier caching, hybrid entity matching, MCP tool integration, and a plugin system.
 
-![Test](https://img.shields.io/github/actions/workflow/status/mainzerp/ha-agenthub/ci.yml?branch=main&job=quality&label=Test&logo=github)
-![Lint](https://img.shields.io/github/actions/workflow/status/mainzerp/ha-agenthub/ci.yml?branch=main&job=quality&label=Lint&logo=github)
+![Quality](https://img.shields.io/github/actions/workflow/status/mainzerp/ha-agenthub/ci.yml?branch=main&job=quality&label=Quality&logo=github)
+![Security](https://img.shields.io/github/actions/workflow/status/mainzerp/ha-agenthub/ci.yml?branch=main&job=security&label=Security&logo=github)
 ![Docker Build](https://img.shields.io/github/actions/workflow/status/mainzerp/ha-agenthub/ci.yml?branch=main&job=docker&label=Docker%20Build&logo=github)
 ![Release](https://img.shields.io/github/actions/workflow/status/mainzerp/ha-agenthub/ci.yml?branch=main&job=release&label=Release&logo=github)
 
@@ -147,7 +147,7 @@ In HA, go to Settings > Devices & Services > Add Integration > "HA-AgentHub". En
 
 HA-AgentHub uses three configuration tiers:
 
-1. **Environment variables** -- Infrastructure-only (`CONTAINER_PORT`, `LOG_LEVEL`, etc.), set in `docker-compose.yml`
+1. **Environment variables** -- Infrastructure-only (e.g. `LOG_LEVEL`), set in `docker-compose.yml`
 2. **Setup wizard** -- One-time secrets and connections, stored encrypted in SQLite
 3. **Admin dashboard** -- All runtime settings, hot-reloadable without restart
 
