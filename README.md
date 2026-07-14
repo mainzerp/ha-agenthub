@@ -155,6 +155,7 @@ See [docs/configuration.md](docs/configuration.md) for the full reference.
 
 ## Documentation
 
+- [User Guide](docs/user-guide.md) -- Dashboard walkthrough, screenshots, and common workflows
 - [Deployment Guide](docs/deployment.md) -- Docker setup, setup wizard, HA integration, networking, backup
 - [Configuration Reference](docs/configuration.md) -- Environment variables, SQLite settings, agent config
 - [Architecture Overview](docs/architecture.md) -- Components, A2A protocol, request flow, cache, entity matching

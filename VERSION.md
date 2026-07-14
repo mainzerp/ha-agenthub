@@ -6,6 +6,8 @@
 
 (tracking changes since 1.44.2)
 
+- docs: add `docs/user-guide.md` with dashboard walkthrough, embedded screenshots, and common UI workflows
+
 ## Version History
 
 ### 1.44.2 (PATCH) -- Orchestrator language constraint cleanup
