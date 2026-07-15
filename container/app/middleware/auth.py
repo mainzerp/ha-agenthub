@@ -36,7 +36,7 @@ class SetupRedirectMiddleware:
     immediately.
     """
 
-    ALLOWED_PREFIXES = ("/setup", "/api/health", "/static", "/dashboard/static")
+    ALLOWED_PREFIXES = ("/setup", "/api/health", "/healthz", "/readyz", "/static", "/dashboard/static")
 
     def __init__(self, app) -> None:
         self.app = app
