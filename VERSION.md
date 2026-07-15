@@ -1,15 +1,20 @@
 # Version
 
-**Current Version:** 1.44.2
+**Current Version:** 1.45.0
 
 ## Recent Changes
 
-(tracking changes since 1.44.2)
-
-- docs: synchronize documentation with current version 1.44.2 -- update version examples, provider lists, model recommendations, COOKIE_SECURE default, A2A references, cache invalidation rules, and plugin context docs
-- docs: add `docs/user-guide.md` with dashboard walkthrough, embedded screenshots, and common UI workflows
+(tracking changes since 1.45.0)
 
 ## Version History
+
+### 1.45.0 (MINOR) -- Container health and readiness probes
+
+- feat(container): add `GET /healthz` liveness endpoint and `GET /readyz` readiness endpoint
+- feat(container): allow `/healthz` and `/readyz` to bypass setup redirect and authentication
+- feat(container): switch Docker and Docker Compose healthchecks from `/api/health` to `/healthz`
+- test(container): add `TestProbeEndpoints` coverage for liveness, readiness, and 503 cases
+- chore(release): bump version to 1.45.0
 
 ### 1.44.2 (PATCH) -- Orchestrator language constraint cleanup
 

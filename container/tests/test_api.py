@@ -196,6 +196,51 @@ class TestHealthEndpoint:
         assert resp.status_code == 200
 
 
+@pytest.mark.integration
+class TestProbeEndpoints:
+    async def test_healthz_returns_200(self, authed_client: httpx.AsyncClient):
+        resp = await authed_client.get("/healthz")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data == {"status": "ok", "probe": "liveness"}
+
+    async def test_healthz_accessible_without_auth(self, unauthed_client: httpx.AsyncClient):
+        resp = await unauthed_client.get("/healthz")
+        assert resp.status_code == 200
+
+    async def test_readyz_returns_200_when_ready(self, authed_client: httpx.AsyncClient):
+        resp = await authed_client.get("/readyz")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "ok"
+        assert data["probe"] == "readiness"
+        assert data["ready"] is True
+        assert data["setup_complete"] is True
+
+    async def test_readyz_accessible_without_auth(self, unauthed_client: httpx.AsyncClient):
+        resp = await unauthed_client.get("/readyz")
+        assert resp.status_code == 200
+
+    async def test_readyz_returns_503_when_not_setup_initialized(self, unauthed_client: httpx.AsyncClient):
+        unauthed_client._transport.app.state.setup_runtime_initialized = False
+        resp = await unauthed_client.get("/readyz")
+        assert resp.status_code == 503
+        data = resp.json()
+        assert data["status"] == "error"
+        assert data["probe"] == "readiness"
+        assert data["ready"] is False
+        assert data["setup_complete"] is False
+        assert "reason" in data
+
+    async def test_readyz_returns_503_before_startup_time(self, unauthed_client: httpx.AsyncClient):
+        unauthed_client._transport.app.state.startup_time = None
+        resp = await unauthed_client.get("/readyz")
+        assert resp.status_code == 503
+        data = resp.json()
+        assert data["status"] == "error"
+        assert data["ready"] is False
+
+
 # ===================================================================
 # Conversation REST + SSE
 # ===================================================================

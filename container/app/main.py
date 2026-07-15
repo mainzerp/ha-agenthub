@@ -5,8 +5,9 @@ from __future__ import annotations
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import Depends, FastAPI
+from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.api.routes import admin as admin_routes
@@ -142,6 +143,49 @@ def create_app() -> FastAPI:
     @app.get("/favicon.ico", include_in_schema=False)
     async def favicon_redirect():
         return RedirectResponse(url="/dashboard/static/favicon.svg")
+
+    @app.get("/healthz", include_in_schema=False)
+    async def healthz(request: Request):
+        """Liveness probe: returns 200 once the application has started."""
+        if getattr(request.app.state, "startup_time", None) is None:
+            return JSONResponse(
+                status_code=503,
+                content={"status": "error", "probe": "liveness", "reason": "startup not complete"},
+            )
+        return {"status": "ok", "probe": "liveness"}
+
+    @app.get("/readyz", include_in_schema=False)
+    async def readyz(request: Request):
+        """Readiness probe: returns 200 when setup/runtime initialization is complete."""
+        if getattr(request.app.state, "startup_time", None) is None:
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "status": "error",
+                    "probe": "readiness",
+                    "ready": False,
+                    "setup_complete": False,
+                    "reason": "startup not complete",
+                },
+            )
+        setup_complete = bool(getattr(request.app.state, "setup_runtime_initialized", False))
+        if not setup_complete:
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "status": "error",
+                    "probe": "readiness",
+                    "ready": False,
+                    "setup_complete": False,
+                    "reason": "setup not initialized",
+                },
+            )
+        return {
+            "status": "ok",
+            "probe": "readiness",
+            "ready": True,
+            "setup_complete": True,
+        }
 
     # Try to mount static files (may not exist yet in dev)
     try:
