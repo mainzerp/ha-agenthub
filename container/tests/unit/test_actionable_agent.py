@@ -29,7 +29,7 @@ _litellm_mock.exceptions.APIError = _APIError
 _litellm_mock.RateLimitError = _RateLimitError
 sys.modules.setdefault("litellm", _litellm_mock)
 
-from tests.helpers import make_agent_task  # noqa: E402
+from tests.helpers import make_dispatch_task  # noqa: E402
 
 from app.agents.actionable import (  # noqa: E402
     ActionableAgent,
@@ -45,7 +45,7 @@ from app.agents.actionable import (  # noqa: E402
 )
 from app.agents.lists import ListsAgent  # noqa: E402
 from app.agents.timer import TimerAgent  # noqa: E402
-from app.models.agent import AgentErrorCode  # noqa: E402
+from app.models.agent import AgentCard, AgentErrorCode, TaskContext, TaskResult  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # _resolve_relevant_entities
@@ -63,7 +63,7 @@ class TestResolveRelevantEntities:
     @pytest.mark.asyncio
     async def test_returns_correct_entities(self):
         agent = LightAgent()
-        task = make_agent_task(description="turn on the kitchen light")
+        task = make_dispatch_task(description="turn on the kitchen light")
         task.verbatim_terms = ["kitchen light"]
 
         with patch(
@@ -83,7 +83,7 @@ class TestResolveRelevantEntities:
     @pytest.mark.asyncio
     async def test_limits_to_three(self):
         agent = LightAgent()
-        task = make_agent_task(description="turn on light one, light two, light three, light four")
+        task = make_dispatch_task(description="turn on light one, light two, light three, light four")
         task.verbatim_terms = ["light one", "light two", "light three", "light four"]
 
         async def _fake_resolve(query, *args, **kwargs):
@@ -101,7 +101,7 @@ class TestResolveRelevantEntities:
     @pytest.mark.asyncio
     async def test_deduplicates_by_entity_id(self):
         agent = LightAgent()
-        task = make_agent_task(description="turn on the kitchen light and kitchen light")
+        task = make_dispatch_task(description="turn on the kitchen light and kitchen light")
         task.verbatim_terms = ["kitchen light", "kitchen light"]
 
         with patch(
@@ -117,7 +117,7 @@ class TestResolveRelevantEntities:
     @pytest.mark.asyncio
     async def test_graceful_when_resolution_fails(self):
         agent = LightAgent()
-        task = make_agent_task(description="turn on the unknown thing")
+        task = make_dispatch_task(description="turn on the unknown thing")
         task.verbatim_terms = ["unknown thing"]
 
         with patch(
@@ -132,7 +132,7 @@ class TestResolveRelevantEntities:
     @pytest.mark.asyncio
     async def test_skips_unresolved_mentions(self):
         agent = LightAgent()
-        task = make_agent_task(description="turn on the kitchen light")
+        task = make_dispatch_task(description="turn on the kitchen light")
         task.verbatim_terms = ["kitchen light"]
 
         with patch(
@@ -148,7 +148,9 @@ class TestResolveRelevantEntities:
     async def test_reuses_visible_entries_across_mentions(self):
         """Cross-mention visible_entries caching: only the first call lists the index."""
         agent = LightAgent()
-        task = make_agent_task(description="turn on the kitchen light and the bedroom light and the living room light")
+        task = make_dispatch_task(
+            description="turn on the kitchen light and the bedroom light and the living room light"
+        )
         task.verbatim_terms = ["kitchen light", "bedroom light", "living room light"]
 
         call_count = 0
@@ -179,7 +181,7 @@ class TestResolveRelevantEntities:
     @pytest.mark.asyncio
     async def test_conditional_clauses_resolve_both_target_and_condition_entity(self):
         agent = LightAgent()
-        task = make_agent_task(description="if outdoor brightness is dark, turn on the kitchen light")
+        task = make_dispatch_task(description="if outdoor brightness is dark, turn on the kitchen light")
         task.verbatim_terms = ["outdoor brightness", "kitchen light"]
 
         call_count = 0
@@ -205,7 +207,7 @@ class TestResolveRelevantEntities:
     @pytest.mark.asyncio
     async def test_uses_description_fallback_when_verbatim_terms_empty(self):
         agent = LightAgent()
-        task = make_agent_task(description="turn on the kitchen light")
+        task = make_dispatch_task(description="turn on the kitchen light")
         task.verbatim_terms = []
 
         with patch(
@@ -329,7 +331,7 @@ class TestGracefulDegradation:
     @pytest.mark.asyncio
     async def test_resolve_relevant_entities_with_none_index_and_matcher(self):
         agent = LightAgent(entity_index=None, entity_matcher=None)
-        task = make_agent_task(description="turn on the kitchen light")
+        task = make_dispatch_task(description="turn on the kitchen light")
 
         with patch(
             "app.agents.actionable.resolve_entity_deterministic_first",
@@ -410,7 +412,7 @@ class TestHandleTaskInnerInjection:
     @pytest.mark.asyncio
     async def test_prompt_includes_entity_states(self):
         agent = LightAgent()
-        task = make_agent_task(description="turn on the kitchen light")
+        task = make_dispatch_task(description="turn on the kitchen light")
 
         with (
             patch("app.agents.actionable.resolve_entity_deterministic_first", new_callable=AsyncMock) as mock_resolve,
@@ -442,7 +444,7 @@ class TestHandleTaskInnerInjection:
     @pytest.mark.asyncio
     async def test_prompt_includes_state_aware_block_even_without_entities(self):
         agent = LightAgent()
-        task = make_agent_task(description="hello")
+        task = make_dispatch_task(description="hello")
 
         with (
             patch(
@@ -466,7 +468,7 @@ class TestHandleTaskInnerInjection:
     @pytest.mark.asyncio
     async def test_injection_gracefully_degrades_on_exception(self):
         agent = LightAgent()
-        task = make_agent_task(description="turn on the kitchen light")
+        task = make_dispatch_task(description="turn on the kitchen light")
 
         with (
             patch.object(
@@ -490,7 +492,7 @@ class TestHandleTaskInnerInjection:
     @pytest.mark.asyncio
     async def test_query_candidate_context_injected_into_system_prompt(self):
         agent = LightAgent()
-        task = make_agent_task(description="is the kitchen light on?")
+        task = make_dispatch_task(description="is the kitchen light on?")
         task.verbatim_terms = ["kitchen light"]
 
         matcher = AsyncMock()
@@ -528,7 +530,7 @@ class TestHandleTaskInnerInjection:
     @pytest.mark.asyncio
     async def test_query_candidate_context_skipped_when_no_candidates(self):
         agent = LightAgent()
-        task = make_agent_task(description="is the kitchen light on?")
+        task = make_dispatch_task(description="is the kitchen light on?")
         task.verbatim_terms = ["kitchen light"]
 
         matcher = AsyncMock()
@@ -567,7 +569,7 @@ class TestHandleTaskExecution:
     @pytest.mark.asyncio
     async def test_success_path_returns_action_executed(self):
         agent = LightAgent()
-        task = make_agent_task(description="turn on the kitchen light")
+        task = make_dispatch_task(description="turn on the kitchen light")
 
         with (
             patch.object(agent, "_load_prompt_async", new_callable=AsyncMock, return_value="You are a light agent."),
@@ -606,7 +608,7 @@ class TestHandleTaskExecution:
     @pytest.mark.asyncio
     async def test_success_path_service_data_from_parameters(self):
         agent = LightAgent()
-        task = make_agent_task(description="set brightness")
+        task = make_dispatch_task(description="set brightness")
 
         with (
             patch.object(agent, "_load_prompt_async", new_callable=AsyncMock, return_value="You are a light agent."),
@@ -637,7 +639,7 @@ class TestHandleTaskExecution:
     @pytest.mark.asyncio
     async def test_directive_from_executor(self):
         agent = LightAgent()
-        task = make_agent_task(description="turn on the kitchen light")
+        task = make_dispatch_task(description="turn on the kitchen light")
 
         with (
             patch.object(agent, "_load_prompt_async", new_callable=AsyncMock, return_value="You are a light agent."),
@@ -673,7 +675,7 @@ class TestHandleTaskExecution:
     @pytest.mark.asyncio
     async def test_executor_returns_explicit_error(self):
         agent = LightAgent()
-        task = make_agent_task(description="turn on the kitchen light")
+        task = make_dispatch_task(description="turn on the kitchen light")
 
         with (
             patch.object(agent, "_load_prompt_async", new_callable=AsyncMock, return_value="You are a light agent."),
@@ -707,7 +709,7 @@ class TestHandleTaskExecution:
     @pytest.mark.asyncio
     async def test_executor_raises_action_failed(self):
         agent = LightAgent()
-        task = make_agent_task(description="turn on the kitchen light")
+        task = make_dispatch_task(description="turn on the kitchen light")
 
         with (
             patch.object(agent, "_load_prompt_async", new_callable=AsyncMock, return_value="You are a light agent."),
@@ -734,7 +736,7 @@ class TestHandleTaskExecution:
     @pytest.mark.asyncio
     async def test_llm_call_raises_exception(self):
         agent = LightAgent()
-        task = make_agent_task(description="turn on the kitchen light")
+        task = make_dispatch_task(description="turn on the kitchen light")
 
         with (
             patch.object(agent, "_load_prompt_async", new_callable=AsyncMock, return_value="You are a light agent."),
@@ -756,7 +758,7 @@ class TestHandleTaskExecution:
     @pytest.mark.asyncio
     async def test_llm_returns_empty_response(self):
         agent = LightAgent()
-        task = make_agent_task(description="turn on the kitchen light")
+        task = make_dispatch_task(description="turn on the kitchen light")
 
         with (
             patch.object(agent, "_load_prompt_async", new_callable=AsyncMock, return_value="You are a light agent."),
@@ -777,7 +779,7 @@ class TestHandleTaskExecution:
     @pytest.mark.asyncio
     async def test_llm_cancelled_error_propagates(self):
         agent = LightAgent()
-        task = make_agent_task(description="turn on the kitchen light")
+        task = make_dispatch_task(description="turn on the kitchen light")
 
         with (
             patch.object(agent, "_load_prompt_async", new_callable=AsyncMock, return_value="You are a light agent."),
@@ -794,7 +796,7 @@ class TestHandleTaskExecution:
     @pytest.mark.asyncio
     async def test_parse_miss_returns_fallback_speech(self):
         agent = LightAgent()
-        task = make_agent_task(description="turn on the kitchen light")
+        task = make_dispatch_task(description="turn on the kitchen light")
 
         with (
             patch.object(agent, "_load_prompt_async", new_callable=AsyncMock, return_value="You are a light agent."),
@@ -814,7 +816,7 @@ class TestHandleTaskExecution:
     @pytest.mark.asyncio
     async def test_no_ha_client_returns_ha_unavailable(self):
         agent = LightAgent()
-        task = make_agent_task(description="turn on the kitchen light")
+        task = make_dispatch_task(description="turn on the kitchen light")
 
         with (
             patch.object(agent, "_load_prompt_async", new_callable=AsyncMock, return_value="You are a light agent."),
@@ -841,7 +843,7 @@ class TestHandleTaskExecution:
     @pytest.mark.asyncio
     async def test_outer_handle_task_exception_returns_internal(self):
         agent = LightAgent()
-        task = make_agent_task(description="turn on the kitchen light")
+        task = make_dispatch_task(description="turn on the kitchen light")
 
         with (
             patch.object(
@@ -862,7 +864,7 @@ class TestHandleTaskExecution:
     @pytest.mark.asyncio
     async def test_entity_not_found_clarification_calls_llm(self):
         agent = LightAgent()
-        task = make_agent_task(description="turn on the kitchen light")
+        task = make_dispatch_task(description="turn on the kitchen light")
 
         with (
             patch.object(agent, "_load_prompt_async", new_callable=AsyncMock, return_value="You are a light agent."),
@@ -903,7 +905,7 @@ class TestHandleTaskExecution:
         speech (resolution_path ending in '_ambiguous'), the generic LLM
         not-found clarification must NOT overwrite it."""
         agent = LightAgent()
-        task = make_agent_task(description="turn on Keller")
+        task = make_dispatch_task(description="turn on Keller")
 
         ambiguity_speech = "Multiple entities match 'Keller'. Please be more specific."
         with (
@@ -945,3 +947,62 @@ class TestHandleTaskExecution:
         assert result.action_executed is not None
         assert result.action_executed.success is False
         assert result.error is None
+
+
+# ---------------------------------------------------------------------------
+# CORE-H3: per-request state isolation on singleton agents
+# ---------------------------------------------------------------------------
+
+
+class TestConcurrentHandleTaskContextIsolation:
+    """Regression: concurrent handle_task calls on one agent instance must
+    each see their own task/context (ContextVar-backed per-request state)."""
+
+    @pytest.mark.asyncio
+    async def test_concurrent_handle_task_calls_see_own_context(self):
+        class _ProbeAgent(ActionableAgent):
+            def __init__(self) -> None:
+                super().__init__()
+                self.seen: dict[str, tuple[object, object]] = {}
+
+            @property
+            def agent_card(self):
+                return AgentCard(agent_id="probe-agent", name="Probe", description="", skills=[])
+
+            async def _handle_task_inner(self, task):
+                # Yield control so the sibling request interleaves between
+                # the ContextVar set in handle_task and this read.
+                await asyncio.sleep(0)
+                self.seen[task.description] = (self._get_current_task_context(), self._get_current_task())
+                return TaskResult(speech="ok")
+
+        agent = _ProbeAgent()
+        ctx_a = TaskContext(area_id="area-a", language="en")
+        ctx_b = TaskContext(area_id="area-b", language="de")
+        task_a = make_dispatch_task(description="req-a", context=ctx_a)
+        task_b = make_dispatch_task(description="req-b", context=ctx_b)
+
+        await asyncio.gather(agent.handle_task(task_a), agent.handle_task(task_b))
+
+        seen_ctx_a, seen_task_a = agent.seen["req-a"]
+        seen_ctx_b, seen_task_b = agent.seen["req-b"]
+        assert seen_ctx_a is ctx_a
+        assert seen_task_a is task_a
+        assert seen_ctx_b is ctx_b
+        assert seen_task_b is task_b
+
+    @pytest.mark.asyncio
+    async def test_context_reset_after_handle_task(self):
+        class _ProbeAgent(ActionableAgent):
+            @property
+            def agent_card(self):
+                return AgentCard(agent_id="probe-agent", name="Probe", description="", skills=[])
+
+            async def _handle_task_inner(self, task):
+                return TaskResult(speech="ok")
+
+        agent = _ProbeAgent()
+        await agent.handle_task(make_dispatch_task(description="req", context=TaskContext(language="en")))
+
+        assert agent._get_current_task_context() is None
+        assert agent._get_current_task() is None

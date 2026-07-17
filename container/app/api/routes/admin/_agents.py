@@ -6,7 +6,9 @@ from typing import Any
 
 from fastapi import APIRouter
 
+from app.bootstrap._agents import BUILT_IN_AGENT_IDS
 from app.db.repository import AgentConfigRepository, EntityVisibilityRepository
+from app.models.agent import INTERNAL_ONLY_AGENTS
 
 from . import _shared
 
@@ -29,23 +31,9 @@ async def list_agents() -> dict[str, Any]:
         result.append(card)
         seen_ids.add(a.agent_id)
 
-    # Known built-in agent IDs (from seed data)
-    builtin_agents = {
-        "orchestrator",
-        "general-agent",
-        "light-agent",
-        "music-agent",
-        "timer-agent",
-        "climate-agent",
-        "media-agent",
-        "scene-agent",
-        "automation-agent",
-        "security-agent",
-        "rewrite-agent",
-        "send-agent",
-        "calendar-agent",
-        "lists-agent",
-    }
+    # Built-in agent IDs exposed via the admin API: the bootstrap seed set
+    # minus pipeline-internal ids (single source of truth).
+    builtin_agents = BUILT_IN_AGENT_IDS - INTERNAL_ONLY_AGENTS
 
     # Include disabled built-in agents from DB that are not yet registered
     all_configs = await AgentConfigRepository.list_all()
@@ -93,9 +81,6 @@ async def get_all_agents_visibility_summary():
             elif r["rule_type"] == "entity_include":
                 domain_part = r["rule_value"].split(".")[0] if "." in r["rule_value"] else r["rule_value"]
                 domains.add(domain_part)
-            elif r["rule_type"] == "entity_exclude":
-                domain_part = r["rule_value"].split(".")[0] if "." in r["rule_value"] else r["rule_value"]
-                excluded_domains.add(domain_part)
             elif r["rule_type"] == "device_class_include":
                 device_classes.add(r["rule_value"])
             elif r["rule_type"] == "device_class_exclude":

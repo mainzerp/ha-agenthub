@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 
@@ -52,11 +53,11 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             results = max(1, min(int(arguments.get("results", 3)), 10))
             if not query:
                 return [TextContent(type="text", text="Error: query is required")]
-            search_results = wikipedia.search(query, results=results)
+            search_results = await asyncio.to_thread(wikipedia.search, query, results=results)
             output = []
             for title in search_results:
                 try:
-                    summary = wikipedia.summary(title, sentences=1)
+                    summary = await asyncio.to_thread(wikipedia.summary, title, sentences=1)
                     output.append({"title": title, "summary": summary})
                 except Exception:
                     output.append({"title": title, "summary": ""})
@@ -67,7 +68,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             sentences = max(1, min(int(arguments.get("sentences", 5)), 20))
             if not title:
                 return [TextContent(type="text", text="Error: title is required")]
-            summary = wikipedia.summary(title, sentences=sentences)
+            summary = await asyncio.to_thread(wikipedia.summary, title, sentences=sentences)
             return [TextContent(type="text", text=json.dumps({"title": title, "summary": summary}, ensure_ascii=False))]
 
         else:

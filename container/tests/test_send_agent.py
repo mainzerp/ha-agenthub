@@ -30,23 +30,20 @@ import app.llm.client  # noqa: E402,F401 -- force module load for patch targets
 from app.agents.send import _CONTENT_SEPARATOR, SendAgent  # noqa: E402
 from app.models.agent import (  # noqa: E402
     AgentErrorCode,
-    AgentTask,
+    DispatchTask,
     TaskContext,
 )
 from app.security.sanitization import USER_INPUT_END, USER_INPUT_START  # noqa: E402
-from tests.helpers import make_agent_task  # noqa: E402
+from tests.helpers import make_dispatch_task  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
 
-def _make_task(
-    description: str = "turn on kitchen light", user_text: str | None = None, context: TaskContext | None = None
-) -> AgentTask:
-    return make_agent_task(
+def _make_task(description: str = "turn on kitchen light", context: TaskContext | None = None) -> DispatchTask:
+    return make_dispatch_task(
         description=description,
-        user_text=user_text or description,
         context=context,
     )
 

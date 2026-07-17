@@ -27,13 +27,13 @@ class TestInProcessTransport:
 
         transport, _registry = self._make_transport(handler=_SlowHandler())
 
-        from app.models.agent import AgentTask
+        from app.models.agent import DispatchTask
 
         # Patch the default timeout to a very short value for the test
         original_timeout = InProcessTransport._DEFAULT_TIMEOUT
         InProcessTransport._DEFAULT_TIMEOUT = 0.01
         try:
-            task = AgentTask(description="test", user_text="test")
+            task = DispatchTask(description="test")
             with pytest.raises(TimeoutError):
                 await transport.send("light-agent", task, "req-1")
         finally:
@@ -49,9 +49,9 @@ class TestInProcessTransport:
                 raise original_error
 
         transport, _registry = self._make_transport(handler=_FailingHandler())
-        from app.models.agent import AgentTask
+        from app.models.agent import DispatchTask
 
-        task = AgentTask(description="test", user_text="test")
+        task = DispatchTask(description="test")
         with pytest.raises(RuntimeError) as exc_info:
             await transport.send("light-agent", task, "req-1")
 
@@ -62,9 +62,9 @@ class TestInProcessTransport:
     async def test_send_agent_not_found(self):
         """G16: InProcessTransport.send must raise RuntimeError when agent not found."""
         transport, _registry = self._make_transport(handler=None)
-        from app.models.agent import AgentTask
+        from app.models.agent import DispatchTask
 
-        task = AgentTask(description="test", user_text="test")
+        task = DispatchTask(description="test")
         with pytest.raises(RuntimeError) as exc_info:
             await transport.send("missing-agent", task, "req-1")
 
@@ -74,10 +74,31 @@ class TestInProcessTransport:
     async def test_stream_agent_not_found_yields_error(self):
         """G16: InProcessTransport.stream must yield an error chunk when agent not found."""
         transport, _registry = self._make_transport(handler=None)
-        from app.models.agent import AgentTask
+        from app.models.agent import DispatchTask
 
-        task = AgentTask(description="test", user_text="test")
+        task = DispatchTask(description="test")
         chunks = [c async for c in transport.stream("missing-agent", task, "req-1")]
         assert len(chunks) == 1
         assert chunks[0]["done"] is True
         assert "Agent not found: missing-agent" in chunks[0].get("error", "")
+
+    @pytest.mark.asyncio
+    async def test_stream_error_chunk_is_sanitized(self):
+        """CORE-M5: stream error chunk must not leak internal exception details."""
+
+        class _FailingHandler:
+            async def handle_task_stream(self, _task):
+                yield {"token": "partial ", "done": False}
+                raise ValueError("sensitive internal detail /srv/app/db.sqlite")
+
+        transport, _registry = self._make_transport(handler=_FailingHandler())
+        from app.models.agent import DispatchTask
+
+        task = DispatchTask(description="test")
+        chunks = [c async for c in transport.stream("light-agent", task, "req-1")]
+
+        assert chunks[-1]["done"] is True
+        error = chunks[-1].get("error", "")
+        assert error == "light-agent: internal error"
+        assert "sensitive internal detail" not in error
+        assert "ValueError" not in error

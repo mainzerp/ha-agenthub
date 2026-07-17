@@ -15,6 +15,7 @@ from app.entity.deterministic_resolver import (
     filter_matches_by_domain,  # noqa: F401  -- re-exported for test compat
     resolve_entity_deterministic_first,
 )
+from app.entity.visibility import entity_is_visible
 from app.ha_client.rest import mark_verified_ha_service_call
 
 logger = logging.getLogger(__name__)
@@ -26,12 +27,31 @@ def is_read_only_action(action_name: str) -> bool:
     return action_name.lower().startswith(_READ_ONLY_ACTION_PREFIXES)
 
 
-def _validate_direct_entity_id(entity_id: str | None, validate_domain_fn) -> str | None:
+async def _validate_direct_entity_id(
+    entity_id: str | None,
+    validate_domain_fn,
+    *,
+    agent_id: str | None = None,
+    entity_index: Any | None = None,
+) -> str | None:
     if not entity_id:
         return None
     if not validate_domain_fn(entity_id):
         logger.warning("Direct entity_id %s rejected by domain validator", entity_id)
         return None
+    if agent_id:
+        try:
+            visible = await entity_is_visible(agent_id, entity_id, entity_index)
+        except Exception:
+            logger.warning(
+                "Visibility check failed for direct entity_id %s; rejecting (fail-closed)",
+                entity_id,
+                exc_info=True,
+            )
+            return None
+        if not visible:
+            logger.warning("Direct entity_id %s not visible to agent %s", entity_id, agent_id)
+            return None
     return entity_id
 
 

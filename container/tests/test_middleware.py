@@ -10,7 +10,7 @@ from starlette.responses import PlainTextResponse
 from starlette.routing import Route
 from starlette.testclient import TestClient
 
-from app.middleware.auth import SetupRedirectMiddleware, apply_auth_dependencies
+from app.middleware.auth import SetupRedirectMiddleware, apply_exception_handlers
 from app.middleware.tracing import TracingMiddleware
 
 # ---------------------------------------------------------------------------
@@ -163,7 +163,7 @@ class TestTracingMiddleware:
 
 
 # ---------------------------------------------------------------------------
-# apply_auth_dependencies
+# apply_exception_handlers
 # ---------------------------------------------------------------------------
 
 
@@ -203,13 +203,46 @@ class TestRateLimitClientIp:
         assert _get_client_ip(request) == "10.0.0.1"
 
 
-class TestApplyAuthDependencies:
+class TestRateLimitStoreEviction:
+    async def test_store_growth_bounded_under_unique_ip_churn(self):
+        from app.middleware.rate_limit import (
+            _RATE_LIMIT_STORE_MAX_ENTRIES,
+            _check_rate_limit,
+            _rate_limit_store,
+        )
+
+        total = _RATE_LIMIT_STORE_MAX_ENTRIES + 50
+        for i in range(total):
+            await _check_rate_limit(f"10.{(i >> 16) & 255}.{(i >> 8) & 255}.{i & 255}", 100, 60, "churn-test")
+        assert len(_rate_limit_store) <= _RATE_LIMIT_STORE_MAX_ENTRIES
+        assert (
+            f"churn-test:10.{(total - 1) >> 16 & 255}.{(total - 1) >> 8 & 255}.{(total - 1) & 255}" in _rate_limit_store
+        )
+
+    async def test_expired_windows_purged_before_eviction(self):
+        import time
+
+        from app.middleware.rate_limit import (
+            _RATE_LIMIT_STORE_MAX_ENTRIES,
+            _check_rate_limit,
+            _rate_limit_store,
+        )
+
+        stale = time.time() - 3600
+        for i in range(_RATE_LIMIT_STORE_MAX_ENTRIES):
+            _rate_limit_store[f"stale-test:192.168.{i // 256}.{i % 256}"] = (1, stale)
+        await _check_rate_limit("203.0.113.1", 100, 60, "stale-test")
+        assert len(_rate_limit_store) == 1
+        assert "stale-test:203.0.113.1" in _rate_limit_store
+
+
+class TestApplyExceptionHandlers:
     def test_registers_exception_handlers(self):
         from fastapi import FastAPI, HTTPException
         from starlette.testclient import TestClient
 
         app = FastAPI()
-        apply_auth_dependencies(app)
+        apply_exception_handlers(app)
         # HTTPException and generic Exception should be registered
         assert len(app.exception_handlers) >= 2
 

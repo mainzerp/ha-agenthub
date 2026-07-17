@@ -465,7 +465,6 @@ class TestHAConfigFlow:
                 return marker, validator
         raise AssertionError(f"Field {field_name} not found in schema")
 
-    @respx.mock(assert_all_called=False)
     async def test_validate_connection_returns_invalid_auth_on_401(self):
         config_flow = self._import_config_flow_module()
 
@@ -481,18 +480,14 @@ class TestHAConfigFlow:
             async def json(self):
                 return {}
 
-        class _FakeSession:
-            async def __aenter__(self):
-                return self
+        session = MagicMock()
+        session.get = MagicMock(return_value=_FakeResponse())
 
-            async def __aexit__(self, exc_type, exc, tb):
-                return False
-
-            def get(self, *args, **kwargs):
-                return _FakeResponse()
-
-        with patch("custom_components.ha_agenthub.config_flow.aiohttp.ClientSession", return_value=_FakeSession()):
-            result = await config_flow._validate_connection("http://ha.local", "bad-token")
+        with patch(
+            "custom_components.ha_agenthub.config_flow.async_get_clientsession",
+            return_value=session,
+        ):
+            result = await config_flow._validate_connection(MagicMock(), "http://ha.local", "bad-token")
 
         assert result == "invalid_auth"
 
@@ -511,18 +506,14 @@ class TestHAConfigFlow:
             async def json(self):
                 return {"status": "degraded"}
 
-        class _FakeSession:
-            async def __aenter__(self):
-                return self
+        session = MagicMock()
+        session.get = MagicMock(return_value=_FakeResponse())
 
-            async def __aexit__(self, exc_type, exc, tb):
-                return False
-
-            def get(self, *args, **kwargs):
-                return _FakeResponse()
-
-        with patch("custom_components.ha_agenthub.config_flow.aiohttp.ClientSession", return_value=_FakeSession()):
-            result = await config_flow._validate_connection("http://ha.local", "token")
+        with patch(
+            "custom_components.ha_agenthub.config_flow.async_get_clientsession",
+            return_value=session,
+        ):
+            result = await config_flow._validate_connection(MagicMock(), "http://ha.local", "token")
 
         assert result == "cannot_connect"
 
@@ -530,11 +521,15 @@ class TestHAConfigFlow:
         config_flow = self._import_config_flow_module()
 
         entry = MagicMock()
+        entry.entry_id = "e1"
         entry.data = {"url": "http://old.local", "api_key": "stored-token"}
+        entry.options = {}
+        entry.unique_id = "http://old.local"
 
         flow = config_flow.HaAgentHubOptionsFlow(entry)
         flow.hass = MagicMock()
         flow.hass.config_entries = MagicMock()
+        flow.hass.config_entries.async_entries = MagicMock(return_value=[])
 
         with patch(
             "custom_components.ha_agenthub.config_flow._validate_connection",
@@ -543,19 +538,22 @@ class TestHAConfigFlow:
         ) as mock_validate:
             result = await flow.async_step_init({"url": "http://ha.local/", "api_key": ""})
 
-        assert result == {"type": "create_entry", "data": {}}
-        mock_validate.assert_awaited_once_with("http://ha.local", "stored-token")
-        assert flow.hass.config_entries.async_update_entry.call_count == 2
-        flow.hass.config_entries.async_update_entry.assert_any_call(
-            entry,
-            title=entry.title,
-            data={
-                "url": "http://ha.local",
-                "api_key": "stored-token",
-                "name": entry.title,
-            },
-            options={"ws_receive_timeout": 120.0},
-        )
+        assert result["type"] == "create_entry"
+        assert result["data"] == {"ws_receive_timeout": 120.0}
+        entry.options = result["data"]
+        assert entry.options["ws_receive_timeout"] == 120.0
+
+        mock_validate.assert_awaited_once_with(flow.hass, "http://ha.local", "stored-token")
+        flow.hass.config_entries.async_update_entry.assert_called_once()
+        update_kwargs = flow.hass.config_entries.async_update_entry.call_args.kwargs
+        assert update_kwargs["title"] == entry.title
+        assert update_kwargs["data"] == {
+            "url": "http://ha.local",
+            "api_key": "stored-token",
+            "name": entry.title,
+        }
+        assert update_kwargs["unique_id"] == "http://ha.local"
+        assert "options" not in update_kwargs
 
     async def test_options_flow_schema_uses_blank_password_field(self):
         config_flow = self._import_config_flow_module()

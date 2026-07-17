@@ -598,7 +598,14 @@ def _ensure_ha_exceptions_mock():
     if "homeassistant.exceptions" not in sys.modules:
         ha_exc = ModuleType("homeassistant.exceptions")
         ha_exc.HomeAssistantError = Exception
+        ha_exc.ConfigEntryError = type("ConfigEntryError", (Exception,), {})
         sys.modules["homeassistant.exceptions"] = ha_exc
+    if "homeassistant.helpers.aiohttp_client" not in sys.modules:
+        from unittest.mock import MagicMock
+
+        aiohttp_client = ModuleType("homeassistant.helpers.aiohttp_client")
+        aiohttp_client.async_get_clientsession = MagicMock()
+        sys.modules["homeassistant.helpers.aiohttp_client"] = aiohttp_client
     yield
 
 

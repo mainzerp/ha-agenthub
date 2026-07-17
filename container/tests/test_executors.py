@@ -5,6 +5,8 @@ from __future__ import annotations
 import sys
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
+
 # Mock litellm before importing any app modules that depend on it
 _litellm_mock = MagicMock()
 
@@ -37,22 +39,28 @@ from app.agents.scene_executor import execute_scene_action  # noqa: E402
 from app.agents.security_executor import execute_security_action  # noqa: E402
 from app.agents.vacuum_executor import execute_vacuum_action  # noqa: E402
 from app.models.agent import (  # noqa: E402
-    AgentTask,
+    DispatchTask,
     TaskContext,
 )
-from tests.helpers import make_agent_task, make_entity_index_entry  # noqa: E402
+from tests.helpers import make_dispatch_task, make_entity_index_entry  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _no_visibility_rules(monkeypatch):
+    monkeypatch.setattr(
+        "app.entity.visibility.EntityVisibilityRepository.get_rules",
+        AsyncMock(return_value=[]),
+    )
+
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
 
-def _make_task(
-    description: str = "turn on kitchen light", user_text: str | None = None, context: TaskContext | None = None
-) -> AgentTask:
-    return make_agent_task(
+def _make_task(description: str = "turn on kitchen light", context: TaskContext | None = None) -> DispatchTask:
+    return make_dispatch_task(
         description=description,
-        user_text=user_text or description,
         context=context,
     )
 

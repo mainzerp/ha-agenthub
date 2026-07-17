@@ -20,6 +20,12 @@ _store_lock = asyncio.Lock()
 
 DEFAULT_WINDOW_SECONDS = 60
 
+# Hard cap on tracked ``scope:ip`` keys. On a new-key insert at/above the
+# cap, entries whose window has expired are purged first; if the store is
+# still at/over the cap the oldest entry is evicted. This bounds memory
+# growth under unique-IP churn.
+_RATE_LIMIT_STORE_MAX_ENTRIES = 10000
+
 
 # Parse once at module load; entries are IP strings or networks.
 _TRUSTED_PROXIES: set[str] = set()
@@ -43,6 +49,13 @@ async def _check_rate_limit(identifier: str, max_requests: int, window_seconds: 
     key = _make_key(identifier, scope)
     now = time.time()
     async with _store_lock:
+        if key not in _rate_limit_store and len(_rate_limit_store) >= _RATE_LIMIT_STORE_MAX_ENTRIES:
+            expired = [k for k, (_count, ws) in _rate_limit_store.items() if now - ws > window_seconds]
+            for k in expired:
+                del _rate_limit_store[k]
+            if len(_rate_limit_store) >= _RATE_LIMIT_STORE_MAX_ENTRIES:
+                oldest = min(_rate_limit_store, key=lambda k: _rate_limit_store[k][1])
+                del _rate_limit_store[oldest]
         count, window_start = _rate_limit_store.get(key, (0, now))
         if now - window_start > window_seconds:
             count = 0

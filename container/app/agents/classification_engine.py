@@ -6,7 +6,6 @@ agent description building, and classification repair.
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import re
@@ -17,9 +16,9 @@ from typing import Any
 import litellm
 
 from app.agents.agent_registry import CachedAgentRegistry
+from app.agents.cache_orchestrator import routing_hit_is_still_valid
 from app.analytics.tracer import _optional_span
 from app.cache.cache_manager import CacheManager
-from app.entity.visibility import entity_is_visible
 from app.llm.client import LLMError
 from app.models.agent import FALLBACK_AGENT, INTERNAL_ONLY_AGENTS
 
@@ -107,35 +106,12 @@ class ClassificationEngine:
 
     async def _routing_cache_hit_is_valid(self, agent_id: str, entity_ids: list[str] | None) -> bool:
         """Validate a routing-cache hit: agent registered and entities visible."""
-        if not agent_id:
-            return False
-        known_agents = await self._get_known_agents()
-        if agent_id not in known_agents:
-            return False
-        if isinstance(entity_ids, list) and entity_ids and self._entity_index is not None:
-            try:
-                visibility = await asyncio.gather(
-                    *[
-                        entity_is_visible(
-                            agent_id,
-                            entity_id,
-                            self._entity_index,
-                            fail_closed_on_metadata_gap=True,
-                        )
-                        for entity_id in entity_ids
-                    ]
-                )
-                if not all(visibility):
-                    return False
-            except Exception:
-                logger.debug(
-                    "Routing-cache visibility check failed for agent=%s entities=%s",
-                    agent_id,
-                    entity_ids,
-                    exc_info=True,
-                )
-                return False
-        return True
+        return await routing_hit_is_still_valid(
+            agent_id,
+            entity_ids,
+            agent_registry=self._agent_registry,
+            entity_index=self._entity_index,
+        )
 
     @property
     def agent_registry(self) -> CachedAgentRegistry:

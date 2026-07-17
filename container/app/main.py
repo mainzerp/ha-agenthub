@@ -19,7 +19,7 @@ from app.bootstrap._shutdown import teardown
 from app.bootstrap._startup import setup_application
 from app.config import settings
 from app.dashboard.routes import router as dashboard_router
-from app.middleware.auth import SetupRedirectMiddleware, apply_auth_dependencies
+from app.middleware.auth import SetupRedirectMiddleware, apply_exception_handlers
 from app.middleware.rate_limit import rate_limit_admin
 from app.middleware.tracing import TracingMiddleware
 from app.setup.routes import router as setup_router
@@ -59,7 +59,7 @@ def create_app() -> FastAPI:
     )
 
     # Exception handlers
-    apply_auth_dependencies(app)
+    apply_exception_handlers(app)
 
     # Setup redirect middleware (redirects to /setup/ if unconfigured)
     app.add_middleware(SetupRedirectMiddleware)

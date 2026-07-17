@@ -271,6 +271,16 @@ class MCPClient:
             self._session = None
             if self._ready is not None and not self._ready.is_set():
                 self._ready.set()
+            # Fail requests still queued so _submit waiters never hang on a
+            # crashed or stopped owner loop.
+            if self._req_q is not None:
+                while True:
+                    try:
+                        fut, _op, _args = self._req_q.get_nowait()
+                    except asyncio.QueueEmpty:
+                        break
+                    if not fut.done():
+                        fut.set_exception(ConnectionError(f"MCP server '{self._name}' owner loop stopped"))
 
     async def _connect_stdio(self) -> bool:
         import app.mcp.client as _mod

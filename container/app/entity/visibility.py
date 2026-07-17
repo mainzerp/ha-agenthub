@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Protocol
@@ -55,27 +56,42 @@ def _parse_rules(rules: Sequence[Mapping[str, Any]]) -> _VisibilityRules:
     return parsed
 
 
-_rules_cache: dict[str, _VisibilityRules | None] = {}
+# Defense-in-depth TTL: invalidation via invalidate_visibility_rules_cache is
+# the primary coherence mechanism; the TTL bounds staleness when an
+# invalidation is missed (e.g. direct DB edit).
+_RULES_CACHE_TTL_SECONDS = 300.0
+_rules_cache: dict[str, tuple[float, _VisibilityRules | None]] = {}
 _rules_cache_lock = asyncio.Lock()
+
+
+def _read_fresh_rules(agent_id: str) -> tuple[bool, _VisibilityRules | None]:
+    """Return ``(hit, rules)``; ``hit`` is False when missing or TTL-expired."""
+    entry = _rules_cache.get(agent_id)
+    if entry is None:
+        return False, None
+    loaded_at, rules = entry
+    if time.monotonic() - loaded_at >= _RULES_CACHE_TTL_SECONDS:
+        return False, None
+    return True, rules
 
 
 async def _get_cached_rules(
     agent_id: str,
     repository=EntityVisibilityRepository,
 ) -> _VisibilityRules | None:
-    """Fetch visibility rules with in-memory caching."""
-    cached = _rules_cache.get(agent_id)
-    if cached is not None or agent_id in _rules_cache:
-        return cached
+    """Fetch visibility rules with in-memory caching (TTL-bounded)."""
+    hit, rules = _read_fresh_rules(agent_id)
+    if hit:
+        return rules
 
     async with _rules_cache_lock:
-        cached = _rules_cache.get(agent_id)
-        if cached is not None or agent_id in _rules_cache:
-            return cached
+        hit, rules = _read_fresh_rules(agent_id)
+        if hit:
+            return rules
 
         raw_rules = await repository.get_rules(agent_id)
         rules = _parse_rules(raw_rules) if raw_rules else None
-        _rules_cache[agent_id] = rules
+        _rules_cache[agent_id] = (time.monotonic(), rules)
         return rules
 
 

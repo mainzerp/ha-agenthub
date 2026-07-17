@@ -151,6 +151,8 @@ async def _traces_ticker(app) -> None:
 
 def _log_task_exception(task: asyncio.Task) -> None:
     """Done callback that logs unhandled exceptions from SSE ticker tasks."""
+    if task.cancelled():
+        return
     exc = task.exception()
     if exc is not None and not isinstance(exc, asyncio.CancelledError):
         logger.error("SSE ticker task %r raised an exception", task.get_name(), exc_info=exc)

@@ -39,25 +39,23 @@ from app.agents.orchestrator import OrchestratorAgent  # noqa: E402
 from app.agents.send import _CONTENT_SEPARATOR, SendAgent  # noqa: E402
 from app.models.agent import (  # noqa: E402
     AgentCard,
-    AgentTask,
     BackgroundEvent,
+    BackgroundTask,
+    IngressTask,
     TaskContext,
 )
 from app.models.conversation import StreamToken  # noqa: E402
 from app.security.sanitization import USER_INPUT_END, USER_INPUT_START  # noqa: E402
-from tests.helpers import make_agent_task  # noqa: E402
+from tests.helpers import make_dispatch_task, make_ingress_task  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
 
-def _make_task(
-    description: str = "turn on kitchen light", user_text: str | None = None, context: TaskContext | None = None
-) -> AgentTask:
-    return make_agent_task(
+def _make_task(description: str = "turn on kitchen light", context: TaskContext | None = None) -> IngressTask:
+    return make_ingress_task(
         description=description,
-        user_text=user_text or description,
         context=context,
     )
 
@@ -120,7 +118,7 @@ class TestOrchestratorAgent:
         mock_settings.get_value = AsyncMock(side_effect=lambda k, d=None: "auto" if k == "language" else d)
         orch, dispatcher, *_ = self._make_orchestrator()
         mock_complete.return_value = "light-agent: Turn on kitchen light"
-        task = _make_task("turn on kitchen light", user_text="turn on kitchen light")
+        task = _make_task("turn on kitchen light")
         task.conversation_id = "conv-1"
         result = await orch.handle_task(task)
         assert result["speech"] == "Done!"
@@ -172,8 +170,7 @@ class TestOrchestratorAgent:
         mock_background.return_value = {"speech": "", "action_executed": None}
         orch, *_ = self._make_orchestrator()
         orch._cache_manager.process = AsyncMock(side_effect=AssertionError("background turns must skip cache lookup"))
-        task = _make_task(
-            "background timer notification",
+        task = BackgroundTask(
             context=TaskContext(
                 source="background",
                 background_event=BackgroundEvent(event_type="timer_notification", payload={"timer_name": "Tea"}),
@@ -190,8 +187,7 @@ class TestOrchestratorAgent:
         orch, *_ = self._make_orchestrator()
         orch._cache_manager.process = AsyncMock(side_effect=AssertionError("background turns must skip cache lookup"))
         orch._invoke_filler_agent = AsyncMock(side_effect=AssertionError("background turns must skip filler"))
-        task = _make_task(
-            "background alarm notification",
+        task = BackgroundTask(
             context=TaskContext(
                 source="background",
                 background_event=BackgroundEvent(event_type="alarm_notification", payload={"alarm_name": "Morning"}),
@@ -843,7 +839,7 @@ class TestOrchestratorAgent:
         response_music = {"speech": "Playing jazz."}
         dispatcher.dispatch = AsyncMock(side_effect=[response_light, response_music])
 
-        task = _make_task("turn on shelf and play jazz", user_text="turn on shelf and play jazz")
+        task = _make_task("turn on shelf and play jazz")
         task.conversation_id = "conv-multi"
         result = await orch.handle_task(task)
         assert result["speech"] == merged_text
@@ -1536,7 +1532,7 @@ class TestOrchestratorAgent:
             ]
         )
 
-        task = _make_task("turn on shelf and play jazz", user_text="turn on shelf and play jazz")
+        task = _make_task("turn on shelf and play jazz")
         task.conversation_id = "conv-partial"
         result = await orch.handle_task(task)
         assert result.get("partial_failure") is not None
@@ -1564,7 +1560,7 @@ class TestOrchestratorAgent:
 
         dispatcher.dispatch = AsyncMock(side_effect=[RuntimeError("light down"), RuntimeError("music down")])
 
-        task = _make_task("turn on shelf and play jazz", user_text="turn on shelf and play jazz")
+        task = _make_task("turn on shelf and play jazz")
         task.conversation_id = "conv-all-fail"
         result = await orch.handle_task(task)
         assert "couldn't complete" in result["speech"].lower() or "error" in result["speech"].lower()
@@ -1798,7 +1794,7 @@ class TestOrchestratorFiller:
 
         dispatcher.dispatch_stream = _fast_stream
 
-        task = _make_task("search something", user_text="search something")
+        task = _make_task("search something")
         task.conversation_id = "conv-fast"
         task.context = TaskContext(language="en")
 
@@ -1843,7 +1839,7 @@ class TestOrchestratorFiller:
 
         dispatcher.dispatch_stream = _slow_stream
 
-        task = _make_task("search something", user_text="search something")
+        task = _make_task("search something")
         task.conversation_id = "conv-slow"
         task.context = TaskContext(language="en")
 
@@ -1877,7 +1873,7 @@ class TestOrchestratorFiller:
 
         dispatcher.dispatch_stream = _stream
 
-        task = _make_task("turn on light", user_text="turn on light")
+        task = _make_task("turn on light")
         task.conversation_id = "conv-fast-agent"
         task.context = TaskContext(language="en")
 
@@ -1921,7 +1917,7 @@ class TestOrchestratorFiller:
 
         dispatcher.dispatch_stream = _slow_stream
 
-        task = _make_task("search something", user_text="search something")
+        task = _make_task("search something")
         task.conversation_id = "conv-fail"
         task.context = TaskContext(language="en")
 
@@ -1971,7 +1967,7 @@ class TestOrchestratorFiller:
         dispatcher.dispatch_stream = _fast_after_threshold
 
         collector = SpanCollector("trace-filler-unsent")
-        task = _make_task("search something", user_text="search something")
+        task = _make_task("search something")
         task.conversation_id = "conv-unsent"
         task.context = TaskContext(language="en")
         task.span_collector = collector
@@ -2020,7 +2016,7 @@ class TestOrchestratorFiller:
         dispatcher.dispatch_stream = _slow_stream
 
         collector = SpanCollector("trace-filler-sent")
-        task = _make_task("search something", user_text="search something")
+        task = _make_task("search something")
         task.conversation_id = "conv-sent"
         task.context = TaskContext(language="en")
         task.span_collector = collector
@@ -2738,7 +2734,7 @@ class TestSendAgentSpans:
                 "ha_service_target": "mobile_app_lauras_iphone",
             }
         )
-        task = _make_task(
+        task = make_dispatch_task(
             description=f"send to Laura Handy{_CONTENT_SEPARATOR}Here is the recipe...",
         )
         task.span_collector = collector
@@ -2764,7 +2760,7 @@ class TestSendAgentSpans:
                 "ha_service_target": "mobile_app_lauras_iphone",
             }
         )
-        task = _make_task(
+        task = make_dispatch_task(
             description=f"send to Laura Handy{_CONTENT_SEPARATOR}content",
         )
         task.span_collector = None
@@ -2925,7 +2921,7 @@ class TestResponseCacheFallThrough:
         orch = OrchestratorAgent(dispatcher=dispatcher, registry=registry, cache_manager=cache_manager)
 
         mock_complete.return_value = "light-agent: turn on kitchen light"
-        task = _make_task("turn on kitchen light", user_text="turn on kitchen light")
+        task = _make_task("turn on kitchen light")
         task.conversation_id = "conv-fallthrough"
         result = await orch.handle_task(task)
 
@@ -2982,7 +2978,7 @@ class TestResponseCacheFallThrough:
         orch = OrchestratorAgent(dispatcher=dispatcher, registry=registry, cache_manager=cache_manager)
 
         mock_complete.return_value = "light-agent: turn on kitchen light"
-        task = _make_task("turn on kitchen light", user_text="turn on kitchen light")
+        task = _make_task("turn on kitchen light")
         task.conversation_id = "conv-routing-recheck"
         result = await orch.handle_task(task)
 

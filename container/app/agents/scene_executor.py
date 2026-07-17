@@ -155,7 +155,12 @@ async def _query_scene(
     verbatim_terms: list[str] | None = None,
     action: dict | None = None,
 ) -> dict:
-    entity_id_direct = _validate_direct_entity_id(action.get("entity_id") if action else None, _validate_domain)
+    entity_id_direct = await _validate_direct_entity_id(
+        action.get("entity_id") if action else None,
+        _validate_domain,
+        agent_id=agent_id,
+        entity_index=entity_index,
+    )
     if entity_id_direct:
         entity_id = entity_id_direct
         friendly_name = _synthesize_direct_entity_metadata(entity_id, entity_index).get("top_friendly_name", entity_id)
