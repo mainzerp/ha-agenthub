@@ -1050,9 +1050,56 @@ class TestClimateExecutorWeatherActions:
 # ---------------------------------------------------------------------------
 
 from app.agents.action_executor import (  # noqa: E402
+    _validate_direct_entity_id,
     is_read_only_action,
     resolve_and_validate_entity,
 )
+
+
+class TestValidateDirectEntityId:
+    """CORE-H2: direct entity_id validation is domain + visibility fail-closed."""
+
+    @pytest.mark.asyncio
+    async def test_returns_none_for_empty_entity_id(self):
+        assert await _validate_direct_entity_id(None, lambda eid: True, agent_id="light-agent") is None
+        assert await _validate_direct_entity_id("", lambda eid: True, agent_id="light-agent") is None
+
+    @pytest.mark.asyncio
+    async def test_rejects_when_domain_validator_fails(self):
+        result = await _validate_direct_entity_id("light.kitchen", lambda eid: False, agent_id="cover-agent")
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_accepts_visible_entity(self, monkeypatch):
+        monkeypatch.setattr(
+            "app.entity.visibility.EntityVisibilityRepository.get_rules",
+            AsyncMock(return_value=[]),
+        )
+        result = await _validate_direct_entity_id("light.kitchen", lambda eid: True, agent_id="light-agent")
+        assert result == "light.kitchen"
+
+    @pytest.mark.asyncio
+    async def test_rejects_invisible_entity(self, monkeypatch):
+        monkeypatch.setattr(
+            "app.entity.visibility.EntityVisibilityRepository.get_rules",
+            AsyncMock(return_value=[{"rule_type": "domain_exclude", "rule_value": "light"}]),
+        )
+        result = await _validate_direct_entity_id("light.kitchen", lambda eid: True, agent_id="light-agent")
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_fail_closed_when_visibility_check_raises(self, monkeypatch):
+        monkeypatch.setattr(
+            "app.entity.visibility.EntityVisibilityRepository.get_rules",
+            AsyncMock(side_effect=RuntimeError("db down")),
+        )
+        result = await _validate_direct_entity_id("light.kitchen", lambda eid: True, agent_id="light-agent")
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_skips_visibility_without_agent_id(self):
+        result = await _validate_direct_entity_id("light.kitchen", lambda eid: True)
+        assert result == "light.kitchen"
 
 
 class TestIsReadOnlyAction:

@@ -21,13 +21,51 @@ class _MockConfigFlow:
     def __init_subclass__(cls, **kwargs):
         pass
 
+    def async_show_form(self, *, step_id=None, data_schema=None, errors=None, **kwargs):
+        return {
+            "type": "form",
+            "step_id": step_id,
+            "data_schema": data_schema,
+            "errors": errors or {},
+        }
+
+    def async_create_entry(self, *, title=None, data=None):
+        return {"type": "create_entry", "title": title, "data": data}
+
+    def async_abort(self, *, reason):
+        return {"type": "abort", "reason": reason}
+
 
 class _MockConfigFlowResult:
     pass
 
 
 class _MockOptionsFlow:
-    pass
+    def async_show_form(self, *, step_id=None, data_schema=None, errors=None, **kwargs):
+        return {
+            "type": "form",
+            "step_id": step_id,
+            "data_schema": data_schema,
+            "errors": errors or {},
+        }
+
+    def async_create_entry(self, *, title=None, data=None):
+        return {"type": "create_entry", "title": title, "data": data}
+
+
+class _FakeTextSelectorType:
+    PASSWORD = "password"
+    URL = "url"
+
+
+class _FakeTextSelectorConfig:
+    def __init__(self, *, type=None):
+        self.type = type
+
+
+class _FakeTextSelector:
+    def __init__(self, config=None):
+        self.config = config
 
 
 class _MockConversationEntityFeature:
@@ -66,12 +104,18 @@ def _mock_homeassistant_deps():
             "MATCH_ALL": "*",
         },
         "homeassistant.core": {"HomeAssistant": MagicMock},
-        "homeassistant.exceptions": {"HomeAssistantError": Exception},
+        "homeassistant.exceptions": {
+            "HomeAssistantError": Exception,
+            "ConfigEntryError": type("ConfigEntryError", (Exception,), {}),
+        },
         "homeassistant.helpers": {},
+        "homeassistant.helpers.aiohttp_client": {
+            "async_get_clientsession": MagicMock,
+        },
         "homeassistant.helpers.selector": {
-            "TextSelector": MagicMock,
-            "TextSelectorConfig": MagicMock,
-            "TextSelectorType": MagicMock,
+            "TextSelector": _FakeTextSelector,
+            "TextSelectorConfig": _FakeTextSelectorConfig,
+            "TextSelectorType": _FakeTextSelectorType,
         },
         "homeassistant.components": {},
         "homeassistant.components.assist_pipeline": {},
@@ -92,7 +136,11 @@ def _mock_homeassistant_deps():
         "homeassistant.helpers.event": {
             "async_track_state_change_event": MagicMock,
         },
-        "voluptuous": MagicMock(),
+        "voluptuous": {
+            "Schema": MagicMock,
+            "Required": MagicMock,
+            "Optional": MagicMock,
+        },
         "aiohttp": {
             "ClientSession": MagicMock,
             "ClientTimeout": MagicMock,

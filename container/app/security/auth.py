@@ -84,7 +84,14 @@ async def require_api_key_ws(websocket: WebSocket) -> str:
     if not token:
         await websocket.close(code=4001, reason="Unauthorized")
         raise HTTPException(status_code=401, detail="Unauthorized")
-    stored_key = await retrieve_secret(API_KEY_SECRET_NAME)
+    try:
+        stored_key = await retrieve_secret(API_KEY_SECRET_NAME)
+    except RuntimeError:
+        # Mirror require_api_key: an undecryptable stored key (Fernet
+        # rotation/corruption) is an auth failure, not a 500.
+        logger.warning("API key retrieval failed (possible Fernet key rotation); rejecting WebSocket")
+        await websocket.close(code=4001, reason="Unauthorized")
+        raise HTTPException(status_code=401, detail="Unauthorized") from None
     if stored_key is None or not hmac.compare_digest(token, stored_key):
         await websocket.close(code=4001, reason="Unauthorized")
         raise HTTPException(status_code=401, detail="Unauthorized")

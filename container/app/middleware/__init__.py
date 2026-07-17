@@ -1,5 +1,5 @@
 """Middleware and FastAPI dependency wrappers for authentication."""
 
-from app.middleware.auth import apply_auth_dependencies
+from app.middleware.auth import apply_exception_handlers
 
-__all__ = ["apply_auth_dependencies"]
+__all__ = ["apply_exception_handlers"]

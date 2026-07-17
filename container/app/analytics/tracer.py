@@ -342,8 +342,8 @@ class SpanCollector:
         self._spans.append(span_data)
 
     def add_root_span(self, span_data: dict[str, Any]) -> None:
-        """Append a pre-built root span (encapsulated access to _spans)."""
-        self._spans.append(span_data)
+        """Append a pre-built root span (alias for :meth:`record_root_span`)."""
+        self.record_root_span(span_data)
 
     async def flush(self) -> None:
         """Bulk insert all collected spans. Fire-and-forget."""

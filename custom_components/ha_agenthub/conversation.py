@@ -200,6 +200,9 @@ class HaAgentHubConversationEntity(
         self._inflight_pushes: dict[str, asyncio.Task] = {}
         # Debounced reconnect request flag for the background reconnect loop.
         self._reconnect_requested = asyncio.Event()
+        # Guards the automatic reauth trigger so a persistent 401 starts at
+        # most one reauth flow per failure episode (reset on next success).
+        self._reauth_triggered = False
         # (removed dead reentrancy guard -- was _push_in_progress_satellites)
         self._attr_device_info = dr.DeviceInfo(
             identifiers={(DOMAIN, entry.entry_id)},
@@ -1042,10 +1045,15 @@ class HaAgentHubConversationEntity(
             sentence_buffer = ""
 
             while True:
-                timeout = self._entry.options.get(
-                    CONF_WS_RECEIVE_TIMEOUT, DEFAULT_WS_RECEIVE_TIMEOUT
-                )
-                msg = await asyncio.wait_for(self._ws.receive(), timeout=float(timeout))
+                try:
+                    timeout = float(
+                        self._entry.options.get(
+                            CONF_WS_RECEIVE_TIMEOUT, DEFAULT_WS_RECEIVE_TIMEOUT
+                        )
+                    )
+                except (TypeError, ValueError):
+                    timeout = float(DEFAULT_WS_RECEIVE_TIMEOUT)
+                msg = await asyncio.wait_for(self._ws.receive(), timeout=timeout)
                 if msg.type == aiohttp.WSMsgType.TEXT:
                     try:
                         data = json.loads(msg.data)
@@ -1167,6 +1175,17 @@ class HaAgentHubConversationEntity(
         except (aiohttp.ClientError, asyncio.TimeoutError) as err:
             raise _WsDroppedAfterSendError() from err
 
+    def _start_reauth_once(self) -> None:
+        """Start the reauth flow once per auth-failure episode.
+
+        The flag is reset on the next successful request so a recovered
+        connection can trigger reauth again if the key is rotated later.
+        """
+        if self._reauth_triggered:
+            return
+        self._reauth_triggered = True
+        self._entry.async_start_reauth(self.hass)
+
     async def _process_via_rest(
         self, user_input: conversation.ConversationInput
     ) -> conversation.ConversationResult:
@@ -1188,11 +1207,14 @@ class HaAgentHubConversationEntity(
                 timeout=aiohttp.ClientTimeout(total=30),
             ) as resp:
                 if resp.status != 200:
+                    if resp.status in {401, 403}:
+                        self._start_reauth_once()
                     return self._build_result(
                         _rest_fallback_error_message(resp.status),
                         user_input.conversation_id,
                         user_input.language,
                     )
+                self._reauth_triggered = False
                 data = await resp.json()
                 voice_followup = bool(data.get("voice_followup", False))
                 return self._build_result(

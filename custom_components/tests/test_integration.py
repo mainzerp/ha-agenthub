@@ -172,100 +172,105 @@ class TestNormalizeUrlConsistency:
 
 
 class TestValidateConnection:
-    """Test _validate_connection with mocked aiohttp."""
+    """Test _validate_connection with a mocked shared client session."""
 
     def _get_fn(self):
         from custom_components.ha_agenthub.config_flow import _validate_connection
 
         return _validate_connection
 
+    def _patch_session(self, mock_resp):
+        mock_session = MagicMock()
+        mock_session.get = MagicMock(return_value=mock_resp)
+        return patch(
+            "custom_components.ha_agenthub.config_flow.async_get_clientsession",
+            return_value=mock_session,
+        )
+
+    def _make_response(self, status, json_payload=None, json_error=None):
+        mock_resp = MagicMock()
+        mock_resp.status = status
+        if json_error is not None:
+            mock_resp.json = AsyncMock(side_effect=json_error)
+        else:
+            mock_resp.json = AsyncMock(return_value=json_payload)
+        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_resp.__aexit__ = AsyncMock(return_value=None)
+        return mock_resp
+
     @pytest.mark.asyncio
     async def test_invalid_url_returns_error(self):
         fn = self._get_fn()
-        result = await fn("not-a-valid-url", "key123")
+        result = await fn(MagicMock(), "not-a-valid-url", "key123")
         assert result == "invalid_url"
 
     @pytest.mark.asyncio
     async def test_empty_api_key_returns_invalid_auth(self):
         fn = self._get_fn()
-        result = await fn("http://example.com", "")
+        result = await fn(MagicMock(), "http://example.com", "")
         assert result == "invalid_auth"
 
     @pytest.mark.asyncio
     async def test_successful_connection(self):
-        import aiohttp
+        mock_resp = self._make_response(200, json_payload={"status": "ok"})
 
-        mock_resp = MagicMock()
-        mock_resp.status = 200
-        mock_resp.json = AsyncMock(return_value={"status": "ok"})
-        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
-        mock_resp.__aexit__ = AsyncMock(return_value=None)
-
-        mock_session = MagicMock()
-        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-        mock_session.__aexit__ = AsyncMock(return_value=None)
-        mock_session.get = MagicMock(return_value=mock_resp)
-
-        with patch.object(aiohttp, "ClientSession", return_value=mock_session):
+        with self._patch_session(mock_resp):
             fn = self._get_fn()
-            result = await fn("http://example.com", "key123")
+            result = await fn(MagicMock(), "http://example.com", "key123")
             assert result is None
 
     @pytest.mark.asyncio
     async def test_401_returns_invalid_auth(self):
-        import aiohttp
+        mock_resp = self._make_response(401)
 
-        mock_resp = MagicMock()
-        mock_resp.status = 401
-        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
-        mock_resp.__aexit__ = AsyncMock(return_value=None)
-
-        mock_session = MagicMock()
-        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-        mock_session.__aexit__ = AsyncMock(return_value=None)
-        mock_session.get = MagicMock(return_value=mock_resp)
-
-        with patch.object(aiohttp, "ClientSession", return_value=mock_session):
+        with self._patch_session(mock_resp):
             fn = self._get_fn()
-            result = await fn("http://example.com", "key123")
+            result = await fn(MagicMock(), "http://example.com", "key123")
             assert result == "invalid_auth"
 
     @pytest.mark.asyncio
     async def test_403_returns_invalid_auth(self):
-        import aiohttp
+        mock_resp = self._make_response(403)
 
-        mock_resp = MagicMock()
-        mock_resp.status = 403
-        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
-        mock_resp.__aexit__ = AsyncMock(return_value=None)
-
-        mock_session = MagicMock()
-        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-        mock_session.__aexit__ = AsyncMock(return_value=None)
-        mock_session.get = MagicMock(return_value=mock_resp)
-
-        with patch.object(aiohttp, "ClientSession", return_value=mock_session):
+        with self._patch_session(mock_resp):
             fn = self._get_fn()
-            result = await fn("http://example.com", "key123")
+            result = await fn(MagicMock(), "http://example.com", "key123")
             assert result == "invalid_auth"
 
     @pytest.mark.asyncio
     async def test_500_returns_cannot_connect(self):
-        import aiohttp
+        mock_resp = self._make_response(500)
 
-        mock_resp = MagicMock()
-        mock_resp.status = 500
-        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
-        mock_resp.__aexit__ = AsyncMock(return_value=None)
-
-        mock_session = MagicMock()
-        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-        mock_session.__aexit__ = AsyncMock(return_value=None)
-        mock_session.get = MagicMock(return_value=mock_resp)
-
-        with patch.object(aiohttp, "ClientSession", return_value=mock_session):
+        with self._patch_session(mock_resp):
             fn = self._get_fn()
-            result = await fn("http://example.com", "key123")
+            result = await fn(MagicMock(), "http://example.com", "key123")
+            assert result == "cannot_connect"
+
+    @pytest.mark.asyncio
+    async def test_malformed_json_returns_cannot_connect(self):
+        mock_resp = self._make_response(200, json_error=ValueError("no json"))
+
+        with self._patch_session(mock_resp):
+            fn = self._get_fn()
+            result = await fn(MagicMock(), "http://example.com", "key123")
+            assert result == "cannot_connect"
+
+    @pytest.mark.asyncio
+    async def test_non_dict_json_returns_cannot_connect(self):
+        mock_resp = self._make_response(200, json_payload=["not", "a", "dict"])
+
+        with self._patch_session(mock_resp):
+            fn = self._get_fn()
+            result = await fn(MagicMock(), "http://example.com", "key123")
+            assert result == "cannot_connect"
+
+    @pytest.mark.asyncio
+    async def test_unhealthy_payload_returns_cannot_connect(self):
+        mock_resp = self._make_response(200, json_payload={"status": "degraded"})
+
+        with self._patch_session(mock_resp):
+            fn = self._get_fn()
+            result = await fn(MagicMock(), "http://example.com", "key123")
             assert result == "cannot_connect"
 
 
@@ -401,6 +406,42 @@ class TestWsReceiveTimeout:
         timeout = mock_wait.call_args.kwargs["timeout"]
         assert timeout == 200.0
 
+    @pytest.mark.asyncio
+    async def test_invalid_timeout_option_falls_back_to_default(self):
+        from custom_components.ha_agenthub.const import (
+            CONF_WS_RECEIVE_TIMEOUT,
+            DEFAULT_WS_RECEIVE_TIMEOUT,
+        )
+
+        entity = self._make_entity({CONF_WS_RECEIVE_TIMEOUT: "not-a-number"})
+        entity._ws = MagicMock()
+        entity._ws.send_json = AsyncMock()
+        entity._ws.receive = AsyncMock(
+            return_value=MagicMock(type=1, data='{"done": true, "token": "hi"}')
+        )
+
+        user_input = MagicMock()
+        user_input.conversation_id = "c1"
+        user_input.text = "hello"
+        user_input.language = "en"
+        user_input.device_id = None
+
+        with (
+            patch(
+                "custom_components.ha_agenthub.conversation.aiohttp.WSMsgType",
+                type("WSMsgType", (), {"TEXT": 1}),
+            ),
+            patch(
+                "custom_components.ha_agenthub.conversation.asyncio.wait_for",
+                new=AsyncMock(),
+            ) as mock_wait,
+        ):
+            mock_wait.return_value = entity._ws.receive.return_value
+            await entity._process_via_ws(user_input)
+
+        timeout = mock_wait.call_args.kwargs["timeout"]
+        assert timeout == DEFAULT_WS_RECEIVE_TIMEOUT
+
 
 # ---------------------------------------------------------------------------
 # 5.3.7 Reconnect scheduling is debounced
@@ -516,3 +557,319 @@ class TestConfigEntrySourceOfTruth:
         assert entry.data[CONF_URL] == "http://options.local"
         assert entry.data[CONF_API_KEY] == "options-key"
         assert entry.options == {}
+
+
+# ---------------------------------------------------------------------------
+# 5.3.9 Options flow: ws_receive_timeout persistence and validation
+# ---------------------------------------------------------------------------
+
+
+class TestOptionsFlow:
+    def _make_flow(self, unique_id="http://old.local"):
+        from custom_components.ha_agenthub.config_flow import HaAgentHubOptionsFlow
+
+        entry = MagicMock()
+        entry.entry_id = "e1"
+        entry.title = "HA-AgentHub"
+        entry.data = {
+            "name": "HA-AgentHub",
+            "url": "http://old.local",
+            "api_key": "stored-token",
+        }
+        entry.options = {}
+        entry.unique_id = unique_id
+
+        flow = HaAgentHubOptionsFlow(entry)
+        flow.hass = MagicMock()
+        flow.hass.config_entries.async_entries = MagicMock(return_value=[])
+        return flow, entry
+
+    @pytest.mark.asyncio
+    async def test_timeout_persisted_via_create_entry_single_write(self):
+        flow, entry = self._make_flow()
+
+        with patch(
+            "custom_components.ha_agenthub.config_flow._validate_connection",
+            new=AsyncMock(return_value=None),
+        ) as mock_validate:
+            result = await flow.async_step_init(
+                {
+                    "url": "http://old.local",
+                    "api_key": "",
+                    "name": "",
+                    "ws_receive_timeout": "45",
+                }
+            )
+
+        # The flow manager applies result["data"] to entry.options.
+        assert result["type"] == "create_entry"
+        assert result["data"] == {"ws_receive_timeout": 45.0}
+        entry.options = result["data"]
+        assert entry.options["ws_receive_timeout"] == 45.0
+
+        mock_validate.assert_awaited_once_with(
+            flow.hass, "http://old.local", "stored-token"
+        )
+        flow.hass.config_entries.async_update_entry.assert_called_once()
+        update_kwargs = flow.hass.config_entries.async_update_entry.call_args.kwargs
+        assert "options" not in update_kwargs
+        assert "unique_id" not in update_kwargs
+        assert update_kwargs["data"]["url"] == "http://old.local"
+        assert update_kwargs["data"]["api_key"] == "stored-token"
+
+    @pytest.mark.asyncio
+    async def test_invalid_timeout_shows_form_error_without_validation(self):
+        flow, entry = self._make_flow()
+
+        with patch(
+            "custom_components.ha_agenthub.config_flow._validate_connection",
+            new=AsyncMock(return_value=None),
+        ) as mock_validate:
+            result = await flow.async_step_init(
+                {
+                    "url": "http://old.local",
+                    "api_key": "",
+                    "name": "",
+                    "ws_receive_timeout": "abc",
+                }
+            )
+
+        assert result["type"] == "form"
+        assert result["errors"] == {"ws_receive_timeout": "invalid_timeout"}
+        mock_validate.assert_not_called()
+        flow.hass.config_entries.async_update_entry.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_url_change_updates_unique_id_in_same_write(self):
+        flow, entry = self._make_flow()
+
+        with patch(
+            "custom_components.ha_agenthub.config_flow._validate_connection",
+            new=AsyncMock(return_value=None),
+        ):
+            result = await flow.async_step_init(
+                {
+                    "url": "http://new.local",
+                    "api_key": "",
+                    "name": "",
+                    "ws_receive_timeout": "30",
+                }
+            )
+
+        assert result["type"] == "create_entry"
+        assert result["data"] == {"ws_receive_timeout": 30.0}
+        flow.hass.config_entries.async_update_entry.assert_called_once()
+        update_kwargs = flow.hass.config_entries.async_update_entry.call_args.kwargs
+        assert update_kwargs["unique_id"] == "http://new.local"
+        assert update_kwargs["data"]["url"] == "http://new.local"
+
+    @pytest.mark.asyncio
+    async def test_url_change_to_existing_unique_id_shows_error(self):
+        flow, entry = self._make_flow()
+        other = MagicMock()
+        other.entry_id = "other-entry"
+        other.unique_id = "http://taken.local"
+        flow.hass.config_entries.async_entries = MagicMock(return_value=[other])
+
+        with patch(
+            "custom_components.ha_agenthub.config_flow._validate_connection",
+            new=AsyncMock(return_value=None),
+        ):
+            result = await flow.async_step_init(
+                {
+                    "url": "http://taken.local",
+                    "api_key": "",
+                    "name": "",
+                    "ws_receive_timeout": "30",
+                }
+            )
+
+        assert result["type"] == "form"
+        assert result["errors"] == {"base": "already_configured"}
+        flow.hass.config_entries.async_update_entry.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# 5.3.10 Reauth flow: unique_id maintenance on URL change
+# ---------------------------------------------------------------------------
+
+
+class TestReauthFlow:
+    def _make_flow(self, unique_id="http://old.local"):
+        from custom_components.ha_agenthub.config_flow import HaAgentHubConfigFlow
+
+        entry = MagicMock()
+        entry.entry_id = "e1"
+        entry.title = "HA-AgentHub"
+        entry.data = {"url": "http://old.local", "api_key": "stored-token"}
+        entry.unique_id = unique_id
+
+        flow = HaAgentHubConfigFlow()
+        flow.hass = MagicMock()
+        flow._get_reauth_entry = lambda: entry
+        flow.hass.config_entries.async_entries = MagicMock(return_value=[entry])
+        flow.hass.config_entries.async_reload = AsyncMock()
+        return flow, entry
+
+    @pytest.mark.asyncio
+    async def test_reauth_same_url_leaves_unique_id_untouched(self):
+        flow, entry = self._make_flow()
+
+        with patch(
+            "custom_components.ha_agenthub.config_flow._validate_connection",
+            new=AsyncMock(return_value=None),
+        ):
+            result = await flow.async_step_reauth(
+                {"url": "http://old.local", "api_key": "new-key"}
+            )
+
+        assert result == {"type": "abort", "reason": "reauth_successful"}
+        flow.hass.config_entries.async_update_entry.assert_called_once()
+        update_kwargs = flow.hass.config_entries.async_update_entry.call_args.kwargs
+        assert "unique_id" not in update_kwargs
+        assert update_kwargs["data"]["api_key"] == "new-key"
+        flow.hass.config_entries.async_reload.assert_awaited_once_with("e1")
+
+    @pytest.mark.asyncio
+    async def test_reauth_url_change_updates_unique_id_in_same_write(self):
+        flow, entry = self._make_flow()
+
+        with patch(
+            "custom_components.ha_agenthub.config_flow._validate_connection",
+            new=AsyncMock(return_value=None),
+        ):
+            result = await flow.async_step_reauth(
+                {"url": "http://new.local", "api_key": "new-key"}
+            )
+
+        assert result == {"type": "abort", "reason": "reauth_successful"}
+        flow.hass.config_entries.async_update_entry.assert_called_once()
+        update_kwargs = flow.hass.config_entries.async_update_entry.call_args.kwargs
+        assert update_kwargs["unique_id"] == "http://new.local"
+        assert update_kwargs["data"]["url"] == "http://new.local"
+
+    @pytest.mark.asyncio
+    async def test_reauth_url_change_to_other_entry_aborts(self):
+        flow, entry = self._make_flow()
+        other = MagicMock()
+        other.entry_id = "other-entry"
+        other.unique_id = "http://taken.local"
+        flow.hass.config_entries.async_entries = MagicMock(return_value=[entry, other])
+
+        with patch(
+            "custom_components.ha_agenthub.config_flow._validate_connection",
+            new=AsyncMock(return_value=None),
+        ):
+            result = await flow.async_step_reauth(
+                {"url": "http://taken.local", "api_key": "new-key"}
+            )
+
+        assert result == {"type": "abort", "reason": "already_configured"}
+        flow.hass.config_entries.async_update_entry.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# 5.3.11 Automatic reauth trigger on 401/403 REST responses
+# ---------------------------------------------------------------------------
+
+
+class TestReauthTriggerOnAuthFailure:
+    def _make_entity(self):
+        from custom_components.ha_agenthub.conversation import (
+            HaAgentHubConversationEntity,
+        )
+
+        entry = MagicMock()
+        entry.entry_id = "test-entry"
+        entry.options = {}
+        entry.async_create_background_task = MagicMock(return_value=MagicMock())
+        entry.async_on_unload = MagicMock()
+        entry.async_start_reauth = MagicMock()
+        entity = HaAgentHubConversationEntity(entry, "http://example.com", "key")
+        entity.hass = MagicMock()
+        return entity
+
+    class _FakeResponse:
+        def __init__(self, status, payload=None):
+            self.status = status
+            self._payload = payload or {}
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def json(self):
+            return self._payload
+
+    class _FakeSession:
+        closed = False
+
+        def __init__(self, response):
+            self._response = response
+
+        def post(self, *args, **kwargs):
+            return self._response
+
+    def _make_user_input(self):
+        user_input = MagicMock()
+        user_input.text = "hello"
+        user_input.conversation_id = "c1"
+        user_input.language = "en"
+        user_input.device_id = None
+        return user_input
+
+    @pytest.mark.asyncio
+    async def test_reauth_started_once_per_failure_episode(self):
+        entity = self._make_entity()
+        user_input = self._make_user_input()
+
+        entity._session = self._FakeSession(self._FakeResponse(401))
+        await entity._process_via_rest(user_input)
+        await entity._process_via_rest(user_input)
+        entity._entry.async_start_reauth.assert_called_once_with(entity.hass)
+
+        # A successful response resets the episode guard.
+        entity._session = self._FakeSession(
+            self._FakeResponse(200, {"speech": "ok", "conversation_id": "c1"})
+        )
+        await entity._process_via_rest(user_input)
+
+        entity._session = self._FakeSession(self._FakeResponse(403))
+        await entity._process_via_rest(user_input)
+        assert entity._entry.async_start_reauth.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_no_reauth_on_server_error(self):
+        entity = self._make_entity()
+        user_input = self._make_user_input()
+
+        entity._session = self._FakeSession(self._FakeResponse(503))
+        await entity._process_via_rest(user_input)
+        entity._entry.async_start_reauth.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# 5.3.12 Setup entry raises ConfigEntryError when URL is missing
+# ---------------------------------------------------------------------------
+
+
+class TestSetupEntryErrors:
+    @pytest.mark.asyncio
+    async def test_missing_url_raises_config_entry_error(self):
+        from custom_components.ha_agenthub import async_setup_entry
+        from homeassistant.exceptions import ConfigEntryError
+
+        hass = MagicMock()
+        hass.data = {}
+        entry = MagicMock()
+        entry.entry_id = "e1"
+        entry.title = "HA-AgentHub"
+        entry.data = {}
+        entry.options = {}
+        entry.async_on_unload = MagicMock()
+        entry.add_update_listener = MagicMock()
+
+        with pytest.raises(ConfigEntryError):
+            await async_setup_entry(hass, entry)

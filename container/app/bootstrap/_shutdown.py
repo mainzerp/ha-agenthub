@@ -12,8 +12,11 @@ The named background tasks cancelled here (purge, flush, ws, sync,
 entity_index_init, cache_validator) are the same six that
 :func:`app.bootstrap._tasks.spawn_background` registered on ``app.state``
 under their conventional attribute names; they are read back by name in the
-historical cancellation order rather than by iterating the registry, so the
-await/gather order is identical to the previous inline implementation.
+historical cancellation order so the await/gather order is identical to the
+previous inline implementation. After the named cancels, the
+``app.state._background_tasks`` registry is swept for any remaining task
+not yet done (e.g. ``log_buffer_guard``), so registry tasks spawned without
+a dedicated named cancel are never left pending at loop close.
 """
 
 from __future__ import annotations
@@ -88,6 +91,18 @@ async def teardown(app: FastAPI) -> None:
         tasks_to_cancel.append(validator_task)
     if tasks_to_cancel:
         await asyncio.gather(*tasks_to_cancel, return_exceptions=True)
+
+    # Sweep the background-task registry for anything not cancelled by name
+    # above (e.g. log_buffer_guard) so no spawned task is left pending.
+    background_tasks = getattr(app.state, "_background_tasks", None) or []
+    registry_tasks = [t for t in background_tasks if not t.done()]
+    for task in registry_tasks:
+        task.cancel()
+    if registry_tasks:
+        try:
+            await asyncio.wait_for(asyncio.gather(*registry_tasks, return_exceptions=True), timeout=5.0)
+        except TimeoutError:
+            logger.warning("Background registry tasks did not shut down within 5 seconds")
 
     # Cancel SSE ticker tasks with timeout
     sse_ticker_tasks = getattr(app.state, "sse_ticker_tasks", [])

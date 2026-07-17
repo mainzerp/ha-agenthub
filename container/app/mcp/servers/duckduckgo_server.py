@@ -1,5 +1,6 @@
 """DuckDuckGo web search MCP server (stdio transport)."""
 
+import asyncio
 import json
 import logging
 
@@ -53,12 +54,12 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
     try:
         ddgs = DDGS()
         if name == "web_search":
-            results = ddgs.text(query, max_results=max_results)
+            results = await asyncio.to_thread(ddgs.text, query, max_results=max_results)
             formatted = [
                 {"title": r.get("title", ""), "url": r.get("href", ""), "snippet": r.get("body", "")} for r in results
             ]
         elif name == "web_search_news":
-            results = ddgs.news(query, max_results=max_results)
+            results = await asyncio.to_thread(ddgs.news, query, max_results=max_results)
             formatted = [
                 {
                     "title": r.get("title", ""),

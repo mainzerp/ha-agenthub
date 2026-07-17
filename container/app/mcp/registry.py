@@ -80,6 +80,12 @@ class MCPServerRegistry:
             timeout=timeout,
         )
         connected = await client.connect()
+        existing = self._clients.pop(name, None)
+        if existing is not None:
+            try:
+                await existing.disconnect()
+            except Exception:
+                logger.warning("Error disconnecting replaced MCP server '%s'", name, exc_info=True)
         self._clients[name] = client
         self._notify_changed(name)
         return connected

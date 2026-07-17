@@ -6,7 +6,8 @@
   "dependencies": ["conversation", "assist_pipeline"],
   "documentation": "https://github.com/mainzerp/ha-agenthub",
   "homeassistant": "2025.1.0",
-  "issue_tracker": "https://github.com/mainzerp/ha-agenthub/issues",
+  "integration_type": "service",
   "iot_class": "local_push",
+  "issue_tracker": "https://github.com/mainzerp/ha-agenthub/issues",
   "version": "1.45.0"
 }

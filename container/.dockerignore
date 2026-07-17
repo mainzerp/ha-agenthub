@@ -2,7 +2,11 @@ tests/
 data/
 __pycache__/
 .pytest_cache/
+.ruff_cache/
+.coverage
 .env
+.env.*
+!.env.example
 *.pyc
 .git
 *.md

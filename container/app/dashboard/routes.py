@@ -139,8 +139,8 @@ async def system_health_page(
 
 @router.get("/health", response_class=RedirectResponse)
 async def health_redirect(request: Request):
-    """Redirect to API health endpoint."""
-    return RedirectResponse(url=_rooted_url(request, "/api/health"))
+    """Redirect to the unauthenticated liveness probe."""
+    return RedirectResponse(url=_rooted_url(request, "/healthz"))
 
 
 @router.get("/chat", response_class=HTMLResponse)
@@ -230,12 +230,14 @@ async def entity_visibility_page(
     _session: dict = Depends(require_admin_session_redirect),
 ):
     """Redirect to entity index (entity visibility merged into entity index)."""
+    from urllib.parse import urlencode
+
     from starlette.responses import RedirectResponse
 
     agent = request.query_params.get("agent", "")
     url = _rooted_url(request, "/dashboard/entity-index")
     if agent:
-        url += f"?agent={agent}"
+        url += f"?{urlencode({'agent': agent})}"
     return RedirectResponse(url=url, status_code=301)
 
 

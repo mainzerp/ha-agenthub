@@ -9,10 +9,37 @@ import logging
 from typing import Any
 
 from app.entity.deterministic_resolver import resolve_entity_deterministic_first
+from app.entity.visibility import entity_is_visible
 
 logger = logging.getLogger(__name__)
 
 _CALENDAR_DOMAINS: frozenset[str] = frozenset({"calendar"})
+
+
+async def _calendar_is_visible(agent_id: str | None, entity_id: str, entity_index: Any) -> bool:
+    """Fail-closed per-entity visibility check for calendar picks."""
+    if not entity_id:
+        return False
+    if not agent_id:
+        return True
+    try:
+        return await entity_is_visible(agent_id, entity_id, entity_index)
+    except Exception:
+        logger.warning("Calendar visibility check failed for %s", entity_id, exc_info=True)
+        return False
+
+
+async def _filter_visible_calendars(
+    entries: list[Any],
+    agent_id: str | None,
+    entity_index: Any,
+) -> list[Any]:
+    visible: list[Any] = []
+    for entry in entries:
+        entity_id = str(getattr(entry, "entity_id", ""))
+        if await _calendar_is_visible(agent_id, entity_id, entity_index):
+            visible.append(entry)
+    return visible
 
 
 async def execute_calendar_action(
@@ -111,19 +138,21 @@ async def _resolve_calendar_entity(
     if explicit_calendar:
         entity_query = explicit_calendar
 
-    if not entity_query and default_calendar_ids:
-        return default_calendar_ids[0], default_calendar_ids[0], None
-
     if not entity_query:
-        # Try to find any visible calendar
+        # Try the configured default calendar first, then any visible calendar
+        if default_calendar_ids:
+            default_id = str(default_calendar_ids[0])
+            if await _calendar_is_visible(agent_id, default_id, entity_index):
+                return default_id, default_id, None
         entries = []
         if entity_index:
             if hasattr(entity_index, "list_entries_async"):
                 entries = await entity_index.list_entries_async(domains=_CALENDAR_DOMAINS)
             elif hasattr(entity_index, "list_entries"):
                 entries = entity_index.list_entries(domains=_CALENDAR_DOMAINS)
-        if entries:
-            first = entries[0]
+        visible_entries = await _filter_visible_calendars(entries, agent_id, entity_index)
+        if visible_entries:
+            first = visible_entries[0]
             return str(getattr(first, "entity_id", "")), str(getattr(first, "friendly_name", "")), None
         return None, None, "No calendar entity available."
 

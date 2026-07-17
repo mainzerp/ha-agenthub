@@ -17,6 +17,8 @@ from homeassistant.config_entries import (
     OptionsFlow,
 )
 from homeassistant.const import CONF_URL, CONF_API_KEY
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.selector import (
     TextSelector,
     TextSelectorConfig,
@@ -84,7 +86,9 @@ def _build_options_schema(current: dict[str, Any]) -> vol.Schema:
     )
 
 
-async def _validate_connection(url: str, api_key: str) -> str | None:
+async def _validate_connection(
+    hass: HomeAssistant, url: str, api_key: str
+) -> str | None:
     """Test connection to the container. Returns error key or None."""
     try:
         normalized_url = _normalize_url(url)
@@ -94,21 +98,24 @@ async def _validate_connection(url: str, api_key: str) -> str | None:
     if not normalized_url or not trimmed_key:
         return "invalid_auth"
 
+    session = async_get_clientsession(hass)
     try:
-        async with aiohttp.ClientSession() as session:
-            headers = {"Authorization": f"Bearer {trimmed_key}"}
-            async with session.get(
-                f"{normalized_url}{HEALTH_PATH}",
-                headers=headers,
-                timeout=aiohttp.ClientTimeout(total=10),
-            ) as resp:
-                if resp.status in {401, 403}:
-                    return "invalid_auth"
-                if resp.status != 200:
-                    return "cannot_connect"
+        headers = {"Authorization": f"Bearer {trimmed_key}"}
+        async with session.get(
+            f"{normalized_url}{HEALTH_PATH}",
+            headers=headers,
+            timeout=aiohttp.ClientTimeout(total=10),
+        ) as resp:
+            if resp.status in {401, 403}:
+                return "invalid_auth"
+            if resp.status != 200:
+                return "cannot_connect"
+            try:
                 data = await resp.json()
-                if data.get("status") != "ok":
-                    return "cannot_connect"
+            except ValueError:
+                return "cannot_connect"
+            if not isinstance(data, dict) or data.get("status") != "ok":
+                return "cannot_connect"
     except (aiohttp.ClientError, asyncio.TimeoutError):
         return "cannot_connect"
     return None
@@ -138,7 +145,7 @@ class HaAgentHubConfigFlow(ConfigFlow, domain=DOMAIN):
                 api_key = (user_input[CONF_API_KEY] or "").strip()
                 name = (user_input.get(CONF_NAME) or INTEGRATION_TITLE).strip()
 
-                error = await _validate_connection(url, api_key)
+                error = await _validate_connection(self.hass, url, api_key)
                 if error:
                     errors["base"] = error
                 else:
@@ -171,18 +178,27 @@ class HaAgentHubConfigFlow(ConfigFlow, domain=DOMAIN):
                 errors["base"] = "invalid_url"
             else:
                 api_key = (user_input.get(CONF_API_KEY) or "").strip()
-                error = await _validate_connection(url, api_key)
+                error = await _validate_connection(self.hass, url, api_key)
                 if error:
                     errors["base"] = error
                 else:
-                    self.hass.config_entries.async_update_entry(
-                        entry,
-                        data={
+                    entry_updates: dict[str, Any] = {
+                        "data": {
                             **entry.data,
                             CONF_URL: url,
                             CONF_API_KEY: api_key,
                         },
-                    )
+                    }
+                    # Update unique_id when URL changes to keep deduplication correct.
+                    if url != entry.unique_id:
+                        for existing in self.hass.config_entries.async_entries(DOMAIN):
+                            if (
+                                existing.unique_id == url
+                                and existing.entry_id != entry.entry_id
+                            ):
+                                return self.async_abort(reason="already_configured")
+                        entry_updates["unique_id"] = url
+                    self.hass.config_entries.async_update_entry(entry, **entry_updates)
                     await self.hass.config_entries.async_reload(entry.entry_id)
                     return self.async_abort(reason="reauth_successful")
 
@@ -215,56 +231,62 @@ class HaAgentHubOptionsFlow(OptionsFlow):
             except ValueError:
                 errors["base"] = "invalid_url"
             else:
-                new_api_key = (user_input.get(CONF_API_KEY) or "").strip()
-                api_key = new_api_key or current.get(CONF_API_KEY, "")
-                new_name = (user_input.get(CONF_NAME) or "").strip()
-                name = new_name or current.get(CONF_NAME, self._entry.title)
-
-                error = await _validate_connection(url, api_key)
-                if error:
-                    errors["base"] = error
-                else:
-                    # Update unique_id when URL changes to keep deduplication correct.
-                    if url != self._entry.unique_id:
-                        for existing in self.hass.config_entries.async_entries(DOMAIN):
-                            if (
-                                existing.unique_id == url
-                                and existing.entry_id != self._entry.entry_id
-                            ):
-                                errors["base"] = "already_configured"
-                                break
-                        else:
-                            self.hass.config_entries.async_update_entry(
-                                self._entry, unique_id=url
-                            )
-                        if errors:
-                            return self.async_show_form(
-                                step_id="init",
-                                data_schema=_build_options_schema(current),
-                                errors=errors,
-                            )
-                    self.hass.config_entries.async_update_entry(
-                        self._entry,
-                        title=name,
-                        data={
-                            **self._entry.data,
-                            CONF_NAME: name,
-                            CONF_URL: url,
-                            CONF_API_KEY: api_key,
-                        },
-                        options={
-                            CONF_WS_RECEIVE_TIMEOUT: float(
-                                user_input.get(
-                                    CONF_WS_RECEIVE_TIMEOUT,
-                                    current.get(
-                                        CONF_WS_RECEIVE_TIMEOUT,
-                                        DEFAULT_WS_RECEIVE_TIMEOUT,
-                                    ),
-                                )
+                try:
+                    ws_receive_timeout = float(
+                        user_input.get(
+                            CONF_WS_RECEIVE_TIMEOUT,
+                            current.get(
+                                CONF_WS_RECEIVE_TIMEOUT,
+                                DEFAULT_WS_RECEIVE_TIMEOUT,
                             ),
-                        },
+                        )
                     )
-                    return self.async_create_entry(data={})
+                except (TypeError, ValueError):
+                    errors[CONF_WS_RECEIVE_TIMEOUT] = "invalid_timeout"
+                else:
+                    new_api_key = (user_input.get(CONF_API_KEY) or "").strip()
+                    api_key = new_api_key or current.get(CONF_API_KEY, "")
+                    new_name = (user_input.get(CONF_NAME) or "").strip()
+                    name = new_name or current.get(CONF_NAME, self._entry.title)
+
+                    error = await _validate_connection(self.hass, url, api_key)
+                    if error:
+                        errors["base"] = error
+                    else:
+                        # Update unique_id when URL changes to keep deduplication correct.
+                        entry_updates: dict[str, Any] = {
+                            "title": name,
+                            "data": {
+                                **self._entry.data,
+                                CONF_NAME: name,
+                                CONF_URL: url,
+                                CONF_API_KEY: api_key,
+                            },
+                        }
+                        if url != self._entry.unique_id:
+                            for existing in self.hass.config_entries.async_entries(
+                                DOMAIN
+                            ):
+                                if (
+                                    existing.unique_id == url
+                                    and existing.entry_id != self._entry.entry_id
+                                ):
+                                    errors["base"] = "already_configured"
+                                    break
+                            else:
+                                entry_updates["unique_id"] = url
+                            if errors:
+                                return self.async_show_form(
+                                    step_id="init",
+                                    data_schema=_build_options_schema(current),
+                                    errors=errors,
+                                )
+                        self.hass.config_entries.async_update_entry(
+                            self._entry, **entry_updates
+                        )
+                        return self.async_create_entry(
+                            data={CONF_WS_RECEIVE_TIMEOUT: ws_receive_timeout}
+                        )
 
         return self.async_show_form(
             step_id="init",

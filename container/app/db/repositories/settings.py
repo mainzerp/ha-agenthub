@@ -141,7 +141,7 @@ async def _settings_float(key: str, *, default: float) -> float:
         if raw is None:
             return default
         return float(raw)
-    except (TypeError, ValueError, Exception):
+    except Exception:
         return default
 
 
@@ -152,5 +152,5 @@ async def _settings_int(key: str, *, default: int) -> int:
         if raw is None:
             return default
         return int(raw)
-    except (TypeError, ValueError, Exception):
+    except Exception:
         return default

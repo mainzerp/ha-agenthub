@@ -65,6 +65,8 @@ async def setup_index(request: Request):
 @router.get("/step/{step_num}", response_class=HTMLResponse)
 async def render_step(request: Request, step_num: int):
     """Render the appropriate step template."""
+    if not 1 <= step_num <= len(STEP_ORDER):
+        return RedirectResponse(url="/setup/", status_code=302)
     steps = await SetupStateRepository.get_all_steps()
     step_map = {s["step"]: s["completed"] for s in steps}
     display_steps = {k: v for k, v in step_map.items() if k != "review_complete"} if step_num == 5 else step_map
@@ -120,6 +122,9 @@ async def save_ha_connection(
     ha_token: str = Form(...),
 ):
     """Step 2: Save HA URL and token (Fernet-encrypted)."""
+    ha_url = ha_url.strip().rstrip("/")
+    if not ha_url or not ha_url.lower().startswith(("http://", "https://")):
+        raise HTTPException(status_code=422, detail="Home Assistant URL must start with http:// or https://")
     await SettingsRepository.set("ha_url", ha_url, "string", "ha", "Home Assistant URL")
     from app.ha_client.auth import set_ha_token
 

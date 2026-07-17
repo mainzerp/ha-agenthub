@@ -212,14 +212,19 @@ async def get_settings() -> dict[str, Any]:
 @router.put("/settings")
 async def update_settings(payload: SettingsUpdatePayload) -> dict[str, str]:
     """Update multiple settings. Payload: {"items": {key: value, ...}}."""
+    # Pass 1: resolve and validate every key before any write so a single
+    # invalid key aborts the whole update without partial state.
+    resolved: list[tuple[str, str, dict[str, Any]]] = []
     for key, value in payload.items.items():
         existing = await SettingsRepository.get(key)
         if existing is None:
             raise HTTPException(status_code=400, detail=f"Unknown setting key: {key}")
-        # Validate value type against stored type
         value_type = existing.get("value_type", "str")
         _validate_setting_value(key, str(value), value_type)
         stored_value = str(value).lower() if value_type == "bool" else str(value)
+        resolved.append((key, stored_value, existing))
+    # Pass 2: apply.
+    for key, stored_value, existing in resolved:
         await SettingsRepository.set(
             key,
             stored_value,

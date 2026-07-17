@@ -191,9 +191,9 @@ class TestHealthEndpoint:
         assert data["status"] == "ok"
         assert "log_level" in data
 
-    async def test_health_accessible_without_auth(self, unauthed_client: httpx.AsyncClient):
+    async def test_health_rejected_without_auth(self, unauthed_client: httpx.AsyncClient):
         resp = await unauthed_client.get("/api/health")
-        assert resp.status_code == 200
+        assert resp.status_code == 401
 
 
 @pytest.mark.integration
@@ -274,8 +274,8 @@ class TestConversationEndpoints:
             assert resp.status_code == 200
             sent_request = mock_dispatcher.dispatch.await_args.args[0]
             sent_task = sent_request.params["task"]
-            assert "\x00" not in sent_task.user_text
-            assert "Küche" in sent_task.user_text
+            assert "\x00" not in sent_task.description
+            assert "Küche" in sent_task.description
             assert sent_task.context.injection_detected is True
         finally:
             conv_routes._dispatcher = old_dispatcher
@@ -289,8 +289,8 @@ class TestConversationEndpoints:
             conversation_id="conv-ws",
         )
         _a2a_request, task = _build_a2a_request(conv_request, "message/stream")
-        assert "\x00" not in task.user_text
-        assert "Büro" in task.user_text
+        assert "\x00" not in task.description
+        assert "Büro" in task.description
         assert task.context is not None
         assert task.context.injection_detected is True
 
@@ -349,8 +349,8 @@ class TestConversationEndpoints:
             assert resp.status_code == 200
             assert captured_request is not None
             sent_task = captured_request.params["task"]
-            assert "\x00" not in sent_task.user_text
-            assert "Küche" in sent_task.user_text
+            assert "\x00" not in sent_task.description
+            assert "Küche" in sent_task.description
             assert sent_task.context.injection_detected is True
         finally:
             dash_routes._dispatcher = old_dispatcher

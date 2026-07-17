@@ -75,13 +75,6 @@ class ActionCache(_BaseCache[ActionCacheEntry]):
             legacy_enabled_keys=("cache.response.enabled",),
             legacy_max_entries_keys=("cache.response.max_entries",),
         )
-        threshold_raw = await self._get_setting(
-            "cache.action.semantic_threshold",
-            "1.0",
-            legacy_keys=("cache.response.threshold",),
-        )
-        threshold = self._coerce_float(threshold_raw, 1.0)
-        self._exact_match_only = threshold >= 1.0
 
     async def reload_config(self) -> None:
         await self.load_config()

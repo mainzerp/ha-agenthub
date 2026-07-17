@@ -31,13 +31,12 @@ sys.modules.setdefault("litellm", _litellm_mock)
 
 import app.llm.client  # noqa: E402,F401
 from app.agents.orchestrator import OrchestratorAgent  # noqa: E402
-from app.models.agent import AgentCard, AgentTask, TaskContext  # noqa: E402
+from app.models.agent import AgentCard, IngressTask, TaskContext  # noqa: E402
 
 
-def _make_task(text: str = "turn on light", conversation_id: str = "conv-stream") -> AgentTask:
-    return AgentTask(
+def _make_task(text: str = "turn on light", conversation_id: str = "conv-stream") -> IngressTask:
+    return IngressTask(
         description=text,
-        user_text=text,
         conversation_id=conversation_id,
         context=TaskContext(language="en"),
     )
@@ -213,3 +212,73 @@ class TestStreamingDispatchInternals:
         # depending on race, but the pipeline must not crash.
         done_chunks = [c for c in chunks if c.get("done")]
         assert len(done_chunks) == 1
+
+
+# ---------------------------------------------------------------------------
+# CORE-M4: sequential-send filler race must not abandon the handle_task future
+# ---------------------------------------------------------------------------
+
+
+class TestSequentialSendFillerRace:
+    @pytest.mark.asyncio
+    @patch("app.agents.orchestrator.SettingsRepository")
+    @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
+    async def test_cancel_mid_filler_cancels_detached_handle_task(self, mock_track, mock_settings):
+        """CORE-M4: cancelling the stream mid-filler must cancel and await the
+        detached handle_task future instead of abandoning it."""
+        mock_settings.get_value = AsyncMock(return_value="")
+        orch, _dispatcher = _make_orchestrator()
+
+        async def _mock_prelude(task, **kwargs):
+            from app.agents.orchestrator import PipelinePreludeResult
+
+            return PipelinePreludeResult(
+                conversation_id=task.conversation_id or "conv-seq-cancel",
+                detected_language="en",
+                lang_turns=[],
+                span_collector=task.span_collector,
+                classifications=[
+                    ("light-agent", "Turn on light", 0.95, []),
+                    ("send-agent", "Send it", 0.95, []),
+                ],
+                routing_cached=False,
+                target_agent="light-agent",
+                condensed_task="Turn on light",
+                confidence=0.95,
+                used_origin_context=False,
+            )
+
+        orch._run_pipeline_prelude = _mock_prelude
+        orch._should_send_filler = AsyncMock(return_value=True)
+        orch._get_filler_threshold_ms = AsyncMock(return_value=0)
+
+        handle_task_cancelled = asyncio.Event()
+
+        async def _hanging_handle_task(*args, **kwargs):
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                handle_task_cancelled.set()
+                raise
+            raise AssertionError("handle_task should have been cancelled")
+
+        async def _hanging_filler(*args, **kwargs):
+            await asyncio.Event().wait()
+            return ""
+
+        orch.handle_task = _hanging_handle_task
+        orch._invoke_filler_agent = _hanging_filler
+
+        task = _make_task("turn on light and send it", conversation_id="conv-seq-cancel")
+        agen = orch.handle_task_stream(task)
+        first = await agen.__anext__()
+        assert first.get("status") == "sequential_send"
+
+        consumer = asyncio.create_task(agen.__anext__())
+        await asyncio.sleep(0.05)
+        consumer.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await consumer
+
+        assert handle_task_cancelled.is_set()
+        await agen.aclose()

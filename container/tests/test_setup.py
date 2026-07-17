@@ -90,7 +90,7 @@ class TestSetupIncompleteRedirect:
         assert resp.status_code == 302
 
     async def test_health_accessible_during_setup(self, setup_client: httpx.AsyncClient):
-        resp = await setup_client.get("/api/health")
+        resp = await setup_client.get("/healthz")
         assert resp.status_code == 200
 
     async def test_setup_routes_accessible_during_setup(self, setup_client: httpx.AsyncClient):

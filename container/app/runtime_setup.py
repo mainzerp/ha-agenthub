@@ -9,32 +9,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Coroutine
 from typing import TYPE_CHECKING
 
 from app.db.repository import SetupStateRepository
-
-_background_tasks: set[asyncio.Task] = set()
-
-
-def _spawn(coro: Coroutine, *, name: str | None = None) -> asyncio.Task:
-    """Schedule ``coro`` as a tracked background task.
-
-    The task is stored in a module-level set until completion so it
-    cannot be silently dropped by the GC. Exceptions raised inside the
-    coroutine are logged with traceback and do not propagate.
-    """
-    task = asyncio.create_task(coro, name=name)
-    _background_tasks.add(task)
-
-    def _done(t: asyncio.Task) -> None:
-        _background_tasks.discard(t)
-        if not t.cancelled() and t.exception() is not None:
-            logger.error("Background task %s failed", t.get_name(), exc_info=t.exception())
-
-    task.add_done_callback(_done)
-    return task
-
 
 if TYPE_CHECKING:
     from fastapi import FastAPI

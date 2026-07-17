@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import secrets
 from typing import Any
@@ -115,10 +116,10 @@ async def get_fernet_key_backup(payload: FernetKeyBackupPayload):
         salt=salt,
         iterations=600000,
     )
-    aes_key = kdf.derive(passphrase.encode("utf-8"))
+    aes_key = await asyncio.to_thread(kdf.derive, passphrase.encode("utf-8"))
     aesgcm = AESGCM(aes_key)
     nonce = os.urandom(12)
-    ciphertext = aesgcm.encrypt(nonce, key_plaintext, None)
+    ciphertext = await asyncio.to_thread(aesgcm.encrypt, nonce, key_plaintext, None)
     envelope = base64.b64encode(salt + nonce + ciphertext).decode("ascii")
     return {
         "status": "ok",

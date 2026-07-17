@@ -69,13 +69,13 @@ async def execute_recorder_history_query(
             significant_changes_only=True,
             minimal_response=True,
         )
-    except Exception as exc:
+    except Exception:
         logger.error("Recorder history failed for %s", entity_id, exc_info=True)
         return {
             "success": False,
             "entity_id": entity_id,
             "new_state": None,
-            "speech": f"Could not load recorder history: {exc}",
+            "speech": "Could not load recorder history. Check the server logs for details.",
             "cacheable": False,
         }
 

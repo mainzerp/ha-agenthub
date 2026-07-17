@@ -235,3 +235,61 @@ class TestQueryCoverStateDirectEntityId:
         assert result["success"] is False
         assert "Could not find" in result["speech"]
         ha_client.get_state.assert_not_awaited()
+
+
+class TestDirectEntityIdVisibility:
+    """CORE-H2: LLM-emitted direct entity_id must pass per-agent visibility."""
+
+    @pytest.mark.asyncio
+    async def test_hidden_direct_entity_id_rejected(self, monkeypatch):
+        monkeypatch.setattr(
+            "app.entity.visibility.EntityVisibilityRepository.get_rules",
+            AsyncMock(return_value=[{"rule_type": "domain_exclude", "rule_value": "cover"}]),
+        )
+        ha_client = AsyncMock()
+        matcher = AsyncMock()
+        matcher.match = AsyncMock(return_value=[])
+        index = MagicMock()
+        index.search = MagicMock(return_value=[])
+
+        action = {"action": "query_cover_state", "entity_id": "cover.garage", "entity": "garage"}
+        result = await execute_cover_action(action, ha_client, index, matcher, agent_id="cover-agent")
+
+        assert result["success"] is False
+        assert result["entity_id"] is None
+        ha_client.get_state.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_direct_entity_id_rejected_when_visibility_check_fails(self, monkeypatch):
+        monkeypatch.setattr(
+            "app.entity.visibility.EntityVisibilityRepository.get_rules",
+            AsyncMock(side_effect=RuntimeError("db unavailable")),
+        )
+        ha_client = AsyncMock()
+        matcher = AsyncMock()
+        matcher.match = AsyncMock(return_value=[])
+        index = MagicMock()
+        index.search = MagicMock(return_value=[])
+
+        action = {"action": "query_cover_state", "entity_id": "cover.garage", "entity": "garage"}
+        result = await execute_cover_action(action, ha_client, index, matcher, agent_id="cover-agent")
+
+        assert result["success"] is False
+        assert result["entity_id"] is None
+        ha_client.get_state.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_visible_direct_entity_id_accepted(self):
+        ha_client = AsyncMock()
+        ha_client.get_state = AsyncMock(
+            return_value={
+                "state": "open",
+                "attributes": {"friendly_name": "Garage Cover", "current_position": 80},
+            }
+        )
+        action = {"action": "query_cover_state", "entity_id": "cover.garage"}
+        result = await execute_cover_action(action, ha_client, MagicMock(), MagicMock(), agent_id="cover-agent")
+
+        assert result["success"] is True
+        assert result["entity_id"] == "cover.garage"
+        ha_client.get_state.assert_awaited_once_with("cover.garage")

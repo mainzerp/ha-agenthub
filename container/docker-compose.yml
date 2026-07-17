@@ -1,7 +1,8 @@
 # HA-AgentHub container stack (default compose).
 # Legacy stack (service agent-assist, volume agent-assist-data): docker-compose_local.yml
 #
-# Pre-built image (CI pushes from main): ghcr.io/mainzerp/ha-agenthub:latest.
+# Pre-built image (CI builds on v* release tags and retags :latest there):
+# ghcr.io/mainzerp/ha-agenthub:latest.
 # Build:   docker compose build
 # Run:     docker compose up -d
 # Tag:     IMAGE_TAG=0.18.14 docker compose build
@@ -11,7 +12,7 @@
 
 services:
   ha-agenthub:
-    # Use :latest (set on push to main).
+    # Use :latest (retagged on v* releases, not pushed from main).
     image: ghcr.io/mainzerp/ha-agenthub:${HA_AGENTHUB_TAG:-latest}
     container_name: ha-agenthub
     restart: unless-stopped

@@ -3,7 +3,6 @@ import contextlib
 import difflib
 import json
 import logging
-import os
 import re
 import time
 from collections.abc import AsyncGenerator, Callable
@@ -28,9 +27,6 @@ logger = logging.getLogger(__name__)
 class LLMError(Exception):
     """Raised when the LLM provider returns an unusable response."""
 
-
-# Enable litellm debug logging for provider troubleshooting.
-os.environ["LITELLM_LOG"] = "DEBUG"
 
 # P3-11: backoff between the first LLM call and the single retry that
 # kicks in when the provider returns an empty completion (typically
@@ -210,8 +206,6 @@ async def complete(
                     pspan["metadata"]["ttft_ms"] = round(ttft_ms, 2)
                     pspan["metadata"]["tps"] = round(tps, 2) if tps else None
             except asyncio.CancelledError:
-                raise
-            except Exception:
                 raise
             if not response.choices:
                 raise LLMError("Empty choices from provider on timeout retry") from e
