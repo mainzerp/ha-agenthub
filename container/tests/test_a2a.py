@@ -27,7 +27,7 @@ from app.a2a.protocol import (
 )
 from app.a2a.registry import AgentRegistry
 from app.a2a.transport import InProcessTransport, Transport
-from app.models.agent import AgentTask
+from app.models.agent import DispatchTask, IngressTask
 from tests.helpers import make_agent_card
 
 # ---------------------------------------------------------------------------
@@ -206,10 +206,26 @@ class TestDispatcher:
         request = JsonRpcRequest(
             method="message/send",
             id="r1",
-            params={"agent_id": "light-agent", "task": {"description": "turn on", "user_text": "turn on"}},
+            params={"agent_id": "light-agent", "task": {"description": "turn on"}},
         )
         resp = await dispatcher.dispatch(request)
         assert resp == {"speech": "Done"}
+
+    async def test_dispatch_orchestrator_bound_dict_validates_as_ingress_task(self):
+        dispatcher, reg, _ = self._make_dispatcher()
+        agent = _make_mock_agent("orchestrator")
+        agent.handle_task = AsyncMock(return_value={"speech": "Done"})
+        await reg.register(agent)
+
+        request = JsonRpcRequest(
+            method="message/send",
+            id="r1b",
+            params={"agent_id": "orchestrator", "task": {"description": "turn on"}},
+        )
+        resp = await dispatcher.dispatch(request)
+        assert resp == {"speech": "Done"}
+        task = agent.handle_task.call_args[0][0]
+        assert isinstance(task, IngressTask)
 
     async def test_dispatch_unknown_method_returns_error(self):
         dispatcher, _, _ = self._make_dispatcher()
@@ -263,7 +279,7 @@ class TestDispatcher:
         request = JsonRpcRequest(
             method="message/stream",
             id="s1",
-            params={"agent_id": "s-agent", "task": {"description": "test", "user_text": "test"}},
+            params={"agent_id": "s-agent", "task": {"description": "test"}},
         )
         chunks = []
         async for chunk in dispatcher.dispatch_stream(request):
@@ -294,14 +310,14 @@ class TestInProcessTransport:
         await reg.register(agent)
 
         transport = InProcessTransport(reg)
-        task = AgentTask(description="test", user_text="test")
+        task = DispatchTask(description="test")
         resp = await transport.send("t-agent", task, "req-1")
         assert resp == {"speech": "ok"}
 
     async def test_send_unknown_agent_raises_runtime_error(self):
         reg = AgentRegistry()
         transport = InProcessTransport(reg)
-        task = AgentTask(description="test", user_text="test")
+        task = DispatchTask(description="test")
         with pytest.raises(RuntimeError, match="Agent not found: missing"):
             await transport.send("missing", task, "req-1")
 
@@ -312,7 +328,7 @@ class TestInProcessTransport:
         await reg.register(agent)
 
         transport = InProcessTransport(reg)
-        task = AgentTask(description="test", user_text="test")
+        task = DispatchTask(description="test")
         with pytest.raises(RuntimeError, match="Agent error: err-agent"):
             await transport.send("err-agent", task, "req-1")
 
@@ -328,7 +344,7 @@ class TestInProcessTransport:
         await reg.register(agent)
 
         transport = InProcessTransport(reg)
-        task = AgentTask(description="test", user_text="test")
+        task = DispatchTask(description="test")
         chunks = []
         async for c in transport.stream("st-agent", task, "req-1"):
             chunks.append(c)
@@ -337,7 +353,7 @@ class TestInProcessTransport:
     async def test_stream_unknown_agent_returns_error_chunk(self):
         reg = AgentRegistry()
         transport = InProcessTransport(reg)
-        task = AgentTask(description="test", user_text="test")
+        task = DispatchTask(description="test")
         chunks = []
         async for c in transport.stream("missing", task, "req-1"):
             chunks.append(c)

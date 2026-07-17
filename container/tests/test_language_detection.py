@@ -31,22 +31,19 @@ sys.modules.setdefault("litellm", _litellm_mock)
 import app.llm.client  # noqa: E402,F401 -- force module load for patch targets
 from app.agents.orchestrator import OrchestratorAgent  # noqa: E402
 from app.models.agent import (  # noqa: E402
-    AgentTask,
+    IngressTask,
     TaskContext,
 )
-from tests.helpers import make_agent_task  # noqa: E402
+from tests.helpers import make_ingress_task  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
 
-def _make_task(
-    description: str = "turn on kitchen light", user_text: str | None = None, context: TaskContext | None = None
-) -> AgentTask:
-    return make_agent_task(
+def _make_task(description: str = "turn on kitchen light", context: TaskContext | None = None) -> IngressTask:
+    return make_ingress_task(
         description=description,
-        user_text=user_text or description,
         context=context,
     )
 

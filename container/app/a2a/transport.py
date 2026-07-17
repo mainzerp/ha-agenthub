@@ -11,7 +11,7 @@ from typing import Any
 
 from app.a2a.registry import AgentRegistry
 from app.ha_client.rest import allow_internal_ha_service_calls
-from app.models.agent import AgentTask
+from app.models.agent import BackgroundTask, DispatchTask, IngressTask
 
 logger = logging.getLogger(__name__)
 
@@ -50,10 +50,12 @@ class Transport(ABC):
     """Abstract transport interface for agent communication."""
 
     @abstractmethod
-    async def send(self, agent_id: str, task: AgentTask, request_id: str) -> Any: ...
+    async def send(self, agent_id: str, task: IngressTask | DispatchTask | BackgroundTask, request_id: str) -> Any: ...
 
     @abstractmethod
-    def stream(self, agent_id: str, task: AgentTask, request_id: str) -> AsyncGenerator[dict[str, Any], None]: ...
+    def stream(
+        self, agent_id: str, task: IngressTask | DispatchTask | BackgroundTask, request_id: str
+    ) -> AsyncGenerator[dict[str, Any], None]: ...
 
 
 class InProcessTransport(Transport):
@@ -64,14 +66,14 @@ class InProcessTransport(Transport):
     def __init__(self, registry: AgentRegistry) -> None:
         self._registry = registry
 
-    async def send(self, agent_id: str, task: AgentTask, request_id: str) -> Any:
+    async def send(self, agent_id: str, task: IngressTask | DispatchTask | BackgroundTask, request_id: str) -> Any:
         handler = await self._registry._get_handler_for_transport(agent_id)
         if handler is None:
             raise RuntimeError(f"Agent not found: {agent_id}")
         try:
             with _internal_ha_service_call_scope(handler):
                 result = await asyncio.wait_for(
-                    handler.handle_task(task),
+                    handler.handle_task(task),  # type: ignore[arg-type]  # dispatch invariant: orchestrator accepts IngressTask | BackgroundTask (FLOW_REDEF DP-1)
                     timeout=self._DEFAULT_TIMEOUT,
                 )
             return result
@@ -82,7 +84,9 @@ class InProcessTransport(Transport):
             logger.exception("Agent %s failed on handle_task", agent_id)
             raise RuntimeError(f"Agent error: {agent_id}") from e
 
-    async def stream(self, agent_id: str, task: AgentTask, request_id: str) -> AsyncGenerator[dict[str, Any], None]:
+    async def stream(
+        self, agent_id: str, task: IngressTask | DispatchTask | BackgroundTask, request_id: str
+    ) -> AsyncGenerator[dict[str, Any], None]:
         handler = await self._registry._get_handler_for_transport(agent_id)
         if handler is None:
             yield {
@@ -93,14 +97,14 @@ class InProcessTransport(Transport):
             return
         try:
             with _internal_ha_service_call_scope(handler):
-                async for token_dict in handler.handle_task_stream(task):
+                async for token_dict in handler.handle_task_stream(task):  # type: ignore[arg-type]  # dispatch invariant (FLOW_REDEF DP-1)
                     yield token_dict
         except asyncio.CancelledError:
             raise
-        except Exception as exc:
+        except Exception:
             logger.exception("Agent %s failed on handle_task_stream", agent_id)
             yield {
                 "token": "",
                 "done": True,
-                "error": f"{agent_id}: {type(exc).__name__}: {exc}",
+                "error": f"{agent_id}: internal error",
             }

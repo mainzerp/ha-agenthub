@@ -18,8 +18,8 @@ sys.modules.setdefault("litellm", _litellm_mock)
 import app.llm.client  # noqa: E402,F401
 from app.agents.cancel_speech import cancel_interaction_ack, generate_cancel_speech  # noqa: E402
 from app.agents.orchestrator import OrchestratorAgent  # noqa: E402
-from app.models.agent import AgentCard, AgentTask, TaskContext  # noqa: E402
-from tests.helpers import make_agent_task  # noqa: E402
+from app.models.agent import AgentCard, IngressTask, TaskContext  # noqa: E402
+from tests.helpers import make_ingress_task  # noqa: E402
 
 CANCEL_AGENT = "cancel-interaction"
 
@@ -155,7 +155,7 @@ class TestOrchestratorCancelInteraction:
         )
         mock_cancel_complete.side_effect = mock_complete.side_effect
 
-        task = make_agent_task(description="nevermind", user_text="nevermind", context=TaskContext(language="en"))
+        task = make_ingress_task(description="nevermind", context=TaskContext(language="en"))
         task.conversation_id = "c1"
         result = await orch.handle_task(task)
 
@@ -181,7 +181,7 @@ class TestOrchestratorCancelInteraction:
         )
         mock_cancel_complete.side_effect = mock_complete.side_effect
 
-        task = make_agent_task(description="Abbrechen", user_text="Abbrechen", context=TaskContext(language="de"))
+        task = make_ingress_task(description="Abbrechen", context=TaskContext(language="de"))
         task.conversation_id = "c2"
         result = await orch.handle_task(task)
 
@@ -207,9 +207,8 @@ class TestOrchestratorCancelInteraction:
         )
         mock_cancel_complete.side_effect = mock_complete.side_effect
 
-        task = AgentTask(
+        task = IngressTask(
             description="stop",
-            user_text="stop",
             conversation_id="c3",
             context=TaskContext(language="en"),
         )

@@ -9,7 +9,7 @@ from abc import ABC, abstractmethod
 from collections.abc import AsyncGenerator, Iterable
 from pathlib import Path
 
-from app.models.agent import AgentCard, AgentError, AgentErrorCode, AgentTask, TaskContext, TaskResult
+from app.models.agent import AgentCard, AgentError, AgentErrorCode, DispatchTask, TaskContext, TaskResult
 from app.security.sanitization import USER_INPUT_END, USER_INPUT_START, wrap_user_input
 
 logger = logging.getLogger(__name__)
@@ -160,7 +160,7 @@ class BaseAgent(ABC):
         ...
 
     @abstractmethod
-    async def handle_task(self, task: AgentTask) -> dict | TaskResult:
+    async def handle_task(self, task: DispatchTask) -> dict | TaskResult:
         """Process a task and return the full result.
 
         Returns:
@@ -168,7 +168,7 @@ class BaseAgent(ABC):
         """
         ...
 
-    async def handle_task_stream(self, task: AgentTask) -> AsyncGenerator[dict, None]:
+    async def handle_task_stream(self, task: DispatchTask) -> AsyncGenerator[dict, None]:
         """Process a task and yield streaming token dicts.
 
         Default implementation wraps handle_task() in a single yield.

@@ -120,7 +120,6 @@ def test_iter_export_chunks_emits_v4_action_and_routing_tiers():
     action_entry = make_action_cache_entry(query_text="turn on kitchen light")
     routing_entry = make_routing_cache_entry(
         query_text="what is the kitchen temperature",
-        condensed_task="Read kitchen temperature",
     )
     store = _vector_store_with_pages(
         {
@@ -139,7 +138,9 @@ def test_iter_export_chunks_emits_v4_action_and_routing_tiers():
     assert payload["source_app_version"] == "1.4.0"
     assert set(payload["tiers"]) == {"action", "routing"}
     assert payload["tiers"]["action"][0]["query_text"] == action_entry.query_text
-    assert payload["tiers"]["routing"][0]["condensed_task"] == "Read kitchen temperature"
+    assert payload["tiers"]["routing"][0]["query_text"] == routing_entry.query_text
+    # DP-5: routing-cache entries no longer export condensed_task.
+    assert "condensed_task" not in payload["tiers"]["routing"][0]
 
 
 def test_iter_export_chunks_paginates_until_short_page():
@@ -201,7 +202,6 @@ async def test_import_envelope_merge_upserts_action_and_routing_entries():
     action_entry = make_action_cache_entry(query_text="turn on kitchen light")
     routing_entry = make_routing_cache_entry(
         query_text="what is the kitchen temperature",
-        condensed_task="Read kitchen temperature",
     )
 
     summary = await import_envelope(

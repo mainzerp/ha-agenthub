@@ -11,7 +11,7 @@ from pydantic import BaseModel
 from app.a2a.protocol import JsonRpcRequest
 from app.a2a.registry import AgentRegistry
 from app.a2a.transport import Transport
-from app.models.agent import AgentTask
+from app.models.agent import BackgroundTask, DispatchTask, IngressTask
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +48,23 @@ class _MessageStreamParams(BaseModel):
 
 class _AgentDiscoverParams(BaseModel):
     agent_id: str
+
+
+def _validate_task(agent_id: str, task_data: Any) -> IngressTask | DispatchTask | BackgroundTask:
+    """Coerce ``params.task`` into the task type matching the dispatch stage.
+
+    Model instances pass through unchanged. Dict payloads are validated by
+    target: orchestrator-bound payloads are ``BackgroundTask`` when they
+    carry no ``description`` key, else ``IngressTask``; agent-bound payloads
+    are ``DispatchTask``.
+    """
+    if isinstance(task_data, (IngressTask, DispatchTask, BackgroundTask)):
+        return task_data
+    if agent_id == "orchestrator":
+        if isinstance(task_data, dict) and "description" not in task_data:
+            return BackgroundTask(**task_data)
+        return IngressTask(**task_data)
+    return DispatchTask(**task_data)
 
 
 def _error_response(request_id: str, code: int, message: str, data: Any | None = None) -> _JsonRpcResponse:
@@ -103,8 +120,7 @@ class Dispatcher:
             }
             return
 
-        task_data = params.task
-        task = task_data if isinstance(task_data, AgentTask) else AgentTask(**task_data)
+        task = _validate_task(params.agent_id, params.task)
         task.span_collector = span_collector
         async for chunk in self._transport.stream(params.agent_id, task, request.id):
             yield chunk
@@ -117,8 +133,7 @@ class Dispatcher:
         except Exception as exc:
             return _error_response(request.id, _INVALID_PARAMS, f"Invalid params: {exc}")
 
-        task_data = params.task
-        task = task_data if isinstance(task_data, AgentTask) else AgentTask(**task_data)
+        task = _validate_task(params.agent_id, params.task)
         task.span_collector = span_collector
         return await self._transport.send(params.agent_id, task, request.id)
 

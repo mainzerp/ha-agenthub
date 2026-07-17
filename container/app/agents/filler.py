@@ -13,7 +13,7 @@ from app.agents.base import (
 )
 from app.agents.decorator import agent
 from app.db.repository import SettingsRepository
-from app.models.agent import AgentCard, AgentTask, TaskResult
+from app.models.agent import AgentCard, DispatchTask, TaskResult
 
 logger = logging.getLogger(__name__)
 
@@ -45,17 +45,20 @@ class FillerAgent(BaseAgent):
             expected_latency="low",
         )
 
-    async def handle_task(self, task: AgentTask) -> TaskResult:
+    async def handle_task(self, task: DispatchTask) -> TaskResult:
         """Generate a filler phrase.
 
-        Expects task.description in format "generate_filler:<target_agent>".
+        Expects task.description in two-line format
+        "generate_filler:<target_agent>\n<raw user_text>".
         Language is read from task.context.language.
         """
         try:
-            # Parse target_agent from description
+            # Parse command line and user-text remainder from description
             target_agent = ""
+            user_text = ""
             if task.description and task.description.startswith("generate_filler:"):
-                target_agent = task.description.split(":", 1)[1]
+                command_line, _, user_text = task.description.partition("\n")
+                target_agent = command_line.split(":", 1)[1]
 
             language = "en"
             if task.context:
@@ -70,7 +73,7 @@ class FillerAgent(BaseAgent):
                 personality=personality or "",
                 language=language_name,
             )
-            user_content = f"{self._wrap_user_input(task.user_text[:200])}\n\nAgent: {target_agent}"
+            user_content = f"{self._wrap_user_input(user_text[:200])}\n\nAgent: {target_agent}"
 
             result = await asyncio.wait_for(
                 self._call_llm(

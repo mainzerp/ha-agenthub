@@ -389,7 +389,7 @@ async def _temp_db(db_path):
 
 
 async def _build_task(scenario: Scenario, text: str, conversation_id: str | None):
-    from app.models.agent import AgentTask, TaskContext
+    from app.models.agent import IngressTask, TaskContext
 
     ctx = scenario.context
     context = TaskContext(
@@ -400,9 +400,8 @@ async def _build_task(scenario: Scenario, text: str, conversation_id: str | None
         device_name=ctx.device_name,
         language=scenario.language if scenario.language != "auto" else "en",
     )
-    return AgentTask(
+    return IngressTask(
         description=text,
-        user_text=text,
         conversation_id=conversation_id,
         context=context,
     )

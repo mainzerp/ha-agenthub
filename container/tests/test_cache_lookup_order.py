@@ -30,14 +30,13 @@ sys.modules.setdefault("litellm", _litellm_mock)
 from app.agents.orchestrator import OrchestratorAgent
 from app.cache.cache_manager import ActionReplayOutcome, CacheManager, RoutingSkipOutcome
 from app.cache.vector_store import VectorStore
-from app.models.agent import AgentCard, AgentTask, TaskContext
+from app.models.agent import AgentCard, IngressTask, TaskContext
 from tests.helpers import make_action_cache_entry, make_routing_cache_entry
 
 
-def _make_task(text: str) -> AgentTask:
-    return AgentTask(
+def _make_task(text: str) -> IngressTask:
+    return IngressTask(
         description=text,
-        user_text=text,
         conversation_id="conv-cache-order",
         context=TaskContext(language="en"),
     )
@@ -194,7 +193,7 @@ async def test_action_disabled_still_consults_routing():
     store.count.return_value = 0
     manager = CacheManager(store)
     manager._action_cache._enabled = False
-    routing_entry = make_routing_cache_entry(condensed_task="Turn on kitchen light")
+    routing_entry = make_routing_cache_entry()
     manager._routing_cache.lookup_with_id = MagicMock(return_value=("routing-1", routing_entry, 0.96))
     orch = _make_orchestrator(manager)
 

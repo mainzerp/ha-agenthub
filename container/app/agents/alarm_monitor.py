@@ -10,7 +10,7 @@ from datetime import datetime
 from typing import Any
 
 from app.a2a._request import build_send_request
-from app.models.agent import AgentTask, BackgroundEvent, TaskContext
+from app.models.agent import BackgroundEvent, BackgroundTask, TaskContext
 
 logger = logging.getLogger(__name__)
 
@@ -137,11 +137,7 @@ class AlarmMonitor:
                     "language": getattr(entry, "language", None),
                 },
             )
-            task = AgentTask(
-                description=f"Dispatch alarm notification for {friendly_name}",
-                user_text=f"Dispatch alarm notification for {friendly_name}",
-                context=event_context,
-            )
+            task = BackgroundTask(context=event_context)
             request = build_send_request(
                 "orchestrator",
                 task,

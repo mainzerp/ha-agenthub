@@ -6,7 +6,7 @@ from app.agents.satellite_targeting import (
     resolve_satellite_target_name,
 )
 from app.agents.timer_executor import execute_timer_action
-from app.models.agent import AgentCard, AgentErrorCode, AgentTask, TaskResult
+from app.models.agent import AgentCard, AgentErrorCode, DispatchTask, TaskResult
 
 
 @agent(
@@ -35,15 +35,15 @@ class TimerAgent(ActionableAgent):
     _clarify_on_not_found = False
 
     async def _do_execute(self, action, ha_client, entity_index, entity_matcher, *, agent_id, span_collector=None):
-        # FLOW-CTX-1 (0.18.6): ``_current_task_context`` is now set
-        # by ``ActionableAgent.handle_task`` for every subclass, so
-        # we no longer need an override just to capture it here.
-        ctx = getattr(self, "_current_task_context", None)
+        # FLOW-CTX-1 (0.18.6): the current task/context is exposed via
+        # ContextVar-backed accessors set by ``ActionableAgent.handle_task``
+        # for every subclass.
+        ctx = self._get_current_task_context()
         device_id = ctx.device_id if ctx else None
         area_id = ctx.area_id if ctx else None
         language = ctx.language if ctx else None
         timezone = ctx.timezone if ctx else None
-        current_task = getattr(self, "_current_task", None)
+        current_task = self._get_current_task()
         verbatim_terms = list(getattr(current_task, "verbatim_terms", []) or []) if current_task else []
         metadata: dict = {}
 
@@ -107,7 +107,7 @@ class TimerAgent(ActionableAgent):
                 result["metadata"] = metadata
         return result
 
-    def _handle_parse_miss(self, task: AgentTask, response: str) -> TaskResult:
+    def _handle_parse_miss(self, task: DispatchTask, response: str) -> TaskResult:
         return self._error_result(
             AgentErrorCode.PARSE_ERROR,
             "I could not understand the timer command well enough to run it. Please try again.",

@@ -32,7 +32,7 @@ sys.modules.setdefault("litellm", _litellm_mock)
 from app.agents.orchestrator import OrchestratorAgent
 from app.cache.cache_manager import CacheManager, RoutingSkipOutcome
 from app.cache.vector_store import VectorStore
-from app.models.agent import AgentCard, AgentTask, TaskContext
+from app.models.agent import AgentCard, IngressTask, TaskContext
 
 
 def _make_manager() -> CacheManager:
@@ -41,10 +41,9 @@ def _make_manager() -> CacheManager:
     return CacheManager(store)
 
 
-def _make_task(text: str) -> AgentTask:
-    return AgentTask(
+def _make_task(text: str) -> IngressTask:
+    return IngressTask(
         description=text,
-        user_text=text,
         conversation_id="conv-routing-cache",
         context=TaskContext(language="en"),
     )

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import random
 import time
@@ -10,7 +11,7 @@ import uuid
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, cast
 
 from app.a2a._request import build_stream_request
 from app.a2a.protocol import JsonRpcRequest
@@ -36,21 +37,13 @@ from app.models.agent import (
     CANCEL_INTERACTION_AGENT,
     FALLBACK_AGENT,
     AgentCard,
-    AgentTask,
+    BackgroundTask,
+    DispatchTask,
+    IngressTask,
     TaskContext,
 )
 
 logger = logging.getLogger(__name__)
-
-# Conversation context setting defaults
-_DEFAULT_CONVERSATION_CONTEXT_TURNS = 3
-_MIN_CONVERSATION_CONTEXT_TURNS = 1
-_MAX_CONVERSATION_CONTEXT_TURNS = 20
-
-# Conversation memory limits
-_MAX_CONVERSATIONS = 1000
-_CONVERSATION_TTL_SECONDS = 1800  # 30 minutes
-
 
 _CANNED_TIMEOUT_SPEECH = "I couldn't process that request in time."
 _CANNED_GENERAL_ERROR_SPEECH = "I couldn't process that request right now."
@@ -484,6 +477,7 @@ class OrchestratorAgent(BaseAgent):
                 area_id=incoming_context.area_id if incoming_context else None,
                 device_name=incoming_context.device_name if incoming_context else None,
                 area_name=incoming_context.area_name if incoming_context else None,
+                user_id=incoming_context.user_id if incoming_context else None,
                 source=incoming_context.source if incoming_context else "api",
                 language=content_language,
                 sequential_send=True,
@@ -592,7 +586,7 @@ class OrchestratorAgent(BaseAgent):
     async def _try_cache_replay(
         self,
         *,
-        task: AgentTask | None = None,
+        task: IngressTask | None = None,
         user_text: str,
         language: str = "en",
         requesting_agent_id: str = "orchestrator",
@@ -618,7 +612,7 @@ class OrchestratorAgent(BaseAgent):
         user_text: str,
         span_collector,
         *,
-        task: AgentTask | None = None,
+        task: IngressTask | None = None,
     ) -> dict[str, Any]:
         return await self._cache_orchestrator.finalize_action_replay_hit(
             hit,
@@ -640,7 +634,7 @@ class OrchestratorAgent(BaseAgent):
         original_response_text: str = "",
         action_executed,
         has_error: bool,
-        task: AgentTask | None = None,
+        task: IngressTask | None = None,
         merged_multi_agent: bool = False,
         used_origin_context: bool = False,
     ) -> tuple[bool, bool]:
@@ -749,7 +743,9 @@ class OrchestratorAgent(BaseAgent):
     def _legacy_pipeline_enabled() -> bool:
         return CacheOrchestrator.legacy_pipeline_enabled()
 
-    async def _pipeline_resolve_conversation_and_language(self, task: AgentTask) -> tuple[str, str, list]:
+    async def _pipeline_resolve_conversation_and_language(
+        self, task: IngressTask | BackgroundTask
+    ) -> tuple[str, str, list]:
         """Resolve conversation_id (with uuid fallback), the effective
         language for this turn, and prefetch the conversation turns
         used by language detection.
@@ -759,7 +755,6 @@ class OrchestratorAgent(BaseAgent):
         extraction; both sites previously inlined an identical 7-line
         block.
         """
-        user_text = task.user_text or task.description
         conversation_id = task.conversation_id
         if not conversation_id:
             conversation_id = str(uuid.uuid4())
@@ -767,13 +762,16 @@ class OrchestratorAgent(BaseAgent):
         context_language = (task.context.language if task.context else None) or "en"
         if self._is_background_turn(task):
             return conversation_id, context_language, []
+        # DP-4: background turns returned above; only IngressTask reaches text reads.
+        task = cast(IngressTask, task)
+        user_text = task.description
         lang_turns = await self._get_turns(conversation_id)
         detected_language = await self._resolve_language(user_text, context_language, turns=lang_turns)
         return conversation_id, detected_language, lang_turns
 
     async def _run_pipeline_prelude(
         self,
-        task: AgentTask,
+        task: IngressTask | BackgroundTask,
         *,
         pre_classified: tuple[list[tuple[str, str, float | None, list[str]]], bool] | None = None,
         classify_reason: str | None = None,
@@ -787,8 +785,6 @@ class OrchestratorAgent(BaseAgent):
         :meth:`_handle_task_impl` and :meth:`_handle_task_stream_impl`.
         When ``early_exit`` is not ``None`` the caller must short-circuit.
         """
-        user_text = task.user_text or task.description
-
         conversation_id, detected_language, lang_turns = await self._pipeline_resolve_conversation_and_language(task)
         span_collector = task.span_collector
 
@@ -814,6 +810,10 @@ class OrchestratorAgent(BaseAgent):
                     "error": result.get("error"),
                 },
             )
+
+        # DP-4: background turns early-exited above; only IngressTask reaches text reads.
+        task = cast(IngressTask, task)
+        user_text = task.description
 
         cache_replay = await self._pipeline_director.run_cache_replay(
             task,
@@ -969,7 +969,7 @@ class OrchestratorAgent(BaseAgent):
 
     async def _prepare_mediation_inputs(
         self,
-        task: AgentTask,
+        task: IngressTask,
         has_error: bool,
         language: str,
     ) -> tuple[str | None, bool]:
@@ -1005,7 +1005,7 @@ class OrchestratorAgent(BaseAgent):
     async def _finalize_post_mediation(
         self,
         *,
-        task: AgentTask,
+        task: IngressTask,
         user_text: str,
         target_agent: str,
         confidence: float | None,
@@ -1082,7 +1082,7 @@ class OrchestratorAgent(BaseAgent):
     async def _finalize_single_agent_response(
         self,
         *,
-        task: AgentTask,
+        task: IngressTask,
         user_text: str,
         target_agent: str,
         confidence: float | None,
@@ -1174,7 +1174,7 @@ class OrchestratorAgent(BaseAgent):
 
     async def _run_pipeline(
         self,
-        task: AgentTask,
+        task: IngressTask | BackgroundTask,
         *,
         streaming: bool,
         _pre_classified: tuple[list[tuple[str, str, float | None, list[str]]], bool] | None = None,
@@ -1216,9 +1216,9 @@ class OrchestratorAgent(BaseAgent):
         )
         yield {"done": True, "payload": result}
 
-    async def handle_task(
+    async def handle_task(  # type: ignore[override]  # FLOW_REDEF DP-1: ingress boundary accepts IngressTask | BackgroundTask
         self,
-        task: AgentTask,
+        task: IngressTask | BackgroundTask,
         *,
         _pre_classified: tuple[list[tuple[str, str, float | None, list[str]]], bool] | None = None,
         _classify_reason: str | None = None,
@@ -1260,7 +1260,7 @@ class OrchestratorAgent(BaseAgent):
             )
         return final["payload"]
 
-    def handle_task_stream(self, task: AgentTask) -> AsyncGenerator[dict[str, Any], None]:
+    def handle_task_stream(self, task: IngressTask | BackgroundTask) -> AsyncGenerator[dict[str, Any], None]:  # type: ignore[override]  # FLOW_REDEF DP-1: ingress boundary accepts IngressTask | BackgroundTask
         """Public streaming entry point.
 
         Returns the unified pipeline iterator directly. Honors
@@ -1272,14 +1272,13 @@ class OrchestratorAgent(BaseAgent):
 
     async def _handle_task_impl(
         self,
-        task: AgentTask,
+        task: IngressTask | BackgroundTask,
         *,
         _pre_classified: tuple[list[tuple[str, str, float | None, list[str]]], bool] | None = None,
         _classify_reason: str | None = None,
         _allow_classify_cache_lookup: bool | None = None,
     ) -> dict[str, Any]:
         """Thin wrapper around the shared TaskPipeline phases."""
-        user_text = task.user_text or task.description
         prelude = await self._run_pipeline_prelude(
             task,
             pre_classified=_pre_classified,
@@ -1295,6 +1294,9 @@ class OrchestratorAgent(BaseAgent):
             response.pop("_exit_type", None)
             response["conversation_id"] = prelude.conversation_id
             return response
+        # DP-4: background turns early-exited in the prelude; only IngressTask reaches text reads.
+        task = cast(IngressTask, task)
+        user_text = task.description
 
         conversation_id = prelude.conversation_id
         detected_language = prelude.detected_language
@@ -1358,8 +1360,9 @@ class OrchestratorAgent(BaseAgent):
         response["conversation_id"] = conversation_id
         return response
 
-    async def _handle_task_stream_impl(self, task: AgentTask) -> AsyncGenerator[dict[str, Any], None]:
-        user_text = task.user_text or task.description
+    async def _handle_task_stream_impl(
+        self, task: IngressTask | BackgroundTask
+    ) -> AsyncGenerator[dict[str, Any], None]:
         span_collector = task.span_collector
         t0_request = time.perf_counter()
         t0_request_utc = datetime.now(UTC)
@@ -1404,6 +1407,9 @@ class OrchestratorAgent(BaseAgent):
                 }
             return
 
+        # DP-4: background turns early-exited in the prelude; only IngressTask reaches text reads.
+        task = cast(IngressTask, task)
+        user_text = task.description
         conversation_id = prelude.conversation_id
         detected_language = prelude.detected_language
         lang_turns = prelude.lang_turns
@@ -1499,39 +1505,50 @@ class OrchestratorAgent(BaseAgent):
                 # Race handle_task against filler threshold
                 task_coro = self.handle_task(task, _pre_classified=(classifications, routing_cached))
                 task_future = asyncio.create_task(task_coro)
+                try:
+                    elapsed = time.perf_counter() - t0_request
+                    remaining = max(0, seq_filler_threshold_ms / 1000 - elapsed)
 
-                elapsed = time.perf_counter() - t0_request
-                remaining = max(0, seq_filler_threshold_ms / 1000 - elapsed)
+                    done_set, _ = await asyncio.wait({task_future}, timeout=remaining)
+                    if done_set:
+                        # handle_task completed before threshold -- no filler needed
+                        result = task_future.result()
+                    else:
+                        # Threshold exceeded -- generate filler
+                        seq_filler_start_ms = (time.perf_counter() - t0_request) * 1000
+                        filler_text = await self._invoke_filler_agent(
+                            user_text,
+                            content_agent_for_filler or "",
+                            language,
+                        )
+                        seq_filler_end_ms = (time.perf_counter() - t0_request) * 1000
 
-                done_set, _ = await asyncio.wait({task_future}, timeout=remaining)
-                if done_set:
-                    # handle_task completed before threshold -- no filler needed
-                    result = task_future.result()
-                else:
-                    # Threshold exceeded -- generate filler
-                    seq_filler_start_ms = (time.perf_counter() - t0_request) * 1000
-                    filler_text = await self._invoke_filler_agent(
-                        user_text,
-                        content_agent_for_filler or "",
-                        language,
-                    )
-                    seq_filler_end_ms = (time.perf_counter() - t0_request) * 1000
+                        if filler_text and not task_future.done():
+                            seq_filler_generated = True
+                            seq_filler_text = filler_text
+                            seq_filler_send_ms = (time.perf_counter() - t0_request) * 1000
+                            yield {
+                                "filler_push": filler_text,
+                                "done": False,
+                                "conversation_id": conversation_id,
+                            }
+                            seq_filler_sent = True
+                        elif filler_text:
+                            seq_filler_generated = True
+                            seq_filler_text = filler_text
 
-                    if filler_text and not task_future.done():
-                        seq_filler_generated = True
-                        seq_filler_text = filler_text
-                        seq_filler_send_ms = (time.perf_counter() - t0_request) * 1000
-                        yield {
-                            "filler_push": filler_text,
-                            "done": False,
-                            "conversation_id": conversation_id,
-                        }
-                        seq_filler_sent = True
-                    elif filler_text:
-                        seq_filler_generated = True
-                        seq_filler_text = filler_text
-
-                    result = await task_future
+                        result = await task_future
+                except BaseException:
+                    # Never abandon the detached handle_task future: cancel it
+                    # and await it so its exception is retrieved before the
+                    # original failure/cancellation propagates.
+                    if not task_future.done():
+                        task_future.cancel()
+                        with contextlib.suppress(asyncio.CancelledError):
+                            await task_future
+                    elif not task_future.cancelled():
+                        task_future.exception()
+                    raise
             else:
                 result = await self.handle_task(task, _pre_classified=(classifications, routing_cached))
 
@@ -1602,14 +1619,14 @@ class OrchestratorAgent(BaseAgent):
             context.area_id = task.context.area_id
             context.device_name = task.context.device_name
             context.area_name = task.context.area_name
+            context.user_id = task.context.user_id
             context.source = task.context.source
             context.injection_detected = task.context.injection_detected
         if self._ha_client:
             await populate_task_context_home_context(context, self._ha_client)
         verbatim_terms = classifications[0][3] if classifications else []
-        agent_task = AgentTask(
+        agent_task = DispatchTask(
             description=condensed_task,
-            user_text=user_text,
             conversation_id=conversation_id,
             context=context,
             verbatim_terms=verbatim_terms,
@@ -1969,11 +1986,11 @@ class OrchestratorAgent(BaseAgent):
         return await self._cache_orchestrator.execute_cached_action(cached_action)
 
     @staticmethod
-    def _is_background_turn(task: AgentTask) -> bool:
+    def _is_background_turn(task: IngressTask | BackgroundTask) -> bool:
         ctx = task.context
         return bool(ctx and ctx.source == "background" and ctx.background_event is not None)
 
-    async def _handle_background_turn(self, task: AgentTask) -> dict[str, Any]:
+    async def _handle_background_turn(self, task: IngressTask | BackgroundTask) -> dict[str, Any]:
         ctx = task.context
         event = ctx.background_event if ctx else None
         if event is None:

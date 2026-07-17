@@ -8,7 +8,7 @@ from contextlib import asynccontextmanager
 from typing import Any
 from unittest.mock import MagicMock
 
-from app.models.agent import AgentCard, AgentConfig, AgentTask, TaskContext
+from app.models.agent import AgentCard, AgentConfig, DispatchTask, IngressTask, TaskContext
 from app.models.cache import ActionCacheEntry, CachedAction, RoutingCacheEntry
 from app.models.conversation import ActionResult, ConversationRequest, ConversationResponse, StreamToken
 from app.models.entity_index import EntityIndexEntry
@@ -113,17 +113,28 @@ def make_agent_config(
     )
 
 
-def make_agent_task(
+def make_ingress_task(
+    description: str = "turn on the kitchen light",
+    conversation_id: str | None = None,
+    context: TaskContext | None = None,
+) -> IngressTask:
+    """Build an IngressTask (orchestrator-bound, raw user text)."""
+    return IngressTask(
+        description=description,
+        conversation_id=conversation_id,
+        context=context,
+    )
+
+
+def make_dispatch_task(
     description: str = "Turn on the kitchen light",
-    user_text: str = "turn on the kitchen light",
     conversation_id: str | None = None,
     context: TaskContext | None = None,
     verbatim_terms: list[str] | None = None,
-) -> AgentTask:
-    """Build an AgentTask."""
-    return AgentTask(
+) -> DispatchTask:
+    """Build a DispatchTask (agent-bound, condensed task)."""
+    return DispatchTask(
         description=description,
-        user_text=user_text,
         conversation_id=conversation_id,
         context=context,
         verbatim_terms=verbatim_terms or [],
@@ -198,7 +209,6 @@ def make_routing_cache_entry(
     confidence: float = 0.95,
     hit_count: int = 1,
     language: str = "en",
-    condensed_task: str | None = None,
     entity_ids: list[str] | None = None,
 ) -> RoutingCacheEntry:
     """Build a RoutingCacheEntry."""
@@ -206,7 +216,6 @@ def make_routing_cache_entry(
         query_text=query_text,
         language=language,
         agent_id=agent_id,
-        condensed_task=condensed_task,
         confidence=confidence,
         entity_ids=entity_ids or [],
         hit_count=hit_count,

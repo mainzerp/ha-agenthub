@@ -21,7 +21,7 @@ from app.analytics.collector import track_agent_timeout, track_request
 from app.analytics.tracer import _optional_span
 from app.db.repository import SettingsRepository
 from app.ha_client.home_context import populate_task_context_home_context
-from app.models.agent import CANCEL_INTERACTION_AGENT, FALLBACK_AGENT, AgentTask, TaskContext
+from app.models.agent import CANCEL_INTERACTION_AGENT, FALLBACK_AGENT, DispatchTask, TaskContext
 
 logger = logging.getLogger(__name__)
 
@@ -154,6 +154,7 @@ class DispatchManager:
             context.area_id = incoming_context.area_id
             context.device_name = incoming_context.device_name
             context.area_name = incoming_context.area_name
+            context.user_id = incoming_context.user_id
             context.source = incoming_context.source
             context.language = incoming_context.language
             context.injection_detected = incoming_context.injection_detected
@@ -175,9 +176,8 @@ class DispatchManager:
         if self._ha_client:
             await populate_task_context_home_context(context, self._ha_client)
 
-        agent_task = AgentTask(
+        agent_task = DispatchTask(
             description=condensed_task,
-            user_text=user_text,
             conversation_id=conversation_id,
             context=context,
             verbatim_terms=verbatim_terms or [],

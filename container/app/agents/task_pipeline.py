@@ -17,7 +17,7 @@ from app.agents.classification_engine import ClassificationEngine
 from app.agents.conversation_manager import ConversationManager
 from app.agents.dispatch_manager import DispatchManager
 from app.cache.cache_manager import ActionReplayOutcome, CacheManager, RoutingSkipOutcome
-from app.models.agent import AgentTask
+from app.models.agent import IngressTask
 
 if TYPE_CHECKING:
     from app.agents.pipeline_strategies import (
@@ -158,7 +158,7 @@ class PipelineDirector:
 
     async def run_cache_replay(
         self,
-        task: AgentTask,
+        task: IngressTask,
         user_text: str,
         language: str,
         span_collector,
@@ -181,7 +181,7 @@ class PipelineDirector:
 
     async def run_classification(
         self,
-        task: AgentTask,
+        task: IngressTask,
         user_text: str,
         language: str,
         span_collector,
@@ -212,7 +212,7 @@ class PipelineDirector:
 
     async def run_dispatch(
         self,
-        task: AgentTask,
+        task: IngressTask,
         classifications: list[tuple[str, str, float | None, list[str]]],
         user_text: str,
         conversation_id: str,
@@ -238,7 +238,7 @@ class PipelineDirector:
 
     async def run_finalization(
         self,
-        task: AgentTask,
+        task: IngressTask,
         dispatch_result: DispatchResult,
         user_text: str,
         language: str,

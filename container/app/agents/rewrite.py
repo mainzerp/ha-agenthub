@@ -8,7 +8,7 @@ from app.agents.base import BaseAgent, language_code_to_name
 from app.agents.decorator import agent
 from app.agents.sanitize import strip_parenthetical_asides
 from app.db.repository import SettingsRepository
-from app.models.agent import AgentCard, AgentTask, TaskResult
+from app.models.agent import AgentCard, DispatchTask, TaskResult
 
 logger = logging.getLogger(__name__)
 
@@ -81,7 +81,7 @@ class RewriteAgent(BaseAgent):
             return cached_text
         return strip_parenthetical_asides(result)
 
-    async def handle_task(self, task: AgentTask) -> TaskResult:
+    async def handle_task(self, task: DispatchTask) -> TaskResult:
         """A2A-compatible interface. Rewrites task.description."""
         result = await self.rewrite(task.description)
         return TaskResult(

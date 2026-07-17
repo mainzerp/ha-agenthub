@@ -41,13 +41,12 @@ sys.modules.setdefault("litellm", _litellm_mock)
 
 import app.llm.client  # noqa: E402,F401 -- force module load for patch targets
 from app.agents.orchestrator import OrchestratorAgent  # noqa: E402
-from app.models.agent import AgentCard, AgentTask, TaskContext  # noqa: E402
+from app.models.agent import AgentCard, IngressTask, TaskContext  # noqa: E402
 
 
-def _make_task(text: str, *, conversation_id: str = "conv-pipe") -> AgentTask:
-    return AgentTask(
+def _make_task(text: str, *, conversation_id: str = "conv-pipe") -> IngressTask:
+    return IngressTask(
         description=text,
-        user_text=text,
         conversation_id=conversation_id,
         context=TaskContext(language="en"),
     )
