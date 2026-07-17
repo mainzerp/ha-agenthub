@@ -1,0 +1,19 @@
+{
+  "servers": {
+    "pyright": {
+      "rootMarkers": [".git", "requirements.txt"],
+      "settings": {
+        "python": {
+          "pythonPath": ".venv/Scripts/python.exe",
+          "analysis": {
+            "extraPaths": ["container", "custom_components"]
+          }
+        }
+      }
+    },
+    "ruff": {
+      "rootMarkers": [".git", "requirements.txt"],
+      "isLinter": true
+    }
+  }
+}
