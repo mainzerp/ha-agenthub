@@ -12,7 +12,7 @@ from app.agents.prompt_builder import PromptBuilder
 from app.agents.tool_calling import call_llm_with_mcp_tools, mcp_tools_to_openai_format
 from app.analytics.tracer import _optional_span
 from app.db.repository import CustomAgentRepository
-from app.models.agent import AgentCard, AgentErrorCode, AgentTask, TaskResult
+from app.models.agent import AgentCard, AgentErrorCode, DispatchTask, TaskResult
 
 logger = logging.getLogger(__name__)
 
@@ -63,7 +63,7 @@ class DynamicAgent(BaseAgent):
             timeout_sec=self._timeout_sec if self._timeout_sec is not None else 30.0,
         )
 
-    async def handle_task(self, task: AgentTask) -> TaskResult:
+    async def handle_task(self, task: DispatchTask) -> TaskResult:
         agent_id = self.agent_card.agent_id
         span_collector = task.span_collector
         prompt = PromptBuilder.build(

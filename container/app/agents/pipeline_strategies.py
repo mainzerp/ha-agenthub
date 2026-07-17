@@ -19,7 +19,7 @@ from app.agents.dispatch_manager import DispatchManager
 from app.agents.sanitize import strip_markdown
 from app.agents.task_pipeline import CacheReplayResult, DispatchResult
 from app.cache.cache_manager import CacheManager
-from app.models.agent import AgentTask
+from app.models.agent import IngressTask
 
 __all__ = [
     "CacheReplayStrategy",
@@ -41,7 +41,7 @@ class CacheReplayStrategy(ABC):
     @abstractmethod
     async def execute(
         self,
-        task: AgentTask,
+        task: IngressTask,
         user_text: str,
         language: str,
         span_collector,
@@ -56,7 +56,7 @@ class ClassificationStrategy(ABC):
     @abstractmethod
     async def execute(
         self,
-        task: AgentTask,
+        task: IngressTask,
         user_text: str,
         language: str,
         span_collector,
@@ -76,7 +76,7 @@ class DispatchStrategy(ABC):
     @abstractmethod
     async def execute(
         self,
-        task: AgentTask,
+        task: IngressTask,
         classifications: list[tuple[str, str, float | None, list[str]]],
         user_text: str,
         conversation_id: str,
@@ -93,7 +93,7 @@ class FinalizationStrategy(ABC):
     @abstractmethod
     async def execute(
         self,
-        task: AgentTask,
+        task: IngressTask,
         dispatch_result: DispatchResult,
         user_text: str,
         language: str,
@@ -121,7 +121,7 @@ class DefaultCacheReplayStrategy(CacheReplayStrategy):
 
     async def execute(
         self,
-        task: AgentTask,
+        task: IngressTask,
         user_text: str,
         language: str,
         span_collector,
@@ -172,7 +172,7 @@ class DefaultClassificationStrategy(ClassificationStrategy):
 
     async def execute(
         self,
-        task: AgentTask,
+        task: IngressTask,
         user_text: str,
         language: str,
         span_collector,
@@ -215,32 +215,29 @@ class DefaultClassificationStrategy(ClassificationStrategy):
                         extra_metadata=next_classify_extra or None,
                     )
         else:
-            try:
-                async with _optional_span(span_collector, "classify", agent_id="orchestrator") as span:
-                    classifications, routing_cached = await self._classification_engine.classify(
-                        user_text,
-                        cache_result=None,
-                        conversation_id=task.conversation_id,
-                        span_collector=span_collector,
-                        language=language,
-                        allow_cache_lookup=allow_classify_cache_lookup,
-                        call_llm=self._call_llm,
-                        load_prompt_async=self._load_prompt_async,
-                        get_turns=self._get_turns,
-                    )
-                    target_agent, condensed_task, confidence, _entities = classifications[0]
-                    self._pipeline_record_classify_span(
-                        span,
-                        classifications,
-                        user_text,
-                        condensed_task,
-                        confidence,
-                        routing_cached,
-                        extended_metadata=extended_metadata,
-                        extra_metadata=next_classify_extra or None,
-                    )
-            except Exception:
-                raise
+            async with _optional_span(span_collector, "classify", agent_id="orchestrator") as span:
+                classifications, routing_cached = await self._classification_engine.classify(
+                    user_text,
+                    cache_result=None,
+                    conversation_id=task.conversation_id,
+                    span_collector=span_collector,
+                    language=language,
+                    allow_cache_lookup=allow_classify_cache_lookup,
+                    call_llm=self._call_llm,
+                    load_prompt_async=self._load_prompt_async,
+                    get_turns=self._get_turns,
+                )
+                target_agent, condensed_task, confidence, _entities = classifications[0]
+                self._pipeline_record_classify_span(
+                    span,
+                    classifications,
+                    user_text,
+                    condensed_task,
+                    confidence,
+                    routing_cached,
+                    extended_metadata=extended_metadata,
+                    extra_metadata=next_classify_extra or None,
+                )
 
         return classifications, routing_cached, target_agent, condensed_task, confidence
 
@@ -258,7 +255,7 @@ class DefaultDispatchStrategy(DispatchStrategy):
 
     async def execute(
         self,
-        task: AgentTask,
+        task: IngressTask,
         classifications: list[tuple[str, str, float | None, list[str]]],
         user_text: str,
         conversation_id: str,
@@ -436,7 +433,7 @@ class DefaultFinalizationStrategy(FinalizationStrategy):
 
     async def execute(
         self,
-        task: AgentTask,
+        task: IngressTask,
         dispatch_result: DispatchResult,
         user_text: str,
         language: str,

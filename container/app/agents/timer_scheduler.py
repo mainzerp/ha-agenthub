@@ -24,7 +24,7 @@ from zoneinfo import ZoneInfo
 
 from app.a2a._request import build_send_request
 from app.db.repository import ScheduledTimersRepository
-from app.models.agent import AgentTask, BackgroundEvent, TaskContext
+from app.models.agent import BackgroundEvent, BackgroundTask, TaskContext
 
 logger = logging.getLogger(__name__)
 
@@ -180,8 +180,6 @@ class TimerScheduler:
         event_type: str,
         payload: dict[str, Any] | None = None,
         *,
-        description: str,
-        user_text: str | None = None,
         conversation_id: str | None = None,
         context: TaskContext | None = None,
         request_id: str | None = None,
@@ -192,9 +190,7 @@ class TimerScheduler:
             event_type=event_type,
             payload=dict(payload or {}),
         )
-        task = AgentTask(
-            description=description,
-            user_text=user_text or description,
+        task = BackgroundTask(
             conversation_id=conversation_id,
             context=event_context,
         )
@@ -588,7 +584,6 @@ class TimerScheduler:
                     "duration": duration_str,
                     "language": language,
                 },
-                description=f"Dispatch timer notification for {display_name or 'timer'}",
             )
             return
 
@@ -610,7 +605,6 @@ class TimerScheduler:
                     "scheduled_for_epoch": int(payload.get("scheduled_for_epoch") or row.get("fires_at") or 0),
                     "timezone": payload.get("timezone"),
                 },
-                description=f"Dispatch alarm notification for {alarm_name}",
             )
 
             recurrence = _load_recurrence(payload)
@@ -647,7 +641,6 @@ class TimerScheduler:
                     "target_entity": target_entity,
                     "target_action": target_action,
                 },
-                description=f"Execute delayed action {target_action} for {target_entity}",
             )
             return
 
@@ -659,7 +652,6 @@ class TimerScheduler:
             await self._dispatch_background_event(
                 "sleep_media_stop",
                 {"media_player": media_player},
-                description=f"Stop media playback for {media_player}",
             )
             return
 

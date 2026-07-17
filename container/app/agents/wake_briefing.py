@@ -110,13 +110,12 @@ async def _dispatch_agent_source(
     dispatcher: Any,
     *,
     description: str,
-    user_text: str,
     conversation_id: str,
     context: TaskContext,
 ) -> str | None:
-    from app.models.agent import AgentTask
+    from app.models.agent import IngressTask
 
-    task = AgentTask(description=description, user_text=user_text, conversation_id=conversation_id, context=context)
+    task = IngressTask(description=description, conversation_id=conversation_id, context=context)
     request = JsonRpcRequest(
         method="message/send",
         params={"agent_id": "orchestrator", "task": task},
@@ -275,7 +274,6 @@ async def _compose_wake_briefing_inner(
                     _dispatch_agent_source(
                         dispatcher,
                         description="weather today and short forecast",
-                        user_text="weather today and short forecast",
                         conversation_id=f"{conversation_seed}-weather",
                         context=context,
                     ),
@@ -293,7 +291,6 @@ async def _compose_wake_briefing_inner(
                     _dispatch_agent_source(
                         dispatcher,
                         description=news_request,
-                        user_text=news_request,
                         conversation_id=f"{conversation_seed}-news",
                         context=context,
                     ),

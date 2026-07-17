@@ -162,21 +162,6 @@ class TestRoutingCache:
         kwargs = store.upsert.call_args.kwargs
         assert kwargs["ids"] == [make_routing_entry_id("what is the kitchen temperature", language="en")]
 
-    def test_lookup_rejects_corrupted_condensed_task(self):
-        cache, store = self._make_cache()
-        entry = make_routing_cache_entry(query_text="lights", condensed_task="light-agent (95%): lights")
-        metadata = cache._serialize_metadata(entry)
-        store.get.return_value = {
-            "ids": [make_routing_entry_id(entry.query_text, language=entry.language)],
-            "documents": [entry.query_text],
-            "metadatas": [metadata],
-        }
-
-        hit, similarity = cache.lookup("lights", language="en")
-
-        assert hit is None
-        assert similarity == pytest.approx(1.0)
-
     def test_invalidate_by_entity_id_deletes_matching_rows(self):
         cache, store = self._make_cache()
         store.get.return_value = {
@@ -260,7 +245,7 @@ class TestCacheManager:
     @pytest.mark.asyncio
     async def test_try_routing_skip_returns_hit(self):
         manager, _store = self._make_manager()
-        entry = make_routing_cache_entry(condensed_task="Read kitchen temperature")
+        entry = make_routing_cache_entry()
         manager._routing_cache.lookup_with_id = MagicMock(return_value=("test-id", entry, 0.96))
 
         with patch("app.cache.cache_manager.track_cache_event", new_callable=AsyncMock) as track:
@@ -268,7 +253,9 @@ class TestCacheManager:
 
         assert result is not None
         assert result.kind == "routing_hit"
-        assert result.condensed_task == "Read kitchen temperature"
+        # CORE-H1: routing hits dispatch the fresh query text, not the stale
+        # cached condensation.
+        assert result.condensed_task == entry.query_text
         track.assert_awaited_once()
 
     @pytest.mark.asyncio
@@ -354,7 +341,6 @@ class TestRoutingCacheExtended:
             query_text="turn on kitchen light",
             agent_id="light-agent",
             confidence=0.95,
-            condensed_task="turn on kitchen light",
             language="en",
         )
         metadata = cache._serialize_metadata(entry_data)
@@ -459,7 +445,6 @@ class TestRoutingCacheExtended:
 
     @pytest.mark.asyncio
     async def test_load_config_from_db(self):
-        # v4: config key is cache.routing.semantic_threshold
         cache, _store = self._make_cache()
 
         async def _get_value(key, default=None):
@@ -472,11 +457,13 @@ class TestRoutingCacheExtended:
         with patch("app.cache._base_cache.SettingsRepository") as mock_base:
             mock_base.get_value = AsyncMock(side_effect=_get_value)
             await cache.load_config()
-        assert cache._exact_match_only is False
+        assert cache._exact_match_only is True
         assert cache._max_entries == 1000
 
     @pytest.mark.asyncio
-    async def test_load_config_exact_match_only_with_float_threshold(self):
+    async def test_load_config_ignores_float_threshold(self):
+        # CORE-L6: lookup is hash-only; the legacy threshold setting no longer
+        # influences matching (stored keys are kept for settings-UI compat).
         cache, _store = self._make_cache()
 
         async def _get_value(key, default=None):
@@ -489,7 +476,7 @@ class TestRoutingCacheExtended:
         with patch("app.cache._base_cache.SettingsRepository") as mock_base:
             mock_base.get_value = AsyncMock(side_effect=_get_value)
             await cache.load_config()
-        assert cache._exact_match_only is False
+        assert cache._exact_match_only is True
 
     @pytest.mark.asyncio
     async def test_load_config_exact_match_only_with_threshold_one(self):
@@ -522,30 +509,6 @@ class TestRoutingCacheExtended:
             mock_base.get_value = AsyncMock(side_effect=_get_value)
             await cache.load_config()
         assert cache._exact_match_only is True
-
-    def test_routing_cache_rejects_corrupted_condensed_task(self, caplog):
-        cache, store = self._make_cache()
-        exact_id = cache.make_entry_id("warm im wohnzimmer", language="de")
-        store.get.return_value = {
-            "ids": [exact_id],
-            "documents": ["warm im wohnzimmer"],
-            "metadatas": [
-                {
-                    "agent_id": "climate-agent",
-                    "confidence": "0.96",
-                    "hit_count": "1",
-                    "condensed_task": "climate-agent (96%): living room temperature",
-                    "created_at": "",
-                    "last_accessed": "",
-                    "language": "de",
-                }
-            ],
-        }
-        with caplog.at_level(logging.WARNING, logger="app.cache.routing_cache"):
-            entry, similarity = cache.lookup("warm im wohnzimmer", language="de")
-        assert entry is None
-        assert similarity == pytest.approx(1.0)
-        assert any("corrupted condensed task" in rec.message for rec in caplog.records)
 
     def test_store_uses_deterministic_id(self):
         cache, store = self._make_cache()
@@ -612,7 +575,7 @@ class TestRoutingCacheExtended:
 
         query_text = "turn on kitchen light"
         language = "en"
-        manager.store_routing(query_text, "light-agent", 0.95, "Turn on kitchen light", language=language)
+        manager.store_routing(query_text, "light-agent", 0.95, language=language)
 
         # v4: use _routing_cache.lookup directly (no _process_inner)
         entry, _similarity = manager._routing_cache.lookup(query_text, language=language)
@@ -781,7 +744,9 @@ class TestActionCacheExtended:
         assert "partial_threshold" not in stats
 
     @pytest.mark.asyncio
-    async def test_load_config_exact_match_only_with_float_threshold(self):
+    async def test_load_config_ignores_float_threshold(self):
+        # CORE-L6: lookup is hash-only; the legacy threshold setting no longer
+        # influences matching (stored keys are kept for settings-UI compat).
         cache, _store = self._make_cache()
 
         async def _get_value(key, default=None):
@@ -794,7 +759,7 @@ class TestActionCacheExtended:
         with patch("app.cache._base_cache.SettingsRepository") as mock_base:
             mock_base.get_value = AsyncMock(side_effect=_get_value)
             await cache.load_config()
-        assert cache._exact_match_only is False
+        assert cache._exact_match_only is True
 
     @pytest.mark.asyncio
     async def test_load_config_exact_match_only_with_threshold_one(self):
@@ -924,12 +889,14 @@ class TestCacheManagerExtended:
     async def test_process_routing_hit(self):
         # v4: process() calls try_routing_skip internally; mock _routing_cache.lookup
         manager, _store = self._make_manager()
-        entry = make_routing_cache_entry(condensed_task="Turn on light")
+        entry = make_routing_cache_entry()
         manager._routing_cache.lookup_with_id = MagicMock(return_value=("test-id", entry, 0.96))
         with patch("app.cache.cache_manager.track_cache_event", new_callable=AsyncMock):
             result = await manager.process("turn on light")
         assert result.hit_type == "routing_hit"
-        assert result.condensed_task == "Turn on light"
+        # CORE-H1: routing hits dispatch the fresh query text, not the stale
+        # cached condensation.
+        assert result.condensed_task == "turn on light"
 
     @pytest.mark.asyncio
     async def test_process_miss(self):
@@ -943,7 +910,7 @@ class TestCacheManagerExtended:
     @pytest.mark.asyncio
     async def test_process_emits_event_only_for_routing_hits(self):
         manager, _store = self._make_manager()
-        entry = make_routing_cache_entry(condensed_task="Turn on light")
+        entry = make_routing_cache_entry()
         with patch("app.cache.cache_manager.track_cache_event", new_callable=AsyncMock) as track:
             manager._routing_cache.lookup_with_id = MagicMock(return_value=("test-id", entry, 0.94))
             await manager.process("turn on light")
@@ -963,11 +930,12 @@ class TestCacheManagerExtended:
         manager, store = self._make_manager()
         store.count.return_value = 0
         store.get.return_value = {"ids": [], "documents": [], "metadatas": []}
-        manager.store_routing("query", "light-agent", 0.95, "Turn on the light")
+        manager.store_routing("query", "light-agent", 0.95)
         store.upsert.assert_called()
         call_args = store.upsert.call_args
         metadatas = call_args[1]["metadatas"]
-        assert metadatas[0]["condensed_task"] == "Turn on the light"
+        # DP-5: routing-cache metadata no longer stores condensed_task.
+        assert "condensed_task" not in metadatas[0]
 
     def test_store_action_delegates(self):
         # v4: store_action() replaces store_response()
@@ -1035,9 +1003,9 @@ class TestCacheManagerExtended:
             mock_cms.get_value = AsyncMock(side_effect=_get_value)
             await manager.initialize()
 
-        assert manager._routing_cache._exact_match_only is False
+        assert manager._routing_cache._exact_match_only is True
         assert manager._routing_cache._max_entries == 50000
-        assert manager._action_cache._exact_match_only is False
+        assert manager._action_cache._exact_match_only is True
         assert manager._action_cache._max_entries == 50000
         assert manager._rewrite_enabled is False
 
@@ -1064,9 +1032,9 @@ class TestCacheManagerExtended:
             mock_cms.get_value = AsyncMock(side_effect=_get_value)
             await manager.reload_config()
 
-        assert manager._routing_cache._exact_match_only is False
+        assert manager._routing_cache._exact_match_only is True
         assert manager._routing_cache._max_entries == 50000
-        assert manager._action_cache._exact_match_only is False
+        assert manager._action_cache._exact_match_only is True
         assert manager._action_cache._max_entries == 50000
         assert manager._rewrite_enabled is False
 
@@ -1080,20 +1048,19 @@ class TestCacheManagerExtended:
         assert not manager._action_cache._state.has_pending()
         assert store.update_metadata.call_count == 2
 
-    def test_routing_cache_stores_condensed_task(self):
-        # v4: store() takes an entry object
+    def test_routing_cache_store_omits_condensed_task(self):
+        # v4: store() takes an entry object; DP-5: metadata no longer stores condensed_task
         cache, store = TestRoutingCacheExtended()._make_cache()
         store.count.return_value = 0
-        entry = make_routing_cache_entry(
-            query_text="turn on light", agent_id="light-agent", confidence=0.95, condensed_task="Turn on the light"
-        )
+        entry = make_routing_cache_entry(query_text="turn on light", agent_id="light-agent", confidence=0.95)
         cache.store(entry)
         store.upsert.assert_called_once()
         call_kwargs = store.upsert.call_args
         metadatas = call_kwargs[1].get("metadatas") or call_kwargs[0][3]
-        assert metadatas[0]["condensed_task"] == "Turn on the light"
+        assert "condensed_task" not in metadatas[0]
 
-    def test_routing_cache_lookup_returns_condensed_task(self):
+    def test_routing_cache_lookup_tolerates_legacy_condensed_task(self):
+        # DP-5: rows stored before the field removal still deserialize (key-based metadata).
         cache, store = TestRoutingCacheExtended()._make_cache()
         exact_id = cache.make_entry_id("turn on light", language="en")
         store.get.return_value = {
@@ -1113,7 +1080,8 @@ class TestCacheManagerExtended:
         }
         entry, similarity = cache.lookup("turn on light")
         assert entry is not None
-        assert entry.condensed_task == "Turn on the light"
+        assert not hasattr(entry, "condensed_task")
+        assert entry.agent_id == "light-agent"
         assert similarity == pytest.approx(1.0)
 
     # Removed: test_routing_skip_carries_condensed_task was permanently skipped
@@ -1912,7 +1880,7 @@ async def test_concurrent_cache_stress():
         for i in range(10):
             query_text = f"query {i % 3}"
             language = "en"
-            manager.store_routing(query_text, "light-agent", 0.9, f"Task {task_id}", language=language)
+            manager.store_routing(query_text, "light-agent", 0.9, language=language)
             manager._routing_cache.lookup(query_text, language=language)
             manager._routing_cache.invalidate_by_entity_id([f"light.kitchen_{task_id % 2}"])
 
@@ -1996,7 +1964,6 @@ class TestLruMemoryBounded:
                 query_text=f"query {i}",
                 agent_id="light-agent",
                 confidence=0.95,
-                condensed_task=f"Task {i}",
             )
             cache.store(entry)
 

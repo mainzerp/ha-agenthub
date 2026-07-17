@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from app.models.agent import AgentCard, AgentConfig, AgentTask, BackgroundEvent, TaskContext
+from app.models.agent import AgentCard, AgentConfig, BackgroundEvent, DispatchTask, IngressTask, TaskContext
 from app.models.cache import ActionCacheEntry, CachedAction, RoutingCacheEntry
 from app.models.conversation import ActionResult, ConversationRequest, ConversationResponse, StreamToken
 from app.models.entity_index import EntityIndexEntry
@@ -14,11 +14,12 @@ from tests.helpers import (
     make_action_result,
     make_agent_card,
     make_agent_config,
-    make_agent_task,
     make_cached_action,
     make_conversation_request,
     make_conversation_response,
+    make_dispatch_task,
     make_entity_index_entry,
+    make_ingress_task,
     make_routing_cache_entry,
     make_stream_token,
 )
@@ -153,13 +154,18 @@ class TestAgentConfig:
 
 class TestAgentTask:
     def test_valid_task(self):
-        task = make_agent_task()
+        task = make_dispatch_task()
         assert task.description == "Turn on the kitchen light"
+        assert task.context is None
+
+    def test_valid_ingress_task(self):
+        task = make_ingress_task()
+        assert task.description == "turn on the kitchen light"
         assert task.context is None
 
     def test_task_with_context(self):
         ctx = TaskContext(area_id="kitchen")
-        task = make_agent_task(context=ctx)
+        task = make_dispatch_task(context=ctx)
         assert task.context.area_id == "kitchen"
 
     def test_task_context_language_default(self):
@@ -186,7 +192,9 @@ class TestAgentTask:
 
     def test_missing_description_raises(self):
         with pytest.raises(ValidationError):
-            AgentTask(user_text="hello")
+            IngressTask()
+        with pytest.raises(ValidationError):
+            DispatchTask()
 
 
 # ---- Cache models ----

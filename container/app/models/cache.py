@@ -51,7 +51,6 @@ class RoutingCacheEntry(BaseModel):
     query_text: str
     language: str
     agent_id: str
-    condensed_task: str | None = None
     confidence: float = 0.0
     entity_ids: list[str] = Field(default_factory=list)
     created_at: str | None = None

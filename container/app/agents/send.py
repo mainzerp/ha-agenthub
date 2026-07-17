@@ -12,7 +12,7 @@ from app.db.repository import SendDeviceMappingRepository, SettingsRepository
 from app.models.agent import (
     AgentCard,
     AgentErrorCode,
-    AgentTask,
+    DispatchTask,
     TaskResult,
 )
 
@@ -65,7 +65,7 @@ class SendAgent(BaseAgent):
             expected_latency="low",
         )
 
-    async def handle_task(self, task: AgentTask) -> TaskResult:
+    async def handle_task(self, task: DispatchTask) -> TaskResult:
         """Deliver content to the target device."""
         description = task.description or ""
         span_collector = task.span_collector

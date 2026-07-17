@@ -7,6 +7,7 @@ the :class:`DomainAgent` type alias for external imports.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import inspect as _inspect
 import logging
 import re
@@ -18,12 +19,30 @@ from app.agents.base import BaseAgent, _render_prompt_template, language_code_to
 from app.agents.decorator import agent
 from app.analytics.tracer import _optional_span
 from app.entity.deterministic_resolver import resolve_entity_deterministic_first
-from app.models.agent import ActionExecuted, AgentCard, AgentError, AgentErrorCode, AgentTask, TaskContext, TaskResult
+from app.models.agent import (
+    ActionExecuted,
+    AgentCard,
+    AgentError,
+    AgentErrorCode,
+    DispatchTask,
+    TaskContext,
+    TaskResult,
+)
 
 logger = logging.getLogger(__name__)
 
 _JSON_FENCE_RE = re.compile(r"```json\s*\n?.*?\n?\s*```", re.DOTALL)
 _RAW_JSON_OBJ_RE = re.compile(r'\{[^{}]*"action"\s*:.*?\}', re.DOTALL)
+
+# Per-request state for the currently handled task. Agent instances are
+# singletons, so these must be ContextVars: two concurrent requests to the
+# same agent would otherwise overwrite each other's context.
+_current_task_var: contextvars.ContextVar[DispatchTask | None] = contextvars.ContextVar(
+    "actionable_current_task", default=None
+)
+_current_task_context_var: contextvars.ContextVar[TaskContext | None] = contextvars.ContextVar(
+    "actionable_current_task_context", default=None
+)
 
 
 def strip_json_blocks(text: str) -> str:
@@ -51,10 +70,14 @@ class ActionableAgent(BaseAgent):
     def __init__(self, ha_client=None, entity_index=None, entity_matcher=None) -> None:
         super().__init__(ha_client=ha_client, entity_index=entity_index)
         self._entity_matcher = entity_matcher
-        self._current_task: AgentTask | None = None
-        self._current_task_context: TaskContext | None = None
 
-    async def _resolve_relevant_entities(self, task: AgentTask) -> list[tuple[str, str]]:
+    def _get_current_task(self) -> DispatchTask | None:
+        return _current_task_var.get()
+
+    def _get_current_task_context(self) -> TaskContext | None:
+        return _current_task_context_var.get()
+
+    async def _resolve_relevant_entities(self, task: DispatchTask) -> list[tuple[str, str]]:
         """Resolve up to 3 unique entity mentions from verbatim_terms or description fallback.
 
         Returns a list of (entity_id, friendly_name) tuples.
@@ -141,7 +164,7 @@ class ActionableAgent(BaseAgent):
             return None
         return ", ".join(lines)
 
-    async def _build_query_candidate_context(self, task: AgentTask) -> str | None:
+    async def _build_query_candidate_context(self, task: DispatchTask) -> str | None:
         """Build a candidate-entity block for query actions."""
         if self._entity_matcher is None or self._entity_index is None:
             return None
@@ -200,10 +223,10 @@ class ActionableAgent(BaseAgent):
         the orchestrator-preserved original-language tokens for
         entity matching.
         """
-        current_task = getattr(self, "_current_task", None)
+        current_task = self._get_current_task()
         return list(getattr(current_task, "verbatim_terms", []) or []) if current_task else []
 
-    async def _generate_not_found_speech(self, entity_query: str, task: AgentTask, span_collector=None) -> str:
+    async def _generate_not_found_speech(self, entity_query: str, task: DispatchTask, span_collector=None) -> str:
         """Ask the LLM to generate a language-appropriate clarifying question when an entity is not found."""
         language = (task.context.language if task.context else None) or "en"
         messages = [
@@ -235,21 +258,21 @@ class ActionableAgent(BaseAgent):
             logger.warning("Not-found clarification LLM call failed", exc_info=True)
             return f"I could not find '{entity_query}'. Which device did you mean?"
 
-    def _handle_parse_miss(self, task: AgentTask, response: str) -> TaskResult:
+    def _handle_parse_miss(self, task: DispatchTask, response: str) -> TaskResult:
         """Return the fallback result when the LLM response has no valid action."""
         return TaskResult(speech=strip_json_blocks(response))
 
-    async def handle_task(self, task: AgentTask) -> TaskResult:
+    async def handle_task(self, task: DispatchTask) -> TaskResult:
         # FLOW-CTX-1 (0.18.6): expose the incoming TaskContext so
         # domain-specific ``_do_execute`` implementations can pick up
         # satellite area, device_id and request source without
         # plumbing an extra kwarg through every executor signature.
-        # Cleared in ``finally`` to avoid leaking between overlapping
-        # tasks (same agent instance, two concurrent requests).
-        self._current_task_context = task.context
+        # Stored in ContextVars (reset in ``finally``) so concurrent
+        # requests on the same singleton agent instance stay isolated.
+        context_token = _current_task_context_var.set(task.context)
         # 0.23.0: domain executors (e.g. climate) read verbatim_terms
         # from the active task without an extra plumbing kwarg.
-        self._current_task = task
+        task_token = _current_task_var.set(task)
         try:
             try:
                 return await self._handle_task_inner(task)
@@ -262,10 +285,10 @@ class ActionableAgent(BaseAgent):
                     "Sorry, something went wrong while handling that request.",
                 )
         finally:
-            self._current_task_context = None
-            self._current_task = None
+            _current_task_var.reset(task_token)
+            _current_task_context_var.reset(context_token)
 
-    async def _handle_task_inner(self, task: AgentTask) -> TaskResult:
+    async def _handle_task_inner(self, task: DispatchTask) -> TaskResult:
         _t0 = time.perf_counter()
         agent_id = self.agent_card.agent_id
         span_collector = task.span_collector
@@ -528,7 +551,7 @@ class _ConfigurableDomainAgent(ActionableAgent):
         super().__init__(ha_client=ha_client, entity_index=entity_index, entity_matcher=entity_matcher)
 
     async def _do_execute(self, action, ha_client, entity_index, entity_matcher, *, agent_id, span_collector=None):
-        ctx = getattr(self, "_current_task_context", None)
+        ctx = self._get_current_task_context()
         area_id = ctx.area_id if ctx else None
         verbatim_terms = self._extract_verbatim_terms()
 

@@ -29,7 +29,7 @@ from app.db.repository import (
     SettingsRepository,
     TraceSummaryRepository,
 )
-from app.models.agent import AgentTask, TaskContext
+from app.models.agent import IngressTask, TaskContext
 from app.models.conversation import StreamToken
 from app.runtime_setup import ensure_setup_runtime_initialized
 from app.security.auth import require_admin_session
@@ -705,9 +705,8 @@ async def admin_chat(request: Request, payload: ChatRequest) -> dict[str, Any]:
     if not language:
         language = await SettingsRepository.get_value("language") or "en"
     prepared_text = prepare_user_text(payload.text)
-    task = AgentTask(
+    task = IngressTask(
         description=prepared_text.text,
-        user_text=prepared_text.text,
         conversation_id=payload.conversation_id,
         # FLOW-CTX-1 (0.18.6): dashboard chat has no satellite and
         # no area. Mark ``source="chat"`` so agents can skip
@@ -746,9 +745,8 @@ async def admin_chat_stream(request: Request, payload: ChatRequest):
     if not language:
         language = await SettingsRepository.get_value("language") or "en"
     prepared_text = prepare_user_text(payload.text)
-    task = AgentTask(
+    task = IngressTask(
         description=prepared_text.text,
-        user_text=prepared_text.text,
         conversation_id=payload.conversation_id,
         context=TaskContext(language=language, source="chat", injection_detected=prepared_text.injection_detected),
     )

@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.agents.cache_orchestrator import CacheOrchestrator
-from app.models.agent import AgentTask
+from app.models.agent import IngressTask
 
 
 def _make_cache_orchestrator():
@@ -55,7 +55,7 @@ class TestCacheOrchestratorEdgeCases:
                     "service_data": {},
                 },
                 has_error=False,
-                task=AgentTask(description="what lights are on", user_text="what lights are on"),
+                task=IngressTask(description="what lights are on"),
             )
         # Returns (action_stored, routing_stored)
         assert result == (False, True)
@@ -84,7 +84,7 @@ class TestCacheOrchestratorEdgeCases:
                     "entity_id": "climate.living_room",
                 },
                 has_error=False,
-                task=AgentTask(description="list climate", user_text="list climate"),
+                task=IngressTask(description="list climate"),
             )
         assert result == (False, True)
         cm.store_routing_async.assert_awaited_once()
@@ -117,7 +117,7 @@ class TestCacheOrchestratorEdgeCases:
                     "service_data": {},
                 },
                 has_error=False,
-                task=AgentTask(description="turn on light", user_text="turn on light"),
+                task=IngressTask(description="turn on light"),
             )
         assert result == (False, False)
         cm.store_routing_async.assert_not_called()
@@ -150,7 +150,7 @@ class TestCacheOrchestratorEdgeCases:
                     "service_data": {"condition": "sun_below_horizon"},
                 },
                 has_error=False,
-                task=AgentTask(description="turn on light if dark", user_text="turn on light if dark"),
+                task=IngressTask(description="turn on light if dark"),
             )
         assert result == (False, False)
         cm.store_routing_async.assert_not_called()
@@ -176,7 +176,7 @@ class TestCacheOrchestratorEdgeCases:
                     "action": "timer.start",
                 },
                 has_error=False,
-                task=AgentTask(description="set a timer", user_text="set a timer"),
+                task=IngressTask(description="set a timer"),
             )
         assert result == (False, True)
         cm.store_routing_async.assert_awaited_once()
@@ -202,7 +202,7 @@ class TestCacheOrchestratorEdgeCases:
                     "entity_id": "light.kitchen",
                 },
                 has_error=False,
-                task=AgentTask(description="turn on light", user_text="turn on light"),
+                task=IngressTask(description="turn on light"),
             )
         assert result == (False, True)
         cm.store_routing_async.assert_awaited_once()

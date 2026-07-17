@@ -32,7 +32,7 @@ sys.modules.setdefault("litellm", _litellm_mock)
 
 from app.agents.orchestrator import OrchestratorAgent  # noqa: E402
 from app.models.agent import AgentCard  # noqa: E402
-from tests.helpers import make_agent_task  # noqa: E402
+from tests.helpers import make_ingress_task  # noqa: E402
 
 
 class TestScenarioTypes:
@@ -109,9 +109,8 @@ class TestScenarioTypes:
             ]
         )
 
-        task = make_agent_task(
+        task = make_ingress_task(
             description="send Laura a reminder about the dental appointment",
-            user_text="send Laura a reminder about the dental appointment",
         )
         task.conversation_id = "conv-seq"
         result = await orch.handle_task(task)
@@ -138,7 +137,7 @@ class TestScenarioTypes:
         orch, dispatcher, *_ = self._make_orchestrator()
         mock_complete.return_value = "custom-1 (95%): Do custom thing"
 
-        task = make_agent_task(description="do a custom thing", user_text="do a custom thing")
+        task = make_ingress_task(description="do a custom thing")
         task.conversation_id = "conv-custom"
         result = await orch.handle_task(task)
 
@@ -176,7 +175,7 @@ class TestScenarioTypes:
             "action_executed": {"success": True, "entity_id": "light.kitchen", "action": "turn_on"},
         }
 
-        task = make_agent_task(description="turn on the light", user_text="turn on the light")
+        task = make_ingress_task(description="turn on the light")
         task.conversation_id = "conv-cache"
         result = await orch.handle_task(task)
 
@@ -203,7 +202,7 @@ class TestScenarioTypes:
         fallback_response = {"speech": "Fallback response."}
         dispatcher.dispatch = AsyncMock(side_effect=[TimeoutError(), fallback_response])
 
-        task = make_agent_task(description="turn on kitchen light", user_text="turn on kitchen light")
+        task = make_ingress_task(description="turn on kitchen light")
         task.conversation_id = "conv-timeout"
         result = await orch.handle_task(task)
 

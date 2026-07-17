@@ -10,7 +10,7 @@ from app.agents.decorator import agent
 from app.agents.prompt_builder import PromptBuilder
 from app.agents.tool_calling import call_llm_with_mcp_tools, mcp_tools_to_openai_format
 from app.analytics.tracer import _optional_span
-from app.models.agent import AgentCard, AgentErrorCode, AgentTask, TaskResult
+from app.models.agent import AgentCard, AgentErrorCode, DispatchTask, TaskResult
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +52,7 @@ class GeneralAgent(BaseAgent):
             timeout_sec=30.0,
         )
 
-    async def handle_task(self, task: AgentTask) -> TaskResult:
+    async def handle_task(self, task: DispatchTask) -> TaskResult:
         span_collector = task.span_collector
         system_prompt = PromptBuilder.build(
             await self._load_prompt_async("general"),

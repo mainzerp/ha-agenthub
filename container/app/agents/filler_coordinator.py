@@ -30,7 +30,7 @@ import logging
 import uuid
 
 from app.a2a._request import build_send_request
-from app.models.agent import AgentTask, TaskContext
+from app.models.agent import DispatchTask, TaskContext
 
 logger = logging.getLogger(__name__)
 
@@ -79,9 +79,8 @@ class FillerCoordinator:
         """
         try:
             context = TaskContext(language=language)
-            filler_task = AgentTask(
-                description=f"generate_filler:{target_agent}",
-                user_text=user_text,
+            filler_task = DispatchTask(
+                description=f"generate_filler:{target_agent}\n{user_text}",
                 context=context,
             )
             request = build_send_request(

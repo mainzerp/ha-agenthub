@@ -4,7 +4,7 @@ from app.agents.actionable import ActionableAgent
 from app.agents.calendar_executor import execute_calendar_action
 from app.agents.decorator import agent
 from app.agents.user_identity import UserIdentityResolver
-from app.models.agent import AgentCard, AgentErrorCode, AgentTask, TaskResult
+from app.models.agent import AgentCard, AgentErrorCode, DispatchTask, TaskResult
 
 
 @agent(
@@ -30,12 +30,12 @@ class CalendarAgent(ActionableAgent):
     """Manages calendar events: read, create, update, delete."""
 
     async def _do_execute(self, action, ha_client, entity_index, entity_matcher, *, agent_id, span_collector=None):
-        ctx = getattr(self, "_current_task_context", None)
+        ctx = self._get_current_task_context()
         device_id = ctx.device_id if ctx else None
         area_id = ctx.area_id if ctx else None
         language = ctx.language if ctx else None
         timezone = ctx.timezone if ctx else None
-        current_task = getattr(self, "_current_task", None)
+        current_task = self._get_current_task()
         verbatim_terms = list(getattr(current_task, "verbatim_terms", []) or []) if current_task else []
 
         resolver = UserIdentityResolver(ha_client=ha_client)
@@ -66,7 +66,7 @@ class CalendarAgent(ActionableAgent):
             default_calendar_ids=default_calendar_ids,
         )
 
-    def _handle_parse_miss(self, task: AgentTask, response: str) -> TaskResult:
+    def _handle_parse_miss(self, task: DispatchTask, response: str) -> TaskResult:
         return self._error_result(
             AgentErrorCode.PARSE_ERROR,
             "I could not understand the calendar command. Please try again.",

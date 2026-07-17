@@ -37,13 +37,12 @@ from app.agents.pipeline_strategies import (  # noqa: E402
     DefaultDispatchStrategy,
     DefaultFinalizationStrategy,
 )
-from app.models.agent import AgentCard, AgentTask, TaskContext  # noqa: E402
+from app.models.agent import AgentCard, IngressTask, TaskContext  # noqa: E402
 
 
-def _make_task(text: str = "turn on light", conversation_id: str = "conv-1") -> AgentTask:
-    return AgentTask(
+def _make_task(text: str = "turn on light", conversation_id: str = "conv-1") -> IngressTask:
+    return IngressTask(
         description=text,
-        user_text=text,
         conversation_id=conversation_id,
         context=TaskContext(language="en"),
     )

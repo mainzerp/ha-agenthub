@@ -17,7 +17,7 @@ from app.a2a._request import build_send_request, build_stream_request
 from app.a2a.protocol import JsonRpcRequest
 from app.analytics.tracer import SpanCollector
 from app.middleware.rate_limit import WsMessageRateLimiter, get_client_ip_from_headers, rate_limit_conversation
-from app.models.agent import AgentTask, TaskContext
+from app.models.agent import IngressTask, TaskContext
 from app.models.conversation import ActionResult, ConversationRequest, ConversationResponse, StreamToken
 from app.security.auth import require_api_key, require_api_key_ws
 from app.security.user_input import prepare_user_text
@@ -106,8 +106,8 @@ def _normalize_action_executed(raw) -> ActionResult | None:
 
 def _build_a2a_request(
     conv_request: ConversationRequest, method: str, span_collector=None, request: Request | None = None
-) -> tuple[JsonRpcRequest, AgentTask]:
-    """Convert a ConversationRequest into an A2A JsonRpcRequest + AgentTask."""
+) -> tuple[JsonRpcRequest, IngressTask]:
+    """Convert a ConversationRequest into an A2A JsonRpcRequest + IngressTask."""
     # FLOW-CTX-1 (0.18.6) / FLOW-WS-SPAN-1 (P1-6): source comes from the
     # SpanCollector that the TracingMiddleware derived from the route
     # path (WS or HTTP). Default when no collector was provided (pure
@@ -125,9 +125,8 @@ def _build_a2a_request(
         source=source,
         injection_detected=prepared_text.injection_detected,
     )
-    task = AgentTask(
+    task = IngressTask(
         description=prepared_text.text,
-        user_text=prepared_text.text,
         conversation_id=conv_request.conversation_id,
         context=context,
     )
@@ -177,7 +176,7 @@ async def conversation_rest(
         speech=result.get("speech", ""),
         conversation_id=result.get("conversation_id") or conv_request.conversation_id,
         action_executed=_normalize_action_executed(result.get("action_executed")),
-        routed_agent=result.get("routed_to") or result.get("agent_id"),
+        routed_agent=result.get("routed_to"),
         voice_followup=bool(result.get("voice_followup")),
         sanitized=bool(result.get("sanitized", True)),
         directive=result.get("directive"),
@@ -223,7 +222,7 @@ async def conversation_sse(
                     action_executed=_normalize_action_executed(chunk.get("action_executed"))
                     if chunk.get("done")
                     else None,
-                    routed_agent=chunk.get("routed_to") or chunk.get("agent_id") if chunk.get("done") else None,
+                    routed_agent=chunk.get("routed_to") if chunk.get("done") else None,
                 )
                 yield f"data: {token.model_dump_json()}\n\n"
         finally:
@@ -333,7 +332,7 @@ async def ws_conversation(
                         action_executed=_normalize_action_executed(chunk.get("action_executed"))
                         if chunk.get("done")
                         else None,
-                        routed_agent=chunk.get("routed_to") or chunk.get("agent_id") if chunk.get("done") else None,
+                        routed_agent=chunk.get("routed_to") if chunk.get("done") else None,
                     )
                     await websocket.send_json(token.model_dump())
             except WebSocketDisconnect:

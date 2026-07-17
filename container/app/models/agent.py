@@ -70,25 +70,51 @@ class AgentConfig(BaseModel):
     reasoning_effort: str | None = None
 
 
-class AgentTask(BaseModel):
+class IngressTask(BaseModel):
+    """Task received at the orchestrator boundary carrying raw user input."""
+
+    model_config = {"arbitrary_types_allowed": True}
+
+    description: str = Field(..., description="Raw sanitized user input")
+    conversation_id: str | None = None
+    context: TaskContext | None = None
+
+    # Runtime-only: not serialized, not included in model_dump()
+    span_collector: Any = Field(default=None, exclude=True)
+
+
+class DispatchTask(BaseModel):
     """Task dispatched from orchestrator to a specialized agent via A2A."""
 
     model_config = {"arbitrary_types_allowed": True}
 
     description: str = Field(..., description="Condensed task with preserved entity names")
-    user_text: str = Field(..., description="Original unmodified user input")
     conversation_id: str | None = None
     context: TaskContext | None = None
-    # Optional entity/room tokens for the entity matcher to try before fuzzy
-    # matching. The orchestrator intentionally leaves this empty because the
-    # condensed task is already written in the user's language. Populating
-    # verbatim_terms would undermine the orchestrator-task-to-agent structure
-    # by giving sub-agents a separate, uncondensed input path. Sub-agents or
-    # plugins may still set it if they have extra hints.
+    # Entity/room tokens parsed from the classification ``@entities:`` lines
+    # (classification_engine.py). The pipeline populates them on every
+    # dispatch so the entity matcher can try them before fuzzy matching.
     verbatim_terms: list[str] = Field(
         default_factory=list,
-        description="Optional entity/room tokens for the entity matcher to try first",
+        description="Entity/room tokens from the classification @entities: line, tried first by the entity matcher",
     )
+
+    # Runtime-only: not serialized, not included in model_dump()
+    span_collector: Any = Field(default=None, exclude=True)
+
+
+class BackgroundTask(BaseModel):
+    """Background-event envelope dispatched to the orchestrator.
+
+    Carries no text fields; the event payload lives on
+    ``context.background_event`` and the background-turn contract is
+    enforced by ``OrchestratorAgent._is_background_turn``.
+    """
+
+    model_config = {"arbitrary_types_allowed": True}
+
+    conversation_id: str | None = None
+    context: TaskContext | None = None
 
     # Runtime-only: not serialized, not included in model_dump()
     span_collector: Any = Field(default=None, exclude=True)
@@ -98,15 +124,6 @@ class TaskContext(BaseModel):
     """Context propagated with an agent task."""
 
     conversation_turns: list[dict] = Field(default_factory=list)
-    entity_states: dict | None = Field(
-        default=None,
-        description=(
-            "Optionally populated map of entity_id -> state dict. "
-            "This is NOT the primary state source for selective injection; "
-            "agents query the entity_index or ha_client directly for up-to-date state."
-        ),
-    )
-    mcp_tools: list[str] = Field(default_factory=list)
     device_id: str | None = None
     area_id: str | None = None
     # FLOW-CTX-1 (0.18.6): human-readable counterparts to device_id /
