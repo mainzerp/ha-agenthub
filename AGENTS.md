@@ -76,7 +76,7 @@ SUBAGENT #1a...#1n: Research & Analysis (subagent_type="coder", research mode)
     - Prompt enforces: Read/Grep/Glob/Write (docs/SubAgent/ only).
       NO Bash, NO Edit, NO source code edits.
     - Each agent investigates ONE distinct topic only.
-    - ALWAYS writes its analysis to docs/SubAgent/[NAME]_{TOPIC}_ANALYSIS.md
+    - ALWAYS writes its analysis to docs/SubAgent/[NAME]/[NAME]_[TOPIC]_ANALYSIS.md
     - Returns summary + file path
     - NEVER asks the user questions, NEVER requests plan approval
     |
@@ -84,8 +84,8 @@ YOU (Orchestrator): Spawn Synthesis subagent (only if parallel research was used
     |
 SUBAGENT #1-Synth: Synthesis (subagent_type="coder", synthesis mode)
     - Prompt enforces: Read/Write ONLY. Reads all
-      docs/SubAgent/[NAME]_*_ANALYSIS.md files.
-    - Writes a single combined docs/SubAgent/[NAME]_ANALYSIS.md
+      docs/SubAgent/[NAME]/[NAME]_*_ANALYSIS.md files.
+    - Writes a single combined docs/SubAgent/[NAME]/[NAME]_ANALYSIS.md
     - Removes duplicates, resolves contradictions, adds cross-references.
     - Does NOT add new research — only synthesizes existing findings.
     - Returns summary
@@ -94,11 +94,11 @@ YOU (Orchestrator): Receive results, spawn Planning subagent
     |
 SUBAGENT #2: Planning (subagent_type="coder", planning mode)
     - Prompt enforces: Read/Grep/Glob/Write ONLY. May write ONLY
-      to docs/SubAgent/[NAME]_PLAN.md. NO Bash, NO Edit,
+      to docs/SubAgent/[NAME]/[NAME]_PLAN.md. NO Bash, NO Edit,
       NO source code edits.
-    - Reads analysis from docs/SubAgent/[NAME]_ANALYSIS.md
+    - Reads analysis from docs/SubAgent/[NAME]/[NAME]_ANALYSIS.md
     - Writes concise step-by-step plan with checklist to
-      docs/SubAgent/[NAME]_PLAN.md
+      docs/SubAgent/[NAME]/[NAME]_PLAN.md
     - Returns summary + file path
     - NEVER asks the user questions, NEVER requests plan approval
     |
@@ -121,13 +121,13 @@ YOU (Orchestrator): Plan Approval (in-chat)
 SUBAGENT #3a...#3n: Implementation (subagent_type="coder", full toolset, fresh context)
     - Reads the approved plan (or assigned partial plan)
     - Implements ONLY the assigned work stream
-    - Appends every file edit to `docs/SubAgent/[NAME]_CHANGES.md`
+    - Appends every file edit to `docs/SubAgent/[NAME]/[NAME]_CHANGES.md`
     - Returns completion summary
     |
 YOU (Orchestrator): Spawn Merge & Verify subagent (only if parallel implementation was used)
     |
 SUBAGENT #3-Merge: Merge & Verify (subagent_type="coder", full toolset)
-    - Reads `docs/SubAgent/[NAME]_CHANGES.md` first to understand all modifications
+    - Reads `docs/SubAgent/[NAME]/[NAME]_CHANGES.md` first to understand all modifications
     - Runs the full test suite (`pytest` or equivalent)
     - Runs lint checks (`ruff check`, `ruff format`)
     - Fixes any merge conflicts, import breaks, or integration issues
@@ -154,11 +154,11 @@ Run every workflow subagent in the foreground (the default, `run_in_background` 
 
 **Rules:**
 1. **MAX 3 parallel research agents.**
-2. Each agent gets a distinct `{TOPIC}` suffix in its filename: `docs/SubAgent/[NAME]_{TOPIC}_ANALYSIS.md`.
-3. Each agent's prompt MUST include: `You are analyzing ONLY the [TOPIC] aspect. Do NOT investigate other topics. Write your findings to docs/SubAgent/[NAME]_[TOPIC]_ANALYSIS.md.`
+2. Each agent gets a distinct `[TOPIC]` suffix in its filename: `docs/SubAgent/[NAME]/[NAME]_[TOPIC]_ANALYSIS.md`.
+3. Each agent's prompt MUST include: `You are analyzing ONLY the [TOPIC] aspect. Do NOT investigate other topics. Write your findings to docs/SubAgent/[NAME]/[NAME]_[TOPIC]_ANALYSIS.md.`
 4. After all parallel agents return, spawn a single **Synthesis agent** (`subagent_type="coder"`, synthesis mode) that:
-   - Reads all `docs/SubAgent/[NAME]_*_ANALYSIS.md` files
-   - Writes a single combined `docs/SubAgent/[NAME]_ANALYSIS.md`
+   - Reads all `docs/SubAgent/[NAME]/[NAME]_*_ANALYSIS.md` files
+   - Writes a single combined `docs/SubAgent/[NAME]/[NAME]_ANALYSIS.md`
    - Removes duplicate findings, resolves contradictions, adds cross-references between topics
    - Does NOT add new research — only synthesizes existing findings
 5. The Planning phase then reads only the combined `[NAME]_ANALYSIS.md`.
@@ -170,16 +170,16 @@ Run every workflow subagent in the foreground (the default, `run_in_background` 
 **Rules:**
 1. **MAX 3 parallel implementation agents.**
 2. The Orchestrator MUST split the approved plan into separate files:
-   - `docs/SubAgent/[NAME]_PART1_PLAN.md`
-   - `docs/SubAgent/[NAME]_PART2_PLAN.md`
+   - `docs/SubAgent/[NAME]/[NAME]_PART1_PLAN.md`
+   - `docs/SubAgent/[NAME]/[NAME]_PART2_PLAN.md`
    - (etc.)
-3. Each agent's prompt MUST include: `You are implementing ONLY Part N. Do NOT touch files assigned to other parts. Read docs/SubAgent/[NAME]_PART{N}_PLAN.md.`
-4. Before spawning parallel agents, the Orchestrator MUST create an empty shared changes file at `docs/SubAgent/[NAME]_CHANGES.md`.
-5. After every file edit, each parallel agent MUST append an entry to `docs/SubAgent/[NAME]_CHANGES.md` recording:
+3. Each agent's prompt MUST include: `You are implementing ONLY Part N. Do NOT touch files assigned to other parts. Read docs/SubAgent/[NAME]/[NAME]_PART[N]_PLAN.md.`
+4. Before spawning parallel agents, the Orchestrator MUST create an empty shared changes file at `docs/SubAgent/[NAME]/[NAME]_CHANGES.md`.
+5. After every file edit, each parallel agent MUST append an entry to `docs/SubAgent/[NAME]/[NAME]_CHANGES.md` recording:
    - The agent identifier (e.g., `Part 1`, `Part 2`, `Part 3`)
    - The path of the file modified
    - A brief reason for the change
-6. If an implementation agent detects file changes that it did not make itself, it MUST consult `docs/SubAgent/[NAME]_CHANGES.md` to determine whether a parallel agent was responsible before taking any corrective action.
+6. If an implementation agent detects file changes that it did not make itself, it MUST consult `docs/SubAgent/[NAME]/[NAME]_CHANGES.md` to determine whether a parallel agent was responsible before taking any corrective action.
 7. After all parallel agents return, spawn a single **Merge & Verify agent** (`subagent_type="coder"`, full toolset) that:
     - Runs the full test suite (`pytest` or equivalent)
     - Runs lint checks (`ruff check`, `ruff format`)
@@ -217,10 +217,10 @@ For this project's workflow, use these agent types:
 
 ### SubAgent File Naming
 
-All SubAgent artifacts follow this pattern: `docs/SubAgent/[NAME]_[SUFFIX].md`
+All SubAgent artifacts live in a per-task subfolder and follow this pattern: `docs/SubAgent/[NAME]/[NAME]_[SUFFIX].md`
 
 - `[NAME]` — short, descriptive task identifier in `UPPER_SNAKE_CASE` chosen by the Orchestrator at the start of each task (e.g. `ADD_UPS_PROTOCOL`, `FIX_AUTH_BUG`).
-- `[SUFFIX]` — phase suffix: `ANALYSIS`, `TOPIC_ANALYSIS`, `PLAN`, `PART1_PLAN`, `CHANGES`, etc.
+- `[SUFFIX]` — phase suffix: `ANALYSIS`, `[TOPIC]_ANALYSIS`, `PLAN`, `PART1_PLAN`, `CHANGES`, etc.
 
 The same `[NAME]` is used across all phases of a single task so artifacts are easy to trace.
 
@@ -233,7 +233,7 @@ These blocks are **mandatory** in every subagent prompt for the respective phase
 ```text
 You are a research agent running as a subagent of the Kimi Code CLI orchestrator. Investigate ONLY: [TOPIC].
 Base every analysis, decision, and statement on verifiable facts. Do not speculate, assume, or invent explanations when information is missing.
-Write your findings to: docs/SubAgent/[NAME]_[TOPIC]_ANALYSIS.md
+Write your findings to: docs/SubAgent/[NAME]/[NAME]_[TOPIC]_ANALYSIS.md
 Allowed tools: Read, Grep, Glob, Write (docs/SubAgent/ only).
 FORBIDDEN: Bash, Edit, any source code modification.
 Do NOT ask the user questions. Do NOT request plan approval.
@@ -245,8 +245,8 @@ Return a short summary and the artifact path when done.
 ```text
 You are a synthesis agent running as a subagent of the Kimi Code CLI orchestrator. Do NOT conduct new research.
 Base every analysis, decision, and statement on verifiable facts. Do not speculate, assume, or invent explanations when information is missing.
-Read all files matching: docs/SubAgent/[NAME]_*_ANALYSIS.md
-Write a single combined analysis to: docs/SubAgent/[NAME]_ANALYSIS.md
+Read all files matching: docs/SubAgent/[NAME]/[NAME]_*_ANALYSIS.md
+Write a single combined analysis to: docs/SubAgent/[NAME]/[NAME]_ANALYSIS.md
 Remove duplicates, resolve contradictions, add cross-references between topics.
 Allowed tools: Read, Write (docs/SubAgent/ only).
 FORBIDDEN: Bash, Edit, any source code modification, any new research.
@@ -258,8 +258,8 @@ Return a short summary when done.
 ```text
 You are a planning agent running as a subagent of the Kimi Code CLI orchestrator. Do NOT implement anything.
 Base every analysis, decision, and statement on verifiable facts. Do not speculate, assume, or invent explanations when information is missing.
-Read the analysis from: docs/SubAgent/[NAME]_ANALYSIS.md
-Write a concise step-by-step implementation plan with a checklist to: docs/SubAgent/[NAME]_PLAN.md
+Read the analysis from: docs/SubAgent/[NAME]/[NAME]_ANALYSIS.md
+Write a concise step-by-step implementation plan with a checklist to: docs/SubAgent/[NAME]/[NAME]_PLAN.md
 Allowed tools: Read, Grep, Glob, Write (docs/SubAgent/ only).
 FORBIDDEN: Bash, Edit, any source code modification.
 Do NOT ask the user questions. Do NOT request plan approval.
@@ -271,7 +271,7 @@ Return a short summary and the artifact path when done.
 ```text
 You are an implementation agent running as a subagent of the Kimi Code CLI orchestrator. Full toolset available.
 Base every analysis, decision, and statement on verifiable facts. Do not speculate, assume, or invent explanations when information is missing.
-Read your assigned plan from: docs/SubAgent/[NAME]_PLAN.md
+Read your assigned plan from: docs/SubAgent/[NAME]/[NAME]_PLAN.md
 Implement ONLY the work described in that plan. Do NOT touch files outside your assigned scope.
 Run tests and lint after completing your changes.
 Return a completion summary listing every file modified and every command run.
@@ -294,13 +294,13 @@ If you encounter unresolvable conflicts, report them explicitly — do NOT guess
 
 ## Artifact Management
 
-`docs/SubAgent/` is listed in `.gitignore` — SubAgent working files are ephemeral and not part of the committed source tree. When an artifact needs to be preserved (e.g. an approved plan promoted to a ticket), force-add it with `git add -f docs/SubAgent/[NAME]_PLAN.md` or add a specific exception rule to `.gitignore`.
+`docs/SubAgent/` is listed in `.gitignore` — SubAgent working files are ephemeral and not part of the committed source tree. When an artifact needs to be preserved (e.g. an approved plan promoted to a ticket), force-add it with `git add -f docs/SubAgent/[NAME]/[NAME]_PLAN.md` or add a specific exception rule to `.gitignore`.
 
 ## Plan Approval
 
 You (the Orchestrator) MUST:
 
-1. Output the absolute path of `docs/SubAgent/[NAME]_PLAN.md`.
+1. Output the absolute path of `docs/SubAgent/[NAME]/[NAME]_PLAN.md`.
 2. Output a brief (<= 15 line) summary of the plan.
 3. Ask exactly: `Approve plan? Reply: yes / request changes / cancel`
 4. Wait for the user's next message before doing anything else.
