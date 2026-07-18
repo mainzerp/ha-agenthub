@@ -4,10 +4,48 @@ from __future__ import annotations
 
 import json
 import time
+from typing import Any
+
+from app.agents.action_executor import resolve_and_validate_entity
 
 from . import _helpers
 
 _DEFAULT_SNOOZE_DURATION = "00:05:00"
+
+# H-2: write-capable domains a deferred action may target (union of the
+# write-capable ``@agent`` domains). Deferred writes are fail-closed: an
+# LLM-supplied ``target_action``/entity outside this list is rejected at
+# schedule time and re-checked at fire time (``background_actions``).
+_DEFERRED_ALLOWED_DOMAINS: frozenset[str] = frozenset(
+    {
+        "light",
+        "switch",
+        "climate",
+        "cover",
+        "vacuum",
+        "scene",
+        "media_player",
+        "automation",
+        "script",
+        "lock",
+        "alarm_control_panel",
+        "input_boolean",
+    }
+)
+
+# Sleep timers only ever stop media players.
+_SLEEP_TIMER_DOMAINS: frozenset[str] = frozenset({"media_player"})
+
+
+def _validate_deferred_domain(entity_id: str) -> bool:
+    """Check that entity_id belongs to a deferred-write-allowed domain."""
+    domain = entity_id.split(".")[0] if "." in entity_id else ""
+    return domain in _DEFERRED_ALLOWED_DOMAINS
+
+
+def _validate_media_player_domain(entity_id: str) -> bool:
+    """Check that entity_id belongs to the media_player domain."""
+    return entity_id.split(".")[0] == "media_player" if "." in entity_id else False
 
 
 async def _start_timer(
@@ -316,6 +354,11 @@ async def _delayed_action(
     device_id: str | None,
     area_id: str | None,
     language: str | None,
+    ha_client: Any = None,
+    entity_index: Any = None,
+    entity_matcher: Any = None,
+    agent_id: str | None = None,
+    verbatim_terms: list[str] | None = None,
 ) -> dict:
     action_name = action.get("action", "").lower()
     entity_query = (action.get("entity") or "delay timer").strip() or "delay timer"
@@ -353,6 +396,17 @@ async def _delayed_action(
             "new_state": None,
             "speech": "Invalid delay_duration.",
         }
+    # H-2 schedule-time validation (fail-closed): the service domain must be
+    # write-capable and the target must resolve to an entity visible to the
+    # scheduling agent (mirrors the foreground executor pattern).
+    action_domain = target_action.split("/", 1)[0]
+    if action_domain not in _DEFERRED_ALLOWED_DOMAINS:
+        return {
+            "success": False,
+            "entity_id": None,
+            "new_state": None,
+            "speech": f"Delayed actions are not supported for the '{action_domain}' domain.",
+        }
     scheduler = _helpers._get_scheduler()
     if scheduler is None:
         return {
@@ -361,13 +415,38 @@ async def _delayed_action(
             "new_state": None,
             "speech": "Timer scheduler is unavailable.",
         }
+    resolved = await resolve_and_validate_entity(
+        target_entity,
+        entity_index,
+        entity_matcher,
+        agent_id,
+        _DEFERRED_ALLOWED_DOMAINS,
+        _validate_deferred_domain,
+        preferred_area_id=area_id,
+        verbatim_terms=verbatim_terms,
+    )
+    resolved_entity = resolved.get("entity_id")
+    if not resolved_entity:
+        not_found = resolved.get("not_found_result") or {}
+        return {
+            "success": False,
+            "entity_id": None,
+            "new_state": None,
+            "speech": not_found.get("speech") or f"Could not find an entity matching '{target_entity}'.",
+            "metadata": not_found.get("metadata"),
+        }
     await scheduler.schedule(
         logical_name=entity_query,
         kind="delayed_action",
         duration_seconds=seconds,
         origin_device_id=device_id,
         origin_area=area_id,
-        payload={"target_entity": target_entity, "target_action": target_action, "language": language},
+        payload={
+            "target_entity": resolved_entity,
+            "target_action": target_action,
+            "language": language,
+            "agent_id": agent_id,
+        },
     )
     human = _helpers._format_duration_human(seconds)
     return {
@@ -375,7 +454,7 @@ async def _delayed_action(
         "action": action_name,
         "entity_id": None,
         "new_state": "active",
-        "speech": f"Scheduled {target_action.replace('/', ' ')} on {target_entity} in {human}.",
+        "speech": f"Scheduled {target_action.replace('/', ' ')} on {resolved_entity} in {human}.",
     }
 
 
@@ -385,6 +464,11 @@ async def _sleep_timer(
     device_id: str | None,
     area_id: str | None,
     language: str | None,
+    ha_client: Any = None,
+    entity_index: Any = None,
+    entity_matcher: Any = None,
+    agent_id: str | None = None,
+    verbatim_terms: list[str] | None = None,
 ) -> dict:
     action_name = action.get("action", "").lower()
     entity_query = (action.get("entity") or "sleep timer").strip() or "sleep timer"
@@ -414,13 +498,40 @@ async def _sleep_timer(
             "new_state": None,
             "speech": "Timer scheduler is unavailable.",
         }
+    # H-2 schedule-time validation (fail-closed): the media player must
+    # resolve to an entity visible to the scheduling agent.
+    resolved = await resolve_and_validate_entity(
+        media_player_entity,
+        entity_index,
+        entity_matcher,
+        agent_id,
+        _SLEEP_TIMER_DOMAINS,
+        _validate_media_player_domain,
+        preferred_area_id=area_id,
+        verbatim_terms=verbatim_terms,
+    )
+    resolved_player = resolved.get("entity_id")
+    if not resolved_player:
+        not_found = resolved.get("not_found_result") or {}
+        return {
+            "success": False,
+            "entity_id": None,
+            "new_state": None,
+            "speech": not_found.get("speech") or f"Could not find an entity matching '{media_player_entity}'.",
+            "metadata": not_found.get("metadata"),
+        }
     await scheduler.schedule(
         logical_name=entity_query,
         kind="sleep",
         duration_seconds=seconds,
         origin_device_id=device_id,
         origin_area=area_id,
-        payload={"media_player": media_player_entity, "duration": duration, "language": language},
+        payload={
+            "media_player": resolved_player,
+            "duration": duration,
+            "language": language,
+            "agent_id": agent_id,
+        },
     )
     human = _helpers._format_duration_human(seconds)
     return {
@@ -428,7 +539,7 @@ async def _sleep_timer(
         "action": action_name,
         "entity_id": None,
         "new_state": "active",
-        "speech": (f"Sleep timer set for {human}. Media on {media_player_entity} will stop when the timer ends."),
+        "speech": (f"Sleep timer set for {human}. Media on {resolved_player} will stop when the timer ends."),
     }
 
 

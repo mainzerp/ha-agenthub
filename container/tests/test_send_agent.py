@@ -188,5 +188,88 @@ class TestSendAgent:
 
 
 # ---------------------------------------------------------------------------
+# M-19: honest errors on unknown device_type and delivery failures
+# ---------------------------------------------------------------------------
+
+
+class TestSendAgentDeliveryErrors:
+    def _make_send_agent(self):
+        ha_client = AsyncMock()
+        agent = SendAgent(ha_client=ha_client, entity_index=None)
+        return agent, ha_client
+
+    @patch("app.agents.send.SendDeviceMappingRepository")
+    async def test_unknown_device_type_returns_error_not_success(self, mock_repo, monkeypatch):
+        agent, ha_client = self._make_send_agent()
+        mock_repo.find_by_name = AsyncMock(
+            return_value={
+                "display_name": "Laura Handy",
+                "device_type": "pigeon",
+                "ha_service_target": "mobile_app_lauras_iphone",
+            }
+        )
+        monkeypatch.setattr(agent, "_format_content", AsyncMock(return_value="test content"))
+
+        task = _make_task(
+            description=f"send to Laura Handy{_CONTENT_SEPARATOR}Here is the recipe...",
+        )
+        result = await agent.handle_task(task)
+
+        assert result.error is not None
+        assert result.error.code == AgentErrorCode.ACTION_FAILED
+        assert "Content sent" not in result.speech
+        assert "gesendet" not in result.speech
+        ha_client.call_service.assert_not_called()
+
+    @patch("app.agents.send.SendDeviceMappingRepository")
+    async def test_notify_delivery_connectivity_error_maps_to_ha_unavailable(self, mock_repo, monkeypatch):
+        import httpx
+
+        agent, ha_client = self._make_send_agent()
+        mock_repo.find_by_name = AsyncMock(
+            return_value={
+                "display_name": "Laura Handy",
+                "device_type": "notify",
+                "ha_service_target": "mobile_app_lauras_iphone",
+            }
+        )
+        monkeypatch.setattr(agent, "_format_content", AsyncMock(return_value="test content"))
+        ha_client.call_service = AsyncMock(side_effect=httpx.ConnectError("connection refused"))
+
+        task = _make_task(
+            description=f"send to Laura Handy{_CONTENT_SEPARATOR}Here is the recipe...",
+        )
+        result = await agent.handle_task(task)
+
+        assert result.error is not None
+        assert result.error.code == AgentErrorCode.HA_UNAVAILABLE
+        assert "Content sent" not in result.speech
+
+    @patch("app.agents.send.SettingsRepository")
+    @patch("app.agents.send.SendDeviceMappingRepository")
+    async def test_tts_delivery_unexpected_error_maps_to_action_failed(self, mock_repo, mock_settings, monkeypatch):
+        agent, ha_client = self._make_send_agent()
+        mock_repo.find_by_name = AsyncMock(
+            return_value={
+                "display_name": "Satellite Kueche",
+                "device_type": "tts",
+                "ha_service_target": "media_player.satellite_kueche",
+            }
+        )
+        mock_settings.get_value = AsyncMock(return_value="tts.google_translate_say")
+        monkeypatch.setattr(agent, "_format_content", AsyncMock(return_value="short summary"))
+        ha_client.call_service = AsyncMock(side_effect=RuntimeError("unexpected payload"))
+
+        task = _make_task(
+            description=f"sende an Satellite Kueche{_CONTENT_SEPARATOR}Full content here",
+        )
+        result = await agent.handle_task(task)
+
+        assert result.error is not None
+        assert result.error.code == AgentErrorCode.ACTION_FAILED
+        assert "gesendet" not in result.speech
+
+
+# ---------------------------------------------------------------------------
 # Orchestrator Sequential Send
 # ---------------------------------------------------------------------------

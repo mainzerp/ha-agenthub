@@ -408,3 +408,109 @@ class TestUpdateEvent:
 
         assert result["success"] is False
         assert "summary or start_date_time is required" in result["speech"]
+
+
+class TestVerbatimTermsForwarding:
+    """M-15: calendar read paths must forward verbatim_terms to entity resolution."""
+
+    async def test_list_events_forwards_verbatim_terms(self):
+        action = {
+            "action": "list_events",
+            "entity": "Arbeit",
+            "parameters": {
+                "start_date_time": "2026-06-01T00:00:00",
+                "end_date_time": "2026-06-30T23:59:59",
+            },
+        }
+        ha_client = AsyncMock()
+        ha_client.get_calendar_events = AsyncMock(return_value=[])
+        with patch(
+            "app.agents.calendar_executor.resolve_entity_deterministic_first",
+            new_callable=AsyncMock,
+            return_value={
+                "entity_id": "calendar.work",
+                "friendly_name": "Work Calendar",
+                "speech": None,
+                "metadata": {},
+            },
+        ) as mock_resolve:
+            result = await execute_calendar_action(
+                action,
+                ha_client,
+                MagicMock(),
+                MagicMock(),
+                agent_id="calendar-agent",
+                verbatim_terms=["Arbeit"],
+            )
+
+        assert result["success"] is True
+        mock_resolve.assert_awaited_once()
+        assert mock_resolve.call_args.kwargs["verbatim_terms"] == ["Arbeit"]
+
+    async def test_query_event_forwards_verbatim_terms(self):
+        action = {
+            "action": "query_event",
+            "entity": "Arbeit",
+            "parameters": {"summary": "standup"},
+        }
+        ha_client = AsyncMock()
+        ha_client.get_calendar_events = AsyncMock(return_value=[])
+        with patch(
+            "app.agents.calendar_executor.resolve_entity_deterministic_first",
+            new_callable=AsyncMock,
+            return_value={
+                "entity_id": "calendar.work",
+                "friendly_name": "Work Calendar",
+                "speech": None,
+                "metadata": {},
+            },
+        ) as mock_resolve:
+            result = await execute_calendar_action(
+                action,
+                ha_client,
+                MagicMock(),
+                MagicMock(),
+                agent_id="calendar-agent",
+                verbatim_terms=["Arbeit"],
+            )
+
+        assert result["success"] is True
+        mock_resolve.assert_awaited_once()
+        assert mock_resolve.call_args.kwargs["verbatim_terms"] == ["Arbeit"]
+
+
+class TestMalformedCalendarEntityIds:
+    """M-18: corrupt calendar_entity_ids_json falls back to default behavior."""
+
+    async def test_corrupt_profile_row_falls_back_to_defaults(self):
+        from app.agents.calendar import CalendarAgent
+
+        agent = CalendarAgent(ha_client=AsyncMock(), entity_index=None, entity_matcher=None)
+        corrupt_user = {
+            "id": 1,
+            "display_name": "Alice",
+            "calendar_entity_ids_json": "{not valid json",
+        }
+        with (
+            patch(
+                "app.agents.calendar.UserIdentityResolver.resolve_user",
+                new_callable=AsyncMock,
+                return_value=corrupt_user,
+            ),
+            patch(
+                "app.agents.calendar.execute_calendar_action",
+                new_callable=AsyncMock,
+                return_value={"success": True, "entity_id": None, "new_state": None, "speech": "ok"},
+            ) as mock_execute,
+        ):
+            result = await agent._do_execute(
+                {"action": "list_events", "entity": "", "parameters": {}},
+                AsyncMock(),
+                None,
+                None,
+                agent_id="calendar-agent",
+            )
+
+        assert result["success"] is True
+        mock_execute.assert_awaited_once()
+        assert mock_execute.call_args.kwargs["default_calendar_ids"] is None

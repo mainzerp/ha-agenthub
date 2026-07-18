@@ -886,6 +886,8 @@ class TestOrchestratorAgent:
         task.conversation_id = "conv-multi-timeout"
         result = await orch.handle_task(task)
         assert result["speech"]  # should have some content
+        # M-13: no agent actually failed (both recovered via fallback) -- no error key.
+        assert result.get("error") is None
 
     @patch("app.agents.orchestrator.SettingsRepository")
     @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
@@ -915,6 +917,10 @@ class TestOrchestratorAgent:
         assert any(c["done"] for c in chunks)
         # 2 LLM calls: classify + merge
         assert mock_complete.await_count == 2
+        # M-8: the terminal chunk carries the bridge metadata.
+        done = [c for c in chunks if c["done"]][-1]
+        assert done["routed_to"] == "light-agent, music-agent"
+        assert done.get("action_executed") is not None
 
     @patch("app.agents.orchestrator.SettingsRepository")
     @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
@@ -1540,6 +1546,14 @@ class TestOrchestratorAgent:
         assert len(failed) == 1
         assert failed[0]["agent_id"] == "light-agent"
         assert failed[0]["error"] == "timeout"
+        # M-13: partial success is not a turn error -- no error key, and the
+        # failure note is woven in by the LLM merge (not a hardcoded suffix).
+        assert result.get("error") is None
+        assert result["speech"] == "The shelf light is now on."
+        merge_call = mock_complete.call_args_list[-1]
+        merge_user_content = merge_call[0][1][1]["content"]
+        assert "light-agent" in merge_user_content
+        assert "Unreachable agents" in merge_user_content
 
     @patch("app.agents.orchestrator.SettingsRepository")
     @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
@@ -1591,6 +1605,44 @@ class TestOrchestratorAgent:
         assert entry is not None
         _, turns = entry
         assert len(turns) == 2
+
+    @patch("app.agents.orchestrator.SettingsRepository")
+    @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
+    @patch("app.analytics.tracer.create_trace_summary", new_callable=AsyncMock)
+    @patch("app.llm.client.complete", new_callable=AsyncMock)
+    async def test_directive_turn_persists_turn_and_trace(
+        self, mock_complete, mock_trace, mock_track, mock_settings, _mock_conversation_repo
+    ):
+        """M-12: a directive-producing turn persists the turn row and creates a
+        trace before returning (non-streaming pipeline)."""
+        from app.analytics.tracer import SpanCollector
+
+        mock_settings.get_value = AsyncMock(
+            side_effect=lambda k, d=None: {
+                "personality.prompt": "",
+                "language": "en",
+            }.get(k, d)
+        )
+        orch, dispatcher, *_ = self._make_orchestrator()
+        mock_complete.return_value = "timer-agent (95%): Set a timer"
+        dispatcher.dispatch = AsyncMock(
+            return_value={
+                "speech": "Timer set for 5 minutes.",
+                "directive": "start_timer",
+                "reason": "timer_created",
+            }
+        )
+
+        task = _make_task("set a 5 minute timer")
+        task.conversation_id = "conv-directive"
+        task.span_collector = SpanCollector("trace-directive")
+        result = await orch.handle_task(task)
+
+        assert result["directive"] == "start_timer"
+        assert result["reason"] == "timer_created"
+        _mock_conversation_repo.insert.assert_awaited_once()
+        assert _mock_conversation_repo.insert.await_args.kwargs["response_text"] == "Timer set for 5 minutes."
+        mock_trace.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------
@@ -2392,7 +2444,9 @@ class TestStreamMediatedSpeech:
         assert final[0]["mediated_speech"] == "Light is on."
 
     async def test_stream_mediate_with_reminder_empty_personality(self):
-        """Empty personality with a reminder yields the reminder directly."""
+        """Empty personality yields nothing -- the reminder-only case is handled
+        by the blocking mediation path (M-9), never by streaming the reminder
+        as the sole token."""
         orch, _, _ = self._make_orchestrator()
         with patch.object(orch, "_get_personality_cached", new_callable=AsyncMock, return_value=""):
             tokens = [
@@ -2404,7 +2458,7 @@ class TestStreamMediatedSpeech:
                     reminder_text="Don't forget your meeting!",
                 )
             ]
-        assert tokens == ["Don't forget your meeting!"]
+        assert tokens == []
 
     async def test_stream_mediate_with_personality_yields_tokens(self):
         """Non-empty personality streams tokens from the LLM."""

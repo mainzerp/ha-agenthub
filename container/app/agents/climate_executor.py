@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
@@ -16,7 +17,7 @@ from app.agents.executor_state_check import _state_matches
 from app.analytics.tracer import _optional_span
 from app.entity.deterministic_resolver import resolve_entity_deterministic_first
 from app.entity.matcher import MatchResult
-from app.entity.visibility import filter_visible_results
+from app.entity.visibility import entity_is_visible, filter_visible_results
 from app.ha_client.history_query import execute_recorder_history_query
 from app.models.agent import TaskContext
 
@@ -408,7 +409,7 @@ async def _query_climate_state(
         }
 
 
-async def _list_climate(ha_client: Any) -> dict:
+async def _list_climate(ha_client: Any, agent_id: str | None = None, entity_index: Any = None) -> dict:
     try:
         states = await ha_client.get_states()
     except Exception as exc:
@@ -435,6 +436,17 @@ async def _list_climate(ha_client: Any) -> dict:
             humidifier_entities.append(s)
         elif eid.startswith("sensor.") and any(k in eid for k in _sensor_keywords):
             sensors.append(s)
+
+    if agent_id and entity_index is not None:
+        candidates = climate_entities + fan_entities + humidifier_entities + sensors
+        visibility = await asyncio.gather(
+            *[entity_is_visible(agent_id, s.get("entity_id", ""), entity_index) for s in candidates]
+        )
+        visible_ids = {s.get("entity_id", "") for s, ok in zip(candidates, visibility, strict=True) if ok}
+        climate_entities = [s for s in climate_entities if s.get("entity_id", "") in visible_ids]
+        fan_entities = [s for s in fan_entities if s.get("entity_id", "") in visible_ids]
+        humidifier_entities = [s for s in humidifier_entities if s.get("entity_id", "") in visible_ids]
+        sensors = [s for s in sensors if s.get("entity_id", "") in visible_ids]
 
     if not climate_entities and not fan_entities and not humidifier_entities and not sensors:
         return {"success": True, "entity_id": "", "new_state": None, "speech": "No climate devices or sensors found."}
@@ -904,7 +916,7 @@ async def _handle_climate_read_action(
             action=action,
         )
     if action_name == "list_climate":
-        return await _list_climate(ha_client)
+        return await _list_climate(ha_client, agent_id=agent_id, entity_index=entity_index)
     if action_name == "query_weather":
         return await _query_weather(
             entity_query,

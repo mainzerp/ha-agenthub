@@ -22,6 +22,7 @@ Failure handling:
 - If an agent failed or had no useful response, acknowledge it briefly.
 - If an agent's status is [no action executed], do NOT claim that action was completed.
 - Input format: each agent line looks like '- <agent_id> [action executed|no action executed]: <speech>'.
+- If an "Unreachable agents:" line is provided, briefly note that those agents could not be reached, in the SAME LANGUAGE as the user's question. Do not invent reasons for the failure.
 
 Language:
 - Respond in the SAME LANGUAGE as the user's question (the "User asked:" line).

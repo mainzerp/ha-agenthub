@@ -181,6 +181,45 @@ async def test_full_hit_skips_both_classify_and_dispatch():
 
 
 @pytest.mark.asyncio
+async def test_streamed_full_hit_done_chunk_carries_bridge_metadata():
+    """M-7: streamed action-replay hit -> done chunk carries routed_to +
+    action_executed (+ voice_followup when true)."""
+    cache_manager = MagicMock()
+    cache_manager.apply_rewrite = AsyncMock(return_value="Cached speech")
+    orch = _make_orchestrator(cache_manager)
+    action_hit = ActionReplayOutcome(
+        kind="full_hit",
+        entry_id="action-1",
+        agent_id="light-agent",
+        response_text="Cached speech",
+        replay_result={"success": True},
+        similarity=1.0,
+    )
+    orch._cache_orchestrator.try_cache_replay = AsyncMock(return_value=(action_hit, None))
+    orch._finalize_action_replay_hit = AsyncMock(
+        return_value={
+            "speech": "Cached speech",
+            "routed_to": "light-agent",
+            "action_executed": {"success": True},
+            "voice_followup": True,
+        }
+    )
+    orch._classification_engine.classify = AsyncMock(
+        side_effect=AssertionError("classification should be skipped on full hit")
+    )
+
+    chunks = [c async for c in orch.handle_task_stream(_make_task("turn on kitchen light"))]
+
+    assert len(chunks) == 1
+    done = chunks[0]
+    assert done["done"] is True
+    assert done["routed_to"] == "light-agent"
+    assert done["action_executed"] == {"success": True}
+    assert done["voice_followup"] is True
+    assert done["mediated_speech"] == "Cached speech"
+
+
+@pytest.mark.asyncio
 async def test_full_hit_rewrite_receives_user_text():
     cache_manager = MagicMock()
     cache_manager.apply_rewrite = AsyncMock(return_value="German speech")

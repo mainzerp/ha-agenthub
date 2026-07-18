@@ -81,6 +81,51 @@ class TestWsAdvanced:
         assert result is not None
         assert result.get("error") == "Rate limit exceeded"
         assert "retry_after_ms" in result
+        # M-1: the rejection is a terminal frame so the HA read loop ends.
+        assert result.get("done") is True
+
+    async def test_ws_invalid_json_returns_terminal_error_frame(self, light_scenario_app):
+        """M-1: an invalid payload yields a done=True error frame so the HA
+        read loop terminates instead of hanging until timeout."""
+        from fastapi.testclient import TestClient
+
+        def _send_bad():
+            with (
+                TestClient(light_scenario_app) as c,
+                c.websocket_connect(
+                    "/ws/conversation",
+                    headers={"Authorization": "Bearer test-api-key"},
+                ) as ws,
+            ):
+                ws.send_text("this is not json")
+                return ws.receive_json()
+
+        frame = await asyncio.to_thread(_send_bad)
+        assert frame.get("done") is True
+        assert frame.get("error") == "Invalid request"
+
+    async def test_ws_oversized_message_returns_terminal_error_frame(self, light_scenario_app):
+        """M-1: an oversized payload yields a done=True error frame."""
+        import json as _json
+
+        from fastapi.testclient import TestClient
+
+        oversized = _json.dumps({"text": "x" * 20_000})
+
+        def _send_big():
+            with (
+                TestClient(light_scenario_app) as c,
+                c.websocket_connect(
+                    "/ws/conversation",
+                    headers={"Authorization": "Bearer test-api-key"},
+                ) as ws,
+            ):
+                ws.send_text(oversized)
+                return ws.receive_json()
+
+        frame = await asyncio.to_thread(_send_big)
+        assert frame.get("done") is True
+        assert frame.get("error") == "Message too large"
 
     async def test_ws_filler_push_flow(self, light_scenario_app):
         """Mock dispatcher yields a filler token with filler_push; assert mid-stream shape."""

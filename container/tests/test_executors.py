@@ -1134,14 +1134,19 @@ class TestAutomationExecutorCrud:
         assert result["metadata"]["resolution_path"] == "llm_entity_id"
         ha.get_state.assert_awaited_once_with("automation.motion_sensor")
 
-    async def test_list_automations_shows_agenthub_marker(self):
+    async def test_list_automations_speech_uses_friendly_names_only(self):
+        """M-17: list_automations speech must not leak config ids or last_triggered."""
         ha = AsyncMock()
         ha.get_states = AsyncMock(
             return_value=[
                 {
                     "entity_id": "automation.morning_routine",
                     "state": "on",
-                    "attributes": {"friendly_name": "Morning Routine", "id": "ah_test"},
+                    "attributes": {
+                        "friendly_name": "Morning Routine",
+                        "id": "ah_test",
+                        "last_triggered": "2024-01-15T10:30:00",
+                    },
                 },
                 {
                     "entity_id": "automation.night_mode",
@@ -1158,7 +1163,11 @@ class TestAutomationExecutorCrud:
             agent_id="automation-agent",
         )
         assert result["success"] is True
-        assert "AgentHub" in result["speech"]
+        assert "Morning Routine" in result["speech"]
+        assert "Night Mode" in result["speech"]
+        assert "AgentHub" not in result["speech"]
+        assert "ah_test" not in result["speech"]
+        assert "last triggered" not in result["speech"]
 
 
 class TestSceneExecutorQueries:
@@ -1692,6 +1701,102 @@ class TestMediaExecutorQueries:
         )
         assert result["success"]
         assert "No media" in result["speech"]
+
+
+# ---------------------------------------------------------------------------
+# M-17: list_* read handlers must exclude entities hidden from the agent
+# ---------------------------------------------------------------------------
+
+
+class TestListVisibilityFiltering:
+    """list_automations / list_media_players / list_music_players filter by visibility."""
+
+    async def test_list_automations_excludes_hidden_entities(self, monkeypatch):
+        ha = AsyncMock()
+        ha.get_states = AsyncMock(
+            return_value=[
+                {
+                    "entity_id": "automation.morning_routine",
+                    "state": "on",
+                    "attributes": {"friendly_name": "Morning Routine"},
+                },
+                {"entity_id": "automation.night_mode", "state": "off", "attributes": {"friendly_name": "Night Mode"}},
+            ]
+        )
+        monkeypatch.setattr(
+            "app.agents.automation_executor.entity_is_visible",
+            AsyncMock(side_effect=lambda agent_id, entity_id, entity_index: entity_id != "automation.night_mode"),
+        )
+        result = await execute_automation_action(
+            {"action": "list_automations", "entity": ""},
+            ha,
+            MagicMock(),
+            None,
+            agent_id="automation-agent",
+        )
+        assert result["success"] is True
+        assert "Morning Routine" in result["speech"]
+        assert "Night Mode" not in result["speech"]
+
+    async def test_list_media_players_excludes_hidden_entities(self, monkeypatch):
+        ha = AsyncMock()
+        ha.get_states = AsyncMock(
+            return_value=[
+                {
+                    "entity_id": "media_player.living_room_tv",
+                    "state": "off",
+                    "attributes": {"friendly_name": "Living Room TV"},
+                },
+                {"entity_id": "media_player.chromecast", "state": "off", "attributes": {"friendly_name": "Chromecast"}},
+            ]
+        )
+        monkeypatch.setattr(
+            "app.agents.media_executor.entity_is_visible",
+            AsyncMock(side_effect=lambda agent_id, entity_id, entity_index: entity_id != "media_player.chromecast"),
+        )
+        result = await execute_media_action(
+            {"action": "list_media_players", "entity": ""},
+            ha,
+            MagicMock(),
+            None,
+            agent_id="media-agent",
+        )
+        assert result["success"] is True
+        assert "Living Room TV" in result["speech"]
+        assert "Chromecast" not in result["speech"]
+
+    async def test_list_music_players_excludes_hidden_entities(self, monkeypatch):
+        ha = AsyncMock()
+        ha.get_states = AsyncMock(
+            return_value=[
+                {
+                    "entity_id": "media_player.kitchen_speaker",
+                    "state": "playing",
+                    "attributes": {"friendly_name": "Kitchen Speaker"},
+                },
+                {
+                    "entity_id": "media_player.bedroom_speaker",
+                    "state": "idle",
+                    "attributes": {"friendly_name": "Bedroom Speaker"},
+                },
+            ]
+        )
+        monkeypatch.setattr(
+            "app.agents.music_executor.entity_is_visible",
+            AsyncMock(
+                side_effect=lambda agent_id, entity_id, entity_index: entity_id != "media_player.bedroom_speaker"
+            ),
+        )
+        result = await execute_music_action(
+            {"action": "list_music_players", "entity": ""},
+            ha,
+            MagicMock(),
+            None,
+            agent_id="music-agent",
+        )
+        assert result["success"] is True
+        assert "Kitchen Speaker" in result["speech"]
+        assert "Bedroom Speaker" not in result["speech"]
 
 
 # ---------------------------------------------------------------------------

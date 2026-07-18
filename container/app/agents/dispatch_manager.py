@@ -158,6 +158,9 @@ class DispatchManager:
             context.source = incoming_context.source
             context.language = incoming_context.language
             context.injection_detected = incoming_context.injection_detected
+            # M-16: preserve the sequential-send marker across the context
+            # rebuild so dispatched agents see the same flag.
+            context.sequential_send = incoming_context.sequential_send
         if resolved_language:
             context.language = resolved_language
 

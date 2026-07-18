@@ -72,6 +72,7 @@ function chatPage() {
         conversationId: null,
         streaming: false,
         streamBuffer: '',
+        streamError: null,
 
         init() {
             this.$nextTick(() => {
@@ -86,6 +87,7 @@ function chatPage() {
             this.input = '';
             this.streaming = false;
             this.streamBuffer = '';
+            this.streamError = null;
         },
 
         scrollToBottom() {
@@ -105,6 +107,7 @@ function chatPage() {
 
             this.streaming = true;
             this.streamBuffer = '';
+            this.streamError = null;
 
             try {
                 const resp = await window.dashboardApi.request('/api/admin/chat/stream', {
@@ -138,6 +141,13 @@ function chatPage() {
                                 this.scrollToBottom();
                                 continue;
                             }
+                            if (data.filler_push) {
+                                // Container-pushed filler played outside the
+                                // pipeline: render like a filler frame.
+                                this.messages.push({ role: 'filler', text: data.filler_push });
+                                this.scrollToBottom();
+                                continue;
+                            }
                             if (data.status === 'multi_agent') {
                                 const agentList = (data.agents || []).join(', ');
                                 this.streamBuffer = 'Working with multiple agents: ' + agentList + '...';
@@ -155,6 +165,9 @@ function chatPage() {
                                 if (data.mediated_speech) {
                                     this.streamBuffer = data.mediated_speech;
                                 }
+                                if (data.error) {
+                                    this.streamError = data.error;
+                                }
                             }
                         } catch (e) {
                             // Ignore parse errors on partial chunks
@@ -164,6 +177,10 @@ function chatPage() {
 
                 if (this.streamBuffer) {
                     this.messages.push({ role: 'assistant', text: this.streamBuffer });
+                } else if (this.streamError) {
+                    // Terminal error with no spoken answer: show the error
+                    // instead of a misleading "(empty response)".
+                    this.messages.push({ role: 'error', text: this.streamError });
                 } else {
                     this.messages.push({ role: 'assistant', text: '(empty response)' });
                 }

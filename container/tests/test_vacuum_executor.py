@@ -233,3 +233,44 @@ class TestQueryVacuumStateDirectEntityId:
         assert result["success"] is False
         assert "Could not find" in result["speech"]
         ha_client.get_state.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# M-17: list_vacuums must exclude entities hidden from the agent
+# ---------------------------------------------------------------------------
+
+
+class TestListVacuumsVisibility:
+    @pytest.mark.asyncio
+    async def test_list_vacuums_excludes_hidden_entities(self, monkeypatch):
+        ha_client = AsyncMock()
+        ha_client.get_states = AsyncMock(
+            return_value=[
+                {
+                    "entity_id": "vacuum.robert",
+                    "state": "docked",
+                    "attributes": {"friendly_name": "Robert", "battery_level": 95},
+                },
+                {
+                    "entity_id": "vacuum.upstairs",
+                    "state": "cleaning",
+                    "attributes": {"friendly_name": "Upstairs Vacuum"},
+                },
+            ]
+        )
+        monkeypatch.setattr(
+            "app.agents.vacuum_executor.entity_is_visible",
+            AsyncMock(side_effect=lambda agent_id, entity_id, entity_index: entity_id != "vacuum.upstairs"),
+        )
+
+        result = await execute_vacuum_action(
+            {"action": "list_vacuums", "entity": ""},
+            ha_client,
+            MagicMock(),
+            None,
+            agent_id="vacuum-agent",
+        )
+
+        assert result["success"] is True
+        assert "Robert" in result["speech"]
+        assert "Upstairs Vacuum" not in result["speech"]

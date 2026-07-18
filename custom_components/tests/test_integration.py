@@ -873,3 +873,133 @@ class TestSetupEntryErrors:
 
         with pytest.raises(ConfigEntryError):
             await async_setup_entry(hass, entry)
+
+
+# ---------------------------------------------------------------------------
+# 5.3.13 user_id forwarding to the container (M-5)
+# ---------------------------------------------------------------------------
+
+
+class TestUserIdForwarding:
+    """_resolve_origin_context forwards user_id; WS and REST payloads carry it."""
+
+    def _make_entity(self):
+        from custom_components.ha_agenthub.conversation import (
+            HaAgentHubConversationEntity,
+        )
+
+        entry = MagicMock()
+        entry.entry_id = "test-entry"
+        entry.options = {}
+        entry.async_create_background_task = MagicMock(return_value=MagicMock())
+        entry.async_on_unload = MagicMock()
+        return HaAgentHubConversationEntity(entry, "http://example.com", "key")
+
+    def _make_user_input(self, context=None):
+        user_input = MagicMock()
+        user_input.text = "hello"
+        user_input.conversation_id = "c1"
+        user_input.language = "en"
+        user_input.device_id = None
+        user_input.context = context
+        return user_input
+
+    class _FakeResponse:
+        def __init__(self, status, payload=None):
+            self.status = status
+            self._payload = payload or {}
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def json(self):
+            return self._payload
+
+    class _FakeSession:
+        closed = False
+
+        def __init__(self, response):
+            self._response = response
+            self.posted_payload = None
+
+        def post(self, *args, **kwargs):
+            self.posted_payload = kwargs.get("json")
+            return self._response
+
+    async def _run_ws(self, entity, user_input):
+        entity._ws = MagicMock()
+        entity._ws.send_json = AsyncMock()
+        entity._ws.receive = AsyncMock(
+            return_value=MagicMock(type=1, data='{"done": true, "token": "hi"}')
+        )
+        with (
+            patch(
+                "custom_components.ha_agenthub.conversation.aiohttp.WSMsgType",
+                type("WSMsgType", (), {"TEXT": 1}),
+            ),
+            patch(
+                "custom_components.ha_agenthub.conversation.asyncio.wait_for",
+                new=AsyncMock(),
+            ) as mock_wait,
+        ):
+            mock_wait.return_value = entity._ws.receive.return_value
+            await entity._process_via_ws(user_input)
+        return entity._ws.send_json.call_args.args[0]
+
+    def test_origin_context_includes_user_id(self):
+        entity = self._make_entity()
+        context = MagicMock()
+        context.user_id = "user-123"
+        extra = entity._resolve_origin_context(self._make_user_input(context))
+        assert extra["user_id"] == "user-123"
+
+    def test_origin_context_omits_user_id_without_context(self):
+        entity = self._make_entity()
+        extra = entity._resolve_origin_context(self._make_user_input(None))
+        assert "user_id" not in extra
+
+    def test_origin_context_omits_falsy_user_id(self):
+        entity = self._make_entity()
+        context = MagicMock()
+        context.user_id = None
+        extra = entity._resolve_origin_context(self._make_user_input(context))
+        assert "user_id" not in extra
+
+    @pytest.mark.asyncio
+    async def test_ws_payload_includes_user_id(self):
+        entity = self._make_entity()
+        context = MagicMock()
+        context.user_id = "user-123"
+        payload = await self._run_ws(entity, self._make_user_input(context))
+        assert payload["user_id"] == "user-123"
+
+    @pytest.mark.asyncio
+    async def test_ws_payload_omits_user_id_without_context(self):
+        entity = self._make_entity()
+        payload = await self._run_ws(entity, self._make_user_input(None))
+        assert "user_id" not in payload
+
+    @pytest.mark.asyncio
+    async def test_rest_payload_includes_user_id(self):
+        entity = self._make_entity()
+        session = self._FakeSession(
+            self._FakeResponse(200, {"speech": "ok", "conversation_id": "c1"})
+        )
+        entity._session = session
+        context = MagicMock()
+        context.user_id = "user-123"
+        await entity._process_via_rest(self._make_user_input(context))
+        assert session.posted_payload["user_id"] == "user-123"
+
+    @pytest.mark.asyncio
+    async def test_rest_payload_omits_user_id_without_context(self):
+        entity = self._make_entity()
+        session = self._FakeSession(
+            self._FakeResponse(200, {"speech": "ok", "conversation_id": "c1"})
+        )
+        entity._session = session
+        await entity._process_via_rest(self._make_user_input(None))
+        assert "user_id" not in session.posted_payload

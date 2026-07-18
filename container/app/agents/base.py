@@ -211,7 +211,7 @@ class BaseAgent(ABC):
                 chunk["reason"] = result.reason
         else:
             chunk = {
-                "token": result.get("speech", ""),
+                "token": result.get("speech") or "",
                 "done": True,
                 "conversation_id": task.conversation_id,
             }

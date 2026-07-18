@@ -23,14 +23,15 @@ class TestHandleBackgroundEvent:
         event.payload = {}
         result = await ba.handle_background_event(event, ha_client=ha_client)
         assert result["speech"] == ""
-        assert result["error"]["code"] == "parse_error"
-        assert "unsupported" in result["error"]["message"].lower()
+        # Phase-1 contract: error is a plain string message.
+        assert isinstance(result["error"], str)
+        assert "unsupported" in result["error"].lower()
 
         # sleep_media_stop with empty media_player
         event = BackgroundEvent(event_type="sleep_media_stop", payload={"media_player": ""})
         result = await ba.handle_background_event(event, ha_client=ha_client)
-        assert result["error"]["code"] == "parse_error"
-        assert "incomplete" in result["error"]["message"].lower()
+        assert isinstance(result["error"], str)
+        assert "incomplete" in result["error"].lower()
 
 
 class TestSpawnVoiceFollowup:

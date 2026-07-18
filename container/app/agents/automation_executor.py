@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 import uuid
@@ -16,6 +17,7 @@ from app.agents.action_executor import (
 )
 from app.analytics.tracer import _optional_span
 from app.entity.deterministic_resolver import resolve_entity_deterministic_first
+from app.entity.visibility import entity_is_visible
 
 logger = logging.getLogger(__name__)
 
@@ -354,7 +356,7 @@ async def _query_automation_state(
         }
 
 
-async def _list_automations(ha_client: Any) -> dict:
+async def _list_automations(ha_client: Any, agent_id: str | None = None, entity_index: Any = None) -> dict:
     try:
         states = await ha_client.get_states()
     except Exception as exc:
@@ -362,6 +364,11 @@ async def _list_automations(ha_client: Any) -> dict:
         return {"success": False, "entity_id": "", "new_state": None, "speech": f"Failed to list automations: {exc}"}
 
     automations = [s for s in states if s.get("entity_id", "").startswith("automation.")]
+    if agent_id and entity_index is not None:
+        visibility = await asyncio.gather(
+            *[entity_is_visible(agent_id, s.get("entity_id", ""), entity_index) for s in automations]
+        )
+        automations = [s for s, ok in zip(automations, visibility, strict=True) if ok]
 
     if not automations:
         return {"success": True, "entity_id": "", "new_state": None, "speech": "No automation entities found."}
@@ -369,20 +376,11 @@ async def _list_automations(ha_client: Any) -> dict:
     enabled = []
     disabled = []
     for a in automations:
-        attrs = a.get("attributes", {})
-        name = attrs.get("friendly_name", a.get("entity_id", ""))
-        state = a.get("state", "unknown")
-        last_triggered = attrs.get("last_triggered")
-        config_id = attrs.get("id", "")
-        info = name
-        if config_id and config_id.startswith("ah_"):
-            info += " (AgentHub)"
-        if last_triggered:
-            info += f" (last triggered: {last_triggered})"
-        if state == "on":
-            enabled.append(info)
+        name = a.get("attributes", {}).get("friendly_name", a.get("entity_id", ""))
+        if a.get("state", "unknown") == "on":
+            enabled.append(name)
         else:
-            disabled.append(info)
+            disabled.append(name)
 
     parts = []
     if enabled:
@@ -417,7 +415,7 @@ async def _handle_automation_read_action(
             action=action,
         )
     if action_name == "list_automations":
-        return await _list_automations(ha_client)
+        return await _list_automations(ha_client, agent_id=agent_id, entity_index=entity_index)
     return {"success": False, "entity_id": "", "new_state": None, "speech": f"Unknown read action: {action_name}"}
 
 

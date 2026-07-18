@@ -67,6 +67,7 @@ async def execute_calendar_action(
             entity_matcher,
             agent_id,
             span_collector,
+            verbatim_terms=verbatim_terms,
             default_calendar_ids=default_calendar_ids,
         )
     if action_name == "query_event":
@@ -77,6 +78,7 @@ async def execute_calendar_action(
             entity_matcher,
             agent_id,
             span_collector,
+            verbatim_terms=verbatim_terms,
             default_calendar_ids=default_calendar_ids,
         )
     if action_name == "create_event":
@@ -193,6 +195,7 @@ async def _list_events(
     entity_matcher: Any,
     agent_id: str | None,
     span_collector=None,
+    verbatim_terms: list[str] | None = None,
     default_calendar_ids: list[str] | None = None,
 ) -> dict:
     params = action.get("parameters") or {}
@@ -214,6 +217,7 @@ async def _list_events(
         entity_matcher,
         agent_id,
         span_collector,
+        verbatim_terms=verbatim_terms,
         default_calendar_ids=default_calendar_ids,
     )
     if error:
@@ -261,6 +265,7 @@ async def _query_event(
     entity_matcher: Any,
     agent_id: str | None,
     span_collector=None,
+    verbatim_terms: list[str] | None = None,
     default_calendar_ids: list[str] | None = None,
 ) -> dict:
     params = action.get("parameters") or {}
@@ -281,6 +286,7 @@ async def _query_event(
         entity_matcher,
         agent_id,
         span_collector,
+        verbatim_terms=verbatim_terms,
         default_calendar_ids=default_calendar_ids,
     )
     if error:

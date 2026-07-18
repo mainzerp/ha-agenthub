@@ -295,3 +295,44 @@ class TestQueryWeatherDirectEntityId:
         assert result["entity_id"] == "weather.home"
         assert result["metadata"]["resolution_path"] == "llm_entity_id"
         ha_client.get_state.assert_awaited_once_with("weather.home")
+
+
+# ---------------------------------------------------------------------------
+# M-17: list_climate must exclude entities hidden from the agent
+# ---------------------------------------------------------------------------
+
+
+class TestListClimateVisibility:
+    @pytest.mark.asyncio
+    async def test_list_climate_excludes_hidden_entities(self, monkeypatch):
+        ha_client = AsyncMock()
+        ha_client.get_states = AsyncMock(
+            return_value=[
+                {
+                    "entity_id": "climate.living_room",
+                    "state": "heat",
+                    "attributes": {"friendly_name": "Living Room", "current_temperature": 21.0},
+                },
+                {
+                    "entity_id": "climate.bedroom",
+                    "state": "off",
+                    "attributes": {"friendly_name": "Bedroom Thermostat"},
+                },
+            ]
+        )
+        monkeypatch.setattr(
+            "app.agents.climate_executor.entity_is_visible",
+            AsyncMock(side_effect=lambda agent_id, entity_id, entity_index: entity_id != "climate.bedroom"),
+        )
+
+        result = await execute_climate_action(
+            {"action": "list_climate", "entity": ""},
+            ha_client,
+            MagicMock(),
+            None,
+            agent_id="climate-agent",
+        )
+
+        assert result["success"] is True
+        assert "Living Room" in result["speech"]
+        assert "Bedroom Thermostat" not in result["speech"]

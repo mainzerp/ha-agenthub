@@ -545,6 +545,144 @@ class TestDelayedAction:
         assert result["success"] is False
         assert "unavailable" in result["speech"].lower()
 
+    async def test_delayed_action_rejects_disallowed_domain(self):
+        """H-2: schedule-time reject of a non-write-capable target_action domain."""
+        scheduler = MagicMock()
+        scheduler.schedule = AsyncMock()
+        with patch("app.agents.timer_executor._helpers._get_scheduler", return_value=scheduler):
+            result = await execute_timer_action(
+                {
+                    "action": "delayed_action",
+                    "entity": "",
+                    "parameters": {
+                        "delay_duration": "00:05:00",
+                        "target_entity": "notify.all",
+                        "target_action": "notify/send",
+                    },
+                },
+                AsyncMock(),
+                None,
+                None,
+                agent_id="timer-agent",
+            )
+        assert result["success"] is False
+        assert "not supported" in result["speech"]
+        scheduler.schedule.assert_not_called()
+
+    async def test_delayed_action_rejects_unknown_entity(self):
+        """H-2: schedule-time reject when the target entity cannot be resolved
+        (fail-closed: no entity index/matcher means no resolution)."""
+        scheduler = MagicMock()
+        scheduler.schedule = AsyncMock()
+        with patch("app.agents.timer_executor._helpers._get_scheduler", return_value=scheduler):
+            result = await execute_timer_action(
+                {
+                    "action": "delayed_action",
+                    "entity": "",
+                    "parameters": {
+                        "delay_duration": "00:05:00",
+                        "target_entity": "light.does_not_exist",
+                        "target_action": "light/turn_off",
+                    },
+                },
+                AsyncMock(),
+                None,
+                None,
+                agent_id="timer-agent",
+            )
+        assert result["success"] is False
+        assert "Could not find" in result["speech"]
+        scheduler.schedule.assert_not_called()
+
+    async def test_delayed_action_rejects_invisible_entity(self):
+        """H-2: schedule-time reject when resolution fails (e.g. entity hidden
+        from the agent) -- the schedule is never created."""
+        scheduler = MagicMock()
+        scheduler.schedule = AsyncMock()
+        not_found_resolution = {
+            "entity_id": None,
+            "friendly_name": "light.secret",
+            "resolution": {},
+            "not_found_result": {
+                "success": False,
+                "entity_id": None,
+                "new_state": None,
+                "speech": "Could not find an entity matching 'light.secret'.",
+                "metadata": None,
+            },
+        }
+        with (
+            patch("app.agents.timer_executor._helpers._get_scheduler", return_value=scheduler),
+            patch(
+                "app.agents.timer_executor._timers.resolve_and_validate_entity",
+                new=AsyncMock(return_value=not_found_resolution),
+            ),
+        ):
+            result = await execute_timer_action(
+                {
+                    "action": "delayed_action",
+                    "entity": "",
+                    "parameters": {
+                        "delay_duration": "00:05:00",
+                        "target_entity": "light.secret",
+                        "target_action": "light/turn_off",
+                    },
+                },
+                AsyncMock(),
+                MagicMock(),
+                MagicMock(),
+                agent_id="timer-agent",
+            )
+        assert result["success"] is False
+        assert "Could not find" in result["speech"]
+        scheduler.schedule.assert_not_called()
+
+    async def test_delayed_action_schedules_resolved_entity(self):
+        """H-2: a resolvable, visible target is scheduled with the RESOLVED
+        entity_id and the scheduling agent_id in the payload."""
+        scheduler = MagicMock()
+        scheduler.schedule = AsyncMock(return_value="timer-1")
+        resolved = {
+            "entity_id": "light.kitchen_ceiling",
+            "friendly_name": "Kitchen Ceiling",
+            "resolution": {},
+            "not_found_result": None,
+        }
+        with (
+            patch("app.agents.timer_executor._helpers._get_scheduler", return_value=scheduler),
+            patch(
+                "app.agents.timer_executor._timers.resolve_and_validate_entity",
+                new=AsyncMock(return_value=resolved),
+            ) as mock_resolve,
+        ):
+            result = await execute_timer_action(
+                {
+                    "action": "delayed_action",
+                    "entity": "kitchen light",
+                    "parameters": {
+                        "delay_duration": "00:05:00",
+                        "target_entity": "kitchen light",
+                        "target_action": "light/turn_off",
+                    },
+                },
+                AsyncMock(),
+                MagicMock(),
+                MagicMock(),
+                agent_id="timer-agent",
+                device_id="satellite_kitchen",
+                area_id="kitchen",
+                verbatim_terms=["kitchen light"],
+            )
+        assert result["success"] is True
+        mock_resolve.assert_awaited_once()
+        resolve_args = mock_resolve.await_args
+        assert resolve_args.args[0] == "kitchen light"
+        assert resolve_args.kwargs.get("verbatim_terms") == ["kitchen light"]
+        scheduler.schedule.assert_awaited_once()
+        schedule_kwargs = scheduler.schedule.await_args.kwargs
+        assert schedule_kwargs["payload"]["target_entity"] == "light.kitchen_ceiling"
+        assert schedule_kwargs["payload"]["agent_id"] == "timer-agent"
+
 
 class TestSleepTimer:
     async def test_sleep_timer_scheduler_none(self):
@@ -562,6 +700,26 @@ class TestSleepTimer:
             )
         assert result["success"] is False
         assert "unavailable" in result["speech"].lower()
+
+    async def test_sleep_timer_rejects_unknown_media_player(self):
+        """H-2: schedule-time reject when the media player cannot be resolved."""
+        scheduler = MagicMock()
+        scheduler.schedule = AsyncMock()
+        with patch("app.agents.timer_executor._helpers._get_scheduler", return_value=scheduler):
+            result = await execute_timer_action(
+                {
+                    "action": "sleep_timer",
+                    "entity": "",
+                    "parameters": {"duration": "00:30:00", "media_player": "media_player.ghost"},
+                },
+                AsyncMock(),
+                None,
+                None,
+                agent_id="timer-agent",
+            )
+        assert result["success"] is False
+        assert "Could not find" in result["speech"]
+        scheduler.schedule.assert_not_called()
 
 
 class TestPauseOrResume:

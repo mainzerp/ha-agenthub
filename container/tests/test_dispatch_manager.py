@@ -219,3 +219,22 @@ class TestDispatchManagerStandalone:
         )
         assert speech == "Fallback answered after timeout."
         assert agent_id == "general-agent"
+
+    @patch("app.agents.dispatch_manager.track_request", new_callable=AsyncMock)
+    async def test_dispatch_single_preserves_sequential_send_context(self, mock_track_request):
+        """M-16: dispatch_single carries sequential_send into the rebuilt TaskContext."""
+        from app.models.agent import TaskContext
+
+        dm, dispatcher, _ = self._make_dispatch_manager(dispatch_side_effect=[{"speech": "ok"}])
+        incoming = TaskContext(sequential_send=True, source="api")
+        await dm.dispatch_single(
+            target_agent="light-agent",
+            condensed_task="summarize",
+            user_text="summarize and send",
+            conversation_id="conv-seq-ctx",
+            turns=[],
+            span_collector=[],
+            incoming_context=incoming,
+        )
+        request = dispatcher.dispatch.await_args.args[0]
+        assert request.params["task"].context.sequential_send is True

@@ -293,3 +293,44 @@ class TestDirectEntityIdVisibility:
         assert result["success"] is True
         assert result["entity_id"] == "cover.garage"
         ha_client.get_state.assert_awaited_once_with("cover.garage")
+
+
+# ---------------------------------------------------------------------------
+# M-17: list_covers must exclude entities hidden from the agent
+# ---------------------------------------------------------------------------
+
+
+class TestListCoversVisibility:
+    @pytest.mark.asyncio
+    async def test_list_covers_excludes_hidden_entities(self, monkeypatch):
+        ha_client = AsyncMock()
+        ha_client.get_states = AsyncMock(
+            return_value=[
+                {
+                    "entity_id": "cover.garage",
+                    "state": "open",
+                    "attributes": {"friendly_name": "Garage Cover", "current_position": 80},
+                },
+                {
+                    "entity_id": "cover.bedroom_blinds",
+                    "state": "closed",
+                    "attributes": {"friendly_name": "Bedroom Blinds"},
+                },
+            ]
+        )
+        monkeypatch.setattr(
+            "app.agents.cover_executor.entity_is_visible",
+            AsyncMock(side_effect=lambda agent_id, entity_id, entity_index: entity_id != "cover.bedroom_blinds"),
+        )
+
+        result = await execute_cover_action(
+            {"action": "list_covers", "entity": ""},
+            ha_client,
+            MagicMock(),
+            None,
+            agent_id="cover-agent",
+        )
+
+        assert result["success"] is True
+        assert "Garage Cover" in result["speech"]
+        assert "Bedroom Blinds" not in result["speech"]

@@ -457,9 +457,13 @@ class TestKindDispatch:
                 logical_name="lights off",
                 kind="delayed_action",
                 duration_seconds=0,
+                origin_device_id="device-9",
+                origin_area="kitchen",
                 payload={
                     "target_entity": "light.kitchen",
                     "target_action": "light/turn_off",
+                    "agent_id": "timer-agent",
+                    "language": "de",
                 },
             )
             for _ in range(20):
@@ -469,7 +473,14 @@ class TestKindDispatch:
                     break
             gateway.dispatch.assert_awaited_once()
             assert _dispatch_event_type(gateway) == "delayed_action"
-            assert _dispatch_payload(gateway)["target_entity"] == "light.kitchen"
+            payload = _dispatch_payload(gateway)
+            assert payload["target_entity"] == "light.kitchen"
+            # H-2: fire payload carries agent/origin metadata for the
+            # fire-time recheck and failure announcement.
+            assert payload["agent_id"] == "timer-agent"
+            assert payload["origin_device_id"] == "device-9"
+            assert payload["origin_area"] == "kitchen"
+            assert payload["language"] == "de"
         finally:
             await sched.stop()
 
@@ -480,7 +491,9 @@ class TestKindDispatch:
                 logical_name="bedtime",
                 kind="sleep",
                 duration_seconds=0,
-                payload={"media_player": "media_player.bedroom"},
+                origin_device_id="device-5",
+                origin_area="bedroom",
+                payload={"media_player": "media_player.bedroom", "agent_id": "timer-agent"},
             )
             for _ in range(20):
                 await asyncio.sleep(0)
@@ -489,7 +502,11 @@ class TestKindDispatch:
                     break
             gateway.dispatch.assert_awaited_once()
             assert _dispatch_event_type(gateway) == "sleep_media_stop"
-            assert _dispatch_payload(gateway)["media_player"] == "media_player.bedroom"
+            payload = _dispatch_payload(gateway)
+            assert payload["media_player"] == "media_player.bedroom"
+            assert payload["agent_id"] == "timer-agent"
+            assert payload["origin_device_id"] == "device-5"
+            assert payload["origin_area"] == "bedroom"
         finally:
             await sched.stop()
 

@@ -159,3 +159,36 @@ class TestExecuteSceneAction:
         assert result["success"] is True
         ha_client.call_service.assert_awaited_once()
         assert "already" not in result["speech"].lower()
+
+
+# ---------------------------------------------------------------------------
+# M-17: list_scenes must exclude entities hidden from the agent
+# ---------------------------------------------------------------------------
+
+
+class TestListScenesVisibility:
+    @pytest.mark.asyncio
+    async def test_list_scenes_excludes_hidden_entities(self, monkeypatch):
+        ha_client = AsyncMock()
+        ha_client.get_states = AsyncMock(
+            return_value=[
+                {"entity_id": "scene.movie_night", "state": "scening", "attributes": {"friendly_name": "Movie Night"}},
+                {"entity_id": "scene.bedtime", "state": "scening", "attributes": {"friendly_name": "Bedtime"}},
+            ]
+        )
+        monkeypatch.setattr(
+            "app.agents.scene_executor.entity_is_visible",
+            AsyncMock(side_effect=lambda agent_id, entity_id, entity_index: entity_id != "scene.bedtime"),
+        )
+
+        result = await execute_scene_action(
+            {"action": "list_scenes", "entity": ""},
+            ha_client,
+            MagicMock(),
+            None,
+            agent_id="scene-agent",
+        )
+
+        assert result["success"] is True
+        assert "Movie Night" in result["speech"]
+        assert "Bedtime" not in result["speech"]

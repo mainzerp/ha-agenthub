@@ -640,6 +640,10 @@ class TimerScheduler:
                 {
                     "target_entity": target_entity,
                     "target_action": target_action,
+                    "agent_id": payload.get("agent_id"),
+                    "origin_device_id": origin_device_id,
+                    "origin_area": origin_area,
+                    "language": language,
                 },
             )
             return
@@ -651,7 +655,13 @@ class TimerScheduler:
                 return
             await self._dispatch_background_event(
                 "sleep_media_stop",
-                {"media_player": media_player},
+                {
+                    "media_player": media_player,
+                    "agent_id": payload.get("agent_id"),
+                    "origin_device_id": origin_device_id,
+                    "origin_area": origin_area,
+                    "language": language,
+                },
             )
             return
 
