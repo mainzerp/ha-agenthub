@@ -246,3 +246,100 @@ class TestGetSendDevices:
 
         assert resp.status_code == 200
         assert resp.json() == [{"id": 1, "display_name": "Kitchen Speaker"}]
+
+
+@pytest.mark.asyncio
+class TestAdminChatBridge:
+    async def test_chat_stream_mirrors_full_envelope(self, db_repository):
+        """M-3/M-4: dashboard stream maps status/agents markers and the full
+        done-frame metadata envelope."""
+        import json as _json
+
+        from app.api.routes import dashboard_api
+
+        app = _build_app()
+
+        async def _envelope_stream(req):
+            yield {
+                "token": "",
+                "done": False,
+                "status": "multi_agent",
+                "agents": ["light-agent", "music-agent"],
+            }
+            yield {
+                "token": "",
+                "done": True,
+                "conversation_id": "conv-1",
+                "mediated_speech": "Both done.",
+                "voice_followup": True,
+                "routed_to": "light-agent, music-agent",
+                "action_executed": {"action": "turn_on", "entity_id": "light.kitchen", "success": True},
+            }
+
+        mock_d = MagicMock()
+        mock_d.dispatch_stream = _envelope_stream
+        old_dispatcher = dashboard_api._dispatcher
+        dashboard_api._dispatcher = mock_d
+        try:
+            async for client in _client_for(app):
+                resp = await client.post("/api/admin/chat/stream", json={"text": "do both"})
+        finally:
+            dashboard_api._dispatcher = old_dispatcher
+
+        assert resp.status_code == 200
+        lines = [line for line in resp.text.splitlines() if line.startswith("data:")]
+        assert len(lines) == 2
+        first = _json.loads(lines[0].removeprefix("data:").strip())
+        assert first["status"] == "multi_agent"
+        assert first["agents"] == ["light-agent", "music-agent"]
+        last = _json.loads(lines[1].removeprefix("data:").strip())
+        assert last["done"] is True
+        assert last["voice_followup"] is True
+        assert last["routed_agent"] == "light-agent, music-agent"
+        assert last["action_executed"]["entity_id"] == "light.kitchen"
+        assert last["action_executed"]["service"] == "light/turn_on"
+
+    async def test_chat_stream_error_frame_surfaces(self, db_repository):
+        """M-4: dashboard stream forwards the error field on done frames."""
+        import json as _json
+
+        from app.api.routes import dashboard_api
+
+        app = _build_app()
+
+        async def _error_stream(req):
+            yield {"token": "", "done": True, "error": "classification failed"}
+
+        mock_d = MagicMock()
+        mock_d.dispatch_stream = _error_stream
+        old_dispatcher = dashboard_api._dispatcher
+        dashboard_api._dispatcher = mock_d
+        try:
+            async for client in _client_for(app):
+                resp = await client.post("/api/admin/chat/stream", json={"text": "hi"})
+        finally:
+            dashboard_api._dispatcher = old_dispatcher
+
+        assert resp.status_code == 200
+        lines = [line for line in resp.text.splitlines() if line.startswith("data:")]
+        last = _json.loads(lines[-1].removeprefix("data:").strip())
+        assert last["done"] is True
+        assert last["error"] == "classification failed"
+
+    async def test_admin_chat_rest_forwards_error(self, db_repository):
+        """M-4: REST chat bridge forwards the pipeline error string."""
+        from app.api.routes import dashboard_api
+
+        app = _build_app()
+        mock_d = MagicMock()
+        mock_d.dispatch = AsyncMock(return_value={"speech": "", "error": "classification failed"})
+        old_dispatcher = dashboard_api._dispatcher
+        dashboard_api._dispatcher = mock_d
+        try:
+            async for client in _client_for(app):
+                resp = await client.post("/api/admin/chat", json={"text": "hi"})
+        finally:
+            dashboard_api._dispatcher = old_dispatcher
+
+        assert resp.status_code == 200
+        assert resp.json()["error"] == "classification failed"

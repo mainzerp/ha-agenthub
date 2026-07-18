@@ -191,7 +191,8 @@ class TestDefaultDispatchStrategyMultiAgent:
             task, classifications, "turn on light and play jazz", "conv-1", [], None, "en", TaskContext()
         )
 
-        assert result.has_error is True
+        # M-13: partial failure (one agent answered) is not a turn error.
+        assert result.has_error is False
         assert len(result.failed_agents) == 1
         assert result.failed_agents[0][0] == "light-agent"
         assert "light-agent crashed" in result.failed_agents[0][1]
@@ -240,7 +241,8 @@ class TestDefaultDispatchStrategyMultiAgent:
             task, classifications, "turn on light and play jazz", "conv-1", [], None, "en", TaskContext()
         )
 
-        assert result.has_error is True
+        # M-13: canned speech from one branch is a partial failure, not a turn error.
+        assert result.has_error is False
         assert len(result.failed_agents) == 1
         assert result.failed_agents[0][0] == "light-agent"
         assert result.failed_agents[0][1] == "canned_speech"
@@ -264,7 +266,8 @@ class TestDefaultDispatchStrategyMultiAgent:
             task, classifications, "turn on light and play jazz", "conv-1", [], None, "en", TaskContext()
         )
 
-        assert result.has_error is True
+        # M-13: None result from one branch is a partial failure, not a turn error.
+        assert result.has_error is False
         assert len(result.failed_agents) == 1
         assert result.failed_agents[0][0] == "music-agent"
         assert result.failed_agents[0][1] == "timeout"

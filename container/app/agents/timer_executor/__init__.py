@@ -114,9 +114,29 @@ async def execute_timer_action(
     if action_name == "start_timer_with_notification":
         return await _start_timer_with_notification(action, device_id=device_id, area_id=area_id, language=language)
     if action_name == "delayed_action":
-        return await _delayed_action(action, device_id=device_id, area_id=area_id, language=language)
+        return await _delayed_action(
+            action,
+            device_id=device_id,
+            area_id=area_id,
+            language=language,
+            ha_client=ha_client,
+            entity_index=entity_index,
+            entity_matcher=entity_matcher,
+            agent_id=agent_id,
+            verbatim_terms=verbatim_terms,
+        )
     if action_name == "sleep_timer":
-        return await _sleep_timer(action, device_id=device_id, area_id=area_id, language=language)
+        return await _sleep_timer(
+            action,
+            device_id=device_id,
+            area_id=area_id,
+            language=language,
+            ha_client=ha_client,
+            entity_index=entity_index,
+            entity_matcher=entity_matcher,
+            agent_id=agent_id,
+            verbatim_terms=verbatim_terms,
+        )
     if action_name == "set_datetime":
         return await _set_alarm(
             action,

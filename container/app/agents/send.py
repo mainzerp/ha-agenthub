@@ -5,6 +5,8 @@ from __future__ import annotations
 import logging
 import re
 
+import httpx
+
 from app.agents.base import BaseAgent, _render_prompt_template
 from app.agents.decorator import agent
 from app.analytics.tracer import _optional_span
@@ -105,16 +107,38 @@ class SendAgent(BaseAgent):
         )
 
         # Deliver
-        if mapping["device_type"] == "notify":
-            async with _optional_span(span_collector, "ha_call", agent_id="send-agent") as span:
-                await self._deliver_notify(mapping["ha_service_target"], formatted_content)
-                span["metadata"]["service"] = "notify"
-                span["metadata"]["target"] = mapping["ha_service_target"]
-        elif mapping["device_type"] == "tts":
-            async with _optional_span(span_collector, "ha_call", agent_id="send-agent") as span:
-                await self._deliver_tts(mapping["ha_service_target"], formatted_content)
-                span["metadata"]["service"] = "tts"
-                span["metadata"]["target"] = mapping["ha_service_target"]
+        device_type = mapping["device_type"]
+        if device_type not in ("notify", "tts"):
+            logger.error("Unknown device_type %r in send-device mapping for %r", device_type, mapping["display_name"])
+            return self._error_result(
+                AgentErrorCode.ACTION_FAILED,
+                f"Cannot deliver to {mapping['display_name']}: unknown device type '{device_type}'. "
+                "Please reconfigure it in the dashboard under Send Devices.",
+            )
+        try:
+            if device_type == "notify":
+                async with _optional_span(span_collector, "ha_call", agent_id="send-agent") as span:
+                    await self._deliver_notify(mapping["ha_service_target"], formatted_content)
+                    span["metadata"]["service"] = "notify"
+                    span["metadata"]["target"] = mapping["ha_service_target"]
+            else:
+                async with _optional_span(span_collector, "ha_call", agent_id="send-agent") as span:
+                    await self._deliver_tts(mapping["ha_service_target"], formatted_content)
+                    span["metadata"]["service"] = "tts"
+                    span["metadata"]["target"] = mapping["ha_service_target"]
+        except httpx.HTTPError:
+            logger.warning("Delivery to %s failed: HA unreachable", mapping["display_name"], exc_info=True)
+            return self._error_result(
+                AgentErrorCode.HA_UNAVAILABLE,
+                f"I could not reach the smart home system to deliver to {mapping['display_name']}.",
+                recoverable=False,
+            )
+        except Exception:
+            logger.exception("Delivery to %s failed", mapping["display_name"])
+            return self._error_result(
+                AgentErrorCode.ACTION_FAILED,
+                f"Sorry, I could not deliver the content to {mapping['display_name']}.",
+            )
 
         language = (task.context.language if task.context else "en") or "en"
         if language.startswith("de"):

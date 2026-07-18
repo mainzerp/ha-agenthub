@@ -914,3 +914,93 @@ class TestExecuteLightActionCondition:
         ha_client.call_service.assert_awaited_once()
         # Without a condition the result should not carry cacheable=False.
         assert result.get("cacheable", True) is True
+
+
+# ---------------------------------------------------------------------------
+# M-14: verbatim_terms forwarding to entity resolution
+# ---------------------------------------------------------------------------
+
+
+class TestVerbatimTermsForwarding:
+    """execute_light_action must forward verbatim_terms on write and read paths."""
+
+    @staticmethod
+    def _resolved_payload(entity_id: str = "light.kueche", friendly_name: str = "Küche") -> dict:
+        return {
+            "entity_id": entity_id,
+            "friendly_name": friendly_name,
+            "resolution": {"metadata": {"resolution_path": "verbatim"}},
+            "not_found_result": None,
+        }
+
+    @pytest.mark.asyncio
+    async def test_write_path_forwards_verbatim_terms(self):
+        ha_client = AsyncMock()
+        ha_client.get_state = AsyncMock(return_value={"state": "on", "attributes": {}})
+        with patch(
+            "app.agents.light_executor.resolve_and_validate_entity",
+            new_callable=AsyncMock,
+            return_value=self._resolved_payload(),
+        ) as mock_resolve:
+            result = await execute_light_action(
+                {"action": "turn_on", "entity": "Küche", "parameters": {}},
+                ha_client,
+                MagicMock(),
+                MagicMock(),
+                agent_id="light-agent",
+                verbatim_terms=["Küche"],
+            )
+
+        assert result["success"] is True
+        mock_resolve.assert_awaited_once()
+        assert mock_resolve.call_args.kwargs["verbatim_terms"] == ["Küche"]
+
+    @pytest.mark.asyncio
+    async def test_query_light_state_forwards_verbatim_terms(self):
+        ha_client = AsyncMock()
+        ha_client.get_state = AsyncMock(return_value={"state": "on", "attributes": {"friendly_name": "Küche"}})
+        with patch(
+            "app.agents.light_executor.resolve_and_validate_entity",
+            new_callable=AsyncMock,
+            return_value=self._resolved_payload(),
+        ) as mock_resolve:
+            result = await execute_light_action(
+                {"action": "query_light_state", "entity": "Küche"},
+                ha_client,
+                MagicMock(),
+                MagicMock(),
+                agent_id="light-agent",
+                verbatim_terms=["Küche"],
+            )
+
+        assert result["success"] is True
+        mock_resolve.assert_awaited_once()
+        assert mock_resolve.call_args.kwargs["verbatim_terms"] == ["Küche"]
+
+    @pytest.mark.asyncio
+    async def test_query_entity_history_forwards_verbatim_terms(self):
+        ha_client = AsyncMock()
+        with (
+            patch(
+                "app.agents.light_executor.resolve_and_validate_entity",
+                new_callable=AsyncMock,
+                return_value=self._resolved_payload(),
+            ) as mock_resolve,
+            patch(
+                "app.agents.light_executor.execute_recorder_history_query",
+                new_callable=AsyncMock,
+                return_value={"success": True, "entity_id": "light.kueche", "speech": "history"},
+            ),
+        ):
+            result = await execute_light_action(
+                {"action": "query_entity_history", "entity": "Küche", "parameters": {}},
+                ha_client,
+                MagicMock(),
+                MagicMock(),
+                agent_id="light-agent",
+                verbatim_terms=["Küche"],
+            )
+
+        assert result["success"] is True
+        mock_resolve.assert_awaited_once()
+        assert mock_resolve.call_args.kwargs["verbatim_terms"] == ["Küche"]

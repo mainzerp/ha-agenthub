@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
@@ -13,6 +14,7 @@ from app.agents.action_executor import (
     resolve_and_validate_entity,
 )
 from app.agents.executor_state_check import _state_matches
+from app.entity.visibility import entity_is_visible
 from app.ha_client.history_query import execute_recorder_history_query
 from app.models.agent import TaskContext
 
@@ -383,7 +385,7 @@ async def _query_security_entity_history(
     )
 
 
-async def _list_security(ha_client: Any) -> dict:
+async def _list_security(ha_client: Any, agent_id: str | None = None, entity_index: Any = None) -> dict:
     try:
         states = await ha_client.get_states()
     except Exception as exc:
@@ -411,6 +413,17 @@ async def _list_security(ha_client: Any) -> dict:
             dc = s.get("attributes", {}).get("device_class", "")
             if dc in _SECURITY_DEVICE_CLASSES:
                 binary_sensors.append(s)
+
+    if agent_id and entity_index is not None:
+        candidates = locks + alarms + cameras + binary_sensors
+        visibility = await asyncio.gather(
+            *[entity_is_visible(agent_id, s.get("entity_id", ""), entity_index) for s in candidates]
+        )
+        visible_ids = {s.get("entity_id", "") for s, ok in zip(candidates, visibility, strict=True) if ok}
+        locks = [s for s in locks if s.get("entity_id", "") in visible_ids]
+        alarms = [s for s in alarms if s.get("entity_id", "") in visible_ids]
+        cameras = [s for s in cameras if s.get("entity_id", "") in visible_ids]
+        binary_sensors = [s for s in binary_sensors if s.get("entity_id", "") in visible_ids]
 
     if not locks and not alarms and not cameras and not binary_sensors:
         return {"success": True, "entity_id": "", "new_state": None, "speech": "No security devices found."}
@@ -457,7 +470,7 @@ async def _handle_security_read_action(
             action=action,
         )
     if action_name == "list_security":
-        return await _list_security(ha_client)
+        return await _list_security(ha_client, agent_id=agent_id, entity_index=entity_index)
     if action_name == "query_entity_history":
         return await _query_security_entity_history(
             entity_query,

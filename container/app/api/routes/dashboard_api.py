@@ -21,6 +21,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
 from app.a2a._request import build_send_request, build_stream_request
+from app.api.routes.conversation import _normalize_action_executed
 from app.db.repository import (
     AgentConfigRepository,
     AnalyticsRepository,
@@ -726,10 +727,15 @@ async def admin_chat(request: Request, payload: ChatRequest) -> dict[str, Any]:
         return {"speech": f"Error: {exc}", "conversation_id": payload.conversation_id}
 
     result = response or {}
-    return {
+    reply: dict[str, Any] = {
         "speech": result.get("speech", ""),
         "conversation_id": result.get("conversation_id") or payload.conversation_id,
     }
+    # M-4: surface pipeline errors to the admin chat UI instead of
+    # silently dropping them.
+    if result.get("error"):
+        reply["error"] = result["error"]
+    return reply
 
 
 @router.post("/chat/stream")
@@ -764,6 +770,9 @@ async def admin_chat_stream(request: Request, payload: ChatRequest):
             parent_token = span_collector.push_parent(root_span_id)
         try:
             async for chunk in _dispatcher.dispatch_stream(a2a_request):
+                # M-4: mirror the public SSE mapping so the dashboard stream
+                # carries the full envelope (errors, filler pushes, voice
+                # follow-ups, directives, routing/action metadata, status).
                 token = StreamToken(
                     token=chunk.get("token", ""),
                     done=chunk.get("done", False),
@@ -771,6 +780,19 @@ async def admin_chat_stream(request: Request, payload: ChatRequest):
                     mediated_speech=chunk.get("mediated_speech") if chunk.get("done") else None,
                     is_filler=chunk.get("is_filler", False),
                     error=chunk.get("error") if chunk.get("done") else None,
+                    voice_followup=bool(chunk.get("voice_followup")) if chunk.get("done") else False,
+                    sanitized=bool(chunk.get("sanitized", True))
+                    if chunk.get("done")
+                    else not chunk.get("is_filler", False),
+                    directive=chunk.get("directive") if chunk.get("done") else None,
+                    reason=chunk.get("reason") if chunk.get("done") else None,
+                    filler_push=chunk.get("filler_push") if not chunk.get("done") else None,
+                    action_executed=_normalize_action_executed(chunk.get("action_executed"))
+                    if chunk.get("done")
+                    else None,
+                    routed_agent=chunk.get("routed_to") if chunk.get("done") else None,
+                    status=chunk.get("status") if not chunk.get("done") else None,
+                    agents=chunk.get("agents") if not chunk.get("done") else None,
                 )
                 yield f"data: {token.model_dump_json()}\n\n"
         finally:

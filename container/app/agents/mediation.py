@@ -37,6 +37,15 @@ from app.analytics.tracer import _optional_span
 logger = logging.getLogger(__name__)
 
 
+class MediationStreamError(Exception):
+    """Raised when the mediation LLM stream fails (M-10).
+
+    The orchestrator distinguishes zero-token failures (fall back to the
+    blocking mediation path) from mid-stream failures (keep the spoken
+    partial output but persist the original full speech).
+    """
+
+
 def _strip_followup_tag(text: str | None) -> tuple[str | None, bool]:
     """Strip a trailing [FOLLOWUP] tag; report whether one was present.
 
@@ -67,19 +76,26 @@ class MediationService:
         user_text: str,
         span_collector=None,
         reminder_text: str | None = None,
+        failed_agents: list[str] | None = None,
     ) -> tuple[str, bool]:
         """Merge multiple agent responses into a single natural answer via LLM.
 
         Always calls LLM regardless of personality settings.
         Includes personality prompt if configured.
         If reminder_text is given, the LLM weaves it in naturally.
+        If failed_agents is given, the LLM briefly notes the unreachable
+        agents in the user's language (replaces the old hardcoded English
+        suffix; the LLM-free ``format_fallback`` stays note-less).
         Falls back to bracket-prefixed format on failure.
         """
         if not agent_responses:
             return "I couldn't process that request.", False
 
-        # Only one response: return it directly (append reminder as fallback)
-        if len(agent_responses) == 1:
+        # Only one response and nothing failed: return it directly
+        # (append reminder as fallback). When some agents failed, the
+        # merge still goes through the LLM so the failure note lands in
+        # the user's language.
+        if len(agent_responses) == 1 and not failed_agents:
             speech = agent_responses[0][1] or "I couldn't process that request."
             if reminder_text:
                 separator = " " if speech and speech[-1] in ".!?" else ". "
@@ -106,6 +122,13 @@ class MediationService:
             user_content = (
                 f"User asked:\n{self._orch._wrap_user_input(user_text)}\n\nAgent responses:\n{agent_summary}\n\n"
             )
+            if failed_agents:
+                unreachable = ", ".join(failed_agents)
+                user_content += (
+                    f"Unreachable agents: {unreachable}\n"
+                    "Briefly note that these agents could not be reached, in the same language "
+                    "as the user's question. Do not invent reasons.\n\n"
+                )
             if reminder_text:
                 user_content += f"Reminder to weave in: {reminder_text}\n\n"
             user_content += "Combine into one natural response:"
@@ -239,11 +262,11 @@ class MediationService:
         """
         personality = await self._orch._get_personality_cached()
         if not personality.strip():
-            # No personality -- nothing to stream mediate.
-            # If a reminder exists, yield it as the only token so the caller
-            # can append it to the speech (matching the blocking path behaviour).
-            if reminder_text:
-                yield reminder_text
+            # No personality -- nothing to stream-mediate. The reminder-only
+            # case is handled by the BLOCKING mediation path (M-9): the
+            # orchestrator gates the streaming branch on a non-empty
+            # personality, so the agent's answer is never replaced by a
+            # lone reminder token.
             return
 
         if not agent_speech or not agent_speech.strip():
@@ -286,8 +309,8 @@ class MediationService:
                         yield token
         except asyncio.CancelledError:
             raise
-        except Exception:
+        except Exception as exc:
             logger.warning(
                 "Response mediation stream failed, caller should fall back to _mediate_response", exc_info=True
             )
-            return
+            raise MediationStreamError("mediation stream failed") from exc

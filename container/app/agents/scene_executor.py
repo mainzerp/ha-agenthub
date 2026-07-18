@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
@@ -11,6 +12,7 @@ from app.agents.action_executor import (
     call_service_with_verification,
     resolve_and_validate_entity,
 )
+from app.entity.visibility import entity_is_visible
 
 logger = logging.getLogger(__name__)
 
@@ -196,7 +198,7 @@ async def _query_scene(
     }
 
 
-async def _list_scenes(ha_client: Any) -> dict:
+async def _list_scenes(ha_client: Any, agent_id: str | None = None, entity_index: Any = None) -> dict:
     try:
         states = await ha_client.get_states()
     except Exception as exc:
@@ -204,6 +206,11 @@ async def _list_scenes(ha_client: Any) -> dict:
         return {"success": False, "entity_id": "", "new_state": None, "speech": f"Failed to list scenes: {exc}"}
 
     scenes = [s for s in states if s.get("entity_id", "").startswith("scene.")]
+    if agent_id and entity_index is not None:
+        visibility = await asyncio.gather(
+            *[entity_is_visible(agent_id, s.get("entity_id", ""), entity_index) for s in scenes]
+        )
+        scenes = [s for s, ok in zip(scenes, visibility, strict=True) if ok]
 
     if not scenes:
         return {"success": True, "entity_id": "", "new_state": None, "speech": "No scenes found."}
@@ -243,5 +250,5 @@ async def _handle_scene_read_action(
             action=action,
         )
     if action_name == "list_scenes":
-        return await _list_scenes(ha_client)
+        return await _list_scenes(ha_client, agent_id=agent_id, entity_index=entity_index)
     return {"success": False, "entity_id": "", "new_state": None, "speech": f"Unknown read action: {action_name}"}

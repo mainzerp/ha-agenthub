@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
@@ -13,6 +14,7 @@ from app.agents.action_executor import (
     resolve_and_validate_entity,
 )
 from app.agents.executor_state_check import _state_matches
+from app.entity.visibility import entity_is_visible
 from app.ha_client.history_query import execute_recorder_history_query
 from app.models.agent import TaskContext
 
@@ -315,7 +317,7 @@ async def _query_cover_state(
         }
 
 
-async def _list_covers(ha_client: Any) -> dict:
+async def _list_covers(ha_client: Any, agent_id: str | None = None, entity_index: Any = None) -> dict:
     try:
         states = await ha_client.get_states()
     except Exception as exc:
@@ -328,18 +330,24 @@ async def _list_covers(ha_client: Any) -> dict:
             "cacheable": False,
         }
 
+    cover_states = [s for s in states if s.get("entity_id", "").startswith("cover.")]
+    if agent_id and entity_index is not None:
+        visibility = await asyncio.gather(
+            *[entity_is_visible(agent_id, s.get("entity_id", ""), entity_index) for s in cover_states]
+        )
+        cover_states = [s for s, ok in zip(cover_states, visibility, strict=True) if ok]
+
     covers = []
-    for s in states:
+    for s in cover_states:
         eid = s.get("entity_id", "")
-        if eid.startswith("cover."):
-            attrs = s.get("attributes", {})
-            name = attrs.get("friendly_name", eid)
-            state = s.get("state", "unknown")
-            info = f"{name}: {state}"
-            current_position = attrs.get("current_position")
-            if current_position is not None:
-                info += f", position {current_position}%"
-            covers.append(info)
+        attrs = s.get("attributes", {})
+        name = attrs.get("friendly_name", eid)
+        state = s.get("state", "unknown")
+        info = f"{name}: {state}"
+        current_position = attrs.get("current_position")
+        if current_position is not None:
+            info += f", position {current_position}%"
+        covers.append(info)
 
     if not covers:
         return {
@@ -426,7 +434,7 @@ async def _handle_cover_read_action(
             action=action,
         )
     if action_name == "list_covers":
-        return await _list_covers(ha_client)
+        return await _list_covers(ha_client, agent_id=agent_id, entity_index=entity_index)
     if action_name == "query_entity_history":
         return await _query_entity_history(
             entity_query,

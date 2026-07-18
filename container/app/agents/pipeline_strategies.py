@@ -395,7 +395,10 @@ class DefaultDispatchStrategy(DispatchStrategy):
         target_agent = routed_agents[0] if routed_agents else "general-agent"
         routed_to = ", ".join(routed_agents) if routed_agents else "general-agent"
         speech = ""
-        has_error = len(failed_agents) > 0
+        # M-13: a partial failure (some agents answered) is not a turn error --
+        # only a total failure marks the turn erroneous (which would suppress
+        # reminders and attach an error to the final response).
+        has_error = bool(failed_agents) and not agent_responses
 
         return DispatchResult(
             classifications=classifications,
@@ -484,11 +487,12 @@ class DefaultFinalizationStrategy(FinalizationStrategy):
                             logger.debug("Calendar reminder injection failed", exc_info=True)
 
                     speech, mediated_followup = await self._merge_responses(
-                        agent_responses, user_text, span_collector=span_collector, reminder_text=reminder_text
+                        agent_responses,
+                        user_text,
+                        span_collector=span_collector,
+                        reminder_text=reminder_text,
+                        failed_agents=[aid for aid, _ in failed_agents] if failed_agents else None,
                     )
-                    if failed_agents:
-                        failed_names = ", ".join(aid for aid, _ in failed_agents)
-                        speech += f"\n\n(Note: {failed_names} could not be reached.)"
 
                 ret_span["metadata"]["agent_response"] = speech
                 speech, voice_followup_effective = self._merge_voice_followup_and_organic(
@@ -548,10 +552,11 @@ class DefaultFinalizationStrategy(FinalizationStrategy):
             "sanitized": True,
         }
         if has_error:
-            response["error"] = {
-                "code": agent_error.get("code", "unknown") if agent_error else "unknown",
-                "recoverable": agent_error.get("recoverable", True) if agent_error else True,
-            }
+            # Phase-1 contract: response errors are plain strings.
+            code = "unknown"
+            if isinstance(agent_error, dict):
+                code = str(agent_error.get("code") or "unknown")
+            response["error"] = code
         if failed_agents:
             response["partial_failure"] = {
                 "failed_agents": [{"agent_id": aid, "error": msg} for aid, msg in failed_agents],

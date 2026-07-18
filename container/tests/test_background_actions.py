@@ -63,7 +63,8 @@ class TestHandleBackgroundEvent:
             event_type="delayed_action",
             payload={"target_entity": "light.bedroom", "target_action": "light/turn_on"},
         )
-        result = await ba.handle_background_event(event, ha_client=ha_client)
+        with patch("app.agents.background_actions.entity_is_visible", new=AsyncMock(return_value=True)):
+            result = await ba.handle_background_event(event, ha_client=ha_client)
         assert result["speech"] == ""
         assert result["action_executed"]["success"] is True
         ha_client.call_service.assert_awaited_once_with("light", "turn_on", "light.bedroom")
@@ -76,7 +77,7 @@ class TestHandleBackgroundEvent:
             payload={"target_entity": "light.bedroom", "target_action": "light/turn_on"},
         )
         result = await ba.handle_background_event(event, ha_client=None)
-        assert result["error"]["code"] == "ha_unavailable"
+        assert result["error"] == "Background delayed action requires Home Assistant connectivity."
 
     @pytest.mark.asyncio
     async def test_delayed_action_incomplete_payload(self):
@@ -86,7 +87,7 @@ class TestHandleBackgroundEvent:
             payload={"target_entity": ""},
         )
         result = await ba.handle_background_event(event, ha_client=AsyncMock())
-        assert result["error"]["code"] == "parse_error"
+        assert result["error"] == "Background delayed action payload is incomplete."
 
     @pytest.mark.asyncio
     async def test_sleep_media_stop_success(self):
@@ -96,7 +97,8 @@ class TestHandleBackgroundEvent:
             event_type="sleep_media_stop",
             payload={"media_player": "media_player.bedroom"},
         )
-        result = await ba.handle_background_event(event, ha_client=ha_client)
+        with patch("app.agents.background_actions.entity_is_visible", new=AsyncMock(return_value=True)):
+            result = await ba.handle_background_event(event, ha_client=ha_client)
         assert result["action_executed"]["action"] == "media_stop"
         ha_client.call_service.assert_awaited_once_with("media_player", "media_stop", "media_player.bedroom")
 
@@ -108,7 +110,110 @@ class TestHandleBackgroundEvent:
             payload={"media_player": "media_player.bedroom"},
         )
         result = await ba.handle_background_event(event, ha_client=None)
-        assert result["error"]["code"] == "ha_unavailable"
+        assert result["error"] == "Background sleep timer requires Home Assistant connectivity."
+
+    @pytest.mark.asyncio
+    async def test_delayed_action_fire_rejected_when_visibility_revoked(self):
+        """H-2 core: fire-time recheck is fail-closed -- an entity hidden after
+        scheduling must NOT be acted on, and no success is reported."""
+        ha_client = AsyncMock()
+        event = BackgroundEvent(
+            event_type="delayed_action",
+            payload={
+                "target_entity": "light.bedroom",
+                "target_action": "light/turn_on",
+                "agent_id": "timer-agent",
+            },
+        )
+        with patch("app.agents.background_actions.entity_is_visible", new=AsyncMock(return_value=False)):
+            result = await ba.handle_background_event(event, ha_client=ha_client)
+        assert "not visible" in result["error"]
+        assert "action_executed" not in result
+        ha_client.call_service.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_delayed_action_fire_rejects_disallowed_domain(self):
+        """H-2: fire-time domain recheck rejects non-write-capable domains."""
+        ha_client = AsyncMock()
+        event = BackgroundEvent(
+            event_type="delayed_action",
+            payload={"target_entity": "notify.all", "target_action": "notify/send"},
+        )
+        with patch("app.agents.background_actions.entity_is_visible", new=AsyncMock(return_value=True)):
+            result = await ba.handle_background_event(event, ha_client=ha_client)
+        assert "not allowed" in result["error"]
+        assert "action_executed" not in result
+        ha_client.call_service.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_delayed_action_fire_call_service_failure_is_honest(self):
+        """H-2: a failing call_service must not report success: True."""
+        ha_client = AsyncMock()
+        ha_client.call_service = AsyncMock(side_effect=RuntimeError("HA offline"))
+        event = BackgroundEvent(
+            event_type="delayed_action",
+            payload={"target_entity": "light.bedroom", "target_action": "light/turn_on"},
+        )
+        with patch("app.agents.background_actions.entity_is_visible", new=AsyncMock(return_value=True)):
+            result = await ba.handle_background_event(event, ha_client=ha_client)
+        assert "failed" in result["error"].lower()
+        assert "action_executed" not in result
+
+    @pytest.mark.asyncio
+    async def test_delayed_action_failure_announced_to_origin(self):
+        """H-2: fire-time rejection with origin info notifies via the
+        dispatch_timer_notification path."""
+        ha_client = AsyncMock()
+        event = BackgroundEvent(
+            event_type="delayed_action",
+            payload={
+                "target_entity": "light.bedroom",
+                "target_action": "light/turn_on",
+                "origin_device_id": "device-1",
+                "origin_area": "bedroom",
+            },
+        )
+        with (
+            patch("app.agents.background_actions.entity_is_visible", new=AsyncMock(return_value=False)),
+            patch("app.agents.background_actions.dispatch_timer_notification", new=AsyncMock()) as mock_notify,
+        ):
+            result = await ba.handle_background_event(event, ha_client=ha_client)
+        assert "not visible" in result["error"]
+        mock_notify.assert_awaited_once()
+        notify_kwargs = mock_notify.await_args.kwargs
+        assert "not visible" in notify_kwargs["timer_name"]
+        assert notify_kwargs["metadata"].origin_device_id == "device-1"
+        assert notify_kwargs["metadata"].origin_area == "bedroom"
+
+    @pytest.mark.asyncio
+    async def test_delayed_action_failure_without_origin_logs_only(self):
+        """H-2: fire-time rejection without origin info skips the announcement."""
+        ha_client = AsyncMock()
+        event = BackgroundEvent(
+            event_type="delayed_action",
+            payload={"target_entity": "light.bedroom", "target_action": "light/turn_on"},
+        )
+        with (
+            patch("app.agents.background_actions.entity_is_visible", new=AsyncMock(return_value=False)),
+            patch("app.agents.background_actions.dispatch_timer_notification", new=AsyncMock()) as mock_notify,
+        ):
+            result = await ba.handle_background_event(event, ha_client=ha_client)
+        assert "not visible" in result["error"]
+        mock_notify.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_sleep_media_stop_fire_rejected_when_visibility_revoked(self):
+        """H-2: sleep_media_stop fire-time recheck is fail-closed too."""
+        ha_client = AsyncMock()
+        event = BackgroundEvent(
+            event_type="sleep_media_stop",
+            payload={"media_player": "media_player.bedroom"},
+        )
+        with patch("app.agents.background_actions.entity_is_visible", new=AsyncMock(return_value=False)):
+            result = await ba.handle_background_event(event, ha_client=ha_client)
+        assert "not visible" in result["error"]
+        assert "action_executed" not in result
+        ha_client.call_service.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_voice_followup_spawns_task(self):
@@ -155,9 +260,9 @@ class TestNotificationMetadata:
     def test_error_result_structure(self):
         result = ba._error_result("something went wrong", code="test_code", recoverable=False)
         assert result["speech"] == ""
-        assert result["error"]["code"] == "test_code"
-        assert result["error"]["message"] == "something went wrong"
-        assert result["error"]["recoverable"] is False
+        # Phase-1 contract: chunk errors are plain strings; code/recoverable
+        # detail is logged, not attached.
+        assert result["error"] == "something went wrong"
 
 
 # ---------------------------------------------------------------------------

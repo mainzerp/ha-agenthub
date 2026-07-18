@@ -11,7 +11,9 @@ from dataclasses import dataclass
 from typing import Any
 
 from app.agents.base import _load_prompt_path, _prompt_path, _render_prompt_template
+from app.agents.timer_executor._timers import _DEFERRED_ALLOWED_DOMAINS
 from app.db.repository import SettingsRepository
+from app.entity.visibility import entity_is_visible
 from app.models.agent import BackgroundEvent, TaskContext
 from app.security.sanitization import wrap_user_input
 from app.util.tasks import spawn
@@ -39,14 +41,72 @@ def _normalize_area_for_match(area: str | None) -> str | None:
     return normalized.casefold()
 
 
+async def _deferred_entity_still_visible(agent_id: str, entity_id: str, entity_index: Any) -> bool:
+    """Fire-time visibility recheck, fail-closed (mirrors the cache-replay
+    recheck): any evaluation error rejects the deferred write."""
+    try:
+        return await entity_is_visible(agent_id, entity_id, entity_index)
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        logger.warning(
+            "Visibility recheck failed for %s; rejecting deferred action (fail-closed)",
+            entity_id,
+            exc_info=True,
+        )
+        return False
+
+
+async def _announce_deferred_failure(
+    ha_client: Any,
+    payload: dict[str, Any],
+    entity_index: Any,
+    *,
+    failure: str,
+) -> None:
+    """Best-effort user notification for a rejected/failed deferred action.
+
+    Announces through the standard timer-notification channels when the
+    event carries origin info; otherwise logs at error level.
+    """
+    origin_device_id = payload.get("origin_device_id")
+    origin_area = payload.get("origin_area")
+    if not origin_device_id and not origin_area:
+        logger.error("Deferred action failed without origin info: %s", failure)
+        return
+    metadata = NotificationMetadata(
+        media_player_entity=payload.get("media_player"),
+        origin_device_id=origin_device_id,
+        origin_area=origin_area,
+        duration=None,
+        language=payload.get("language"),
+    )
+    try:
+        await dispatch_timer_notification(
+            ha_client=ha_client,
+            timer_name=failure,
+            entity_id="agenthub_internal:deferred_action_failure",
+            metadata=metadata,
+            entity_index=entity_index,
+        )
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        logger.error("Failed to announce deferred action failure: %s", failure, exc_info=True)
+
+
 def _error_result(message: str, *, code: str = "internal", recoverable: bool = True) -> dict[str, Any]:
+    """Build a background-event error result.
+
+    Phase-1 contract: chunk ``error`` values are ``str | None`` — the
+    message string is attached directly and the code/recoverable detail is
+    logged instead of shipped as a dict (which crashed ``StreamToken``
+    validation downstream).
+    """
+    logger.warning("Background action error (code=%s, recoverable=%s): %s", code, recoverable, message)
     return {
         "speech": "",
-        "error": {
-            "code": code,
-            "message": message,
-            "recoverable": recoverable,
-        },
+        "error": message,
     }
 
 
@@ -116,7 +176,26 @@ async def handle_background_event(
         if not target_entity or "/" not in target_action:
             return _error_result("Background delayed action payload is incomplete.", code="parse_error")
         domain, service = target_action.split("/", 1)
-        await ha_client.call_service(domain, service, target_entity)
+        # H-2 fire-time recheck (fail-closed): domain allow-list + visibility.
+        # The entity may have been hidden or removed between schedule and fire.
+        if domain not in _DEFERRED_ALLOWED_DOMAINS:
+            failure = f"Delayed action rejected: domain '{domain}' is not allowed for deferred actions."
+            await _announce_deferred_failure(ha_client, payload, entity_index, failure=failure)
+            return _error_result(failure, code="forbidden_domain", recoverable=False)
+        agent_id = payload.get("agent_id") or "timer-agent"
+        if not await _deferred_entity_still_visible(agent_id, target_entity, entity_index):
+            failure = f"Delayed action rejected: {target_entity} is not visible to {agent_id}."
+            await _announce_deferred_failure(ha_client, payload, entity_index, failure=failure)
+            return _error_result(failure, code="entity_not_visible", recoverable=False)
+        try:
+            await ha_client.call_service(domain, service, target_entity)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            failure = f"Delayed action {target_action} on {target_entity} failed."
+            logger.error("%s (%s)", failure, exc, exc_info=True)
+            await _announce_deferred_failure(ha_client, payload, entity_index, failure=failure)
+            return _error_result(failure, code="ha_error")
         return {
             "speech": "",
             "action_executed": {
@@ -133,7 +212,21 @@ async def handle_background_event(
         media_player = payload.get("media_player") or ""
         if not media_player:
             return _error_result("Background sleep timer payload is incomplete.", code="parse_error")
-        await ha_client.call_service("media_player", "media_stop", media_player)
+        # H-2 fire-time recheck (fail-closed): visibility of the media player.
+        agent_id = payload.get("agent_id") or "timer-agent"
+        if not await _deferred_entity_still_visible(agent_id, media_player, entity_index):
+            failure = f"Sleep timer stop rejected: {media_player} is not visible to {agent_id}."
+            await _announce_deferred_failure(ha_client, payload, entity_index, failure=failure)
+            return _error_result(failure, code="entity_not_visible", recoverable=False)
+        try:
+            await ha_client.call_service("media_player", "media_stop", media_player)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            failure = f"Sleep timer media stop on {media_player} failed."
+            logger.error("%s (%s)", failure, exc, exc_info=True)
+            await _announce_deferred_failure(ha_client, payload, entity_index, failure=failure)
+            return _error_result(failure, code="ha_error")
         return {
             "speech": "",
             "action_executed": {

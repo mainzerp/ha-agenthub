@@ -112,6 +112,318 @@ class TestCancelInteractionStreaming:
 
 
 # ---------------------------------------------------------------------------
+# M-11: streaming dispatch timeout + fallback
+# ---------------------------------------------------------------------------
+
+
+class TestStreamingDispatchTimeout:
+    def _patch_settings(self, mock_settings):
+        mock_settings.get_value = AsyncMock(return_value="")
+
+    @pytest.mark.asyncio
+    @patch("app.agents.orchestrator.SettingsRepository")
+    @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
+    @patch("app.llm.client.complete", new_callable=AsyncMock)
+    async def test_hanging_stream_falls_back_to_general_agent(self, mock_complete, mock_track, mock_settings):
+        """M-11: a streaming agent that never yields hits the per-agent timeout
+        and the terminal chunk carries the fallback agent's answer."""
+        self._patch_settings(mock_settings)
+        mock_complete.return_value = "light-agent (95%): Turn on light"
+        orch, dispatcher = _make_orchestrator()
+        orch._dispatch_manager.resolve_dispatch_timeout = AsyncMock(return_value=0.05)
+        orch._should_send_filler = AsyncMock(return_value=False)
+
+        async def _hanging_stream(_request):
+            await asyncio.sleep(30)
+            yield {"token": "never", "done": True}
+
+        dispatcher.dispatch_stream = _hanging_stream
+        dispatcher.dispatch = AsyncMock(return_value={"speech": "Fallback answer."})
+
+        task = _make_task("turn on light", conversation_id="conv-stream-timeout")
+        chunks = [c async for c in orch.handle_task_stream(task)]
+
+        done_chunks = [c for c in chunks if c.get("done")]
+        assert len(done_chunks) == 1
+        final = done_chunks[0]
+        assert final["routed_to"] == "general-agent"
+        assert final["mediated_speech"] == "Fallback answer."
+        assert isinstance(final["error"], str)
+        assert "timed out" in final["error"]
+
+    @pytest.mark.asyncio
+    @patch("app.agents.orchestrator.SettingsRepository")
+    @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
+    @patch("app.llm.client.complete", new_callable=AsyncMock)
+    async def test_hanging_stream_failing_fallback_yields_graceful_error(
+        self, mock_complete, mock_track, mock_settings
+    ):
+        """M-11: when the fallback also fails, the terminal chunk carries the
+        canned timeout speech and a string error (no crash)."""
+        self._patch_settings(mock_settings)
+        mock_complete.return_value = "light-agent (95%): Turn on light"
+        orch, dispatcher = _make_orchestrator()
+        orch._dispatch_manager.resolve_dispatch_timeout = AsyncMock(return_value=0.05)
+        orch._should_send_filler = AsyncMock(return_value=False)
+
+        async def _hanging_stream(_request):
+            await asyncio.sleep(30)
+            yield {"token": "never", "done": True}
+
+        dispatcher.dispatch_stream = _hanging_stream
+        dispatcher.dispatch = AsyncMock(side_effect=RuntimeError("fallback down"))
+
+        task = _make_task("turn on light", conversation_id="conv-stream-timeout-fb-fail")
+        chunks = [c async for c in orch.handle_task_stream(task)]
+
+        done_chunks = [c for c in chunks if c.get("done")]
+        assert len(done_chunks) == 1
+        final = done_chunks[0]
+        assert final["mediated_speech"] == "I couldn't process that request in time."
+        assert isinstance(final["error"], str)
+
+    @pytest.mark.asyncio
+    @patch("app.agents.orchestrator.SettingsRepository")
+    @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
+    @patch("app.llm.client.complete", new_callable=AsyncMock)
+    async def test_fallback_agent_timeout_skips_fallback_dispatch(self, mock_complete, mock_track, mock_settings):
+        """M-11: when the target IS the fallback agent, no fallback dispatch is
+        attempted -- the terminal chunk carries the canned speech directly."""
+        self._patch_settings(mock_settings)
+        mock_complete.return_value = "general-agent (95%): chat"
+        orch, dispatcher = _make_orchestrator()
+        orch._dispatch_manager.resolve_dispatch_timeout = AsyncMock(return_value=0.05)
+        orch._should_send_filler = AsyncMock(return_value=False)
+
+        async def _hanging_stream(_request):
+            await asyncio.sleep(30)
+            yield {"token": "never", "done": True}
+
+        dispatcher.dispatch_stream = _hanging_stream
+        dispatcher.dispatch = AsyncMock(return_value={"speech": "unused"})
+
+        task = _make_task("hello", conversation_id="conv-stream-timeout-general")
+        chunks = [c async for c in orch.handle_task_stream(task)]
+
+        done_chunks = [c for c in chunks if c.get("done")]
+        assert len(done_chunks) == 1
+        final = done_chunks[0]
+        assert final["routed_to"] == "general-agent"
+        assert final["mediated_speech"] == "I couldn't process that request in time."
+        dispatcher.dispatch.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# M-12: streaming directive turns persist turn + trace
+# ---------------------------------------------------------------------------
+
+
+class TestStreamingDirectiveTurn:
+    @pytest.mark.asyncio
+    @patch("app.agents.orchestrator.SettingsRepository")
+    @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
+    @patch("app.llm.client.complete", new_callable=AsyncMock)
+    async def test_streaming_directive_turn_stores_turn_and_trace(self, mock_complete, mock_track, mock_settings):
+        """M-12: a directive terminal chunk in streaming mode persists the turn
+        and creates a trace before the chunk is yielded."""
+        from app.analytics.tracer import SpanCollector
+
+        mock_settings.get_value = AsyncMock(return_value="")
+        mock_complete.return_value = "light-agent (95%): Set a timer"
+        orch, dispatcher = _make_orchestrator()
+        orch._should_send_filler = AsyncMock(return_value=False)
+
+        async def _directive_stream(_request):
+            yield {
+                "token": "Timer set for 5 minutes.",
+                "done": True,
+                "directive": "start_timer",
+                "reason": "timer_created",
+            }
+
+        dispatcher.dispatch_stream = _directive_stream
+        orch._store_turn = AsyncMock()
+        orch._create_trace = AsyncMock()
+
+        task = _make_task("set a 5 minute timer", conversation_id="conv-directive-stream")
+        task.span_collector = SpanCollector("trace-directive-stream")
+        chunks = [c async for c in orch.handle_task_stream(task)]
+
+        done_chunks = [c for c in chunks if c.get("done")]
+        assert len(done_chunks) == 1
+        final = done_chunks[0]
+        assert final["directive"] == "start_timer"
+        assert final["reason"] == "timer_created"
+        orch._store_turn.assert_awaited_once()
+        assert orch._store_turn.await_args.args[2] == "Timer set for 5 minutes."
+        orch._create_trace.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# M-9 / M-10: streaming mediation correctness
+# ---------------------------------------------------------------------------
+
+
+class TestStreamingMediation:
+    @pytest.mark.asyncio
+    @patch("app.agents.orchestrator.SettingsRepository")
+    @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
+    @patch("app.llm.client.complete", new_callable=AsyncMock)
+    async def test_empty_personality_reminder_keeps_agent_answer(self, mock_complete, mock_track, mock_settings):
+        """M-9: mediation-streaming enabled + empty personality + active
+        reminder: the user receives the agent's answer WITH the reminder
+        appended (blocking path), never the reminder alone."""
+        mock_complete.return_value = "light-agent (95%): Turn on light"
+        mock_settings.get_value = AsyncMock(
+            side_effect=lambda k, d=None: {
+                "orchestrator.mediation_streaming_enabled": "true",
+                "personality.prompt": "",
+                "orchestrator.organic_followup_enabled": "false",
+            }.get(k, d)
+        )
+        orch, dispatcher = _make_orchestrator()
+        orch._calendar_injector = MagicMock()
+        orch._calendar_injector.inject_reminders = AsyncMock(return_value="Meeting at 3pm.")
+
+        async def _stream(_request):
+            yield {"token": "Light is on.", "done": True}
+
+        dispatcher.dispatch_stream = _stream
+        orch._should_send_filler = AsyncMock(return_value=False)
+
+        task = _make_task("turn on light", conversation_id="conv-m9")
+        chunks = [c async for c in orch.handle_task_stream(task)]
+
+        done_chunks = [c for c in chunks if c.get("done")]
+        assert len(done_chunks) == 1
+        assert done_chunks[0]["mediated_speech"] == "Light is on. Meeting at 3pm."
+        # No lone-reminder token was streamed before the terminal chunk.
+        token_chunks = [c for c in chunks if not c.get("done") and c.get("token")]
+        assert token_chunks == []
+
+    @pytest.mark.asyncio
+    @patch("app.agents.orchestrator.SettingsRepository")
+    @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
+    @patch("app.llm.client.complete", new_callable=AsyncMock)
+    async def test_mediation_stream_failure_before_first_token_falls_back(
+        self, mock_complete, mock_track, mock_settings
+    ):
+        """M-10: mediation LLM failing before the first token falls back to the
+        blocking path -- the full (mediated) answer is delivered and stored."""
+        from app.agents.mediation import MediationStreamError
+
+        mock_complete.return_value = "light-agent (95%): Turn on light"
+        mock_settings.get_value = AsyncMock(
+            side_effect=lambda k, d=None: {
+                "orchestrator.mediation_streaming_enabled": "true",
+                "personality.prompt": "You are friendly.",
+                "orchestrator.organic_followup_enabled": "false",
+            }.get(k, d)
+        )
+        orch, dispatcher = _make_orchestrator()
+
+        async def _stream(_request):
+            yield {"token": "Light is on.", "done": True}
+
+        dispatcher.dispatch_stream = _stream
+        orch._should_send_filler = AsyncMock(return_value=False)
+
+        async def _failing_mediation_stream(**kwargs):
+            raise MediationStreamError("LLM stream broke")
+            yield  # pragma: no cover -- async generator shape
+
+        orch._mediate_response_stream = _failing_mediation_stream
+        orch._mediate_response = AsyncMock(return_value=("Friendly full answer.", False))
+        orch._store_turn = AsyncMock()
+
+        task = _make_task("turn on light", conversation_id="conv-m10-zero")
+        chunks = [c async for c in orch.handle_task_stream(task)]
+
+        done_chunks = [c for c in chunks if c.get("done")]
+        assert len(done_chunks) == 1
+        assert done_chunks[0]["mediated_speech"] == "Friendly full answer."
+        orch._store_turn.assert_awaited_once()
+        assert orch._store_turn.await_args.args[2] == "Friendly full answer."
+
+    @pytest.mark.asyncio
+    @patch("app.agents.orchestrator.SettingsRepository")
+    @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
+    @patch("app.llm.client.complete", new_callable=AsyncMock)
+    async def test_mediation_stream_failure_mid_stream_stores_original(self, mock_complete, mock_track, mock_settings):
+        """M-10: mediation LLM failing mid-stream keeps the spoken partial
+        output but stores the ORIGINAL full agent answer (no truncation)."""
+        from app.agents.mediation import MediationStreamError
+
+        mock_complete.return_value = "light-agent (95%): Turn on light"
+        mock_settings.get_value = AsyncMock(
+            side_effect=lambda k, d=None: {
+                "orchestrator.mediation_streaming_enabled": "true",
+                "personality.prompt": "You are friendly.",
+                "orchestrator.organic_followup_enabled": "false",
+            }.get(k, d)
+        )
+        orch, dispatcher = _make_orchestrator()
+
+        async def _stream(_request):
+            yield {"token": "Full agent answer.", "done": True}
+
+        dispatcher.dispatch_stream = _stream
+        orch._should_send_filler = AsyncMock(return_value=False)
+
+        async def _partial_mediation_stream(**kwargs):
+            yield "Partial mediated "
+            raise MediationStreamError("LLM stream broke mid-way")
+
+        orch._mediate_response_stream = _partial_mediation_stream
+        orch._store_turn = AsyncMock()
+
+        task = _make_task("turn on light", conversation_id="conv-m10-partial")
+        chunks = [c async for c in orch.handle_task_stream(task)]
+
+        # The partial mediated token was already spoken to the client.
+        token_chunks = [c for c in chunks if not c.get("done") and c.get("token")]
+        assert [c["token"] for c in token_chunks] == ["Partial mediated "]
+        done_chunks = [c for c in chunks if c.get("done")]
+        assert len(done_chunks) == 1
+        # mediated_speech suppressed (tokens were streamed) and the stored
+        # turn holds the ORIGINAL full agent answer.
+        assert done_chunks[0].get("mediated_speech") is None
+        orch._store_turn.assert_awaited_once()
+        assert orch._store_turn.await_args.args[2] == "Full agent answer."
+
+
+# ---------------------------------------------------------------------------
+# H-1: recoverable classification failure -> terminal chunk carries string error
+# ---------------------------------------------------------------------------
+
+
+class TestClassificationErrorStreaming:
+    @pytest.mark.asyncio
+    @patch("app.agents.orchestrator.SettingsRepository")
+    @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
+    async def test_recoverable_classification_failure_yields_string_error_chunk(self, mock_track, mock_settings):
+        """H-1: recoverable classification failure yields one terminal chunk with
+        a string ``error`` (never a dict) plus ``mediated_speech``."""
+        mock_settings.get_value = AsyncMock(return_value="")
+        orch, _dispatcher = _make_orchestrator()
+        from app.agents.classification_engine import _RecoverableClassificationError
+
+        orch._pipeline_director.run_classification = AsyncMock(
+            side_effect=_RecoverableClassificationError("Classification service is unavailable.", code="llm_error")
+        )
+
+        task = _make_task("turn on light", conversation_id="conv-clf-error")
+        chunks = [c async for c in orch.handle_task_stream(task)]
+
+        assert len(chunks) == 1
+        final = chunks[0]
+        assert final["done"] is True
+        assert final["error"] == "Classification service is unavailable."
+        assert isinstance(final["error"], str)
+        assert final["mediated_speech"] == "Classification service is unavailable."
+
+
+# ---------------------------------------------------------------------------
 # G14: Streaming dispatch: filler generation, queue reader, token processing
 # ---------------------------------------------------------------------------
 
@@ -212,6 +524,60 @@ class TestStreamingDispatchInternals:
         # depending on race, but the pipeline must not crash.
         done_chunks = [c for c in chunks if c.get("done")]
         assert len(done_chunks) == 1
+
+
+# ---------------------------------------------------------------------------
+# M-8: sequential-send terminal chunk carries the bridge metadata
+# ---------------------------------------------------------------------------
+
+
+class TestSequentialSendStreamingMetadata:
+    @pytest.mark.asyncio
+    @patch("app.agents.orchestrator.SettingsRepository")
+    @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
+    async def test_sequential_send_done_chunk_carries_bridge_metadata(self, mock_track, mock_settings):
+        """M-8: sequential-send terminal chunk carries routed_to + action_executed."""
+        mock_settings.get_value = AsyncMock(return_value="")
+        orch, _dispatcher = _make_orchestrator()
+
+        async def _mock_prelude(task, **kwargs):
+            from app.agents.orchestrator import PipelinePreludeResult
+
+            return PipelinePreludeResult(
+                conversation_id=task.conversation_id or "conv-seq-meta",
+                detected_language="en",
+                lang_turns=[],
+                span_collector=task.span_collector,
+                classifications=[
+                    ("general-agent", "Summarize", 0.95, []),
+                    ("send-agent", "Send it", 0.95, []),
+                ],
+                routing_cached=False,
+                target_agent="general-agent",
+                condensed_task="Summarize",
+                confidence=0.95,
+                used_origin_context=False,
+            )
+
+        orch._run_pipeline_prelude = _mock_prelude
+        orch._should_send_filler = AsyncMock(return_value=False)
+        orch.handle_task = AsyncMock(
+            return_value={
+                "speech": "Sent your summary.",
+                "routed_to": "general-agent, send-agent",
+                "action_executed": {"action": "notify", "entity_id": "notify.telegram", "success": True},
+                "voice_followup": False,
+            }
+        )
+
+        task = _make_task("summarize and send", conversation_id="conv-seq-meta")
+        chunks = [c async for c in orch.handle_task_stream(task)]
+
+        assert chunks[0].get("status") == "sequential_send"
+        done = chunks[-1]
+        assert done["done"] is True
+        assert done["routed_to"] == "general-agent, send-agent"
+        assert done["action_executed"] == {"action": "notify", "entity_id": "notify.telegram", "success": True}
 
 
 # ---------------------------------------------------------------------------

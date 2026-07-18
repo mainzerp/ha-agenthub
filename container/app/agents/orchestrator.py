@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 
-from app.a2a._request import build_stream_request
+from app.a2a._request import build_send_request, build_stream_request
 from app.a2a.protocol import JsonRpcRequest
 from app.agents.agent_registry import CachedAgentRegistry
 from app.agents.base import BaseAgent
@@ -25,7 +25,7 @@ from app.agents.decorator import agent
 from app.agents.dispatch_manager import DispatchManager
 from app.agents.filler_coordinator import FillerCoordinator
 from app.agents.language_detect import detect_user_language
-from app.agents.mediation import MediationService, _strip_followup_tag
+from app.agents.mediation import MediationService, MediationStreamError, _strip_followup_tag
 from app.agents.sanitize import strip_markdown, strip_parenthetical_asides
 from app.agents.task_pipeline import PipelineDirector
 from app.analytics.collector import track_request
@@ -49,6 +49,27 @@ _CANNED_TIMEOUT_SPEECH = "I couldn't process that request in time."
 _CANNED_GENERAL_ERROR_SPEECH = "I couldn't process that request right now."
 
 _PERSONALITY_CACHE_TTL_SEC: float = 300.0
+
+
+def _stringify_error(err: Any) -> str | None:
+    """Normalize a chunk ``error`` value to ``str | None`` (Phase-1 contract).
+
+    ``StreamToken.error`` is ``str | None``; early-exit and background paths
+    historically attached ``{"code", "message", "recoverable"}`` dicts,
+    which crashed pydantic validation inside every streaming generator.
+    Dict payloads are logged at debug in full and reduced to their
+    ``message`` (fallback ``code``); the structured early-exit dict stays
+    available in ``prelude.early_exit`` for logs/traces.
+    """
+    if err is None:
+        return None
+    if isinstance(err, str):
+        return err
+    if isinstance(err, dict):
+        logger.debug("Stringifying dict-shaped chunk error: %s", err)
+        message = err.get("message") or err.get("code")
+        return str(message) if message else "unknown error"
+    return str(err)
 
 
 @dataclass
@@ -92,7 +113,7 @@ class StreamingContext:
     stream_directive: str | None = None
     stream_reason: str | None = None
     action_executed: Any = None
-    stream_error: Any = None
+    stream_error: str | None = None
     stream_voice_followup: bool = False
 
     def __post_init__(self) -> None:
@@ -1332,6 +1353,25 @@ class OrchestratorAgent(BaseAgent):
             )
 
         if dispatch_result.directive:
+            # M-12: directive turns are real turns -- persist the turn and
+            # trace before returning (no cache store).
+            await self._store_turn(
+                conversation_id, user_text, dispatch_result.speech, agent_id=dispatch_result.routed_to
+            )
+            if span_collector:
+                await self._create_trace(
+                    span_collector,
+                    conversation_id,
+                    user_text,
+                    dispatch_result.speech,
+                    dispatch_result.target_agent,
+                    confidence,
+                    condensed_task,
+                    classifications,
+                    turns,
+                    task_context=task.context,
+                    voice_followup=False,
+                )
             return {
                 "speech": dispatch_result.speech,
                 "conversation_id": conversation_id,
@@ -1381,7 +1421,7 @@ class OrchestratorAgent(BaseAgent):
                     "done": True,
                     "conversation_id": prelude.conversation_id,
                     "mediated_speech": strip_markdown(ee.get("speech", "")),
-                    "error": ee["error"],
+                    "error": _stringify_error(ee["error"]),
                 }
             elif exit_type == "background_turn":
                 final_chunk: dict[str, Any] = {
@@ -1395,16 +1435,25 @@ class OrchestratorAgent(BaseAgent):
                 if ee.get("action_executed"):
                     final_chunk["action_executed"] = ee["action_executed"]
                 if ee.get("error"):
-                    final_chunk["error"] = ee["error"]
+                    final_chunk["error"] = _stringify_error(ee["error"])
                 yield final_chunk
             else:
-                yield {
+                # cache_replay exit: forward routing/action metadata so the
+                # streaming done frame carries the same bridge fields as the
+                # single-agent path (M-7).
+                final_chunk = {
                     "token": ee["speech"],
                     "done": True,
                     "conversation_id": prelude.conversation_id,
                     "mediated_speech": ee["speech"],
+                    "routed_to": ee.get("routed_to", "orchestrator"),
                     "sanitized": True,
                 }
+                if ee.get("action_executed"):
+                    final_chunk["action_executed"] = ee["action_executed"]
+                if ee.get("voice_followup"):
+                    final_chunk["voice_followup"] = True
+                yield final_chunk
             return
 
         # DP-4: background turns early-exited in the prelude; only IngressTask reaches text reads.
@@ -1585,6 +1634,11 @@ class OrchestratorAgent(BaseAgent):
                 "conversation_id": conversation_id,
                 "mediated_speech": result["speech"],
             }
+            # M-8: sequential-send terminal chunks carry the bridge metadata.
+            if result.get("routed_to"):
+                seq_final["routed_to"] = result["routed_to"]
+            if result.get("action_executed"):
+                seq_final["action_executed"] = result["action_executed"]
             if result.get("voice_followup"):
                 seq_final["voice_followup"] = True
             yield seq_final
@@ -1605,6 +1659,11 @@ class OrchestratorAgent(BaseAgent):
                 "conversation_id": conversation_id,
                 "mediated_speech": result["speech"],
             }
+            # M-8: multi-agent terminal chunks carry the bridge metadata.
+            if result.get("routed_to"):
+                multi_final["routed_to"] = result["routed_to"]
+            if result.get("action_executed"):
+                multi_final["action_executed"] = result["action_executed"]
             if result.get("voice_followup"):
                 multi_final["voice_followup"] = True
             yield multi_final
@@ -1655,7 +1714,7 @@ class OrchestratorAgent(BaseAgent):
             error = chunk_result.get("error")
             if error:
                 logger.warning("Agent streaming error: %s", error)
-                sc.stream_error = error
+                sc.stream_error = _stringify_error(error)
             if token:
                 sc.append_speech(token)
             if done and chunk_result.get("action_executed"):
@@ -1783,10 +1842,55 @@ class OrchestratorAgent(BaseAgent):
                 except Exception:
                     logger.debug("reader_task cleanup raised", exc_info=True)
 
+        # M-11: the streaming dispatch shares the per-agent timeout budget of
+        # the non-streaming path (same registry resolution as
+        # ``DispatchManager.resolve_dispatch_timeout``).
+        stream_dispatch_timeout = await self._dispatch_manager.resolve_dispatch_timeout(target_agent)
         async with _optional_span(span_collector, "dispatch", agent_id=target_agent) as span:
+            span["metadata"]["dispatch_timeout_sec"] = stream_dispatch_timeout
             _t_stream_start = time.perf_counter()
-            async for token_dict in _stream_with_filler(self._dispatcher.dispatch_stream(request), span):
-                yield token_dict
+            try:
+                async with asyncio.timeout(stream_dispatch_timeout):
+                    async for token_dict in _stream_with_filler(self._dispatcher.dispatch_stream(request), span):
+                        yield token_dict
+            except TimeoutError:
+                # M-11: streaming dispatch timed out -- mirror the
+                # non-streaming fallback: a non-streaming send of the same
+                # task to the fallback agent, then a terminal chunk with a
+                # string error.
+                logger.warning(
+                    "Streaming dispatch to %s timed out after %.1fs, falling back",
+                    target_agent,
+                    stream_dispatch_timeout,
+                )
+                span["metadata"]["stream_timeout"] = True
+                fallback_speech = ""
+                if target_agent != FALLBACK_AGENT:
+                    fb_request = build_send_request(
+                        FALLBACK_AGENT,
+                        agent_task,
+                        request_id=conversation_id or "orchestrator-stream-fallback",
+                        span_collector=span_collector,
+                    )
+                    fb_result = await self._dispatch_fallback(
+                        fb_request, target_agent, span_collector, "stream_timeout"
+                    )
+                    if fb_result is not None:
+                        _fb_agent, fb_response = fb_result
+                        fb_data = DispatchManager.normalize_agent_result(fb_response, agent_id=FALLBACK_AGENT)
+                        fallback_speech = fb_data.get("speech") or ""
+                if not fallback_speech:
+                    fallback_speech = _CANNED_TIMEOUT_SPEECH
+                yield {
+                    "token": "",
+                    "done": True,
+                    "conversation_id": conversation_id,
+                    "mediated_speech": fallback_speech,
+                    "routed_to": FALLBACK_AGENT,
+                    "error": f"Streaming dispatch to {target_agent} timed out after {stream_dispatch_timeout:.1f}s.",
+                    "sanitized": True,
+                }
+                return
             _t_stream_end = time.perf_counter()
             logger.info(
                 "dispatch_stream agent=%s stream_inner=%.1fms",
@@ -1825,6 +1929,24 @@ class OrchestratorAgent(BaseAgent):
                     fs_span["_override_duration_ms"] = 0
 
         if sc.stream_directive:
+            # M-12: directive turns are real turns -- persist the turn and
+            # trace before yielding the terminal chunk (no cache store).
+            directive_speech = "".join(sc.collected_speech)
+            await self._store_turn(conversation_id, user_text, directive_speech, agent_id=target_agent)
+            if span_collector:
+                await self._create_trace(
+                    span_collector,
+                    conversation_id,
+                    user_text,
+                    directive_speech,
+                    target_agent,
+                    confidence,
+                    condensed_task,
+                    classifications,
+                    turns,
+                    task_context=task.context,
+                    voice_followup=False,
+                )
             final_chunk = {
                 "token": "",
                 "done": True,
@@ -1865,26 +1987,47 @@ class OrchestratorAgent(BaseAgent):
         )
 
         tokens_were_streamed = False
-        if mediation_streaming_enabled and should_mediate and full_speech.strip():
+        # M-9: the streaming mediation branch requires a non-empty
+        # personality. A reminder-only turn falls through to the blocking
+        # path, which appends the reminder to the agent's answer instead of
+        # streaming the reminder as the sole token (replacing the answer).
+        use_streamed_mediation = (
+            mediation_streaming_enabled and should_mediate and personality.strip() and full_speech.strip()
+        )
+        if use_streamed_mediation:
             # Stream mediated tokens to the client
             mediated_tokens: list[str] = []
-            async for token in self._mediate_response_stream(
-                agent_speech=full_speech,
-                user_text=user_text,
-                agent_id=target_agent,
-                language=language,
-                span_collector=span_collector,
-                reminder_text=reminder_text,
-                allow_organic_followup=allow_organic_followup,
-            ):
-                if token:
-                    mediated_tokens.append(token)
-                    yield {
-                        "token": token,
-                        "done": False,
-                        "conversation_id": conversation_id,
-                    }
+            mediation_failed_partial = False
+            try:
+                async for token in self._mediate_response_stream(
+                    agent_speech=full_speech,
+                    user_text=user_text,
+                    agent_id=target_agent,
+                    language=language,
+                    span_collector=span_collector,
+                    reminder_text=reminder_text,
+                    allow_organic_followup=allow_organic_followup,
+                ):
+                    if token:
+                        mediated_tokens.append(token)
+                        yield {
+                            "token": token,
+                            "done": False,
+                            "conversation_id": conversation_id,
+                        }
+            except MediationStreamError:
+                if not mediated_tokens:
+                    # M-10: nothing was spoken -- fall back to the blocking
+                    # path so the full answer is delivered and stored.
+                    use_streamed_mediation = False
+                else:
+                    # M-10: partial output was already spoken and cannot be
+                    # retracted; post-mediation finalization below persists
+                    # the ORIGINAL full speech so the turn store / response
+                    # cache never record the truncation.
+                    mediation_failed_partial = True
 
+        if use_streamed_mediation:
             # Post-process the collected mediated text
             collected_mediated = "".join(mediated_tokens)
             mediated = strip_parenthetical_asides(collected_mediated) if collected_mediated.strip() else full_speech
@@ -1892,6 +2035,8 @@ class OrchestratorAgent(BaseAgent):
 
             if mediated_tokens:
                 tokens_were_streamed = True
+            if mediation_failed_partial:
+                mediated = full_speech
 
             # Run post-mediation finalization
             full_speech, vf_eff = await self._finalize_post_mediation(
@@ -1951,7 +2096,7 @@ class OrchestratorAgent(BaseAgent):
         if not tokens_were_streamed:
             final_chunk["mediated_speech"] = mediated_text
         if sc.stream_error:
-            final_chunk["error"] = sc.stream_error
+            final_chunk["error"] = _stringify_error(sc.stream_error)
         if vf_eff:
             final_chunk["voice_followup"] = True
         if sc.action_executed:
@@ -1994,13 +2139,14 @@ class OrchestratorAgent(BaseAgent):
         ctx = task.context
         event = ctx.background_event if ctx else None
         if event is None:
+            logger.warning(
+                "Background turn missing event payload (code=%s, recoverable=%s)",
+                "parse_error",
+                True,
+            )
             return {
                 "speech": "",
-                "error": {
-                    "code": "parse_error",
-                    "message": "Missing background event payload.",
-                    "recoverable": True,
-                },
+                "error": "Missing background event payload.",
             }
         from app.agents.background_actions import handle_background_event
 
@@ -2059,6 +2205,7 @@ class OrchestratorAgent(BaseAgent):
         user_text: str,
         span_collector=None,
         reminder_text: str | None = None,
+        failed_agents: list[str] | None = None,
     ) -> tuple[str, bool]:
         """Merge multiple agent responses into a single natural answer.
 
@@ -2071,6 +2218,7 @@ class OrchestratorAgent(BaseAgent):
             user_text,
             span_collector=span_collector,
             reminder_text=reminder_text,
+            failed_agents=failed_agents,
         )
 
     @staticmethod

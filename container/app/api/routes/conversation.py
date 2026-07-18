@@ -74,6 +74,19 @@ def set_dispatcher(dispatcher) -> None:
     _dispatcher = dispatcher
 
 
+def _ws_terminal_error(message: str, **extra) -> dict:
+    """Build a terminal WS error frame (M-1).
+
+    Bare ``{"error": ...}`` frames never terminate the HA read loop (it
+    breaks only on ``done`` or socket close), so every ingress rejection is
+    sent as a ``done=True`` StreamToken-shaped frame carrying the reason.
+    Transport extras (e.g. ``retry_after_ms``) ride along as top-level keys.
+    """
+    frame = StreamToken(token="", done=True, error=message).model_dump()  # nosec B106
+    frame.update(extra)
+    return frame
+
+
 def _normalize_action_executed(raw) -> ActionResult | None:
     """Adapt internal ``ActionExecuted`` / dict shapes to the public ``ActionResult`` model."""
     if raw is None:
@@ -196,14 +209,17 @@ async def conversation_sse(
     span_collector = getattr(request.state, "span_collector", None)
     a2a_request, _task = _build_a2a_request(conv_request, "message/stream", span_collector, request)
 
+    # M-2: reject at request level; an HTTPException raised inside the
+    # generator would be undeliverable once StreamingResponse has started.
+    if _dispatcher is None:
+        raise HTTPException(status_code=503, detail="Service not ready")
+
     async def generate():
         root_span_id = getattr(request.state, "root_span_id", None)
         parent_token = None
         if span_collector and root_span_id:
             parent_token = span_collector.push_parent(root_span_id)
         try:
-            if _dispatcher is None:
-                raise HTTPException(status_code=503, detail="Service not ready")
             async for chunk in _dispatcher.dispatch_stream(a2a_request):
                 token = StreamToken(
                     token=chunk.get("token", ""),
@@ -223,6 +239,8 @@ async def conversation_sse(
                     if chunk.get("done")
                     else None,
                     routed_agent=chunk.get("routed_to") if chunk.get("done") else None,
+                    status=chunk.get("status") if not chunk.get("done") else None,
+                    agents=chunk.get("agents") if not chunk.get("done") else None,
                 )
                 yield f"data: {token.model_dump_json()}\n\n"
         finally:
@@ -278,19 +296,30 @@ async def ws_conversation(
     ws_rate_limiter = WsMessageRateLimiter(rate=10.0, burst=20)
     try:
         while True:
-            if not await ws_rate_limiter.acquire():
-                await websocket.send_json({"error": "Rate limit exceeded", "retry_after_ms": 100})
-                continue
+            # M-6: receive first, then validate, then account the message
+            # against the rate limiter. Every rejection sends exactly ONE
+            # terminal frame per received message (M-1), so frames stay
+            # bounded by the ingress rate and no tight spin can occur.
             raw = await websocket.receive_text()
             if len(raw) > _MAX_WS_MESSAGE_SIZE:
-                await websocket.send_json({"error": "Message too large", "max_bytes": _MAX_WS_MESSAGE_SIZE})
+                await websocket.send_json(_ws_terminal_error("Message too large", max_bytes=_MAX_WS_MESSAGE_SIZE))
+                continue
+            if not await ws_rate_limiter.acquire():
+                await websocket.send_json(_ws_terminal_error("Rate limit exceeded", retry_after_ms=100))
                 continue
             try:
                 data = json.loads(raw)
                 conv_request = ConversationRequest(**data)
             except Exception as exc:
                 logger.warning("Invalid WebSocket request: %s", exc, exc_info=True)
-                await websocket.send_json({"error": "Invalid request"})
+                await websocket.send_json(_ws_terminal_error("Invalid request"))
+                continue
+
+            # M-2: a missing dispatcher on an accepted socket must not raise
+            # HTTPException (undeliverable) nor leak span state -- answer with
+            # a terminal error frame and keep serving the connection.
+            if _dispatcher is None:
+                await websocket.send_json(_ws_terminal_error("Service not ready"))
                 continue
 
             # Per-turn trace boundary.
@@ -305,9 +334,6 @@ async def ws_conversation(
             state["root_span_id"] = root_span_id
 
             a2a_request, _task = _build_a2a_request(conv_request, "message/stream", span_collector)
-
-            if _dispatcher is None:
-                raise HTTPException(status_code=503, detail="Service not ready")
 
             t0 = time.perf_counter()
             start_time = datetime.now(UTC).isoformat()
@@ -333,6 +359,8 @@ async def ws_conversation(
                         if chunk.get("done")
                         else None,
                         routed_agent=chunk.get("routed_to") if chunk.get("done") else None,
+                        status=chunk.get("status") if not chunk.get("done") else None,
+                        agents=chunk.get("agents") if not chunk.get("done") else None,
                     )
                     await websocket.send_json(token.model_dump())
             except WebSocketDisconnect:

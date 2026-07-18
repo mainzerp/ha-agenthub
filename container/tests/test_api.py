@@ -412,6 +412,43 @@ class TestConversationEndpoints:
         finally:
             conv_routes._dispatcher = old_dispatcher
 
+    async def test_sse_passes_through_status_frames(self, authed_client: httpx.AsyncClient):
+        """M-3: SSE forwards multi-agent status/agents markers on non-done frames."""
+        import json as _json
+
+        from app.api.routes import conversation as conv_routes
+
+        async def _status_stream(req):
+            yield {
+                "token": "",
+                "done": False,
+                "status": "multi_agent",
+                "agents": ["light-agent", "music-agent"],
+            }
+            yield {"token": "", "done": True, "mediated_speech": "Both done."}
+
+        old_dispatcher = conv_routes._dispatcher
+        mock_d = MagicMock()
+        mock_d.dispatch_stream = _status_stream
+        conv_routes._dispatcher = mock_d
+
+        try:
+            resp = await authed_client.post(
+                "/api/conversation/stream",
+                json={"text": "do both"},
+            )
+            assert resp.status_code == 200
+            lines = [line for line in resp.text.splitlines() if line.startswith("data:")]
+            assert len(lines) == 2
+            first_data = _json.loads(lines[0].removeprefix("data:").strip())
+            assert first_data.get("status") == "multi_agent"
+            assert first_data.get("agents") == ["light-agent", "music-agent"]
+            last_data = _json.loads(lines[1].removeprefix("data:").strip())
+            assert last_data.get("done") is True
+            assert last_data.get("status") is None
+        finally:
+            conv_routes._dispatcher = old_dispatcher
+
     async def test_conversation_sse_surfaces_error(self, authed_client: httpx.AsyncClient):
         """SSE endpoint should include error field when agent streams an error chunk."""
         import json as _json
@@ -452,6 +489,162 @@ class TestConversationEndpoints:
         data = token.model_dump()
         assert data["error"] == "Agent error: test"
         assert data["done"] is True
+
+    async def test_conversation_sse_coerces_dict_error_chunk(self, authed_client: httpx.AsyncClient):
+        """H-1: dict-shaped error chunks must not crash SSE framing; the terminal
+        frame carries a string error (the dict's message)."""
+        import json as _json
+
+        from app.api.routes import conversation as conv_routes
+
+        async def _dict_error_stream(req):
+            yield {"token": "partial", "done": False}
+            yield {
+                "token": "",
+                "done": True,
+                "error": {"code": "llm_error", "message": "classification failed", "recoverable": True},
+            }
+
+        old_dispatcher = conv_routes._dispatcher
+        mock_d = MagicMock()
+        mock_d.dispatch_stream = _dict_error_stream
+        conv_routes._dispatcher = mock_d
+
+        try:
+            resp = await authed_client.post(
+                "/api/conversation/stream",
+                json={"text": "do something"},
+            )
+            assert resp.status_code == 200
+            lines = [line for line in resp.text.splitlines() if line.startswith("data:")]
+            last_data = _json.loads(lines[-1].removeprefix("data:").strip())
+            assert last_data.get("done") is True
+            assert last_data.get("error") == "classification failed"
+        finally:
+            conv_routes._dispatcher = old_dispatcher
+
+    async def test_sse_returns_503_when_dispatcher_missing(self, authed_client: httpx.AsyncClient):
+        """M-2: SSE rejects with 503 at request level when the dispatcher is not ready."""
+        from app.api.routes import conversation as conv_routes
+
+        old_dispatcher = conv_routes._dispatcher
+        conv_routes._dispatcher = None
+        try:
+            resp = await authed_client.post(
+                "/api/conversation/stream",
+                json={"text": "hello"},
+            )
+            assert resp.status_code == 503
+        finally:
+            conv_routes._dispatcher = old_dispatcher
+
+    async def test_ws_rate_limit_frames_bounded_by_ingress(self):
+        """M-6: rate-limit starvation sends exactly ONE terminal frame per
+        received message -- frames stay bounded by the ingress rate."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from fastapi import WebSocketDisconnect
+
+        from app.api.routes import conversation as conv_routes
+        from app.api.routes.conversation import ws_conversation
+
+        starved = MagicMock()
+        starved.acquire = AsyncMock(return_value=False)
+
+        ws = MagicMock()
+        ws.headers = {}
+        ws.app.state.allowed_ws_origins = set()
+        ws.client.host = "127.0.0.1"
+        ws.scope = {}
+        ws.accept = AsyncMock()
+        ws.send_json = AsyncMock()
+        messages = ['{"text": "hi"}'] * 25
+        ws.receive_text = AsyncMock(side_effect=[*messages, WebSocketDisconnect()])
+
+        with patch.object(conv_routes, "WsMessageRateLimiter", return_value=starved):
+            await ws_conversation(ws)
+
+        frames = [call.args[0] for call in ws.send_json.await_args_list]
+        assert len(frames) == len(messages)
+        for frame in frames:
+            assert frame["done"] is True
+            assert frame["error"] == "Rate limit exceeded"
+            assert frame["retry_after_ms"] == 100
+
+    async def test_ws_dispatcher_missing_sends_terminal_frame(self):
+        """M-2: WS answers with a terminal error frame (no HTTPException on an
+        accepted socket) and performs no span work when not ready."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        from fastapi import WebSocketDisconnect
+
+        from app.api.routes import conversation as conv_routes
+        from app.api.routes.conversation import ws_conversation
+
+        ws = MagicMock()
+        ws.headers = {}
+        ws.app.state.allowed_ws_origins = set()
+        ws.client.host = "127.0.0.1"
+        ws.scope = {}
+        ws.accept = AsyncMock()
+        ws.send_json = AsyncMock()
+        ws.receive_text = AsyncMock(side_effect=['{"text": "hi"}', WebSocketDisconnect()])
+
+        old_dispatcher = conv_routes._dispatcher
+        conv_routes._dispatcher = None
+        try:
+            await ws_conversation(ws)
+        finally:
+            conv_routes._dispatcher = old_dispatcher
+
+        frames = [call.args[0] for call in ws.send_json.await_args_list]
+        assert len(frames) == 1
+        assert frames[0]["done"] is True
+        assert frames[0]["error"] == "Service not ready"
+        # No per-turn span state was minted for the rejected message.
+        assert "span_collector" not in ws.scope.get("state", {})
+
+    async def test_ws_conversation_coerces_dict_error_chunk(self):
+        """H-1: WS done frame carries a string error for dict-shaped chunk errors."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        from fastapi import WebSocketDisconnect
+
+        from app.api.routes import conversation as conv_routes
+        from app.api.routes.conversation import ws_conversation
+
+        async def _dict_error_stream(req):
+            yield {"token": "partial", "done": False}
+            yield {
+                "token": "",
+                "done": True,
+                "error": {"code": "llm_error", "message": "classification failed", "recoverable": True},
+            }
+
+        old_dispatcher = conv_routes._dispatcher
+        mock_d = MagicMock()
+        mock_d.dispatch_stream = _dict_error_stream
+        conv_routes._dispatcher = mock_d
+
+        ws = MagicMock()
+        ws.headers = {}
+        ws.app.state.allowed_ws_origins = set()
+        ws.client.host = "127.0.0.1"
+        ws.scope = {}
+        ws.accept = AsyncMock()
+        ws.close = AsyncMock()
+        ws.send_json = AsyncMock()
+        ws.receive_text = AsyncMock(side_effect=['{"text": "hello"}', WebSocketDisconnect()])
+
+        try:
+            await ws_conversation(ws)
+        finally:
+            conv_routes._dispatcher = old_dispatcher
+
+        frames = [call.args[0] for call in ws.send_json.await_args_list]
+        done_frames = [f for f in frames if f.get("done")]
+        assert done_frames, f"no done frame sent: {frames}"
+        assert done_frames[-1]["error"] == "classification failed"
 
     async def test_ws_conversation_rejects_invalid_origin(self):
         from unittest.mock import AsyncMock, MagicMock

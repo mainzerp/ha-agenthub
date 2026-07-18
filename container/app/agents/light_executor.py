@@ -161,6 +161,7 @@ async def execute_light_action(
     *,
     preferred_area_id: str | None = None,
     task_context: TaskContext | None = None,
+    verbatim_terms: list[str] | None = None,
 ) -> dict:
     """Resolve an entity, call a HA service, and verify the result.
 
@@ -189,6 +190,7 @@ async def execute_light_action(
             parameters=action.get("parameters") or {},
             preferred_area_id=preferred_area_id,
             task_context=task_context,
+            verbatim_terms=verbatim_terms,
             action=action,
         )
 
@@ -210,6 +212,7 @@ async def execute_light_action(
         _ACTION_DOMAINS_LIGHT.get(action_name, _ALLOWED_DOMAINS),
         _validate_domain,
         preferred_area_id=preferred_area_id,
+        verbatim_terms=verbatim_terms,
         enable_strip_device_noun=True,
         enable_area_fallback=True,
         preferred_domain="light",
@@ -373,6 +376,7 @@ async def _query_light_state(
     span_collector=None,
     *,
     preferred_area_id: str | None = None,
+    verbatim_terms: list[str] | None = None,
     action: dict | None = None,
 ) -> dict:
     entity_id_direct = await _validate_direct_entity_id(
@@ -393,6 +397,7 @@ async def _query_light_state(
             _ALLOWED_DOMAINS,
             _validate_domain,
             preferred_area_id=preferred_area_id,
+            verbatim_terms=verbatim_terms,
             enable_strip_device_noun=True,
             enable_area_fallback=True,
             preferred_domain="light",
@@ -449,6 +454,7 @@ async def _query_light_entity_history(
     *,
     preferred_area_id: str | None = None,
     task_context: TaskContext | None = None,
+    verbatim_terms: list[str] | None = None,
 ) -> dict:
     """Recorder history for a single light, switch, or illuminance/light-level sensor entity."""
     resolved = await resolve_and_validate_entity(
@@ -459,6 +465,7 @@ async def _query_light_entity_history(
         _ALLOWED_DOMAINS,
         _validate_domain,
         preferred_area_id=preferred_area_id,
+        verbatim_terms=verbatim_terms,
         enable_strip_device_noun=True,
         enable_area_fallback=True,
         preferred_domain="light",
@@ -561,6 +568,7 @@ async def _handle_light_read_action(
     parameters: dict[str, Any] | None = None,
     preferred_area_id: str | None = None,
     task_context: TaskContext | None = None,
+    verbatim_terms: list[str] | None = None,
     action: dict | None = None,
 ) -> dict:
     if action_name == "query_light_state":
@@ -572,6 +580,7 @@ async def _handle_light_read_action(
             agent_id,
             span_collector=span_collector,
             preferred_area_id=preferred_area_id,
+            verbatim_terms=verbatim_terms,
             action=action,
         )
     if action_name == "list_lights":
@@ -587,6 +596,7 @@ async def _handle_light_read_action(
             span_collector=span_collector,
             preferred_area_id=preferred_area_id,
             task_context=task_context,
+            verbatim_terms=verbatim_terms,
         )
     return {
         "success": False,

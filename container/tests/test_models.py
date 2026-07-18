@@ -105,6 +105,41 @@ class TestStreamToken:
         assert restored.is_filler is True
         assert restored.sanitized is False
 
+    def test_error_dict_coerced_to_message_string(self):
+        """Phase-1 contract: dict-shaped errors coerce to their message string."""
+        st = StreamToken(
+            token="",
+            done=True,
+            error={"code": "llm_error", "message": "classification failed", "recoverable": True},
+        )
+        assert st.error == "classification failed"
+
+    def test_error_dict_without_message_falls_back_to_code(self):
+        st = StreamToken(token="", done=True, error={"code": "llm_error", "recoverable": True})
+        assert st.error == "llm_error"
+
+    def test_error_string_passthrough(self):
+        st = StreamToken(token="", done=True, error="plain error")
+        assert st.error == "plain error"
+
+    def test_error_none_passthrough(self):
+        st = StreamToken(token="", done=True, error=None)
+        assert st.error is None
+
+    def test_token_none_coerced_to_empty_string(self):
+        st = StreamToken(token=None, done=True)
+        assert st.token == ""
+
+    def test_status_and_agents_fields(self):
+        """M-3: multi-agent status markers serialize on StreamToken."""
+        st = StreamToken(token="", done=False, status="multi_agent", agents=["light-agent", "music-agent"])
+        data = st.model_dump()
+        assert data["status"] == "multi_agent"
+        assert data["agents"] == ["light-agent", "music-agent"]
+        st_default = StreamToken(token="hi")
+        assert st_default.status is None
+        assert st_default.agents is None
+
 
 # ---- Agent models ----
 

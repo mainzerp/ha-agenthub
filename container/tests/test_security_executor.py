@@ -257,3 +257,36 @@ class TestQuerySecurityStateDirectEntityId:
         assert result["success"] is False
         assert "Could not find" in result["speech"]
         ha_client.get_state.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# M-17: list_security must exclude entities hidden from the agent
+# ---------------------------------------------------------------------------
+
+
+class TestListSecurityVisibility:
+    @pytest.mark.asyncio
+    async def test_list_security_excludes_hidden_entities(self, monkeypatch):
+        ha_client = AsyncMock()
+        ha_client.get_states = AsyncMock(
+            return_value=[
+                {"entity_id": "lock.front_door", "state": "locked", "attributes": {"friendly_name": "Front Door"}},
+                {"entity_id": "lock.back_door", "state": "unlocked", "attributes": {"friendly_name": "Back Door"}},
+            ]
+        )
+        monkeypatch.setattr(
+            "app.agents.security_executor.entity_is_visible",
+            AsyncMock(side_effect=lambda agent_id, entity_id, entity_index: entity_id != "lock.back_door"),
+        )
+
+        result = await execute_security_action(
+            {"action": "list_security", "entity": ""},
+            ha_client,
+            MagicMock(),
+            None,
+            agent_id="security-agent",
+        )
+
+        assert result["success"] is True
+        assert "Front Door" in result["speech"]
+        assert "Back Door" not in result["speech"]

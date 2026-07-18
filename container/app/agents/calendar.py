@@ -1,10 +1,14 @@
 """Calendar agent — manages calendar events via HA REST API."""
 
+import logging
+
 from app.agents.actionable import ActionableAgent
 from app.agents.calendar_executor import execute_calendar_action
 from app.agents.decorator import agent
 from app.agents.user_identity import UserIdentityResolver
 from app.models.agent import AgentCard, AgentErrorCode, DispatchTask, TaskResult
+
+logger = logging.getLogger(__name__)
 
 
 @agent(
@@ -49,7 +53,14 @@ class CalendarAgent(ActionableAgent):
         if user:
             import json
 
-            default_calendar_ids = json.loads(user.get("calendar_entity_ids_json", "[]"))
+            try:
+                default_calendar_ids = json.loads(user.get("calendar_entity_ids_json", "[]"))
+            except json.JSONDecodeError:
+                logger.warning(
+                    "Malformed calendar_entity_ids_json for user %r; falling back to default calendar behavior",
+                    user.get("display_name") or user.get("id"),
+                )
+                default_calendar_ids = None
 
         return await execute_calendar_action(
             action,
