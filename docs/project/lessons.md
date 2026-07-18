@@ -250,3 +250,7 @@ All findings from the security/architecture review have been promoted to **What 
 - Config-flow options contract: options flows must persist via `async_create_entry(data={...})` in a single write; `async_update_entry` for title/data/unique_id only — never write then wipe options.
 - `_validate_direct_entity_id` is now async + fail-closed on visibility for all 11 executor call sites; agent per-request state (`_current_task`) lives in ContextVars, not instance attributes.
 - `/api/health` now requires API key; unauthenticated probes use `/healthz`.
+
+### 2026-07-18 — SubAgent artifacts: per-task subfolder layout
+- All SubAgent workflow artifacts now live in `docs/SubAgent/[NAME]/` (one folder per task) and keep the `[NAME]_[SUFFIX].md` filename prefix, e.g. `docs/SubAgent/FIX_AUTH_BUG/FIX_AUTH_BUG_PLAN.md`. The flat `docs/SubAgent/[NAME]_*.md` layout is retired; AGENTS.md "SubAgent File Naming" is the canonical reference.
+- `.gitignore`'s `docs/SubAgent/` directory pattern already covers subfolders recursively — no ignore-file change was needed.
