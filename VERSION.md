@@ -1,12 +1,20 @@
 # Version
 
-**Current Version:** 1.47.0
+**Current Version:** 1.47.1
 
 ## Recent Changes
 
-(tracking changes since 1.47.0)
+(tracking changes since 1.47.1)
 
 ## Version History
+
+### 1.47.1 (PATCH) -- Filler threshold slider allows 0 ms
+
+(commit 87159aa)
+
+- fix(dashboard): filler threshold range slider minimum 500 -> 0 ms in personality settings; 0 = send filler as soon as it is generated (filler generation itself already starts at dispatch time since 1.46.0)
+- fix(dashboard): correct stale hint text and JS fallback default (2000 -> 1000 ms, matching the backend seed default)
+- chore(release): bump version to 1.47.1
 
 ### 1.47.0 (MINOR) -- Dashboard redesign: warm amber theme
 
