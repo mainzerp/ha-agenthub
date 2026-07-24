@@ -104,6 +104,12 @@ class StreamToken(BaseModel):
     # non-terminal ``done=False`` frames).
     status: str | None = None
     agents: list[str] | None = None
+    # P0 first-frame observability: per-turn timings populated on the
+    # terminal (done=True) frame by the streaming routes. Keys:
+    # ``first_frame_ms`` (request start -> first frame sent) and
+    # ``total_ms`` (request start -> done frame). The HA bridge parses only
+    # known keys, so this extra field is safe for older integrations.
+    timings: dict[str, float | None] | None = None
 
     @field_validator("error", mode="before")
     @classmethod

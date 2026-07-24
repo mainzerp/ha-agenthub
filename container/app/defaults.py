@@ -10,6 +10,8 @@ CACHE_DEFAULTS: dict[str, object] = {
     "cache.enabled": True,
     "cache.compound_utterance_bypass": True,
     "cache.routing.enabled": True,
+    # Semantic routing tier (P4): active by default (no shadow mode).
+    "cache.routing.semantic_enabled": True,
     "cache.routing.semantic_threshold": 0.92,
     "cache.routing.max_entries": 50000,
     "cache.action.enabled": True,

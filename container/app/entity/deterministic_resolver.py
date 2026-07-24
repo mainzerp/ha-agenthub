@@ -231,9 +231,15 @@ def _build_resolution_result(
     }
 
 
-def _with_visible_entries(result: dict[str, Any], visible_entries: list[Any]) -> dict[str, Any]:
-    """Attach cached visible entries for downstream reuse without re-listing the index."""
-    result["_visible_entries"] = list(visible_entries) if visible_entries else []
+def _with_visible_entries(result: dict[str, Any], visible_entries: list[Any] | None) -> dict[str, Any]:
+    """Attach cached visible entries for downstream reuse without re-listing the index.
+
+    The key is absent when resolution finished before the index listing
+    ran (lazy exact-``entity_id`` path) -- callers must treat a missing
+    key as "no snapshot available", not "no visible entities".
+    """
+    if visible_entries is not None:
+        result["_visible_entries"] = list(visible_entries)
     return result
 
 
@@ -250,6 +256,23 @@ def _build_exact_terms(entity_query: str, verbatim_terms: list[str] | None) -> l
         seen.add(key)
         ordered_terms.append(normalized)
     return ordered_terms
+
+
+def _normalized_entry_fields(entry: Any) -> tuple[Any, str, list[str], str]:
+    """Compute an entry's normalized match fields once per snapshot.
+
+    ``area`` is guarded by an isinstance check: previously area
+    normalization only ran inside the area-fallback stage, so entries
+    without a real string area (e.g. lightweight test doubles) never
+    reached it -- the eager precompute must stay that tolerant.
+    """
+    area = getattr(entry, "area", None)
+    return (
+        entry,
+        _normalize_lookup_text(entry.friendly_name or ""),
+        [_normalize_lookup_text(alias) for alias in (getattr(entry, "aliases", None) or []) if alias],
+        _normalize_lookup_text(area if isinstance(area, str) else ""),
+    )
 
 
 async def resolve_entity_deterministic_first(
@@ -270,6 +293,12 @@ async def resolve_entity_deterministic_first(
 ) -> dict[str, Any]:
     """Resolve an entity through deterministic stages before hybrid matching.
 
+    The exact ``entity_id`` stage runs before the full index listing
+    (lazy listing); a caller may pass a pre-computed, visibility-filtered
+    ``visible_entries`` snapshot from the SAME request to skip the
+    listing entirely (Directive 5: the snapshot is always computed fresh
+    per request by the caller or by this function).
+
     Optional extensions (used by the light executor):
       * ``enable_strip_device_noun`` strips trailing nouns like "light" /
         "switch" and retries an exact friendly_name match.
@@ -286,13 +315,12 @@ async def resolve_entity_deterministic_first(
         "resolution_path": "unresolved",
         "verbatim_terms_tried": ordered_terms,
     }
-    if visible_entries is None:
-        visible_entries = await _filter_visible_entries(
-            await _list_index_entries(entity_index, domains=allowed_domains),
-            entity_index,
-            agent_id,
-        )
 
+    # Lazy listing (P2): the exact entity_id stage runs BEFORE the full
+    # index listing + visibility filter it never uses. The listing is
+    # computed on demand below, only when a later stage needs it (or is
+    # supplied by the caller via ``visible_entries``). Directive 5 is
+    # preserved: the exact-id path keeps its own visibility check.
     if entity_index and _supports_method(entity_index, "get_by_id"):
         for term in ordered_terms:
             entity_id_query = term.lower()
@@ -320,14 +348,28 @@ async def resolve_entity_deterministic_first(
                 ),
                 visible_entries,
             )
+
+    if visible_entries is None:
+        visible_entries = await _filter_visible_entries(
+            await _list_index_entries(entity_index, domains=allowed_domains),
+            entity_index,
+            agent_id,
+        )
+
     normalized_terms = {value for value in (_normalize_lookup_text(term) for term in ordered_terms) if value}
+
+    # Normalized match fields are computed ONCE per visible-entries
+    # snapshot and reused across the friendly_name / alias /
+    # strip-device-noun / area stages below (previously up to four full
+    # normalization sweeps per resolution call).
+    normalized_entries: list[tuple[Any, str, list[str], str]] = []
+    if visible_entries and normalized_terms:
+        normalized_entries = [_normalized_entry_fields(entry) for entry in visible_entries]
 
     ambiguous_result: dict[str, Any] | None = None
 
-    if visible_entries and normalized_terms:
-        exact_name_matches = [
-            entry for entry in visible_entries if _normalize_lookup_text(entry.friendly_name or "") in normalized_terms
-        ]
+    if normalized_entries:
+        exact_name_matches = [entry for entry, norm_name, _, _ in normalized_entries if norm_name in normalized_terms]
         candidate, ambiguity = _select_deterministic_candidate(
             exact_name_matches,
             entity_query,
@@ -360,11 +402,11 @@ async def resolve_entity_deterministic_first(
             }
 
         if enable_exact_alias:
-            alias_matches = []
-            for entry in visible_entries:
-                aliases = getattr(entry, "aliases", None) or []
-                if any(_normalize_lookup_text(alias) in normalized_terms for alias in aliases if alias):
-                    alias_matches.append(entry)
+            alias_matches = [
+                entry
+                for entry, _, norm_aliases, _ in normalized_entries
+                if any(norm_alias in normalized_terms for norm_alias in norm_aliases)
+            ]
             candidate, ambiguity = _select_deterministic_candidate(
                 alias_matches,
                 entity_query,
@@ -399,14 +441,10 @@ async def resolve_entity_deterministic_first(
     # ------------------------------------------------------------------
     # Extra deterministic fallbacks (extracted from action_executor)
     # ------------------------------------------------------------------
-    if visible_entries and normalized_terms and enable_strip_device_noun:
+    if normalized_entries and enable_strip_device_noun:
         stripped_query = _strip_trailing_device_noun(entity_query)
         if stripped_query and stripped_query != _normalize_lookup_text(entity_query):
-            stripped_matches = [
-                entry
-                for entry in visible_entries
-                if _normalize_lookup_text(entry.friendly_name or "") == stripped_query
-            ]
+            stripped_matches = [entry for entry, norm_name, _, _ in normalized_entries if norm_name == stripped_query]
             candidate, ambiguity = _select_deterministic_candidate(
                 stripped_matches,
                 entity_query,
@@ -446,7 +484,7 @@ async def resolve_entity_deterministic_first(
                     "speech": ambiguity,
                 }
 
-    if visible_entries and normalized_terms and enable_area_fallback:
+    if normalized_entries and enable_area_fallback:
         area_queries = set(normalized_terms)
         stripped_query = _strip_trailing_device_noun(entity_query)
         if stripped_query:
@@ -454,9 +492,8 @@ async def resolve_entity_deterministic_first(
         domain_set = allowed_domains if allowed_domains is not None else frozenset()
         area_matches = [
             entry
-            for entry in visible_entries
-            if (not domain_set or getattr(entry, "domain", "") in domain_set)
-            and _normalize_lookup_text(entry.area or "") in area_queries
+            for entry, _, _, norm_area in normalized_entries
+            if (not domain_set or getattr(entry, "domain", "") in domain_set) and norm_area in area_queries
         ]
         candidate, ambiguity = _select_deterministic_candidate(
             area_matches,

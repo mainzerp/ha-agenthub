@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 
 from app.agents.base import (
@@ -12,7 +13,7 @@ from app.agents.base import (
     language_code_to_name,
 )
 from app.agents.decorator import agent
-from app.db.repository import SettingsRepository
+from app.db.repository import AgentConfigRepository, SettingsRepository
 from app.models.agent import AgentCard, DispatchTask, TaskResult
 
 logger = logging.getLogger(__name__)
@@ -85,11 +86,16 @@ class FillerAgent(BaseAgent):
                 timeout=_FILLER_LLM_TIMEOUT_SEC,
             )
             if not result or not result.strip():
+                # L10 fix: ``self._config`` does not exist on BaseAgent --
+                # read the (memoized) agent config for diagnostics instead.
+                config_row = None
+                with contextlib.suppress(Exception):
+                    config_row = await AgentConfigRepository.get(self.agent_card.agent_id)
                 logger.warning(
                     "Filler generation produced empty response (agent=%s model=%s max_tokens=%s)",
                     self.agent_card.agent_id,
-                    self._config.model if self._config else "unknown",
-                    self._config.max_tokens if self._config else "unknown",
+                    (config_row or {}).get("model") or "unknown",
+                    (config_row or {}).get("max_tokens") or "unknown",
                 )
                 return TaskResult(speech="")
             return TaskResult(speech=result.strip())

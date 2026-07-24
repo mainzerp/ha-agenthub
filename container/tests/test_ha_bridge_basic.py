@@ -227,7 +227,10 @@ class TestWsBridge:
         done_frame = tokens[-1]
         assert done_frame.get("done") is True
         assert "conversation_id" in done_frame
-        assert "kitchen" in (done_frame.get("mediated_speech") or done_frame.get("token", "")).lower()
+        # P0: with mediation inactive the speech streams as non-terminal
+        # tokens; the done frame then carries no mediated_speech duplicate.
+        speech = done_frame.get("mediated_speech") or "".join(t.get("token", "") for t in tokens if not t.get("done"))
+        assert "kitchen" in speech.lower()
 
     async def test_ws_prompt_injection_sanitizes_input(self, light_scenario_app):
         """Null bytes stripped and injection_detected flag set via WS ingress."""

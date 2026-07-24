@@ -254,3 +254,12 @@ All findings from the security/architecture review have been promoted to **What 
 ### 2026-07-18 — SubAgent artifacts: per-task subfolder layout
 - All SubAgent workflow artifacts now live in `docs/SubAgent/[NAME]/` (one folder per task) and keep the `[NAME]_[SUFFIX].md` filename prefix, e.g. `docs/SubAgent/FIX_AUTH_BUG/FIX_AUTH_BUG_PLAN.md`. The flat `docs/SubAgent/[NAME]_*.md` layout is retired; AGENTS.md "SubAgent File Naming" is the canonical reference.
 - `.gitignore`'s `docs/SubAgent/` directory pattern already covers subfolders recursively — no ignore-file change was needed.
+
+### 2026-07-20 — PIPELINE_REVIEW: First-Frame Latency + Semantic Routing Cache (Phases 1-5)
+- Parallel research (3 streams) + synthesis + sequential 5-phase implementation workflow completed cleanly; per-phase full-suite gates caught integration breaks early (cross-stream failure pattern already logged 2026-07-16).
+- `cache.db` is a SEPARATE database from `agent_assist.db`: managed by its own PRAGMA `user_version` ladder in `sqlite_cache_store.py` (now v2), NOT the app/db/schema migration registry.
+- `vec0` table names must not collide with vec0 shadow tables (e.g. suffix `_info` is reserved by vec0 itself); vec0 dimension depends on the configured embedding model — create the table lazily and drop stale vectors on dimension change.
+- Deterministic executor confirmations never pass through the agent LLM; personality reaches them only via the mediation/rewrite step (user requirement: personality in ALL responses).
+- Non-streaming "TTFT" was actually total latency; metric renamed to `latency_ms`, `ttft_ms`/`tps` are now streaming-only.
+- pytest shutdown-hang on this Windows host reconfirmed (take verdicts from printed summary lines — see 2026-07-17 entry).
+- Final suite states: container 2987 passed, custom_components 82 passed, ruff clean.

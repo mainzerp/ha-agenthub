@@ -65,7 +65,7 @@ async def analytics_overview(
     latency_percentiles = _compute_percentiles(latencies, [50, 95, 99])
 
     # Cache hit rate
-    hits = sum(1 for e in cache_events if e.get("event_type") in ("routing_hit", "action_hit"))
+    hits = sum(1 for e in cache_events if e.get("event_type") in ("routing_hit", "semantic_hit", "action_hit"))
     misses = sum(1 for e in cache_events if e.get("event_type") == "miss")
     total_cache = hits + misses
     hit_rate = round(hits / total_cache * 100, 1) if total_cache > 0 else 0
@@ -167,7 +167,7 @@ async def analytics_cache(
     start = (datetime.now(UTC) - timedelta(hours=hours)).strftime("%Y-%m-%d %H:%M:%S")
     events = await AnalyticsRepository.query_by_range(start=start, limit=10000)
 
-    hit_types = {"routing_hit", "action_hit"}
+    hit_types = {"routing_hit", "semantic_hit", "action_hit"}
     miss_types = {"miss"}
 
     hits_per_bucket: dict[str, int] = defaultdict(int)
@@ -215,10 +215,24 @@ async def analytics_tokens(
     )
 
     by_agent: dict[str, dict] = defaultdict(
-        lambda: {"tokens_in": 0, "tokens_out": 0, "calls": 0, "ttft_ms_values": [], "tps_values": []}
+        lambda: {
+            "tokens_in": 0,
+            "tokens_out": 0,
+            "calls": 0,
+            "ttft_ms_values": [],
+            "tps_values": [],
+            "latency_ms_values": [],
+        }
     )
     by_provider: dict[str, dict] = defaultdict(
-        lambda: {"tokens_in": 0, "tokens_out": 0, "calls": 0, "ttft_ms_values": [], "tps_values": []}
+        lambda: {
+            "tokens_in": 0,
+            "tokens_out": 0,
+            "calls": 0,
+            "ttft_ms_values": [],
+            "tps_values": [],
+            "latency_ms_values": [],
+        }
     )
 
     for e in events:
@@ -240,19 +254,25 @@ async def analytics_tokens(
 
         ttft = data.get("ttft_ms")
         tps_val = data.get("tps")
+        latency = data.get("latency_ms")
         if ttft is not None:
             by_agent[agent]["ttft_ms_values"].append(ttft)
             by_provider[provider]["ttft_ms_values"].append(ttft)
         if tps_val is not None:
             by_agent[agent]["tps_values"].append(tps_val)
             by_provider[provider]["tps_values"].append(tps_val)
+        if latency is not None:
+            by_agent[agent]["latency_ms_values"].append(latency)
+            by_provider[provider]["latency_ms_values"].append(latency)
 
     for bucket in (by_agent, by_provider):
         for key in bucket:
             ttft_vals = bucket[key].pop("ttft_ms_values", [])
             tps_vals = bucket[key].pop("tps_values", [])
+            latency_vals = bucket[key].pop("latency_ms_values", [])
             bucket[key]["avg_ttft_ms"] = round(sum(ttft_vals) / len(ttft_vals), 2) if ttft_vals else None
             bucket[key]["avg_tps"] = round(sum(tps_vals) / len(tps_vals), 2) if tps_vals else None
+            bucket[key]["avg_latency_ms"] = round(sum(latency_vals) / len(latency_vals), 2) if latency_vals else None
 
     return {
         "by_agent": dict(by_agent),
@@ -316,7 +336,7 @@ async def analytics_cache_tiers(
             ts_epoch = int(dt.timestamp())
             bucket_start = ts_epoch - (ts_epoch % bucket_secs)
             bucket_label = datetime.fromtimestamp(bucket_start, tz=UTC).strftime("%H:%M")
-            if et == "routing_hit":
+            if et in ("routing_hit", "semantic_hit"):
                 routing_hits_per_bucket[bucket_label] += 1
             elif et == "action_hit":
                 action_hits_per_bucket[bucket_label] += 1

@@ -99,7 +99,7 @@ The **Analytics** page at `/dashboard/analytics` provides deeper operational met
 - **Cache performance** -- hits, misses, and hit rates per tier.
 - **Error breakdown** -- errors grouped by type and agent.
 - **Per-agent performance** -- requests handled by each agent.
-- **Token usage** -- average time-to-first-token (TTFT) and tokens-per-second (TPS).
+- **Token usage** -- average whole-call latency, plus time-to-first-token (TTFT) and tokens-per-second (TPS) for streaming calls.
 - **Rewrite stats** -- how often cached responses were rewritten for variety.
 
 Use this page to identify trends, measure the impact of a settings change, or decide whether an LLM provider is too slow.
@@ -274,7 +274,7 @@ The **Settings** page at `/dashboard/settings` is a unified editor for advanced 
 
 - **Cache** -- enable/disable tiers, thresholds, max entries, LRU behavior, and validator configuration.
 - **Embedding** -- local or external embedding provider and model.
-- **Entity Matching** -- confidence threshold, top-N candidates, oversample factor, and expansion settings.
+- **Entity Matching** -- confidence threshold, top-N candidates, and expansion settings.
 - **Communication** -- WebSocket reconnect interval and stream buffer size.
 - **A2A** -- default agent timeout, max iterations, and max dispatch timeout.
 - **Filler** -- enable interim TTS filler phrases and set the threshold delay.

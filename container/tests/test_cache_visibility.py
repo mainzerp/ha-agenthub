@@ -483,6 +483,17 @@ class TestActionCacheTraceDualWrite:
                 "duration_ms": 1.0,
             }
         )
+        # P2: the ha_action span is now emitted by try_replay_action around
+        # the actual replay call (upstream of finalize); mirror it here so
+        # the trace includes the executing agent like the real flow.
+        span_collector._spans.append(
+            {
+                "span_name": "ha_action",
+                "agent_id": "light-agent",
+                "metadata": {"action": "light/turn_on", "entity": "light.kitchen", "cached": True, "success": True},
+                "duration_ms": 1.0,
+            }
+        )
         orch._get_turns = AsyncMock(return_value=[])
         orch._store_turn = AsyncMock()
         cache_manager.apply_rewrite = AsyncMock(return_value="Done.")

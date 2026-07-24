@@ -1,9 +1,11 @@
 """Tests for the embedding shortlist oversample behaviour in EntityMatcher.
 
-Validates §3 of docs/SubAgent/area_only_climate_agent_plan.md: when
-``agent_id`` or ``preferred_domains`` is supplied, the matcher must
-enlarge the embedding shortlist by ``oversample_factor``; otherwise the
-shortlist stays at ``top_n * 2``.
+The dead ``entity_matching.oversample_factor`` setting was removed (L6):
+for ``top_n >= 10`` the ``min()`` clamp made any factor a no-op, and with
+the shipped default factor the shortlist always landed on the fixed cap.
+When ``agent_id`` or ``preferred_domains`` is supplied the matcher now
+enlarges the embedding shortlist to the fixed cap ``max(20, top_n * 2)``;
+otherwise the shortlist stays at ``top_n * 2``.
 """
 
 from __future__ import annotations
@@ -21,13 +23,12 @@ def _make_matcher() -> EntityMatcher:
     entity_index.get_by_ids_async = AsyncMock(return_value={})
     matcher = EntityMatcher(entity_index=entity_index, alias_resolver=object())
     matcher._top_n = 3
-    matcher._oversample_factor = 20
     matcher._apply_visibility_rules = AsyncMock(side_effect=lambda _agent, results: results)
     return matcher
 
 
 @pytest.mark.asyncio
-async def test_oversample_factor_applied_when_agent_id_present():
+async def test_shortlist_capped_when_agent_id_present():
     matcher = _make_matcher()
     with (
         patch("app.entity.matcher.AliasSignal.score", new=AsyncMock(return_value=None)),
@@ -39,7 +40,7 @@ async def test_oversample_factor_applied_when_agent_id_present():
 
 
 @pytest.mark.asyncio
-async def test_oversample_factor_applied_when_preferred_domains_present():
+async def test_shortlist_capped_when_preferred_domains_present():
     matcher = _make_matcher()
     with (
         patch("app.entity.matcher.AliasSignal.score", new=AsyncMock(return_value=None)),
@@ -51,7 +52,7 @@ async def test_oversample_factor_applied_when_preferred_domains_present():
 
 
 @pytest.mark.asyncio
-async def test_oversample_factor_not_applied_for_unfiltered_query():
+async def test_shortlist_not_oversampled_for_unfiltered_query():
     matcher = _make_matcher()
     with (
         patch("app.entity.matcher.AliasSignal.score", new=AsyncMock(return_value=None)),
@@ -63,76 +64,21 @@ async def test_oversample_factor_not_applied_for_unfiltered_query():
 
 
 @pytest.mark.asyncio
-async def test_oversample_factor_clamped_on_load():
+async def test_shortlist_cap_scales_with_top_n():
     matcher = _make_matcher()
-
-    async def _settings(values):
-        async def _get(key, default=None):
-            return values.get(key, default)
-
-        return _get
-
-    # Stub entity_matching_config DB read to return empty rows.
-    class _FakeCursor:
-        async def fetchall(self):
-            return []
-
-    class _FakeDB:
-        async def execute(self, *_args, **_kwargs):
-            return _FakeCursor()
-
-    class _FakeCtx:
-        async def __aenter__(self):
-            return _FakeDB()
-
-        async def __aexit__(self, *_exc):
-            return None
-
-    def _get_db_read():
-        return _FakeCtx()
-
-    # Low value -> clamped to 2.
+    matcher._top_n = 15
     with (
-        patch("app.db.schema.get_db_read", new=_get_db_read),
-        patch(
-            "app.entity.matcher.SettingsRepository.get_value",
-            new=AsyncMock(
-                side_effect=lambda key, default=None: "0" if key == "entity_matching.oversample_factor" else default
-            ),
-        ),
+        patch("app.entity.matcher.AliasSignal.score", new=AsyncMock(return_value=None)),
+        patch("app.entity.matcher.EmbeddingSignal.score", new=AsyncMock(return_value=[])) as embed_mock,
     ):
-        await matcher.load_config()
-    assert matcher._oversample_factor == 2
-
-    # High value -> clamped to 200.
-    with (
-        patch("app.db.schema.get_db_read", new=_get_db_read),
-        patch(
-            "app.entity.matcher.SettingsRepository.get_value",
-            new=AsyncMock(
-                side_effect=lambda key, default=None: "9999" if key == "entity_matching.oversample_factor" else default
-            ),
-        ),
-    ):
-        await matcher.load_config()
-    assert matcher._oversample_factor == 200
-
-    # Non-numeric -> falls back to default 20.
-    with (
-        patch("app.db.schema.get_db_read", new=_get_db_read),
-        patch(
-            "app.entity.matcher.SettingsRepository.get_value",
-            new=AsyncMock(
-                side_effect=lambda key, default=None: "abc" if key == "entity_matching.oversample_factor" else default
-            ),
-        ),
-    ):
-        await matcher.load_config()
-    assert matcher._oversample_factor == 20
+        await matcher._match_query("flur", agent_id="climate-agent")
+    embed_mock.assert_awaited_once()
+    assert embed_mock.await_args.kwargs.get("n") == 30
 
 
 @pytest.mark.asyncio
-async def test_oversample_factor_default_is_20():
+async def test_load_config_has_no_oversample_factor():
+    """The removed setting must not be read or stored anymore."""
     matcher = _make_matcher()
 
     class _FakeCursor:
@@ -153,15 +99,19 @@ async def test_oversample_factor_default_is_20():
     def _get_db_read():
         return _FakeCtx()
 
+    requested_keys: list[str] = []
+
+    async def _get_value(key, default=None):
+        requested_keys.append(key)
+        return default
+
     with (
         patch("app.db.schema.get_db_read", new=_get_db_read),
-        patch(
-            "app.entity.matcher.SettingsRepository.get_value",
-            new=AsyncMock(side_effect=lambda key, default=None: default),
-        ),
+        patch("app.entity.matcher.SettingsRepository.get_value", new=_get_value),
     ):
         await matcher.load_config()
-    assert matcher._oversample_factor == 20
+    assert not hasattr(matcher, "_oversample_factor")
+    assert "entity_matching.oversample_factor" not in requested_keys
 
 
 @pytest.mark.asyncio

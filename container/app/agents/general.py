@@ -2,13 +2,19 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
+from collections.abc import AsyncGenerator
 from typing import Any
 
 from app.agents.base import BaseAgent
 from app.agents.decorator import agent
 from app.agents.prompt_builder import PromptBuilder
-from app.agents.tool_calling import call_llm_with_mcp_tools, mcp_tools_to_openai_format
+from app.agents.tool_calling import (
+    call_llm_with_mcp_tools,
+    call_llm_with_mcp_tools_stream,
+    mcp_tools_to_openai_format,
+)
 from app.analytics.tracer import _optional_span
 from app.models.agent import AgentCard, AgentErrorCode, DispatchTask, TaskResult
 
@@ -52,8 +58,8 @@ class GeneralAgent(BaseAgent):
             timeout_sec=30.0,
         )
 
-    async def handle_task(self, task: DispatchTask) -> TaskResult:
-        span_collector = task.span_collector
+    async def _build_messages(self, task: DispatchTask) -> tuple[list[dict], dict[str, Any]]:
+        """Assemble system prompt + message list and per-call LLM overrides."""
         system_prompt = PromptBuilder.build(
             await self._load_prompt_async("general"),
             language=task.context.language if task.context else None,
@@ -71,10 +77,16 @@ class GeneralAgent(BaseAgent):
         # only the distilled description.
         messages.append({"role": "user", "content": self._wrap_user_input(task.description)})
 
-        # Check for available MCP tools
         llm_kwargs: dict[str, Any] = {}
         if task.context and task.context.sequential_send:
             llm_kwargs["max_tokens"] = 2048
+        return messages, llm_kwargs
+
+    async def handle_task(self, task: DispatchTask) -> TaskResult:
+        span_collector = task.span_collector
+        messages, llm_kwargs = await self._build_messages(task)
+
+        # Check for available MCP tools
         tools = await self._get_mcp_tools()
         if tools:
             tool_schemas = mcp_tools_to_openai_format(tools)
@@ -104,6 +116,64 @@ class GeneralAgent(BaseAgent):
             )
 
         return TaskResult(speech=response)
+
+    async def handle_task_stream(self, task: DispatchTask) -> AsyncGenerator[dict, None]:
+        """Streaming variant of handle_task: yields LLM tokens as they arrive.
+
+        Same prompt assembly and MCP tool loop as :meth:`handle_task`, but
+        the final no-tools round streams via ``complete_stream`` so the
+        orchestrator can relay first tokens immediately on turns where
+        mediation is inactive. Mid-stream failures keep any tokens already
+        yielded; only a failure before the first token produces the canned
+        error speech (mirroring the base-class default wrapper).
+        """
+        span_collector = task.span_collector
+        messages, llm_kwargs = await self._build_messages(task)
+
+        tools = await self._get_mcp_tools()
+        collected: list[str] = []
+        try:
+            if tools:
+                tool_schemas = mcp_tools_to_openai_format(tools)
+                async with _optional_span(span_collector, "llm_call", agent_id="general-agent") as span:
+                    async for token in call_llm_with_mcp_tools_stream(
+                        self,
+                        messages,
+                        tools,
+                        self._mcp_tool_manager,
+                        span_collector=span_collector,
+                        **llm_kwargs,
+                    ):
+                        collected.append(token)
+                        yield {"token": token, "done": False, "conversation_id": task.conversation_id}
+                    span["metadata"]["model"] = "general-agent"
+                    span["metadata"]["llm_response"] = "".join(collected)[:500]
+                    span["metadata"]["tools_available"] = len(tool_schemas)
+            else:
+                async with _optional_span(span_collector, "llm_call", agent_id="general-agent") as span:
+                    async for token in self._call_llm_stream(messages, span_collector=span_collector, **llm_kwargs):
+                        collected.append(token)
+                        yield {"token": token, "done": False, "conversation_id": task.conversation_id}
+                    span["metadata"]["model"] = "general-agent"
+                    span["metadata"]["llm_response"] = "".join(collected)[:500]
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # Mid-stream failure: tokens already yielded stay spoken; the
+            # turn terminates below with the partial answer. A failure
+            # before the first token falls through to the canned error.
+            logger.exception("LLM stream failed for general-agent")
+
+        speech = "".join(collected).strip()
+        if not speech:
+            logger.warning("LLM returned empty response for general-agent task: %s", task.description[:100])
+            err = self._error_result(
+                AgentErrorCode.LLM_EMPTY_RESPONSE,
+                "The language model did not return a response. Please try again.",
+            )
+            yield {"token": err.speech, "done": True, "conversation_id": task.conversation_id}
+            return
+        yield {"token": "", "done": True, "conversation_id": task.conversation_id}
 
     async def _get_mcp_tools(self) -> list[dict]:
         """Get MCP tools assigned to this agent."""

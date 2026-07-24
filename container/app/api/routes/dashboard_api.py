@@ -195,7 +195,9 @@ async def get_overview(request: Request) -> dict[str, Any]:
         )
         if cache_events:
             total_lookups = len(cache_events)
-            hits = sum(1 for e in cache_events if e.get("hit_type", "") in ("routing_hit", "action_hit"))
+            hits = sum(
+                1 for e in cache_events if e.get("hit_type", "") in ("routing_hit", "semantic_hit", "action_hit")
+            )
             cache_hit_rate = round(hits / total_lookups * 100, 1)
     except Exception:
         logger.debug("Failed to compute cache hit rate", exc_info=True)
@@ -292,7 +294,7 @@ async def get_overview_extended(request: Request) -> dict[str, Any]:
             limit=10000,
         )
 
-    hit_types = {"routing_hit", "action_hit"}
+    hit_types = {"routing_hit", "semantic_hit", "action_hit"}
     miss_types = {"miss"}
     hits = sum(1 for e in all_events if e.get("event_type") in hit_types)
     misses = sum(1 for e in all_events if e.get("event_type") in miss_types)
@@ -300,7 +302,7 @@ async def get_overview_extended(request: Request) -> dict[str, Any]:
     cache_hit_rate = round(hits / total_cache * 100, 1) if total_cache > 0 else 0
 
     # Cache tier breakdown counts
-    routing_hits = sum(1 for e in all_events if e.get("event_type") == "routing_hit")
+    routing_hits = sum(1 for e in all_events if e.get("event_type") in ("routing_hit", "semantic_hit"))
     action_hits = sum(1 for e in all_events if e.get("event_type") == "action_hit")
     cache_misses = misses
 

@@ -87,6 +87,63 @@ def _ws_terminal_error(message: str, **extra) -> dict:
     return frame
 
 
+def _apply_stream_chunk(
+    frame: StreamToken,
+    chunk: dict,
+    *,
+    first_frame_ms: float | None,
+    now_ms: float,
+) -> StreamToken:
+    """Populate the reusable per-turn ``frame`` from one dispatcher chunk.
+
+    P3 lightweight token frames: one ``StreamToken`` construction per turn
+    instead of one construction + validation per chunk. Assignment does not
+    re-run pydantic validators, so the coercions the model validators applied
+    on construction are mirrored here (``token=None`` -> ``""``, dict-shaped
+    ``error`` -> ``str``, filler chunks forced unsanitized). Every field is
+    assigned unconditionally so no stale value leaks between chunks; the
+    emitted field set stays byte-identical to per-chunk construction.
+    """
+    done = bool(chunk.get("done", False))
+    is_filler = bool(chunk.get("is_filler", False))
+    frame.token = chunk.get("token") or ""
+    frame.done = done
+    frame.conversation_id = chunk.get("conversation_id") if done else None
+    frame.mediated_speech = chunk.get("mediated_speech") if done else None
+    frame.is_filler = is_filler
+    error = chunk.get("error") if done else None
+    if error is not None and not isinstance(error, str):
+        if isinstance(error, dict):
+            logger.warning("StreamToken coerced dict-shaped error to string: %s", error)
+            message = error.get("message") or error.get("code")
+            error = str(message) if message else "unknown error"
+        else:
+            logger.warning("StreamToken coerced non-string error %r to string", error)
+            error = str(error)
+    frame.error = error
+    frame.voice_followup = bool(chunk.get("voice_followup")) if done else False
+    frame.sanitized = bool(chunk.get("sanitized", True)) if done else not is_filler
+    if is_filler:
+        # Mirror the _force_unsanitized_filler model validator.
+        frame.sanitized = False
+    frame.directive = chunk.get("directive") if done else None
+    frame.reason = chunk.get("reason") if done else None
+    frame.filler_push = chunk.get("filler_push") if not done else None
+    frame.action_executed = _normalize_action_executed(chunk.get("action_executed")) if done else None
+    frame.routed_agent = chunk.get("routed_to") if done else None
+    frame.status = chunk.get("status") if not done else None
+    frame.agents = chunk.get("agents") if not done else None
+    frame.timings = (
+        {
+            "first_frame_ms": round(first_frame_ms, 2),
+            "total_ms": round(now_ms, 2),
+        }
+        if done
+        else None
+    )
+    return frame
+
+
 def _normalize_action_executed(raw) -> ActionResult | None:
     """Adapt internal ``ActionExecuted`` / dict shapes to the public ``ActionResult`` model."""
     if raw is None:
@@ -219,29 +276,20 @@ async def conversation_sse(
         parent_token = None
         if span_collector and root_span_id:
             parent_token = span_collector.push_parent(root_span_id)
+        t0 = time.perf_counter()
+        first_frame_ms: float | None = None
+        # P3: one frame model per turn, mutated per chunk (see _apply_stream_chunk).
+        frame = StreamToken(token="")  # nosec B106
         try:
             async for chunk in _dispatcher.dispatch_stream(a2a_request):
-                token = StreamToken(
-                    token=chunk.get("token", ""),
-                    done=chunk.get("done", False),
-                    conversation_id=chunk.get("conversation_id") if chunk.get("done") else None,
-                    mediated_speech=chunk.get("mediated_speech") if chunk.get("done") else None,
-                    is_filler=chunk.get("is_filler", False),
-                    error=chunk.get("error") if chunk.get("done") else None,
-                    voice_followup=bool(chunk.get("voice_followup")) if chunk.get("done") else False,
-                    sanitized=bool(chunk.get("sanitized", True))
-                    if chunk.get("done")
-                    else not chunk.get("is_filler", False),
-                    directive=chunk.get("directive") if chunk.get("done") else None,
-                    reason=chunk.get("reason") if chunk.get("done") else None,
-                    filler_push=chunk.get("filler_push") if not chunk.get("done") else None,
-                    action_executed=_normalize_action_executed(chunk.get("action_executed"))
-                    if chunk.get("done")
-                    else None,
-                    routed_agent=chunk.get("routed_to") if chunk.get("done") else None,
-                    status=chunk.get("status") if not chunk.get("done") else None,
-                    agents=chunk.get("agents") if not chunk.get("done") else None,
-                )
+                now_ms = (time.perf_counter() - t0) * 1000
+                if first_frame_ms is None:
+                    # This frame is about to be sent and is therefore the
+                    # first frame of the turn.
+                    first_frame_ms = now_ms
+                    # Expose to TracingMiddleware for the root-span marker.
+                    request.state.first_frame_ms = first_frame_ms
+                token = _apply_stream_chunk(frame, chunk, first_frame_ms=first_frame_ms, now_ms=now_ms)
                 yield f"data: {token.model_dump_json()}\n\n"
         finally:
             if span_collector and parent_token is not None:
@@ -339,29 +387,17 @@ async def ws_conversation(
             start_time = datetime.now(UTC).isoformat()
             status = "ok"
             disconnect_during_turn = False
+            first_frame_ms: float | None = None
+            # P3: one frame model per turn, mutated per chunk (see _apply_stream_chunk).
+            frame = StreamToken(token="")  # nosec B106
             try:
                 async for chunk in _dispatcher.dispatch_stream(a2a_request):
-                    token = StreamToken(
-                        token=chunk.get("token", ""),
-                        done=chunk.get("done", False),
-                        conversation_id=chunk.get("conversation_id") if chunk.get("done") else None,
-                        mediated_speech=chunk.get("mediated_speech") if chunk.get("done") else None,
-                        is_filler=chunk.get("is_filler", False),
-                        error=chunk.get("error") if chunk.get("done") else None,
-                        voice_followup=bool(chunk.get("voice_followup")) if chunk.get("done") else False,
-                        sanitized=bool(chunk.get("sanitized", True))
-                        if chunk.get("done")
-                        else not chunk.get("is_filler", False),
-                        directive=chunk.get("directive") if chunk.get("done") else None,
-                        reason=chunk.get("reason") if chunk.get("done") else None,
-                        filler_push=chunk.get("filler_push") if not chunk.get("done") else None,
-                        action_executed=_normalize_action_executed(chunk.get("action_executed"))
-                        if chunk.get("done")
-                        else None,
-                        routed_agent=chunk.get("routed_to") if chunk.get("done") else None,
-                        status=chunk.get("status") if not chunk.get("done") else None,
-                        agents=chunk.get("agents") if not chunk.get("done") else None,
-                    )
+                    now_ms = (time.perf_counter() - t0) * 1000
+                    if first_frame_ms is None:
+                        # This frame is about to be sent and is therefore the
+                        # first frame of the turn.
+                        first_frame_ms = now_ms
+                    token = _apply_stream_chunk(frame, chunk, first_frame_ms=first_frame_ms, now_ms=now_ms)
                     await websocket.send_json(token.model_dump())
             except WebSocketDisconnect:
                 status = "error"
@@ -372,6 +408,9 @@ async def ws_conversation(
             finally:
                 span_collector.pop_parent(parent_token)
                 duration_ms = (time.perf_counter() - t0) * 1000
+                root_metadata: dict = {"status_code": 101, "ws_path": "/ws/conversation"}
+                if first_frame_ms is not None:
+                    root_metadata["first_frame_ms"] = round(first_frame_ms, 2)
                 span_collector.add_root_span(
                     {
                         "span_id": root_span_id,
@@ -382,7 +421,7 @@ async def ws_conversation(
                         "start_time": start_time,
                         "duration_ms": round(duration_ms, 2),
                         "status": status,
-                        "metadata": {"status_code": 101, "ws_path": "/ws/conversation"},
+                        "metadata": root_metadata,
                     }
                 )
                 try:

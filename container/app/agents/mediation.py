@@ -166,6 +166,12 @@ class MediationService:
 
     # ------------------------------------------------------------------
     # Single-agent mediation
+    #
+    # Invoked by the orchestrator whenever the configured personality is
+    # set OR a calendar reminder must be woven into the answer -- the
+    # personality applies to every system response (deterministic executor
+    # confirmations included). [FOLLOWUP] detection and reminder weaving
+    # live in this path.
     # ------------------------------------------------------------------
 
     async def mediate_response(

@@ -14,7 +14,11 @@ import re
 import time
 from typing import Any
 
-from app.agents.action_executor import parse_action
+from app.agents.action_executor import (
+    parse_action,
+    reset_request_visible_entries,
+    set_request_visible_entries,
+)
 from app.agents.base import BaseAgent, _render_prompt_template, language_code_to_name
 from app.agents.decorator import agent
 from app.analytics.tracer import _optional_span
@@ -50,6 +54,24 @@ def strip_json_blocks(text: str) -> str:
     text = _JSON_FENCE_RE.sub("", text)
     text = _RAW_JSON_OBJ_RE.sub("", text)
     return text.strip() or "Sorry, I could not process that request."
+
+
+# Deterministic localized not-found clarification, used as the fallback
+# when the LLM clarifying-question call fails or returns empty (the turn
+# must never die on an LLM error). Template dict mirrors the localized
+# fallback pattern in ``background_actions.py`` (de/en, English fallback,
+# ASCII-only German).
+_NOT_FOUND_SPEECH_TEMPLATES = {
+    "de": "Ich konnte '{entity}' nicht finden. Welches Geraet meinst du?",
+    "en": "I could not find '{entity}'. Which device did you mean?",
+}
+
+
+def _not_found_speech(entity_query: str, language: str | None) -> str:
+    """Build the deterministic localized not-found clarification speech."""
+    lang = (language or "en").lower().split("-", 1)[0]
+    template = _NOT_FOUND_SPEECH_TEMPLATES.get(lang, _NOT_FOUND_SPEECH_TEMPLATES["en"])
+    return template.format(entity=entity_query)
 
 
 class ActionableAgent(BaseAgent):
@@ -116,6 +138,11 @@ class ActionableAgent(BaseAgent):
 
             if cached_visible_entries is None:
                 cached_visible_entries = result.get("_visible_entries")
+                if cached_visible_entries:
+                    # Publish the per-request snapshot so the post-LLM
+                    # executor resolution (resolve_and_validate_entity)
+                    # reuses it instead of re-listing the index.
+                    set_request_visible_entries(self._allowed_domains, agent_id, cached_visible_entries)
 
             entity_id = result.get("entity_id")
             friendly_name = result.get("friendly_name")
@@ -212,6 +239,36 @@ class ActionableAgent(BaseAgent):
         )
         return "\n".join(lines)
 
+    async def _entity_state_context_or_none(self, resolved_entities: list[tuple[str, str]]) -> str | None:
+        """Failure-contained wrapper around ``_build_relevant_entity_state_context``.
+
+        P3 parallel pre-LLM context: runs inside ``asyncio.gather`` next to the
+        candidate-context build, so a failing branch must not abort the other.
+        """
+        try:
+            return await self._build_relevant_entity_state_context(resolved_entities)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.debug("Entity state context build failed for %s", self.agent_card.agent_id, exc_info=True)
+            return None
+
+    async def _candidate_context_or_none(self, task: DispatchTask) -> str | None:
+        """Failure-contained wrapper around ``_build_query_candidate_context``.
+
+        P3 parallel pre-LLM context: runs inside ``asyncio.gather`` next to the
+        entity-state fetch, so a failing branch must not abort the other.
+        """
+        if not self._inject_query_candidates or self._entity_matcher is None:
+            return None
+        try:
+            return await self._build_query_candidate_context(task)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.debug("Query candidate injection failed for %s", self.agent_card.agent_id, exc_info=True)
+            return None
+
     async def _do_execute(self, action, ha_client, entity_index, entity_matcher, *, agent_id, span_collector=None):
         """Execute the parsed action. Subclasses must override."""
         raise NotImplementedError
@@ -227,7 +284,12 @@ class ActionableAgent(BaseAgent):
         return list(getattr(current_task, "verbatim_terms", []) or []) if current_task else []
 
     async def _generate_not_found_speech(self, entity_query: str, task: DispatchTask, span_collector=None) -> str:
-        """Ask the LLM to generate a language-appropriate clarifying question when an entity is not found."""
+        """Ask the LLM to generate a language-appropriate clarifying question when an entity is not found.
+
+        Falls back to the deterministic localized template when the LLM
+        call fails or returns empty, so the turn never dies on an LLM
+        error.
+        """
         language = (task.context.language if task.context else None) or "en"
         messages = [
             {
@@ -247,16 +309,12 @@ class ActionableAgent(BaseAgent):
         ]
         try:
             result = await self._call_llm(messages, span_collector=span_collector)
-            return (
-                result.strip()
-                if result and result.strip()
-                else f"I could not find '{entity_query}'. Which device did you mean?"
-            )
+            return result.strip() if result and result.strip() else _not_found_speech(entity_query, language)
         except asyncio.CancelledError:
             raise
         except Exception:
             logger.warning("Not-found clarification LLM call failed", exc_info=True)
-            return f"I could not find '{entity_query}'. Which device did you mean?"
+            return _not_found_speech(entity_query, language)
 
     def _handle_parse_miss(self, task: DispatchTask, response: str) -> TaskResult:
         """Return the fallback result when the LLM response has no valid action."""
@@ -273,6 +331,10 @@ class ActionableAgent(BaseAgent):
         # 0.23.0: domain executors (e.g. climate) read verbatim_terms
         # from the active task without an extra plumbing kwarg.
         task_token = _current_task_var.set(task)
+        # P2 resolver efficiency: clear any inherited visible-entries
+        # snapshot; ``_resolve_relevant_entities`` publishes a fresh one
+        # for the post-LLM ``resolve_and_validate_entity`` pass-through.
+        visible_entries_token = set_request_visible_entries(None, None, None)
         try:
             try:
                 return await self._handle_task_inner(task)
@@ -285,6 +347,7 @@ class ActionableAgent(BaseAgent):
                     "Sorry, something went wrong while handling that request.",
                 )
         finally:
+            reset_request_visible_entries(visible_entries_token)
             _current_task_var.reset(task_token)
             _current_task_context_var.reset(context_token)
 
@@ -294,8 +357,14 @@ class ActionableAgent(BaseAgent):
         span_collector = task.span_collector
         system_prompt = await self._load_prompt_async(self._prompt_name)
 
-        # Inject language directive for non-English users (PREPEND so it sits
-        # in front of the few-shot examples and is not overridden by them).
+        # Inject language directive for non-English users AFTER the static
+        # prompt body (P3 prompt-prefix hygiene; previously PREPENDED). The
+        # static head -- including the English-only few-shot examples
+        # (Directive 13) -- stays byte-stable across languages so provider
+        # prompt-prefix caching can hit it. Placing the directive
+        # immediately after the examples also keeps it closer to the
+        # generation point (recency), which counters example language
+        # bleed; the directive text itself is unchanged.
         language = None
         if task.context:
             language = task.context.language
@@ -305,9 +374,9 @@ class ActionableAgent(BaseAgent):
                 f"Respond in {language}.\n"
                 f"Copy entity, device, room, and scene names verbatim from the user's message.\n"
                 f"NEVER translate entity names to English, regardless of what language the few-shot examples use.\n"
-                f"If a few-shot example uses a different language than the user, copy the example's STRUCTURE but keep the USER's original entity names unchanged.\n\n"
+                f"If a few-shot example uses a different language than the user, copy the example's STRUCTURE but keep the USER's original entity names unchanged."
             )
-            system_prompt = lang_directive + system_prompt
+            system_prompt = f"{system_prompt}\n\n{lang_directive}"
 
         # Inject time/location context (append: data, not constraint rule)
         time_location = self._build_time_location_context(task.context)
@@ -331,16 +400,29 @@ class ActionableAgent(BaseAgent):
                 '- Example JSON: {"action": "turn_on", "entity": "Keller", "condition": {"entity": "outdoor brightness", "state": "dark"}}'
             )
 
-        # Inject relevant entity states (compact single-line format, after output rules)
+        # Inject relevant entity states (compact single-line format, after output rules).
+        # P3 parallel pre-LLM context: the entity-state fetch and the
+        # independent query-candidate build run concurrently. The resolution
+        # itself stays sequential in the parent context because it publishes
+        # the visible-entries snapshot ContextVar (P2) -- a ContextVar set
+        # inside a gather child would not propagate back. Each parallel
+        # branch keeps its own failure containment.
+        candidate_context: str | None = None
         try:
             async with _optional_span(span_collector, "entity_resolution", agent_id=agent_id) as er_span:
                 resolved_entities = await self._resolve_relevant_entities(task)
                 _t1 = time.perf_counter()
-                entity_state_context = await self._build_relevant_entity_state_context(resolved_entities)
+                entity_state_context, candidate_context = await asyncio.gather(
+                    self._entity_state_context_or_none(resolved_entities),
+                    self._candidate_context_or_none(task),
+                )
                 _t2 = time.perf_counter()
                 er_span["metadata"]["resolved_count"] = len(resolved_entities)
                 er_span["metadata"]["has_state_context"] = entity_state_context is not None
                 er_span["metadata"]["resolve_ms"] = round((_t1 - _t0) * 1000, 1)
+                # P3: with the candidate build running concurrently this now
+                # measures the longer of the two parallel branches
+                # (previously the state fetch alone).
                 er_span["metadata"]["state_fetch_ms"] = round((_t2 - _t1) * 1000, 1)
             if entity_state_context:
                 system_prompt += f"\n\nContext: {entity_state_context}"
@@ -348,16 +430,10 @@ class ActionableAgent(BaseAgent):
             raise
         except Exception:
             logger.debug("Entity state injection failed for %s", agent_id, exc_info=True)
+            candidate_context = None
 
-        if self._inject_query_candidates and self._entity_matcher is not None:
-            try:
-                candidate_context = await self._build_query_candidate_context(task)
-                if candidate_context:
-                    system_prompt += f"\n\n{candidate_context}"
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                logger.debug("Query candidate injection failed for %s", agent_id, exc_info=True)
+        if candidate_context:
+            system_prompt += f"\n\n{candidate_context}"
 
         messages = [{"role": "system", "content": system_prompt}]
 
@@ -431,8 +507,10 @@ class ActionableAgent(BaseAgent):
 
                 _t4 = time.perf_counter()
 
-                # Entity not found: replace hardcoded speech with LLM-generated clarifying question.
-                # LOW-15: skip the generic LLM clarification when the resolver already produced a
+                # Entity not found: replace the executor's generic English
+                # speech with an LLM-generated clarifying question (with a
+                # deterministic localized fallback when the LLM call fails).
+                # LOW-15: skip the generic clarification when the resolver already produced a
                 # targeted disambiguation speech ("Multiple entities match ..."), signalled by a
                 # resolution_path ending in "_ambiguous". Otherwise the deterministic message would
                 # be overwritten by a vague "which device did you mean?" question.

@@ -42,6 +42,7 @@ from app.agents.actionable import (  # noqa: E402
     SceneAgent,
     SecurityAgent,
     VacuumAgent,
+    _not_found_speech,
 )
 from app.agents.lists import ListsAgent  # noqa: E402
 from app.agents.timer import TimerAgent  # noqa: E402
@@ -863,6 +864,9 @@ class TestHandleTaskExecution:
 
     @pytest.mark.asyncio
     async def test_entity_not_found_clarification_calls_llm(self):
+        """Not-found speech is LLM-generated again: a second LLM call produces
+        the clarifying question (the deterministic template is only a
+        fallback)."""
         agent = LightAgent()
         task = make_dispatch_task(description="turn on the kitchen light")
 
@@ -872,19 +876,16 @@ class TestHandleTaskExecution:
                 agent,
                 "_call_llm",
                 new_callable=AsyncMock,
-                return_value='{"action": "turn_on", "entity": "kitchen light"}',
-            ),
+                side_effect=[
+                    '{"action": "turn_on", "entity": "kitchen light"}',
+                    "Which kitchen light did you mean?",
+                ],
+            ) as mock_llm,
             patch.object(
                 agent,
                 "_do_execute",
                 new_callable=AsyncMock,
                 return_value={"success": False, "entity_id": None, "error": None, "speech": "not found"},
-            ),
-            patch.object(
-                agent,
-                "_generate_not_found_speech",
-                new_callable=AsyncMock,
-                return_value="Which light?",
             ),
             patch.object(agent, "_resolve_relevant_entities", new_callable=AsyncMock, return_value=[]),
         ):
@@ -894,10 +895,88 @@ class TestHandleTaskExecution:
 
             result = await agent.handle_task(task)
 
-        assert result.speech == "Which light?"
+        assert result.speech == "Which kitchen light did you mean?"
         assert result.action_executed is not None
         assert result.action_executed.success is False
         assert result.error is None
+        # Main LLM call + clarification call.
+        assert mock_llm.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_entity_not_found_clarification_falls_back_on_llm_error(self):
+        """When the clarification LLM call fails, the deterministic localized
+        template is used so the turn never dies on an LLM error."""
+        agent = LightAgent()
+        task = make_dispatch_task(description="turn on the kitchen light")
+
+        with (
+            patch.object(agent, "_load_prompt_async", new_callable=AsyncMock, return_value="You are a light agent."),
+            patch.object(
+                agent,
+                "_call_llm",
+                new_callable=AsyncMock,
+                side_effect=[
+                    '{"action": "turn_on", "entity": "kitchen light"}',
+                    RuntimeError("provider down"),
+                ],
+            ) as mock_llm,
+            patch.object(
+                agent,
+                "_do_execute",
+                new_callable=AsyncMock,
+                return_value={"success": False, "entity_id": None, "error": None, "speech": "not found"},
+            ),
+            patch.object(agent, "_resolve_relevant_entities", new_callable=AsyncMock, return_value=[]),
+        ):
+            agent._ha_client = AsyncMock()
+            agent._entity_index = None
+            agent._entity_matcher = None
+
+            result = await agent.handle_task(task)
+
+        assert result.speech == "I could not find 'kitchen light'. Which device did you mean?"
+        assert result.action_executed is not None
+        assert result.action_executed.success is False
+        assert result.error is None
+        assert mock_llm.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_entity_not_found_clarification_fallback_german(self):
+        """German turns get the deterministic German not-found template when
+        the clarification LLM call fails."""
+        agent = LightAgent()
+        task = make_dispatch_task(
+            description="schalte das Kuechenlicht ein",
+            context=TaskContext(language="de"),
+        )
+
+        with (
+            patch.object(agent, "_load_prompt_async", new_callable=AsyncMock, return_value="You are a light agent."),
+            patch.object(
+                agent,
+                "_call_llm",
+                new_callable=AsyncMock,
+                side_effect=[
+                    '{"action": "turn_on", "entity": "kitchen light"}',
+                    RuntimeError("provider down"),
+                ],
+            ) as mock_llm,
+            patch.object(
+                agent,
+                "_do_execute",
+                new_callable=AsyncMock,
+                return_value={"success": False, "entity_id": None, "error": None, "speech": "not found"},
+            ),
+            patch.object(agent, "_resolve_relevant_entities", new_callable=AsyncMock, return_value=[]),
+        ):
+            agent._ha_client = AsyncMock()
+            agent._entity_index = None
+            agent._entity_matcher = None
+
+            result = await agent.handle_task(task)
+
+        assert result.speech == "Ich konnte 'kitchen light' nicht finden. Welches Geraet meinst du?"
+        assert mock_llm.await_count == 2
 
     @pytest.mark.asyncio
     async def test_ambiguous_resolution_not_overwritten_by_llm_clarification(self):
@@ -947,6 +1026,29 @@ class TestHandleTaskExecution:
         assert result.action_executed is not None
         assert result.action_executed.success is False
         assert result.error is None
+
+
+class TestNotFoundSpeechHelper:
+    """Direct unit tests for the deterministic not-found fallback helper."""
+
+    def test_english(self):
+        assert _not_found_speech("garden gnome lamp", "en") == (
+            "I could not find 'garden gnome lamp'. Which device did you mean?"
+        )
+
+    def test_german(self):
+        assert _not_found_speech("Gartenlampe", "de") == (
+            "Ich konnte 'Gartenlampe' nicht finden. Welches Geraet meinst du?"
+        )
+
+    def test_regional_code_uses_primary_language(self):
+        assert _not_found_speech("Lampe", "de-AT").startswith("Ich konnte")
+
+    def test_unknown_language_falls_back_to_english(self):
+        assert _not_found_speech("lampe", "fr") == ("I could not find 'lampe'. Which device did you mean?")
+
+    def test_none_language_defaults_to_english(self):
+        assert _not_found_speech("lamp", None).startswith("I could not find")
 
 
 # ---------------------------------------------------------------------------
@@ -1006,3 +1108,149 @@ class TestConcurrentHandleTaskContextIsolation:
 
         assert agent._get_current_task_context() is None
         assert agent._get_current_task() is None
+
+
+# ---------------------------------------------------------------------------
+# P3: language directive placement + parallel pre-LLM context
+# ---------------------------------------------------------------------------
+
+
+class TestLanguageDirectivePlacement:
+    """P3 step 7: the language directive sits AFTER the static prompt body
+    (stable head for provider prefix caching); text unchanged."""
+
+    @pytest.mark.asyncio
+    async def test_german_directive_follows_static_body(self):
+        agent = LightAgent()
+        task = make_dispatch_task(
+            description="Mach das Kuechenlicht an",
+            context=TaskContext(language="de"),
+        )
+
+        with (
+            patch.object(
+                agent,
+                "_load_prompt_async",
+                new_callable=AsyncMock,
+                return_value="You are a light agent. Few-shot examples follow.",
+            ),
+            patch.object(agent, "_call_llm", new_callable=AsyncMock, return_value="Hello there!") as mock_llm,
+            patch.object(agent, "_resolve_relevant_entities", new_callable=AsyncMock, return_value=[]),
+        ):
+            agent._entity_index = None
+            agent._ha_client = None
+            agent._entity_matcher = None
+
+            await agent.handle_task(task)
+
+        system_msg = mock_llm.call_args.args[0][0]["content"]
+        static_body = "You are a light agent. Few-shot examples follow."
+        directive = "CRITICAL LANGUAGE INSTRUCTION"
+        assert directive in system_msg
+        # Stable static head: the prompt starts with the unchanged body and
+        # the directive comes after it (no longer prepended).
+        assert system_msg.startswith(static_body)
+        assert system_msg.index(static_body) < system_msg.index(directive)
+        assert "Respond in de." in system_msg
+        assert "NEVER translate entity names to English" in system_msg
+
+    @pytest.mark.asyncio
+    async def test_english_context_has_no_directive(self):
+        agent = LightAgent()
+        task = make_dispatch_task(
+            description="Turn on the kitchen light",
+            context=TaskContext(language="en"),
+        )
+
+        with (
+            patch.object(agent, "_load_prompt_async", new_callable=AsyncMock, return_value="You are a light agent."),
+            patch.object(agent, "_call_llm", new_callable=AsyncMock, return_value="Hello there!") as mock_llm,
+            patch.object(agent, "_resolve_relevant_entities", new_callable=AsyncMock, return_value=[]),
+        ):
+            agent._entity_index = None
+            agent._ha_client = None
+            agent._entity_matcher = None
+
+            await agent.handle_task(task)
+
+        system_msg = mock_llm.call_args.args[0][0]["content"]
+        assert "CRITICAL LANGUAGE INSTRUCTION" not in system_msg
+
+
+class TestParallelPreLlmContext:
+    """P3 step 3: entity-state fetch and candidate build run concurrently;
+    a failing branch must not lose the other's context block."""
+
+    @pytest.mark.asyncio
+    async def test_failing_candidate_branch_keeps_state_context(self):
+        agent = LightAgent()
+        task = make_dispatch_task(description="turn on the kitchen light")
+
+        matcher = AsyncMock()
+        matcher.match = AsyncMock(side_effect=RuntimeError("matcher down"))
+
+        index = AsyncMock()
+        index.get_by_id_async = AsyncMock(
+            return_value=DummyEntry("light.kitchen_ceiling", "Kitchen Ceiling", state="off")
+        )
+
+        with (
+            patch(
+                "app.agents.actionable.resolve_entity_deterministic_first",
+                new_callable=AsyncMock,
+                return_value={"entity_id": "light.kitchen_ceiling", "friendly_name": "Kitchen Ceiling"},
+            ),
+            patch.object(agent, "_load_prompt_async", new_callable=AsyncMock, return_value="You are a light agent."),
+            patch.object(
+                agent, "_call_llm", new_callable=AsyncMock, return_value='{"action": "turn_on", "entity": "kitchen"}'
+            ) as mock_llm,
+        ):
+            agent._entity_index = index
+            agent._entity_matcher = matcher
+            agent._ha_client = None
+
+            await agent.handle_task(task)
+
+        system_msg = mock_llm.call_args.args[0][0]["content"]
+        assert "Context: Kitchen Ceiling (light.kitchen_ceiling): off" in system_msg
+        assert "Candidate entities for" not in system_msg
+
+    @pytest.mark.asyncio
+    async def test_failing_state_branch_keeps_candidate_context(self):
+        agent = LightAgent()
+        task = make_dispatch_task(description="is the kitchen light on?")
+        task.verbatim_terms = ["kitchen light"]
+
+        matcher = AsyncMock()
+        match_result = MagicMock()
+        match_result.entity_id = "light.kitchen_ceiling"
+        match_result.friendly_name = "Kitchen Ceiling"
+        match_result.score = 0.95
+        matcher.match = AsyncMock(return_value=[match_result])
+
+        with (
+            patch.object(agent, "_load_prompt_async", new_callable=AsyncMock, return_value="You are a light agent."),
+            patch.object(
+                agent,
+                "_call_llm",
+                new_callable=AsyncMock,
+                return_value='{"action": "query_light_state", "entity_id": "light.kitchen_ceiling"}',
+            ) as mock_llm,
+            patch.object(agent, "_resolve_relevant_entities", new_callable=AsyncMock, return_value=[]),
+            patch.object(
+                agent,
+                "_build_relevant_entity_state_context",
+                new_callable=AsyncMock,
+                side_effect=RuntimeError("state fetch down"),
+            ),
+            patch.object(agent, "_do_execute", new_callable=AsyncMock, return_value={"speech": "OK", "success": True}),
+        ):
+            agent._entity_index = AsyncMock()
+            agent._entity_matcher = matcher
+            agent._ha_client = AsyncMock()
+
+            await agent.handle_task(task)
+
+        system_msg = mock_llm.call_args.args[0][0]["content"]
+        assert "Candidate entities for 'kitchen light'" in system_msg
+        assert "Context:" not in system_msg

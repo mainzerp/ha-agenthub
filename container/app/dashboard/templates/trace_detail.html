@@ -452,6 +452,12 @@
                                 <span class="text-mono" x-text="selectedSpan.metadata.ttft_ms + 'ms'"></span>
                             </div>
                         </template>
+                        <template x-if="selectedSpan.metadata && selectedSpan.metadata.latency_ms">
+                            <div class="span-detail-row">
+                                <span class="span-detail-label">Latency</span>
+                                <span class="text-mono" x-text="selectedSpan.metadata.latency_ms + 'ms'"></span>
+                            </div>
+                        </template>
                         <template x-if="selectedSpan.metadata && selectedSpan.metadata.tps">
                             <div class="span-detail-row">
                                 <span class="span-detail-label">TPS</span>
@@ -535,6 +541,7 @@
                                     <th>Duration</th>
                                     <th>TTFT</th>
                                     <th>TPS</th>
+                                    <th>Latency</th>
                                     <th>Status</th>
                                     <th>Response</th>
                                 </tr>
@@ -550,6 +557,7 @@
                                         <td class="text-mono" x-text="exec.duration_ms ? Math.round(exec.duration_ms) + 'ms' : '-'"></td>
                                         <td class="text-mono" x-text="exec.ttft_ms ? Math.round(exec.ttft_ms) + 'ms' : '-'"></td>
                                         <td class="text-mono" x-text="exec.tps ? exec.tps.toFixed(1) : '-'"></td>
+                                        <td class="text-mono" x-text="exec.latency_ms ? Math.round(exec.latency_ms) + 'ms' : '-'"></td>
                                         <td>
                                             <span :class="exec.status === 'error' ? 'badge badge-red' : 'badge badge-green'"
                                                   x-text="exec.status"></span>

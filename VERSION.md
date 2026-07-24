@@ -1,12 +1,25 @@
 # Version
 
-**Current Version:** 1.45.0
+**Current Version:** 1.46.0
 
 ## Recent Changes
 
-(tracking changes since 1.45.0)
+(tracking changes since 1.46.0)
 
 ## Version History
+
+### 1.46.0 (MINOR) -- Pipeline review: first-frame latency, semantic routing cache, hot-path fixes
+
+(PIPELINE_REVIEW work, Phases 1-5 + user corrections; version bumped before commit -- no commit hashes available yet)
+
+- perf: first-frame latency -- streaming mediation default on, token relay when mediation inactive, `GeneralAgent.handle_task_stream` (incl. MCP tool-loop streaming via `complete_with_tools_stream`), `first_frame_ms` + done-frame timings
+- perf: filler starts at t=0 with cancellation; WS-lock in HA bridge narrowed (parallel satellite turns); fire-and-forget analytics on hot paths
+- perf: resolver lazy listing + shared per-turn visibility snapshot; memoized secrets/agent-config/provider params (invalidate-on-write); action-cache invalidation sidecar index (cache.db `user_version` 2)
+- feat: semantic routing-cache tier (sqlite-vec, cache.db `user_version` 2 / vec sidecar), fail-closed validated; settings `cache.routing.semantic_enabled` (default true) + `cache.routing.semantic_threshold` (0.92)
+- fix: non-streaming LLM metric renamed `ttft_ms`/`tps` -> `latency_ms` -- RELEASE NOTE: dashboard/analytics consumers must switch to `latency_ms`; `ttft_ms`/`tps` are now streaming-only
+- fix: `filler.py` `_config` AttributeError; dead `entity_matching.oversample_factor` removed -- RELEASE NOTE: setting removed, default behavior unchanged
+- behavior: personality applies to all responses again (mediation gate personality-or-reminder, streaming); not-found clarification LLM-generated with deterministic de/en fallback; `mediation.max_tokens` stays 2048; done frame omits `mediated_speech` when tokens were relayed
+- chore(release): bump version to 1.46.0
 
 ### 1.45.0 (MINOR) -- Container health and readiness probes
 

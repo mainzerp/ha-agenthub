@@ -50,6 +50,38 @@ def _sanitize_tool_name(name: str, valid_names: set[str]) -> str | None:
     return None
 
 
+async def _record_nonstream_call_metrics(
+    pspan: Any,
+    *,
+    agent_id: str,
+    model: str,
+    t0: float,
+    response: Any,
+    extra_metadata: dict[str, Any] | None = None,
+) -> None:
+    """Record whole-call latency + token usage for a non-streaming completion.
+
+    P2: the five non-streaming metric blocks were duplicates that
+    mislabeled the whole-call latency as ``ttft_ms`` (and the resulting
+    tokens/total-time ratio as ``tps``). The measurement is now recorded
+    as ``latency_ms``; ``ttft_ms``/``tps`` are only emitted by the
+    streaming paths, where first-chunk timing actually exists.
+    """
+    latency_ms = (time.perf_counter() - t0) * 1000
+    pspan["metadata"]["model"] = model
+    if extra_metadata:
+        pspan["metadata"].update(extra_metadata)
+    if hasattr(response, "usage") and response.usage:
+        await track_token_usage(
+            agent_id=agent_id,
+            provider=model.split("/")[0] if "/" in model else "unknown",
+            tokens_in=response.usage.prompt_tokens or 0,
+            tokens_out=response.usage.completion_tokens or 0,
+            latency_ms=round(latency_ms, 2),
+        )
+    pspan["metadata"]["latency_ms"] = round(latency_ms, 2)
+
+
 async def complete(
     agent_id: str,
     messages: list[dict],
@@ -87,23 +119,14 @@ async def complete(
         async with _optional_span(span_collector, "llm_provider_call", agent_id=agent_id) as pspan:
             t0 = time.perf_counter()
             response = await litellm.acompletion(**call_kwargs)
-            ttft_ms = (time.perf_counter() - t0) * 1000
-            pspan["metadata"]["model"] = model
-            pspan["metadata"]["provider"] = model.split("/")[0] if "/" in model else "unknown"
-            tps = None
-            if hasattr(response, "usage") and response.usage and response.usage.completion_tokens:
-                tps = response.usage.completion_tokens / (ttft_ms / 1000.0) if ttft_ms > 0 else None
-            if hasattr(response, "usage") and response.usage:
-                await track_token_usage(
-                    agent_id=agent_id,
-                    provider=model.split("/")[0] if "/" in model else "unknown",
-                    tokens_in=response.usage.prompt_tokens or 0,
-                    tokens_out=response.usage.completion_tokens or 0,
-                    ttft_ms=round(ttft_ms, 2),
-                    tps=round(tps, 2) if tps else None,
-                )
-            pspan["metadata"]["ttft_ms"] = round(ttft_ms, 2)
-            pspan["metadata"]["tps"] = round(tps, 2) if tps else None
+            await _record_nonstream_call_metrics(
+                pspan,
+                agent_id=agent_id,
+                model=model,
+                t0=t0,
+                response=response,
+                extra_metadata={"provider": model.split("/")[0] if "/" in model else "unknown"},
+            )
         if not response.choices:
             raise LLMError("Empty choices from provider")
         if response.choices[0].finish_reason == "length":
@@ -127,23 +150,14 @@ async def complete(
             async with _optional_span(span_collector, "llm_provider_call", agent_id=agent_id) as pspan:
                 t0 = time.perf_counter()
                 response = await litellm.acompletion(**call_kwargs)
-                ttft_ms = (time.perf_counter() - t0) * 1000
-                pspan["metadata"]["model"] = model
-                pspan["metadata"]["retry"] = True
-                tps = None
-                if hasattr(response, "usage") and response.usage and response.usage.completion_tokens:
-                    tps = response.usage.completion_tokens / (ttft_ms / 1000.0) if ttft_ms > 0 else None
-                if hasattr(response, "usage") and response.usage:
-                    await track_token_usage(
-                        agent_id=agent_id,
-                        provider=model.split("/")[0] if "/" in model else "unknown",
-                        tokens_in=response.usage.prompt_tokens or 0,
-                        tokens_out=response.usage.completion_tokens or 0,
-                        ttft_ms=round(ttft_ms, 2),
-                        tps=round(tps, 2) if tps else None,
-                    )
-                pspan["metadata"]["ttft_ms"] = round(ttft_ms, 2)
-                pspan["metadata"]["tps"] = round(tps, 2) if tps else None
+                await _record_nonstream_call_metrics(
+                    pspan,
+                    agent_id=agent_id,
+                    model=model,
+                    t0=t0,
+                    response=response,
+                    extra_metadata={"retry": True},
+                )
             if not response.choices:
                 raise LLMError("Empty choices from provider on retry")
             if response.choices[0].finish_reason == "length":
@@ -188,23 +202,14 @@ async def complete(
                 async with _optional_span(span_collector, "llm_provider_call", agent_id=agent_id) as pspan:
                     t0 = time.perf_counter()
                     response = await litellm.acompletion(**call_kwargs)
-                    ttft_ms = (time.perf_counter() - t0) * 1000
-                    pspan["metadata"]["model"] = model
-                    pspan["metadata"]["retry"] = "timeout"
-                    tps = None
-                    if hasattr(response, "usage") and response.usage and response.usage.completion_tokens:
-                        tps = response.usage.completion_tokens / (ttft_ms / 1000.0) if ttft_ms > 0 else None
-                    if hasattr(response, "usage") and response.usage:
-                        await track_token_usage(
-                            agent_id=agent_id,
-                            provider=model.split("/")[0] if "/" in model else "unknown",
-                            tokens_in=response.usage.prompt_tokens or 0,
-                            tokens_out=response.usage.completion_tokens or 0,
-                            ttft_ms=round(ttft_ms, 2),
-                            tps=round(tps, 2) if tps else None,
-                        )
-                    pspan["metadata"]["ttft_ms"] = round(ttft_ms, 2)
-                    pspan["metadata"]["tps"] = round(tps, 2) if tps else None
+                    await _record_nonstream_call_metrics(
+                        pspan,
+                        agent_id=agent_id,
+                        model=model,
+                        t0=t0,
+                        response=response,
+                        extra_metadata={"retry": "timeout"},
+                    )
             except asyncio.CancelledError:
                 raise
             if not response.choices:
@@ -312,6 +317,7 @@ async def complete_stream(
 
             ttft_ms = (first_chunk_time - t_call) * 1000 if first_chunk_time else None
             stream_ms = (last_chunk_time - first_chunk_time) * 1000 if first_chunk_time and last_chunk_time else None
+            latency_ms = (time.perf_counter() - t_call) * 1000
 
             # Token usage may be delivered in a final chunk with empty choices.
             if hasattr(response, "usage") and response.usage:
@@ -324,9 +330,11 @@ async def complete_stream(
                     tokens_out=tokens_out,
                     ttft_ms=round(ttft_ms, 2) if ttft_ms else None,
                     tps=round(tps, 2) if tps else None,
+                    latency_ms=round(latency_ms, 2),
                 )
                 pspan["metadata"]["ttft_ms"] = round(ttft_ms, 2) if ttft_ms else None
                 pspan["metadata"]["tps"] = round(tps, 2) if tps else None
+            pspan["metadata"]["latency_ms"] = round(latency_ms, 2)
     except asyncio.CancelledError:
         raise
     except litellm.exceptions.AuthenticationError:
@@ -409,23 +417,14 @@ async def complete_with_tools(
         async with _optional_span(span_collector, "llm_provider_call", agent_id=agent_id) as pspan:
             t0 = time.perf_counter()
             response = await litellm.acompletion(**tool_call_kwargs)
-            ttft_ms = (time.perf_counter() - t0) * 1000
-            pspan["metadata"]["model"] = model
-            pspan["metadata"]["round"] = _round + 1
-            tps = None
-            if hasattr(response, "usage") and response.usage and response.usage.completion_tokens:
-                tps = response.usage.completion_tokens / (ttft_ms / 1000.0) if ttft_ms > 0 else None
-            if hasattr(response, "usage") and response.usage:
-                await track_token_usage(
-                    agent_id=agent_id,
-                    provider=model.split("/")[0] if "/" in model else "unknown",
-                    tokens_in=response.usage.prompt_tokens or 0,
-                    tokens_out=response.usage.completion_tokens or 0,
-                    ttft_ms=round(ttft_ms, 2),
-                    tps=round(tps, 2) if tps else None,
-                )
-            pspan["metadata"]["ttft_ms"] = round(ttft_ms, 2)
-            pspan["metadata"]["tps"] = round(tps, 2) if tps else None
+            await _record_nonstream_call_metrics(
+                pspan,
+                agent_id=agent_id,
+                model=model,
+                t0=t0,
+                response=response,
+                extra_metadata={"round": _round + 1},
+            )
         if not response.choices:
             raise LLMError("Empty choices from provider")
         msg = response.choices[0].message
@@ -576,24 +575,14 @@ async def complete_with_tools(
     async with _optional_span(span_collector, "llm_provider_call", agent_id=agent_id) as pspan:
         t0 = time.perf_counter()
         response = await litellm.acompletion(**final_kwargs)
-        ttft_ms = (time.perf_counter() - t0) * 1000
-        pspan["metadata"]["model"] = model
-        pspan["metadata"]["round"] = max_tool_rounds + 1
-        pspan["metadata"]["forced_final"] = True
-        tps = None
-        if hasattr(response, "usage") and response.usage and response.usage.completion_tokens:
-            tps = response.usage.completion_tokens / (ttft_ms / 1000.0) if ttft_ms > 0 else None
-        if hasattr(response, "usage") and response.usage:
-            await track_token_usage(
-                agent_id=agent_id,
-                provider=model.split("/")[0] if "/" in model else "unknown",
-                tokens_in=response.usage.prompt_tokens or 0,
-                tokens_out=response.usage.completion_tokens or 0,
-                ttft_ms=round(ttft_ms, 2),
-                tps=round(tps, 2) if tps else None,
-            )
-        pspan["metadata"]["ttft_ms"] = round(ttft_ms, 2)
-        pspan["metadata"]["tps"] = round(tps, 2) if tps else None
+        await _record_nonstream_call_metrics(
+            pspan,
+            agent_id=agent_id,
+            model=model,
+            t0=t0,
+            response=response,
+            extra_metadata={"round": max_tool_rounds + 1, "forced_final": True},
+        )
     if not response.choices:
         raise LLMError("Empty choices from provider")
     if response.choices[0].finish_reason == "length":
@@ -605,3 +594,271 @@ async def complete_with_tools(
         )
     content = (response.choices[0].message.content or "").strip() if response.choices[0].message else ""
     return content or ""
+
+
+async def complete_with_tools_stream(
+    agent_id: str,
+    messages: list[dict],
+    tools: list[dict],
+    tool_executor: Callable,
+    max_tool_rounds: int = 5,
+    **overrides: Any,
+) -> AsyncGenerator[str, None]:
+    """Streaming variant of :func:`complete_with_tools`.
+
+    Every round runs with ``stream=True``; content tokens are yielded as they
+    arrive so the caller can relay them downstream immediately. When a round
+    finishes WITH tool calls, the tools execute (in parallel, same semantics
+    as the non-streaming loop) and the next round starts; the round that
+    finishes WITHOUT tool calls is the final answer.
+
+    Note: providers may attach content to a tool-call round ("preamble").
+    Such tokens are yielded like any other content and are also kept in the
+    assistant history, mirroring the non-streaming loop which preserves
+    ``msg.content`` alongside tool calls. In practice tool-call rounds
+    carry no content, so only the final answer is streamed.
+
+    Yields:
+        Individual content tokens (strings). The caller must collect them
+        to reconstruct the final response.
+    """
+    span_collector = overrides.pop("span_collector", None)
+    row = await AgentConfigRepository.get(agent_id)
+    if row is None:
+        raise ValueError(f"No config found for agent: {agent_id}")
+    config = AgentConfig(**row)
+
+    model = overrides.get("model") or config.model
+    if model is None:
+        raise ValueError(f"No model configured for agent: {agent_id}")
+    max_tokens = overrides.get("max_tokens", config.max_tokens)
+    temperature = overrides.get("temperature", config.temperature)
+    reasoning_effort = overrides.get("reasoning_effort") or config.reasoning_effort
+
+    provider_params = await resolve_provider_params(model)
+
+    # Make a mutable copy of messages for the tool-call loop
+    msgs = list(messages)
+    valid_names = {t["function"]["name"] for t in tools}
+
+    async def _stream_round(
+        round_msgs: list[dict],
+        round_no: int,
+        *,
+        with_tools: bool,
+        result: dict[str, Any],
+    ) -> AsyncGenerator[str, None]:
+        """Stream one LLM round, yielding content tokens as they arrive.
+
+        Populates ``result["content"]`` (full round text) and
+        ``result["tool_calls"]`` (reconstructed tool call dicts).
+        """
+        call_kwargs = dict(
+            model=model,
+            messages=round_msgs,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            timeout=config.timeout,
+            stream=True,
+            **provider_params,
+        )
+        if with_tools:
+            call_kwargs["tools"] = tools
+            call_kwargs["tool_choice"] = "auto"
+        if reasoning_effort:
+            call_kwargs["reasoning_effort"] = reasoning_effort
+            call_kwargs["drop_params"] = True
+        # Attempt usage tracking via stream_options; skip if unsupported.
+        with contextlib.suppress(TypeError, ValueError):
+            call_kwargs["stream_options"] = {"include_usage": True}
+
+        content_parts: list[str] = []
+        tool_calls_acc: dict[int, dict[str, str]] = {}
+        finish_reason = None
+        async with _optional_span(span_collector, "llm_provider_call", agent_id=agent_id) as pspan:
+            pspan["metadata"]["model"] = model
+            pspan["metadata"]["provider"] = model.split("/")[0] if "/" in model else "unknown"
+            pspan["metadata"]["streamed"] = True
+            pspan["metadata"]["round"] = round_no
+            t_call = time.perf_counter()
+            response = await litellm.acompletion(**call_kwargs)
+            first_chunk_time = None
+            last_chunk_time = None
+            async for chunk in response:
+                if not chunk.choices:
+                    # Usage-only trailer chunk (stream_options include_usage).
+                    continue
+                delta = chunk.choices[0].delta
+                content = getattr(delta, "content", None)
+                if content:
+                    content_parts.append(content)
+                    yield content
+                for tc_delta in getattr(delta, "tool_calls", None) or []:
+                    idx = getattr(tc_delta, "index", 0) or 0
+                    slot = tool_calls_acc.setdefault(idx, {"id": "", "name": "", "arguments": ""})
+                    if getattr(tc_delta, "id", None):
+                        slot["id"] = tc_delta.id
+                    fn = getattr(tc_delta, "function", None)
+                    if fn is not None:
+                        if getattr(fn, "name", None):
+                            slot["name"] += fn.name
+                        if getattr(fn, "arguments", None):
+                            slot["arguments"] += fn.arguments
+                if first_chunk_time is None:
+                    first_chunk_time = time.perf_counter()
+                last_chunk_time = time.perf_counter()
+                if chunk.choices[0].finish_reason:
+                    finish_reason = chunk.choices[0].finish_reason
+
+            ttft_ms = (first_chunk_time - t_call) * 1000 if first_chunk_time else None
+            stream_ms = (last_chunk_time - first_chunk_time) * 1000 if first_chunk_time and last_chunk_time else None
+            latency_ms = (time.perf_counter() - t_call) * 1000
+            if hasattr(response, "usage") and response.usage:
+                tokens_out = response.usage.completion_tokens or 0
+                tps = tokens_out / (stream_ms / 1000.0) if stream_ms and stream_ms > 0 else None
+                await track_token_usage(
+                    agent_id=agent_id,
+                    provider=model.split("/")[0] if "/" in model else "unknown",
+                    tokens_in=response.usage.prompt_tokens or 0,
+                    tokens_out=tokens_out,
+                    ttft_ms=round(ttft_ms, 2) if ttft_ms else None,
+                    tps=round(tps, 2) if tps else None,
+                    latency_ms=round(latency_ms, 2),
+                )
+                pspan["metadata"]["ttft_ms"] = round(ttft_ms, 2) if ttft_ms else None
+                pspan["metadata"]["tps"] = round(tps, 2) if tps else None
+            pspan["metadata"]["latency_ms"] = round(latency_ms, 2)
+
+        if finish_reason == "length":
+            logger.warning(
+                "LLM stream truncated (finish_reason=length) for agent=%s model=%s max_tokens=%s",
+                agent_id,
+                model,
+                max_tokens,
+            )
+        result["content"] = "".join(content_parts)
+        result["tool_calls"] = [
+            {
+                "id": slot["id"] or f"call_{idx}",
+                "type": "function",
+                "function": {"name": slot["name"], "arguments": slot["arguments"]},
+            }
+            for idx, slot in sorted(tool_calls_acc.items())
+        ]
+
+    for _round in range(max_tool_rounds):
+        logger.debug(
+            "LLM tool-call stream round %d: agent=%s model=%s",
+            _round + 1,
+            agent_id,
+            model,
+        )
+        round_result: dict[str, Any] = {}
+        async for _token in _stream_round(msgs, _round + 1, with_tools=True, result=round_result):
+            yield _token
+        content = round_result["content"]
+        tool_calls = round_result["tool_calls"]
+
+        if not tool_calls:
+            # Final no-tools round -- tokens already streamed to the caller.
+            return
+
+        # Validate and sanitize tool call names before they enter conversation history
+        fixed_calls = []
+        invalid_map: dict[str, str] = {}
+
+        for tc in tool_calls:
+            original_name = tc["function"]["name"]
+            fixed = _sanitize_tool_name(original_name, valid_names)
+            if fixed is not None:
+                if fixed != original_name:
+                    logger.warning(
+                        "Sanitized tool name '%s' -> '%s' for agent=%s",
+                        original_name,
+                        fixed,
+                        agent_id,
+                    )
+                tc["function"]["name"] = fixed
+                fixed_calls.append(tc)
+            else:
+                logger.warning(
+                    "Invalid tool name '%s' from agent=%s; closest valid tools: %s",
+                    original_name,
+                    agent_id,
+                    ", ".join(sorted(valid_names)) if valid_names else "none",
+                )
+                fallback = difflib.get_close_matches(original_name, valid_names, n=1, cutoff=0.1)
+                fallback_name = fallback[0] if fallback else (next(iter(valid_names)) if valid_names else None)
+                if fallback_name is not None:
+                    tc["function"]["name"] = fallback_name
+                    invalid_map[tc["id"]] = original_name
+                    fixed_calls.append(tc)
+
+        # Edge case: every tool call was invalid and no fallback exists (empty tools list)
+        if not fixed_calls:
+            error_text = (
+                f"The model generated invalid tool call names "
+                f"({[tc['function']['name'] for tc in tool_calls]}). "
+                f"No valid tools are available."
+            )
+            msgs.append({"role": "assistant", "content": error_text})
+            continue
+
+        # Rebuild assistant message as a clean dict so invalid names never enter history
+        assistant_msg: dict[str, Any] = {
+            "role": "assistant",
+            "content": content or None,
+            "tool_calls": fixed_calls,
+        }
+        msgs.append(assistant_msg)
+
+        async def _run_one_tool(tc, _invalid_map=invalid_map, _valid_names=valid_names) -> tuple[str | None, str]:
+            fn_name = tc["function"]["name"]
+            if tc["id"] in _invalid_map:
+                original = _invalid_map[tc["id"]]
+                result_str = (
+                    f"Error: invalid tool name '{original}'. "
+                    f"Available tools: {', '.join(sorted(_valid_names))}. "
+                    f"Please use one of the listed tool names."
+                )
+            else:
+                try:
+                    fn_args = json.loads(tc["function"]["arguments"]) if tc["function"]["arguments"] else {}
+                except (json.JSONDecodeError, TypeError):
+                    fn_args = {}
+                    logger.warning("Failed to parse tool arguments for '%s'", fn_name)
+
+                logger.debug("Executing tool '%s' with args: %s", fn_name, fn_args)
+
+                try:
+                    result_str = await tool_executor(fn_name, fn_args)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:
+                    logger.warning("Tool executor '%s' raised: %s", fn_name, e)
+                    result_str = f"Tool error: {e}"
+            return tc["id"], result_str
+
+        # Parallel execution: all tool_calls for this round run concurrently.
+        # ``asyncio.gather`` preserves completion order matching the input awaitables,
+        # so tool messages stay aligned with ``tool_calls`` order for the API.
+        tool_results = await asyncio.gather(*[_run_one_tool(tc) for tc in fixed_calls])
+
+        for tool_call_id, result_str in tool_results:
+            msgs.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": tool_call_id,
+                    "content": result_str,
+                }
+            )
+
+    # Max rounds exhausted -- force a final text response without tools (streamed).
+    logger.warning(
+        "Max tool rounds (%d) exhausted for agent=%s, forcing final response",
+        max_tool_rounds,
+        agent_id,
+    )
+    final_result: dict[str, Any] = {}
+    async for _token in _stream_round(msgs, max_tool_rounds + 1, with_tools=False, result=final_result):
+        yield _token

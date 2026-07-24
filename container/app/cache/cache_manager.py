@@ -9,11 +9,14 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
-from app.analytics.collector import track_cache_event, track_rewrite
+from app.analytics.collector import track_cache_event_background, track_rewrite
+from app.analytics.tracer import _optional_span
 from app.cache.action_cache import ActionCache
+from app.cache.embedding import get_embedding_engine
 from app.cache.routing_cache import RoutingCache
 from app.cache.sqlite_cache_store import COLLECTION_ACTION_CACHE, COLLECTION_ROUTING_CACHE, SqliteCacheStore
 from app.models.cache import ActionCacheEntry, CachedAction, RoutingCacheEntry
+from app.util.tasks import spawn
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +62,7 @@ class RoutingSkipOutcome:
     similarity: float
     language: str = "en"
     entity_ids: list[str] = field(default_factory=list)
+    lookup_ms: float | None = None
 
 
 class CacheManager:
@@ -74,6 +78,7 @@ class CacheManager:
         self._action_cache = ActionCache(cache_store)
         self._rewrite_agent = rewrite_agent
         self._rewrite_enabled: bool = False
+        self._backfill_inflight: set[str] = set()
 
     @property
     def response_cache(self) -> ActionCache:
@@ -150,6 +155,7 @@ class CacheManager:
         requesting_agent_id: str = "orchestrator",
         check_visibility,
         execute_cached_action,
+        span_collector=None,
     ) -> ActionReplayOutcome | None:
         """Attempt to replay a cached action after current-turn validation."""
         if not self._action_cache._enabled:
@@ -185,19 +191,27 @@ class CacheManager:
             with contextlib.suppress(Exception):
                 if entry_id is not None:
                     await asyncio.to_thread(self._action_cache.invalidate_by_entry_id, entry_id)
-            await track_cache_event(tier="action", hit_type="miss")
+            track_cache_event_background(tier="action", hit_type="miss")
             return None
 
-        try:
-            replay_result = await execute_cached_action(entry.cached_action)
-        except Exception:
-            logger.warning("Cached action replay failed", exc_info=True)
-            replay_result = None
+        # The ha_action span wraps the ACTUAL replay REST call here (it used
+        # to be emitted downstream in finalize_action_replay_hit, where it
+        # wrapped nothing because the replay had already happened).
+        async with _optional_span(span_collector, "ha_action", agent_id=cached_agent_id) as ha_span:
+            ha_span["metadata"]["action"] = entry.cached_action.service
+            ha_span["metadata"]["entity"] = entry.cached_action.entity_id
+            ha_span["metadata"]["cached"] = True
+            try:
+                replay_result = await execute_cached_action(entry.cached_action)
+            except Exception:
+                logger.warning("Cached action replay failed", exc_info=True)
+                replay_result = None
+            ha_span["metadata"]["success"] = replay_result is not None
         if replay_result is None:
-            await track_cache_event(tier="action", hit_type="miss")
+            track_cache_event_background(tier="action", hit_type="miss")
             return None
 
-        await track_cache_event(
+        track_cache_event_background(
             tier="action",
             hit_type="action_hit",
             agent_id=entry.agent_id,
@@ -224,9 +238,18 @@ class CacheManager:
         query_text: str,
         language: str = "en",
     ) -> RoutingSkipOutcome | None:
-        """Return a routing cache hit that can skip live classification."""
+        """Return a routing cache hit that can skip live classification.
+
+        Lookup order: exact SHA-256 hash first, then -- when the semantic
+        tier is enabled -- a k-NN cosine search over stored query embeddings
+        (embedding similarity only, Directive 11). Both tiers return an
+        unvalidated candidate; the caller (CacheOrchestrator) applies the
+        identical fail-closed ``routing_hit_is_still_valid`` check to both
+        before classification may be skipped (Directives 2, 7, 12).
+        """
         if not self._routing_cache._enabled:
             return None
+        t0 = time.perf_counter()
         try:
             entry_id, entry, similarity = await asyncio.to_thread(
                 self._routing_cache.lookup_with_id,
@@ -236,24 +259,85 @@ class CacheManager:
         except Exception:
             logger.warning("Routing cache lookup failed", exc_info=True)
             return None
-        if entry is None or similarity is None:
-            await track_cache_event(tier="routing", hit_type="miss")
-            return None
-        await track_cache_event(
-            tier="routing",
-            hit_type="routing_hit",
-            agent_id=entry.agent_id,
-            similarity=similarity,
-        )
-        return RoutingSkipOutcome(
-            kind="routing_hit",
-            entry_id=entry_id or "",
-            agent_id=entry.agent_id,
-            condensed_task=query_text,
-            similarity=similarity,
-            language=entry.language,
-            entity_ids=entry.entity_ids or [],
-        )
+        if entry is not None and similarity is not None:
+            # Lazy backfill: entries stored before the semantic tier existed
+            # get their embedding on the next exact hit (documented choice --
+            # no bulk re-embed migration).
+            self._schedule_semantic_backfill(entry_id, query_text)
+            track_cache_event_background(
+                tier="routing",
+                hit_type="routing_hit",
+                agent_id=entry.agent_id,
+                similarity=similarity,
+            )
+            return RoutingSkipOutcome(
+                kind="routing_hit",
+                entry_id=entry_id or "",
+                agent_id=entry.agent_id,
+                condensed_task=query_text,
+                similarity=similarity,
+                language=entry.language,
+                entity_ids=entry.entity_ids or [],
+                lookup_ms=(time.perf_counter() - t0) * 1000,
+            )
+
+        # Exact miss: semantic tier (P4). The embedding encode offloads the
+        # CPU-bound work off the event loop internally (Directive 9). Any
+        # failure falls through to live LLM classification (Directive 12).
+        if self._routing_cache.semantic_available():
+            try:
+                engine = await get_embedding_engine()
+                query_embedding = await engine.embed(query_text)
+                sem_id, sem_entry, sem_similarity = await asyncio.to_thread(
+                    self._routing_cache.lookup_semantic,
+                    query_embedding,
+                    language=language,
+                )
+            except Exception:
+                logger.warning("Routing semantic lookup failed; falling back to classification", exc_info=True)
+                sem_id, sem_entry, sem_similarity = None, None, None
+            if sem_entry is not None and sem_similarity is not None:
+                track_cache_event_background(
+                    tier="routing",
+                    hit_type="semantic_hit",
+                    agent_id=sem_entry.agent_id,
+                    similarity=sem_similarity,
+                )
+                return RoutingSkipOutcome(
+                    kind="semantic_hit",
+                    entry_id=sem_id or "",
+                    agent_id=sem_entry.agent_id,
+                    condensed_task=query_text,
+                    similarity=sem_similarity,
+                    language=sem_entry.language,
+                    entity_ids=sem_entry.entity_ids or [],
+                    lookup_ms=(time.perf_counter() - t0) * 1000,
+                )
+
+        track_cache_event_background(tier="routing", hit_type="miss")
+        return None
+
+    def _schedule_semantic_backfill(self, entry_id: str | None, query_text: str) -> None:
+        """Schedule a background embedding backfill for an entry lacking one."""
+        if not entry_id or not self._routing_cache.semantic_available():
+            return
+        if entry_id in self._backfill_inflight:
+            return
+        self._backfill_inflight.add(entry_id)
+        spawn(self._backfill_routing_embedding(entry_id, query_text), name="routing-embedding-backfill")
+
+    async def _backfill_routing_embedding(self, entry_id: str, query_text: str) -> None:
+        """Embed an existing routing entry's query text and store the vector."""
+        try:
+            if await asyncio.to_thread(self._routing_cache.has_embedding, entry_id):
+                return
+            engine = await get_embedding_engine()
+            embedding = await engine.embed(query_text)
+            await asyncio.to_thread(self._routing_cache.store_embedding, entry_id, embedding)
+        except Exception:
+            logger.debug("Routing embedding backfill failed for %s", entry_id, exc_info=True)
+        finally:
+            self._backfill_inflight.discard(entry_id)
 
     async def apply_rewrite(
         self,
@@ -308,6 +392,7 @@ class CacheManager:
         *,
         language: str = "en",
         entity_ids: list[str] | None = None,
+        embedding: list[float] | None = None,
     ) -> None:
         """Store a routing decision after dispatch or read-only handling."""
         entry = RoutingCacheEntry(
@@ -317,7 +402,7 @@ class CacheManager:
             confidence=confidence,
             entity_ids=entity_ids or [],
         )
-        self._routing_cache.store(entry)
+        self._routing_cache.store(entry, embedding=embedding)
 
     def store_routing_only(
         self,
@@ -345,7 +430,20 @@ class CacheManager:
         language: str = "en",
         entity_ids: list[str] | None = None,
     ) -> None:
-        """Async wrapper around ``store_routing``."""
+        """Async wrapper around ``store_routing``.
+
+        Computes the query embedding up front (CPU-bound encode is offloaded
+        off the event loop inside the engine, Directive 9) so the vec row is
+        written in the same store transaction. An embedding failure degrades
+        to an exact-only entry -- the routing cache keeps working.
+        """
+        embedding: list[float] | None = None
+        if self._routing_cache.semantic_available():
+            try:
+                engine = await get_embedding_engine()
+                embedding = await engine.embed(query_text)
+            except Exception:
+                logger.warning("Routing embedding compute failed; storing without embedding", exc_info=True)
         await asyncio.to_thread(
             self.store_routing,
             query_text,
@@ -353,6 +451,7 @@ class CacheManager:
             confidence,
             language=language,
             entity_ids=entity_ids,
+            embedding=embedding,
         )
 
     async def store_routing_only_async(

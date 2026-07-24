@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import contextvars
 import json
 import logging
 import re
@@ -21,6 +22,32 @@ from app.ha_client.rest import mark_verified_ha_service_call
 logger = logging.getLogger(__name__)
 
 _READ_ONLY_ACTION_PREFIXES: tuple[str, ...] = ("query_", "list_", "get_")
+
+# Per-request visible-entries snapshot (P2 resolver efficiency). Set by
+# ActionableAgent after its pre-LLM resolution pass so the post-LLM
+# ``resolve_and_validate_entity`` call reuses the same per-request,
+# visibility-filtered snapshot instead of re-listing the whole index.
+# Directive 5 is preserved: the snapshot is always computed fresh per
+# request (per agent) and the exact-id path keeps its own visibility
+# check. Value shape: ``(allowed_domains, agent_id, entries)``.
+_request_visible_entries: contextvars.ContextVar[tuple[frozenset[str] | None, str | None, list[Any]] | None] = (
+    contextvars.ContextVar("action_executor_visible_entries", default=None)
+)
+
+
+def set_request_visible_entries(
+    allowed_domains: frozenset[str] | None,
+    agent_id: str | None,
+    entries: list[Any] | None,
+) -> contextvars.Token:
+    """Publish the per-request visible-entries snapshot (``None`` clears)."""
+    value = (allowed_domains, agent_id, entries) if entries else None
+    return _request_visible_entries.set(value)
+
+
+def reset_request_visible_entries(token: contextvars.Token) -> None:
+    """Restore the snapshot published before ``token`` was created."""
+    _request_visible_entries.reset(token)
 
 
 def is_read_only_action(action_name: str) -> bool:
@@ -89,12 +116,19 @@ async def resolve_and_validate_entity(
     preferred_domain: str | None = None,
     span_collector=None,
     require_matcher: bool = False,
+    visible_entries: list[Any] | None = None,
 ) -> dict[str, Any]:
     """Resolve an entity query deterministically and validate its domain.
 
     Encapsulates the common entity resolution block used by every domain
     executor: init dict -> resolve_entity_deterministic_first -> domain
     validation -> not-found fallback.
+
+    ``visible_entries``: optional per-request, visibility-filtered
+    candidate snapshot forwarded to the resolver. When omitted, the
+    snapshot published by ``set_request_visible_entries`` (same request,
+    same agent) is reused -- but only when its domain coverage is a
+    superset of ``allowed_domains``; otherwise a fresh listing is used.
 
     Returns a dict with keys:
         entity_id: resolved and validated entity_id (None if not found)
@@ -105,6 +139,21 @@ async def resolve_and_validate_entity(
             (e.g. ``cacheable``, ``voice_followup``).
     """
     from app.analytics.tracer import _optional_span
+
+    if visible_entries is None:
+        snapshot = _request_visible_entries.get()
+        if snapshot is not None:
+            snap_domains, snap_agent_id, snap_entries = snapshot
+            domains_covered = (
+                snap_domains is None or allowed_domains is None or set(allowed_domains) <= set(snap_domains)
+            )
+            if snap_agent_id == agent_id and snap_entries and domains_covered:
+                if allowed_domains:
+                    visible_entries = [
+                        entry for entry in snap_entries if getattr(entry, "domain", None) in allowed_domains
+                    ]
+                else:
+                    visible_entries = list(snap_entries)
 
     resolution = {
         "entity_id": None,
@@ -134,6 +183,8 @@ async def resolve_and_validate_entity(
                     kwargs["enable_area_fallback"] = True
                 if preferred_domain:
                     kwargs["preferred_domain"] = preferred_domain
+                if visible_entries is not None:
+                    kwargs["visible_entries"] = visible_entries
                 resolution = await resolve_entity_deterministic_first(
                     entity_query,
                     entity_index,

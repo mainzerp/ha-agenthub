@@ -248,3 +248,5 @@ class TestCompleteStream:
         assert len(prov_spans) == 1
         assert prov_spans[0]["metadata"]["ttft_ms"] >= 0
         assert prov_spans[0]["metadata"]["tps"] > 0
+        # P2: streaming calls also record whole-call latency_ms.
+        assert prov_spans[0]["metadata"]["latency_ms"] >= 0

@@ -7,8 +7,10 @@ non-streaming and streaming impls. The legacy direct-call path can be
 restored at runtime via ``ORCHESTRATOR_LEGACY_PIPELINE=1`` for emergency
 rollback.
 
-The current canonical flow buffers non-filler sub-agent tokens until the
-terminal frame so the client receives only the final mediated speech.
+The current canonical flow relays sub-agent tokens immediately when
+mediation is inactive (no personality configured and no calendar
+reminder pending). Tokens stay buffered until the terminal frame when
+mediation applies (personality set OR reminder pending).
 """
 
 from __future__ import annotations
@@ -141,7 +143,11 @@ async def test_streaming_pipeline_terminates_with_done(mock_complete, mock_track
     chunks = [c async for c in orch._run_pipeline(task, streaming=True)]
     assert chunks, "streaming pipeline must yield at least the done chunk"
     assert chunks[-1]["done"] is True
-    assert "mediated_speech" in chunks[-1]
+    # P0: with mediation inactive (no personality, no reminder), the agent
+    # token relays immediately and the terminal chunk omits mediated_speech.
+    relayed = [c for c in chunks if not c["done"] and c.get("token")]
+    assert [c["token"] for c in relayed] == ["Light is on."]
+    assert chunks[-1].get("mediated_speech") is None
 
 
 # ---------------------------------------------------------------------------
@@ -196,20 +202,25 @@ async def test_legacy_pipeline_flag_routes_directly_to_impls(monkeypatch):
 @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
 @patch("app.llm.client.complete", new_callable=AsyncMock)
 async def test_streaming_mediation_buffers_tokens_until_terminal_frame(mock_complete, mock_track, mock_settings):
-    """When personality.prompt is set, non-filler sub-agent tokens stay buffered
-    until the terminal frame, which carries the mediated speech."""
+    """When mediation applies (personality configured, reminder pending),
+    non-filler sub-agent tokens stay buffered until the terminal frame,
+    which carries the mediated speech.
+    """
     orch, dispatcher = _make_orchestrator()
     mock_complete.side_effect = [
         "light-agent (95%): Turn on light",  # classify
-        "Hey! The light is now on.",  # mediation
+        "Hey! The light is now on. Don't forget your meeting.",  # mediation
     ]
     mock_settings.get_value = AsyncMock(
         side_effect=lambda k, d=None: {
             "personality.prompt": "You are a friendly assistant.",
+            "orchestrator.mediation_streaming_enabled": "false",
             "rewrite.model": "groq/llama-3.1-8b-instant",
             "rewrite.temperature": "0.3",
         }.get(k, d)
     )
+    orch._calendar_injector = MagicMock()
+    orch._calendar_injector.inject_reminders = AsyncMock(return_value="Meeting at 3pm.")
 
     async def mock_stream(_request):
         yield {"token": "Light ", "done": False}

@@ -72,7 +72,7 @@ async def test_exact_text_hit_replays_without_classify():
     manager._action_cache.invalidate_by_entry_id = MagicMock()
     execute_cached_action = AsyncMock(return_value={"success": True, "entity_id": entry.cached_action.entity_id})
 
-    with patch("app.cache.cache_manager.track_cache_event", new_callable=AsyncMock) as track:
+    with patch("app.cache.cache_manager.track_cache_event_background") as track:
         result = await manager.try_replay_action(
             query_text=entry.query_text,
             language=entry.language,
@@ -86,7 +86,7 @@ async def test_exact_text_hit_replays_without_classify():
     assert result.similarity == pytest.approx(1.0)
     execute_cached_action.assert_awaited_once_with(entry.cached_action)
     manager._action_cache.invalidate_by_entry_id.assert_not_called()
-    track.assert_awaited_once()
+    track.assert_called_once()
 
 
 @pytest.mark.asyncio

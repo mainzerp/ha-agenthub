@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from collections.abc import Awaitable, Callable
 from typing import Any, ClassVar
 
 from app.db.repositories._utils import _now
@@ -33,6 +34,22 @@ class SettingsRepository:
     # collection of staticmethods used as a namespace.
     _value_cache: ClassVar[dict[str, tuple[Any, float]]] = {}
     _value_cache_lock: ClassVar[asyncio.Lock | None] = None
+    # P2: post-write listeners invoked with the written key so dependent
+    # memoizations (e.g. LLM provider params) can invalidate on write.
+    _write_listeners: ClassVar[list[Callable[[str], Awaitable[None]]]] = []
+
+    @classmethod
+    def register_write_listener(cls, listener: Callable[[str], Awaitable[None]]) -> None:
+        """Register an async callback invoked with the key after set/delete."""
+        cls._write_listeners.append(listener)
+
+    @staticmethod
+    async def _notify_write_listeners(key: str) -> None:
+        for listener in list(SettingsRepository._write_listeners):
+            try:
+                await listener(key)
+            except Exception:
+                logger.warning("Settings write listener failed for key %s", key, exc_info=True)
 
     @classmethod
     def _get_lock(cls) -> asyncio.Lock:
@@ -111,6 +128,7 @@ class SettingsRepository:
             )
         # P3-6: invalidate so subsequent ``get_value`` reflects the write.
         await SettingsRepository._cache_invalidate(key)
+        await SettingsRepository._notify_write_listeners(key)
 
     @staticmethod
     async def get_by_category(category: str) -> list[dict[str, Any]]:
@@ -132,6 +150,7 @@ class SettingsRepository:
         async with get_db_write() as db:
             await db.execute("DELETE FROM settings WHERE key = ?", (key,))
         await SettingsRepository._cache_invalidate(key)
+        await SettingsRepository._notify_write_listeners(key)
 
 
 async def _settings_float(key: str, *, default: float) -> float:

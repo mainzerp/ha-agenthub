@@ -291,3 +291,89 @@ async def test_ws_conversation_mints_per_turn_trace(mock_summary):
     assert "trace_id" not in ws.scope["state"]
     assert "span_collector" not in ws.scope["state"]
     assert "root_span_id" not in ws.scope["state"]
+
+
+# ---------------------------------------------------------------------------
+# P0: first_frame_ms root-span marker (SSE route stashes it on request.state)
+# ---------------------------------------------------------------------------
+
+
+async def _sse_with_first_frame_marker(request: Request) -> StreamingResponse:
+    async def event_gen():
+        request.state.first_frame_ms = 12.5
+        yield b"data: first\n\n"
+
+    return StreamingResponse(event_gen(), media_type="text/event-stream")
+
+
+@pytest.mark.asyncio
+async def test_tracing_middleware_records_first_frame_ms_on_root_span():
+    """P0: when a streaming route stashes first_frame_ms on request.state,
+    the TracingMiddleware records it on the HTTP root span metadata."""
+    app = TracingMiddleware(Starlette(routes=[Route("/sse-marker", _sse_with_first_frame_marker)]))
+
+    collector = MagicMock()
+    collector.push_parent = MagicMock(return_value="token")
+    collector.pop_parent = MagicMock()
+    collector.record_root_span = MagicMock()
+    collector.flush = AsyncMock()
+
+    received = [{"type": "http.request", "body": b"", "more_body": False}]
+
+    async def receive():
+        if received:
+            return received.pop(0)
+        return {"type": "http.disconnect"}
+
+    async def send(message):
+        pass
+
+    scope = _scope()
+    scope["path"] = "/sse-marker"
+    scope["raw_path"] = b"/sse-marker"
+
+    with (
+        patch("app.middleware.tracing.SpanCollector", return_value=collector),
+        patch("app.db.repository.TraceSummaryRepository") as mock_summary,
+    ):
+        mock_summary.update_duration = AsyncMock()
+        await app(scope, receive, send)
+
+    collector.record_root_span.assert_called_once()
+    root_span = collector.record_root_span.call_args.args[0]
+    assert root_span["metadata"]["first_frame_ms"] == 12.5
+    assert root_span["metadata"]["status_code"] == 200
+
+
+@pytest.mark.asyncio
+async def test_tracing_middleware_omits_first_frame_ms_when_absent():
+    """P0: routes that never set first_frame_ms keep the root span metadata
+    unchanged (no None-valued marker)."""
+    app = TracingMiddleware(Starlette(routes=[Route("/sse", _slow_sse)]))
+
+    collector = MagicMock()
+    collector.push_parent = MagicMock(return_value="token")
+    collector.pop_parent = MagicMock()
+    collector.record_root_span = MagicMock()
+    collector.flush = AsyncMock()
+
+    received = [{"type": "http.request", "body": b"", "more_body": False}]
+
+    async def receive():
+        if received:
+            return received.pop(0)
+        return {"type": "http.disconnect"}
+
+    async def send(message):
+        pass
+
+    with (
+        patch("app.middleware.tracing.SpanCollector", return_value=collector),
+        patch("app.db.repository.TraceSummaryRepository") as mock_summary,
+    ):
+        mock_summary.update_duration = AsyncMock()
+        await app(_scope(), receive, send)
+
+    collector.record_root_span.assert_called_once()
+    root_span = collector.record_root_span.call_args.args[0]
+    assert "first_frame_ms" not in root_span["metadata"]

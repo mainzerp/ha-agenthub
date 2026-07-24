@@ -923,7 +923,7 @@ class TestLLMProviderSpans:
     @patch("litellm.acompletion", new_callable=AsyncMock)
     @patch("app.llm.client.resolve_provider_params", new_callable=AsyncMock, return_value={})
     @patch("app.llm.client.AgentConfigRepository")
-    async def test_complete_span_metadata_includes_ttft_and_tps(self, mock_repo, mock_params, mock_acompletion):
+    async def test_complete_span_metadata_includes_latency(self, mock_repo, mock_params, mock_acompletion):
         from app.analytics.tracer import SpanCollector
 
         mock_repo.get = AsyncMock(
@@ -945,15 +945,53 @@ class TestLLMProviderSpans:
         usage.completion_tokens = 10
         mock_acompletion.return_value = MagicMock(choices=[choice], usage=usage)
 
-        collector = SpanCollector("trace-ttft-tps")
+        collector = SpanCollector("trace-latency")
         from app.llm.client import complete
 
         result = await complete("light-agent", [{"role": "user", "content": "test"}], span_collector=collector)
         assert result == "Done!"
         prov_spans = [s for s in collector._spans if s["span_name"] == "llm_provider_call"]
         assert len(prov_spans) == 1
-        assert prov_spans[0]["metadata"]["ttft_ms"] >= 0
-        assert prov_spans[0]["metadata"]["tps"] > 0
+        # P2: non-streaming calls record whole-call latency_ms; ttft/tps
+        # are streaming-only (no first-chunk timing exists here).
+        assert prov_spans[0]["metadata"]["latency_ms"] >= 0
+        assert "ttft_ms" not in prov_spans[0]["metadata"]
+        assert "tps" not in prov_spans[0]["metadata"]
+
+    @patch("litellm.acompletion", new_callable=AsyncMock)
+    @patch("app.llm.client.resolve_provider_params", new_callable=AsyncMock, return_value={})
+    @patch("app.llm.client.AgentConfigRepository")
+    @patch("app.llm.client.track_token_usage", new_callable=AsyncMock)
+    async def test_complete_tracks_latency_ms_token_usage(self, mock_track, mock_repo, mock_params, mock_acompletion):
+        """P2: the non-streaming metric helper emits latency_ms (not ttft/tps)."""
+        mock_repo.get = AsyncMock(
+            return_value={
+                "agent_id": "light-agent",
+                "enabled": True,
+                "model": "openrouter/openai/gpt-4o-mini",
+                "timeout": 5,
+                "max_iterations": 3,
+                "temperature": 0.7,
+                "max_tokens": 256,
+                "description": "Light agent",
+            }
+        )
+        choice = MagicMock()
+        choice.message.content = "Done!"
+        usage = MagicMock()
+        usage.prompt_tokens = 5
+        usage.completion_tokens = 10
+        mock_acompletion.return_value = MagicMock(choices=[choice], usage=usage)
+
+        from app.llm.client import complete
+
+        result = await complete("light-agent", [{"role": "user", "content": "test"}])
+        assert result == "Done!"
+        mock_track.assert_awaited_once()
+        kwargs = mock_track.await_args.kwargs
+        assert kwargs["latency_ms"] is not None and kwargs["latency_ms"] >= 0
+        assert kwargs.get("ttft_ms") is None
+        assert kwargs.get("tps") is None
 
     @patch("litellm.acompletion", new_callable=AsyncMock)
     @patch("app.llm.client.resolve_provider_params", new_callable=AsyncMock, return_value={})

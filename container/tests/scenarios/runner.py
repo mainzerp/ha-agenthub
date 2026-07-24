@@ -450,8 +450,23 @@ async def run_scenario(scenario: Scenario, db_path) -> None:
         async def _complete_router(agent_id, messages, **kwargs):
             return await handles.llm.complete(agent_id, messages, **kwargs)
 
+        # P0: the streaming entry points (general-agent handle_task_stream,
+        # streamed mediation) must route through the same deterministic
+        # stub -- each yields the full stub reply as a single token.
+        async def _complete_stream_router(agent_id, messages, **kwargs):
+            text = await handles.llm.complete(agent_id, messages, **kwargs)
+            if text:
+                yield text
+
+        async def _complete_with_tools_stream_router(agent_id, messages, tools, tool_executor, **kwargs):
+            text = await handles.llm.complete(agent_id, messages, **kwargs)
+            if text:
+                yield text
+
         with (
             patch("app.llm.client.complete", new=_complete_router),
+            patch("app.llm.client.complete_stream", new=_complete_stream_router),
+            patch("app.llm.client.complete_with_tools_stream", new=_complete_with_tools_stream_router),
             patch("app.agents.base.complete", new=_complete_router)
             if _has_attr("app.agents.base", "complete")
             else contextlib.nullcontext(),

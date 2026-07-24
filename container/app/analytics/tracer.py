@@ -58,6 +58,7 @@ _SAFE_METADATA_KEYS = {
     "from_agent",
     "hit_type",
     "language",
+    "latency_ms",
     "length",
     "model",
     "server_name",

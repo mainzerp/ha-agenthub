@@ -253,6 +253,8 @@ async def get_trace_detail(trace_id: str):
                 exec_entry["ttft_ms"] = meta["ttft_ms"]
             if meta.get("tps") is not None:
                 exec_entry["tps"] = meta["tps"]
+            if meta.get("latency_ms") is not None:
+                exec_entry["latency_ms"] = meta["latency_ms"]
             agent_executions.append(exec_entry)
 
     # Build inter-agent communication from spans

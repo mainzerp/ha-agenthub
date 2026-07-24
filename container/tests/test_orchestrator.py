@@ -1857,12 +1857,14 @@ class TestOrchestratorFiller:
         # No filler token should be present
         filler_chunks = [c for c in chunks if "filler_push" in c]
         assert len(filler_chunks) == 0
-        # Non-filler tokens are buffered until the terminal frame.
+        # P0: with mediation inactive (no personality, no reminder), agent
+        # tokens relay immediately instead of buffering until the terminal
+        # frame; the terminal chunk omits mediated_speech.
         real_tokens = [c for c in chunks if c.get("token") and "filler_push" not in c and not c.get("done")]
-        assert real_tokens == []
+        assert [c["token"] for c in real_tokens] == ["Here is the answer"]
         done_chunks = [c for c in chunks if c.get("done")]
         assert len(done_chunks) == 1
-        assert done_chunks[0].get("mediated_speech") == "Here is the answer"
+        assert done_chunks[0].get("mediated_speech") is None
 
     @patch("app.agents.orchestrator.SettingsRepository")
     @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
@@ -1980,12 +1982,12 @@ class TestOrchestratorFiller:
         # No filler since generation failed
         filler_chunks = [c for c in chunks if "filler_push" in c]
         assert len(filler_chunks) == 0
-        # Non-filler tokens are buffered until the terminal frame.
-        real_tokens = [c for c in chunks if c.get("token") == "Real answer"]
-        assert real_tokens == []
+        # P0: agent tokens relay immediately when mediation is inactive.
+        real_tokens = [c for c in chunks if c.get("token") == "Real answer" and not c.get("done")]
+        assert len(real_tokens) == 1
         done_chunks = [c for c in chunks if c.get("done")]
         assert len(done_chunks) == 1
-        assert done_chunks[0].get("mediated_speech") == "Real answer"
+        assert done_chunks[0].get("mediated_speech") is None
 
     @patch("app.agents.orchestrator.SettingsRepository")
     @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
@@ -2360,12 +2362,12 @@ class TestStreamMediatedSpeech:
     async def test_stream_yields_mediated_speech_when_changed(self, mock_complete, mock_track, mock_settings):
         """Final done chunk includes mediated_speech when mediation changes the text.
 
-        Canonical flow now buffers all non-filler sub-agent tokens
-        until the terminal frame, so the client should only see the
-        final mediated payload.
+        Mediation is active (personality configured, reminder pending) with
+        streaming mediation disabled, so non-filler sub-agent tokens stay
+        buffered until the terminal frame.
         """
         orch, dispatcher, _ = self._make_orchestrator()
-        # First call: classify. Second call: mediation.
+        # First call: classify. Second call: mediation (reminder weaving).
         mock_complete.side_effect = [
             "light-agent (95%): Turn on light",
             "Hey! The light is now on for you!",
@@ -2373,10 +2375,13 @@ class TestStreamMediatedSpeech:
         mock_settings.get_value = AsyncMock(
             side_effect=lambda k, d=None: {
                 "personality.prompt": "You are a friendly assistant.",
+                "orchestrator.mediation_streaming_enabled": "false",
                 "rewrite.model": "groq/llama-3.1-8b-instant",
                 "rewrite.temperature": "0.3",
             }.get(k, d)
         )
+        orch._calendar_injector = MagicMock()
+        orch._calendar_injector.inject_reminders = AsyncMock(return_value="Meeting at 3pm.")
 
         async def mock_stream(request):
             yield {"token": "Light ", "done": False}
@@ -2402,7 +2407,9 @@ class TestStreamMediatedSpeech:
     @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
     @patch("app.llm.client.complete", new_callable=AsyncMock)
     async def test_stream_no_mediated_speech_when_no_mediation(self, mock_complete, mock_track, mock_settings):
-        """Final done chunk includes mediated_speech even when personality is empty."""
+        """P0: with mediation inactive (no personality, no reminder), the
+        agent token relays immediately and the terminal frame omits
+        mediated_speech so TTS never speaks the answer twice."""
         orch, dispatcher, _ = self._make_orchestrator()
         mock_complete.return_value = "light-agent (95%): Turn on light"
         mock_settings.get_value = AsyncMock(return_value="")
@@ -2416,18 +2423,26 @@ class TestStreamMediatedSpeech:
         task.conversation_id = "conv-no-mediation"
         chunks = [c async for c in orch.handle_task_stream(task)]
 
+        relayed = [c for c in chunks if not c["done"] and c.get("token")]
+        assert [c["token"] for c in relayed] == ["Light is on."]
         final = [c for c in chunks if c["done"]]
         assert len(final) == 1
-        assert final[0].get("mediated_speech") is not None
+        assert final[0].get("mediated_speech") is None
 
     @patch("app.agents.orchestrator.SettingsRepository")
     @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
     @patch("app.llm.client.complete", new_callable=AsyncMock)
-    async def test_stream_always_includes_mediated_speech(self, mock_complete, mock_track, mock_settings):
-        """Final done chunk ALWAYS includes mediated_speech, even without personality mediation."""
+    async def test_stream_includes_mediated_speech_when_not_streamed(self, mock_complete, mock_track, mock_settings):
+        """When tokens were NOT streamed (mediation-active turn), the final
+        done chunk carries the full speech as mediated_speech.
+
+        Here a pending reminder keeps tokens buffered and the blocking path
+        appends the reminder (empty personality, M-9)."""
         orch, dispatcher, _ = self._make_orchestrator()
         mock_complete.return_value = "light-agent (95%): Turn on light"
         mock_settings.get_value = AsyncMock(return_value="")
+        orch._calendar_injector = MagicMock()
+        orch._calendar_injector.inject_reminders = AsyncMock(return_value="Meeting at 3pm.")
 
         async def mock_stream(request):
             yield {"token": "Light is on.", "done": True}
@@ -2438,10 +2453,12 @@ class TestStreamMediatedSpeech:
         task.conversation_id = "conv-always-mediated"
         chunks = [c async for c in orch.handle_task_stream(task)]
 
+        # No raw agent tokens leaked downstream while mediation is active.
+        relayed = [c for c in chunks if not c["done"] and c.get("token")]
+        assert relayed == []
         final = [c for c in chunks if c["done"]]
         assert len(final) == 1
-        assert final[0].get("mediated_speech") is not None
-        assert final[0]["mediated_speech"] == "Light is on."
+        assert final[0].get("mediated_speech") == "Light is on. Meeting at 3pm."
 
     async def test_stream_mediate_with_reminder_empty_personality(self):
         """Empty personality yields nothing -- the reminder-only case is handled
