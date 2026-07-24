@@ -128,7 +128,9 @@ def _mock_homeassistant_deps():
             "DeviceInfo": MagicMock,
             "DeviceEntryType": type("DeviceEntryType", (), {"SERVICE": "service"}),
         },
-        "homeassistant.helpers.entity_registry": MagicMock(),
+        "homeassistant.helpers.entity_registry": {
+            "EVENT_ENTITY_REGISTRY_UPDATED": "entity_registry_updated",
+        },
         "homeassistant.helpers.intent": {"IntentResponse": MagicMock},
         "homeassistant.helpers.entity_platform": {
             "AddConfigEntryEntitiesCallback": _MockAddConfigEntryEntitiesCallback,

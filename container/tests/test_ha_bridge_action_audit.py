@@ -418,7 +418,12 @@ class TestFullContractAudit:
         async with HAMimicClient(scene_app) as client:
             await client.connect_ws()
             tokens = await client.send_turn("activate movie night")
-        done_frame = tokens[-1]
+        done_frame = dict(tokens[-1])
+        # P0: with mediation inactive the speech streams as non-terminal
+        # tokens and the done frame carries no mediated_speech duplicate --
+        # aggregate the stream (mirrors the bridge's sentence_buffer).
+        if not done_frame.get("mediated_speech"):
+            done_frame["speech"] = "".join(t.get("token", "") for t in tokens if not t.get("done"))
         BridgeActionAudit.assert_full_contract(
             done_frame,
             {

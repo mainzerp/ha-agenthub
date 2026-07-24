@@ -173,6 +173,7 @@ class ClassificationEngine:
         call_llm: Callable[..., Awaitable[str]] | None = None,
         load_prompt_async: Callable[[str], Awaitable[str]] | None = None,
         get_turns: Callable[[str | None], Awaitable[list[dict[str, Any]]]] | None = None,
+        prefetched_turns: list[dict[str, Any]] | None = None,
     ) -> tuple[list[tuple[str, str, float | None, list[str]]], bool]:
         """Classify user intent and produce a condensed task.
 
@@ -184,6 +185,9 @@ class ClassificationEngine:
         Args:
             user_text: The raw user input.
             cache_result: Optional pre-computed CacheResult from handle_task.
+            prefetched_turns: P3 -- conversation turns already fetched by the
+                pipeline prelude; when given, the duplicate ``get_turns``
+                fetch is skipped.
 
         Returns:
             (classifications, routing_cached) where classifications is a list
@@ -277,9 +281,12 @@ class ClassificationEngine:
         ]
 
         async with _optional_span(span_collector, "classify.conversation_turns", agent_id="orchestrator") as subspan:
-            turns = []
-            if _get_turns_fn is not None:
+            if prefetched_turns is not None:
+                turns = prefetched_turns
+            elif _get_turns_fn is not None:
                 turns = await _get_turns_fn(conversation_id)
+            else:
+                turns = []
             previous_agent_hint = ""
             if turns:
                 for turn in reversed(turns):

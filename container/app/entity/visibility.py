@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
@@ -13,6 +14,22 @@ from app.entity.index import EntityIndex
 
 # Domains where device_class filtering applies (sensor-like domains).
 DEVICE_CLASS_DOMAINS = {"sensor", "binary_sensor", "cover", "number"}
+
+# P3: per-class memoization of the ``get_by_id_async`` coroutine check --
+# previously ``import inspect`` + ``iscoroutinefunction`` ran on every
+# ``_passes_visibility_filters`` call.
+_get_by_id_async_is_coro: dict[type, bool] = {}
+
+
+def _index_has_async_get_by_id(entity_index: Any) -> bool:
+    """Return whether the index class exposes a coroutine ``get_by_id_async``."""
+    cls = type(entity_index)
+    cached = _get_by_id_async_is_coro.get(cls)
+    if cached is None:
+        unbound = getattr(cls, "get_by_id_async", None)
+        cached = bool(unbound is not None and inspect.iscoroutinefunction(unbound))
+        _get_by_id_async_is_coro[cls] = cached
+    return cached
 
 
 class VisibilityCandidate(Protocol):
@@ -125,10 +142,7 @@ async def _passes_visibility_filters(
         nonlocal entry_loaded, entry
         if not entry_loaded:
             if entity_index is not None:
-                import inspect
-
-                unbound = getattr(type(entity_index), "get_by_id_async", None)
-                if unbound is not None and inspect.iscoroutinefunction(unbound):
+                if _index_has_async_get_by_id(entity_index):
                     entry = await entity_index.get_by_id_async(entity_id)
                 else:
                     entry = entity_index.get_by_id(entity_id)

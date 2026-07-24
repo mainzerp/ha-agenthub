@@ -107,6 +107,25 @@ async def test_scenario_rest(scenario_path: Path, tmp_path):
     _assert_service_calls(scenario, client.app.state.ha_client)
 
 
+def _ws_speech(tokens: list[dict]) -> str:
+    """Extract the final speech from a WS token stream.
+
+    P0: with mediation inactive, agent tokens stream as non-terminal frames
+    and the done frame carries no ``mediated_speech`` duplicate -- the
+    speech is the concatenation of the streamed tokens. The HA bridge runs
+    its own ``_strip_markdown`` over every spoken sentence, so apply the
+    container's equivalent here to mirror what a satellite actually says
+    (the REST path strip_markdowns the final speech as well).
+    """
+    from app.agents.sanitize import strip_markdown
+
+    done_frame = tokens[-1]
+    if done_frame.get("mediated_speech"):
+        return done_frame["mediated_speech"]
+    streamed = "".join(t.get("token", "") for t in tokens if not t.get("done"))
+    return strip_markdown(streamed).strip() or done_frame.get("token", "")
+
+
 @pytest.mark.parametrize("scenario_path", _params())
 @pytest.mark.integration
 @pytest.mark.asyncio
@@ -124,8 +143,7 @@ async def test_scenario_ws(scenario_path: Path, tmp_path):
         await client.connect_ws()
         tokens = await client.send_turn(scenario.request_text, conversation_id=conversation_id)
 
-    done_frame = tokens[-1]
-    speech = done_frame.get("mediated_speech") or done_frame.get("token", "")
+    speech = _ws_speech(tokens)
     _assert_speech(scenario, speech)
     _assert_service_calls(scenario, client.app.state.ha_client)
 
@@ -154,7 +172,7 @@ async def test_scenario_rest_ws_speech_parity(scenario_path: Path, tmp_path):
         ws_tokens = await client.send_turn(scenario.request_text, conversation_id=conversation_id)
 
     rest_speech = rest_resp.get("speech", "")
-    ws_speech = ws_tokens[-1].get("mediated_speech") or ws_tokens[-1].get("token", "")
+    ws_speech = _ws_speech(ws_tokens)
     assert rest_speech == ws_speech, (
         f"[{scenario.id}] REST/WS speech mismatch:\n  REST: {rest_speech!r}\n  WS:   {ws_speech!r}"
     )

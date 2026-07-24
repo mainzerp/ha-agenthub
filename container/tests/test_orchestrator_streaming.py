@@ -309,7 +309,10 @@ class TestStreamingMediation:
         self, mock_complete, mock_track, mock_settings
     ):
         """M-10: mediation LLM failing before the first token falls back to the
-        blocking path -- the full (mediated) answer is delivered and stored."""
+        blocking path -- the full (mediated) answer is delivered and stored.
+
+        Mediation is active because a personality is configured and a
+        calendar reminder applies."""
         from app.agents.mediation import MediationStreamError
 
         mock_complete.return_value = "light-agent (95%): Turn on light"
@@ -321,6 +324,8 @@ class TestStreamingMediation:
             }.get(k, d)
         )
         orch, dispatcher = _make_orchestrator()
+        orch._calendar_injector = MagicMock()
+        orch._calendar_injector.inject_reminders = AsyncMock(return_value="Meeting at 3pm.")
 
         async def _stream(_request):
             yield {"token": "Light is on.", "done": True}
@@ -351,7 +356,10 @@ class TestStreamingMediation:
     @patch("app.llm.client.complete", new_callable=AsyncMock)
     async def test_mediation_stream_failure_mid_stream_stores_original(self, mock_complete, mock_track, mock_settings):
         """M-10: mediation LLM failing mid-stream keeps the spoken partial
-        output but stores the ORIGINAL full agent answer (no truncation)."""
+        output but stores the ORIGINAL full agent answer (no truncation).
+
+        Mediation is active because a personality is configured and a
+        calendar reminder applies."""
         from app.agents.mediation import MediationStreamError
 
         mock_complete.return_value = "light-agent (95%): Turn on light"
@@ -363,6 +371,8 @@ class TestStreamingMediation:
             }.get(k, d)
         )
         orch, dispatcher = _make_orchestrator()
+        orch._calendar_injector = MagicMock()
+        orch._calendar_injector.inject_reminders = AsyncMock(return_value="Meeting at 3pm.")
 
         async def _stream(_request):
             yield {"token": "Full agent answer.", "done": True}
@@ -459,16 +469,23 @@ class TestStreamingDispatchInternals:
         assert len(filler_chunks) >= 1
         assert filler_chunks[0]["filler_push"] == "One moment please."
 
+        # P0: with mediation inactive (no personality, no reminder) the
+        # agent tokens relay immediately; the terminal chunk carries no
+        # mediated_speech duplicate.
+        relayed = [c for c in chunks if not c.get("done") and c.get("token")]
+        assert [c["token"] for c in relayed] == ["Light ", "is on."]
         done_chunks = [c for c in chunks if c.get("done")]
         assert len(done_chunks) == 1
-        assert done_chunks[0].get("mediated_speech")
+        assert done_chunks[0].get("mediated_speech") is None
 
     @pytest.mark.asyncio
     @patch("app.agents.orchestrator.SettingsRepository")
     @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
     @patch("app.llm.client.complete", new_callable=AsyncMock)
     async def test_streaming_token_processing_collects_speech(self, mock_complete, mock_track, mock_settings):
-        """G14: Stream tokens must be collected into final mediated_speech."""
+        """G14: Stream tokens must be collected; P0 relays them immediately
+        when mediation is inactive, so the terminal chunk carries the action
+        metadata but no mediated_speech duplicate."""
         mock_settings.get_value = AsyncMock(return_value="")
         mock_complete.return_value = "light-agent (95%): Turn on light"
         orch, dispatcher = _make_orchestrator()
@@ -486,10 +503,12 @@ class TestStreamingDispatchInternals:
         async for chunk in orch.handle_task_stream(task):
             chunks.append(chunk)
 
+        relayed = [c for c in chunks if not c.get("done") and c.get("token")]
+        assert [c["token"] for c in relayed] == ["The ", "light ", "is on."]
         done_chunks = [c for c in chunks if c.get("done")]
         assert len(done_chunks) == 1
         final = done_chunks[0]
-        assert final["mediated_speech"] == "The light is on."
+        assert final.get("mediated_speech") is None
         assert final.get("action_executed") == {"service": "light/turn_on"}
 
     @pytest.mark.asyncio
@@ -522,6 +541,46 @@ class TestStreamingDispatchInternals:
 
         # Should still yield a terminal chunk; filler may or may not be sent
         # depending on race, but the pipeline must not crash.
+        done_chunks = [c for c in chunks if c.get("done")]
+        assert len(done_chunks) == 1
+
+    @pytest.mark.asyncio
+    @patch("app.agents.orchestrator.SettingsRepository")
+    @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
+    @patch("app.llm.client.complete", new_callable=AsyncMock)
+    async def test_streaming_filler_cancelled_when_agent_answers_first(self, mock_complete, mock_track, mock_settings):
+        """P1: the t=0 filler task is cancelled when the first agent chunk
+        beats the threshold (no dangling filler LLM call, no filler_push)."""
+        mock_settings.get_value = AsyncMock(return_value="")
+        mock_complete.return_value = "light-agent (95%): Turn on light"
+        orch, dispatcher = _make_orchestrator()
+
+        async def _fast_stream(_request):
+            yield {"token": "Light is on.", "done": True}
+
+        dispatcher.dispatch_stream = _fast_stream
+        task = _make_task("turn on light", conversation_id="conv-filler-cancel")
+
+        filler_cancelled = asyncio.Event()
+
+        async def _hanging_filler(user_text, agent_id, language):
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                filler_cancelled.set()
+                raise
+
+        orch._should_send_filler = AsyncMock(return_value=True)
+        orch._get_filler_threshold_ms = AsyncMock(return_value=5000)
+        orch._invoke_filler_agent = AsyncMock(side_effect=_hanging_filler)
+
+        chunks = []
+        async for chunk in orch.handle_task_stream(task):
+            chunks.append(chunk)
+
+        filler_chunks = [c for c in chunks if c.get("filler_push")]
+        assert len(filler_chunks) == 0
+        assert filler_cancelled.is_set()
         done_chunks = [c for c in chunks if c.get("done")]
         assert len(done_chunks) == 1
 
@@ -648,3 +707,211 @@ class TestSequentialSendFillerRace:
 
         assert handle_task_cancelled.is_set()
         await agen.aclose()
+
+
+# ---------------------------------------------------------------------------
+# P0: first-frame latency — relay when mediation is inactive, streaming default
+# ---------------------------------------------------------------------------
+
+
+class TestFirstFrameLatency:
+    @pytest.mark.asyncio
+    @patch("app.agents.orchestrator.SettingsRepository")
+    @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
+    @patch("app.llm.client.complete", new_callable=AsyncMock)
+    async def test_streaming_mediation_is_default_on(self, mock_complete, mock_track, mock_settings):
+        """P0: with no explicit setting, streaming mediation defaults to ON --
+        a personality+reminder turn streams mediated tokens instead of using
+        the blocking mediation call."""
+        mock_complete.return_value = "light-agent (95%): Turn on light"
+        mock_settings.get_value = AsyncMock(
+            side_effect=lambda k, d=None: {
+                # orchestrator.mediation_streaming_enabled deliberately absent:
+                # the new default ("true") must kick in.
+                "personality.prompt": "You are friendly.",
+                "orchestrator.organic_followup_enabled": "false",
+            }.get(k, d)
+        )
+        orch, dispatcher = _make_orchestrator()
+        orch._calendar_injector = MagicMock()
+        orch._calendar_injector.inject_reminders = AsyncMock(return_value="Meeting at 3pm.")
+        orch._should_send_filler = AsyncMock(return_value=False)
+
+        async def _stream(_request):
+            yield {"token": "Light is on.", "done": True}
+
+        dispatcher.dispatch_stream = _stream
+
+        async def _fake_mediation_stream(**kwargs):
+            yield "Friendly answer with reminder."
+
+        orch._mediate_response_stream = _fake_mediation_stream
+        orch._mediate_response = AsyncMock()
+
+        task = _make_task("turn on light", conversation_id="conv-p0-default-on")
+        chunks = [c async for c in orch.handle_task_stream(task)]
+
+        token_chunks = [c for c in chunks if not c.get("done") and c.get("token")]
+        assert [c["token"] for c in token_chunks] == ["Friendly answer with reminder."]
+        # The blocking mediation path was NOT used.
+        orch._mediate_response.assert_not_called()
+        done_chunks = [c for c in chunks if c.get("done")]
+        assert len(done_chunks) == 1
+        assert done_chunks[0].get("mediated_speech") is None
+
+    @pytest.mark.asyncio
+    @patch("app.agents.orchestrator.SettingsRepository")
+    @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
+    @patch("app.llm.client.complete", new_callable=AsyncMock)
+    async def test_mediation_skipped_when_personality_and_reminder_empty(
+        self, mock_complete, mock_track, mock_settings
+    ):
+        """P0: no personality and no reminder -> no mediation LLM call at all;
+        the executor confirmation relays as an immediate token."""
+        mock_complete.return_value = "light-agent (95%): Turn on light"
+        mock_settings.get_value = AsyncMock(return_value="")
+        orch, dispatcher = _make_orchestrator()
+        orch._should_send_filler = AsyncMock(return_value=False)
+        orch._mediate_response = AsyncMock()
+
+        async def _fail_mediation_stream(**kwargs):
+            raise AssertionError("mediation stream must not run on a mediation-inactive turn")
+            yield  # pragma: no cover -- async generator shape
+
+        orch._mediate_response_stream = _fail_mediation_stream
+
+        async def _stream(_request):
+            yield {"token": "Light is on.", "done": True}
+
+        dispatcher.dispatch_stream = _stream
+
+        task = _make_task("turn on light", conversation_id="conv-p0-no-mediation")
+        chunks = [c async for c in orch.handle_task_stream(task)]
+
+        token_chunks = [c for c in chunks if not c.get("done") and c.get("token")]
+        assert [c["token"] for c in token_chunks] == ["Light is on."]
+        orch._mediate_response.assert_not_called()
+        # Only the classification LLM call happened (no mediation round-trip).
+        assert mock_complete.await_count == 1
+        done_chunks = [c for c in chunks if c.get("done")]
+        assert len(done_chunks) == 1
+        assert done_chunks[0].get("mediated_speech") is None
+
+    @pytest.mark.asyncio
+    @patch("app.agents.orchestrator.SettingsRepository")
+    @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
+    @patch("app.llm.client.complete", new_callable=AsyncMock)
+    async def test_personality_only_turn_streams_mediated_tokens(self, mock_complete, mock_track, mock_settings):
+        """Personality WITHOUT reminder triggers mediation again (personality
+        applies to all system responses): the raw agent tokens stay buffered
+        and the streamed mediation output is relayed instead (streaming
+        mediation defaults to ON)."""
+        mock_complete.return_value = "light-agent (95%): Turn on light"
+        mock_settings.get_value = AsyncMock(
+            side_effect=lambda k, d=None: {
+                "personality.prompt": "You are friendly.",
+                "orchestrator.organic_followup_enabled": "false",
+            }.get(k, d)
+        )
+        orch, dispatcher = _make_orchestrator()
+        orch._should_send_filler = AsyncMock(return_value=False)
+        orch._mediate_response = AsyncMock()
+
+        async def _stream(request):
+            yield {"token": "Light ", "done": False}
+            yield {"token": "is on.", "done": True}
+
+        dispatcher.dispatch_stream = _stream
+
+        async def _fake_mediation_stream(**kwargs):
+            yield "Friendly: light is on."
+
+        orch._mediate_response_stream = _fake_mediation_stream
+
+        task = _make_task("turn on light", conversation_id="conv-personality-only")
+        chunks = [c async for c in orch.handle_task_stream(task)]
+
+        # No raw agent tokens leaked downstream; the mediated tokens were
+        # streamed instead.
+        token_chunks = [c for c in chunks if not c.get("done") and c.get("token")]
+        assert [c["token"] for c in token_chunks] == ["Friendly: light is on."]
+        # The blocking mediation path was NOT used.
+        orch._mediate_response.assert_not_called()
+        done_chunks = [c for c in chunks if c.get("done")]
+        assert len(done_chunks) == 1
+        assert done_chunks[0].get("mediated_speech") is None
+
+    @pytest.mark.asyncio
+    @patch("app.agents.orchestrator.SettingsRepository")
+    @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
+    @patch("app.llm.client.complete", new_callable=AsyncMock)
+    async def test_reminder_only_mediation_still_weaves_followup(self, mock_complete, mock_track, mock_settings):
+        """The mediation path still runs the LLM (reminder weaving) and still
+        detects the [FOLLOWUP] tag -- here with streaming mediation disabled
+        so the blocking path mediates."""
+        mock_complete.side_effect = [
+            "light-agent (95%): Turn on light",  # classify
+            "Light is on. Meeting at 3pm. Should I dim it?[FOLLOWUP]",  # mediation
+        ]
+        mock_settings.get_value = AsyncMock(
+            side_effect=lambda k, d=None: {
+                "personality.prompt": "You are friendly.",
+                "orchestrator.mediation_streaming_enabled": "false",
+                "orchestrator.organic_followup_enabled": "false",
+            }.get(k, d)
+        )
+        orch, dispatcher = _make_orchestrator()
+        orch._calendar_injector = MagicMock()
+        orch._calendar_injector.inject_reminders = AsyncMock(return_value="Meeting at 3pm.")
+        orch._should_send_filler = AsyncMock(return_value=False)
+
+        async def _stream(_request):
+            yield {"token": "Light is on.", "done": True}
+
+        dispatcher.dispatch_stream = _stream
+
+        task = _make_task("turn on light", conversation_id="conv-p0-followup")
+        chunks = [c async for c in orch.handle_task_stream(task)]
+
+        # Mediation active: nothing relayed, the terminal frame carries the
+        # mediated speech without the tag and asks for the followup.
+        token_chunks = [c for c in chunks if not c.get("done") and c.get("token")]
+        assert token_chunks == []
+        done_chunks = [c for c in chunks if c.get("done")]
+        assert len(done_chunks) == 1
+        final = done_chunks[0]
+        assert final["mediated_speech"] == "Light is on. Meeting at 3pm. Should I dim it?"
+        assert final.get("voice_followup") is True
+        # The mediation LLM call received the reminder to weave in.
+        mediation_messages = mock_complete.await_args_list[1].args[1]
+        assert any("Meeting at 3pm." in m.get("content", "") for m in mediation_messages)
+
+    @pytest.mark.asyncio
+    @patch("app.agents.orchestrator.SettingsRepository")
+    @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
+    @patch("app.llm.client.complete", new_callable=AsyncMock)
+    async def test_filler_precedes_relayed_tokens(self, mock_complete, mock_track, mock_settings):
+        """P0 interplay: when the filler fires on a slow agent and mediation
+        is inactive, the filler push is emitted BEFORE the relayed tokens."""
+        mock_settings.get_value = AsyncMock(return_value="")
+        mock_complete.return_value = "general-agent (95%): search the web"
+        orch, dispatcher = _make_orchestrator()
+
+        async def _slow_stream(_request):
+            await asyncio.sleep(0.06)
+            yield {"token": "Real ", "done": False}
+            yield {"token": "answer.", "done": True}
+
+        dispatcher.dispatch_stream = _slow_stream
+        orch._should_send_filler = AsyncMock(return_value=True)
+        orch._get_filler_threshold_ms = AsyncMock(return_value=50)
+        orch._invoke_filler_agent = AsyncMock(return_value="One moment please.")
+
+        task = _make_task("search something", conversation_id="conv-p0-filler-order")
+        chunks = [c async for c in orch.handle_task_stream(task)]
+
+        filler_idx = next(i for i, c in enumerate(chunks) if c.get("filler_push"))
+        first_token_idx = next(i for i, c in enumerate(chunks) if not c.get("done") and c.get("token"))
+        assert filler_idx < first_token_idx
+        token_chunks = [c for c in chunks if not c.get("done") and c.get("token")]
+        assert [c["token"] for c in token_chunks] == ["Real ", "answer."]

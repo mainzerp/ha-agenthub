@@ -86,6 +86,14 @@ class TracingMiddleware:
             duration_ms = (time.perf_counter() - t0) * 1000
             status_code = status_code_holder["code"]
 
+            root_metadata: dict = {"status_code": status_code}
+            # P0 first-frame observability: streaming routes (SSE) stash the
+            # time of the first emitted frame on request.state; record it on
+            # the root span when present.
+            first_frame_ms = state.get("first_frame_ms")
+            if first_frame_ms is not None:
+                root_metadata["first_frame_ms"] = round(first_frame_ms, 2)
+
             span_collector.record_root_span(
                 {
                     "span_id": root_span_id,
@@ -96,7 +104,7 @@ class TracingMiddleware:
                     "start_time": start_time,
                     "duration_ms": round(duration_ms, 2),
                     "status": "ok" if status_code < 400 else "error",
-                    "metadata": {"status_code": status_code},
+                    "metadata": root_metadata,
                 }
             )
 

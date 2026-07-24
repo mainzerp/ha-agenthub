@@ -395,6 +395,110 @@ class TestSequentialSendFiller:
         assert fs_spans[0]["metadata"]["sequential_send"] is True
         assert fs_spans[0]["metadata"]["target_agent"] == "general-agent"
 
+    @patch("app.agents.orchestrator.SettingsRepository")
+    @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
+    @patch("app.llm.client.complete", new_callable=AsyncMock)
+    async def test_seq_send_filler_kicked_off_at_dispatch_time(self, mock_complete, mock_track, mock_settings):
+        """P1: filler generation starts at dispatch time (t=0), not after the
+        threshold fires -- with a huge threshold the filler must still start
+        immediately."""
+        mock_settings.get_value = AsyncMock(
+            side_effect=lambda k, d=None: {
+                "filler.enabled": "true",
+                "filler.threshold_ms": "5000",
+                "language": "auto",
+            }.get(k, d)
+        )
+        orch = self._make_orchestrator()
+
+        mock_complete.return_value = "general-agent: find recipe\nsend-agent: send"
+        orch._should_send_filler = AsyncMock(return_value=True)
+
+        filler_started = asyncio.Event()
+        handle_release = asyncio.Event()
+
+        async def _filler(user_text, agent_id, language):
+            filler_started.set()
+            return "One moment please."
+
+        orch._invoke_filler_agent = AsyncMock(side_effect=_filler)
+
+        async def _blocked_handle(task, _pre_classified=None):
+            await handle_release.wait()
+            return {"speech": "Done and sent."}
+
+        orch.handle_task = AsyncMock(side_effect=_blocked_handle)
+
+        async def _watchdog():
+            # Release handle_task once the filler has started; on a t=0
+            # kickoff this happens immediately, long before the 5s threshold.
+            try:
+                await asyncio.wait_for(filler_started.wait(), timeout=2.0)
+            except TimeoutError:
+                pass
+            finally:
+                handle_release.set()
+
+        watchdog = asyncio.create_task(_watchdog())
+
+        task = _make_task("find recipe and send")
+        task.conversation_id = "conv-seq-tzero"
+        task.context = TaskContext(language="en")
+
+        chunks = []
+        async for c in orch.handle_task_stream(task):
+            chunks.append(c)
+        await watchdog
+
+        # Filler started even though handle_task was still blocked and the
+        # threshold (5s) never fired -- proof of the t=0 kickoff. The fast
+        # answer means no filler was sent.
+        assert filler_started.is_set()
+        filler_chunks = [c for c in chunks if "filler_push" in c]
+        assert len(filler_chunks) == 0
+
+    @patch("app.agents.orchestrator.SettingsRepository")
+    @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
+    @patch("app.llm.client.complete", new_callable=AsyncMock)
+    async def test_seq_send_filler_cancelled_on_fast_response(self, mock_complete, mock_track, mock_settings):
+        """P1: when handle_task answers before the threshold, the t=0 filler
+        task is cancelled (no dangling filler LLM call)."""
+        mock_settings.get_value = AsyncMock(
+            side_effect=lambda k, d=None: {
+                "filler.enabled": "true",
+                "filler.threshold_ms": "5000",
+                "language": "auto",
+            }.get(k, d)
+        )
+        orch = self._make_orchestrator()
+
+        mock_complete.return_value = "general-agent: find recipe\nsend-agent: send"
+        orch._should_send_filler = AsyncMock(return_value=True)
+
+        filler_cancelled = asyncio.Event()
+
+        async def _hanging_filler(user_text, agent_id, language):
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                filler_cancelled.set()
+                raise
+
+        orch._invoke_filler_agent = AsyncMock(side_effect=_hanging_filler)
+        orch.handle_task = AsyncMock(return_value={"speech": "Done and sent."})
+
+        task = _make_task("find recipe and send")
+        task.conversation_id = "conv-seq-cancel"
+        task.context = TaskContext(language="en")
+
+        chunks = []
+        async for c in orch.handle_task_stream(task):
+            chunks.append(c)
+
+        filler_chunks = [c for c in chunks if "filler_push" in c]
+        assert len(filler_chunks) == 0
+        assert filler_cancelled.is_set()
+
 
 # ---------------------------------------------------------------------------
 # Safe prompt rendering with braces in values

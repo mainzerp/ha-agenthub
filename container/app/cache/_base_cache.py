@@ -80,6 +80,19 @@ def _parse_entity_ids(raw: object) -> list[str]:
     return []
 
 
+def _store_method(store: Any, name: str):
+    """Return a store method only when the store's TYPE provides it.
+
+    Used for the optional sidecar finders (P2): MagicMock-based test
+    doubles auto-create any attribute on access, so an instance-level
+    ``getattr`` would fake sidecar support and disable the scan
+    fallback. Checking the type keeps duck-typing honest.
+    """
+    if getattr(type(store), name, None) is None:
+        return None
+    return getattr(store, name, None)
+
+
 class _BaseCache[TEntry](ABC):
     """Shared storage, LRU, and metadata-flush behavior for cache tiers."""
 
@@ -178,7 +191,7 @@ class _BaseCache[TEntry](ABC):
     def flush_pending(self) -> None:
         self._flush_pending_updates()
 
-    def store(self, entry: TEntry) -> None:
+    def store(self, entry: TEntry, *, embedding: list[float] | None = None) -> None:
         if not self._enabled:
             return
         generation = self._state.current_generation()
@@ -193,7 +206,7 @@ class _BaseCache[TEntry](ABC):
             self._collection_name,
             ids=[entry_id],
             documents=[entry.query_text],  # type: ignore[attr-defined]
-            embeddings=None,
+            embeddings=[embedding] if embedding else None,
             metadatas=[self._serialize_metadata(entry)],
         )
 
@@ -207,26 +220,35 @@ class _BaseCache[TEntry](ABC):
         targets = {str(entity_id).strip().lower() for entity_id in entity_ids if entity_id}
         if not targets:
             return 0
-        to_delete: list[str] = []
-        offset = 0
-        while True:
-            page = self._store.get(
-                self._collection_name,
-                include=["metadatas"],
-                limit=_LRU_PAGE_SIZE,
-                offset=offset,
-            )
-            ids = page.get("ids") or []
-            if not ids:
-                break
-            metas = page.get("metadatas") or []
-            for entry_id, meta in zip(ids, metas, strict=False):
-                row_entity_ids = _parse_entity_ids((meta or {}).get("entity_ids"))
-                if targets.intersection({value.strip().lower() for value in row_entity_ids if value}):
-                    to_delete.append(entry_id)
-            if len(ids) < _LRU_PAGE_SIZE:
-                break
-            offset += _LRU_PAGE_SIZE
+        to_delete: list[str] | None = None
+        # P2: O(matches) indexed lookup via the action-cache sidecar table
+        # when the store supports it (SqliteCacheStore); the legacy paged
+        # full scan below is the fallback for collections without a
+        # sidecar (routing cache, VectorStore-backed collections).
+        finder = _store_method(self._store, "find_entries_by_entity_ids")
+        if finder is not None:
+            to_delete = finder(self._collection_name, sorted(targets))
+        if to_delete is None:
+            to_delete = []
+            offset = 0
+            while True:
+                page = self._store.get(
+                    self._collection_name,
+                    include=["metadatas"],
+                    limit=_LRU_PAGE_SIZE,
+                    offset=offset,
+                )
+                ids = page.get("ids") or []
+                if not ids:
+                    break
+                metas = page.get("metadatas") or []
+                for entry_id, meta in zip(ids, metas, strict=False):
+                    row_entity_ids = _parse_entity_ids((meta or {}).get("entity_ids"))
+                    if targets.intersection({value.strip().lower() for value in row_entity_ids if value}):
+                        to_delete.append(entry_id)
+                if len(ids) < _LRU_PAGE_SIZE:
+                    break
+                offset += _LRU_PAGE_SIZE
         if not to_delete:
             return 0
         for entry_id in to_delete:
@@ -253,10 +275,16 @@ class _BaseCache[TEntry](ABC):
         )
 
     def purge_entries_without_language(self) -> int:
-        page = self._store.get(self._collection_name, include=["metadatas"])
-        ids = page.get("ids") or []
-        metas = page.get("metadatas") or []
-        to_delete = [entry_id for entry_id, meta in zip(ids, metas, strict=False) if not (meta or {}).get("language")]
+        # P2: indexed sidecar lookup when available (see invalidate_by_entity_id).
+        finder = _store_method(self._store, "find_entries_without_language")
+        to_delete = finder(self._collection_name) if finder is not None else None
+        if to_delete is None:
+            page = self._store.get(self._collection_name, include=["metadatas"])
+            ids = page.get("ids") or []
+            metas = page.get("metadatas") or []
+            to_delete = [
+                entry_id for entry_id, meta in zip(ids, metas, strict=False) if not (meta or {}).get("language")
+            ]
         if not to_delete:
             return 0
         for start in range(0, len(to_delete), 500):
@@ -264,18 +292,22 @@ class _BaseCache[TEntry](ABC):
         return len(to_delete)
 
     def purge_legacy_schema_entries(self, min_schema_version: int) -> int:
-        page = self._store.get(self._collection_name, include=["metadatas"])
-        ids = page.get("ids") or []
-        metas = page.get("metadatas") or []
-        to_delete: list[str] = []
-        for entry_id, meta in zip(ids, metas, strict=False):
-            schema_raw = (meta or {}).get("schema_version")
-            try:
-                schema_version = int(schema_raw or 0)
-            except Exception:
-                schema_version = 0
-            if schema_version < min_schema_version:
-                to_delete.append(entry_id)
+        # P2: indexed sidecar lookup when available (see invalidate_by_entity_id).
+        finder = _store_method(self._store, "find_entries_below_schema_version")
+        to_delete = finder(self._collection_name, min_schema_version) if finder is not None else None
+        if to_delete is None:
+            page = self._store.get(self._collection_name, include=["metadatas"])
+            ids = page.get("ids") or []
+            metas = page.get("metadatas") or []
+            to_delete = []
+            for entry_id, meta in zip(ids, metas, strict=False):
+                schema_raw = (meta or {}).get("schema_version")
+                try:
+                    schema_version = int(schema_raw or 0)
+                except Exception:
+                    schema_version = 0
+                if schema_version < min_schema_version:
+                    to_delete.append(entry_id)
         if not to_delete:
             return 0
         for start in range(0, len(to_delete), 500):

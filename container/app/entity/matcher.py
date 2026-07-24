@@ -74,7 +74,6 @@ class EntityMatcher:
         self._weights: dict[str, float] = {}
         self._confidence_threshold: float = 0.60
         self._top_n: int = 3
-        self._oversample_factor: int = 20
         # 0.23.0: optional language-agnostic on-demand expansion service.
         # Wired by runtime_setup; leave None in tests that do not need it.
         self._expansion_service: QueryExpansionService | None = None
@@ -116,21 +115,15 @@ class EntityMatcher:
         top_n_raw = await SettingsRepository.get_value("entity_matching.top_n_candidates", "3")
         self._top_n = int(top_n_raw or "3")
         try:
-            raw_factor = await SettingsRepository.get_value("entity_matching.oversample_factor", "20")
-            self._oversample_factor = max(2, min(200, int(raw_factor or "20")))
-        except (TypeError, ValueError):
-            self._oversample_factor = 20
-        try:
             log_misses = await SettingsRepository.get_value("entity_matching.log_misses", "true")
             self._log_misses = (log_misses or "true").lower() in ("1", "true", "yes", "on")
         except Exception:
             self._log_misses = True
         logger.info(
-            "Entity matcher config: weights=%s threshold=%s top_n=%s oversample_factor=%s",
+            "Entity matcher config: weights=%s threshold=%s top_n=%s",
             self._weights,
             self._confidence_threshold,
             self._top_n,
-            self._oversample_factor,
         )
 
     async def match(
@@ -239,14 +232,16 @@ class EntityMatcher:
         """Inner matcher: scores a single query string against the index."""
         results: dict[str, MatchResult] = {}
 
-        # Embedding shortlist size: oversample when downstream filtering
-        # (agent visibility or preferred-domain re-ranking) will prune
-        # candidates before the top_n slice.
+        # Embedding shortlist size: oversample up to a fixed cap when
+        # downstream filtering (agent visibility or preferred-domain
+        # re-ranking) will prune candidates before the top_n slice.
+        # The dead ``entity_matching.oversample_factor`` setting was
+        # removed (L6): for top_n >= 10 the min() clamp made any factor a
+        # no-op, and with the shipped default factor the shortlist always
+        # landed on this cap -- so the cap is the documented fixed
+        # behavior and the effective shortlist is unchanged.
         filtering_active = bool(agent_id) or bool(preferred_domains)
-        embedding_n = (
-            max(self._top_n * 2, self._top_n * self._oversample_factor) if filtering_active else self._top_n * 2
-        )
-        embedding_n = min(embedding_n, max(20, self._top_n * 2))
+        embedding_n = max(20, self._top_n * 2) if filtering_active else self._top_n * 2
 
         # 1. Alias signal (fast path -- exact match)
         alias_result = await AliasSignal.score(query, self._alias_resolver)

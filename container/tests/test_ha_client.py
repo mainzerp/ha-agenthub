@@ -953,6 +953,30 @@ class TestHAConversationWSCloseError:
             if key.startswith("custom_components"):
                 del sys.modules[key]
 
+    @staticmethod
+    def _bind_real_ws_methods(entity):
+        """Bind the real WS helpers onto a MagicMock entity.
+
+        P1 split ``_process_via_ws`` into a locked send phase
+        (``_ws_send_locked``) and an unlocked read phase
+        (``_process_via_ws_read``) with real socket-disposition helpers; a
+        plain MagicMock self must provide them as real coroutines.
+        """
+        import asyncio as _asyncio
+        import types
+
+        from custom_components.ha_agenthub.conversation import HaAgentHubConversationEntity
+
+        entity._ws_lock = _asyncio.Lock()
+        for name in (
+            "_ws_send_locked",
+            "_process_via_ws_read",
+            "_reuse_shared_ws",
+            "_close_local_ws",
+            "_resolve_origin_context",
+        ):
+            setattr(entity, name, types.MethodType(getattr(HaAgentHubConversationEntity, name), entity))
+
     async def test_process_via_ws_closed_mid_stream(self):
         """WS CLOSED mid-stream should raise _WsDroppedAfterSendError wrapping aiohttp.ClientError."""
         import json as _json
@@ -978,6 +1002,7 @@ class TestHAConversationWSCloseError:
         msg_closed.type = aiohttp.WSMsgType.CLOSED
 
         entity._ws.receive = AsyncMock(side_effect=[msg_text, msg_closed])
+        self._bind_real_ws_methods(entity)
 
         user_input = MagicMock()
         user_input.text = "hello"
@@ -1015,6 +1040,7 @@ class TestHAConversationWSCloseError:
         msg_error.type = aiohttp.WSMsgType.ERROR
 
         entity._ws.receive = AsyncMock(side_effect=[msg_text, msg_error])
+        self._bind_real_ws_methods(entity)
 
         user_input = MagicMock()
         user_input.text = "hello"
@@ -1048,6 +1074,7 @@ class TestHAConversationWSCloseError:
         msg_closed.type = aiohttp.WSMsgType.CLOSED
 
         entity._ws.receive = AsyncMock(return_value=msg_closed)
+        self._bind_real_ws_methods(entity)
 
         user_input = MagicMock()
         user_input.text = "hello"
@@ -1084,6 +1111,7 @@ class TestHAConversationWSCloseError:
         msg_done.data = _json.dumps({"token": "", "done": True, "error": "Agent error: test"})
 
         entity._ws.receive = AsyncMock(return_value=msg_done)
+        self._bind_real_ws_methods(entity)
 
         user_input = MagicMock()
         user_input.text = "hello"

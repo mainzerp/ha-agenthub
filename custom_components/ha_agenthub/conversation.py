@@ -198,6 +198,10 @@ class HaAgentHubConversationEntity(
         self._coalesce_window_sec: float = 0.25
         # V4: at most one in-flight post-filler push task per satellite.
         self._inflight_pushes: dict[str, asyncio.Task] = {}
+        # P3: memoized device_id -> assist_satellite entity_id resolution
+        # (None = known to have no satellite). Cleared on entity-registry
+        # updates for assist_satellite entities.
+        self._satellite_cache: dict[str, str | None] = {}
         # Debounced reconnect request flag for the background reconnect loop.
         self._reconnect_requested = asyncio.Event()
         # Guards the automatic reauth trigger so a persistent 401 starts at
@@ -240,6 +244,20 @@ class HaAgentHubConversationEntity(
             name="ha_agenthub_ws_reconnect",
         )
 
+        # P3: invalidate the memoized device->satellite mapping when an
+        # assist_satellite entity is created/removed/updated (e.g. the
+        # satellite integration is replaced or re-assigned to a device).
+        def _on_entity_registry_updated(event) -> None:
+            entity_id = (event.data or {}).get("entity_id") if event else None
+            if entity_id is None or entity_id.startswith("assist_satellite."):
+                self._satellite_cache.clear()
+
+        self.async_on_remove(
+            self.hass.bus.async_listen(
+                er.EVENT_ENTITY_REGISTRY_UPDATED, _on_entity_registry_updated
+            )
+        )
+
     async def async_will_remove_from_hass(self) -> None:
         """When entity will be removed from Home Assistant."""
         if hasattr(self, "_reconnect_task") and self._reconnect_task:
@@ -253,6 +271,9 @@ class HaAgentHubConversationEntity(
                 task.cancel()
         self._inflight_bridge.clear()
         await self._disconnect_ws()
+        # P3: the shared session survives disconnects; close it exactly
+        # once when the entity is removed.
+        await self._close_session()
         await super().async_will_remove_from_hass()
 
     async def _connect_ws(self) -> bool:
@@ -284,29 +305,41 @@ class HaAgentHubConversationEntity(
             return True
         except (aiohttp.ClientError, asyncio.TimeoutError, OSError):
             logger.warning("Failed to connect to container at %s", self._url)
-            if self._session:
-                try:
-                    await self._session.close()
-                except (aiohttp.ClientError, OSError):
-                    pass
-                self._session = None
+            # P3 (minimal WS reuse): keep the session on connect failure --
+            # a failed ws_connect does not poison the ClientSession, and
+            # reusing it across reconnect attempts avoids paying connection
+            # pool setup per retry. A dead session is replaced by the
+            # ``self._session.closed`` check above.
             self._ws = None
             return False
 
     async def _disconnect_ws(self) -> None:
-        """Close the WebSocket and session."""
+        """Close the WebSocket (the shared session survives, see below)."""
         async with self._ws_lock:
             await self._disconnect_ws_locked()
 
     async def _disconnect_ws_locked(self) -> None:
         """Locked body of :meth:`_disconnect_ws`. Caller MUST hold
-        ``self._ws_lock``."""
+        ``self._ws_lock``.
+
+        P3 (minimal WS reuse): only the WebSocket is closed here. The
+        shared ``aiohttp.ClientSession`` survives reconnects (a fresh
+        session per reconnect pays connection-pool setup for no benefit)
+        and is closed exactly once on entity removal via
+        :meth:`_close_session`.
+        """
         if self._ws and not self._ws.closed:
             await self._ws.close()
         self._ws = None
-        if self._session:
-            await self._session.close()
-            self._session = None
+
+    async def _close_session(self) -> None:
+        """Close the shared aiohttp session (entity removal only)."""
+        if self._session and not self._session.closed:
+            try:
+                await self._session.close()
+            except (aiohttp.ClientError, OSError):
+                pass
+        self._session = None
 
     async def _reconnect_loop(self) -> None:
         """Background loop that maintains the WebSocket connection."""
@@ -445,28 +478,40 @@ class HaAgentHubConversationEntity(
     async def _async_bridge_to_container(
         self, user_input: conversation.ConversationInput
     ) -> conversation.ConversationResult:
-        """Single WS (preferred) or REST attempt to the HA-AgentHub container."""
+        """Single WS (preferred) or REST attempt to the HA-AgentHub container.
+
+        P1: ``self._ws_lock`` covers only the connectivity check and the
+        ``send_json`` write. The streaming read runs unlocked on a socket
+        the turn exclusively owns (detached from ``self._ws`` at send
+        time), so a concurrent satellite turn no longer queues behind a
+        slow read -- it simply connects its own socket.
+        """
         try:
+            turn_ws: aiohttp.ClientWebSocketResponse | None = None
             async with self._ws_lock:
                 if await self._ensure_connected_locked():
                     try:
-                        return await self._process_via_ws(user_input)
-                    except _WsDroppedAfterSendError:
-                        logger.warning(
-                            "WebSocket failed after the request was sent; skipping REST "
-                            "(avoids duplicate container traces)",
-                            exc_info=True,
-                        )
-                        await self._disconnect_ws_locked()
-                        return self._build_result(
-                            "The connection dropped before the reply finished. "
-                            "If the action may have run, check your devices.",
-                            user_input.conversation_id,
-                            user_input.language,
-                        )
+                        turn_ws = await self._ws_send_locked(user_input)
                     except (aiohttp.ClientError, asyncio.TimeoutError):
-                        logger.warning("WebSocket error, falling back to REST")
+                        logger.warning("WebSocket send failed, falling back to REST")
                         await self._disconnect_ws_locked()
+            if turn_ws is not None:
+                try:
+                    return await self._process_via_ws_read(user_input, turn_ws)
+                except _WsDroppedAfterSendError:
+                    logger.warning(
+                        "WebSocket failed after the request was sent; skipping REST "
+                        "(avoids duplicate container traces)",
+                        exc_info=True,
+                    )
+                    return self._build_result(
+                        "The connection dropped before the reply finished. "
+                        "If the action may have run, check your devices.",
+                        user_input.conversation_id,
+                        user_input.language,
+                    )
+                except (aiohttp.ClientError, asyncio.TimeoutError):
+                    logger.warning("WebSocket error, falling back to REST")
         except (aiohttp.ClientError, asyncio.TimeoutError, OSError):
             logger.warning(
                 "Unexpected WS dispatch failure, falling back to REST", exc_info=True
@@ -513,32 +558,42 @@ class HaAgentHubConversationEntity(
                 "filler_push: no device_id in ConversationInput, cannot resolve satellite"
             )
             return None
+        # P3: the registry scan is memoized per device (invalidated on
+        # assist_satellite registry updates) so streamed turns no longer
+        # scan -- and log -- the whole registry entry list every time.
+        if device_id in self._satellite_cache:
+            return self._satellite_cache[device_id]
+        resolved: str | None = None
         try:
             entity_registry = er.async_get(self.hass)
             entries = er.async_entries_for_device(entity_registry, device_id)
-            logger.info(
+            logger.debug(
                 "filler_push: device %s has %d registry entries",
                 device_id,
                 len(entries),
             )
             for entry in entries:
-                logger.info(
+                logger.debug(
                     "filler_push: entry domain=%s entity_id=%s",
                     entry.domain,
                     entry.entity_id,
                 )
                 if entry.domain == "assist_satellite":
-                    return entry.entity_id
-            logger.warning(
-                "filler_push: no assist_satellite entity found for device %s", device_id
-            )
+                    resolved = entry.entity_id
+                    break
+            if resolved is None:
+                logger.warning(
+                    "filler_push: no assist_satellite entity found for device %s",
+                    device_id,
+                )
         except (aiohttp.ClientError, asyncio.TimeoutError, OSError):
             logger.warning(
                 "filler_push: failed to resolve satellite entity for device %s",
                 device_id,
                 exc_info=True,
             )
-        return None
+        self._satellite_cache[device_id] = resolved
+        return resolved
 
     def _spawn_post_filler_push(
         self,
@@ -1017,10 +1072,19 @@ class HaAgentHubConversationEntity(
                 exc_info=True,
             )
 
-    async def _process_via_ws(
+    async def _ws_send_locked(
         self, user_input: conversation.ConversationInput
-    ) -> conversation.ConversationResult:
-        """Send request via WebSocket and accumulate streaming tokens."""
+    ) -> aiohttp.ClientWebSocketResponse:
+        """Send the request payload and hand socket ownership to the turn.
+
+        Caller MUST hold ``self._ws_lock`` (except single-threaded test
+        doubles). On success ``self._ws`` is cleared so no other turn can
+        send on -- or read from -- this socket while the streaming read
+        runs unlocked; the read phase offers the socket back via
+        :meth:`_reuse_shared_ws` after a clean done frame. On send failure
+        ``self._ws`` is left untouched so the caller can disconnect under
+        the lock (pre-P1 semantics).
+        """
         logger.debug(
             "ha-agenthub: ws-entry cid=%s ws_open=%s",
             user_input.conversation_id,
@@ -1032,8 +1096,66 @@ class HaAgentHubConversationEntity(
             "language": user_input.language or "en",
         }
         payload.update(self._resolve_origin_context(user_input))
-        await self._ws.send_json(payload)
+        turn_ws = self._ws
+        if turn_ws is None:
+            raise aiohttp.ClientError("WebSocket not connected")
+        await turn_ws.send_json(payload)
+        self._ws = None
+        return turn_ws
 
+    async def _reuse_shared_ws(self, turn_ws: aiohttp.ClientWebSocketResponse) -> None:
+        """Offer a finished turn's socket back as the shared connection.
+
+        If another turn (or the reconnect loop) already installed a fresh
+        socket, the extra one is closed instead -- only one shared
+        connection is kept.
+        """
+        async with self._ws_lock:
+            if self._ws is None and not turn_ws.closed:
+                self._ws = turn_ws
+                self._ws_last_active = time.monotonic()
+                return
+        await self._close_local_ws(turn_ws)
+
+    async def _close_local_ws(self, turn_ws: aiohttp.ClientWebSocketResponse) -> None:
+        """Best-effort close of a turn-owned socket; never touches ``self._ws``."""
+        try:
+            if not turn_ws.closed:
+                await turn_ws.close()
+        except (aiohttp.ClientError, OSError):
+            logger.debug("ha-agenthub: error closing turn socket", exc_info=True)
+
+    async def _process_via_ws(
+        self, user_input: conversation.ConversationInput
+    ) -> conversation.ConversationResult:
+        """Send + read on the current shared socket (legacy combined form).
+
+        Production turns go through :meth:`_async_bridge_to_container`,
+        which splits the locked send phase from the unlocked read phase.
+        This wrapper keeps the pre-existing single-call contract used by
+        the bridge test-suite.
+        """
+        turn_ws = await self._ws_send_locked(user_input)
+        return await self._process_via_ws_read(user_input, turn_ws)
+
+    async def _process_via_ws_read(
+        self,
+        user_input: conversation.ConversationInput,
+        turn_ws: aiohttp.ClientWebSocketResponse,
+    ) -> conversation.ConversationResult:
+        """Read the streaming response from a turn-owned socket (unlocked).
+
+        The turn owns ``turn_ws`` exclusively (see :meth:`_ws_send_locked`),
+        so this loop never touches ``self._ws`` and never holds
+        ``self._ws_lock``. Socket disposition:
+          - early filler/sentence handoff: ownership moves to the
+            background push task (which closes it), exactly as before;
+          - clean done frame: the socket is offered back as the shared
+            connection via :meth:`_reuse_shared_ws`;
+          - any failure or cancellation: the socket is closed.
+        """
+        handoff = False
+        done_ok = False
         try:
             speech_parts: list[str] = []
             final_conversation_id = user_input.conversation_id
@@ -1059,7 +1181,7 @@ class HaAgentHubConversationEntity(
                     )
                 except (TypeError, ValueError):
                     timeout = float(DEFAULT_WS_RECEIVE_TIMEOUT)
-                msg = await asyncio.wait_for(self._ws.receive(), timeout=timeout)
+                msg = await asyncio.wait_for(turn_ws.receive(), timeout=timeout)
                 if msg.type == aiohttp.WSMsgType.TEXT:
                     try:
                         data = json.loads(msg.data)
@@ -1086,13 +1208,12 @@ class HaAgentHubConversationEntity(
                         )
                         if stripped_filler:
                             satellite = self._resolve_satellite_entity(device_id)
-                            local_ws = self._ws
-                            self._ws = None
                             self._spawn_post_filler_push(
-                                local_ws=local_ws,
+                                local_ws=turn_ws,
                                 satellite_entity_id=satellite,
                                 gate_key=gate_key,
                             )
+                            handoff = True
                             self._ws_last_active = time.monotonic()
                             response = intent.IntentResponse(
                                 language=user_input.language or "en"
@@ -1115,14 +1236,13 @@ class HaAgentHubConversationEntity(
                                 _strip_markdown(sentence_buffer.strip())
                             )
                             satellite = self._resolve_satellite_entity(device_id)
-                            local_ws = self._ws
-                            self._ws = None
                             self._spawn_sentence_stream(
-                                local_ws=local_ws,
+                                local_ws=turn_ws,
                                 gate_key=gate_key,
                                 satellite_entity_id=satellite,
                                 initial_buffer="",
                             )
+                            handoff = True
                             self._ws_last_active = time.monotonic()
                             return conversation.ConversationResult(
                                 response=response,
@@ -1160,15 +1280,14 @@ class HaAgentHubConversationEntity(
                                 ]
                         break
                 elif msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
-                    self._ws = None
                     raise aiohttp.ClientError(
                         f"WebSocket {'closed' if msg.type == aiohttp.WSMsgType.CLOSED else 'error'} mid-stream"
                     )
 
             if not received_done:
-                self._ws = None
                 raise aiohttp.ClientError("WebSocket stream ended without done token")
 
+            done_ok = True
             self._ws_last_active = time.monotonic()
             speech = "".join(speech_parts)
             return self._build_result(
@@ -1180,6 +1299,14 @@ class HaAgentHubConversationEntity(
             )
         except (aiohttp.ClientError, asyncio.TimeoutError) as err:
             raise _WsDroppedAfterSendError() from err
+        finally:
+            if handoff:
+                # The background push task owns the socket now and closes it.
+                pass
+            elif done_ok:
+                await self._reuse_shared_ws(turn_ws)
+            else:
+                await self._close_local_ws(turn_ws)
 
     def _start_reauth_once(self) -> None:
         """Start the reauth flow once per auth-failure episode.

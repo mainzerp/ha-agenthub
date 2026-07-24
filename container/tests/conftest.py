@@ -152,6 +152,27 @@ async def _clear_settings_cache():
 
 
 @pytest.fixture(autouse=True)
+async def _clear_hot_path_caches():
+    """P2: drop the memoized secrets / agent-config / provider-params caches.
+
+    Same rationale as ``_clear_settings_cache``: module-level TTL caches
+    must not leak rows from one test's temporary database into the next.
+    """
+    from app.db.repositories.agent_config import invalidate_agent_config_cache
+    from app.llm.providers import invalidate_provider_params
+    from app.security.encryption import invalidate_secret_cache
+
+    async def _clear() -> None:
+        await invalidate_secret_cache()
+        await invalidate_agent_config_cache()
+        await invalidate_provider_params()
+
+    await _clear()
+    yield
+    await _clear()
+
+
+@pytest.fixture(autouse=True)
 def _clear_visibility_rules_cache():
     """Clear the in-memory visibility rules cache between tests."""
     from app.entity.visibility import invalidate_visibility_rules_cache
@@ -563,7 +584,6 @@ def mock_settings() -> dict[str, str]:
         "embedding.dimension": "384",
         "entity_matching.confidence_threshold": "0.60",
         "entity_matching.top_n_candidates": "3",
-        "entity_matching.oversample_factor": "20",
         "rewrite.model": "groq/llama-3.1-8b-instant",
         "rewrite.temperature": "0.8",
         "personality.prompt": "",
@@ -702,6 +722,26 @@ def build_scenario_backed_app(
 
             llm_patcher = patch("app.llm.client.complete", new=_complete_router)
             llm_patcher.start()
+
+            # P0: route the streaming entry points through the same
+            # deterministic stub (general-agent handle_task_stream, streamed
+            # mediation); each yields the full stub reply as one token.
+            async def _complete_stream_router(agent_id, messages, **kwargs):
+                text = await handles.llm.complete(agent_id, messages, **kwargs)
+                if text:
+                    yield text
+
+            async def _complete_with_tools_stream_router(agent_id, messages, tools, tool_executor, **kwargs):
+                text = await handles.llm.complete(agent_id, messages, **kwargs)
+                if text:
+                    yield text
+
+            stream_patcher = patch("app.llm.client.complete_stream", new=_complete_stream_router)
+            stream_patcher.start()
+            tools_stream_patcher = patch(
+                "app.llm.client.complete_with_tools_stream", new=_complete_with_tools_stream_router
+            )
+            tools_stream_patcher.start()
             base_patcher = None
             try:
                 base_patcher = patch("app.agents.base.complete", new=_complete_router)
@@ -712,6 +752,8 @@ def build_scenario_backed_app(
                 yield
             finally:
                 llm_patcher.stop()
+                stream_patcher.stop()
+                tools_stream_patcher.stop()
                 if base_patcher is not None:
                     base_patcher.stop()
 

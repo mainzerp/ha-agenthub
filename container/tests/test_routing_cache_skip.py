@@ -240,11 +240,11 @@ async def test_routing_cache_disabled_setting_short_circuits():
     manager = _make_manager()
     manager._routing_cache._enabled = False
 
-    with patch("app.cache.cache_manager.track_cache_event", new_callable=AsyncMock) as track:
+    with patch("app.cache.cache_manager.track_cache_event_background") as track:
         result = await manager.try_routing_skip(query_text="turn on kitchen light", language="en")
 
     assert result is None
-    track.assert_not_awaited()
+    track.assert_not_called()
 
 
 @pytest.mark.asyncio

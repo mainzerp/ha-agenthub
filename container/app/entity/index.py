@@ -519,19 +519,21 @@ class EntityIndex:
         return await loop.run_in_executor(None, partial(self.search, query, n_results=n_results))
 
     async def get_by_id_async(self, entity_id: str) -> EntityIndexEntry | None:
-        """Async wrapper -- offloads get_by_id() to thread pool."""
-        loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(None, self.get_by_id, entity_id)
+        """Async form of get_by_id().
+
+        P3: direct call -- the sync body is a lock + dict get measured in
+        microseconds, so the thread-pool round-trip cost more than the work
+        (the lock is never held long: writers only swap dict entries).
+        """
+        return self.get_by_id(entity_id)
 
     async def get_by_ids_async(self, entity_ids: list[str]) -> dict[str, EntityIndexEntry]:
-        """Async wrapper -- offloads get_by_ids() to thread pool."""
-        loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(None, partial(self.get_by_ids, entity_ids))
+        """Async form of get_by_ids() -- direct call (trivial dict lookup, P3)."""
+        return self.get_by_ids(entity_ids)
 
     async def list_entries_async(
         self,
         domains: set[str] | frozenset[str] | None = None,
     ) -> list[EntityIndexEntry]:
-        """Async wrapper -- offloads list_entries() to thread pool."""
-        loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(None, partial(self.list_entries, domains=domains))
+        """Async form of list_entries() -- direct call (lock + list copy, P3)."""
+        return self.list_entries(domains=domains)

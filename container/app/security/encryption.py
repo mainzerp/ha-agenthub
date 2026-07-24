@@ -8,6 +8,7 @@ from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
 from app.config import settings
 from app.db.repository import SecretsRepository
+from app.util.memoize import AsyncTtlCache
 
 SESSION_SIGNING_INFO = b"agent-assist session signing"
 
@@ -18,6 +19,31 @@ FERNET_KEY_PATH = Path(settings.fernet_key_path)
 _fernet: Fernet | None = None
 _key_lock = threading.Lock()
 _key_bytes: bytes | None = None
+
+# P2: memoize decrypted secrets on hot paths (REST auth, LLM provider
+# params). Invalidated on every write (store/delete) below and bounded by
+# a TTL so out-of-band DB edits cannot go stale indefinitely.
+_SECRET_CACHE_TTL_SEC = 60.0
+_secret_cache = AsyncTtlCache(_SECRET_CACHE_TTL_SEC)
+
+
+async def invalidate_secret_cache(key: str | None = None) -> None:
+    """Drop memoized secrets (one key, or all when ``key`` is ``None``)."""
+    await _secret_cache.invalidate(key)
+
+
+async def _invalidate_provider_params_cache() -> None:
+    """Drop memoized LLM provider params after a secret write.
+
+    Deferred import: ``app.llm.providers`` imports this module, so a
+    module-level import would create a cycle.
+    """
+    try:
+        from app.llm.providers import invalidate_provider_params
+
+        await invalidate_provider_params()
+    except Exception:
+        logger.warning("Failed to invalidate provider params cache", exc_info=True)
 
 
 def _load_or_generate_key() -> bytes:
@@ -98,21 +124,34 @@ def decrypt(ciphertext: bytes) -> str:
 async def store_secret(key: str, plaintext: str) -> None:
     encrypted = encrypt(plaintext)
     await SecretsRepository.set(key, encrypted)
+    await _secret_cache.invalidate(key)
+    await _invalidate_provider_params_cache()
 
 
 async def retrieve_secret(key: str) -> str | None:
+    hit, cached = await _secret_cache.get(key)
+    if hit:
+        return cached
     encrypted = await SecretsRepository.get(key)
     if encrypted is None:
+        await _secret_cache.put(key, None)
         return None
     try:
-        return decrypt(encrypted)
+        plaintext = decrypt(encrypted)
     except ValueError:
+        # Fail loudly on decryption failure (key rotation/corruption) and
+        # never memoize the failure -- callers must see the error, not a
+        # cached empty value.
         logger.error("Failed to decrypt secret '%s' -- Fernet key may have been rotated", key)
         raise RuntimeError(f"Failed to decrypt secret '{key}'") from None
+    await _secret_cache.put(key, plaintext)
+    return plaintext
 
 
 async def delete_secret(key: str) -> None:
     await SecretsRepository.delete(key)
+    await _secret_cache.invalidate(key)
+    await _invalidate_provider_params_cache()
 
 
 def export_fernet_key() -> str:

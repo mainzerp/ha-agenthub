@@ -28,7 +28,7 @@ from app.agents.language_detect import detect_user_language
 from app.agents.mediation import MediationService, MediationStreamError, _strip_followup_tag
 from app.agents.sanitize import strip_markdown, strip_parenthetical_asides
 from app.agents.task_pipeline import PipelineDirector
-from app.analytics.collector import track_request
+from app.analytics.collector import track_request, track_request_background
 from app.analytics.tracer import _optional_span
 from app.cache.cache_manager import ActionReplayOutcome, RoutingSkipOutcome
 from app.db.repository import SettingsRepository
@@ -70,6 +70,26 @@ def _stringify_error(err: Any) -> str | None:
         message = err.get("message") or err.get("code")
         return str(message) if message else "unknown error"
     return str(err)
+
+
+async def _cancel_filler_future(filler_future: asyncio.Task | None) -> None:
+    """Cancel a t=0 filler task that is no longer needed and retrieve its outcome.
+
+    P1: filler generation starts at dispatch time; when the agent answers
+    before the threshold (or the turn exits early) the filler task is
+    cancelled here. The await after ``cancel()`` is suppression-scoped so a
+    mid-flight filler dispatch unwinds cleanly, and an already-finished
+    task's exception is retrieved so it never logs "exception was never
+    retrieved".
+    """
+    if filler_future is None:
+        return
+    if not filler_future.done():
+        filler_future.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await filler_future
+    elif not filler_future.cancelled():
+        filler_future.exception()
 
 
 @dataclass
@@ -115,6 +135,9 @@ class StreamingContext:
     action_executed: Any = None
     stream_error: str | None = None
     stream_voice_followup: bool = False
+    # P0 first-frame latency: True once at least one agent token was relayed
+    # downstream as a non-terminal chunk (mediation inactive for the turn).
+    relayed_tokens: bool = False
 
     def __post_init__(self) -> None:
         pass
@@ -764,23 +787,35 @@ class OrchestratorAgent(BaseAgent):
     def _legacy_pipeline_enabled() -> bool:
         return CacheOrchestrator.legacy_pipeline_enabled()
 
-    async def _pipeline_resolve_conversation_and_language(
-        self, task: IngressTask | BackgroundTask
-    ) -> tuple[str, str, list]:
-        """Resolve conversation_id (with uuid fallback), the effective
-        language for this turn, and prefetch the conversation turns
-        used by language detection.
+    def _pipeline_resolve_conversation_id(self, task: IngressTask | BackgroundTask) -> tuple[str, str]:
+        """Cheap prelude half: conversation_id (with uuid fallback) and the
+        request/context language. No I/O.
 
-        Shared prelude between :meth:`_handle_task_impl` and
-        :meth:`_handle_task_stream_impl`. Behaviour-preserving
-        extraction; both sites previously inlined an identical 7-line
-        block.
+        P3 prelude reorder: language auto-detection (langdetect) and the
+        conversation-turn prefetch only run after a cache miss, so the
+        action-cache-hit path skips both.
         """
         conversation_id = task.conversation_id
         if not conversation_id:
             conversation_id = str(uuid.uuid4())
             logger.debug("No conversation_id from HA, generated fallback: %s", conversation_id)
         context_language = (task.context.language if task.context else None) or "en"
+        return conversation_id, context_language
+
+    async def _pipeline_resolve_conversation_and_language(
+        self, task: IngressTask | BackgroundTask
+    ) -> tuple[str, str, list]:
+        """Full language resolution: prefetch the conversation turns and run
+        language detection (settings override > auto-detect > turns-detect >
+        fallback).
+
+        Shared prelude between :meth:`_handle_task_impl` and
+        :meth:`_handle_task_stream_impl`. P3: invoked only after a cache
+        miss -- the returned ``lang_turns`` are then threaded into
+        ``classify`` and reused for the dispatch context, so the turn list
+        is fetched exactly once per turn.
+        """
+        conversation_id, context_language = self._pipeline_resolve_conversation_id(task)
         if self._is_background_turn(task):
             return conversation_id, context_language, []
         # DP-4: background turns returned above; only IngressTask reaches text reads.
@@ -789,6 +824,31 @@ class OrchestratorAgent(BaseAgent):
         lang_turns = await self._get_turns(conversation_id)
         detected_language = await self._resolve_language(user_text, context_language, turns=lang_turns)
         return conversation_id, detected_language, lang_turns
+
+    async def _explicit_cache_language(self, context_language: str) -> str:
+        """Language for the pre-detection cache-replay lookup (P3).
+
+        Cache keys embed the language (``make_text_id`` hashes
+        ``(normalized_text, language)``). The replay lookup runs BEFORE
+        auto-detection now, so it uses the explicit language: the manual
+        ``language`` setting when the operator pinned one, else the
+        request/context language. Entries stored under an auto-detected
+        language that differs from the explicit one are unreachable by
+        this lookup -- an accepted cold-cache cost in exchange for
+        skipping langdetect and the turn prefetch on cache hits.
+        """
+        setting = ""
+        try:
+            setting = await SettingsRepository.get_value("language", "auto")
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # Degrade to the request language -- the post-miss
+            # `_resolve_language` performs the authoritative read anyway.
+            logger.debug("language setting read failed, using request language", exc_info=True)
+        if setting and setting != "auto":
+            return setting
+        return context_language or "en"
 
     async def _run_pipeline_prelude(
         self,
@@ -800,21 +860,27 @@ class OrchestratorAgent(BaseAgent):
         extended_metadata: bool = False,
         publish_events: bool = False,
     ) -> PipelinePreludeResult:
-        """Shared prelude: resolve language, check background/cache, classify.
+        """Shared prelude: check background/cache, then resolve language and classify.
 
         Encapsulates the logic that was duplicated between
         :meth:`_handle_task_impl` and :meth:`_handle_task_stream_impl`.
         When ``early_exit`` is not ``None`` the caller must short-circuit.
+
+        P3 prelude reorder: the cache replay runs BEFORE language
+        detection / turn prefetch, so action-cache hits skip ``langdetect``
+        and the turn fetch. The replay lookup uses the explicit language
+        (settings override or request language -- cache keys embed the
+        language, see :meth:`_explicit_cache_language`).
         """
-        conversation_id, detected_language, lang_turns = await self._pipeline_resolve_conversation_and_language(task)
+        conversation_id, context_language = self._pipeline_resolve_conversation_id(task)
         span_collector = task.span_collector
 
         if self._is_background_turn(task):
             result = await self._handle_background_turn(task)
             return PipelinePreludeResult(
                 conversation_id=conversation_id,
-                detected_language=detected_language,
-                lang_turns=lang_turns,
+                detected_language=context_language,
+                lang_turns=[],
                 span_collector=span_collector,
                 classifications=[],
                 routing_cached=False,
@@ -836,10 +902,11 @@ class OrchestratorAgent(BaseAgent):
         task = cast(IngressTask, task)
         user_text = task.description
 
+        cache_language = await self._explicit_cache_language(context_language)
         cache_replay = await self._pipeline_director.run_cache_replay(
             task,
             user_text,
-            detected_language,
+            cache_language,
             span_collector,
             skip_lookup=pre_classified is not None,
         )
@@ -853,8 +920,8 @@ class OrchestratorAgent(BaseAgent):
             )
             return PipelinePreludeResult(
                 conversation_id=conversation_id,
-                detected_language=detected_language,
-                lang_turns=lang_turns,
+                detected_language=context_language,
+                lang_turns=[],
                 span_collector=span_collector,
                 classifications=[],
                 routing_cached=False,
@@ -867,6 +934,9 @@ class OrchestratorAgent(BaseAgent):
                     **replay,
                 },
             )
+
+        # Cache miss: pay language detection and the (single) turn prefetch.
+        conversation_id, detected_language, lang_turns = await self._pipeline_resolve_conversation_and_language(task)
 
         used_origin_context = bool(task and task.context and (task.context.area_id or task.context.device_id))
 
@@ -893,6 +963,7 @@ class OrchestratorAgent(BaseAgent):
                 extended_metadata=extended_metadata,
                 classify_reason=classify_reason,
                 allow_classify_cache_lookup=allow_classify_cache_lookup,
+                prefetched_turns=lang_turns,
             )
         except _RecoverableClassificationError as exc:
             return PipelinePreludeResult(
@@ -1122,6 +1193,7 @@ class OrchestratorAgent(BaseAgent):
         skip_mediation_on_error: bool = True,
         skip_response_cache: bool = False,
         used_origin_context: bool = False,
+        mediation_inputs: tuple[str | None, bool] | None = None,
     ) -> tuple[str, bool]:
         """Run the shared single-agent / sequential-send finalization
         block: open the ``return`` span, mediate the agent speech,
@@ -1139,6 +1211,13 @@ class OrchestratorAgent(BaseAgent):
         uses the bare ``target_agent``. Both knobs are explicit
         parameters so callers preserve their prior behaviour exactly.
         Behaviour-preserving helper extracted in P1-1 iter 3.
+
+        Mediation runs whenever the configured personality is set OR a
+        calendar reminder applies, so personality is applied to ALL
+        system responses (including deterministic executor
+        confirmations). ``mediation_inputs`` lets the streaming caller
+        pass its pre-dispatch probe result (has_error already applied)
+        instead of re-querying the calendar injector.
         """
         if routed_to is None:
             routed_to = target_agent
@@ -1149,11 +1228,26 @@ class OrchestratorAgent(BaseAgent):
             ret_span["metadata"]["from_agent"] = routed_to
             ret_span["metadata"]["agent_response"] = speech
 
-            reminder_text, allow_organic_followup = await self._prepare_mediation_inputs(
-                task, has_error=has_error, language=language
-            )
+            if mediation_inputs is not None:
+                # Precomputed by the caller (streaming path probes the
+                # reminder before dispatch so the token-relay decision can
+                # be made at the first chunk); has_error already applied.
+                reminder_text, allow_organic_followup = mediation_inputs
+            else:
+                reminder_text, allow_organic_followup = await self._prepare_mediation_inputs(
+                    task, has_error=has_error, language=language
+                )
 
-            should_mediate = target_agent != CANCEL_INTERACTION_AGENT and (not has_error or not skip_mediation_on_error)
+            # Mediation runs whenever a personality is configured OR a
+            # reminder must be woven in -- personality applies to every
+            # system response again (deterministic executor confirmations
+            # included).
+            personality = await self._get_personality_cached()
+            should_mediate = (
+                target_agent != CANCEL_INTERACTION_AGENT
+                and (not has_error or not skip_mediation_on_error)
+                and (bool(personality.strip()) or bool(reminder_text))
+            )
             mediated_followup = False
             if should_mediate:
                 speech, mediated_followup = await self._mediate_response(
@@ -1330,7 +1424,9 @@ class OrchestratorAgent(BaseAgent):
         used_origin_context = prelude.used_origin_context
 
         # Phase 2: dispatch
-        turns = await self._get_turns(conversation_id)
+        # P3: reuse the prelude's turn snapshot instead of a second fetch --
+        # nothing stores a turn between the prelude and dispatch.
+        turns = list(prelude.lang_turns)
         if self._event_bus is not None:
             await self._event_bus.publish(
                 "pipeline.pre_dispatch",
@@ -1554,6 +1650,13 @@ class OrchestratorAgent(BaseAgent):
                 # Race handle_task against filler threshold
                 task_coro = self.handle_task(task, _pre_classified=(classifications, routing_cached))
                 task_future = asyncio.create_task(task_coro)
+                # P1: kick off filler generation at dispatch time (t=0) so a
+                # slow agent hears the filler at ~threshold instead of
+                # threshold + filler-LLM latency. Cancelled when the agent
+                # answers before the threshold fires.
+                filler_future = asyncio.create_task(
+                    self._invoke_filler_agent(user_text, content_agent_for_filler or "", language)
+                )
                 try:
                     elapsed = time.perf_counter() - t0_request
                     remaining = max(0, seq_filler_threshold_ms / 1000 - elapsed)
@@ -1562,14 +1665,12 @@ class OrchestratorAgent(BaseAgent):
                     if done_set:
                         # handle_task completed before threshold -- no filler needed
                         result = task_future.result()
+                        await _cancel_filler_future(filler_future)
                     else:
-                        # Threshold exceeded -- generate filler
+                        # Threshold exceeded -- filler generation already runs
+                        # since t=0; await its (usually finished) result.
                         seq_filler_start_ms = (time.perf_counter() - t0_request) * 1000
-                        filler_text = await self._invoke_filler_agent(
-                            user_text,
-                            content_agent_for_filler or "",
-                            language,
-                        )
+                        filler_text = await filler_future
                         seq_filler_end_ms = (time.perf_counter() - t0_request) * 1000
 
                         if filler_text and not task_future.done():
@@ -1588,9 +1689,10 @@ class OrchestratorAgent(BaseAgent):
 
                         result = await task_future
                 except BaseException:
-                    # Never abandon the detached handle_task future: cancel it
-                    # and await it so its exception is retrieved before the
+                    # Never abandon the detached futures: cancel them and
+                    # await them so their exceptions are retrieved before the
                     # original failure/cancellation propagates.
+                    await _cancel_filler_future(filler_future)
                     if not task_future.done():
                         task_future.cancel()
                         with contextlib.suppress(asyncio.CancelledError):
@@ -1670,7 +1772,8 @@ class OrchestratorAgent(BaseAgent):
             return
 
         # 2. Build context and task (single agent streaming)
-        turns = await self._get_turns(conversation_id)
+        # P3: reuse the prelude's turn snapshot instead of a second fetch.
+        turns = list(lang_turns)
         language = detected_language
         context = TaskContext(conversation_turns=turns, language=language)
         if task.context:
@@ -1683,6 +1786,18 @@ class OrchestratorAgent(BaseAgent):
             context.injection_detected = task.context.injection_detected
         if self._ha_client:
             await populate_task_context_home_context(context, self._ha_client)
+
+        # First-frame latency: resolve the personality up front (TTL-cached,
+        # cheap) and probe the mediation inputs (calendar reminder + organic
+        # followup roll) concurrently with the dispatch. The probe result
+        # decides -- when the first agent chunk arrives -- whether agent
+        # tokens relay straight through (mediation inactive: no personality
+        # and no reminder) or stay buffered for the mediation LLM.
+        personality = await self._get_personality_cached()
+        mediation_inputs_task = asyncio.create_task(
+            self._prepare_mediation_inputs(task, has_error=False, language=language)
+        )
+
         verbatim_terms = classifications[0][3] if classifications else []
         agent_task = DispatchTask(
             description=condensed_task,
@@ -1706,8 +1821,59 @@ class OrchestratorAgent(BaseAgent):
         # P3-10: per-request filler-decision log; debug.
         logger.debug("Filler decision for %s: use_filler=%s", target_agent, use_filler)
 
+        # P1: start filler generation at dispatch time (t=0) so a slow agent
+        # hears the filler at ~threshold instead of threshold + filler-LLM
+        # latency. Cancelled as soon as the agent answers before the
+        # threshold (or when the turn ends without the filler being sent).
+        filler_task: asyncio.Task | None = None
+        if use_filler:
+            filler_task = asyncio.create_task(self._invoke_filler_agent(user_text, target_agent, language))
+
+        # Relay state for the first-frame-latency path: when mediation is
+        # inactive for the turn (no personality configured, no reminder
+        # pending), agent tokens are yielded straight to the client instead
+        # of being buffered until the terminal frame.
+        relay_state: dict[str, Any] = {
+            "decided": False,
+            "enabled": False,
+            "reminder_text": None,
+            "allow_organic_followup": False,
+        }
+
+        async def _ensure_relay_decided() -> None:
+            """Await the pre-dispatch mediation probe once and latch the relay decision."""
+            if relay_state["decided"]:
+                return
+            relay_state["decided"] = True
+            try:
+                reminder_text, allow_organic_followup = await mediation_inputs_task
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                # Mediation must never break the turn: degrade to no-reminder
+                # (tokens relay, the reminder is dropped for this turn).
+                logger.debug("Mediation inputs probe failed; assuming no reminder", exc_info=True)
+                reminder_text, allow_organic_followup = None, False
+            relay_state["reminder_text"] = reminder_text
+            relay_state["allow_organic_followup"] = allow_organic_followup
+            # Mediation runs whenever a personality is configured OR a
+            # reminder must be woven in. Only a mediation-inactive turn
+            # (neither applies) relays agent tokens straight through.
+            relay_state["enabled"] = not (reminder_text or personality.strip())
+
+        def _discard_mediation_inputs() -> None:
+            """Release the mediation probe on early exits (timeout/directive)."""
+            if not mediation_inputs_task.done():
+                mediation_inputs_task.cancel()
+                return
+            if not mediation_inputs_task.cancelled():
+                # Retrieve the outcome so a probe failure never logs
+                # "exception was never retrieved" on paths that ignore it.
+                mediation_inputs_task.exception()
+
         async def _process_chunk(chunk):
-            """Process a single stream chunk: collect speech and detect actions."""
+            """Process a single stream chunk: collect speech, detect actions,
+            and return a relay chunk when tokens stream straight through."""
             chunk_result = chunk if isinstance(chunk, dict) else {}
             token = chunk_result.get("token", "")
             done = chunk_result.get("done", False)
@@ -1724,7 +1890,15 @@ class OrchestratorAgent(BaseAgent):
             if done and chunk_result.get("directive"):
                 sc.stream_directive = chunk_result["directive"]
                 sc.stream_reason = chunk_result.get("reason")
-            return token
+            await _ensure_relay_decided()
+            if not relay_state["enabled"] or not token:
+                return None
+            # Directive turns speak through their own terminal frame, and
+            # errored turns fall back to the buffered terminal speech.
+            if sc.stream_directive or sc.stream_error:
+                return None
+            sc.relayed_tokens = True
+            return {"token": token, "done": False, "conversation_id": conversation_id}
 
         async def _stream_with_filler(stream_iter, span=None):
             """Race the first agent token against the filler threshold.
@@ -1737,7 +1911,9 @@ class OrchestratorAgent(BaseAgent):
             if not use_filler:
                 # No filler logic -- stream directly
                 async for chunk in stream_iter:
-                    await _process_chunk(chunk)
+                    relay_chunk = await _process_chunk(chunk)
+                    if relay_chunk is not None:
+                        yield relay_chunk
                 return
 
             # Queue-based approach: reader task fills queue, main loop consumes
@@ -1770,13 +1946,17 @@ class OrchestratorAgent(BaseAgent):
                         timeout=remaining_threshold,
                     )
                     logger.debug("First chunk arrived before threshold")
+                    # Agent answered before the threshold -- cancel the t=0
+                    # filler task; its result is no longer needed.
+                    await _cancel_filler_future(filler_task)
                     if item is not _sentinel:
                         first_chunk = item
                 except TimeoutError:
-                    # Agent is slow -- generate and yield filler
+                    # Agent is slow -- the filler task started at t=0 is
+                    # usually finished by now; await its result.
                     logger.debug("Threshold exceeded, generating filler for %s", target_agent)
                     sc.filler_start_ms = (time.perf_counter() - t0_request) * 1000
-                    filler_text = await self._invoke_filler_agent(user_text, target_agent, language)
+                    filler_text = await filler_task if filler_task is not None else None
                     sc.filler_end_ms = (time.perf_counter() - t0_request) * 1000
                     logger.debug("Filler generation result: %s", repr(filler_text[:80]) if filler_text else "None")
                     pre_first_chunk = None
@@ -1817,15 +1997,23 @@ class OrchestratorAgent(BaseAgent):
 
                 # Process first chunk
                 if first_chunk is not None:
-                    await _process_chunk(first_chunk)
+                    relay_chunk = await _process_chunk(first_chunk)
+                    if relay_chunk is not None:
+                        yield relay_chunk
 
                 # Drain remaining chunks from queue
                 while True:
                     item = await queue.get()
                     if item is _sentinel:
                         break
-                    await _process_chunk(item)
+                    relay_chunk = await _process_chunk(item)
+                    if relay_chunk is not None:
+                        yield relay_chunk
             finally:
+                # The turn ended (agent answered, stream failed, or the
+                # dispatch timed out) -- make sure the t=0 filler task does
+                # not outlive the turn.
+                await _cancel_filler_future(filler_task)
                 reader_task.cancel()
                 try:
                     await stream_iter.aclose()
@@ -1881,6 +2069,7 @@ class OrchestratorAgent(BaseAgent):
                         fallback_speech = fb_data.get("speech") or ""
                 if not fallback_speech:
                     fallback_speech = _CANNED_TIMEOUT_SPEECH
+                _discard_mediation_inputs()
                 yield {
                     "token": "",
                     "done": True,
@@ -1901,10 +2090,13 @@ class OrchestratorAgent(BaseAgent):
             span["metadata"]["agent_response"] = "".join(sc.collected_speech)
             if sc.filler_sent:
                 span["metadata"]["filler_sent"] = True
-            span["metadata"]["non_filler_tokens_buffered_until_terminal"] = True
+            if sc.relayed_tokens:
+                span["metadata"]["agent_tokens_relayed"] = True
+            else:
+                span["metadata"]["non_filler_tokens_buffered_until_terminal"] = True
 
         latency_ms = (time.perf_counter() - t0_dispatch) * 1000
-        await track_request(target_agent, cache_hit=False, latency_ms=latency_ms)
+        track_request_background(target_agent, cache_hit=False, latency_ms=latency_ms)
 
         # Record filler_generate span (always, if filler was generated -- even if not sent)
         if sc.filler_generated:
@@ -1956,11 +2148,15 @@ class OrchestratorAgent(BaseAgent):
             }
             if sc.stream_reason is not None:
                 final_chunk["reason"] = sc.stream_reason
+            _discard_mediation_inputs()
             yield final_chunk
             return
 
         # 4. Store conversation turn and create trace summary
-        full_speech = "".join(sc.collected_speech)
+        # P0: relayed agent tokens are raw LLM stream output (pre-P0 the
+        # agent speech arrived pre-stripped from complete()); strip the
+        # assembled speech so stored turns / cache entries stay clean.
+        full_speech = "".join(sc.collected_speech).strip()
         if sc.stream_error is not None and target_agent == FALLBACK_AGENT:
             if not full_speech.strip():
                 full_speech = _CANNED_GENERAL_ERROR_SPEECH
@@ -1969,28 +2165,35 @@ class OrchestratorAgent(BaseAgent):
             sc.stream_error = None
         has_error = sc.stream_error is not None
 
-        # Check if mediation streaming is enabled
+        # Check if mediation streaming is enabled (default on since the
+        # first-frame-latency rework; set to "false" to opt out).
         mediation_streaming_enabled_raw = await SettingsRepository.get_value(
-            "orchestrator.mediation_streaming_enabled", "false"
+            "orchestrator.mediation_streaming_enabled", "true"
         )
-        mediation_streaming_enabled = (mediation_streaming_enabled_raw or "false").lower() == "true"
+        mediation_streaming_enabled = (mediation_streaming_enabled_raw or "true").lower() == "true"
 
-        personality = await self._get_personality_cached()
-        reminder_text, allow_organic_followup = await self._prepare_mediation_inputs(
-            task, has_error=has_error, language=language
-        )
+        # Consume the pre-dispatch mediation probe (started before dispatch,
+        # so it is long finished by now). Mirror
+        # _prepare_mediation_inputs(has_error=True): no reminder injection
+        # and no organic followup on failed turns.
+        await _ensure_relay_decided()
+        reminder_text = relay_state["reminder_text"]
+        allow_organic_followup = relay_state["allow_organic_followup"]
+        if has_error:
+            reminder_text, allow_organic_followup = None, False
 
-        should_mediate = (
-            target_agent != CANCEL_INTERACTION_AGENT
-            and (sc.stream_error is None or True)  # streaming path always mediates
-            and (personality.strip() or reminder_text)
-        )
+        # Mediation runs whenever a personality is configured OR a reminder
+        # must be woven in -- personality applies to every system response
+        # again (deterministic executor confirmations included). Only a
+        # mediation-inactive turn relays agent tokens straight through.
+        should_mediate = target_agent != CANCEL_INTERACTION_AGENT and (bool(personality.strip()) or bool(reminder_text))
 
-        tokens_were_streamed = False
+        tokens_were_streamed = sc.relayed_tokens
         # M-9: the streaming mediation branch requires a non-empty
-        # personality. A reminder-only turn falls through to the blocking
-        # path, which appends the reminder to the agent's answer instead of
-        # streaming the reminder as the sole token (replacing the answer).
+        # personality. A reminder-only turn (no personality) falls through to
+        # the blocking path, which appends the reminder to the agent's answer
+        # instead of streaming the reminder as the sole token (replacing the
+        # answer).
         use_streamed_mediation = (
             mediation_streaming_enabled and should_mediate and personality.strip() and full_speech.strip()
         )
@@ -2061,7 +2264,9 @@ class OrchestratorAgent(BaseAgent):
                 used_origin_context=used_origin_context,
             )
         else:
-            # Existing blocking path
+            # Existing blocking path. The mediation probe was already
+            # consumed above (has_error applied), so pass it through instead
+            # of re-querying the calendar injector.
             full_speech, vf_eff = await self._finalize_single_agent_response(
                 task=task,
                 user_text=user_text,
@@ -2081,6 +2286,7 @@ class OrchestratorAgent(BaseAgent):
                 mediation_agent=target_agent,
                 skip_mediation_on_error=False,
                 used_origin_context=used_origin_context,
+                mediation_inputs=(reminder_text, allow_organic_followup),
             )
 
         # Yield final done chunk; mediated_speech is only included when tokens

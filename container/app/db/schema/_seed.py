@@ -33,11 +33,18 @@ async def _seed_defaults(db: aiosqlite.Connection) -> None:
             "Enable routing cache lookup and storage",
         ),
         (
+            "cache.routing.semantic_enabled",
+            "true" if CACHE_DEFAULTS["cache.routing.semantic_enabled"] else "false",
+            "bool",
+            "cache",
+            "Enable the routing cache semantic similarity tier",
+        ),
+        (
             "cache.routing.semantic_threshold",
             str(CACHE_DEFAULTS["cache.routing.semantic_threshold"]),
             "float",
             "cache",
-            "Routing cache semantic hit threshold",
+            "Routing cache semantic hit threshold (cosine similarity)",
         ),
         (
             "cache.routing.max_entries",
@@ -152,13 +159,6 @@ async def _seed_defaults(db: aiosqlite.Connection) -> None:
             "Minimum confidence for entity match",
         ),
         ("entity_matching.top_n_candidates", "3", "int", "entity_matching", "Top-N candidates for LLM disambiguation"),
-        (
-            "entity_matching.oversample_factor",
-            "20",
-            "int",
-            "entity_matching",
-            "Embedding shortlist multiplier when agent visibility/preferred-domain hints are present",
-        ),
         # 0.23.0: language-agnostic on-demand expansion cache.
         (
             "entity_matching.expansion.enabled",
@@ -402,7 +402,7 @@ async def _seed_defaults(db: aiosqlite.Connection) -> None:
         ),
         (
             "mediation.max_tokens",
-            "8192",
+            "2048",
             "number",
             "mediation",
             "Max tokens for mediation/merge LLM calls (increase for reasoning models)",

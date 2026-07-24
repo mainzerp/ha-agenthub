@@ -67,6 +67,7 @@ class ClassificationStrategy(ABC):
         extended_metadata: bool = False,
         classify_reason: str | None = None,
         allow_classify_cache_lookup: bool = False,
+        prefetched_turns: list[dict[str, Any]] | None = None,
     ) -> tuple[list[tuple[str, str, float | None, list[str]]], bool, str, str, float | None]: ...
 
 
@@ -183,6 +184,7 @@ class DefaultClassificationStrategy(ClassificationStrategy):
         extended_metadata: bool = False,
         classify_reason: str | None = None,
         allow_classify_cache_lookup: bool = False,
+        prefetched_turns: list[dict[str, Any]] | None = None,
     ) -> tuple[list[tuple[str, str, float | None, list[str]]], bool, str, str, float | None]:
         from app.analytics.tracer import _optional_span
 
@@ -226,6 +228,7 @@ class DefaultClassificationStrategy(ClassificationStrategy):
                     call_llm=self._call_llm,
                     load_prompt_async=self._load_prompt_async,
                     get_turns=self._get_turns,
+                    prefetched_turns=prefetched_turns,
                 )
                 target_agent, condensed_task, confidence, _entities = classifications[0]
                 self._pipeline_record_classify_span(

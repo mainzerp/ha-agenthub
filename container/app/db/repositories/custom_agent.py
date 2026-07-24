@@ -8,6 +8,7 @@ import re
 from typing import Any, ClassVar
 
 from app.db.repositories._utils import _now, _validate_column_name
+from app.db.repositories.agent_config import invalidate_agent_config_cache
 from app.db.schema import get_db_read, get_db_write
 
 logger = logging.getLogger(__name__)
@@ -343,6 +344,7 @@ class CustomAgentRepository:
                 ),
             )
             await cls._sync_runtime_state_in_tx(db, row)
+        await invalidate_agent_config_cache(f"custom-{name}")
         return name
 
     @classmethod
@@ -383,11 +385,13 @@ class CustomAgentRepository:
             cursor = await db.execute("SELECT * FROM custom_agents WHERE name = ?", (name,))
             row = await cursor.fetchone()
             if row is None:
-                await db.commit()
-                return False
-            decoded = cls._decode_row(row)
-            await cls._sync_runtime_state_in_tx(db, decoded)
-            return True
+                result = False
+            else:
+                decoded = cls._decode_row(row)
+                await cls._sync_runtime_state_in_tx(db, decoded)
+                result = True
+        await invalidate_agent_config_cache(f"custom-{name}")
+        return result
 
     @classmethod
     async def delete_with_runtime(cls, name: str) -> bool:
@@ -398,9 +402,13 @@ class CustomAgentRepository:
             await db.execute("DELETE FROM agent_configs WHERE agent_id = ?", (agent_id,))
             await db.execute("DELETE FROM agent_mcp_tools WHERE agent_id = ?", (agent_id,))
             await db.execute("DELETE FROM entity_visibility_rules WHERE agent_id = ?", (agent_id,))
-            return (cursor.rowcount or 0) > 0
+            deleted = (cursor.rowcount or 0) > 0
+        await invalidate_agent_config_cache(agent_id)
+        return deleted
 
     @classmethod
     async def ensure_runtime_state(cls, row: dict[str, Any]) -> None:
+        name = cls.normalize_name(row["name"])
         async with get_db_write() as db:
             await cls._sync_runtime_state_in_tx(db, row)
+        await invalidate_agent_config_cache(f"custom-{name}")

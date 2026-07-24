@@ -10,11 +10,12 @@ import asyncio
 import contextlib
 import logging
 import os
+import time
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import Any
 
-from app.analytics.collector import track_cache_event
+from app.analytics.collector import track_cache_event_background, track_request_background
 from app.analytics.tracer import _optional_span
 from app.cache.cache_manager import ActionReplayOutcome, CacheManager, RoutingSkipOutcome
 from app.db.repository import SettingsRepository
@@ -208,6 +209,7 @@ class CacheOrchestrator:
                 requesting_agent_id=requesting_agent_id,
                 check_visibility=_check_vis,
                 execute_cached_action=_exec_action,
+                span_collector=span_collector,
             )
             if action_hit is not None:
                 cache_span["metadata"]["hit_type"] = "action_hit"
@@ -221,14 +223,21 @@ class CacheOrchestrator:
                 language=language,
             )
             if routing_hit is not None:
+                # kind is "routing_hit" (exact) or "semantic_hit" (P4 tier);
+                # BOTH flow through the identical fail-closed validation
+                # (agent registered + per-entity visibility recheck,
+                # Directives 2 and 7) before classification may be skipped.
+                is_semantic = routing_hit.kind == "semantic_hit"
+                if routing_hit.lookup_ms is not None:
+                    cache_span["metadata"]["routing_lookup_ms"] = round(routing_hit.lookup_ms, 1)
                 if not await self._routing_hit_is_still_valid(routing_hit):
                     with contextlib.suppress(Exception):
                         await asyncio.to_thread(self._cache_manager.invalidate_routing, routing_hit.entry_id)
-                    cache_span["metadata"]["hit_type"] = "routing_invalid"
+                    cache_span["metadata"]["hit_type"] = "semantic_invalid" if is_semantic else "routing_invalid"
                     cache_span["metadata"]["cached_agent_id"] = routing_hit.agent_id
                     cache_span["metadata"]["cache_tier"] = "both_miss"
                     return None, None
-                cache_span["metadata"]["hit_type"] = "routing_hit"
+                cache_span["metadata"]["hit_type"] = routing_hit.kind
                 cache_span["metadata"]["similarity"] = routing_hit.similarity
                 cache_span["metadata"]["cached_agent_id"] = routing_hit.agent_id
                 cache_span["metadata"]["cache_tier"] = "routing"
@@ -236,7 +245,7 @@ class CacheOrchestrator:
 
             cache_span["metadata"]["hit_type"] = "miss"
             cache_span["metadata"]["cache_tier"] = "both_miss"
-            await track_cache_event(tier="both_miss", hit_type="miss")
+            track_cache_event_background(tier="both_miss", hit_type="miss")
             return None, None
 
     async def cached_action_is_still_visible(self, agent_id: str, entity_id: str) -> bool:
@@ -284,6 +293,7 @@ class CacheOrchestrator:
         task: IngressTask | None = None,
     ) -> dict[str, Any]:
         """Finalize a successful action-cache full hit."""
+        t0_finalize = time.perf_counter()
         target_agent = hit.agent_id or "unknown"
         task_context = getattr(task, "context", None) if task is not None else None
         raw_speech = hit.original_response_text or hit.response_text or ""
@@ -317,13 +327,6 @@ class CacheOrchestrator:
         if reminder_text and not hit.rewrite_applied:
             separator = " " if speech and speech[-1] in ".!?" else ". "
             speech = f"{speech}{separator}{reminder_text}" if speech else reminder_text
-
-        if hit.cached_action:
-            async with _optional_span(span_collector, "ha_action", agent_id=target_agent) as ha_span:
-                ha_span["metadata"]["action"] = hit.cached_action.service
-                ha_span["metadata"]["entity"] = hit.cached_action.entity_id
-                ha_span["metadata"]["success"] = hit.replay_result is not None
-                ha_span["metadata"]["cached"] = True
 
         async with _optional_span(span_collector, "return", agent_id="orchestrator") as ret_span:
             ret_span["metadata"]["from_agent"] = target_agent
@@ -364,6 +367,15 @@ class CacheOrchestrator:
                 )
             except Exception:
                 logger.warning("action-replay _create_trace failed", exc_info=True)
+
+        # M10: cache-hit turns were invisible in request analytics -- record
+        # the finalization latency as a cache-hit request event (fire and
+        # forget, hot path).
+        track_request_background(
+            target_agent,
+            cache_hit=True,
+            latency_ms=(time.perf_counter() - t0_finalize) * 1000,
+        )
 
         return {
             "speech": speech,

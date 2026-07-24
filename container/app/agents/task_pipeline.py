@@ -192,6 +192,7 @@ class PipelineDirector:
         extended_metadata: bool = False,
         classify_reason: str | None = None,
         allow_classify_cache_lookup: bool = False,
+        prefetched_turns: list[dict[str, Any]] | None = None,
     ) -> tuple[list[tuple[str, str, float | None, list[str]]], bool, str, str, float | None]:
         return await self._classification_strategy.execute(
             task=task,
@@ -204,6 +205,7 @@ class PipelineDirector:
             extended_metadata=extended_metadata,
             classify_reason=classify_reason,
             allow_classify_cache_lookup=allow_classify_cache_lookup,
+            prefetched_turns=prefetched_turns,
         )
 
     # ------------------------------------------------------------------

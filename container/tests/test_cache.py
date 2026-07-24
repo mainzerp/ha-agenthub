@@ -191,7 +191,7 @@ class TestCacheManager:
         manager._action_cache.lookup_with_id = MagicMock(return_value=("test-id", entry, 0.99))
         manager._action_cache.invalidate_by_entry_id = MagicMock()
 
-        with patch("app.cache.cache_manager.track_cache_event", new_callable=AsyncMock) as track:
+        with patch("app.cache.cache_manager.track_cache_event_background") as track:
             result = await manager.try_replay_action(
                 query_text=entry.query_text,
                 language=entry.language,
@@ -203,7 +203,7 @@ class TestCacheManager:
         assert result.kind == "full_hit"
         assert result.cached_action is not None
         manager._action_cache.invalidate_by_entry_id.assert_not_called()
-        track.assert_awaited_once()
+        track.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_try_replay_action_returns_none_for_context_dependent_entry(self):
@@ -248,7 +248,7 @@ class TestCacheManager:
         entry = make_routing_cache_entry()
         manager._routing_cache.lookup_with_id = MagicMock(return_value=("test-id", entry, 0.96))
 
-        with patch("app.cache.cache_manager.track_cache_event", new_callable=AsyncMock) as track:
+        with patch("app.cache.cache_manager.track_cache_event_background") as track:
             result = await manager.try_routing_skip(query_text=entry.query_text, language=entry.language)
 
         assert result is not None
@@ -256,7 +256,7 @@ class TestCacheManager:
         # CORE-H1: routing hits dispatch the fresh query text, not the stale
         # cached condensation.
         assert result.condensed_task == entry.query_text
-        track.assert_awaited_once()
+        track.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_invalidate_by_entity_id_fans_out_to_both_caches(self):
@@ -450,6 +450,7 @@ class TestRoutingCacheExtended:
         async def _get_value(key, default=None):
             return {
                 "cache.routing.enabled": "true",
+                "cache.routing.semantic_enabled": "false",
                 "cache.routing.max_entries": "1000",
                 "cache.routing.semantic_threshold": "0.90",
             }.get(key, default)
@@ -462,13 +463,14 @@ class TestRoutingCacheExtended:
 
     @pytest.mark.asyncio
     async def test_load_config_ignores_float_threshold(self):
-        # CORE-L6: lookup is hash-only; the legacy threshold setting no longer
-        # influences matching (stored keys are kept for settings-UI compat).
+        # The threshold setting feeds the semantic tier only; with the
+        # semantic tier disabled the cache stays exact-hash-only.
         cache, _store = self._make_cache()
 
         async def _get_value(key, default=None):
             return {
                 "cache.routing.enabled": "true",
+                "cache.routing.semantic_enabled": "false",
                 "cache.routing.max_entries": "1000",
                 "cache.routing.semantic_threshold": "0.92",
             }.get(key, default)
@@ -485,6 +487,7 @@ class TestRoutingCacheExtended:
         async def _get_value(key, default=None):
             return {
                 "cache.routing.enabled": "true",
+                "cache.routing.semantic_enabled": "false",
                 "cache.routing.max_entries": "1000",
                 "cache.routing.semantic_threshold": "1.0",
             }.get(key, default)
@@ -501,6 +504,7 @@ class TestRoutingCacheExtended:
         async def _get_value(key, default=None):
             return {
                 "cache.routing.enabled": "true",
+                "cache.routing.semantic_enabled": "false",
                 "cache.routing.max_entries": "1000",
                 "cache.routing.semantic_threshold": "true",
             }.get(key, default)
@@ -891,7 +895,7 @@ class TestCacheManagerExtended:
         manager, _store = self._make_manager()
         entry = make_routing_cache_entry()
         manager._routing_cache.lookup_with_id = MagicMock(return_value=("test-id", entry, 0.96))
-        with patch("app.cache.cache_manager.track_cache_event", new_callable=AsyncMock):
+        with patch("app.cache.cache_manager.track_cache_event_background"):
             result = await manager.process("turn on light")
         assert result.hit_type == "routing_hit"
         # CORE-H1: routing hits dispatch the fresh query text, not the stale
@@ -902,27 +906,27 @@ class TestCacheManagerExtended:
     async def test_process_miss(self):
         manager, _store = self._make_manager()
         manager._routing_cache.lookup_with_id = MagicMock(return_value=(None, None, None))
-        with patch("app.cache.cache_manager.track_cache_event", new_callable=AsyncMock) as track:
+        with patch("app.cache.cache_manager.track_cache_event_background") as track:
             result = await manager.process("random query")
         assert result.hit_type == "miss"
-        track.assert_awaited()
+        track.assert_called()
 
     @pytest.mark.asyncio
     async def test_process_emits_event_only_for_routing_hits(self):
         manager, _store = self._make_manager()
         entry = make_routing_cache_entry()
-        with patch("app.cache.cache_manager.track_cache_event", new_callable=AsyncMock) as track:
+        with patch("app.cache.cache_manager.track_cache_event_background") as track:
             manager._routing_cache.lookup_with_id = MagicMock(return_value=("test-id", entry, 0.94))
             await manager.process("turn on light")
             manager._routing_cache.lookup_with_id = MagicMock(return_value=(None, None, None))
             await manager.process("nothing matches")
-        assert track.await_count == 2
+        assert track.call_count == 2
 
     @pytest.mark.asyncio
     async def test_process_exception_returns_miss(self):
         manager, _store = self._make_manager()
         manager._routing_cache.lookup_with_id = MagicMock(side_effect=RuntimeError("db fail"))
-        with patch("app.cache.cache_manager.track_cache_event", new_callable=AsyncMock):
+        with patch("app.cache.cache_manager.track_cache_event_background"):
             result = await manager.process("any query")
         assert result.hit_type == "miss"
 
@@ -987,6 +991,7 @@ class TestCacheManagerExtended:
         async def _get_value(key, default=None):
             return {
                 "cache.routing.enabled": "true",
+                "cache.routing.semantic_enabled": "false",
                 "cache.routing.max_entries": "50000",
                 "cache.routing.semantic_threshold": "0.92",
                 "cache.action.enabled": "true",
@@ -1016,6 +1021,7 @@ class TestCacheManagerExtended:
         async def _get_value(key, default=None):
             return {
                 "cache.routing.enabled": "true",
+                "cache.routing.semantic_enabled": "false",
                 "cache.routing.max_entries": "50000",
                 "cache.routing.semantic_threshold": "0.90",
                 "cache.action.enabled": "true",
@@ -1612,7 +1618,7 @@ class TestCacheTraceSimilarity:
                 }
             ],
         }
-        with patch("app.cache.cache_manager.track_cache_event", new_callable=AsyncMock):
+        with patch("app.cache.cache_manager.track_cache_event_background"):
             result = await manager.process("turn on light")
         assert result.hit_type == "routing_hit"
         assert result.similarity == pytest.approx(1.0)
@@ -1629,7 +1635,7 @@ class TestCacheTraceSimilarity:
             "documents": [[]],
             "metadatas": [[]],
         }
-        with patch("app.cache.cache_manager.track_cache_event", new_callable=AsyncMock):
+        with patch("app.cache.cache_manager.track_cache_event_background"):
             result = await manager.process("some query")
         assert result.hit_type == "miss"
         assert result.similarity is None

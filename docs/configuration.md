@@ -41,7 +41,8 @@ The export and import API surface uses the `action` tier name.
 | `cache.enabled` | `true` | bool | Enable cache lookups and writes globally |
 | `cache.compound_utterance_bypass` | `true` | bool | Bypass cache lookup for structurally compound utterances |
 | `cache.routing.enabled` | `true` | bool | Enable the routing cache tier |
-| `cache.routing.semantic_threshold` | `0.92` | float | Legacy threshold setting; the routing cache uses exact SHA-256 hash match lookup. This value is retained for backward compatibility. |
+| `cache.routing.semantic_enabled` | `true` | bool | Enable the routing cache semantic similarity tier (k-NN cosine over stored query embeddings, consulted after an exact-hash miss). Semantic hits pass the same fail-closed validation as exact hits (agent registered, referenced entities visible) before classification is skipped; otherwise the entry is invalidated and the LLM classifies. The tier decides only the target agent. |
+| `cache.routing.semantic_threshold` | `0.92` | float | Cosine-similarity threshold for a semantic routing hit. Conservative default reused from the project's historical routing threshold; no production data exists yet to tune it. Entries stored before the tier existed are re-embedded lazily on their next exact hit or re-store. |
 | `cache.routing.max_entries` | `50000` | int | Maximum routing cache entries (LRU eviction) |
 | `cache.action.enabled` | `true` | bool | Enable the action cache tier |
 | `cache.action.semantic_threshold` | `0.95` | float | Legacy threshold setting; the action cache uses exact SHA-256 hash match lookup. This value is retained for backward compatibility. |
@@ -76,7 +77,6 @@ The export and import API surface uses the `action` tier name.
 |-----|---------|------|-------------|
 | `entity_matching.confidence_threshold` | `0.60` | float | Minimum confidence score for entity match |
 | `entity_matching.top_n_candidates` | `3` | int | Number of candidates for LLM disambiguation |
-| `entity_matching.oversample_factor` | `20` | int | Embedding shortlist multiplier when agent visibility/preferred-domain hints are present |
 | `entity_matching.expansion.enabled` | `true` | bool | Enable on-demand LLM expansion of cold query tokens |
 | `entity_matching.expansion.ttl_seconds` | `2592000` | int | Query synonym cache TTL in seconds (default 30 days) |
 | `entity_matching.expansion.max_cache_rows` | `5000` | int | Query synonym cache LRU cap |
@@ -299,8 +299,8 @@ Cache can be flushed per tier or entirely from the admin dashboard or via the AP
 
 ## Analytics
 
-Stored traces and dashboard trace detail expose per-span time-to-first-token (`ttft_ms`) and tokens-per-second (`tps`).
-The `/api/admin/analytics/tokens` endpoint aggregates average TTFT/TPS across requests, grouped by agent and provider.
+Stored traces and dashboard trace detail expose per-span whole-call latency (`latency_ms`) and, on streaming LLM calls, time-to-first-token (`ttft_ms`) and tokens-per-second (`tps`). Non-streaming calls record only `latency_ms` (first-chunk timing does not exist there).
+The `/api/admin/analytics/tokens` endpoint aggregates average latency, TTFT, and TPS across requests, grouped by agent and provider.
 
 ## MCP Server Configuration
 

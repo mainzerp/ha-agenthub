@@ -1951,3 +1951,198 @@ class TestEntityVisibilityRuleTypeValidation:
         assert resp.status_code == 200
         data = resp.json()
         assert data["rules_count"] == 2
+
+
+# ---------------------------------------------------------------------------
+# P0: first-frame observability -- done-frame timings + first_frame_ms spans
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+class TestStreamTimings:
+    async def test_sse_done_frame_carries_timings(self, authed_client: httpx.AsyncClient):
+        """P0: the SSE terminal frame carries a timings dict
+        (first_frame_ms, total_ms); non-terminal frames carry timings=None."""
+        import json as _json
+
+        from app.api.routes import conversation as conv_routes
+
+        async def _stream(req):
+            yield {"token": "Light is on.", "done": False}
+            yield {"token": "", "done": True, "mediated_speech": "Light is on."}
+
+        old_dispatcher = conv_routes._dispatcher
+        mock_d = MagicMock()
+        mock_d.dispatch_stream = _stream
+        conv_routes._dispatcher = mock_d
+
+        try:
+            resp = await authed_client.post(
+                "/api/conversation/stream",
+                json={"text": "turn on the kitchen light"},
+            )
+            assert resp.status_code == 200
+            lines = [line for line in resp.text.splitlines() if line.startswith("data:")]
+            assert len(lines) == 2
+            first_data = _json.loads(lines[0].removeprefix("data:").strip())
+            assert first_data.get("done") is False
+            assert first_data.get("timings") is None
+            last_data = _json.loads(lines[1].removeprefix("data:").strip())
+            assert last_data.get("done") is True
+            timings = last_data.get("timings")
+            assert isinstance(timings, dict)
+            first_frame_ms = timings["first_frame_ms"]
+            total_ms = timings["total_ms"]
+            assert isinstance(first_frame_ms, int | float)
+            assert isinstance(total_ms, int | float)
+            assert 0 <= first_frame_ms <= total_ms
+        finally:
+            conv_routes._dispatcher = old_dispatcher
+
+    async def test_ws_done_frame_carries_timings_and_root_span_first_frame(self):
+        """P0: the WS done frame carries timings and the per-turn ws_turn
+        root span records first_frame_ms in its metadata."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        from fastapi import WebSocketDisconnect
+
+        from app.api.routes import conversation as conv_routes
+        from app.api.routes.conversation import ws_conversation
+
+        async def _stream(req):
+            yield {"token": "Light is on.", "done": False}
+            yield {"token": "", "done": True, "mediated_speech": "Light is on."}
+
+        old_dispatcher = conv_routes._dispatcher
+        mock_d = MagicMock()
+        mock_d.dispatch_stream = _stream
+        conv_routes._dispatcher = mock_d
+
+        span_collector = MagicMock()
+        span_collector.source = "ha"
+        span_collector.push_parent = MagicMock(return_value="parent-token")
+        span_collector.pop_parent = MagicMock()
+        span_collector.add_root_span = MagicMock()
+        span_collector.flush = AsyncMock()
+
+        ws = MagicMock()
+        ws.headers = {}
+        ws.app.state.allowed_ws_origins = set()
+        ws.client.host = "127.0.0.1"
+        ws.scope = {}
+        ws.accept = AsyncMock()
+        ws.close = AsyncMock()
+        ws.send_json = AsyncMock()
+        ws.receive_text = AsyncMock(side_effect=['{"text": "hello"}', WebSocketDisconnect()])
+
+        try:
+            with patch.object(conv_routes, "SpanCollector", return_value=span_collector):
+                await ws_conversation(ws)
+        finally:
+            conv_routes._dispatcher = old_dispatcher
+
+        frames = [call.args[0] for call in ws.send_json.await_args_list]
+        done_frames = [f for f in frames if f.get("done")]
+        assert done_frames, f"no done frame sent: {frames}"
+        timings = done_frames[-1].get("timings")
+        assert isinstance(timings, dict)
+        assert 0 <= timings["first_frame_ms"] <= timings["total_ms"]
+        non_done = [f for f in frames if not f.get("done")]
+        assert non_done and all(f.get("timings") is None for f in non_done)
+
+        span_collector.add_root_span.assert_called_once()
+        root_span = span_collector.add_root_span.call_args.args[0]
+        assert root_span["span_name"] == "ws_turn"
+        first_frame_ms = root_span["metadata"].get("first_frame_ms")
+        assert isinstance(first_frame_ms, int | float)
+        assert first_frame_ms >= 0
+
+
+class TestStreamFrameParity:
+    """P3 lightweight frames: ``_apply_stream_chunk`` mutation must emit the
+    exact same field set as the previous per-chunk ``StreamToken(...)``
+    construction (the HA bridge parses these frames)."""
+
+    @staticmethod
+    def _legacy_construct(chunk, first_frame_ms, now_ms) -> StreamToken:
+        """Byte-for-byte replica of the pre-P3 per-chunk construction."""
+        from app.api.routes.conversation import _normalize_action_executed
+
+        return StreamToken(
+            token=chunk.get("token", ""),
+            done=chunk.get("done", False),
+            conversation_id=chunk.get("conversation_id") if chunk.get("done") else None,
+            mediated_speech=chunk.get("mediated_speech") if chunk.get("done") else None,
+            is_filler=chunk.get("is_filler", False),
+            error=chunk.get("error") if chunk.get("done") else None,
+            voice_followup=bool(chunk.get("voice_followup")) if chunk.get("done") else False,
+            sanitized=bool(chunk.get("sanitized", True)) if chunk.get("done") else not chunk.get("is_filler", False),
+            directive=chunk.get("directive") if chunk.get("done") else None,
+            reason=chunk.get("reason") if chunk.get("done") else None,
+            filler_push=chunk.get("filler_push") if not chunk.get("done") else None,
+            action_executed=_normalize_action_executed(chunk.get("action_executed")) if chunk.get("done") else None,
+            routed_agent=chunk.get("routed_to") if chunk.get("done") else None,
+            status=chunk.get("status") if not chunk.get("done") else None,
+            agents=chunk.get("agents") if not chunk.get("done") else None,
+            timings={
+                "first_frame_ms": round(first_frame_ms, 2),
+                "total_ms": round(now_ms, 2),
+            }
+            if chunk.get("done")
+            else None,
+        )
+
+    @pytest.mark.parametrize(
+        "chunk",
+        [
+            {"token": "Hello", "done": False},
+            {"token": None, "done": False},
+            {"filler_push": "One moment", "done": False},
+            {"token": "Hmm", "done": False, "is_filler": True},
+            {"token": "", "done": False, "status": "multi_agent", "agents": ["a", "b"]},
+            {
+                "token": "Done.",
+                "done": True,
+                "conversation_id": "c1",
+                "mediated_speech": "Done.",
+                "voice_followup": True,
+                "sanitized": True,
+                "routed_to": "light-agent",
+                "action_executed": {
+                    "service": "light/turn_on",
+                    "entity_id": "light.k",
+                    "result": "success",
+                },
+            },
+            {"token": "", "done": True, "error": {"code": "llm_error", "message": "LLM failed"}},
+            {"done": True},
+        ],
+    )
+    def test_mutated_frame_matches_legacy_construction(self, chunk):
+        from app.api.routes.conversation import _apply_stream_chunk
+
+        legacy = self._legacy_construct(chunk, 12.345, 67.891)
+        frame = _apply_stream_chunk(StreamToken(token=""), chunk, first_frame_ms=12.345, now_ms=67.891)
+
+        assert frame.model_dump() == legacy.model_dump()
+        assert frame.model_dump_json() == legacy.model_dump_json()
+
+    def test_reused_frame_leaks_no_stale_fields(self):
+        """A status/agents frame followed by a plain token frame on the SAME
+        model must not leak the previous chunk's fields."""
+        from app.api.routes.conversation import _apply_stream_chunk
+
+        frame = StreamToken(token="")
+        _apply_stream_chunk(
+            frame,
+            {"token": "", "done": False, "status": "multi_agent", "agents": ["a"]},
+            first_frame_ms=1.0,
+            now_ms=1.0,
+        )
+        token_chunk = {"token": "Hello", "done": False}
+        _apply_stream_chunk(frame, token_chunk, first_frame_ms=1.0, now_ms=2.0)
+
+        legacy = self._legacy_construct(token_chunk, 1.0, 2.0)
+        assert frame.model_dump() == legacy.model_dump()
+        assert frame.status is None
+        assert frame.agents is None

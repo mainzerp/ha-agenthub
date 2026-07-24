@@ -9,8 +9,39 @@ from __future__ import annotations
 import logging
 
 from app.db.repository import AnalyticsRepository
+from app.util.tasks import spawn
 
 logger = logging.getLogger(__name__)
+
+
+def track_request_background(agent_id: str, cache_hit: bool, latency_ms: float) -> None:
+    """Schedule :func:`track_request` without blocking the caller.
+
+    For hot request paths where awaiting the SQLite insert would couple
+    analytics DB health to request latency (P1 fire-and-forget analytics).
+    The underlying tracker logs and swallows insert failures; ``spawn``
+    holds a strong reference to the task until completion and logs
+    unexpected errors, so tasks neither leak nor vanish silently.
+    Accepted trade-off: telemetry events can be lost on crash.
+    """
+    spawn(track_request(agent_id, cache_hit, latency_ms), name="analytics-track-request")
+
+
+def track_cache_event_background(
+    tier: str,
+    hit_type: str,
+    agent_id: str | None = None,
+    similarity: float | None = None,
+) -> None:
+    """Schedule :func:`track_cache_event` without blocking the caller.
+
+    See :func:`track_request_background` for the rationale and safety
+    properties.
+    """
+    spawn(
+        track_cache_event(tier, hit_type, agent_id=agent_id, similarity=similarity),
+        name="analytics-track-cache-event",
+    )
 
 
 async def track_request(agent_id: str, cache_hit: bool, latency_ms: float) -> None:
@@ -60,10 +91,19 @@ async def track_token_usage(
     tokens_out: int,
     ttft_ms: float | None = None,
     tps: float | None = None,
+    latency_ms: float | None = None,
 ) -> None:
-    """Track LLM token usage."""
+    """Track LLM token usage.
+
+    ``latency_ms`` is the whole-call latency (recorded on every path).
+    ``ttft_ms``/``tps`` are only populated on streaming paths, where
+    first-chunk timing actually exists -- on non-streaming calls the
+    whole-call value used to be mislabeled as ``ttft_ms``.
+    """
     try:
         data = {"provider": provider, "tokens_in": tokens_in, "tokens_out": tokens_out}
+        if latency_ms is not None:
+            data["latency_ms"] = round(latency_ms, 2)
         if ttft_ms is not None:
             data["ttft_ms"] = round(ttft_ms, 2)
         if tps is not None:

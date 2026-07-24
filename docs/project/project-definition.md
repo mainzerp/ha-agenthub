@@ -246,7 +246,6 @@ Current seeded defaults that materially affect matching:
 | `embedding.local_model` | `intfloat/multilingual-e5-small` |
 | `entity_matching.confidence_threshold` | `0.60` |
 | `entity_matching.top_n_candidates` | `3` |
-| `entity_matching.oversample_factor` | `20` |
 | `entity_matching.expansion.enabled` | `true` |
 | `entity_matching.log_misses` | `true` |
 

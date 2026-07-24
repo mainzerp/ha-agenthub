@@ -444,6 +444,168 @@ class TestWsReceiveTimeout:
 
 
 # ---------------------------------------------------------------------------
+# P1: narrowed WS-lock critical section (connect+send locked, read unlocked)
+# ---------------------------------------------------------------------------
+
+
+class TestWsLockNarrowing:
+    """P1: the streaming read runs outside ``_ws_lock`` on a turn-owned
+    socket; a concurrent turn must not queue behind a slow read."""
+
+    def _make_entity(self, options: dict | None = None):
+        from custom_components.ha_agenthub.conversation import (
+            HaAgentHubConversationEntity,
+        )
+
+        entry = MagicMock()
+        entry.entry_id = "test-entry"
+        entry.options = options or {}
+        entry.async_create_background_task = MagicMock(return_value=MagicMock())
+        entry.async_on_unload = MagicMock()
+        return HaAgentHubConversationEntity(entry, "http://example.com", "key")
+
+    def _make_user_input(self, cid: str, text: str):
+        user_input = MagicMock()
+        user_input.conversation_id = cid
+        user_input.text = text
+        user_input.language = "en"
+        user_input.device_id = None
+        return user_input
+
+    def _make_ws(self, receive):
+        ws = MagicMock()
+        ws.closed = False
+        ws.send_json = AsyncMock()
+        ws.close = AsyncMock()
+        ws.receive = receive
+        return ws
+
+    @pytest.mark.asyncio
+    async def test_concurrent_turn_not_blocked_behind_slow_read(self):
+        import json
+        import time
+
+        import aiohttp
+
+        entity = self._make_entity()
+        release_turn1 = asyncio.Event()
+
+        async def _slow_receive():
+            await release_turn1.wait()
+            return MagicMock(
+                type=aiohttp.WSMsgType.TEXT,
+                data=json.dumps({"done": True, "token": "turn one"}),
+            )
+
+        ws1 = self._make_ws(AsyncMock(side_effect=_slow_receive))
+        ws2 = self._make_ws(
+            AsyncMock(
+                return_value=MagicMock(
+                    type=aiohttp.WSMsgType.TEXT,
+                    data=json.dumps({"done": True, "token": "turn two"}),
+                )
+            )
+        )
+
+        entity._ws = ws1
+        entity._ws_last_active = time.monotonic()
+
+        async def _connect_second():
+            # Turn 2 finds no shared socket (turn 1 owns it) and connects anew.
+            entity._ws = ws2
+            return True
+
+        with patch.object(entity, "_connect_ws_locked", side_effect=_connect_second):
+            turn1 = asyncio.create_task(
+                entity._async_bridge_to_container(self._make_user_input("c1", "one"))
+            )
+            await asyncio.sleep(0.05)  # turn 1 is now blocked in its read
+            turn2 = asyncio.create_task(
+                entity._async_bridge_to_container(self._make_user_input("c2", "two"))
+            )
+            # Turn 2 completes while turn 1 is still blocked in its read --
+            # with the pre-P1 whole-cycle lock this would time out.
+            result2 = await asyncio.wait_for(turn2, timeout=1.0)
+            assert not turn1.done()
+            release_turn1.set()
+            result1 = await asyncio.wait_for(turn1, timeout=1.0)
+
+        assert result1 is not None and result2 is not None
+        ws1.send_json.assert_awaited_once()
+        ws2.send_json.assert_awaited_once()
+        # Turn 2 finished first and republished its socket; turn 1's
+        # finished socket was closed instead of replacing it.
+        assert entity._ws is ws2
+        ws1.close.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_midstream_failure_closes_turn_socket_and_skips_rest(self):
+        import time
+
+        import aiohttp
+
+        entity = self._make_entity()
+        # Transport error mid-stream (the conftest aiohttp mock only defines
+        # WSMsgType.TEXT, so fail via ClientError instead of a CLOSED frame).
+        ws = self._make_ws(
+            AsyncMock(side_effect=aiohttp.ClientError("closed mid-stream"))
+        )
+        entity._ws = ws
+        entity._ws_last_active = time.monotonic()
+
+        with patch.object(
+            entity, "_process_via_rest", new_callable=AsyncMock
+        ) as mock_rest:
+            result = await entity._async_bridge_to_container(
+                self._make_user_input("c1", "hello")
+            )
+
+        # _WsDroppedAfterSendError semantics preserved: the request may have
+        # run on the container, so no duplicate REST dispatch.
+        mock_rest.assert_not_awaited()
+        # The failing turn closed its own socket (not a shared one).
+        ws.close.assert_awaited_once()
+        assert entity._ws is None
+        assert result is not None
+
+    @pytest.mark.asyncio
+    async def test_send_failure_disconnects_and_falls_back_to_rest(self):
+        import time
+
+        import aiohttp
+
+        entity = self._make_entity()
+        ws = self._make_ws(
+            AsyncMock(
+                return_value=MagicMock(
+                    type=aiohttp.WSMsgType.TEXT, data='{"done": true}'
+                )
+            )
+        )
+        ws.send_json = AsyncMock(side_effect=aiohttp.ClientError("boom"))
+        entity._ws = ws
+        entity._ws_last_active = time.monotonic()
+
+        with (
+            patch.object(
+                entity,
+                "_process_via_rest",
+                new_callable=AsyncMock,
+                return_value=MagicMock(),
+            ) as mock_rest,
+            patch.object(
+                entity, "_disconnect_ws_locked", new_callable=AsyncMock
+            ) as mock_disconnect,
+        ):
+            await entity._async_bridge_to_container(
+                self._make_user_input("c1", "hello")
+            )
+
+        mock_disconnect.assert_awaited_once()
+        mock_rest.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
 # 5.3.7 Reconnect scheduling is debounced
 # ---------------------------------------------------------------------------
 
@@ -930,11 +1092,15 @@ class TestUserIdForwarding:
             return self._response
 
     async def _run_ws(self, entity, user_input):
-        entity._ws = MagicMock()
-        entity._ws.send_json = AsyncMock()
-        entity._ws.receive = AsyncMock(
+        # The send phase detaches the socket from ``entity._ws`` (the turn
+        # owns it exclusively during the unlocked read), so keep a local
+        # reference to inspect the payload afterwards.
+        ws = MagicMock()
+        ws.send_json = AsyncMock()
+        ws.receive = AsyncMock(
             return_value=MagicMock(type=1, data='{"done": true, "token": "hi"}')
         )
+        entity._ws = ws
         with (
             patch(
                 "custom_components.ha_agenthub.conversation.aiohttp.WSMsgType",
@@ -945,9 +1111,9 @@ class TestUserIdForwarding:
                 new=AsyncMock(),
             ) as mock_wait,
         ):
-            mock_wait.return_value = entity._ws.receive.return_value
+            mock_wait.return_value = ws.receive.return_value
             await entity._process_via_ws(user_input)
-        return entity._ws.send_json.call_args.args[0]
+        return ws.send_json.call_args.args[0]
 
     def test_origin_context_includes_user_id(self):
         entity = self._make_entity()
@@ -1003,3 +1169,203 @@ class TestUserIdForwarding:
         entity._session = session
         await entity._process_via_rest(self._make_user_input(None))
         assert "user_id" not in session.posted_payload
+
+
+# ---------------------------------------------------------------------------
+# P3: shared aiohttp session reuse across WS reconnects
+# ---------------------------------------------------------------------------
+
+
+class TestWsSessionReuse:
+    """P3 step 1: one ``aiohttp.ClientSession`` is reused across reconnects;
+    only entity removal closes it."""
+
+    def _make_entity(self):
+        from custom_components.ha_agenthub.conversation import (
+            HaAgentHubConversationEntity,
+        )
+
+        entry = MagicMock()
+        entry.entry_id = "test-entry"
+        entry.options = {}
+        entry.async_create_background_task = MagicMock(return_value=MagicMock())
+        entry.async_on_unload = MagicMock()
+        return HaAgentHubConversationEntity(entry, "http://example.com", "key")
+
+    @pytest.mark.asyncio
+    async def test_disconnect_closes_ws_but_keeps_session(self):
+        entity = self._make_entity()
+        session = MagicMock()
+        session.closed = False
+        session.close = AsyncMock()
+        entity._session = session
+        ws = MagicMock()
+        ws.closed = False
+        ws.close = AsyncMock()
+        entity._ws = ws
+
+        await entity._disconnect_ws()
+
+        ws.close.assert_awaited_once()
+        session.close.assert_not_awaited()
+        assert entity._ws is None
+        assert entity._session is session
+
+    @pytest.mark.asyncio
+    async def test_connect_reuses_existing_session(self):
+        entity = self._make_entity()
+        session = MagicMock()
+        session.closed = False
+        ws = MagicMock()
+        ws.closed = False
+        session.ws_connect = AsyncMock(return_value=ws)
+        entity._session = session
+
+        with patch(
+            "custom_components.ha_agenthub.conversation.aiohttp.ClientSession"
+        ) as session_cls:
+            connected = await entity._connect_ws()
+
+        assert connected is True
+        session_cls.assert_not_called()
+        session.ws_connect.assert_awaited_once()
+        assert entity._ws is ws
+
+    @pytest.mark.asyncio
+    async def test_failed_connect_keeps_session_for_retry(self):
+        import aiohttp
+
+        entity = self._make_entity()
+        session = MagicMock()
+        session.closed = False
+        session.close = AsyncMock()
+        session.ws_connect = AsyncMock(side_effect=aiohttp.ClientError("boom"))
+        entity._session = session
+
+        connected = await entity._connect_ws()
+
+        assert connected is False
+        assert entity._ws is None
+        session.close.assert_not_awaited()
+        assert entity._session is session
+
+    @pytest.mark.asyncio
+    async def test_entity_removal_closes_session(self, monkeypatch):
+        import custom_components.ha_agenthub.conversation as conv_mod
+
+        entity = self._make_entity()
+        monkeypatch.setattr(
+            conv_mod.conversation.ConversationEntity,
+            "async_will_remove_from_hass",
+            AsyncMock(),
+            raising=False,
+        )
+        session = MagicMock()
+        session.closed = False
+        session.close = AsyncMock()
+        entity._session = session
+
+        await entity.async_will_remove_from_hass()
+
+        session.close.assert_awaited_once()
+        assert entity._session is None
+
+
+# ---------------------------------------------------------------------------
+# P3: satellite mapping cache + registry-event invalidation
+# ---------------------------------------------------------------------------
+
+
+class TestSatelliteMappingCache:
+    """P3 step 5: device->satellite resolution is memoized per device and
+    cleared on assist_satellite registry updates."""
+
+    def _make_entity(self):
+        from custom_components.ha_agenthub.conversation import (
+            HaAgentHubConversationEntity,
+        )
+
+        entry = MagicMock()
+        entry.entry_id = "test-entry"
+        entry.options = {}
+        entry.async_create_background_task = MagicMock(return_value=MagicMock())
+        entry.async_on_unload = MagicMock()
+        entity = HaAgentHubConversationEntity(entry, "http://example.com", "key")
+        entity.hass = MagicMock()
+        return entity
+
+    def test_resolution_memoized_per_device(self):
+        entity = self._make_entity()
+        sat_entry = MagicMock()
+        sat_entry.domain = "assist_satellite"
+        sat_entry.entity_id = "assist_satellite.kitchen"
+
+        with patch("custom_components.ha_agenthub.conversation.er") as mock_er:
+            mock_er.async_entries_for_device.return_value = [sat_entry]
+            first = entity._resolve_satellite_entity("dev-1")
+            second = entity._resolve_satellite_entity("dev-1")
+
+        assert first == "assist_satellite.kitchen"
+        assert second == "assist_satellite.kitchen"
+        mock_er.async_entries_for_device.assert_called_once()
+
+    def test_negative_result_cached(self):
+        entity = self._make_entity()
+
+        with patch("custom_components.ha_agenthub.conversation.er") as mock_er:
+            mock_er.async_entries_for_device.return_value = []
+            assert entity._resolve_satellite_entity("dev-2") is None
+            assert entity._resolve_satellite_entity("dev-2") is None
+
+        mock_er.async_entries_for_device.assert_called_once()
+
+    def test_per_entry_logs_demoted_to_debug(self, caplog):
+        import logging
+
+        entity = self._make_entity()
+        sat_entry = MagicMock()
+        sat_entry.domain = "assist_satellite"
+        sat_entry.entity_id = "assist_satellite.kitchen"
+
+        with (
+            patch("custom_components.ha_agenthub.conversation.er") as mock_er,
+            caplog.at_level(
+                logging.DEBUG, logger="custom_components.ha_agenthub.conversation"
+            ),
+        ):
+            mock_er.async_entries_for_device.return_value = [sat_entry]
+            entity._resolve_satellite_entity("dev-1")
+
+        info_records = [r for r in caplog.records if r.levelno == logging.INFO]
+        assert not any("registry entries" in r.getMessage() for r in info_records)
+        assert not any("entry domain=" in r.getMessage() for r in info_records)
+
+    @pytest.mark.asyncio
+    async def test_registry_update_clears_cache(self, monkeypatch):
+        import custom_components.ha_agenthub.conversation as conv_mod
+
+        entity = self._make_entity()
+        monkeypatch.setattr(entity, "async_on_remove", lambda cb: None, raising=False)
+        monkeypatch.setattr(
+            conv_mod.conversation.ConversationEntity,
+            "async_added_to_hass",
+            AsyncMock(),
+            raising=False,
+        )
+
+        await entity.async_added_to_hass()
+
+        callback = entity.hass.bus.async_listen.call_args.args[1]
+
+        entity._satellite_cache["dev-1"] = "assist_satellite.kitchen"
+        event = MagicMock()
+        event.data = {"action": "remove", "entity_id": "assist_satellite.kitchen"}
+        callback(event)
+        assert entity._satellite_cache == {}
+
+        # Unrelated entity updates keep the cache intact.
+        entity._satellite_cache["dev-1"] = "assist_satellite.kitchen"
+        other = MagicMock()
+        other.data = {"action": "update", "entity_id": "light.kitchen"}
+        callback(other)
+        assert entity._satellite_cache == {"dev-1": "assist_satellite.kitchen"}

@@ -7,7 +7,7 @@ import logging
 from collections.abc import Iterator
 from datetime import UTC, datetime
 
-from app.cache._base_cache import _BaseCache, _normalize_language, _parse_entity_ids, make_text_id
+from app.cache._base_cache import _BaseCache, _normalize_language, _parse_entity_ids, _store_method, make_text_id
 from app.cache.sqlite_cache_store import COLLECTION_ACTION_CACHE, SqliteCacheStore
 from app.models.cache import ActionCacheEntry, CachedAction
 
@@ -107,14 +107,18 @@ class ActionCache(_BaseCache[ActionCacheEntry]):
         return entry_id, entry, similarity
 
     def purge_readonly_entries(self) -> int:
-        page = self._store.get(COLLECTION_ACTION_CACHE, include=["metadatas"])
-        ids = page.get("ids") or []
-        metas = page.get("metadatas") or []
-        to_delete = [
-            entry_id
-            for entry_id, meta in zip(ids, metas, strict=False)
-            if _is_readonly_action((meta or {}).get("cached_action"))
-        ]
+        # P2: indexed sidecar lookup when available (see _base_cache).
+        finder = _store_method(self._store, "find_readonly_entries")
+        to_delete = finder(COLLECTION_ACTION_CACHE) if finder is not None else None
+        if to_delete is None:
+            page = self._store.get(COLLECTION_ACTION_CACHE, include=["metadatas"])
+            ids = page.get("ids") or []
+            metas = page.get("metadatas") or []
+            to_delete = [
+                entry_id
+                for entry_id, meta in zip(ids, metas, strict=False)
+                if _is_readonly_action((meta or {}).get("cached_action"))
+            ]
         if not to_delete:
             return 0
         for start in range(0, len(to_delete), 500):

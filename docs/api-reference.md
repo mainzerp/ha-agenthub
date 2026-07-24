@@ -762,8 +762,8 @@ Cache-tier summary: hits, misses, hit rate, and invalidations.
 
 ### GET /api/admin/analytics/tokens
 
-Token-generation performance metrics, including `avg_ttft_ms` and
-`avg_tps`.
+Token-generation performance metrics, including `avg_latency_ms` (all
+calls), plus `avg_ttft_ms` and `avg_tps` (streaming calls only).
 
 **Query parameters:**
 - `hours` -- Time window (default: 24)
