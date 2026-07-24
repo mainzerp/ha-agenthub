@@ -1,11 +1,11 @@
-﻿/* --- Dashboard layout --- */
+/* --- Dashboard layout --- */
 
 .dashboard-body {
     display: flex;
     min-height: 100vh;
     background:
-        radial-gradient(ellipse 80% 60% at 70% 20%, rgba(45, 212, 191, 0.04) 0%, transparent 60%),
-        radial-gradient(ellipse 60% 80% at 20% 80%, rgba(139, 92, 246, 0.03) 0%, transparent 60%),
+        radial-gradient(ellipse 80% 60% at 70% 20%, rgba(226, 168, 75, 0.04) 0%, transparent 60%),
+        radial-gradient(ellipse 60% 80% at 20% 80%, rgba(226, 168, 75, 0.02) 0%, transparent 60%),
         var(--bg-void);
 }
 
@@ -55,7 +55,7 @@
     left: 0;
     width: var(--sidebar-width);
     height: 100vh;
-    background: var(--bg-obsidian);
+    background: var(--bg-void);
     border-right: 1px solid color-mix(in srgb, var(--bg-stone) 40%, transparent);
     display: flex;
     flex-direction: column;
@@ -125,7 +125,10 @@
 
 .nav-group-label {
     text-transform: uppercase;
-    letter-spacing: 0.04em;
+    font-size: 0.75rem;
+    font-weight: 500;
+    letter-spacing: 0.05em;
+    color: var(--color-fog);
 }
 
 .nav-group-chevron {
@@ -169,7 +172,7 @@
 }
 
 .nav-link.active {
-    background: rgba(45, 212, 191, 0.08);
+    background: rgba(226, 168, 75, 0.12);
     color: var(--teal);
     font-weight: 600;
     border-left: none;
@@ -225,27 +228,25 @@ button.sidebar-logout {
     margin-left: 0;
 }
 
-.top-bar {
+.page-header {
     display: flex;
-    align-items: center;
     justify-content: space-between;
-    padding: 0.75rem 1.5rem;
-    background: color-mix(in srgb, var(--bg-basalt) 80%, transparent);
-    border-bottom: 1px solid color-mix(in srgb, var(--bg-stone) 60%, transparent);
-    backdrop-filter: blur(12px);
-    -webkit-backdrop-filter: blur(12px);
+    align-items: flex-end;
+    margin-bottom: 1.5rem;
+    gap: 1rem;
 }
 
 .page-title {
-    font-size: 1.25rem;
-    font-weight: 600;
-    color: var(--color-light);
+    font-size: 1.875rem;
+    font-weight: 700;
+    color: var(--color-bright);
 }
 
-.top-bar-actions {
+.page-header-actions {
     display: flex;
-    gap: 1rem;
+    gap: 0.75rem;
     align-items: center;
+    flex-shrink: 0;
 }
 
 .page-content {
@@ -319,18 +320,9 @@ button.sidebar-logout {
         margin-left: 0;
     }
 
-    /* Push page title past the fixed hamburger button (~44px icon + 12px left offset) */
-    .top-bar {
-        padding-left: 4rem;
-    }
-
-    /* Allow title to shrink and not overflow the top-bar on narrow screens */
-    .page-title {
-        flex: 1;
-        min-width: 0;
-        overflow: hidden;
-        white-space: nowrap;
-        text-overflow: ellipsis;
+    /* Push page header past the fixed hamburger button (~44px icon + 12px left offset) */
+    .page-header {
+        padding-left: 2.75rem;
     }
 
     .card-grid {
@@ -414,8 +406,8 @@ button.sidebar-logout {
     }
 
     .page-content { padding: 0.75rem; }
-    /* Keep left padding large enough to clear the (bigger) hamburger at ≤480px */
-    .top-bar { padding: 0.5rem 0.75rem 0.5rem 4rem; }
+    /* Keep header left padding large enough to clear the (bigger) hamburger at ≤480px */
+    .page-header { padding-left: 3rem; }
     .setup-shell { padding: 1rem; }
     .stat-grid-6 { grid-template-columns: 1fr; }
     .stat-grid-3 { grid-template-columns: 1fr; }
@@ -487,7 +479,7 @@ button.sidebar-logout {
 
 .setup-progress-step--current {
     background: var(--accent);
-    color: #fff;
+    color: var(--bg-abyss);
 }
 
 .setup-progress-step--pending {
@@ -627,25 +619,25 @@ button.sidebar-logout {
 
 .text-cloud { color: var(--color-cloud); }
 .text-teal-glow { color: var(--teal-glow); }
-.text-purple { color: #a78bfa; }
+.text-purple { color: var(--purple); }
 
 .gantt-container { min-height: 200px; background: var(--bg-obsidian); border-radius: 0.5rem; padding: 0.5rem; }
 .btn-coral { background: var(--coral); color: white; }
 .toggle-card { padding: 0.85rem; display: flex; justify-content: space-between; align-items: center; gap: 1rem; }
 .form-label-block { display: block; margin-bottom: 0.35rem; }
-.form-input-native { width: 100%; box-sizing: border-box; padding: 0.55rem 0.7rem; background: var(--input-bg, #313244); border: 1px solid var(--border, #45475a); border-radius: 4px; color: inherit; }
-.form-input-native-sm { width: 100%; box-sizing: border-box; padding: 0.45rem 0.6rem; background: var(--input-bg, #313244); border: 1px solid var(--border, #45475a); border-radius: 4px; color: inherit; }
-.modal-card { background: var(--surface, #1e1e2e); padding: 1.5rem; border-radius: 8px; min-width: min(320px, 90vw); max-width: 480px; width: 90%; }
+.form-input-native { width: 100%; box-sizing: border-box; padding: 0.55rem 0.7rem; background: var(--input-bg, #0d0c0a); border: 1px solid var(--border, #2e2b28); border-radius: 4px; color: inherit; }
+.form-input-native-sm { width: 100%; box-sizing: border-box; padding: 0.45rem 0.6rem; background: var(--input-bg, #0d0c0a); border: 1px solid var(--border, #2e2b28); border-radius: 4px; color: inherit; }
+.modal-card { background: var(--surface, #151512); padding: 1.5rem; border-radius: 8px; min-width: min(320px, 90vw); max-width: 480px; width: 90%; }
 .pre-cloud { white-space: pre-wrap; word-break: break-all; font-size: 0.875rem; margin: 0; color: var(--color-cloud); }
 .pre-cloud-sm { white-space: pre-wrap; word-break: break-all; font-size: 0.8rem; margin: 0.2rem 0 0 0; color: var(--color-cloud); }
 .pre-cloud-xs { white-space: pre-wrap; word-break: break-all; font-size: 0.75rem; margin: 0.15rem 0 0 0; color: var(--color-cloud); }
 .step-num { font-size: 0.65rem; color: var(--text-silver); min-width: 1.2rem; text-align: center; font-weight: 600; }
-.badge-indigo { background: rgba(99, 102, 241, 0.15); color: #818cf8; }
+.badge-indigo { background: rgba(154, 143, 184, 0.12); color: #9a8fb8; }
 .badge-close { display: inline-flex; align-items: center; gap: 0.25rem; }
 .agent-badges { display: flex; flex-wrap: wrap; align-items: center; gap: 0.375rem; }
 .entity-count { margin-left: 0.375rem; }
 .preview-box { padding: 0.9rem; white-space: pre-wrap; line-height: 1.5; }
-.api-key-shown { padding: 0.75rem; border: 1px solid var(--teal-glow, #14b8a6); border-radius: 0.35rem; background: rgba(20, 184, 166, 0.06); }
+.api-key-shown { padding: 0.75rem; border: 1px solid var(--teal-glow, #f5c26b); border-radius: 0.35rem; background: rgba(226, 168, 75, 0.06); }
 .api-key-text { margin: 0 0 0.5rem 0; font-size: 0.75rem; word-break: break-all; white-space: pre-wrap; color: var(--color-cloud); }
 .btn-xs { padding: 0.15rem 0.5rem; font-size: 0.7rem; }
 .form-input-xs { width: 100px; font-size: 0.75rem; padding: 0.25rem 0.5rem; }
@@ -653,7 +645,7 @@ button.sidebar-logout {
 .config-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 1rem; margin-top: 1rem; }
 .provider-grid { display: flex; flex-direction: column; gap: 0.5rem; max-width: 700px; }
 .ha-config { display: flex; flex-direction: column; gap: 0.75rem; max-width: 720px; }
-.provider-row { display: grid; grid-template-columns: 90px 70px 1fr auto; align-items: center; gap: 0.5rem; padding: 0.4rem 0; border-bottom: 1px solid var(--border-subtle, rgba(255,255,255,0.06)); }
+.provider-row { display: grid; grid-template-columns: 90px 70px 1fr auto; align-items: center; gap: 0.5rem; padding: 0.4rem 0; border-bottom: 1px solid var(--border-subtle, rgba(226,168,75,0.10)); }
 .label-edit { display: flex; gap: 0.25rem; align-items: center; }
 .comm-row { margin-bottom: 0.4rem; display: flex; align-items: center; gap: 0.5rem; }
 .comm-task { margin-left: 2rem; margin-bottom: 0.4rem; }
@@ -674,7 +666,7 @@ button.sidebar-logout {
 .badge-sensor { display: inline-flex; align-items: center; gap: 0.4rem; }
 
 
-.form-input-native-xs { width: 100%; box-sizing: border-box; padding: 0.4rem 0.6rem; background: var(--input-bg, #313244); border: 1px solid var(--border, #45475a); border-radius: 4px; color: inherit; }
+.form-input-native-xs { width: 100%; box-sizing: border-box; padding: 0.4rem 0.6rem; background: var(--input-bg, #0d0c0a); border: 1px solid var(--border, #2e2b28); border-radius: 4px; color: inherit; }
 
 
 .py-md { padding-top: 1rem; padding-bottom: 1rem; }

@@ -433,18 +433,6 @@
                     <button class="btn btn-primary btn-sm" @click="saveSection('orchestrator')">Save Orchestrator</button>
                 </div>
             </section>
-
-            <!-- Section 8: MCP -->
-            <section data-category="mcp" x-show="activeCategory === 'mcp'" x-cloak>
-                <h3 class="section-title">MCP Servers</h3>
-                <p class="text-muted text-sm">MCP server configuration is managed on the <a href="{{ root_url(request, '/dashboard/mcp-servers') }}" class="section-link">MCP Servers</a> page.</p>
-            </section>
-
-            <!-- Section 8: Plugins -->
-            <section data-category="plugins" x-show="activeCategory === 'plugins'" x-cloak>
-                <h3 class="section-title">Plugins</h3>
-                <p class="text-muted text-sm">Plugin management is on the <a href="{{ root_url(request, '/dashboard/plugins') }}" class="section-link">Plugins</a> page.</p>
-            </section>
         </div>
     </div>
 </div>
@@ -500,8 +488,6 @@ function settingsPage() {
             { key: 'agents', label: 'Agents', count: 0 },
             { key: 'home_context', label: 'Home Context', count: 0 },
             { key: 'orchestrator', label: 'Orchestrator', count: 0 },
-            { key: 'mcp', label: 'MCP', count: 0 },
-            { key: 'plugins', label: 'Plugins', count: 0 },
         ],
 
         init() {

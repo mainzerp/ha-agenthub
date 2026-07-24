@@ -132,13 +132,16 @@
 
     <!-- Main content -->
     <div class="main-content" :class="{ 'main-content-expanded': !sidebarOpen }">
-        <header class="top-bar" role="banner">
-            <h1 class="page-title">{% block header_title %}Dashboard{% endblock %}</h1>
-            <div class="top-bar-actions">
-                {% block top_bar_actions %}{% endblock %}
-            </div>
-        </header>
         <main id="main" class="page-content" tabindex="-1">
+            <div class="page-header">
+                <div class="page-header-text">
+                    <h1 class="page-title">{% block header_title %}Dashboard{% endblock %}</h1>
+                    {% block page_subtitle %}{% endblock %}
+                </div>
+                <div class="page-header-actions">
+                    {% block page_header_actions %}{% endblock %}
+                </div>
+            </div>
             {% block page_content %}{% endblock %}
         </main>
         <footer class="app-footer" role="contentinfo">

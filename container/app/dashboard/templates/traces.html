@@ -2,6 +2,7 @@
 {% block page_title %}Traces{% endblock %}
 {% block page_css %}<link rel="stylesheet" href="{{ static_url(request, '/dashboard/static/css/pages/traces.css') }}">{% endblock %}
 {% block header_title %}Request Traces{% endblock %}
+{% block page_subtitle %}<p class="page-subtitle">Inspect individual request flows.</p>{% endblock %}
 {% block page_content %}
 <div x-data="tracesListPage()" x-init="init()">
 
