@@ -10,7 +10,7 @@
 
 ### 1.46.0 (MINOR) -- Pipeline review: first-frame latency, semantic routing cache, hot-path fixes
 
-(PIPELINE_REVIEW work, Phases 1-5 + user corrections; version bumped before commit -- no commit hashes available yet)
+(PIPELINE_REVIEW work, Phases 1-5 + user corrections; commits 8118586, 43457fe)
 
 - perf: first-frame latency -- streaming mediation default on, token relay when mediation inactive, `GeneralAgent.handle_task_stream` (incl. MCP tool-loop streaming via `complete_with_tools_stream`), `first_frame_ms` + done-frame timings
 - perf: filler starts at t=0 with cancellation; WS-lock in HA bridge narrowed (parallel satellite turns); fire-and-forget analytics on hot paths
