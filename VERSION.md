@@ -1,12 +1,24 @@
 # Version
 
-**Current Version:** 1.46.0
+**Current Version:** 1.47.0
 
 ## Recent Changes
 
-(tracking changes since 1.46.0)
+(tracking changes since 1.47.0)
 
 ## Version History
+
+### 1.47.0 (MINOR) -- Dashboard redesign: warm amber theme
+
+(FRONTEND_REDESIGN work; commit fd64004)
+
+- feat(dashboard): full reskin to warm amber-on-near-black theme (accent #e2a84b); token values swapped in `tokens.css`, all CSS var names kept so `chartColors()` keeps working
+- feat(dashboard): self-hosted Inter (UI) + JetBrains Mono (code) fonts replace DM Sans/Outfit
+- feat(dashboard): top bar removed; page title/subtitle/actions move to an in-content page-header pattern; sidebar active link = 3px accent bar
+- feat(dashboard): components recolored (buttons, badges, toasts, cards, login, command palette, chat, vis-timeline Gantt); hardcoded JS hex maps (agent/span colors) and Chart.js literals updated in lockstep
+- fix(dashboard): range slider thumb 44px -> 18px, add Firefox `::-moz-range-thumb`
+- fix(dashboard): remove MCP/Plugins stub categories from settings (managed on their own pages)
+- chore(release): bump version to 1.47.0
 
 ### 1.46.0 (MINOR) -- Pipeline review: first-frame latency, semantic routing cache, hot-path fixes
 
