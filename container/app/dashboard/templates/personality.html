@@ -61,9 +61,9 @@
 
         <div class="form-group" x-show="config.filler_enabled">
             <label class="form-label">Threshold: <span x-text="config.filler_threshold_ms"></span> ms</label>
-            <input type="range" class="form-input w-full" min="500" max="5000" step="100"
+            <input type="range" class="form-input w-full" min="0" max="5000" step="100"
                    x-model.number="config.filler_threshold_ms">
-            <span class="form-hint">How long to wait (ms) before sending a filler. Default: 2000 ms.</span>
+            <span class="form-hint">How long to wait (ms) before sending a filler. 0 = send as soon as generated. Default: 1000 ms.</span>
         </div>
 
 
@@ -88,7 +88,7 @@
 <script>
 function personalityPage() {
     return {
-        config: { prompt: "", mediation_temperature: 0.3, filler_enabled: false, filler_threshold_ms: 2000 },
+        config: { prompt: "", mediation_temperature: 0.3, filler_enabled: false, filler_threshold_ms: 1000 },
         saved: false,
         error: "",
         async loadConfig() {
