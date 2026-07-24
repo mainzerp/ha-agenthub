@@ -6,7 +6,8 @@
 {% endblock %}
 {% block page_js %}<script src="{{ static_url(request, '/dashboard/static/vendor/vis-timeline/vis-timeline-graph2d-7.7.3.min.js') }}" defer></script>{% endblock %}
 {% block header_title %}Trace Detail{% endblock %}
-{% block top_bar_actions %}
+{% block page_subtitle %}<p class="page-subtitle">Inspect an individual request flow.</p>{% endblock %}
+{% block page_header_actions %}
 <a class="btn btn-sm btn-secondary" href="{{ root_url(request, '/dashboard/traces') }}">Back to List</a>
 {% endblock %}
 {% block page_content %}
@@ -656,7 +657,7 @@ function traceDetailPage() {
                 const depth = getDepth(span);
                 const indent = '\u00A0\u00A0'.repeat(depth);
                 const agentCls = span.agent_id ? window.dashAgentClass(span.agent_id) : 'muted';
-                const color = isError ? '#ef4444' : (classToHex[agentCls] || '#6b7280');
+                const color = isError ? '#d4756b' : (classToHex[agentCls] || '#8a8580');
                 const label = indent + span.span_name + (span.agent_id ? ' (' + span.agent_id + ')' : '') + ' [' + Math.round(span.duration_ms) + 'ms]';
 
                 return {

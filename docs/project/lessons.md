@@ -263,3 +263,14 @@ All findings from the security/architecture review have been promoted to **What 
 - Non-streaming "TTFT" was actually total latency; metric renamed to `latency_ms`, `ttft_ms`/`tps` are now streaming-only.
 - pytest shutdown-hang on this Windows host reconfirmed (take verdicts from printed summary lines — see 2026-07-17 entry).
 - Final suite states: container 2987 passed, custom_components 82 passed, ruff clean.
+
+### 2026-07-24 — Pre-push review + release v1.46.0
+- Pre-push review pattern that worked: `git diff origin/main..HEAD` split into per-domain diff files under `docs/SubAgent/[NAME]/`, 3 parallel research streams (agents / cache+entity / llm+api+integration) with prompt-forbidden Bash, plus `python scripts/ci.py --skip-security --skip-docker` run in background as the automated gate (ruff + pytest container + HA).
+- Diff-splitting pitfall: `container/app/__init__.py` fell through the per-domain diff buckets, causing a false version-skew WARNING. Include version files (`__init__.py`, `manifest.json`, `VERSION.md`) explicitly in one bucket.
+- Before creating a release tag, check whether the tag already exists locally (`git tag -l 'vX.Y*'`) and verify it points at the intended commit (`git rev-parse vX.Y.Z^{}`). Here `v1.46.0` already existed at HEAD and only needed pushing; after a follow-up release-chore commit it had to be re-pointed (`git tag -d` + re-create) — safe only because it was never pushed.
+- Untracked pre-push hygiene: `container/coverage.xml` (build artifact) and `flow.md` were untracked; flagged for exclusion rather than committed.
+
+### 2026-07-24 — FRONTEND_REDESIGN: Dashboard reskin to gameserver-manager style
+- Dashboard restyled to the reference warm amber-on-near-black theme: tokens.css values swapped (token names kept — `chartColors()` in `utils.js` reads 8 CSS var names), Inter/JetBrains Mono vendored, top bar removed in favor of an in-content `.page-header` pattern, `_STATIC_BUILD` bumped 13->14.
+- **Pattern:** keeping CSS var NAMES stable while swapping values lets a full reskin happen without touching JS — but hardcoded hex maps (`utils.js` `_agentClassToHex`/`_traceSpanColors`) and Chart.js rgba literals in templates bypass CSS vars and must be edited in lockstep.
+- **Deviation note:** plan assumed 18 pages needed subtitle blocks; in fact 16 pages already had in-content `.page-header` with Alpine-bound actions — moving those into Jinja base blocks would have broken Alpine scoping. Verify actual template state before migrating patterns.

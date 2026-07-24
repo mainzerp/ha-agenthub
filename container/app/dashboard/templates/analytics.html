@@ -202,16 +202,16 @@ function analyticsPage() {
 
         async loadRequestsChart() {
             var data = await window.dashboardApi.safeJson('/api/admin/analytics/requests?hours=' + this.hours);
-            if (data) this.renderChart('requestsChart', 'requestsChart', data, 'bar', 'rgba(59, 130, 246, 0.7)');
+            if (data) this.renderChart('requestsChart', 'requestsChart', data, 'bar', 'rgba(143, 180, 204, 0.7)');
         },
 
         async loadCacheChart() {
             var data = await window.dashboardApi.safeJson('/api/admin/analytics/cache/tiers?hours=' + this.hours);
             if (data) {
                 this.renderMultiChart('cacheChart', data, 'bar', [
-                    { color: 'rgba(34, 197, 94, 0.7)', label: 'Routing Hits' },
-                    { color: 'rgba(45, 212, 191, 0.7)', label: 'Action Hits' },
-                    { color: 'rgba(232, 119, 119, 0.7)', label: 'Misses' },
+                    { color: 'rgba(125, 171, 140, 0.7)', label: 'Routing Hits' },
+                    { color: 'rgba(226, 168, 75, 0.7)', label: 'Action Hits' },
+                    { color: 'rgba(212, 117, 107, 0.7)', label: 'Misses' },
                 ]);
             }
         },
@@ -273,7 +273,7 @@ function analyticsPage() {
             if (data && data.labels && data.labels.length > 0) {
                 this.errorData = data;
                 this.renderMultiChart('errorsChart', data, 'bar', [
-                    { color: 'rgba(245, 158, 11, 0.7)', label: 'Errors' },
+                    { color: 'rgba(240, 178, 92, 0.7)', label: 'Errors' },
                 ]);
             } else {
                 this.errorData = {};

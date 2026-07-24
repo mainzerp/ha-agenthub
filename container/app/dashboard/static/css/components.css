@@ -1,4 +1,4 @@
-﻿/* --- Cards --- */
+/* --- Cards --- */
 
 .card-grid {
     display: grid;
@@ -84,13 +84,13 @@
     font-weight: 600;
 }
 
-.badge-green { background: rgba(109, 186, 136, 0.15); color: var(--sage); }
-.badge-red { background: rgba(232, 119, 119, 0.15); color: var(--coral); }
-.badge-yellow { background: rgba(245, 158, 11, 0.15); color: var(--soft-amber); }
-.badge-blue { background: rgba(96, 165, 250, 0.15); color: var(--blue); }
-.badge-purple { background: rgba(168, 85, 247, 0.15); color: #c084fc; }
-.badge-pink { background: rgba(236, 72, 153, 0.15); color: #f472b6; }
-.badge-orange { background: rgba(249, 115, 22, 0.15); color: #fb923c; }
+.badge-green { background: rgba(125, 171, 140, 0.12); color: var(--sage); }
+.badge-red { background: rgba(212, 117, 107, 0.12); color: var(--coral); }
+.badge-yellow { background: rgba(240, 178, 92, 0.12); color: var(--amber); }
+.badge-blue { background: rgba(143, 180, 204, 0.12); color: var(--blue); }
+.badge-purple { background: rgba(185, 143, 168, 0.12); color: #b98fa8; }
+.badge-pink { background: rgba(217, 138, 154, 0.12); color: #d98a9a; }
+.badge-orange { background: rgba(217, 138, 92, 0.12); color: #d98a5c; }
 .badge-danger { background: var(--danger-strong); color: #fff; }
 
 /* --- Overview: 6-column stat grid --- */
@@ -193,7 +193,7 @@
 }
 
 .chart-card-title {
-    font-family: 'Outfit', sans-serif;
+    font-family: var(--font-display);
     font-size: 0.875rem;
     font-weight: 600;
     color: var(--color-light);
@@ -214,7 +214,7 @@
 }
 
 .cache-breakdown-value {
-    font-family: 'Outfit', sans-serif;
+    font-family: var(--font-display);
     font-size: 1.25rem;
     font-weight: 700;
     color: var(--color-light);
@@ -305,7 +305,7 @@
 .form-textarea:focus {
     outline: none;
     border-color: var(--teal);
-    box-shadow: 0 0 0 1px rgba(45, 212, 191, 0.3);
+    box-shadow: 0 0 0 3px rgba(226, 168, 75, 0.12);
 }
 
 .form-input::placeholder,
@@ -335,11 +335,11 @@
     transition: background 0.2s ease, box-shadow 0.2s ease;
 }
 
-.btn-primary { background: var(--teal-glow); color: #fff; }
-.btn-primary:hover { background: var(--teal-dim); }
+.btn-primary { background: var(--teal); color: var(--bg-abyss); box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08); }
+.btn-primary:hover { background: var(--teal-glow); box-shadow: 0 0 0 3px rgba(226, 168, 75, 0.35); transform: translateY(-1px); }
 .btn-secondary { background: var(--bg-basalt); color: var(--color-fog); border: 1px solid var(--bg-stone); }
-.btn-secondary:hover { background: var(--bg-charcoal); color: var(--color-cloud); }
-.btn-danger { background: rgba(212, 68, 68, 0.8); color: var(--color-light); }
+.btn-secondary:hover { background: var(--bg-charcoal); color: var(--color-cloud); border-color: var(--teal); }
+.btn-danger { background: rgba(184, 92, 82, 0.8); color: var(--color-light); }
 .btn-danger:hover { background: var(--ember); }
 .btn-sm { padding: 0.25rem 0.625rem; font-size: 0.75rem; }
 
@@ -400,10 +400,22 @@ input[type="range"] {
 
 input[type="range"]::-webkit-slider-thumb {
     -webkit-appearance: none;
-    width: 44px;
-    height: 44px;
+    width: 18px;
+    height: 18px;
     border-radius: 50%;
     background: var(--accent);
+    border: 2px solid var(--bg-void);
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
+    cursor: pointer;
+}
+
+input[type="range"]::-moz-range-thumb {
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    background: var(--accent);
+    border: 2px solid var(--bg-void);
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
     cursor: pointer;
 }
 
@@ -474,15 +486,7 @@ input[type="range"]::-webkit-slider-thumb {
     scrollbar-color: var(--color-ash) transparent;
 }
 
-/* --- Page header --- */
-
-.page-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: flex-start;
-    margin-bottom: 1.5rem;
-    gap: 1rem;
-}
+/* --- Page header (layout rule lives in layout.css) --- */
 
 .page-header-text {
     flex: 1;
@@ -560,7 +564,7 @@ input[type="range"]::-webkit-slider-thumb {
 }
 
 .stat-card-value {
-    font-family: 'Outfit', sans-serif;
+    font-family: var(--font-display);
     font-size: clamp(1.25rem, 5vw, 1.75rem);
     font-weight: 700;
     color: var(--color-light);
@@ -596,7 +600,7 @@ input[type="range"]::-webkit-slider-thumb {
 /* --- Card enhancements --- */
 
 .card-title {
-    font-family: 'Outfit', sans-serif;
+    font-family: var(--font-display);
     font-size: 1rem;
     font-weight: 600;
     color: var(--color-light);
@@ -713,7 +717,7 @@ input[type="range"]::-webkit-slider-thumb {
 
 /* --- Badge enhancements --- */
 
-.badge-teal { background: rgba(45, 212, 191, 0.15); color: var(--teal); }
+.badge-teal { background: rgba(226, 168, 75, 0.12); color: var(--teal); }
 .badge-muted { background: color-mix(in srgb, var(--bg-stone) 60%, transparent); color: var(--color-dust); }
 
 .badge-outline {
@@ -982,20 +986,20 @@ input[type="range"]::-webkit-slider-thumb {
 }
 
 .toast-success {
-    background: rgba(109, 186, 136, 0.15);
-    border-color: rgba(109, 186, 136, 0.3);
+    background: rgba(125, 171, 140, 0.12);
+    border-color: rgba(125, 171, 140, 0.3);
     color: var(--sage);
 }
 
 .toast-error {
-    background: rgba(232, 119, 119, 0.15);
-    border-color: rgba(232, 119, 119, 0.3);
+    background: rgba(212, 117, 107, 0.12);
+    border-color: rgba(212, 117, 107, 0.3);
     color: var(--coral);
 }
 
 .toast-info {
-    background: rgba(45, 212, 191, 0.15);
-    border-color: rgba(45, 212, 191, 0.3);
+    background: rgba(226, 168, 75, 0.12);
+    border-color: rgba(226, 168, 75, 0.3);
     color: var(--teal);
 }
 
@@ -1046,26 +1050,26 @@ input[type="range"]::-webkit-slider-thumb {
 }
 
 .alert-success {
-    background: rgba(109, 186, 136, 0.12);
-    border-color: rgba(109, 186, 136, 0.25);
+    background: rgba(125, 171, 140, 0.12);
+    border-color: rgba(125, 171, 140, 0.25);
     color: var(--sage);
 }
 
 .alert-error {
-    background: rgba(232, 119, 119, 0.12);
-    border-color: rgba(232, 119, 119, 0.25);
+    background: rgba(212, 117, 107, 0.12);
+    border-color: rgba(212, 117, 107, 0.25);
     color: var(--coral);
 }
 
 .alert-info {
-    background: rgba(45, 212, 191, 0.12);
-    border-color: rgba(45, 212, 191, 0.25);
+    background: rgba(226, 168, 75, 0.12);
+    border-color: rgba(226, 168, 75, 0.25);
     color: var(--teal);
 }
 
 .alert-warning {
-    background: rgba(245, 158, 11, 0.12);
-    border-color: rgba(245, 158, 11, 0.25);
+    background: rgba(226, 168, 75, 0.12);
+    border-color: rgba(226, 168, 75, 0.25);
     color: var(--soft-amber);
 }
 
@@ -1170,11 +1174,11 @@ input[type="range"]::-webkit-slider-thumb {
 .max-w-400 { max-width: 400px; }
 
 .bg-obsidian { background: var(--bg-obsidian); }
-.bg-teal-10 { background: rgba(94,234,212,0.10); }
-.bg-amber-10 { background: rgba(251,191,36,0.10); }
-.bg-green-10 { background: rgba(134,239,172,0.10); }
-.bg-blue-10 { background: rgba(96,165,250,0.10); }
-.border-right-subtle { border-right: 1px solid rgba(255,255,255,0.06); }
+.bg-teal-10 { background: rgba(226,168,75,0.10); }
+.bg-amber-10 { background: rgba(240,178,92,0.10); }
+.bg-green-10 { background: rgba(125,171,140,0.10); }
+.bg-blue-10 { background: rgba(143,180,204,0.10); }
+.border-right-subtle { border-right: 1px solid var(--border-subtle); }
 
 /* --- Progress bar --- */
 
@@ -1246,8 +1250,8 @@ input[type="range"]::-webkit-slider-thumb {
 
 .chat-bubble-user {
     align-self: flex-end;
-    background: var(--teal-glow);
-    color: #fff;
+    background: var(--teal);
+    color: var(--bg-abyss);
 }
 
 .chat-bubble-assistant {
@@ -1259,9 +1263,9 @@ input[type="range"]::-webkit-slider-thumb {
 
 .chat-bubble-error {
     align-self: flex-start;
-    background: rgba(232, 119, 119, 0.15);
+    background: rgba(212, 117, 107, 0.12);
     color: var(--coral);
-    border: 1px solid rgba(232, 119, 119, 0.3);
+    border: 1px solid rgba(212, 117, 107, 0.3);
 }
 
 .chat-bubble-label {
@@ -1358,7 +1362,7 @@ details.card {
 
 details.card > summary {
     cursor: pointer;
-    font-family: 'Outfit', sans-serif;
+    font-family: var(--font-display);
     font-weight: 600;
     font-size: 1rem;
     color: var(--color-light);
@@ -1421,7 +1425,7 @@ details.card > .details-content {
 }
 
 .login-brand-text {
-    font-family: 'Outfit', sans-serif;
+    font-family: var(--font-display);
     font-size: 1.25rem;
     font-weight: 600;
     color: var(--color-light);
@@ -1446,6 +1450,10 @@ details.card > .details-content {
 
 .card {
     transition: border-color 0.2s ease;
+}
+
+.card:hover {
+    border-color: var(--teal);
 }
 
 .badge {

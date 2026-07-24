@@ -168,10 +168,19 @@
     max-width: 300px;
 }
 
-/* Ensure vis-timeline items are visible */
+/* Ensure vis-timeline items are visible and on-theme */
 .vis-timeline {
-    border: none !important;
+    border: 1px solid var(--border) !important;
+    background: var(--bg-obsidian) !important;
     font-family: var(--font-body) !important;
+}
+
+.vis-panel.vis-background,
+.vis-panel.vis-center,
+.vis-panel.vis-left,
+.vis-panel.vis-bottom {
+    background: var(--bg-obsidian) !important;
+    border-color: var(--border) !important;
 }
 
 .vis-item {
@@ -179,12 +188,23 @@
     border-radius: 4px !important;
 }
 
+.vis-item.vis-selected {
+    border: 1px solid var(--teal) !important;
+    box-shadow: 0 0 0 2px rgba(226, 168, 75, 0.35) !important;
+}
+
 .vis-time-axis .vis-text {
     color: var(--color-fog) !important;
 }
 
+.vis-time-axis .vis-grid.vis-minor,
+.vis-time-axis .vis-grid.vis-major {
+    border-color: var(--border-subtle) !important;
+}
+
 .vis-labelset .vis-label {
     color: var(--color-cloud) !important;
+    border-color: var(--border) !important;
 }
 
 @media (max-width: 480px) {
