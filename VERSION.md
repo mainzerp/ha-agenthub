@@ -1,12 +1,21 @@
 # Version
 
-**Current Version:** 1.47.1
+**Current Version:** 1.47.2
 
 ## Recent Changes
 
-(tracking changes since 1.47.1)
+(tracking changes since 1.47.2)
 
 ## Version History
+
+### 1.47.2 (PATCH) -- Routing-cache empty-cache guard + embedding keep-alive
+
+(CACHE_EMBED_WARMUP work)
+
+- fix(cache): skip semantic routing-cache tier (embedding encode + k-NN) when the routing cache has 0 entries; fixes a multi-second cache_lookup stall on the first turn after long idle when the cache is empty
+- feat(cache): add periodic embedding keep-alive (`run_embedding_keepalive`) that keeps the local SentenceTransformer model warm; new setting `embedding.keepalive_interval_minutes` (default 15, 0 = disabled, no-op for external embedding providers)
+- test(cache): cover empty-cache semantic skip and keep-alive loop (local/external/disabled)
+- chore(release): bump version to 1.47.2
 
 ### 1.47.1 (PATCH) -- Filler threshold slider allows 0 ms
 
