@@ -284,35 +284,44 @@ class CacheManager:
         # Exact miss: semantic tier (P4). The embedding encode offloads the
         # CPU-bound work off the event loop internally (Directive 9). Any
         # failure falls through to live LLM classification (Directive 12).
+        # An empty cache cannot produce a semantic hit, so the entry count
+        # is checked first to skip the wasted encode (count is blocking
+        # sqlite I/O -- offloaded via asyncio.to_thread, Directive 9).
         if self._routing_cache.semantic_available():
             try:
-                engine = await get_embedding_engine()
-                query_embedding = await engine.embed(query_text)
-                sem_id, sem_entry, sem_similarity = await asyncio.to_thread(
-                    self._routing_cache.lookup_semantic,
-                    query_embedding,
-                    language=language,
-                )
+                entry_count = await asyncio.to_thread(self._routing_cache.count)
             except Exception:
-                logger.warning("Routing semantic lookup failed; falling back to classification", exc_info=True)
-                sem_id, sem_entry, sem_similarity = None, None, None
-            if sem_entry is not None and sem_similarity is not None:
-                track_cache_event_background(
-                    tier="routing",
-                    hit_type="semantic_hit",
-                    agent_id=sem_entry.agent_id,
-                    similarity=sem_similarity,
-                )
-                return RoutingSkipOutcome(
-                    kind="semantic_hit",
-                    entry_id=sem_id or "",
-                    agent_id=sem_entry.agent_id,
-                    condensed_task=query_text,
-                    similarity=sem_similarity,
-                    language=sem_entry.language,
-                    entity_ids=sem_entry.entity_ids or [],
-                    lookup_ms=(time.perf_counter() - t0) * 1000,
-                )
+                logger.warning("Routing cache count failed; skipping semantic tier", exc_info=True)
+                entry_count = 0
+            if entry_count > 0:
+                try:
+                    engine = await get_embedding_engine()
+                    query_embedding = await engine.embed(query_text)
+                    sem_id, sem_entry, sem_similarity = await asyncio.to_thread(
+                        self._routing_cache.lookup_semantic,
+                        query_embedding,
+                        language=language,
+                    )
+                except Exception:
+                    logger.warning("Routing semantic lookup failed; falling back to classification", exc_info=True)
+                    sem_id, sem_entry, sem_similarity = None, None, None
+                if sem_entry is not None and sem_similarity is not None:
+                    track_cache_event_background(
+                        tier="routing",
+                        hit_type="semantic_hit",
+                        agent_id=sem_entry.agent_id,
+                        similarity=sem_similarity,
+                    )
+                    return RoutingSkipOutcome(
+                        kind="semantic_hit",
+                        entry_id=sem_id or "",
+                        agent_id=sem_entry.agent_id,
+                        condensed_task=query_text,
+                        similarity=sem_similarity,
+                        language=sem_entry.language,
+                        entity_ids=sem_entry.entity_ids or [],
+                        lookup_ms=(time.perf_counter() - t0) * 1000,
+                    )
 
         track_cache_event_background(tier="routing", hit_type="miss")
         return None

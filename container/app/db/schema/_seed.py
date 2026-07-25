@@ -150,6 +150,14 @@ async def _seed_defaults(db: aiosqlite.Connection) -> None:
             "External embedding model (e.g., openai/text-embedding-3-small)",
         ),
         ("embedding.dimension", "384", "int", "embedding", "Embedding dimension (auto-detected from model)"),
+        (
+            "embedding.keepalive_interval_minutes",
+            "15",
+            "number",
+            "embedding",
+            "Keep-alive dummy encode interval for the local embedding model; 0 = disabled. "
+            "Values below 6 minutes are ineffective (embedding cache TTL is 300 s)",
+        ),
         # Entity matching settings
         (
             "entity_matching.confidence_threshold",
