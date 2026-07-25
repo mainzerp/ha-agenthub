@@ -71,4 +71,10 @@ async def setup_cache(
     if validator_task is None or validator_task.done():
         spawn_background(app, cache_validator.run_periodic(), "cache_validator_task", name="cache_validator")
 
+    keepalive_task = getattr(app.state, "embedding_keepalive_task", None)
+    if keepalive_task is None or keepalive_task.done():
+        from app.cache.embedding import run_embedding_keepalive
+
+        spawn_background(app, run_embedding_keepalive(), "embedding_keepalive_task", name="embedding_keepalive")
+
     return cache_manager

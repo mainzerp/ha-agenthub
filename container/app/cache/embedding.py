@@ -229,6 +229,11 @@ class EmbeddingEngine:
 _engine: EmbeddingEngine | None = None
 _engine_init_lock = asyncio.Lock()
 
+# Fixed keep-alive payload. Safe because the default interval (15 min)
+# exceeds the 300 s _EmbeddingCache TTL, so every run performs a real
+# model.encode instead of being served from the embedding LRU.
+_KEEPALIVE_WARMUP_TEXT = "embedding keep-alive warmup"
+
 
 async def get_embedding_engine() -> EmbeddingEngine:
     """Return the singleton EmbeddingEngine, initializing on first call."""
@@ -245,3 +250,36 @@ async def get_embedding_info() -> dict:
     """Return embedding config info from the singleton engine."""
     engine = await get_embedding_engine()
     return engine.get_info()
+
+
+async def run_embedding_keepalive() -> None:
+    """Periodic dummy encode to keep the local embedding model warm.
+
+    No-op for external providers (they need no warmup and a keep-alive
+    would burn paid API tokens). Interval is re-read each iteration;
+    ``0`` disables the encode with a 300 s recheck (entity-sync precedent).
+    """
+    while True:
+        try:
+            interval_raw = await SettingsRepository.get_value("embedding.keepalive_interval_minutes", "15")
+            try:
+                interval_min = int(str(interval_raw))
+            except (TypeError, ValueError):
+                interval_min = 15
+
+            if interval_min <= 0:
+                await asyncio.sleep(300)
+                continue
+
+            provider = await SettingsRepository.get_value("embedding.provider", "local")
+            if provider == "local":
+                # engine.embed offloads the CPU-bound encode internally
+                # (asyncio.to_thread, Directive 9) -- no extra offload here.
+                engine = await get_embedding_engine()
+                await engine.embed(_KEEPALIVE_WARMUP_TEXT)
+            await asyncio.sleep(interval_min * 60)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.warning("Embedding keep-alive run failed", exc_info=True)
+            await asyncio.sleep(300)
