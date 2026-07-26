@@ -608,8 +608,8 @@ class TestSequentialSendStreamingMetadata:
                 lang_turns=[],
                 span_collector=task.span_collector,
                 classifications=[
-                    ("general-agent", "Summarize", 0.95, []),
-                    ("send-agent", "Send it", 0.95, []),
+                    ("general-agent", "Summarize", 0.95),
+                    ("send-agent", "Send it", 0.95),
                 ],
                 routing_cached=False,
                 target_agent="general-agent",
@@ -663,8 +663,8 @@ class TestSequentialSendFillerRace:
                 lang_turns=[],
                 span_collector=task.span_collector,
                 classifications=[
-                    ("light-agent", "Turn on light", 0.95, []),
-                    ("send-agent", "Send it", 0.95, []),
+                    ("light-agent", "Turn on light", 0.95),
+                    ("send-agent", "Send it", 0.95),
                 ],
                 routing_cached=False,
                 target_agent="light-agent",

@@ -1,12 +1,25 @@
 # Version
 
-**Current Version:** 1.47.2
+**Current Version:** 1.48.0
 
 ## Recent Changes
 
-(tracking changes since 1.47.2)
+(tracking changes since 1.48.0)
 
 ## Version History
+
+### 1.48.0 (MINOR) -- Entity resolution redesign + token preselection
+
+(TOKEN_PRESELECTION + ENTITY_RES_REDESIGN + ENTITY_RES_FOLLOWUP work)
+
+- feat(entity): token-based candidate preselection with IDF ranking and df-ratio cap (TOKEN_PRESELECTION + Addenda A/B)
+- feat(entity): ingress entity resolution parallel to classification with two-phase visibility (unfiltered pool -> per-agent filter, K=5 on `DispatchTask.candidates`)
+- feat(entity): span-based scoring with IDF coverage + Floor-Regel (0.65 floor for verbatim full-name spans); containment/reverse-containment/token-overlap bonuses removed
+- feat(agents): agent LLM may emit `entity_id` from the candidate list for state-changing actions; deterministic-first validation extended with fail-closed existence check and per-action domain gates
+- feat(agents): `last_entities` anaphora hints; ambiguity annotation on close top-1/top-2 score gaps
+- refactor(entity): verbatim_terms retired end-to-end (stage a+b); Directive 4 rewritten to deterministic-exact-first
+- fix(agents): prose clarifying questions on the parse-miss path now request voice follow-up
+- chore(release): bump version to 1.48.0
 
 ### 1.47.2 (PATCH) -- Routing-cache empty-cache guard + embedding keep-alive
 

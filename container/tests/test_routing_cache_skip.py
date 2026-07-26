@@ -436,7 +436,7 @@ async def test_routing_skip_finalization_writes_trace_summary_row():
             conversation_id="conv-routing-cache",
             language="en",
             turns=[],
-            classifications=[("light-agent", "Turn on kitchen light", 0.97, [])],
+            classifications=[("light-agent", "Turn on kitchen light", 0.97)],
             voice_followup_requested=False,
             skip_response_cache=True,
         )

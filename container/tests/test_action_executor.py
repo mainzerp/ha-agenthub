@@ -785,7 +785,7 @@ class TestMusicExecutor:
         entity_matcher.match.assert_awaited_once()
         call = entity_matcher.match.await_args
         assert call.args == ("kitchen speaker",)
-        assert call.kwargs == {"agent_id": None, "verbatim_terms": None, "preferred_domains": ("media_player",)}
+        assert call.kwargs == {"agent_id": None, "preferred_domains": ("media_player",)}
         entity_index.search.assert_not_called()
 
     @pytest.mark.asyncio
@@ -800,7 +800,6 @@ class TestMusicExecutor:
         assert call.args == ("kitchen speaker",)
         assert call.kwargs == {
             "agent_id": "music-agent",
-            "verbatim_terms": None,
             "preferred_domains": ("media_player",),
         }
 
@@ -1101,6 +1100,54 @@ class TestValidateDirectEntityId:
         result = await _validate_direct_entity_id("light.kitchen", lambda eid: True)
         assert result == "light.kitchen"
 
+    @pytest.mark.asyncio
+    async def test_accepts_entity_present_in_index(self):
+        index = _make_listable_entity_index(make_entity_index_entry("light.kitchen", "Kitchen Light"))
+        result = await _validate_direct_entity_id(
+            "light.kitchen",
+            lambda eid: True,
+            agent_id="light-agent",
+            entity_index=index,
+        )
+        assert result == "light.kitchen"
+
+    @pytest.mark.asyncio
+    async def test_rejects_entity_missing_from_index_fail_closed(self):
+        index = _make_listable_entity_index()
+        result = await _validate_direct_entity_id(
+            "light.hallucinated",
+            lambda eid: True,
+            agent_id="light-agent",
+            entity_index=index,
+        )
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_fail_closed_when_existence_check_raises(self):
+        index = MagicMock(spec=EntityIndex)
+        index.get_by_id = MagicMock(side_effect=RuntimeError("index broken"))
+        result = await _validate_direct_entity_id(
+            "light.kitchen",
+            lambda eid: True,
+            agent_id="light-agent",
+            entity_index=index,
+        )
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_rejects_domain_outside_per_action_allowed_domains(self):
+        # set_brightness must not accept switch.* even though the broad
+        # read-side _ALLOWED_DOMAINS includes it.
+        index = _make_listable_entity_index(make_entity_index_entry("switch.kitchen", "Kitchen Switch"))
+        result = await _validate_direct_entity_id(
+            "switch.kitchen",
+            lambda eid: True,
+            agent_id="light-agent",
+            entity_index=index,
+            allowed_domains=frozenset({"light"}),
+        )
+        assert result is None
+
 
 class TestIsReadOnlyAction:
     def test_query_prefix(self):
@@ -1295,3 +1342,96 @@ class TestResolveAndValidateEntity:
             assert "score" in candidate
             assert "signal_scores" in candidate
         assert candidates[0]["entity_id"] == "light.kitchen"
+
+
+class TestResolveAndValidateEntityDirectEntityId:
+    """Phase 5: LLM-picked entity_id is validation input on write paths."""
+
+    @pytest.mark.asyncio
+    async def test_direct_id_accepted_when_in_index(self):
+        index = _make_listable_entity_index(make_entity_index_entry("light.kitchen", "Kitchen Light"))
+        matcher = MagicMock(spec=EntityMatcher)
+        matcher.match = AsyncMock(return_value=[])
+
+        result = await resolve_and_validate_entity(
+            "kitchen",
+            index,
+            matcher,
+            "light-agent",
+            frozenset({"light"}),
+            lambda eid: True,
+            direct_entity_id="light.kitchen",
+        )
+
+        assert result["entity_id"] == "light.kitchen"
+        assert result["friendly_name"] == "Kitchen Light"
+        assert result["not_found_result"] is None
+        assert result["resolution"]["metadata"]["resolution_path"] == "llm_entity_id"
+        # The direct id short-circuits the deterministic-first pipeline.
+        matcher.match.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_hallucinated_id_valid_domain_rejected_fail_closed(self):
+        # Valid domain but the id does not exist in the index: reject and
+        # fall back to deterministic resolution (which finds nothing here).
+        index = _make_listable_entity_index(make_entity_index_entry("light.kitchen", "Kitchen Light"))
+        matcher = MagicMock(spec=EntityMatcher)
+        matcher.match = AsyncMock(return_value=[])
+
+        result = await resolve_and_validate_entity(
+            "hallucinated lamp",
+            index,
+            matcher,
+            "light-agent",
+            frozenset({"light"}),
+            lambda eid: True,
+            direct_entity_id="light.hallucinated",
+        )
+
+        assert result["entity_id"] is None
+        assert result["not_found_result"] is not None
+        assert result["not_found_result"]["success"] is False
+
+    @pytest.mark.asyncio
+    async def test_visibility_blocked_id_rejected(self, monkeypatch):
+        monkeypatch.setattr(
+            "app.entity.visibility.EntityVisibilityRepository.get_rules",
+            AsyncMock(return_value=[{"rule_type": "domain_exclude", "rule_value": "light"}]),
+        )
+        index = _make_listable_entity_index(make_entity_index_entry("light.kitchen", "Kitchen Light"))
+        matcher = MagicMock(spec=EntityMatcher)
+        matcher.match = AsyncMock(return_value=[])
+
+        result = await resolve_and_validate_entity(
+            "hallucinated lamp",
+            index,
+            matcher,
+            "light-agent",
+            frozenset({"light"}),
+            lambda eid: True,
+            direct_entity_id="light.kitchen",
+        )
+
+        assert result["entity_id"] is None
+        assert result["not_found_result"] is not None
+
+    @pytest.mark.asyncio
+    async def test_direct_id_outside_per_action_domains_rejected(self):
+        # set_brightness-style per-action set: switch.* must not pass even
+        # when the broad validator would accept it.
+        index = _make_listable_entity_index(make_entity_index_entry("switch.kitchen", "Kitchen Switch"))
+        matcher = MagicMock(spec=EntityMatcher)
+        matcher.match = AsyncMock(return_value=[])
+
+        result = await resolve_and_validate_entity(
+            "kitchen",
+            index,
+            matcher,
+            "light-agent",
+            frozenset({"light"}),
+            lambda eid: True,
+            direct_entity_id="switch.kitchen",
+        )
+
+        assert result["entity_id"] is None
+        assert result["not_found_result"] is not None

@@ -197,6 +197,27 @@ async def _seed_defaults(db: aiosqlite.Connection) -> None:
             "Emit structured entity_match_diag log on matcher misses",
         ),
         (
+            "entity_matching.token_preselection.enabled",
+            "true",
+            "bool",
+            "entity_matching",
+            "Enable token-based candidate preselection (restart required)",
+        ),
+        (
+            "entity_matching.token_preselection.max_df_ratio",
+            "0.5",
+            "float",
+            "entity_matching",
+            "Ignore query tokens appearing in more than this fraction of indexed entities (restart required)",
+        ),
+        (
+            "entity_matching.token_preselection.max_candidates",
+            "20",
+            "int",
+            "entity_matching",
+            "Max candidates added by token preselection (restart required)",
+        ),
+        (
             "agents.actionable.primary_text_source",
             "original_when_translated",
             "string",

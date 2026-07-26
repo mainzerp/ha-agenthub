@@ -78,7 +78,6 @@ async def execute_timer_action(
     language: str | None = None,
     timezone: str | None = None,
     span_collector=None,
-    verbatim_terms: list[str] | None = None,
 ) -> dict:
     """Dispatch a parsed timer action.
 
@@ -123,7 +122,6 @@ async def execute_timer_action(
             entity_index=entity_index,
             entity_matcher=entity_matcher,
             agent_id=agent_id,
-            verbatim_terms=verbatim_terms,
         )
     if action_name == "sleep_timer":
         return await _sleep_timer(
@@ -135,7 +133,6 @@ async def execute_timer_action(
             entity_index=entity_index,
             entity_matcher=entity_matcher,
             agent_id=agent_id,
-            verbatim_terms=verbatim_terms,
         )
     if action_name == "set_datetime":
         return await _set_alarm(

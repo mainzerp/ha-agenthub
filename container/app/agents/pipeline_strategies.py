@@ -14,7 +14,7 @@ from typing import Any
 from app.agents.cache_orchestrator import CacheOrchestrator
 from app.agents.classification_engine import ClassificationEngine
 from app.agents.compound_utterance import looks_compound
-from app.agents.conversation_manager import ConversationManager
+from app.agents.conversation_manager import ConversationManager, extract_resolved_entities
 from app.agents.dispatch_manager import DispatchManager
 from app.agents.sanitize import strip_markdown
 from app.agents.task_pipeline import CacheReplayResult, DispatchResult
@@ -61,14 +61,14 @@ class ClassificationStrategy(ABC):
         language: str,
         span_collector,
         *,
-        pre_classified: tuple[list[tuple[str, str, float | None, list[str]]], bool] | None = None,
+        pre_classified: tuple[list[tuple[str, str, float | None]], bool] | None = None,
         routing_skip: Any | None = None,
         compound_bypass: bool = False,
         extended_metadata: bool = False,
         classify_reason: str | None = None,
         allow_classify_cache_lookup: bool = False,
         prefetched_turns: list[dict[str, Any]] | None = None,
-    ) -> tuple[list[tuple[str, str, float | None, list[str]]], bool, str, str, float | None]: ...
+    ) -> tuple[list[tuple[str, str, float | None]], bool, str, str, float | None]: ...
 
 
 class DispatchStrategy(ABC):
@@ -78,13 +78,15 @@ class DispatchStrategy(ABC):
     async def execute(
         self,
         task: IngressTask,
-        classifications: list[tuple[str, str, float | None, list[str]]],
+        classifications: list[tuple[str, str, float | None]],
         user_text: str,
         conversation_id: str,
         turns: list[dict[str, Any]],
         span_collector,
         language: str,
         incoming_context,
+        *,
+        candidates: dict[str, list[Any]] | None = None,
     ) -> DispatchResult: ...
 
 
@@ -101,7 +103,7 @@ class FinalizationStrategy(ABC):
         conversation_id: str,
         turns: list[dict[str, Any]],
         span_collector,
-        classifications: list[tuple[str, str, float | None, list[str]]],
+        classifications: list[tuple[str, str, float | None]],
         voice_followup_requested: bool,
         used_origin_context: bool,
         confidence: float | None = None,
@@ -178,14 +180,14 @@ class DefaultClassificationStrategy(ClassificationStrategy):
         language: str,
         span_collector,
         *,
-        pre_classified: tuple[list[tuple[str, str, float | None, list[str]]], bool] | None = None,
+        pre_classified: tuple[list[tuple[str, str, float | None]], bool] | None = None,
         routing_skip: Any | None = None,
         compound_bypass: bool = False,
         extended_metadata: bool = False,
         classify_reason: str | None = None,
         allow_classify_cache_lookup: bool = False,
         prefetched_turns: list[dict[str, Any]] | None = None,
-    ) -> tuple[list[tuple[str, str, float | None, list[str]]], bool, str, str, float | None]:
+    ) -> tuple[list[tuple[str, str, float | None]], bool, str, str, float | None]:
         from app.analytics.tracer import _optional_span
 
         next_classify_extra: dict[str, object] = {}
@@ -203,7 +205,7 @@ class DefaultClassificationStrategy(ClassificationStrategy):
 
         if pre_classified is not None:
             classifications, routing_cached = pre_classified
-            target_agent, condensed_task, confidence, _entities = classifications[0]
+            target_agent, condensed_task, confidence = classifications[0]
             if synthetic_preclassified:
                 async with _optional_span(span_collector, "classify", agent_id="orchestrator") as span:
                     self._pipeline_record_classify_span(
@@ -230,7 +232,7 @@ class DefaultClassificationStrategy(ClassificationStrategy):
                     get_turns=self._get_turns,
                     prefetched_turns=prefetched_turns,
                 )
-                target_agent, condensed_task, confidence, _entities = classifications[0]
+                target_agent, condensed_task, confidence = classifications[0]
                 self._pipeline_record_classify_span(
                     span,
                     classifications,
@@ -259,16 +261,18 @@ class DefaultDispatchStrategy(DispatchStrategy):
     async def execute(
         self,
         task: IngressTask,
-        classifications: list[tuple[str, str, float | None, list[str]]],
+        classifications: list[tuple[str, str, float | None]],
         user_text: str,
         conversation_id: str,
         turns: list[dict[str, Any]],
         span_collector,
         language: str,
         incoming_context,
+        *,
+        candidates: dict[str, list[Any]] | None = None,
     ) -> DispatchResult:
-        is_sequential_send = any(a == "send-agent" for a, _, _, _ in classifications) and any(
-            a != "send-agent" for a, _, _, _ in classifications
+        is_sequential_send = any(a == "send-agent" for a, _, _ in classifications) and any(
+            a != "send-agent" for a, _, _ in classifications
         )
 
         failed_agents: list[tuple[str, str]] = []
@@ -286,6 +290,7 @@ class DefaultDispatchStrategy(DispatchStrategy):
                 span_collector,
                 incoming_context,
                 resolved_language=language,
+                candidates=candidates,
             )
             action_executed = (result or {}).get("action_executed")
             has_error = bool((result or {}).get("error"))
@@ -306,7 +311,6 @@ class DefaultDispatchStrategy(DispatchStrategy):
         if len(classifications) == 1:
             target_agent = classifications[0][0]
             condensed_task = classifications[0][1]
-            verbatim_terms = classifications[0][3]
             agent_id, speech, result = await self._dispatch_manager.dispatch_single(
                 target_agent,
                 condensed_task,
@@ -316,7 +320,7 @@ class DefaultDispatchStrategy(DispatchStrategy):
                 span_collector,
                 incoming_context=incoming_context,
                 resolved_language=language,
-                verbatim_terms=verbatim_terms,
+                candidates=(candidates or {}).get(target_agent),
             )
             action_executed = (result or {}).get("action_executed")
             routed_to = agent_id
@@ -351,9 +355,9 @@ class DefaultDispatchStrategy(DispatchStrategy):
                 span_collector,
                 incoming_context=incoming_context,
                 resolved_language=language,
-                verbatim_terms=entities,
+                candidates=(candidates or {}).get(aid),
             )
-            for aid, ctask, _, entities in classifications
+            for aid, ctask, _ in classifications
         ]
         dispatch_results = await asyncio.gather(*dispatch_coros, return_exceptions=True)
 
@@ -446,7 +450,7 @@ class DefaultFinalizationStrategy(FinalizationStrategy):
         conversation_id: str,
         turns: list[dict[str, Any]],
         span_collector,
-        classifications: list[tuple[str, str, float | None, list[str]]],
+        classifications: list[tuple[str, str, float | None]],
         voice_followup_requested: bool,
         used_origin_context: bool,
         confidence: float | None = None,
@@ -508,7 +512,12 @@ class DefaultFinalizationStrategy(FinalizationStrategy):
                 ret_span["metadata"]["voice_followup"] = voice_followup_effective
                 ret_span["metadata"]["cache_stored_response"] = False
                 ret_span["metadata"]["cache_stored_routing"] = False
-                await self._conversation_manager.store_turn(conversation_id, user_text, speech, agent_id=routed_to)
+                # ENTITY_RES_REDESIGN Phase 6: remember the acted-on entity
+                # (success path only) as an anaphora recency hint.
+                resolved_entities = await extract_resolved_entities(action_executed)
+                await self._conversation_manager.store_turn(
+                    conversation_id, user_text, speech, agent_id=routed_to, resolved_entities=resolved_entities
+                )
                 if span_collector:
                     await self._create_trace(
                         span_collector,

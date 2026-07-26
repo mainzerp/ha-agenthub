@@ -244,7 +244,7 @@ These blocks are **mandatory** in every subagent prompt for the respective phase
 You are a research agent running as a subagent of the Kimi Code CLI orchestrator. Investigate ONLY: [TOPIC].
 Base every analysis, decision, and statement on verifiable facts. Do not speculate, assume, or invent explanations when information is missing.
 Write your findings to: docs/SubAgent/[NAME]/[NAME]_[TOPIC]_ANALYSIS.md
-Allowed tools: Read, Grep, Glob, Write (docs/SubAgent/ only), mcp__jcodemunch__* (e.g. search_symbols, get_file_outline, get_symbol_source — PREFER these for code lookup on indexed repos; fall back to Grep/Read if unavailable or empty).
+Allowed tools: Read, Grep, Glob, Write (docs/SubAgent/ only), mcp__jcodemunch__* (e.g. search_symbols, get_file_outline, get_symbol_source — PREFER mcp__jcodemunch__* for code lookup on indexed repos; fall back to Grep/Read if unavailable or empty).
 FORBIDDEN: Bash, Edit, any source code modification.
 Do NOT ask the user questions. Do NOT request plan approval.
 Return a short summary and the artifact path when done.
@@ -270,7 +270,7 @@ You are a planning agent running as a subagent of the Kimi Code CLI orchestrator
 Base every analysis, decision, and statement on verifiable facts. Do not speculate, assume, or invent explanations when information is missing.
 Read the analysis from: docs/SubAgent/[NAME]/[NAME]_ANALYSIS.md
 Write a concise step-by-step implementation plan with a checklist to: docs/SubAgent/[NAME]/[NAME]_PLAN.md
-Allowed tools: Read, Grep, Glob, Write (docs/SubAgent/ only), mcp__jcodemunch__* (e.g. search_symbols, get_file_outline, get_symbol_source — PREFER these for code lookup on indexed repos; fall back to Grep/Read if unavailable or empty).
+Allowed tools: Read, Grep, Glob, Write (docs/SubAgent/ only), mcp__jcodemunch__* (e.g. search_symbols, get_file_outline, get_symbol_source — PREFER mcp__jcodemunch__* for code lookup on indexed repos; fall back to Grep/Read if unavailable or empty).
 FORBIDDEN: Bash, Edit, any source code modification.
 Do NOT ask the user questions. Do NOT request plan approval.
 Return a short summary and the artifact path when done.

@@ -85,7 +85,6 @@ async def execute_vacuum_action(
     *,
     preferred_area_id: str | None = None,
     task_context: TaskContext | None = None,
-    verbatim_terms: list[str] | None = None,
 ) -> dict:
     """Resolve an entity, call a vacuum HA service, and verify the result.
 
@@ -115,7 +114,6 @@ async def execute_vacuum_action(
             parameters=action.get("parameters") or {},
             preferred_area_id=preferred_area_id,
             task_context=task_context,
-            verbatim_terms=verbatim_terms,
             action=action,
         )
 
@@ -139,8 +137,8 @@ async def execute_vacuum_action(
         _VACUUM_WRITE_DOMAINS,
         _validate_domain,
         preferred_area_id=preferred_area_id,
-        verbatim_terms=verbatim_terms,
         span_collector=span_collector,
+        direct_entity_id=action.get("entity_id"),
     )
     if resolved["not_found_result"] is not None:
         return resolved["not_found_result"]
@@ -231,7 +229,6 @@ async def _query_vacuum_state(
     span_collector=None,
     *,
     preferred_area_id: str | None = None,
-    verbatim_terms: list[str] | None = None,
     action: dict | None = None,
 ) -> dict:
     entity_id_direct = await _validate_direct_entity_id(
@@ -252,7 +249,6 @@ async def _query_vacuum_state(
             _VACUUM_READ_DOMAINS,
             _validate_domain,
             preferred_area_id=preferred_area_id,
-            verbatim_terms=verbatim_terms,
             span_collector=span_collector,
         )
         if resolved["not_found_result"] is not None:
@@ -354,7 +350,6 @@ async def _handle_vacuum_read_action(
     parameters: dict[str, Any] | None = None,
     preferred_area_id: str | None = None,
     task_context: TaskContext | None = None,
-    verbatim_terms: list[str] | None = None,
     action: dict | None = None,
 ) -> dict:
     params = parameters or {}
@@ -367,7 +362,6 @@ async def _handle_vacuum_read_action(
             agent_id,
             span_collector=span_collector,
             preferred_area_id=preferred_area_id,
-            verbatim_terms=verbatim_terms,
             action=action,
         )
     if action_name == "list_vacuums":
@@ -383,7 +377,6 @@ async def _handle_vacuum_read_action(
             _HISTORY_DOMAINS,
             _validate_domain,
             preferred_area_id=preferred_area_id,
-            verbatim_terms=verbatim_terms,
             span_collector=span_collector,
         )
         if resolved["not_found_result"] is not None:

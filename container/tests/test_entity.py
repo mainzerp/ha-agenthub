@@ -22,6 +22,7 @@ from app.entity.signals import (
     LevenshteinSignal,
     PhoneticSignal,
 )
+from app.entity.tokens import entry_tokens, normalize_tokenize
 from app.security.sanitization import USER_INPUT_END, USER_INPUT_START
 from tests.helpers import make_entity_index_entry
 
@@ -99,7 +100,7 @@ class TestPhoneticSignal:
             assert score == 1.0
 
     def test_graceful_without_pyphonetics(self):
-        with patch("app.entity.signals.Soundex", None), patch("app.entity.signals.Metaphone", None):
+        with patch("app.entity.signals._SOUNDEX", None), patch("app.entity.signals._METAPHONE", None):
             score = PhoneticSignal.score("light", "lite")
             assert score == 0.0
 
@@ -190,13 +191,21 @@ class TestEntityMatcher:
 
         mock_index.get_by_ids = MagicMock(side_effect=_get_by_ids)
         mock_index.get_by_ids_async = AsyncMock(side_effect=_get_by_ids)
+        mock_index.find_by_tokens_async = AsyncMock(return_value=[])
+        # Uniform IDF stub: weighted coverage degenerates to plain token
+        # coverage, keeping span-score expectations deterministic. Tests that
+        # exercise unseen-token behavior override this stub.
+        mock_index.token_idf = MagicMock(side_effect=lambda tokens: {t: 1.0 for t in tokens})
         mock_alias_resolver = AsyncMock(spec=AliasResolver)
         matcher = EntityMatcher(mock_index, mock_alias_resolver)
+        # Production-like weights (seed _seed.py default_matching): score
+        # assertions must not pass on equal 0.2 weights, which mask real
+        # production behavior (e.g. the token-preselection rescue case).
         matcher._weights = {
-            "levenshtein": 0.2,
-            "jaro_winkler": 0.2,
+            "levenshtein": 0.20,
+            "jaro_winkler": 0.20,
             "phonetic": 0.15,
-            "embedding": 0.3,
+            "embedding": 0.30,
             "alias": 0.15,
         }
         matcher._confidence_threshold = 0.75
@@ -407,7 +416,7 @@ class TestEntityMatcher:
     async def test_match_area_bonus_exact_match(self):
         """Query equal to entry.area receives +0.30 bonus and crosses threshold."""
         matcher, mock_index, mock_alias = self._make_matcher()
-        matcher._confidence_threshold = 0.5
+        matcher._confidence_threshold = 0.40
         mock_alias.resolve = AsyncMock(return_value=None)
 
         entry = make_entity_index_entry(
@@ -416,7 +425,7 @@ class TestEntityMatcher:
             domain="climate",
             area="wohnzimmer",
         )
-        # Embedding similarity 0.4 -> base weighted score well below 0.5
+        # Embedding similarity 0.4 -> base weighted score well below 0.4
         mock_index.search_async = AsyncMock(return_value=[(entry, 0.6)])
         mock_index.get_by_id = MagicMock(return_value=entry)
 
@@ -425,13 +434,13 @@ class TestEntityMatcher:
 
         assert len(results) >= 1
         assert results[0].entity_id == "climate.thermostat"
-        # Embedding contributes 0.4 * 0.3 = 0.12, then +0.30 area bonus = 0.42
-        # so threshold 0.5 would not pass without containment-or-area logic.
-        # Friendly name "Thermostat" does not contain "wohnzimmer", only area does.
-        assert results[0].score >= 0.5
+        # Span signals are pruned to zero (no token overlap with "Thermostat"),
+        # phonetic is 0.0: weighted = 0.4 * 0.3 = 0.12, then +0.30 area bonus
+        # = 0.42, so threshold 0.4 would not pass without the area bonus.
+        assert results[0].score == pytest.approx(0.42, abs=0.01)
 
-    async def test_match_area_bonus_stacks_with_containment(self):
-        """Both friendly_name containment and area bonuses apply, capped at 1.0."""
+    async def test_match_area_bonus_stacks_with_span_score(self):
+        """Area bonus stacks on top of the span-scored name match."""
         matcher, mock_index, mock_alias = self._make_matcher()
         matcher._confidence_threshold = 0.0
         mock_alias.resolve = AsyncMock(return_value=None)
@@ -449,8 +458,10 @@ class TestEntityMatcher:
             results = await matcher.match("wohnzimmer")
 
         assert len(results) >= 1
-        # Both bonuses apply -> base + 0.3 + 0.3, then capped at 1.0
-        assert results[0].score == pytest.approx(1.0)
+        # Span "wohnzimmer" covers half the friendly-name tokens (cov 0.5):
+        # lev 0.714*0.5, jw 0.719*0.5, phonetic 1.0 (token match), embedding
+        # 0.9 -> weighted ~0.563, then +0.30 area bonus -> ~0.863.
+        assert results[0].score == pytest.approx(0.863, abs=0.01)
 
     async def test_match_no_area_bonus_when_area_empty(self):
         """Entry with area=None receives no area bonus."""
@@ -511,6 +522,254 @@ class TestEntityMatcher:
         assert len(results) >= 1
         assert results[0].entity_id == "climate.wohnzimmer"
         assert results[0].score >= 0.60
+
+    async def test_token_preselection_rescues_embedding_miss(self):
+        """Canonical case: "Licht bei Couch im Wohnzimmer" misses light.couch in
+        the embedding shortlist; token preselection rescues it and the
+        Floor-Regel lifts it past the 0.60 threshold.
+
+        Measured with production weights (lev 0.20 / jw 0.20 / phonetic 0.15 /
+        embedding 0.30 / alias 0.15): the span "couch" matches friendly "Couch"
+        exactly (lev 1.0, jw 1.0, cov 1.0) and phonetic per-token is 1.0, so
+        the weighted sum is 0.20+0.20+0.15 = 0.55 (embedding and alias
+        contribute 0; the area bonus cannot fire on sentence-length queries).
+        The span covers ALL friendly-name tokens with similarity >= 0.95, so
+        the Floor-Regel applies: score = max(0.55, 0.65) = 0.65 >= 0.60.
+        """
+        matcher, mock_index, mock_alias = self._make_matcher()
+        matcher._confidence_threshold = 0.60
+        mock_alias.resolve = AsyncMock(return_value=None)
+
+        couch = make_entity_index_entry(
+            "light.couch",
+            "Couch",
+            area="wohnzimmer",
+            area_name="Wohnzimmer",
+            id_tokens=["couch"],
+        )
+        # Embedding shortlist misses light.couch entirely.
+        mock_index.search_async = AsyncMock(return_value=[])
+        mock_index.find_by_tokens_async = AsyncMock(return_value=[couch])
+        mock_index.get_by_id = MagicMock(side_effect=lambda eid: couch if eid == "light.couch" else None)
+
+        with patch("app.entity.matcher.EntityVisibilityRepository"):
+            results = await matcher.match("Licht bei Couch im Wohnzimmer")
+
+        rescued = [r for r in results if r.entity_id == "light.couch"]
+        assert len(rescued) == 1
+        # Marker is diagnostics-only: present, but with no scoring effect.
+        assert rescued[0].signal_scores.get("token_preselection") == 1.0
+        assert rescued[0].score == pytest.approx(0.65)
+        assert rescued[0].score >= 0.60
+
+    async def test_token_preselection_disabled_skips_lookup(self):
+        """Disabled flag: no find_by_tokens_async call, no rescue."""
+        matcher, mock_index, mock_alias = self._make_matcher()
+        matcher._token_preselection_enabled = False
+        matcher._confidence_threshold = 0.0
+        mock_alias.resolve = AsyncMock(return_value=None)
+        mock_index.search_async = AsyncMock(return_value=[])
+
+        with patch("app.entity.matcher.EntityVisibilityRepository"):
+            results = await matcher.match("Licht bei Couch im Wohnzimmer")
+
+        assert results == []
+        mock_index.find_by_tokens_async.assert_not_awaited()
+
+    async def test_token_preselection_rescue_respects_visibility(self):
+        """A rescued entry that fails the visibility filter is not returned."""
+        matcher, mock_index, mock_alias = self._make_matcher()
+        matcher._confidence_threshold = 0.0
+        mock_alias.resolve = AsyncMock(return_value=None)
+
+        couch = make_entity_index_entry("light.couch", "Couch", area="wohnzimmer")
+        mock_index.search_async = AsyncMock(return_value=[])
+        mock_index.find_by_tokens_async = AsyncMock(return_value=[couch])
+        mock_index.get_by_id = MagicMock(return_value=None)
+
+        with patch("app.entity.matcher.EntityVisibilityRepository") as mock_repo:
+            mock_repo.get_rules = AsyncMock(
+                return_value=[
+                    {"rule_type": "domain_exclude", "rule_value": "light"},
+                ]
+            )
+            results = await matcher.match("Licht bei Couch im Wohnzimmer", agent_id="climate-agent")
+
+        assert all(r.entity_id != "light.couch" for r in results)
+
+    async def test_token_preselection_marks_embedding_shortlisted_candidate(self):
+        """An entity in the embedding shortlist AND returned by
+        find_by_tokens_async gets BOTH the embedding and (diagnostics-only)
+        token_preselection signals; the Floor-Regel never lowers its score,
+        so it outranks a same-named rescue-only entity that is lifted to 0.65.
+        """
+        matcher, mock_index, mock_alias = self._make_matcher()
+        matcher._confidence_threshold = 0.0
+        mock_alias.resolve = AsyncMock(return_value=None)
+
+        light_couch = make_entity_index_entry(
+            "light.couch",
+            "Couch",
+            area="wohnzimmer",
+            area_name="Wohnzimmer",
+            id_tokens=["couch"],
+        )
+        update_couch = make_entity_index_entry(
+            "update.couch",
+            "Couch",
+            area="wohnzimmer",
+            area_name="Wohnzimmer",
+            id_tokens=["couch"],
+        )
+        # light.couch is the TOP embedding hit; update.couch is not shortlisted.
+        mock_index.search_async = AsyncMock(return_value=[(light_couch, 0.1)])  # sim = 0.9
+        mock_index.find_by_tokens_async = AsyncMock(return_value=[light_couch, update_couch])
+        entries = {e.entity_id: e for e in (light_couch, update_couch)}
+        mock_index.get_by_id = MagicMock(side_effect=lambda eid: entries.get(eid))
+
+        with patch("app.entity.matcher.EntityVisibilityRepository"):
+            results = await matcher.match("Licht bei Couch im Wohnzimmer")
+
+        by_id = {r.entity_id: r for r in results}
+        assert "light.couch" in by_id
+        assert "update.couch" in by_id
+        shortlisted = by_id["light.couch"]
+        assert "embedding" in shortlisted.signal_scores
+        assert shortlisted.signal_scores.get("token_preselection") == 1.0
+        # Weighted sum: lev 1.0*0.20 + jw 1.0*0.20 + phonetic 1.0*0.15 +
+        # embedding 0.9*0.30 = 0.82. The Floor-Regel must not lower it to 0.65.
+        assert shortlisted.score == pytest.approx(0.82, abs=0.01)
+        # The same-named rescue-only entity lacks the embedding contribution:
+        # weighted 0.55, floored to 0.65 -- below the shortlist hit.
+        rescue_only = by_id["update.couch"]
+        assert rescue_only.signal_scores.get("token_preselection") == 1.0
+        assert "embedding" not in rescue_only.signal_scores
+        assert rescue_only.score == pytest.approx(0.65)
+        assert shortlisted.score > rescue_only.score
+
+    async def test_token_preselection_no_marker_for_non_token_matched_shortlist(self):
+        """Shortlist candidate NOT returned by find_by_tokens_async gets no marker."""
+        matcher, mock_index, mock_alias = self._make_matcher()
+        matcher._confidence_threshold = 0.30
+        mock_alias.resolve = AsyncMock(return_value=None)
+
+        couch = make_entity_index_entry("light.couch", "Couch", area="wohnzimmer", id_tokens=["couch"])
+        mock_index.search_async = AsyncMock(return_value=[(couch, 0.05)])  # sim = 0.95
+        mock_index.find_by_tokens_async = AsyncMock(return_value=[])
+        mock_index.get_by_id = MagicMock(side_effect=lambda eid: couch if eid == "light.couch" else None)
+
+        with patch("app.entity.matcher.EntityVisibilityRepository"):
+            results = await matcher.match("Licht bei Couch im Wohnzimmer")
+
+        shortlisted = [r for r in results if r.entity_id == "light.couch"]
+        assert len(shortlisted) == 1
+        assert "embedding" in shortlisted[0].signal_scores
+        assert "token_preselection" not in shortlisted[0].signal_scores
+
+    async def test_floor_lifts_contained_full_name_to_floor_score(self):
+        """Floor-Regel: full friendly name contained in a sentence, weak
+        embedding hit -> weighted sum below 0.65, floor lifts it to 0.65."""
+        matcher, mock_index, mock_alias = self._make_matcher()
+        matcher._confidence_threshold = 0.60
+        mock_alias.resolve = AsyncMock(return_value=None)
+
+        entry = make_entity_index_entry("light.nachtlicht", "Nachtlicht", area=None)
+        mock_index.search_async = AsyncMock(return_value=[(entry, 0.7)])  # sim = 0.3
+        mock_index.get_by_id = MagicMock(side_effect=lambda eid: entry if eid == "light.nachtlicht" else None)
+
+        with patch("app.entity.matcher.EntityVisibilityRepository"):
+            results = await matcher.match("Mach bitte das Nachtlicht an")
+
+        assert len(results) == 1
+        # lev/jw span "nachtlicht" = 1.0 (cov 1.0), phonetic 1.0, embedding
+        # 0.3 -> weighted 0.20+0.20+0.15+0.09 = 0.64; span covers all name
+        # tokens verbatim -> floored to 0.65.
+        assert results[0].score == pytest.approx(0.65)
+
+    async def test_floor_does_not_alter_score_already_above_floor(self):
+        """A candidate whose weighted score is already above 0.65 keeps it."""
+        matcher, mock_index, mock_alias = self._make_matcher()
+        matcher._confidence_threshold = 0.0
+        mock_alias.resolve = AsyncMock(return_value=None)
+
+        entry = make_entity_index_entry("light.couch", "Couch", area=None)
+        mock_index.search_async = AsyncMock(return_value=[(entry, 0.1)])  # sim = 0.9
+        mock_index.get_by_id = MagicMock(side_effect=lambda eid: entry if eid == "light.couch" else None)
+
+        with patch("app.entity.matcher.EntityVisibilityRepository"):
+            results = await matcher.match("Licht bei Couch im Wohnzimmer")
+
+        assert len(results) == 1
+        # 0.20+0.20+0.15 + 0.9*0.30 = 0.82 -- floored candidate, but already
+        # above the floor, so the score is unchanged.
+        assert results[0].score == pytest.approx(0.82, abs=0.01)
+
+    async def test_floor_applies_without_pyphonetics(self):
+        """Without pyphonetics the phonetic signal is 0.0 (weighted 0.40 for
+        the rescue case); the Floor-Regel still lifts the score to 0.65."""
+        matcher, mock_index, mock_alias = self._make_matcher()
+        matcher._confidence_threshold = 0.60
+        mock_alias.resolve = AsyncMock(return_value=None)
+
+        couch = make_entity_index_entry("light.couch", "Couch", area=None, id_tokens=["couch"])
+        mock_index.search_async = AsyncMock(return_value=[])
+        mock_index.find_by_tokens_async = AsyncMock(return_value=[couch])
+        mock_index.get_by_id = MagicMock(side_effect=lambda eid: couch if eid == "light.couch" else None)
+
+        with (
+            patch("app.entity.signals._SOUNDEX", None),
+            patch("app.entity.signals._METAPHONE", None),
+            patch("app.entity.matcher.EntityVisibilityRepository"),
+        ):
+            results = await matcher.match("Licht bei Couch im Wohnzimmer")
+
+        rescued = [r for r in results if r.entity_id == "light.couch"]
+        assert len(rescued) == 1
+        assert rescued[0].signal_scores.get("phonetic") == 0.0
+        assert rescued[0].score == pytest.approx(0.65)
+
+    async def test_partial_name_match_is_not_floored(self):
+        """Partial-name match: no span covers ALL friendly-name tokens, so the
+        Floor-Regel does not apply and the score stays the weighted sum."""
+        matcher, mock_index, mock_alias = self._make_matcher()
+        matcher._confidence_threshold = 0.0
+        mock_alias.resolve = AsyncMock(return_value=None)
+
+        entry = make_entity_index_entry("light.lichtband_wohnzimmer", "Lichtband Wohnzimmer", area=None)
+        mock_index.search_async = AsyncMock(return_value=[(entry, 0.5)])  # sim = 0.5
+        mock_index.get_by_id = MagicMock(side_effect=lambda eid: entry if eid == "light.lichtband_wohnzimmer" else None)
+
+        with patch("app.entity.matcher.EntityVisibilityRepository"):
+            results = await matcher.match("Wohnzimmer")
+
+        assert len(results) == 1
+        # Span "wohnzimmer" covers half the name tokens (cov 0.5): lev
+        # 0.667*0.5, jw 0.45*0.5, phonetic 1.0, embedding 0.5 -> weighted
+        # ~0.412, no floor (token "lichtband" uncovered) -> score < 0.65.
+        assert results[0].score == pytest.approx(0.412, abs=0.01)
+        assert results[0].score < 0.65
+
+    async def test_unseen_tokens_fall_back_to_unweighted_coverage(self):
+        """Defined unseen-token behavior: when no entity token has an IDF
+        weight (empty idf map), coverage is plain unweighted token coverage;
+        the contained name still scores 1.0 and the floor still fires."""
+        matcher, mock_index, mock_alias = self._make_matcher()
+        matcher._confidence_threshold = 0.60
+        mock_alias.resolve = AsyncMock(return_value=None)
+        mock_index.token_idf = MagicMock(return_value={})
+
+        couch = make_entity_index_entry("light.couch", "Couch", area=None, id_tokens=["couch"])
+        mock_index.search_async = AsyncMock(return_value=[])
+        mock_index.find_by_tokens_async = AsyncMock(return_value=[couch])
+        mock_index.get_by_id = MagicMock(side_effect=lambda eid: couch if eid == "light.couch" else None)
+
+        with patch("app.entity.matcher.EntityVisibilityRepository"):
+            results = await matcher.match("Licht bei Couch im Wohnzimmer")
+
+        rescued = [r for r in results if r.entity_id == "light.couch"]
+        assert len(rescued) == 1
+        assert rescued[0].signal_scores["levenshtein"] == pytest.approx(1.0)
+        assert rescued[0].score == pytest.approx(0.65)
 
 
 # ---------------------------------------------------------------------------
@@ -745,6 +1004,41 @@ class TestNormalizeForContainment:
 
 
 # ---------------------------------------------------------------------------
+# Shared normalize/tokenize helpers (token preselection)
+# ---------------------------------------------------------------------------
+
+
+class TestNormalizeTokenize:
+    """Tests for the shared normalize_tokenize/entry_tokens helpers."""
+
+    def test_umlaut_and_digraph_equivalent(self):
+        assert normalize_tokenize("Müller") == normalize_tokenize("Mueller") == {"muller"}
+
+    def test_diacritics_stripped(self):
+        assert normalize_tokenize("Gästezimmer") == {"gastezimmer"}
+
+    def test_punctuation_split(self):
+        assert normalize_tokenize("Licht, bei Couch!") == {"licht", "bei", "couch"}
+
+    def test_empty_and_noise(self):
+        assert normalize_tokenize("") == set()
+        assert normalize_tokenize("  ---  ") == set()
+
+    def test_entry_tokens_union(self):
+        entry = make_entity_index_entry(
+            "light.couch",
+            "Couch Lampe",
+            area="wohnzimmer",
+            area_name="Wohnzimmer",
+            device_name="IKEA Traadfri",
+            aliases=["Sofa Licht"],
+            id_tokens=["couch"],
+        )
+        tokens = entry_tokens(entry)
+        assert {"couch", "lampe", "wohnzimmer", "ikea", "traadfri", "sofa", "licht"} <= tokens
+
+
+# ---------------------------------------------------------------------------
 # Digraphs to umlauts
 # ---------------------------------------------------------------------------
 
@@ -948,6 +1242,7 @@ class TestVisibilityRules:
 
     def _make_matcher(self) -> tuple[EntityMatcher, MagicMock, AsyncMock]:
         mock_index = MagicMock(spec=EntityIndex)
+        mock_index.find_by_tokens_async = AsyncMock(return_value=[])
         mock_alias = AsyncMock(spec=AliasResolver)
         matcher = EntityMatcher(mock_index, mock_alias)
         return matcher, mock_index, mock_alias

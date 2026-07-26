@@ -176,8 +176,6 @@ class TestCancelledErrorPropagation:
         from app.agents.actionable import LightAgent
 
         agent = LightAgent()
-        agent._current_task = MagicMock()
-        agent._current_task.verbatim_terms = []
 
         with (
             patch(

@@ -21,6 +21,10 @@ def _make_matcher() -> EntityMatcher:
     entity_index = MagicMock()
     entity_index.get_by_ids = MagicMock(return_value={})
     entity_index.get_by_ids_async = AsyncMock(return_value={})
+    entity_index.find_by_tokens_async = AsyncMock(return_value=[])
+    # Empty IDF map: all tokens count as unseen -> span coverage falls back
+    # to plain unweighted token coverage (defined unseen-token behavior).
+    entity_index.token_idf = MagicMock(return_value={})
     matcher = EntityMatcher(entity_index=entity_index, alias_resolver=object())
     matcher._top_n = 3
     matcher._apply_visibility_rules = AsyncMock(side_effect=lambda _agent, results: results)
@@ -137,14 +141,15 @@ async def test_query_normalization_regression():
 
 @pytest.mark.asyncio
 async def test_hidden_entities_excluded_before_scoring():
-    """Visibility filtering must run before Levenshtein/phonetic scoring."""
+    """Visibility filtering must run before span-based string scoring."""
     matcher = _make_matcher()
+    # Production-like weights (seed _seed.py default_matching).
     matcher._weights = {
-        "levenshtein": 0.2,
-        "jaro_winkler": 0.2,
-        "phonetic": 0.2,
-        "embedding": 0.2,
-        "alias": 0.2,
+        "levenshtein": 0.20,
+        "jaro_winkler": 0.20,
+        "phonetic": 0.15,
+        "embedding": 0.30,
+        "alias": 0.15,
     }
     matcher._confidence_threshold = 0.0
 
@@ -180,5 +185,10 @@ async def test_hidden_entities_excluded_before_scoring():
     called_ids = {r.entity_id for r in vis_mock.await_args.args[1]}
     assert called_ids == {"light.hidden", "light.visible"}
     assert not any(r.entity_id == "light.hidden" for r in results)
+    # Span signature: score(span_text, friendly_name) -- the hidden entity is
+    # never scored, and only query spans reach the signal.
     scored_friendly_names = {call.args[1] for call in lev_mock.call_args_list}
     assert "Hidden Light" not in scored_friendly_names
+    scored_spans = {call.args[0] for call in lev_mock.call_args_list}
+    assert scored_spans
+    assert scored_spans <= {"hidden", "light", "hidden light"}

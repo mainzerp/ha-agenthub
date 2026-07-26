@@ -43,8 +43,6 @@ class TimerAgent(ActionableAgent):
         area_id = ctx.area_id if ctx else None
         language = ctx.language if ctx else None
         timezone = ctx.timezone if ctx else None
-        current_task = self._get_current_task()
-        verbatim_terms = list(getattr(current_task, "verbatim_terms", []) or []) if current_task else []
         metadata: dict = {}
 
         params = action.get("parameters") or {}
@@ -95,7 +93,6 @@ class TimerAgent(ActionableAgent):
             language=language,
             timezone=timezone,
             span_collector=span_collector,
-            verbatim_terms=verbatim_terms,
         )
         if metadata:
             existing_metadata = result.get("metadata") if isinstance(result, dict) else None
