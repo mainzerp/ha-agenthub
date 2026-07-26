@@ -83,6 +83,22 @@ class IngressTask(BaseModel):
     span_collector: Any = Field(default=None, exclude=True)
 
 
+class EntityCandidate(BaseModel):
+    """Post-filter entity candidate resolved at ingress and carried on the
+    dispatch envelope.
+
+    Populated by the orchestrator's ingress resolution stage
+    (``_run_pipeline_prelude``): an unfiltered oversampled matcher pool is
+    re-filtered per routed agent (visibility, Directive 5) and re-ranked by
+    the agent's preferred domains, then cut to the top K. Only this
+    post-filter list may leave the orchestrator.
+    """
+
+    entity_id: str
+    friendly_name: str = ""
+    score: float = 0.0
+
+
 class DispatchTask(BaseModel):
     """Task dispatched from orchestrator to a specialized agent via A2A."""
 
@@ -91,12 +107,13 @@ class DispatchTask(BaseModel):
     description: str = Field(..., description="Condensed task with preserved entity names")
     conversation_id: str | None = None
     context: TaskContext | None = None
-    # Entity/room tokens parsed from the classification ``@entities:`` lines
-    # (classification_engine.py). The pipeline populates them on every
-    # dispatch so the entity matcher can try them before fuzzy matching.
-    verbatim_terms: list[str] = Field(
+    # ENTITY_RES_REDESIGN Phase 3: post-filter (visibility + preferred-domain
+    # re-rank) top-K entity candidates from ingress resolution. Content
+    # agents only -- filler and send-agent legs always carry an empty list.
+    # Optional: agents that ignore the field keep working unchanged.
+    candidates: list[EntityCandidate] = Field(
         default_factory=list,
-        description="Entity/room tokens from the classification @entities: line, tried first by the entity matcher",
+        description="Post-filter top-K entity candidates from ingress resolution (content agents only)",
     )
 
     # Runtime-only: not serialized, not included in model_dump()
@@ -120,10 +137,32 @@ class BackgroundTask(BaseModel):
     span_collector: Any = Field(default=None, exclude=True)
 
 
+class LastEntity(BaseModel):
+    """A recently resolved entity carried as a slim recency hint.
+
+    ENTITY_RES_REDESIGN Phase 6: ids + names + turn index only -- no
+    states. Recorded by the orchestrator from successful
+    ``TaskResult.action_executed`` results and injected into the dispatch
+    context so agents can resolve anaphoric follow-ups ("turn it off").
+    When the agent LLM echoes one of these ids as ``entity_id`` it passes
+    the same fail-closed validation gate (domain + index existence +
+    visibility) as any other LLM-picked id before execution; explicit
+    exact matches always win over this recency hint.
+    """
+
+    entity_id: str
+    friendly_name: str = ""
+    turn_index: int = 0
+
+
 class TaskContext(BaseModel):
     """Context propagated with an agent task."""
 
     conversation_turns: list[dict] = Field(default_factory=list)
+    # ENTITY_RES_REDESIGN Phase 6: recently resolved entities (most recent
+    # first) for anaphora resolution. Populated by the orchestrator from
+    # the conversation store; read-only context for agents.
+    last_entities: list[LastEntity] = Field(default_factory=list)
     device_id: str | None = None
     area_id: str | None = None
     # FLOW-CTX-1 (0.18.6): human-readable counterparts to device_id /

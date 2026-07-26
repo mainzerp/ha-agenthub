@@ -238,3 +238,68 @@ class TestDispatchManagerStandalone:
         )
         request = dispatcher.dispatch.await_args.args[0]
         assert request.params["task"].context.sequential_send is True
+
+
+# ---------------------------------------------------------------------------
+# ENTITY_RES_REDESIGN Phase 3: DispatchTask.candidates envelope
+# ---------------------------------------------------------------------------
+
+
+class TestDispatchTaskCandidates:
+    def _make_dispatch_manager(self, dispatch_side_effect=None):
+        dispatcher = AsyncMock()
+        if dispatch_side_effect is not None:
+            dispatcher.dispatch = AsyncMock(side_effect=dispatch_side_effect)
+        agent_registry = AsyncMock()
+        agent_registry.resolve_dispatch_timeout = AsyncMock(return_value=5.0)
+        dm = DispatchManager(
+            dispatcher=dispatcher,
+            agent_registry=agent_registry,
+        )
+        return dm, dispatcher, agent_registry
+
+    def test_dispatch_task_candidates_default_empty(self):
+        """The candidates field is optional and defaults to an empty list
+        (plugin/custom agents and dict producers keep working)."""
+        from app.models.agent import DispatchTask
+
+        task = DispatchTask(description="turn on light")
+        assert task.candidates == []
+
+    @patch("app.agents.dispatch_manager.track_request", new_callable=AsyncMock)
+    async def test_dispatch_single_populates_candidates(self, mock_track_request):
+        """dispatch_single must attach the given candidates to the
+        DispatchTask it builds (non-streaming construction site)."""
+        from app.models.agent import EntityCandidate
+
+        dm, dispatcher, _ = self._make_dispatch_manager(dispatch_side_effect=[{"speech": "ok"}])
+        cand = EntityCandidate(entity_id="light.couch", friendly_name="Couch", score=0.9)
+        await dm.dispatch_single(
+            target_agent="light-agent",
+            condensed_task="turn on couch light",
+            user_text="turn on couch light",
+            conversation_id="conv-cands",
+            turns=[],
+            span_collector=[],
+            candidates=[cand],
+        )
+        request = dispatcher.dispatch.await_args.args[0]
+        task = request.params["task"]
+        assert task.candidates == [cand]
+
+    @patch("app.agents.dispatch_manager.track_request", new_callable=AsyncMock)
+    async def test_dispatch_single_without_candidates_defaults_empty(self, mock_track_request):
+        """Legs dispatched without candidates (send-agent, filler) carry an
+        empty candidate list on the envelope."""
+        dm, dispatcher, _ = self._make_dispatch_manager(dispatch_side_effect=[{"speech": "ok"}])
+        await dm.dispatch_single(
+            target_agent="send-agent",
+            condensed_task="send it",
+            user_text="send it",
+            conversation_id="conv-no-cands",
+            turns=[],
+            span_collector=[],
+        )
+        request = dispatcher.dispatch.await_args.args[0]
+        task = request.params["task"]
+        assert task.candidates == []

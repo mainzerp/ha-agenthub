@@ -27,7 +27,6 @@ async def execute_lists_action(
     language: str | None = None,
     timezone: str | None = None,
     span_collector=None,
-    verbatim_terms: list[str] | None = None,
 ) -> dict:
     """Dispatch a parsed lists action."""
     action_name = action.get("action", "").lower()
@@ -35,25 +34,15 @@ async def execute_lists_action(
     if action_name == "list_lists":
         return await _list_lists(entity_index, entity_matcher, agent_id)
     if action_name == "list_items":
-        return await _list_items(
-            action, ha_client, entity_index, entity_matcher, agent_id, span_collector, verbatim_terms=verbatim_terms
-        )
+        return await _list_items(action, ha_client, entity_index, entity_matcher, agent_id, span_collector)
     if action_name == "add_item":
-        return await _add_item(
-            action, ha_client, entity_index, entity_matcher, agent_id, span_collector, verbatim_terms=verbatim_terms
-        )
+        return await _add_item(action, ha_client, entity_index, entity_matcher, agent_id, span_collector)
     if action_name == "complete_item":
-        return await _complete_item(
-            action, ha_client, entity_index, entity_matcher, agent_id, span_collector, verbatim_terms=verbatim_terms
-        )
+        return await _complete_item(action, ha_client, entity_index, entity_matcher, agent_id, span_collector)
     if action_name == "remove_item":
-        return await _remove_item(
-            action, ha_client, entity_index, entity_matcher, agent_id, span_collector, verbatim_terms=verbatim_terms
-        )
+        return await _remove_item(action, ha_client, entity_index, entity_matcher, agent_id, span_collector)
     if action_name == "clear_completed":
-        return await _clear_completed(
-            action, ha_client, entity_index, entity_matcher, agent_id, span_collector, verbatim_terms=verbatim_terms
-        )
+        return await _clear_completed(action, ha_client, entity_index, entity_matcher, agent_id, span_collector)
 
     return {
         "success": False,
@@ -70,7 +59,6 @@ async def _resolve_todo_entity(
     entity_matcher: Any,
     agent_id: str | None,
     span_collector=None,
-    verbatim_terms: list[str] | None = None,
 ) -> tuple[str | None, str | None, str | None]:
     """Resolve target todo entity. Returns (entity_id, friendly_name, speech_error)."""
     entity_query = action.get("entity", "")
@@ -111,7 +99,6 @@ async def _resolve_todo_entity(
                     entity_matcher,
                     agent_id,
                     allowed_domains=_TODO_DOMAINS,
-                    verbatim_terms=verbatim_terms,
                 )
                 em_span["metadata"] = resolution["metadata"]
     except Exception:
@@ -231,11 +218,10 @@ async def _list_items(
     entity_matcher: Any,
     agent_id: str | None,
     span_collector=None,
-    verbatim_terms: list[str] | None = None,
 ) -> dict:
     """List items in a specific todo list."""
     entity_id, friendly_name, error = await _resolve_todo_entity(
-        action, ha_client, entity_index, entity_matcher, agent_id, span_collector, verbatim_terms=verbatim_terms
+        action, ha_client, entity_index, entity_matcher, agent_id, span_collector
     )
     if error:
         return {"success": False, "entity_id": None, "new_state": None, "speech": error, "cacheable": False}
@@ -269,7 +255,6 @@ async def _add_item(
     entity_matcher: Any,
     agent_id: str | None,
     span_collector=None,
-    verbatim_terms: list[str] | None = None,
 ) -> dict:
     """Add item(s) to a todo list."""
     params = action.get("parameters") or {}
@@ -283,7 +268,7 @@ async def _add_item(
         }
 
     entity_id, friendly_name, error = await _resolve_todo_entity(
-        action, ha_client, entity_index, entity_matcher, agent_id, span_collector, verbatim_terms=verbatim_terms
+        action, ha_client, entity_index, entity_matcher, agent_id, span_collector
     )
     if error:
         return {"success": False, "entity_id": None, "new_state": None, "speech": error}
@@ -329,7 +314,6 @@ async def _complete_item(
     entity_matcher: Any,
     agent_id: str | None,
     span_collector=None,
-    verbatim_terms: list[str] | None = None,
 ) -> dict:
     """Mark item(s) as completed in a todo list."""
     params = action.get("parameters") or {}
@@ -343,7 +327,7 @@ async def _complete_item(
         }
 
     entity_id, friendly_name, error = await _resolve_todo_entity(
-        action, ha_client, entity_index, entity_matcher, agent_id, span_collector, verbatim_terms=verbatim_terms
+        action, ha_client, entity_index, entity_matcher, agent_id, span_collector
     )
     if error:
         return {"success": False, "entity_id": None, "new_state": None, "speech": error}
@@ -423,7 +407,6 @@ async def _remove_item(
     entity_matcher: Any,
     agent_id: str | None,
     span_collector=None,
-    verbatim_terms: list[str] | None = None,
 ) -> dict:
     """Remove item(s) from a todo list."""
     params = action.get("parameters") or {}
@@ -437,7 +420,7 @@ async def _remove_item(
         }
 
     entity_id, friendly_name, error = await _resolve_todo_entity(
-        action, ha_client, entity_index, entity_matcher, agent_id, span_collector, verbatim_terms=verbatim_terms
+        action, ha_client, entity_index, entity_matcher, agent_id, span_collector
     )
     if error:
         return {"success": False, "entity_id": None, "new_state": None, "speech": error}
@@ -515,11 +498,10 @@ async def _clear_completed(
     entity_matcher: Any,
     agent_id: str | None,
     span_collector=None,
-    verbatim_terms: list[str] | None = None,
 ) -> dict:
     """Remove all completed items from a todo list."""
     entity_id, friendly_name, error = await _resolve_todo_entity(
-        action, ha_client, entity_index, entity_matcher, agent_id, span_collector, verbatim_terms=verbatim_terms
+        action, ha_client, entity_index, entity_matcher, agent_id, span_collector
     )
     if error:
         return {"success": False, "entity_id": None, "new_state": None, "speech": error}

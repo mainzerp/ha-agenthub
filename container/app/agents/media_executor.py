@@ -99,7 +99,6 @@ async def execute_media_action(
     span_collector=None,
     *,
     preferred_area_id: str | None = None,
-    verbatim_terms: list[str] | None = None,
 ) -> dict:
     """Resolve an entity, call a media_player HA service, and verify the result.
 
@@ -127,7 +126,6 @@ async def execute_media_action(
             agent_id,
             span_collector=span_collector,
             preferred_area_id=preferred_area_id,
-            verbatim_terms=verbatim_terms,
             action=action,
         )
 
@@ -142,40 +140,55 @@ async def execute_media_action(
 
     domain, service = mapping
 
-    resolution = {
-        "entity_id": None,
-        "friendly_name": entity_query,
-        "speech": None,
-        "metadata": {"query": entity_query, "match_count": 0, "resolution_path": "not_attempted"},
-    }
-    try:
-        if entity_index or entity_matcher:
-            async with _optional_span(span_collector, "entity_match", agent_id=agent_id) as em_span:
-                resolution = await resolve_entity_deterministic_first(
-                    entity_query,
-                    entity_index,
-                    entity_matcher,
-                    agent_id,
-                    allowed_domains=_ACTION_DOMAINS,
-                    preferred_area_id=preferred_area_id,
-                    verbatim_terms=verbatim_terms,
-                )
-                em_span["metadata"] = resolution["metadata"]
-    except Exception:
-        logger.warning("Entity resolution failed for '%s'", entity_query, exc_info=True)
+    # LLM-picked entity_id is validation input only (Directive 4): the
+    # same fail-closed gate as the shared helper, applied inline.
+    not_found_speech: str | None = None
+    entity_id_direct = await _validate_direct_entity_id(
+        action.get("entity_id"),
+        _validate_domain,
+        agent_id=agent_id,
+        entity_index=entity_index,
+        allowed_domains=_ACTION_DOMAINS,
+    )
+    if entity_id_direct:
+        entity_id = entity_id_direct
+        friendly_name = _synthesize_direct_entity_metadata(entity_id, entity_index).get("top_friendly_name", entity_id)
+    else:
+        resolution = {
+            "entity_id": None,
+            "friendly_name": entity_query,
+            "speech": None,
+            "metadata": {"query": entity_query, "match_count": 0, "resolution_path": "not_attempted"},
+        }
+        try:
+            if entity_index or entity_matcher:
+                async with _optional_span(span_collector, "entity_match", agent_id=agent_id) as em_span:
+                    resolution = await resolve_entity_deterministic_first(
+                        entity_query,
+                        entity_index,
+                        entity_matcher,
+                        agent_id,
+                        allowed_domains=_ACTION_DOMAINS,
+                        preferred_area_id=preferred_area_id,
+                    )
+                    em_span["metadata"] = resolution["metadata"]
+        except Exception:
+            logger.warning("Entity resolution failed for '%s'", entity_query, exc_info=True)
 
-    entity_id = resolution["entity_id"]
-    friendly_name = resolution["friendly_name"]
-    if entity_id and not _validate_domain(entity_id):
-        logger.warning("Resolved entity %s not in allowed domains %s", entity_id, _ALLOWED_DOMAINS)
-        entity_id = None
+        entity_id = resolution["entity_id"]
+        friendly_name = resolution["friendly_name"]
+        if entity_id and not _validate_domain(entity_id):
+            logger.warning("Resolved entity %s not in allowed domains %s", entity_id, _ALLOWED_DOMAINS)
+            entity_id = None
+        if not entity_id:
+            not_found_speech = resolution["speech"]
 
     if not entity_id:
         return {
             "success": False,
             "entity_id": None,
             "new_state": None,
-            "speech": resolution["speech"] or f"Could not find an entity matching '{entity_query}'.",
+            "speech": not_found_speech or f"Could not find an entity matching '{entity_query}'.",
         }
 
     # Deterministic skip: if already in target state, do not call HA.
@@ -270,7 +283,6 @@ async def _query_media_state(
     span_collector=None,
     *,
     preferred_area_id: str | None = None,
-    verbatim_terms: list[str] | None = None,
     action: dict | None = None,
 ) -> dict:
     entity_id_direct = await _validate_direct_entity_id(
@@ -299,7 +311,6 @@ async def _query_media_state(
                         agent_id,
                         allowed_domains=_ACTION_DOMAINS,
                         preferred_area_id=preferred_area_id,
-                        verbatim_terms=verbatim_terms,
                     )
                     em_span["metadata"] = resolution["metadata"]
         except Exception:
@@ -399,7 +410,6 @@ async def _handle_media_read_action(
     span_collector=None,
     *,
     preferred_area_id: str | None = None,
-    verbatim_terms: list[str] | None = None,
     action: dict | None = None,
 ) -> dict:
     if action_name == "query_media_state":
@@ -411,7 +421,6 @@ async def _handle_media_read_action(
             agent_id,
             span_collector=span_collector,
             preferred_area_id=preferred_area_id,
-            verbatim_terms=verbatim_terms,
             action=action,
         )
     if action_name == "list_media_players":

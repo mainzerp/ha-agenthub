@@ -37,8 +37,6 @@ class ListsAgent(ActionableAgent):
         area_id = ctx.area_id if ctx else None
         language = ctx.language if ctx else None
         timezone = ctx.timezone if ctx else None
-        current_task = self._get_current_task()
-        verbatim_terms = list(getattr(current_task, "verbatim_terms", []) or []) if current_task else []
 
         return await execute_lists_action(
             action,
@@ -51,7 +49,6 @@ class ListsAgent(ActionableAgent):
             language=language,
             timezone=timezone,
             span_collector=span_collector,
-            verbatim_terms=verbatim_terms,
         )
 
     def _handle_parse_miss(self, task: DispatchTask, response: str) -> TaskResult:

@@ -1802,3 +1802,80 @@ class TestListVisibilityFiltering:
 # ---------------------------------------------------------------------------
 # Phase 4.3: Conversation memory eviction tests
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# Phase 5 (Style B): LLM-picked entity_id on the media write path
+# ---------------------------------------------------------------------------
+
+
+class TestMediaWriteDirectEntityId:
+    """execute_media_action honors a validated LLM-supplied entity_id."""
+
+    @pytest.fixture(autouse=True)
+    def _fast_state_verify(self, monkeypatch):
+        monkeypatch.setattr(
+            "app.agents.action_executor._settings_float",
+            AsyncMock(side_effect=lambda key, *, default: default),
+        )
+
+    @pytest.fixture()
+    def ha(self):
+        client = AsyncMock()
+        client.expect_state = None
+        client.get_state = AsyncMock(return_value={"state": "off"})
+        client.call_service = AsyncMock(return_value=[{"entity_id": "media_player.living_room_tv", "state": "on"}])
+        return client
+
+    @pytest.fixture()
+    def entity_index(self):
+        entry = make_entity_index_entry("media_player.living_room_tv", "Living Room TV")
+        index = MagicMock()
+        index.get_by_id = MagicMock(
+            side_effect=lambda entity_id: entry if entity_id == "media_player.living_room_tv" else None
+        )
+        index.list_entries_async = AsyncMock(return_value=[entry])
+        return index
+
+    async def test_write_path_direct_entity_id_honored(self, ha, entity_index):
+        matcher = AsyncMock()
+        matcher.match = AsyncMock(return_value=[])
+        result = await execute_media_action(
+            {"action": "turn_on", "entity": "", "entity_id": "media_player.living_room_tv"},
+            ha,
+            entity_index,
+            matcher,
+            agent_id="media-agent",
+        )
+        assert result["success"] is True
+        assert result["entity_id"] == "media_player.living_room_tv"
+        ha.call_service.assert_awaited_once_with("media_player", "turn_on", "media_player.living_room_tv", None)
+        matcher.match.assert_not_awaited()
+
+    async def test_write_path_hallucinated_entity_id_rejected_fail_closed(self, ha, entity_index):
+        matcher = AsyncMock()
+        matcher.match = AsyncMock(return_value=[])
+        result = await execute_media_action(
+            {"action": "turn_on", "entity": "", "entity_id": "media_player.hallucinated"},
+            ha,
+            entity_index,
+            matcher,
+            agent_id="media-agent",
+        )
+        assert result["success"] is False
+        assert "Could not find" in result["speech"]
+        ha.call_service.assert_not_awaited()
+
+    async def test_write_path_wrong_domain_entity_id_rejected(self, ha, entity_index):
+        matcher = AsyncMock()
+        matcher.match = AsyncMock(return_value=[])
+        result = await execute_media_action(
+            {"action": "turn_on", "entity": "", "entity_id": "light.living_room_tv"},
+            ha,
+            entity_index,
+            matcher,
+            agent_id="media-agent",
+        )
+        assert result["success"] is False
+        assert "Could not find" in result["speech"]
+        ha.call_service.assert_not_awaited()

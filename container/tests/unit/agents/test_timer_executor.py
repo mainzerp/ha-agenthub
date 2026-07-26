@@ -671,13 +671,11 @@ class TestDelayedAction:
                 agent_id="timer-agent",
                 device_id="satellite_kitchen",
                 area_id="kitchen",
-                verbatim_terms=["kitchen light"],
             )
         assert result["success"] is True
         mock_resolve.assert_awaited_once()
         resolve_args = mock_resolve.await_args
         assert resolve_args.args[0] == "kitchen light"
-        assert resolve_args.kwargs.get("verbatim_terms") == ["kitchen light"]
         scheduler.schedule.assert_awaited_once()
         schedule_kwargs = scheduler.schedule.await_args.kwargs
         assert schedule_kwargs["payload"]["target_entity"] == "light.kitchen_ceiling"

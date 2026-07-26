@@ -14,6 +14,12 @@ except ImportError:
     Soundex = None
     Metaphone = None
 
+# Hoisted codec singletons: pyphonetics codecs are stateless, so they are
+# instantiated once at import instead of on every score() call (hot path:
+# per-token phonetic matching calls score() for each token pair).
+_SOUNDEX = Soundex() if Soundex is not None else None
+_METAPHONE = Metaphone() if Metaphone is not None else None
+
 
 class LevenshteinSignal:
     """Fuzzy string matching using Levenshtein distance via rapidfuzz."""
@@ -78,14 +84,12 @@ class PhoneticSignal:
 
         Returns 1.0 for Soundex match, 0.8 for Metaphone match, 0.0 otherwise.
         """
-        if Soundex is None or Metaphone is None:
+        if _SOUNDEX is None or _METAPHONE is None:
             return 0.0
         try:
-            soundex = Soundex()
-            if soundex.phonetics(query.lower()) == soundex.phonetics(candidate.lower()):
+            if _SOUNDEX.phonetics(query.lower()) == _SOUNDEX.phonetics(candidate.lower()):
                 return 1.0
-            metaphone = Metaphone()
-            if metaphone.phonetics(query.lower()) == metaphone.phonetics(candidate.lower()):
+            if _METAPHONE.phonetics(query.lower()) == _METAPHONE.phonetics(candidate.lower()):
                 return 0.8
         except Exception:
             return 0.0

@@ -130,14 +130,12 @@ def make_dispatch_task(
     description: str = "Turn on the kitchen light",
     conversation_id: str | None = None,
     context: TaskContext | None = None,
-    verbatim_terms: list[str] | None = None,
 ) -> DispatchTask:
     """Build a DispatchTask (agent-bound, condensed task)."""
     return DispatchTask(
         description=description,
         conversation_id=conversation_id,
         context=context,
-        verbatim_terms=verbatim_terms or [],
     )
 
 

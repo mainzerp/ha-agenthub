@@ -20,8 +20,8 @@ from app.agents.base import BaseAgent
 from app.agents.cache_orchestrator import CacheOrchestrator
 from app.agents.cancel_speech import generate_cancel_speech
 from app.agents.classification_engine import ClassificationEngine, _RecoverableClassificationError
-from app.agents.conversation_manager import ConversationManager
-from app.agents.decorator import agent
+from app.agents.conversation_manager import ConversationManager, extract_resolved_entities
+from app.agents.decorator import _AGENT_CLASSES, agent
 from app.agents.dispatch_manager import DispatchManager
 from app.agents.filler_coordinator import FillerCoordinator
 from app.agents.language_detect import detect_user_language
@@ -36,10 +36,13 @@ from app.ha_client.home_context import populate_task_context_home_context
 from app.models.agent import (
     CANCEL_INTERACTION_AGENT,
     FALLBACK_AGENT,
+    INTERNAL_ONLY_AGENTS,
     AgentCard,
     BackgroundTask,
     DispatchTask,
+    EntityCandidate,
     IngressTask,
+    LastEntity,
     TaskContext,
 )
 
@@ -49,6 +52,34 @@ _CANNED_TIMEOUT_SPEECH = "I couldn't process that request in time."
 _CANNED_GENERAL_ERROR_SPEECH = "I couldn't process that request right now."
 
 _PERSONALITY_CACHE_TTL_SEC: float = 300.0
+
+# ENTITY_RES_REDESIGN Phase 3 (ingress resolution): the matcher runs at
+# ingress on the raw user text and produces an UNFILTERED (agent_id=None,
+# pre-routing) oversampled pool of _INGRESS_POOL_SIZE candidates. After
+# routing, the pool is re-filtered per agent (visibility, Directive 5) via
+# EntityMatcher.filter_visible_results, re-ranked by the agent's preferred
+# domains, and cut to _INGRESS_CANDIDATE_K for the DispatchTask envelope.
+# The unfiltered pool must never reach agents, spans, or traces.
+_INGRESS_POOL_SIZE: int = 20
+_INGRESS_CANDIDATE_K: int = 5
+# Agents whose dispatch legs never carry entity candidates:
+# send-agent and filler legs always get an empty list.
+_INGRESS_NO_CANDIDATE_AGENTS: frozenset[str] = INTERNAL_ONLY_AGENTS | frozenset(
+    {"send-agent", CANCEL_INTERACTION_AGENT}
+)
+
+
+def _agent_preferred_domains(agent_id: str) -> tuple[str, ...] | None:
+    """Preferred-domain tuple for an agent's candidate re-rank.
+
+    Reads the registered class metadata (same source the agent itself uses
+    for ``allowed_domains``); plugin/custom agents without decorator
+    metadata get no re-rank (score order is kept).
+    """
+    cls = _AGENT_CLASSES.get(agent_id)
+    meta = getattr(cls, "_agent_meta", None) if cls is not None else None
+    allowed = meta.get("allowed_domains") if meta else None
+    return tuple(sorted(d.lower() for d in allowed if d)) if allowed else None
 
 
 def _stringify_error(err: Any) -> str | None:
@@ -106,13 +137,16 @@ class PipelinePreludeResult:
     detected_language: str
     lang_turns: list
     span_collector: Any
-    classifications: list[tuple[str, str, float | None, list[str]]]
+    classifications: list[tuple[str, str, float | None]]
     routing_cached: bool
     target_agent: str
     condensed_task: str
     confidence: float | None
     used_origin_context: bool
     early_exit: dict[str, Any] | None = None
+    # ENTITY_RES_REDESIGN Phase 3: post-filter per-agent entity candidates
+    # from ingress resolution (agent_id -> top-K EntityCandidate list).
+    candidates: dict[str, list[EntityCandidate]] = field(default_factory=dict)
 
 
 @dataclass
@@ -162,6 +196,7 @@ class StreamingContext:
         cache_manager=getattr(app.state, "cache_manager", None),
         ha_client=getattr(app.state, "ha_client", None),
         entity_index=getattr(app.state, "entity_index", None),
+        entity_matcher=getattr(app.state, "entity_matcher", None),
         filler_agent=filler,
     ),
 )
@@ -178,12 +213,16 @@ class OrchestratorAgent(BaseAgent):
         filler_agent=None,
         agent_registry: CachedAgentRegistry | None = None,
         event_bus=None,
+        entity_matcher=None,
     ) -> None:
         super().__init__(ha_client=ha_client, entity_index=entity_index)
         self._dispatcher = dispatcher
         self._cache_manager = cache_manager
         self._filler_agent = filler_agent
         self._event_bus = event_bus
+        # ENTITY_RES_REDESIGN Phase 3: entity matcher for ingress resolution
+        # (optional; None disables the ingress stage, e.g. in unit tests).
+        self._entity_matcher = entity_matcher
         self._default_timeout: int = 5
         self._max_iterations: int = 3
         self._mediation_model: str | None = None
@@ -459,7 +498,7 @@ class OrchestratorAgent(BaseAgent):
         skip_dispatch_span: bool = False,
         *,
         resolved_language: str | None = None,
-        verbatim_terms: list[str] | None = None,
+        candidates: list[EntityCandidate] | None = None,
     ) -> tuple[str, str, dict[str, Any] | None]:
         return await self._dispatch_manager.dispatch_single(
             target_agent,
@@ -471,12 +510,12 @@ class OrchestratorAgent(BaseAgent):
             incoming_context=incoming_context,
             skip_dispatch_span=skip_dispatch_span,
             resolved_language=resolved_language,
-            verbatim_terms=verbatim_terms,
+            candidates=candidates,
         )
 
     async def _handle_sequential_send(
         self,
-        classifications: list[tuple[str, str, float | None, list[str]]],
+        classifications: list[tuple[str, str, float | None]],
         user_text: str,
         conversation_id: str,
         turns: list[dict[str, Any]],
@@ -484,13 +523,16 @@ class OrchestratorAgent(BaseAgent):
         incoming_context,
         *,
         resolved_language: str | None = None,
+        candidates: dict[str, list[EntityCandidate]] | None = None,
     ) -> tuple[str, str, dict[str, Any] | None]:
         """Handle sequential dispatch: content agent -> send agent.
 
         Returns (routed_to, speech, result_dict) like _dispatch_single.
+        Entity candidates ride on the content leg only; the send-agent leg
+        always dispatches without candidates.
         """
-        content_agents = [(a, t, c, e) for a, t, c, e in classifications if a != "send-agent"]
-        send_classification = next(((a, t, c, e) for a, t, c, e in classifications if a == "send-agent"), None)
+        content_agents = [(a, t, c) for a, t, c in classifications if a != "send-agent"]
+        send_classification = next(((a, t, c) for a, t, c in classifications if a == "send-agent"), None)
 
         if not send_classification:
             logger.warning("_handle_sequential_send called without send-agent classification")
@@ -503,16 +545,15 @@ class OrchestratorAgent(BaseAgent):
                 span_collector,
                 incoming_context=incoming_context,
                 resolved_language=resolved_language,
-                verbatim_terms=classifications[0][3] if classifications else [],
+                candidates=(candidates or {}).get(classifications[0][0]) if classifications else None,
             )
 
-        _send_agent_id, send_task_text, _send_confidence, _send_entities = send_classification
+        _send_agent_id, send_task_text, _send_confidence = send_classification
 
         _content_result: dict[str, Any] | None = None
         content_dispatched = False
-        content_verbatim_terms: list[str] = []
         if content_agents:
-            content_aid, content_task, _, content_verbatim_terms = content_agents[0]
+            content_aid, content_task, _ = content_agents[0]
             content_dispatched = True
             content_language = resolved_language or (incoming_context.language if incoming_context else None) or "en"
             content_context = TaskContext(
@@ -526,6 +567,9 @@ class OrchestratorAgent(BaseAgent):
                 language=content_language,
                 sequential_send=True,
                 injection_detected=incoming_context.injection_detected if incoming_context else False,
+                # Phase 6: anaphora recency hints ride the content leg like
+                # the rest of the conversation context.
+                last_entities=list(incoming_context.last_entities) if incoming_context else [],
             )
 
             if self._ha_client:
@@ -541,7 +585,7 @@ class OrchestratorAgent(BaseAgent):
                     incoming_context=content_context,
                     skip_dispatch_span=True,
                     resolved_language=resolved_language,
-                    verbatim_terms=content_verbatim_terms,
+                    candidates=(candidates or {}).get(content_aid),
                 )
                 span["metadata"]["content_agent"] = content_agent_id
                 span["metadata"]["content_length"] = len(content_speech or "")
@@ -598,7 +642,6 @@ class OrchestratorAgent(BaseAgent):
                 incoming_context=incoming_context,
                 skip_dispatch_span=True,
                 resolved_language=resolved_language,
-                verbatim_terms=[],
             )
             span["metadata"]["send_target"] = send_task_text
             span["metadata"]["content_from"] = content_agent_id
@@ -709,7 +752,7 @@ class OrchestratorAgent(BaseAgent):
         target_agent: str,
         confidence: float | None,
         condensed_task: str,
-        classifications: list[tuple[str, str, float | None, list[str]]],
+        classifications: list[tuple[str, str, float | None]],
         turns: list[dict[str, Any]],
         *,
         task_context: TaskContext | None = None,
@@ -744,7 +787,7 @@ class OrchestratorAgent(BaseAgent):
                 condensed_task=condensed_task,
                 agents=agents,
                 source=getattr(span_collector, "source", "api"),
-                agent_instructions={aid: ctask for aid, ctask, _, _ in classifications}
+                agent_instructions={aid: ctask for aid, ctask, _ in classifications}
                 if len(classifications) > 1
                 else None,
                 conversation_turns=turns,
@@ -753,7 +796,6 @@ class OrchestratorAgent(BaseAgent):
                 device_name=getattr(task_context, "device_name", None),
                 area_name=getattr(task_context, "area_name", None),
                 voice_followup=voice_followup,
-                verbatim_terms=classifications[0][3] if classifications else [],
                 cache_hit_type=cache_hit_type,
             )
         except asyncio.CancelledError:
@@ -822,6 +864,12 @@ class OrchestratorAgent(BaseAgent):
         task = cast(IngressTask, task)
         user_text = task.description
         lang_turns = await self._get_turns(conversation_id)
+        # ENTITY_RES_REDESIGN Phase 6: attach anaphora recency hints (most
+        # recent first) to the task context so every dispatch-envelope
+        # build downstream can copy them onto the agent-bound TaskContext.
+        if task.context is not None:
+            last_entities = await self._conversation_manager.get_last_entities(conversation_id)
+            task.context.last_entities = [LastEntity(**e) for e in last_entities]
         detected_language = await self._resolve_language(user_text, context_language, turns=lang_turns)
         return conversation_id, detected_language, lang_turns
 
@@ -854,7 +902,7 @@ class OrchestratorAgent(BaseAgent):
         self,
         task: IngressTask | BackgroundTask,
         *,
-        pre_classified: tuple[list[tuple[str, str, float | None, list[str]]], bool] | None = None,
+        pre_classified: tuple[list[tuple[str, str, float | None]], bool] | None = None,
         classify_reason: str | None = None,
         allow_classify_cache_lookup: bool = False,
         extended_metadata: bool = False,
@@ -940,6 +988,38 @@ class OrchestratorAgent(BaseAgent):
 
         used_origin_context = bool(task and task.context and (task.context.area_id or task.context.device_id))
 
+        # ENTITY_RES_REDESIGN Phase 3: ingress entity resolution. Started
+        # only AFTER the action-cache miss (replay hits never pay for it)
+        # and after the turn prefetch, so it overlaps the classification LLM
+        # call -- the dominant prelude cost. The pool is UNFILTERED
+        # (agent_id=None, the target agent is only known after routing) and
+        # oversampled; the result is returned as a VALUE, never published
+        # via ContextVar (gather-child caveat, see actionable.py). On a
+        # routing-cache hit the agent is already known, so the matcher runs
+        # a single fully visibility-filtered pass for that agent instead.
+        routing_skip = cache_replay.routing_skip
+        ingress_task: asyncio.Task | None = None
+        if self._entity_matcher is not None:
+            if routing_skip is not None:
+                ingress_task = asyncio.create_task(
+                    self._entity_matcher.match(
+                        user_text,
+                        agent_id=routing_skip.agent_id,
+                        preferred_domains=_agent_preferred_domains(routing_skip.agent_id),
+                        source_language=detected_language,
+                        top_n=_INGRESS_CANDIDATE_K,
+                    )
+                )
+            else:
+                ingress_task = asyncio.create_task(
+                    self._entity_matcher.match(
+                        user_text,
+                        agent_id=None,
+                        source_language=detected_language,
+                        top_n=_INGRESS_POOL_SIZE,
+                    )
+                )
+
         if publish_events and self._event_bus is not None:
             await self._event_bus.publish(
                 "pipeline.pre_classify", {"task": task, "user_text": user_text, "language": detected_language}
@@ -958,7 +1038,7 @@ class OrchestratorAgent(BaseAgent):
                 detected_language,
                 span_collector,
                 pre_classified=pre_classified,
-                routing_skip=cache_replay.routing_skip,
+                routing_skip=routing_skip,
                 compound_bypass=cache_replay.compound_bypass,
                 extended_metadata=extended_metadata,
                 classify_reason=classify_reason,
@@ -966,6 +1046,12 @@ class OrchestratorAgent(BaseAgent):
                 prefetched_turns=lang_turns,
             )
         except _RecoverableClassificationError as exc:
+            # Never abandon the detached ingress task: cancel it and await
+            # it so a mid-flight matcher unwinds cleanly.
+            if ingress_task is not None and not ingress_task.done():
+                ingress_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await ingress_task
             return PipelinePreludeResult(
                 conversation_id=conversation_id,
                 detected_language=detected_language,
@@ -990,6 +1076,13 @@ class OrchestratorAgent(BaseAgent):
                     },
                 },
             )
+
+        candidates = await self._resolve_ingress_candidates(
+            ingress_task,
+            routing_skip=routing_skip,
+            classifications=classifications,
+            span_collector=span_collector,
+        )
 
         logger.debug(
             "Routed to %s (%s): %s (conversation=%s)",
@@ -1022,12 +1115,99 @@ class OrchestratorAgent(BaseAgent):
             condensed_task=condensed_task,
             confidence=confidence,
             used_origin_context=used_origin_context,
+            candidates=candidates,
         )
+
+    async def _resolve_ingress_candidates(
+        self,
+        ingress_task: asyncio.Task | None,
+        *,
+        routing_skip: RoutingSkipOutcome | None,
+        classifications: list[tuple[str, str, float | None]],
+        span_collector,
+    ) -> dict[str, list[EntityCandidate]]:
+        """Turn the ingress matcher pool into per-agent envelope candidates.
+
+        Two-phase visibility (Directive 5): the pool the matcher produced at
+        ingress is UNFILTERED (agent_id=None). It is re-filtered here per
+        routed agent via :meth:`EntityMatcher.filter_visible_results`,
+        re-ranked by the agent's preferred domains, and cut to
+        ``_INGRESS_CANDIDATE_K``. Only this post-filter list is returned
+        (for the DispatchTask envelope) and recorded on the
+        ``ingress_resolution`` span -- the unfiltered pool never leaves
+        this method. On a routing-cache hit the matcher already ran a
+        single fully-filtered pass for the known agent, so its result is
+        used directly.
+
+        Fail-soft: a matcher/visibility failure degrades to empty
+        candidates (the agent-side description fallback covers it) rather
+        than failing the turn.
+        """
+        if ingress_task is None or self._entity_matcher is None:
+            return {}
+        try:
+            pool = await ingress_task
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.debug("Ingress entity resolution failed", exc_info=True)
+            return {}
+
+        candidates_by_agent: dict[str, list[EntityCandidate]] = {}
+        if routing_skip is not None:
+            # Routing-cache hit: single pass was already visibility-filtered
+            # and preferred-domain ranked for this agent.
+            candidates_by_agent[routing_skip.agent_id] = [
+                EntityCandidate(entity_id=r.entity_id, friendly_name=r.friendly_name or "", score=r.score)
+                for r in pool[:_INGRESS_CANDIDATE_K]
+            ]
+        else:
+            seen: set[str] = set()
+            for agent_id, *_rest in classifications:
+                if agent_id in seen or agent_id in _INGRESS_NO_CANDIDATE_AGENTS:
+                    continue
+                seen.add(agent_id)
+                try:
+                    visible = await self._entity_matcher.filter_visible_results(agent_id, pool)
+                except Exception:
+                    logger.debug("Ingress candidate visibility filter failed for %s", agent_id, exc_info=True)
+                    continue
+                ranked = self._rerank_pool_for_agent(visible, _agent_preferred_domains(agent_id))
+                top = ranked[:_INGRESS_CANDIDATE_K]
+                if top:
+                    candidates_by_agent[agent_id] = [
+                        EntityCandidate(entity_id=r.entity_id, friendly_name=r.friendly_name or "", score=r.score)
+                        for r in top
+                    ]
+
+        async with _optional_span(span_collector, "ingress_resolution", agent_id="orchestrator") as span:
+            span["metadata"]["candidates"] = {
+                aid: [
+                    {"entity_id": c.entity_id, "friendly_name": c.friendly_name, "score": round(c.score, 4)}
+                    for c in cands
+                ]
+                for aid, cands in candidates_by_agent.items()
+            }
+        return candidates_by_agent
+
+    @staticmethod
+    def _rerank_pool_for_agent(pool: list, preferred_domains: tuple[str, ...] | None) -> list:
+        """Sort a candidate pool by score with the agent's preferred domains
+        as tie-breaker (mirrors the matcher's preferred-domain sort)."""
+        if preferred_domains:
+
+            def _sort_key(r) -> tuple:
+                domain = r.entity_id.split(".")[0].lower() if "." in r.entity_id else ""
+                domain_rank = preferred_domains.index(domain) if domain in preferred_domains else len(preferred_domains)
+                return (-r.score, domain_rank)
+
+            return sorted(pool, key=_sort_key)
+        return sorted(pool, key=lambda r: r.score, reverse=True)
 
     @staticmethod
     def _pipeline_record_classify_span(
         span,
-        classifications: list[tuple[str, str, float | None, list[str]]],
+        classifications: list[tuple[str, str, float | None]],
         user_text: str,
         condensed_task: str,
         confidence: float | None,
@@ -1045,7 +1225,7 @@ class OrchestratorAgent(BaseAgent):
         existing streaming behaviour exactly. Behaviour-preserving
         helper extracted in P1-1 iter 3.
         """
-        span["metadata"]["target_agent"] = ", ".join(a for a, _, _, _ in classifications)
+        span["metadata"]["target_agent"] = ", ".join(a for a, _, _ in classifications)
         span["metadata"]["user_input"] = user_text
         span["metadata"]["condensed_task"] = condensed_task
         span["metadata"]["confidence"] = confidence
@@ -1053,9 +1233,8 @@ class OrchestratorAgent(BaseAgent):
         span["metadata"]["multi_agent"] = len(classifications) > 1
         if extended_metadata and len(classifications) > 1:
             span["metadata"]["all_classifications"] = {
-                a: {"task": t[:300], "confidence": c, "verbatim_terms": v} for a, t, c, v in classifications
+                a: {"task": t[:300], "confidence": c} for a, t, c in classifications
             }
-        span["metadata"]["verbatim_terms"] = classifications[0][3] if classifications else []
         if extra_metadata:
             span["metadata"].update(extra_metadata)
 
@@ -1110,7 +1289,7 @@ class OrchestratorAgent(BaseAgent):
         conversation_id: str,
         language: str,
         turns: list,
-        classifications: list[tuple[str, str, float | None, list[str]]],
+        classifications: list[tuple[str, str, float | None]],
         voice_followup_requested: bool,
         mediated_followup: bool = False,
         routed_to: str | None = None,
@@ -1154,7 +1333,12 @@ class OrchestratorAgent(BaseAgent):
             ret_span["metadata"]["cache_stored_action"] = cache_stored_action
             ret_span["metadata"]["cache_stored_response"] = cache_stored_response
             ret_span["metadata"]["cache_stored_routing"] = cache_stored_routing
-        await self._store_turn(conversation_id, user_text, speech, agent_id=routed_to)
+        # ENTITY_RES_REDESIGN Phase 6: remember the acted-on entity (success
+        # path only) as an anaphora recency hint for later turns.
+        resolved_entities = await extract_resolved_entities(action_executed, getattr(self, "_entity_index", None))
+        await self._store_turn(
+            conversation_id, user_text, speech, agent_id=routed_to, resolved_entities=resolved_entities
+        )
         if span_collector:
             await self._create_trace(
                 span_collector,
@@ -1186,7 +1370,7 @@ class OrchestratorAgent(BaseAgent):
         conversation_id: str,
         language: str,
         turns: list,
-        classifications: list[tuple[str, str, float | None, list[str]]],
+        classifications: list[tuple[str, str, float | None]],
         voice_followup_requested: bool,
         routed_to: str | None = None,
         mediation_agent: str | None = None,
@@ -1292,7 +1476,7 @@ class OrchestratorAgent(BaseAgent):
         task: IngressTask | BackgroundTask,
         *,
         streaming: bool,
-        _pre_classified: tuple[list[tuple[str, str, float | None, list[str]]], bool] | None = None,
+        _pre_classified: tuple[list[tuple[str, str, float | None]], bool] | None = None,
         _classify_reason: str | None = None,
         _allow_classify_cache_lookup: bool | None = None,
     ) -> AsyncGenerator[dict[str, Any], None]:
@@ -1335,7 +1519,7 @@ class OrchestratorAgent(BaseAgent):
         self,
         task: IngressTask | BackgroundTask,
         *,
-        _pre_classified: tuple[list[tuple[str, str, float | None, list[str]]], bool] | None = None,
+        _pre_classified: tuple[list[tuple[str, str, float | None]], bool] | None = None,
         _classify_reason: str | None = None,
         _allow_classify_cache_lookup: bool | None = None,
     ) -> dict[str, Any]:
@@ -1389,7 +1573,7 @@ class OrchestratorAgent(BaseAgent):
         self,
         task: IngressTask | BackgroundTask,
         *,
-        _pre_classified: tuple[list[tuple[str, str, float | None, list[str]]], bool] | None = None,
+        _pre_classified: tuple[list[tuple[str, str, float | None]], bool] | None = None,
         _classify_reason: str | None = None,
         _allow_classify_cache_lookup: bool | None = None,
     ) -> dict[str, Any]:
@@ -1441,6 +1625,7 @@ class OrchestratorAgent(BaseAgent):
             span_collector,
             detected_language,
             task.context,
+            candidates=prelude.candidates,
         )
         if self._event_bus is not None:
             await self._event_bus.publish(
@@ -1451,8 +1636,15 @@ class OrchestratorAgent(BaseAgent):
         if dispatch_result.directive:
             # M-12: directive turns are real turns -- persist the turn and
             # trace before returning (no cache store).
+            resolved_entities = await extract_resolved_entities(
+                dispatch_result.action_executed, getattr(self, "_entity_index", None)
+            )
             await self._store_turn(
-                conversation_id, user_text, dispatch_result.speech, agent_id=dispatch_result.routed_to
+                conversation_id,
+                user_text,
+                dispatch_result.speech,
+                agent_id=dispatch_result.routed_to,
+                resolved_entities=resolved_entities,
             )
             if span_collector:
                 await self._create_trace(
@@ -1616,8 +1808,8 @@ class OrchestratorAgent(BaseAgent):
             return
 
         # Multi-agent: yield progress marker, then fall back to non-streaming handle_task
-        is_sequential_send = any(a == "send-agent" for a, _, _, _ in classifications) and any(
-            a != "send-agent" for a, _, _, _ in classifications
+        is_sequential_send = any(a == "send-agent" for a, _, _ in classifications) and any(
+            a != "send-agent" for a, _, _ in classifications
         )
 
         # Sequential send: fall back to non-streaming, with filler support
@@ -1630,7 +1822,7 @@ class OrchestratorAgent(BaseAgent):
             }
 
             # Determine which content agent to check for filler
-            content_agent_ids = [a for a, _, _, _ in classifications if a != "send-agent"]
+            content_agent_ids = [a for a, _, _ in classifications if a != "send-agent"]
             content_agent_for_filler = content_agent_ids[0] if content_agent_ids else None
             seq_use_filler = (
                 await self._should_send_filler(content_agent_for_filler) if content_agent_for_filler else False
@@ -1752,7 +1944,7 @@ class OrchestratorAgent(BaseAgent):
                 "done": False,
                 "conversation_id": conversation_id,
                 "status": "multi_agent",
-                "agents": [a for a, _, _, _ in classifications],
+                "agents": [a for a, _, _ in classifications],
             }
             result = await self.handle_task(task, _pre_classified=(classifications, routing_cached))
             multi_final = {
@@ -1784,6 +1976,8 @@ class OrchestratorAgent(BaseAgent):
             context.user_id = task.context.user_id
             context.source = task.context.source
             context.injection_detected = task.context.injection_detected
+            # Phase 6: anaphora recency hints populated in the prelude.
+            context.last_entities = list(task.context.last_entities)
         if self._ha_client:
             await populate_task_context_home_context(context, self._ha_client)
 
@@ -1798,12 +1992,11 @@ class OrchestratorAgent(BaseAgent):
             self._prepare_mediation_inputs(task, has_error=False, language=language)
         )
 
-        verbatim_terms = classifications[0][3] if classifications else []
         agent_task = DispatchTask(
             description=condensed_task,
             conversation_id=conversation_id,
             context=context,
-            verbatim_terms=verbatim_terms,
+            candidates=prelude.candidates.get(target_agent, []),
         )
 
         # 3. Dispatch via A2A message/stream
@@ -2124,7 +2317,12 @@ class OrchestratorAgent(BaseAgent):
             # M-12: directive turns are real turns -- persist the turn and
             # trace before yielding the terminal chunk (no cache store).
             directive_speech = "".join(sc.collected_speech)
-            await self._store_turn(conversation_id, user_text, directive_speech, agent_id=target_agent)
+            resolved_entities = await extract_resolved_entities(
+                sc.action_executed, getattr(self, "_entity_index", None)
+            )
+            await self._store_turn(
+                conversation_id, user_text, directive_speech, agent_id=target_agent, resolved_entities=resolved_entities
+            )
             if span_collector:
                 await self._create_trace(
                     span_collector,
@@ -2376,7 +2574,7 @@ class OrchestratorAgent(BaseAgent):
         span_collector=None,
         language: str = "en",
         allow_cache_lookup: bool = True,
-    ) -> tuple[list[tuple[str, str, float | None, list[str]]], bool]:
+    ) -> tuple[list[tuple[str, str, float | None]], bool]:
         return await self._classification_engine.classify(
             user_text,
             cache_result=cache_result,
@@ -2389,18 +2587,23 @@ class OrchestratorAgent(BaseAgent):
             get_turns=self._get_turns,
         )
 
-    async def _parse_classification(
-        self, response: str, original_text: str
-    ) -> list[tuple[str, str, float | None, list[str]]]:
+    async def _parse_classification(self, response: str, original_text: str) -> list[tuple[str, str, float | None]]:
         return await self._classification_engine.parse_classification(response, original_text)
 
     async def _get_turns(self, conversation_id: str | None) -> list[dict[str, Any]]:
         return await self._conversation_manager.get_turns(conversation_id)
 
     async def _store_turn(
-        self, conversation_id: str | None, user_text: str, assistant_text: str, agent_id: str | None = None
+        self,
+        conversation_id: str | None,
+        user_text: str,
+        assistant_text: str,
+        agent_id: str | None = None,
+        resolved_entities: list[dict[str, Any]] | None = None,
     ) -> None:
-        await self._conversation_manager.store_turn(conversation_id, user_text, assistant_text, agent_id)
+        await self._conversation_manager.store_turn(
+            conversation_id, user_text, assistant_text, agent_id, resolved_entities=resolved_entities
+        )
 
     def _evict_stale_conversations(self) -> None:
         self._conversation_manager._evict_stale_conversations()
