@@ -36,6 +36,14 @@ Your job is to receive the user's request, delegate analysis and planning to spe
 - Schedule one-shot or recurring reminders (`CronCreate`, `CronList`, `CronDelete`)
 - Confirm task completion with the user directly in chat
 
+## Code Intelligence (jCodeMunch MCP)
+
+The `jcodemunch` MCP server is registered at user level and provides symbol-level code retrieval via a tree-sitter index (stored under `~/.code-index/`). On indexed repos it exposes `mcp__jcodemunch__*` tools (e.g. `search_symbols`, `get_file_outline`, `get_symbol_source`, `get_repo_map`, `find_references`) that retrieve exact symbols instead of brute-reading whole files — this cuts token usage significantly.
+
+- **Orchestrator:** Prefer `mcp__jcodemunch__*` tools for quick code lookups and context gathering on indexed repos; fall back to `Read`/`Grep`/`Glob` when the repo is not indexed or a tool returns nothing.
+- **Subagents:** Research, Planning, and Implementation agents SHOULD prefer `mcp__jcodemunch__*` tools for code exploration when available — this is encoded in the Required Prompt Blocks below.
+- **Indexing:** If a repo is not indexed yet, index it once via Bash (`uvx jcodemunch-mcp index <path>`) before relying on these tools. Check indexed repos with `uvx jcodemunch-mcp list-repos`.
+
 ## Skills
 
 This project provides specialized skills that contain domain-specific instructions, workflows, and bundled resources. They live under `.agents/skills/` — a Kimi Code project-level skill directory (scanned automatically, shared across tools):
@@ -73,7 +81,8 @@ YOU (Orchestrator): Receive request, spawn 1-3 Research subagents
       modules/domains (see "Parallel Agent Execution")
     |
 SUBAGENT #1a...#1n: Research & Analysis (subagent_type="coder", research mode)
-    - Prompt enforces: Read/Grep/Glob/Write (docs/SubAgent/ only).
+    - Prompt enforces: Read/Grep/Glob/Write (docs/SubAgent/ only) +
+      mcp__jcodemunch__* (preferred for code lookup on indexed repos).
       NO Bash, NO Edit, NO source code edits.
     - Each agent investigates ONE distinct topic only.
     - ALWAYS writes its analysis to docs/SubAgent/[NAME]/[NAME]_[TOPIC]_ANALYSIS.md
@@ -93,9 +102,10 @@ SUBAGENT #1-Synth: Synthesis (subagent_type="coder", synthesis mode)
 YOU (Orchestrator): Receive results, spawn Planning subagent
     |
 SUBAGENT #2: Planning (subagent_type="coder", planning mode)
-    - Prompt enforces: Read/Grep/Glob/Write ONLY. May write ONLY
-      to docs/SubAgent/[NAME]/[NAME]_PLAN.md. NO Bash, NO Edit,
-      NO source code edits.
+    - Prompt enforces: Read/Grep/Glob/Write ONLY +
+      mcp__jcodemunch__* (preferred for code lookup on indexed repos).
+      May write ONLY to docs/SubAgent/[NAME]/[NAME]_PLAN.md. NO Bash,
+      NO Edit, NO source code edits.
     - Reads analysis from docs/SubAgent/[NAME]/[NAME]_ANALYSIS.md
     - Writes concise step-by-step plan with checklist to
       docs/SubAgent/[NAME]/[NAME]_PLAN.md
@@ -205,9 +215,9 @@ For this project's workflow, use these agent types:
 
 |Phase|Agent Type|Purpose|Tool Restrictions|
 |---|---|---|---|
-|Research|`coder`|Codebase analysis with written artifact|Prompt-enforced: Read/Grep/Glob/Write (docs/SubAgent only). NO Bash, NO Edit, NO source edits. ALWAYS writes an `ANALYSIS.md` artifact.|
+|Research|`coder`|Codebase analysis with written artifact|Prompt-enforced: Read/Grep/Glob/Write (docs/SubAgent only) + `mcp__jcodemunch__*` (preferred for code lookup on indexed repos). NO Bash, NO Edit, NO source edits. ALWAYS writes an `ANALYSIS.md` artifact.|
 |Synthesis|`coder`|Combine parallel research findings|Prompt-enforced: Read/Write (docs/SubAgent only). NO Bash, NO Edit, NO source edits, NO new research.|
-|Planning|`coder`|Implementation planning with written artifact|Prompt-enforced: Read/Grep/Glob/Write (docs/SubAgent only). NO Bash, NO Edit, NO source edits.|
+|Planning|`coder`|Implementation planning with written artifact|Prompt-enforced: Read/Grep/Glob/Write (docs/SubAgent only) + `mcp__jcodemunch__*` (preferred for code lookup on indexed repos). NO Bash, NO Edit, NO source edits.|
 |Implementation|`coder`|Senior software engineering: read/write files, run commands, search code|Full toolset|
 |Merge & Verify|`coder`|Merge parallel implementations, run tests and lint|Full toolset|
 
@@ -234,7 +244,7 @@ These blocks are **mandatory** in every subagent prompt for the respective phase
 You are a research agent running as a subagent of the Kimi Code CLI orchestrator. Investigate ONLY: [TOPIC].
 Base every analysis, decision, and statement on verifiable facts. Do not speculate, assume, or invent explanations when information is missing.
 Write your findings to: docs/SubAgent/[NAME]/[NAME]_[TOPIC]_ANALYSIS.md
-Allowed tools: Read, Grep, Glob, Write (docs/SubAgent/ only).
+Allowed tools: Read, Grep, Glob, Write (docs/SubAgent/ only), mcp__jcodemunch__* (e.g. search_symbols, get_file_outline, get_symbol_source — PREFER these for code lookup on indexed repos; fall back to Grep/Read if unavailable or empty).
 FORBIDDEN: Bash, Edit, any source code modification.
 Do NOT ask the user questions. Do NOT request plan approval.
 Return a short summary and the artifact path when done.
@@ -260,7 +270,7 @@ You are a planning agent running as a subagent of the Kimi Code CLI orchestrator
 Base every analysis, decision, and statement on verifiable facts. Do not speculate, assume, or invent explanations when information is missing.
 Read the analysis from: docs/SubAgent/[NAME]/[NAME]_ANALYSIS.md
 Write a concise step-by-step implementation plan with a checklist to: docs/SubAgent/[NAME]/[NAME]_PLAN.md
-Allowed tools: Read, Grep, Glob, Write (docs/SubAgent/ only).
+Allowed tools: Read, Grep, Glob, Write (docs/SubAgent/ only), mcp__jcodemunch__* (e.g. search_symbols, get_file_outline, get_symbol_source — PREFER these for code lookup on indexed repos; fall back to Grep/Read if unavailable or empty).
 FORBIDDEN: Bash, Edit, any source code modification.
 Do NOT ask the user questions. Do NOT request plan approval.
 Return a short summary and the artifact path when done.
@@ -271,6 +281,7 @@ Return a short summary and the artifact path when done.
 ```text
 You are an implementation agent running as a subagent of the Kimi Code CLI orchestrator. Full toolset available.
 Base every analysis, decision, and statement on verifiable facts. Do not speculate, assume, or invent explanations when information is missing.
+Prefer mcp__jcodemunch__* tools (search_symbols, get_symbol_source, get_file_outline, find_references) for code lookup on indexed repos; fall back to Grep/Read if unavailable or empty.
 Read your assigned plan from: docs/SubAgent/[NAME]/[NAME]_PLAN.md
 Implement ONLY the work described in that plan. Do NOT touch files outside your assigned scope.
 Run tests and lint after completing your changes.
