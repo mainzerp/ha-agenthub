@@ -783,6 +783,10 @@ async def _query_weather_forecast(
         resp = await ha_client.call_service(
             "weather", "get_forecasts", entity_id, {"type": forecast_type}, return_response=True
         )
+        # REST API wraps return_response bodies in a "service_response" envelope;
+        # WebSocket responses are already unwrapped. Normalize both shapes.
+        if isinstance(resp, dict) and isinstance(resp.get("service_response"), dict):
+            resp = resp["service_response"]
         forecasts = []
         if isinstance(resp, dict):
             # HA returns {entity_id: {"forecast": [...]}}
@@ -801,6 +805,11 @@ async def _query_weather_forecast(
                 "cacheable": False,
                 "metadata": resolution_metadata,
             }
+        logger.warning(
+            "weather.get_forecasts returned no forecast entries for %s (response keys: %s)",
+            entity_id,
+            list(resp.keys()) if isinstance(resp, dict) else type(resp).__name__,
+        )
     except Exception:
         logger.warning(
             "weather.get_forecasts service call failed for %s, falling back to state", entity_id, exc_info=True

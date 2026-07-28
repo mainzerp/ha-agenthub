@@ -23,6 +23,7 @@ from app.agents.base import BaseAgent, _render_prompt_template, language_code_to
 from app.agents.decorator import agent
 from app.analytics.tracer import _optional_span
 from app.entity.deterministic_resolver import resolve_entity_deterministic_first
+from app.entity.visibility import filter_visible_results
 from app.models.agent import (
     ActionExecuted,
     AgentCard,
@@ -128,6 +129,50 @@ class ActionableAgent(BaseAgent):
             return []
 
         agent_id = self.agent_card.agent_id
+
+        # Envelope fast path: the orchestrator already ran the ingress
+        # matcher and post-filtered (visibility + preferred-domain re-rank,
+        # Directive 5) the top-K candidates for this agent. When the top
+        # candidate is unambiguous, reuse it instead of re-running the
+        # deterministic-first resolution (embedding encode, k-NN search,
+        # umlaut dual search, scoring loop). Empty/ambiguous envelopes and
+        # missing index fall through to the matcher path unchanged.
+        candidates = [c for c in (task.candidates or []) if c.entity_id]
+        ambiguous = len(candidates) >= 2 and (
+            float(candidates[0].score or 0.0) - float(candidates[1].score or 0.0) < _AMBIGUITY_SCORE_GAP
+        )
+        if candidates and not ambiguous and self._entity_index is not None:
+            try:
+                entries = await self._entity_index.list_entries_async(domains=self._allowed_domains)
+                visible = await filter_visible_results(agent_id, entries, self._entity_index)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.debug("Envelope fast path snapshot failed", exc_info=True)
+            else:
+                if visible:
+                    # Publish the per-request snapshot so the post-LLM
+                    # executor resolution (resolve_and_validate_entity)
+                    # reuses it instead of re-listing the index.
+                    set_request_visible_entries(self._allowed_domains, agent_id, visible)
+                    top_id = candidates[0].entity_id
+                    if top_id in {getattr(e, "entity_id", None) for e in visible}:
+                        logger.debug(
+                            "Envelope fast path resolved %s (score %s) for %s",
+                            top_id,
+                            candidates[0].score,
+                            agent_id,
+                        )
+                        return [(top_id, candidates[0].friendly_name or top_id)]
+                    # Belt-and-braces Directive 5 check: a top candidate that
+                    # is not in the visible snapshot must not be selected.
+                    logger.warning(
+                        "Envelope top candidate %s missing from visible snapshot for %s; "
+                        "falling back to deterministic resolution",
+                        top_id,
+                        agent_id,
+                    )
+
         resolved: list[tuple[str, str]] = []
         seen_ids: set[str] = set()
         cached_visible_entries: list[Any] | None = None

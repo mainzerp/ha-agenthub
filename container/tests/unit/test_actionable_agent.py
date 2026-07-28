@@ -131,6 +131,153 @@ class TestResolveRelevantEntities:
         mock_resolve.assert_awaited_once()
         assert mock_resolve.call_args.args[0] == "turn on the kitchen light"
 
+    @pytest.mark.asyncio
+    async def test_envelope_fast_path_returns_top_candidate(self):
+        """Unambiguous envelope candidates are consumed directly: the
+        deterministic resolver and the matcher are not called."""
+        agent = LightAgent()
+        task = make_dispatch_task(description="turn on the kitchen light")
+        task.candidates = [
+            EntityCandidate(entity_id="light.kitchen_ceiling", friendly_name="Kitchen Ceiling", score=0.95),
+            EntityCandidate(entity_id="light.couch", friendly_name="Couch Light", score=0.80),
+        ]
+
+        visible_entries = [
+            DummyEntry("light.kitchen_ceiling", "Kitchen Ceiling"),
+            DummyEntry("light.couch", "Couch Light"),
+        ]
+        index = AsyncMock()
+        index.list_entries_async = AsyncMock(return_value=visible_entries)
+        agent._entity_index = index
+        agent._entity_matcher = AsyncMock()
+
+        with (
+            patch(
+                "app.agents.actionable.resolve_entity_deterministic_first",
+                new_callable=AsyncMock,
+            ) as mock_resolve,
+            patch(
+                "app.agents.actionable.filter_visible_results",
+                new_callable=AsyncMock,
+                return_value=visible_entries,
+            ),
+        ):
+            result = await agent._resolve_relevant_entities(task)
+
+        assert result == [("light.kitchen_ceiling", "Kitchen Ceiling")]
+        mock_resolve.assert_not_awaited()
+        agent._entity_matcher.match.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_envelope_fast_path_publishes_visible_snapshot(self):
+        """The fast path still publishes the per-request visible-entries
+        snapshot for the post-LLM executor resolution."""
+        agent = LightAgent()
+        task = make_dispatch_task(description="turn on the kitchen light")
+        task.candidates = [
+            EntityCandidate(entity_id="light.kitchen_ceiling", friendly_name="Kitchen Ceiling", score=0.95)
+        ]
+
+        visible_entries = [DummyEntry("light.kitchen_ceiling", "Kitchen Ceiling")]
+        index = AsyncMock()
+        index.list_entries_async = AsyncMock(return_value=visible_entries)
+        agent._entity_index = index
+
+        with (
+            patch(
+                "app.agents.actionable.filter_visible_results",
+                new_callable=AsyncMock,
+                return_value=visible_entries,
+            ),
+            patch("app.agents.actionable.set_request_visible_entries") as mock_set,
+        ):
+            result = await agent._resolve_relevant_entities(task)
+
+        assert result == [("light.kitchen_ceiling", "Kitchen Ceiling")]
+        mock_set.assert_called_once_with(agent._allowed_domains, agent.agent_card.agent_id, visible_entries)
+
+    @pytest.mark.asyncio
+    async def test_envelope_fast_path_skipped_when_ambiguous(self):
+        """A top-1/top-2 score gap below _AMBIGUITY_SCORE_GAP falls back
+        to the deterministic resolver."""
+        agent = LightAgent()
+        task = make_dispatch_task(description="turn on the light")
+        task.candidates = [
+            EntityCandidate(entity_id="light.couch", friendly_name="Couch Light", score=0.88),
+            EntityCandidate(entity_id="light.kitchen_ceiling", friendly_name="Kitchen Ceiling", score=0.86),
+        ]
+
+        index = AsyncMock()
+        agent._entity_index = index
+
+        with (
+            patch(
+                "app.agents.actionable.resolve_entity_deterministic_first",
+                new_callable=AsyncMock,
+                return_value={"entity_id": "light.couch", "friendly_name": "Couch Light"},
+            ) as mock_resolve,
+            patch(
+                "app.agents.actionable.filter_visible_results",
+                new_callable=AsyncMock,
+            ) as mock_filter,
+        ):
+            result = await agent._resolve_relevant_entities(task)
+
+        assert result == [("light.couch", "Couch Light")]
+        mock_resolve.assert_awaited_once()
+        mock_filter.assert_not_awaited()
+        index.list_entries_async.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_envelope_fast_path_skipped_when_empty(self):
+        """An empty envelope falls back to the deterministic resolver."""
+        agent = LightAgent()
+        task = make_dispatch_task(description="turn on the kitchen light")
+        task.candidates = []
+
+        with patch(
+            "app.agents.actionable.resolve_entity_deterministic_first",
+            new_callable=AsyncMock,
+            return_value={"entity_id": "light.kitchen_ceiling", "friendly_name": "Kitchen Ceiling"},
+        ) as mock_resolve:
+            result = await agent._resolve_relevant_entities(task)
+
+        assert result == [("light.kitchen_ceiling", "Kitchen Ceiling")]
+        mock_resolve.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_envelope_fast_path_skipped_when_candidate_not_visible(self, caplog):
+        """Directive 5 belt-and-braces: a top candidate missing from the
+        visible snapshot falls back to the resolver with a WARNING."""
+        agent = LightAgent()
+        task = make_dispatch_task(description="turn on the kitchen light")
+        task.candidates = [
+            EntityCandidate(entity_id="light.kitchen_ceiling", friendly_name="Kitchen Ceiling", score=0.95)
+        ]
+
+        index = AsyncMock()
+        index.list_entries_async = AsyncMock(return_value=[DummyEntry("light.couch", "Couch Light")])
+        agent._entity_index = index
+
+        with (
+            patch(
+                "app.agents.actionable.filter_visible_results",
+                new_callable=AsyncMock,
+                return_value=[DummyEntry("light.couch", "Couch Light")],
+            ),
+            patch(
+                "app.agents.actionable.resolve_entity_deterministic_first",
+                new_callable=AsyncMock,
+                return_value={"entity_id": "light.kitchen_ceiling", "friendly_name": "Kitchen Ceiling"},
+            ) as mock_resolve,
+            caplog.at_level("WARNING", logger="app.agents.actionable"),
+        ):
+            result = await agent._resolve_relevant_entities(task)
+
+        assert result == [("light.kitchen_ceiling", "Kitchen Ceiling")]
+        mock_resolve.assert_awaited_once()
+        assert "missing from visible snapshot" in caplog.text
+
 
 # ---------------------------------------------------------------------------
 # _build_relevant_entity_state_context
