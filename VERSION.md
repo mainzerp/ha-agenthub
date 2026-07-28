@@ -1,12 +1,21 @@
 # Version
 
-**Current Version:** 1.48.0
+**Current Version:** 1.48.1
 
 ## Recent Changes
 
-(tracking changes since 1.48.0)
+(tracking changes since 1.48.1)
 
 ## Version History
+
+### 1.48.1 (PATCH) -- Follow-up TTS leak, weather forecast envelope, entity-resolution reuse
+
+(LIVE_ISSUES work; commit 29c08b9)
+
+- fix(agents): `[FOLLOWUP]` marker no longer reaches TTS on streamed voice turns — streaming mediation now holds back a trailing 10-char window and flushes only the stripped remainder (`orchestrator.py` emission site; HA consumers see clean frames)
+- fix(agents): `query_weather_forecast` unwraps the REST `service_response` envelope from `weather.get_forecasts` (tolerant for both response shapes); adds a WARNING log in the previously silent empty-forecast branch
+- perf(agents): dispatched agents reuse the orchestrator's visibility-filtered ingress candidates (`DispatchTask.candidates`) when unambiguous instead of re-resolving serially (~400 ms saved per turn); ambiguity gap, visibility snapshot and ContextVar publication preserved
+- chore(release): bump version to 1.48.1
 
 ### 1.48.0 (MINOR) -- Entity resolution redesign + token preselection
 
