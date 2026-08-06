@@ -10,7 +10,7 @@ A multi-agent AI assistant for Home Assistant with container-based A2A orchestra
 ![Security](https://img.shields.io/github/actions/workflow/status/mainzerp/ha-agenthub/ci.yml?branch=main&job=security&label=Security&logo=github)
 ![Docker Build](https://img.shields.io/github/actions/workflow/status/mainzerp/ha-agenthub/ci.yml?branch=main&job=docker&label=Docker%20Build&logo=github)
 ![Release](https://img.shields.io/github/actions/workflow/status/mainzerp/ha-agenthub/ci.yml?branch=main&job=release&label=Release&logo=github)
-> **Note:** This project is "vibe coded" — much of the code was written iteratively with AI assistance.
+> **Note:** This project is "vibe coded" — the code was written iteratively with AI assistance.
 
 ## Features
 
