@@ -2,6 +2,7 @@ import sys
 from pathlib import Path
 from types import ModuleType
 from unittest.mock import MagicMock
+
 import pytest
 
 _project_root = Path(__file__).resolve().parent.parent.parent
