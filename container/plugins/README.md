@@ -18,7 +18,6 @@ from app.plugins.base import BasePlugin, PluginContext
 
 
 class HelloPlugin(BasePlugin):
-
     @property
     def name(self) -> str:
         return "hello"
@@ -33,6 +32,7 @@ class HelloPlugin(BasePlugin):
 
     async def ready(self, ctx: PluginContext) -> None:
         import logging
+
         logging.getLogger(__name__).info("Hello from plugin!")
 ```
 

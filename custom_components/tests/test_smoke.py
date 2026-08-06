@@ -7,6 +7,7 @@ and exercised in CI without installing the full HA core package.
 import sys
 from types import ModuleType
 from unittest.mock import MagicMock
+
 import pytest
 
 
