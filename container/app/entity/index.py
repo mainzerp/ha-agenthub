@@ -7,8 +7,10 @@ import logging
 import threading
 from datetime import UTC, datetime
 from functools import partial
+from math import log
 
 from app.cache.vector_store import COLLECTION_ENTITY_INDEX, VectorStore
+from app.entity.tokens import entry_tokens
 from app.models.entity_index import EntityIndexEntry
 
 logger = logging.getLogger(__name__)
@@ -57,6 +59,11 @@ class EntityIndex:
         }
         self._primary: dict[str, EntityIndexEntry] = {}
         self._primary_lock = threading.Lock()
+        # In-memory token posting map for token-based preselection:
+        # token -> set of entity_ids whose entry_tokens contain it.
+        # Guarded by _primary_lock; df(token) = len(postings[token]),
+        # N = len(_primary). Not persisted -- derivable from index contents.
+        self._token_postings: dict[str, set[str]] = {}
 
     @staticmethod
     def _build_metadata(entry: EntityIndexEntry) -> dict:
@@ -125,6 +132,88 @@ class EntityIndex:
         entry._content_hash = meta.get("content_hash") or None
         return entry
 
+    # ------------------------------------------------------------------
+    # Token posting map (token-based candidate preselection)
+    # ------------------------------------------------------------------
+
+    def _rebuild_token_index_locked(self) -> None:
+        """Rebuild the token posting map from ``_primary``. Caller holds the lock."""
+        postings: dict[str, set[str]] = {}
+        for entry in self._primary.values():
+            for token in entry_tokens(entry):
+                postings.setdefault(token, set()).add(entry.entity_id)
+        self._token_postings = postings
+
+    def _remove_from_token_index_locked(self, entity_id: str) -> None:
+        """Drop ``entity_id`` from all posting sets. Caller holds the lock."""
+        empty_tokens: list[str] = []
+        for token, ids in self._token_postings.items():
+            ids.discard(entity_id)
+            if not ids:
+                empty_tokens.append(token)
+        for token in empty_tokens:
+            del self._token_postings[token]
+
+    def _add_to_token_index_locked(self, entry: EntityIndexEntry) -> None:
+        """Index a single entry's tokens. Caller holds the lock."""
+        for token in entry_tokens(entry):
+            self._token_postings.setdefault(token, set()).add(entry.entity_id)
+
+    def find_by_tokens(
+        self,
+        tokens: set[str],
+        max_df_ratio: float = 0.5,
+        max_candidates: int = 20,
+    ) -> list[EntityIndexEntry]:
+        """Return entries matching individual query tokens.
+
+        Language-agnostic: tokens whose document frequency exceeds
+        ``max_df_ratio`` of the index size are ignored (stand-in for
+        stopword lists). Remaining entities are ranked by the sum of the
+        inverse document frequencies (``log(N / df)``) of the surviving
+        tokens they match (desc), then entity_id (asc), capped at
+        ``max_candidates``. IDF weighting ensures rare, distinctive
+        tokens outrank common area tokens.
+        """
+        with self._primary_lock:
+            total = len(self._primary)
+            if not total or not tokens:
+                return []
+            scores: dict[str, float] = {}
+            for token in tokens:
+                ids = self._token_postings.get(token)
+                if not ids:
+                    continue
+                if len(ids) / total > max_df_ratio:
+                    continue
+                idf = log(total / len(ids))
+                for entity_id in ids:
+                    scores[entity_id] = scores.get(entity_id, 0.0) + idf
+            ranked = sorted(scores.items(), key=lambda kv: (-kv[1], kv[0]))[:max_candidates]
+            return [self._primary[eid] for eid, _ in ranked if eid in self._primary]
+
+    def token_idf(self, tokens: set[str]) -> dict[str, float]:
+        """Return IDF weights (``log(N / df)``) for the given tokens.
+
+        Reads ``_token_postings`` under ``_primary_lock``; same IDF math as
+        ``find_by_tokens`` but without the document-frequency cap (coverage
+        weighting needs the true IDF of every token). Unseen tokens have no
+        postings and are skipped -- they simply do not appear in the
+        returned dict; no df is invented for them. Returns an empty dict
+        for an empty index or empty input.
+        """
+        with self._primary_lock:
+            total = len(self._primary)
+            if not total or not tokens:
+                return {}
+            weights: dict[str, float] = {}
+            for token in tokens:
+                ids = self._token_postings.get(token)
+                if not ids:
+                    continue
+                weights[token] = log(total / len(ids))
+            return weights
+
     def populate(self, entities: list[EntityIndexEntry]) -> None:
         """Bulk upsert all HA entities into the entity_index collection.
 
@@ -158,6 +247,7 @@ class EntityIndex:
                 self._primary.clear()
                 for e in entities:
                     self._primary[e.entity_id] = e
+                self._rebuild_token_index_locked()
             self._last_refresh = datetime.now(UTC).isoformat()
             self._status["state"] = "ready"
             self._status["progress"] = 100
@@ -165,6 +255,7 @@ class EntityIndex:
         except Exception as exc:
             with self._primary_lock:
                 self._primary.clear()
+                self._token_postings = {}
             self._status["state"] = "error"
             self._status["error"] = str(exc)
             logger.error("Entity index populate failed: %s", exc)
@@ -214,6 +305,8 @@ class EntityIndex:
                 # content_hash (identity fields) hasn't.
                 with self._primary_lock:
                     self._primary[entry.entity_id] = entry
+                    self._remove_from_token_index_locked(entry.entity_id)
+                    self._add_to_token_index_locked(entry)
                 return
         except Exception:
             logger.debug(
@@ -229,12 +322,15 @@ class EntityIndex:
         )
         with self._primary_lock:
             self._primary[entry.entity_id] = entry
+            self._remove_from_token_index_locked(entry.entity_id)
+            self._add_to_token_index_locked(entry)
 
     def remove(self, entity_id: str) -> None:
         """Remove an entity from the index."""
         self._store.delete(COLLECTION_ENTITY_INDEX, ids=[entity_id])
         with self._primary_lock:
             self._primary.pop(entity_id, None)
+            self._remove_from_token_index_locked(entity_id)
 
     def get_by_id(self, entity_id: str) -> EntityIndexEntry | None:
         """Retrieve a single entity by its ID, or None if not found."""
@@ -265,6 +361,7 @@ class EntityIndex:
                 self._store.delete(COLLECTION_ENTITY_INDEX, ids=all_data["ids"])
         with self._primary_lock:
             self._primary.clear()
+            self._rebuild_token_index_locked()
         logger.info("Entity index cleared")
 
     def refresh(self, entities: list[EntityIndexEntry]) -> None:
@@ -369,6 +466,7 @@ class EntityIndex:
                 self._primary.clear()
                 for e in entities:
                     self._primary[e.entity_id] = e
+                self._rebuild_token_index_locked()
 
             self._sync_stats = {
                 "added": added,
@@ -488,6 +586,8 @@ class EntityIndex:
         with self._primary_lock:
             for e in deduped:
                 self._primary[e.entity_id] = e
+                self._remove_from_token_index_locked(e.entity_id)
+                self._add_to_token_index_locked(e)
 
     # ------------------------------------------------------------------
     # Async wrappers (offload to thread pool via run_in_executor)
@@ -537,3 +637,16 @@ class EntityIndex:
     ) -> list[EntityIndexEntry]:
         """Async form of list_entries() -- direct call (lock + list copy, P3)."""
         return self.list_entries(domains=domains)
+
+    async def find_by_tokens_async(
+        self,
+        tokens: set[str],
+        max_df_ratio: float = 0.5,
+        max_candidates: int = 20,
+    ) -> list[EntityIndexEntry]:
+        """Async form of find_by_tokens() -- direct call (lock + dict/set ops, P3)."""
+        return self.find_by_tokens(tokens, max_df_ratio=max_df_ratio, max_candidates=max_candidates)
+
+    async def token_idf_async(self, tokens: set[str]) -> dict[str, float]:
+        """Async form of token_idf() -- direct call (lock + dict lookups, P3)."""
+        return self.token_idf(tokens)

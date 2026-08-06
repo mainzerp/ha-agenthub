@@ -21,7 +21,7 @@ from app.analytics.collector import track_agent_timeout, track_request, track_re
 from app.analytics.tracer import _optional_span
 from app.db.repository import SettingsRepository
 from app.ha_client.home_context import populate_task_context_home_context
-from app.models.agent import CANCEL_INTERACTION_AGENT, FALLBACK_AGENT, DispatchTask, TaskContext
+from app.models.agent import CANCEL_INTERACTION_AGENT, FALLBACK_AGENT, DispatchTask, EntityCandidate, TaskContext
 
 logger = logging.getLogger(__name__)
 
@@ -144,7 +144,7 @@ class DispatchManager:
         skip_dispatch_span: bool = False,
         *,
         resolved_language: str | None = None,
-        verbatim_terms: list[str] | None = None,
+        candidates: list[EntityCandidate] | None = None,
     ) -> tuple[str, str, dict[str, Any] | None]:
         """Dispatch a single task to one agent and return (agent_id, speech, result_dict)."""
         t_dispatch = time.perf_counter()
@@ -161,6 +161,8 @@ class DispatchManager:
             # M-16: preserve the sequential-send marker across the context
             # rebuild so dispatched agents see the same flag.
             context.sequential_send = incoming_context.sequential_send
+            # Phase 6: carry anaphora recency hints onto the dispatch envelope.
+            context.last_entities = list(incoming_context.last_entities)
         if resolved_language:
             context.language = resolved_language
 
@@ -183,7 +185,7 @@ class DispatchManager:
             description=condensed_task,
             conversation_id=conversation_id,
             context=context,
-            verbatim_terms=verbatim_terms or [],
+            candidates=candidates or [],
         )
         request = build_send_request(
             target_agent,

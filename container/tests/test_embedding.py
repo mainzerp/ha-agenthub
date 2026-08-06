@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.cache.embedding import EmbeddingEngine
+from app.cache.embedding import EmbeddingEngine, run_embedding_keepalive
 
 
 @pytest.mark.asyncio
@@ -92,3 +93,95 @@ class TestEmbeddingEngineCallsEngine:
         result = asyncio.run(_run())
         assert len(result) == 1
         assert list(result[0]) == [0.4, 0.5, 0.6]
+        result = asyncio.run(_run())
+        assert len(result) == 1
+        assert list(result[0]) == [0.4, 0.5, 0.6]
+
+
+class TestRunEmbeddingKeepalive:
+    """Periodic keep-alive loop (run_embedding_keepalive).
+
+    Follows the run_periodic test pattern from test_cache_validator.py:
+    SettingsRepository.get_value is stubbed via AsyncMock side_effect and
+    asyncio.sleep records durations, raising CancelledError after N calls.
+    """
+
+    @pytest.mark.asyncio
+    async def test_local_provider_embeds_each_iteration(self):
+        engine = MagicMock()
+        engine.embed = AsyncMock(return_value=[0.1])
+        sleep_calls: list[float] = []
+
+        async def _mock_sleep(duration):
+            sleep_calls.append(duration)
+            if len(sleep_calls) >= 2:
+                raise asyncio.CancelledError()
+
+        with (
+            patch("app.cache.embedding.SettingsRepository") as mock_settings,
+            patch("app.cache.embedding.get_embedding_engine", new=AsyncMock(return_value=engine)),
+            patch("asyncio.sleep", _mock_sleep),
+            pytest.raises(asyncio.CancelledError),
+        ):
+            mock_settings.get_value = AsyncMock(
+                side_effect=lambda key, default="": {
+                    "embedding.keepalive_interval_minutes": "15",
+                    "embedding.provider": "local",
+                }.get(key, default)
+            )
+            await run_embedding_keepalive()
+
+        assert engine.embed.await_count == 2
+        assert sleep_calls == [900, 900]
+
+    @pytest.mark.asyncio
+    async def test_external_provider_skips_embed_but_still_sleeps(self):
+        sleep_calls: list[float] = []
+
+        async def _mock_sleep(duration):
+            sleep_calls.append(duration)
+            if len(sleep_calls) >= 2:
+                raise asyncio.CancelledError()
+
+        with (
+            patch("app.cache.embedding.SettingsRepository") as mock_settings,
+            patch("app.cache.embedding.get_embedding_engine", new=AsyncMock()) as mock_get_engine,
+            patch("asyncio.sleep", _mock_sleep),
+            pytest.raises(asyncio.CancelledError),
+        ):
+            mock_settings.get_value = AsyncMock(
+                side_effect=lambda key, default="": {
+                    "embedding.keepalive_interval_minutes": "15",
+                    "embedding.provider": "openrouter",
+                }.get(key, default)
+            )
+            await run_embedding_keepalive()
+
+        mock_get_engine.assert_not_called()
+        assert sleep_calls == [900, 900]
+
+    @pytest.mark.asyncio
+    async def test_disabled_interval_sleeps_short_recheck(self):
+        sleep_calls: list[float] = []
+
+        async def _mock_sleep(duration):
+            sleep_calls.append(duration)
+            if len(sleep_calls) >= 2:
+                raise asyncio.CancelledError()
+
+        with (
+            patch("app.cache.embedding.SettingsRepository") as mock_settings,
+            patch("app.cache.embedding.get_embedding_engine", new=AsyncMock()) as mock_get_engine,
+            patch("asyncio.sleep", _mock_sleep),
+            pytest.raises(asyncio.CancelledError),
+        ):
+            mock_settings.get_value = AsyncMock(
+                side_effect=lambda key, default="": {
+                    "embedding.keepalive_interval_minutes": "0",
+                    "embedding.provider": "local",
+                }.get(key, default)
+            )
+            await run_embedding_keepalive()
+
+        mock_get_engine.assert_not_called()
+        assert sleep_calls == [300, 300]

@@ -23,6 +23,7 @@ from app.agents.base import BaseAgent, _render_prompt_template, language_code_to
 from app.agents.decorator import agent
 from app.analytics.tracer import _optional_span
 from app.entity.deterministic_resolver import resolve_entity_deterministic_first
+from app.entity.visibility import filter_visible_results
 from app.models.agent import (
     ActionExecuted,
     AgentCard,
@@ -74,6 +75,22 @@ def _not_found_speech(entity_query: str, language: str | None) -> str:
     return template.format(entity=entity_query)
 
 
+# ENTITY_RES_REDESIGN Phase 7 (ambiguity follow-up MVP): when the top-1/top-2
+# candidate score gap is below this threshold, the candidate block is
+# annotated so the agent LLM asks a short clarifying question instead of
+# guessing. Module constant on purpose (MVP, no settings seed); the value
+# mirrors the area re-rank gap in deterministic_resolver.py.
+_AMBIGUITY_SCORE_GAP = 0.05
+
+# English-only per Directive 13 -- the LLM translates its own answer into
+# the user's language.
+_AMBIGUITY_ANNOTATION = (
+    "Note: the top candidates have very close scores, so the request is ambiguous. "
+    "Do not guess: ask the user a short clarifying question instead "
+    "(for example, 'Did you mean <name 1> or <name 2>?') in the user's language."
+)
+
+
 class ActionableAgent(BaseAgent):
     """Base for domain agents that parse actions from LLM output and execute via HA.
 
@@ -100,20 +117,62 @@ class ActionableAgent(BaseAgent):
         return _current_task_context_var.get()
 
     async def _resolve_relevant_entities(self, task: DispatchTask) -> list[tuple[str, str]]:
-        """Resolve up to 3 unique entity mentions from verbatim_terms or description fallback.
+        """Resolve entity mentions from the condensed task description.
 
         Returns a list of (entity_id, friendly_name) tuples.
         """
-        terms = list(task.verbatim_terms or [])
-        # Fallback: if orchestrator didn't populate verbatim_terms,
-        # use the full condensed task as a single query
-        if not terms and task.description:
-            terms = [task.description]
+        # The condensed task is the single resolution query (verbatim_terms
+        # were retired in ENTITY_RES_FOLLOWUP Phase A).
+        terms = [task.description] if task.description else []
 
         if not terms:
             return []
 
         agent_id = self.agent_card.agent_id
+
+        # Envelope fast path: the orchestrator already ran the ingress
+        # matcher and post-filtered (visibility + preferred-domain re-rank,
+        # Directive 5) the top-K candidates for this agent. When the top
+        # candidate is unambiguous, reuse it instead of re-running the
+        # deterministic-first resolution (embedding encode, k-NN search,
+        # umlaut dual search, scoring loop). Empty/ambiguous envelopes and
+        # missing index fall through to the matcher path unchanged.
+        candidates = [c for c in (task.candidates or []) if c.entity_id]
+        ambiguous = len(candidates) >= 2 and (
+            float(candidates[0].score or 0.0) - float(candidates[1].score or 0.0) < _AMBIGUITY_SCORE_GAP
+        )
+        if candidates and not ambiguous and self._entity_index is not None:
+            try:
+                entries = await self._entity_index.list_entries_async(domains=self._allowed_domains)
+                visible = await filter_visible_results(agent_id, entries, self._entity_index)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.debug("Envelope fast path snapshot failed", exc_info=True)
+            else:
+                if visible:
+                    # Publish the per-request snapshot so the post-LLM
+                    # executor resolution (resolve_and_validate_entity)
+                    # reuses it instead of re-listing the index.
+                    set_request_visible_entries(self._allowed_domains, agent_id, visible)
+                    top_id = candidates[0].entity_id
+                    if top_id in {getattr(e, "entity_id", None) for e in visible}:
+                        logger.debug(
+                            "Envelope fast path resolved %s (score %s) for %s",
+                            top_id,
+                            candidates[0].score,
+                            agent_id,
+                        )
+                        return [(top_id, candidates[0].friendly_name or top_id)]
+                    # Belt-and-braces Directive 5 check: a top candidate that
+                    # is not in the visible snapshot must not be selected.
+                    logger.warning(
+                        "Envelope top candidate %s missing from visible snapshot for %s; "
+                        "falling back to deterministic resolution",
+                        top_id,
+                        agent_id,
+                    )
+
         resolved: list[tuple[str, str]] = []
         seen_ids: set[str] = set()
         cached_visible_entries: list[Any] | None = None
@@ -192,50 +251,97 @@ class ActionableAgent(BaseAgent):
         return ", ".join(lines)
 
     async def _build_query_candidate_context(self, task: DispatchTask) -> str | None:
-        """Build a candidate-entity block for query actions."""
-        if self._entity_matcher is None or self._entity_index is None:
-            return None
+        """Build a candidate-entity block from the dispatch envelope.
 
-        terms = list(task.verbatim_terms or [])
-        if not terms and task.description:
-            terms = [task.description]
-        if not terms:
-            return None
+        Primary source: ``task.candidates`` -- the orchestrator's post-filter
+        (visibility + preferred-domain re-rank) top-K list (two-phase
+        visibility, Directive 5; the unfiltered ingress pool never leaves
+        the orchestrator). Fallback for envelopes without candidates
+        (direct dispatch, fail-soft ingress): a single filtered matcher
+        pass over the condensed task description.
+        """
+        candidates: list[tuple[str, str, float]] = []
+        for cand in task.candidates or []:
+            entity_id = cand.entity_id or ""
+            if not entity_id:
+                continue
+            friendly_name = cand.friendly_name or entity_id
+            score = round(float(cand.score or 0.0), 2)
+            candidates.append((entity_id, friendly_name, score))
 
-        agent_id = self.agent_card.agent_id
-        preferred_domains = tuple(sorted(self._allowed_domains)) if self._allowed_domains else None
-        lines: list[str] = []
-
-        for term in terms:
+        if not candidates and task.description and self._entity_matcher is not None and self._entity_index is not None:
+            # Fallback: the envelope carried no candidates -- run one
+            # filtered matcher pass over the condensed description (same
+            # visibility and preferred-domain filters as the retired
+            # per-verbatim-term path).
+            agent_id = self.agent_card.agent_id
+            preferred_domains = tuple(sorted(self._allowed_domains)) if self._allowed_domains else None
             try:
                 matches = await self._entity_matcher.match(
-                    term,
+                    task.description,
                     agent_id=agent_id,
                     preferred_domains=preferred_domains,
                 )
             except asyncio.CancelledError:
                 raise
             except Exception:
-                logger.debug("Candidate match failed for term %r", term, exc_info=True)
-                continue
+                logger.debug("Candidate match failed for description fallback", exc_info=True)
+                matches = []
 
-            if not matches:
-                continue
-
-            lines.append(f"Candidate entities for '{term}' (choose the best match):")
-            for idx, match in enumerate(matches, start=1):
+            for match in matches or []:
                 entity_id = getattr(match, "entity_id", "") or ""
+                if not entity_id:
+                    continue
                 friendly_name = getattr(match, "friendly_name", "") or entity_id
                 score = round(float(getattr(match, "score", 0.0) or 0.0), 2)
-                lines.append(f"{idx}. {friendly_name} ({entity_id}) - score {score}")
+                candidates.append((entity_id, friendly_name, score))
 
-        if not lines:
+        if not candidates:
             return None
 
+        lines = ["Candidate entities (choose the best match):"]
+        for idx, (entity_id, friendly_name, score) in enumerate(candidates, start=1):
+            lines.append(f"{idx}. {friendly_name} ({entity_id}) - score {score}")
         lines.append("")
         lines.append(
-            "For query_* and list_* actions, you may emit the exact entity_id in the JSON action block using the 'entity_id' field instead of 'entity'. "
-            "For state-changing actions, ignore this list and use the user's original entity name in the 'entity' field."
+            "You may emit an entity_id chosen ONLY from this candidate list in the JSON action block using the 'entity_id' field instead of 'entity'. "
+            "If none of the candidates matches the user's request, use the user's original entity name in the 'entity' field."
+        )
+        # Phase 7: ambiguous top-1/top-2 gap -> ask, don't guess. The
+        # clarifying question rides the existing voice_followup round-trip;
+        # the deterministic *_ambiguous executor speech stays as fallback.
+        if len(candidates) >= 2 and candidates[0][2] - candidates[1][2] < _AMBIGUITY_SCORE_GAP:
+            lines.append("")
+            lines.append(_AMBIGUITY_ANNOTATION)
+        return "\n".join(lines)
+
+    def _build_last_entities_context(self, task: DispatchTask) -> str | None:
+        """Build a compact anaphora recency-hint block from the task context.
+
+        ENTITY_RES_REDESIGN Phase 6: ``TaskContext.last_entities`` carries
+        the entities acted on in recent turns (ids + names, no states),
+        most recent first. The block is a HINT for follow-up references
+        ("turn it off") only -- an explicitly named device always wins via
+        the candidate block and deterministic-first resolution, and any id
+        the LLM echoes from this list is re-validated before execution by
+        the same fail-closed gate as a candidate pick (domain + index
+        existence + visibility, Phase 5).
+        """
+        context = task.context
+        if not context or not context.last_entities:
+            return None
+        lines = [
+            "Recently controlled entities (most recent first; use these ONLY for follow-up references "
+            'like "it", "that one", or "the same device"):'
+        ]
+        for idx, entry in enumerate(context.last_entities[:3], start=1):
+            name = entry.friendly_name or entry.entity_id
+            lines.append(f"{idx}. {name} ({entry.entity_id})")
+        lines.append("")
+        lines.append(
+            "When the user explicitly names a device, resolve THAT name instead (candidate list above) -- "
+            "an explicit mention always wins over recency. You may emit an entity_id from this list in the "
+            "'entity_id' field; it will be validated before execution."
         )
         return "\n".join(lines)
 
@@ -258,8 +364,13 @@ class ActionableAgent(BaseAgent):
 
         P3 parallel pre-LLM context: runs inside ``asyncio.gather`` next to the
         entity-state fetch, so a failing branch must not abort the other.
+
+        ENTITY_RES_REDESIGN Phase 4: the block primarily renders from
+        ``task.candidates`` (envelope), so a missing entity matcher no
+        longer disables it -- the matcher is only needed for the
+        description fallback inside ``_build_query_candidate_context``.
         """
-        if not self._inject_query_candidates or self._entity_matcher is None:
+        if not self._inject_query_candidates:
             return None
         try:
             return await self._build_query_candidate_context(task)
@@ -272,16 +383,6 @@ class ActionableAgent(BaseAgent):
     async def _do_execute(self, action, ha_client, entity_index, entity_matcher, *, agent_id, span_collector=None):
         """Execute the parsed action. Subclasses must override."""
         raise NotImplementedError
-
-    def _extract_verbatim_terms(self) -> list[str]:
-        """Read verbatim_terms from the current task context.
-
-        Provides a single source of truth for domain agents that need
-        the orchestrator-preserved original-language tokens for
-        entity matching.
-        """
-        current_task = self._get_current_task()
-        return list(getattr(current_task, "verbatim_terms", []) or []) if current_task else []
 
     async def _generate_not_found_speech(self, entity_query: str, task: DispatchTask, span_collector=None) -> str:
         """Ask the LLM to generate a language-appropriate clarifying question when an entity is not found.
@@ -317,8 +418,25 @@ class ActionableAgent(BaseAgent):
             return _not_found_speech(entity_query, language)
 
     def _handle_parse_miss(self, task: DispatchTask, response: str) -> TaskResult:
-        """Return the fallback result when the LLM response has no valid action."""
-        return TaskResult(speech=strip_json_blocks(response))
+        """Return the fallback result when the LLM response has no valid action.
+
+        ENTITY_RES_FOLLOWUP Phase B: when the stripped fallback speech is a
+        clarifying question (right-trimmed text ends with ``?``) and the
+        envelope candidates are ambiguous (top-1/top-2 score gap below
+        ``_AMBIGUITY_SCORE_GAP``, recomputed statelessly from
+        ``task.candidates`` -- the same condition that injected the Phase 7
+        annotation), request a voice follow-up so the user's answer is
+        re-dispatched. Normal prose answers, clear score gaps, and envelopes
+        with fewer than two candidates keep ``voice_followup=False``.
+        """
+        speech = strip_json_blocks(response)
+        followup = False
+        if speech.rstrip().endswith("?"):
+            candidates = [cand for cand in (task.candidates or []) if cand.entity_id]
+            if len(candidates) >= 2:
+                gap = float(candidates[0].score or 0.0) - float(candidates[1].score or 0.0)
+                followup = gap < _AMBIGUITY_SCORE_GAP
+        return TaskResult(speech=speech, voice_followup=followup)
 
     async def handle_task(self, task: DispatchTask) -> TaskResult:
         # FLOW-CTX-1 (0.18.6): expose the incoming TaskContext so
@@ -328,8 +446,6 @@ class ActionableAgent(BaseAgent):
         # Stored in ContextVars (reset in ``finally``) so concurrent
         # requests on the same singleton agent instance stay isolated.
         context_token = _current_task_context_var.set(task.context)
-        # 0.23.0: domain executors (e.g. climate) read verbatim_terms
-        # from the active task without an extra plumbing kwarg.
         task_token = _current_task_var.set(task)
         # P2 resolver efficiency: clear any inherited visible-entries
         # snapshot; ``_resolve_relevant_entities`` publishes a fresh one
@@ -434,6 +550,13 @@ class ActionableAgent(BaseAgent):
 
         if candidate_context:
             system_prompt += f"\n\n{candidate_context}"
+
+        # ENTITY_RES_REDESIGN Phase 6: anaphora recency hints render next to
+        # the candidate block and follow the same injection opt-out flag.
+        if self._inject_query_candidates:
+            last_entities_context = self._build_last_entities_context(task)
+            if last_entities_context:
+                system_prompt += f"\n\n{last_entities_context}"
 
         messages = [{"role": "system", "content": system_prompt}]
 
@@ -631,12 +754,10 @@ class _ConfigurableDomainAgent(ActionableAgent):
     async def _do_execute(self, action, ha_client, entity_index, entity_matcher, *, agent_id, span_collector=None):
         ctx = self._get_current_task_context()
         area_id = ctx.area_id if ctx else None
-        verbatim_terms = self._extract_verbatim_terms()
 
         kwargs: dict[str, Any] = {
             "preferred_area_id": area_id,
             "task_context": ctx,
-            "verbatim_terms": verbatim_terms,
         }
 
         meta = getattr(self.__class__, "_agent_meta", {})

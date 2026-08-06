@@ -46,7 +46,14 @@ from app.agents.actionable import (  # noqa: E402
 )
 from app.agents.lists import ListsAgent  # noqa: E402
 from app.agents.timer import TimerAgent  # noqa: E402
-from app.models.agent import AgentCard, AgentErrorCode, TaskContext, TaskResult  # noqa: E402
+from app.models.agent import (  # noqa: E402
+    AgentCard,
+    AgentErrorCode,
+    EntityCandidate,
+    LastEntity,
+    TaskContext,
+    TaskResult,
+)
 
 # ---------------------------------------------------------------------------
 # _resolve_relevant_entities
@@ -65,7 +72,6 @@ class TestResolveRelevantEntities:
     async def test_returns_correct_entities(self):
         agent = LightAgent()
         task = make_dispatch_task(description="turn on the kitchen light")
-        task.verbatim_terms = ["kitchen light"]
 
         with patch(
             "app.agents.actionable.resolve_entity_deterministic_first",
@@ -79,47 +85,12 @@ class TestResolveRelevantEntities:
         mock_resolve.assert_awaited_once()
         call_kwargs = mock_resolve.call_args.kwargs
         assert call_kwargs.get("allowed_domains") == frozenset({"light", "switch", "sensor"})
-        assert mock_resolve.call_args.args[0] == "kitchen light"
-
-    @pytest.mark.asyncio
-    async def test_limits_to_three(self):
-        agent = LightAgent()
-        task = make_dispatch_task(description="turn on light one, light two, light three, light four")
-        task.verbatim_terms = ["light one", "light two", "light three", "light four"]
-
-        async def _fake_resolve(query, *args, **kwargs):
-            return {"entity_id": f"light.{query.replace(' ', '_')}", "friendly_name": query}
-
-        with patch(
-            "app.agents.actionable.resolve_entity_deterministic_first",
-            new_callable=AsyncMock,
-            side_effect=_fake_resolve,
-        ):
-            result = await agent._resolve_relevant_entities(task)
-
-        assert len(result) == 3
-
-    @pytest.mark.asyncio
-    async def test_deduplicates_by_entity_id(self):
-        agent = LightAgent()
-        task = make_dispatch_task(description="turn on the kitchen light and kitchen light")
-        task.verbatim_terms = ["kitchen light", "kitchen light"]
-
-        with patch(
-            "app.agents.actionable.resolve_entity_deterministic_first",
-            new_callable=AsyncMock,
-            return_value={"entity_id": "light.kitchen_ceiling", "friendly_name": "Kitchen Ceiling"},
-        ):
-            result = await agent._resolve_relevant_entities(task)
-
-        assert len(result) == 1
-        assert result[0] == ("light.kitchen_ceiling", "Kitchen Ceiling")
+        assert mock_resolve.call_args.args[0] == "turn on the kitchen light"
 
     @pytest.mark.asyncio
     async def test_graceful_when_resolution_fails(self):
         agent = LightAgent()
         task = make_dispatch_task(description="turn on the unknown thing")
-        task.verbatim_terms = ["unknown thing"]
 
         with patch(
             "app.agents.actionable.resolve_entity_deterministic_first",
@@ -134,7 +105,6 @@ class TestResolveRelevantEntities:
     async def test_skips_unresolved_mentions(self):
         agent = LightAgent()
         task = make_dispatch_task(description="turn on the kitchen light")
-        task.verbatim_terms = ["kitchen light"]
 
         with patch(
             "app.agents.actionable.resolve_entity_deterministic_first",
@@ -146,70 +116,9 @@ class TestResolveRelevantEntities:
         assert result == []
 
     @pytest.mark.asyncio
-    async def test_reuses_visible_entries_across_mentions(self):
-        """Cross-mention visible_entries caching: only the first call lists the index."""
-        agent = LightAgent()
-        task = make_dispatch_task(
-            description="turn on the kitchen light and the bedroom light and the living room light"
-        )
-        task.verbatim_terms = ["kitchen light", "bedroom light", "living room light"]
-
-        call_count = 0
-
-        async def _fake_resolve(query, *args, **kwargs):
-            nonlocal call_count
-            call_count += 1
-            if call_count == 1:
-                assert kwargs.get("visible_entries") is None
-            else:
-                assert kwargs.get("visible_entries") is not None
-            return {
-                "entity_id": f"light.{query.replace(' ', '_')}",
-                "friendly_name": query,
-                "_visible_entries": ["mock_entry"],
-            }
-
-        with patch(
-            "app.agents.actionable.resolve_entity_deterministic_first",
-            new_callable=AsyncMock,
-            side_effect=_fake_resolve,
-        ):
-            result = await agent._resolve_relevant_entities(task)
-
-        assert len(result) == 3
-        assert call_count == 3
-
-    @pytest.mark.asyncio
-    async def test_conditional_clauses_resolve_both_target_and_condition_entity(self):
-        agent = LightAgent()
-        task = make_dispatch_task(description="if outdoor brightness is dark, turn on the kitchen light")
-        task.verbatim_terms = ["outdoor brightness", "kitchen light"]
-
-        call_count = 0
-
-        async def _fake_resolve(query, *args, **kwargs):
-            nonlocal call_count
-            call_count += 1
-            if "outdoor" in query.lower() or "brightness" in query.lower():
-                return {"entity_id": "sensor.outdoor_brightness", "friendly_name": "Outdoor Brightness"}
-            return {"entity_id": "light.kitchen_ceiling", "friendly_name": "Kitchen Ceiling"}
-
-        with patch(
-            "app.agents.actionable.resolve_entity_deterministic_first",
-            new_callable=AsyncMock,
-            side_effect=_fake_resolve,
-        ):
-            result = await agent._resolve_relevant_entities(task)
-
-        entity_ids = [r[0] for r in result]
-        assert "sensor.outdoor_brightness" in entity_ids
-        assert "light.kitchen_ceiling" in entity_ids
-
-    @pytest.mark.asyncio
-    async def test_uses_description_fallback_when_verbatim_terms_empty(self):
+    async def test_uses_description_as_resolution_query(self):
         agent = LightAgent()
         task = make_dispatch_task(description="turn on the kitchen light")
-        task.verbatim_terms = []
 
         with patch(
             "app.agents.actionable.resolve_entity_deterministic_first",
@@ -221,6 +130,153 @@ class TestResolveRelevantEntities:
         assert len(result) == 1
         mock_resolve.assert_awaited_once()
         assert mock_resolve.call_args.args[0] == "turn on the kitchen light"
+
+    @pytest.mark.asyncio
+    async def test_envelope_fast_path_returns_top_candidate(self):
+        """Unambiguous envelope candidates are consumed directly: the
+        deterministic resolver and the matcher are not called."""
+        agent = LightAgent()
+        task = make_dispatch_task(description="turn on the kitchen light")
+        task.candidates = [
+            EntityCandidate(entity_id="light.kitchen_ceiling", friendly_name="Kitchen Ceiling", score=0.95),
+            EntityCandidate(entity_id="light.couch", friendly_name="Couch Light", score=0.80),
+        ]
+
+        visible_entries = [
+            DummyEntry("light.kitchen_ceiling", "Kitchen Ceiling"),
+            DummyEntry("light.couch", "Couch Light"),
+        ]
+        index = AsyncMock()
+        index.list_entries_async = AsyncMock(return_value=visible_entries)
+        agent._entity_index = index
+        agent._entity_matcher = AsyncMock()
+
+        with (
+            patch(
+                "app.agents.actionable.resolve_entity_deterministic_first",
+                new_callable=AsyncMock,
+            ) as mock_resolve,
+            patch(
+                "app.agents.actionable.filter_visible_results",
+                new_callable=AsyncMock,
+                return_value=visible_entries,
+            ),
+        ):
+            result = await agent._resolve_relevant_entities(task)
+
+        assert result == [("light.kitchen_ceiling", "Kitchen Ceiling")]
+        mock_resolve.assert_not_awaited()
+        agent._entity_matcher.match.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_envelope_fast_path_publishes_visible_snapshot(self):
+        """The fast path still publishes the per-request visible-entries
+        snapshot for the post-LLM executor resolution."""
+        agent = LightAgent()
+        task = make_dispatch_task(description="turn on the kitchen light")
+        task.candidates = [
+            EntityCandidate(entity_id="light.kitchen_ceiling", friendly_name="Kitchen Ceiling", score=0.95)
+        ]
+
+        visible_entries = [DummyEntry("light.kitchen_ceiling", "Kitchen Ceiling")]
+        index = AsyncMock()
+        index.list_entries_async = AsyncMock(return_value=visible_entries)
+        agent._entity_index = index
+
+        with (
+            patch(
+                "app.agents.actionable.filter_visible_results",
+                new_callable=AsyncMock,
+                return_value=visible_entries,
+            ),
+            patch("app.agents.actionable.set_request_visible_entries") as mock_set,
+        ):
+            result = await agent._resolve_relevant_entities(task)
+
+        assert result == [("light.kitchen_ceiling", "Kitchen Ceiling")]
+        mock_set.assert_called_once_with(agent._allowed_domains, agent.agent_card.agent_id, visible_entries)
+
+    @pytest.mark.asyncio
+    async def test_envelope_fast_path_skipped_when_ambiguous(self):
+        """A top-1/top-2 score gap below _AMBIGUITY_SCORE_GAP falls back
+        to the deterministic resolver."""
+        agent = LightAgent()
+        task = make_dispatch_task(description="turn on the light")
+        task.candidates = [
+            EntityCandidate(entity_id="light.couch", friendly_name="Couch Light", score=0.88),
+            EntityCandidate(entity_id="light.kitchen_ceiling", friendly_name="Kitchen Ceiling", score=0.86),
+        ]
+
+        index = AsyncMock()
+        agent._entity_index = index
+
+        with (
+            patch(
+                "app.agents.actionable.resolve_entity_deterministic_first",
+                new_callable=AsyncMock,
+                return_value={"entity_id": "light.couch", "friendly_name": "Couch Light"},
+            ) as mock_resolve,
+            patch(
+                "app.agents.actionable.filter_visible_results",
+                new_callable=AsyncMock,
+            ) as mock_filter,
+        ):
+            result = await agent._resolve_relevant_entities(task)
+
+        assert result == [("light.couch", "Couch Light")]
+        mock_resolve.assert_awaited_once()
+        mock_filter.assert_not_awaited()
+        index.list_entries_async.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_envelope_fast_path_skipped_when_empty(self):
+        """An empty envelope falls back to the deterministic resolver."""
+        agent = LightAgent()
+        task = make_dispatch_task(description="turn on the kitchen light")
+        task.candidates = []
+
+        with patch(
+            "app.agents.actionable.resolve_entity_deterministic_first",
+            new_callable=AsyncMock,
+            return_value={"entity_id": "light.kitchen_ceiling", "friendly_name": "Kitchen Ceiling"},
+        ) as mock_resolve:
+            result = await agent._resolve_relevant_entities(task)
+
+        assert result == [("light.kitchen_ceiling", "Kitchen Ceiling")]
+        mock_resolve.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_envelope_fast_path_skipped_when_candidate_not_visible(self, caplog):
+        """Directive 5 belt-and-braces: a top candidate missing from the
+        visible snapshot falls back to the resolver with a WARNING."""
+        agent = LightAgent()
+        task = make_dispatch_task(description="turn on the kitchen light")
+        task.candidates = [
+            EntityCandidate(entity_id="light.kitchen_ceiling", friendly_name="Kitchen Ceiling", score=0.95)
+        ]
+
+        index = AsyncMock()
+        index.list_entries_async = AsyncMock(return_value=[DummyEntry("light.couch", "Couch Light")])
+        agent._entity_index = index
+
+        with (
+            patch(
+                "app.agents.actionable.filter_visible_results",
+                new_callable=AsyncMock,
+                return_value=[DummyEntry("light.couch", "Couch Light")],
+            ),
+            patch(
+                "app.agents.actionable.resolve_entity_deterministic_first",
+                new_callable=AsyncMock,
+                return_value={"entity_id": "light.kitchen_ceiling", "friendly_name": "Kitchen Ceiling"},
+            ) as mock_resolve,
+            caplog.at_level("WARNING", logger="app.agents.actionable"),
+        ):
+            result = await agent._resolve_relevant_entities(task)
+
+        assert result == [("light.kitchen_ceiling", "Kitchen Ceiling")]
+        mock_resolve.assert_awaited_once()
+        assert "missing from visible snapshot" in caplog.text
 
 
 # ---------------------------------------------------------------------------
@@ -492,9 +548,52 @@ class TestHandleTaskInnerInjection:
 
     @pytest.mark.asyncio
     async def test_query_candidate_context_injected_into_system_prompt(self):
+        """ENTITY_RES_REDESIGN Phase 4: the candidate block renders from the
+        envelope's post-filter ``task.candidates`` -- no matcher call."""
         agent = LightAgent()
         task = make_dispatch_task(description="is the kitchen light on?")
-        task.verbatim_terms = ["kitchen light"]
+        task.candidates = [
+            EntityCandidate(entity_id="light.kitchen_ceiling", friendly_name="Kitchen Ceiling", score=0.95)
+        ]
+
+        matcher = AsyncMock()
+        matcher.match = AsyncMock(return_value=[])
+
+        index = AsyncMock()
+        index.get_by_id_async = AsyncMock(return_value=None)
+
+        with (
+            patch.object(agent, "_load_prompt_async", new_callable=AsyncMock, return_value="You are a light agent."),
+            patch.object(
+                agent,
+                "_call_llm",
+                new_callable=AsyncMock,
+                return_value='{"action": "query_light_state", "entity_id": "light.kitchen_ceiling"}',
+            ) as mock_llm,
+            patch.object(agent, "_resolve_relevant_entities", new_callable=AsyncMock, return_value=[]),
+            patch.object(agent, "_do_execute", new_callable=AsyncMock, return_value={"speech": "OK", "success": True}),
+        ):
+            agent._entity_index = index
+            agent._entity_matcher = matcher
+            agent._ha_client = AsyncMock()
+
+            await agent.handle_task(task)
+
+        system_msg = mock_llm.call_args.args[0][0]["content"]
+        assert "Candidate entities (choose the best match):" in system_msg
+        assert "1. Kitchen Ceiling (light.kitchen_ceiling) - score 0.95" in system_msg
+        assert "entity_id' field instead of 'entity" in system_msg
+        # Envelope candidates are rendered directly; the matcher fallback is
+        # not consulted.
+        matcher.match.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_query_candidate_context_falls_back_to_description_match(self):
+        """Empty envelope candidates: a single filtered matcher pass over the
+        condensed description builds the block (graceful degradation when the
+        ingress stage did not populate candidates)."""
+        agent = LightAgent()
+        task = make_dispatch_task(description="is the kitchen light on?")
 
         matcher = AsyncMock()
         match_result = MagicMock()
@@ -524,15 +623,16 @@ class TestHandleTaskInnerInjection:
             await agent.handle_task(task)
 
         system_msg = mock_llm.call_args.args[0][0]["content"]
-        assert "Candidate entities for 'kitchen light'" in system_msg
+        assert "Candidate entities (choose the best match):" in system_msg
         assert "Kitchen Ceiling (light.kitchen_ceiling)" in system_msg
         matcher.match.assert_awaited_once()
+        assert matcher.match.call_args.args[0] == "is the kitchen light on?"
 
     @pytest.mark.asyncio
     async def test_query_candidate_context_skipped_when_no_candidates(self):
+        """No envelope candidates and an empty matcher fallback: no block."""
         agent = LightAgent()
         task = make_dispatch_task(description="is the kitchen light on?")
-        task.verbatim_terms = ["kitchen light"]
 
         matcher = AsyncMock()
         matcher.match = AsyncMock(return_value=[])
@@ -557,8 +657,105 @@ class TestHandleTaskInnerInjection:
             await agent.handle_task(task)
 
         system_msg = mock_llm.call_args.args[0][0]["content"]
-        assert "Candidate entities for" not in system_msg
+        assert "Candidate entities (choose the best match):" not in system_msg
         matcher.match.assert_awaited_once()
+        assert matcher.match.call_args.args[0] == "is the kitchen light on?"
+
+    @pytest.mark.asyncio
+    async def test_candidate_block_annotated_when_top_scores_close(self):
+        """ENTITY_RES_REDESIGN Phase 7: a small top-1/top-2 score gap
+        (< _AMBIGUITY_SCORE_GAP) annotates the block with the clarifying-
+        question instruction."""
+        agent = LightAgent()
+        task = make_dispatch_task(description="turn on the light")
+        task.candidates = [
+            EntityCandidate(entity_id="light.couch", friendly_name="Couch Light", score=0.88),
+            EntityCandidate(entity_id="light.kitchen_ceiling", friendly_name="Kitchen Ceiling", score=0.86),
+        ]
+
+        with (
+            patch.object(agent, "_load_prompt_async", new_callable=AsyncMock, return_value="You are a light agent."),
+            patch.object(
+                agent,
+                "_call_llm",
+                new_callable=AsyncMock,
+                return_value="Did you mean the Couch Light or the Kitchen Ceiling?",
+            ) as mock_llm,
+            patch.object(agent, "_resolve_relevant_entities", new_callable=AsyncMock, return_value=[]),
+            patch.object(agent, "_do_execute", new_callable=AsyncMock, return_value={"speech": "OK", "success": True}),
+        ):
+            agent._entity_index = None
+            agent._entity_matcher = None
+            agent._ha_client = AsyncMock()
+
+            await agent.handle_task(task)
+
+        system_msg = mock_llm.call_args.args[0][0]["content"]
+        assert "Candidate entities (choose the best match):" in system_msg
+        assert "very close scores" in system_msg
+        assert "clarifying question" in system_msg
+
+    @pytest.mark.asyncio
+    async def test_candidate_block_not_annotated_when_gap_clear(self):
+        """A clear top-1/top-2 score gap (>= _AMBIGUITY_SCORE_GAP) leaves
+        the block unannotated."""
+        agent = LightAgent()
+        task = make_dispatch_task(description="turn on the light")
+        task.candidates = [
+            EntityCandidate(entity_id="light.kitchen_ceiling", friendly_name="Kitchen Ceiling", score=0.95),
+            EntityCandidate(entity_id="light.couch", friendly_name="Couch Light", score=0.80),
+        ]
+
+        with (
+            patch.object(agent, "_load_prompt_async", new_callable=AsyncMock, return_value="You are a light agent."),
+            patch.object(
+                agent,
+                "_call_llm",
+                new_callable=AsyncMock,
+                return_value='{"action": "turn_on", "entity_id": "light.kitchen_ceiling"}',
+            ) as mock_llm,
+            patch.object(agent, "_resolve_relevant_entities", new_callable=AsyncMock, return_value=[]),
+            patch.object(agent, "_do_execute", new_callable=AsyncMock, return_value={"speech": "OK", "success": True}),
+        ):
+            agent._entity_index = None
+            agent._entity_matcher = None
+            agent._ha_client = AsyncMock()
+
+            await agent.handle_task(task)
+
+        system_msg = mock_llm.call_args.args[0][0]["content"]
+        assert "Candidate entities (choose the best match):" in system_msg
+        assert "very close scores" not in system_msg
+
+    @pytest.mark.asyncio
+    async def test_candidate_block_not_annotated_for_single_candidate(self):
+        """A single candidate is never ambiguous: no annotation."""
+        agent = LightAgent()
+        task = make_dispatch_task(description="turn on the kitchen light")
+        task.candidates = [
+            EntityCandidate(entity_id="light.kitchen_ceiling", friendly_name="Kitchen Ceiling", score=0.72)
+        ]
+
+        with (
+            patch.object(agent, "_load_prompt_async", new_callable=AsyncMock, return_value="You are a light agent."),
+            patch.object(
+                agent,
+                "_call_llm",
+                new_callable=AsyncMock,
+                return_value='{"action": "turn_on", "entity_id": "light.kitchen_ceiling"}',
+            ) as mock_llm,
+            patch.object(agent, "_resolve_relevant_entities", new_callable=AsyncMock, return_value=[]),
+            patch.object(agent, "_do_execute", new_callable=AsyncMock, return_value={"speech": "OK", "success": True}),
+        ):
+            agent._entity_index = None
+            agent._entity_matcher = None
+            agent._ha_client = AsyncMock()
+
+            await agent.handle_task(task)
+
+        system_msg = mock_llm.call_args.args[0][0]["content"]
+        assert "Candidate entities (choose the best match):" in system_msg
+        assert "very close scores" not in system_msg
 
 
 # ---------------------------------------------------------------------------
@@ -813,6 +1010,152 @@ class TestHandleTaskExecution:
         assert "Hello" in result.speech
         assert result.error is None
         assert result.action_executed is None
+
+    @pytest.mark.asyncio
+    async def test_parse_miss_question_with_close_gap_requests_voice_followup(self):
+        """ENTITY_RES_FOLLOWUP Phase B: a prose clarifying question with an
+        ambiguous top-1/top-2 candidate gap (< _AMBIGUITY_SCORE_GAP) sets
+        voice_followup so the user's answer is re-dispatched."""
+        agent = LightAgent()
+        task = make_dispatch_task(description="turn on the light")
+        task.candidates = [
+            EntityCandidate(entity_id="light.couch", friendly_name="Couch Light", score=0.88),
+            EntityCandidate(entity_id="light.kitchen_ceiling", friendly_name="Kitchen Ceiling", score=0.86),
+        ]
+
+        with (
+            patch.object(agent, "_load_prompt_async", new_callable=AsyncMock, return_value="You are a light agent."),
+            patch.object(
+                agent,
+                "_call_llm",
+                new_callable=AsyncMock,
+                return_value="Did you mean the Couch Light or the Kitchen Ceiling?",
+            ),
+            patch.object(agent, "_resolve_relevant_entities", new_callable=AsyncMock, return_value=[]),
+        ):
+            agent._ha_client = AsyncMock()
+            agent._entity_index = None
+            agent._entity_matcher = None
+
+            result = await agent.handle_task(task)
+
+        assert result.error is None
+        assert result.voice_followup is True
+
+    @pytest.mark.asyncio
+    async def test_parse_miss_question_with_clear_gap_no_voice_followup(self):
+        """A clarifying question with a clear top-1/top-2 score gap
+        (>= _AMBIGUITY_SCORE_GAP) does not request a voice follow-up."""
+        agent = LightAgent()
+        task = make_dispatch_task(description="turn on the light")
+        task.candidates = [
+            EntityCandidate(entity_id="light.kitchen_ceiling", friendly_name="Kitchen Ceiling", score=0.95),
+            EntityCandidate(entity_id="light.couch", friendly_name="Couch Light", score=0.80),
+        ]
+
+        with (
+            patch.object(agent, "_load_prompt_async", new_callable=AsyncMock, return_value="You are a light agent."),
+            patch.object(
+                agent,
+                "_call_llm",
+                new_callable=AsyncMock,
+                return_value="Did you mean the Kitchen Ceiling?",
+            ),
+            patch.object(agent, "_resolve_relevant_entities", new_callable=AsyncMock, return_value=[]),
+        ):
+            agent._ha_client = AsyncMock()
+            agent._entity_index = None
+            agent._entity_matcher = None
+
+            result = await agent.handle_task(task)
+
+        assert result.error is None
+        assert result.voice_followup is False
+
+    @pytest.mark.asyncio
+    async def test_parse_miss_prose_without_question_no_voice_followup(self):
+        """A normal prose answer (no trailing question mark) never requests
+        a voice follow-up, even with an ambiguous candidate gap."""
+        agent = LightAgent()
+        task = make_dispatch_task(description="turn on the light")
+        task.candidates = [
+            EntityCandidate(entity_id="light.couch", friendly_name="Couch Light", score=0.88),
+            EntityCandidate(entity_id="light.kitchen_ceiling", friendly_name="Kitchen Ceiling", score=0.86),
+        ]
+
+        with (
+            patch.object(agent, "_load_prompt_async", new_callable=AsyncMock, return_value="You are a light agent."),
+            patch.object(
+                agent,
+                "_call_llm",
+                new_callable=AsyncMock,
+                return_value="I am not sure which light you mean.",
+            ),
+            patch.object(agent, "_resolve_relevant_entities", new_callable=AsyncMock, return_value=[]),
+        ):
+            agent._ha_client = AsyncMock()
+            agent._entity_index = None
+            agent._entity_matcher = None
+
+            result = await agent.handle_task(task)
+
+        assert result.error is None
+        assert result.voice_followup is False
+
+    @pytest.mark.asyncio
+    async def test_parse_miss_question_single_candidate_no_voice_followup(self):
+        """A single candidate is never ambiguous: a clarifying question does
+        not request a voice follow-up."""
+        agent = LightAgent()
+        task = make_dispatch_task(description="turn on the kitchen light")
+        task.candidates = [
+            EntityCandidate(entity_id="light.kitchen_ceiling", friendly_name="Kitchen Ceiling", score=0.72)
+        ]
+
+        with (
+            patch.object(agent, "_load_prompt_async", new_callable=AsyncMock, return_value="You are a light agent."),
+            patch.object(
+                agent,
+                "_call_llm",
+                new_callable=AsyncMock,
+                return_value="Did you mean the Kitchen Ceiling?",
+            ),
+            patch.object(agent, "_resolve_relevant_entities", new_callable=AsyncMock, return_value=[]),
+        ):
+            agent._ha_client = AsyncMock()
+            agent._entity_index = None
+            agent._entity_matcher = None
+
+            result = await agent.handle_task(task)
+
+        assert result.error is None
+        assert result.voice_followup is False
+
+    @pytest.mark.asyncio
+    async def test_parse_miss_question_without_candidates_no_voice_followup(self):
+        """No envelope candidates: a clarifying question does not request a
+        voice follow-up."""
+        agent = LightAgent()
+        task = make_dispatch_task(description="turn on the kitchen light")
+
+        with (
+            patch.object(agent, "_load_prompt_async", new_callable=AsyncMock, return_value="You are a light agent."),
+            patch.object(
+                agent,
+                "_call_llm",
+                new_callable=AsyncMock,
+                return_value="Which light did you mean?",
+            ),
+            patch.object(agent, "_resolve_relevant_entities", new_callable=AsyncMock, return_value=[]),
+        ):
+            agent._ha_client = AsyncMock()
+            agent._entity_index = None
+            agent._entity_matcher = None
+
+            result = await agent.handle_task(task)
+
+        assert result.error is None
+        assert result.voice_followup is False
 
     @pytest.mark.asyncio
     async def test_no_ha_client_returns_ha_unavailable(self):
@@ -1213,20 +1556,17 @@ class TestParallelPreLlmContext:
 
         system_msg = mock_llm.call_args.args[0][0]["content"]
         assert "Context: Kitchen Ceiling (light.kitchen_ceiling): off" in system_msg
-        assert "Candidate entities for" not in system_msg
+        assert "Candidate entities (choose the best match):" not in system_msg
 
     @pytest.mark.asyncio
     async def test_failing_state_branch_keeps_candidate_context(self):
         agent = LightAgent()
         task = make_dispatch_task(description="is the kitchen light on?")
-        task.verbatim_terms = ["kitchen light"]
+        task.candidates = [
+            EntityCandidate(entity_id="light.kitchen_ceiling", friendly_name="Kitchen Ceiling", score=0.95)
+        ]
 
         matcher = AsyncMock()
-        match_result = MagicMock()
-        match_result.entity_id = "light.kitchen_ceiling"
-        match_result.friendly_name = "Kitchen Ceiling"
-        match_result.score = 0.95
-        matcher.match = AsyncMock(return_value=[match_result])
 
         with (
             patch.object(agent, "_load_prompt_async", new_callable=AsyncMock, return_value="You are a light agent."),
@@ -1252,5 +1592,127 @@ class TestParallelPreLlmContext:
             await agent.handle_task(task)
 
         system_msg = mock_llm.call_args.args[0][0]["content"]
-        assert "Candidate entities for 'kitchen light'" in system_msg
+        assert "Candidate entities (choose the best match):" in system_msg
+        assert "1. Kitchen Ceiling (light.kitchen_ceiling) - score 0.95" in system_msg
         assert "Context:" not in system_msg
+
+
+# ---------------------------------------------------------------------------
+# ENTITY_RES_REDESIGN Phase 6: last_entities anaphora block
+# ---------------------------------------------------------------------------
+
+
+class TestLastEntitiesContext:
+    def _make_task_with_last_entities(self, **kwargs) -> object:
+        context = TaskContext(
+            language="en",
+            last_entities=[
+                LastEntity(entity_id="light.couch", friendly_name="Couch", turn_index=2),
+                LastEntity(entity_id="light.kitchen_ceiling", friendly_name="Kitchen Ceiling", turn_index=1),
+            ],
+        )
+        return make_dispatch_task(description="turn it off", context=context, **kwargs)
+
+    @pytest.mark.asyncio
+    async def test_last_entities_block_rendered_next_to_candidates(self):
+        """The recency block renders after the candidate block."""
+        agent = LightAgent()
+        task = self._make_task_with_last_entities()
+        task.candidates = [
+            EntityCandidate(entity_id="light.kitchen_ceiling", friendly_name="Kitchen Ceiling", score=0.95)
+        ]
+
+        with (
+            patch.object(agent, "_load_prompt_async", new_callable=AsyncMock, return_value="You are a light agent."),
+            patch.object(
+                agent, "_call_llm", new_callable=AsyncMock, return_value='{"action": "turn_off", "entity": "couch"}'
+            ) as mock_llm,
+            patch.object(agent, "_resolve_relevant_entities", new_callable=AsyncMock, return_value=[]),
+            patch.object(agent, "_do_execute", new_callable=AsyncMock, return_value={"speech": "OK", "success": True}),
+        ):
+            agent._entity_index = AsyncMock()
+            agent._entity_matcher = AsyncMock()
+            agent._ha_client = AsyncMock()
+
+            await agent.handle_task(task)
+
+        system_msg = mock_llm.call_args.args[0][0]["content"]
+        assert "Recently controlled entities (most recent first" in system_msg
+        assert "1. Couch (light.couch)" in system_msg
+        assert "2. Kitchen Ceiling (light.kitchen_ceiling)" in system_msg
+        assert "explicit mention always wins over recency" in system_msg
+        # The recency block renders AFTER the candidate block.
+        assert system_msg.index("Candidate entities (choose the best match):") < system_msg.index(
+            "Recently controlled entities"
+        )
+
+    @pytest.mark.asyncio
+    async def test_last_entities_block_rendered_without_candidates(self):
+        """No candidates: the recency block still renders on its own."""
+        agent = LightAgent()
+        task = self._make_task_with_last_entities()
+
+        matcher = AsyncMock()
+        matcher.match = AsyncMock(return_value=[])
+
+        with (
+            patch.object(agent, "_load_prompt_async", new_callable=AsyncMock, return_value="You are a light agent."),
+            patch.object(
+                agent, "_call_llm", new_callable=AsyncMock, return_value='{"action": "turn_off", "entity": "couch"}'
+            ) as mock_llm,
+            patch.object(agent, "_resolve_relevant_entities", new_callable=AsyncMock, return_value=[]),
+            patch.object(agent, "_do_execute", new_callable=AsyncMock, return_value={"speech": "OK", "success": True}),
+        ):
+            agent._entity_index = AsyncMock()
+            agent._entity_matcher = matcher
+            agent._ha_client = AsyncMock()
+
+            await agent.handle_task(task)
+
+        system_msg = mock_llm.call_args.args[0][0]["content"]
+        assert "Candidate entities (choose the best match):" not in system_msg
+        assert "Recently controlled entities (most recent first" in system_msg
+        assert "1. Couch (light.couch)" in system_msg
+
+    @pytest.mark.asyncio
+    async def test_no_last_entities_block_when_empty(self):
+        agent = LightAgent()
+        task = make_dispatch_task(description="turn on the kitchen light", context=TaskContext(language="en"))
+
+        matcher = AsyncMock()
+        matcher.match = AsyncMock(return_value=[])
+
+        with (
+            patch.object(agent, "_load_prompt_async", new_callable=AsyncMock, return_value="You are a light agent."),
+            patch.object(agent, "_call_llm", new_callable=AsyncMock, return_value="Hello there!") as mock_llm,
+            patch.object(agent, "_resolve_relevant_entities", new_callable=AsyncMock, return_value=[]),
+        ):
+            agent._entity_index = AsyncMock()
+            agent._entity_matcher = matcher
+            agent._ha_client = None
+
+            await agent.handle_task(task)
+
+        system_msg = mock_llm.call_args.args[0][0]["content"]
+        assert "Recently controlled entities" not in system_msg
+
+    @pytest.mark.asyncio
+    async def test_last_entities_block_follows_injection_opt_out(self):
+        """Agents that opt out of candidate injection get no recency block."""
+        agent = LightAgent()
+        agent._inject_query_candidates = False
+        task = self._make_task_with_last_entities()
+
+        with (
+            patch.object(agent, "_load_prompt_async", new_callable=AsyncMock, return_value="You are a light agent."),
+            patch.object(agent, "_call_llm", new_callable=AsyncMock, return_value="Hello there!") as mock_llm,
+            patch.object(agent, "_resolve_relevant_entities", new_callable=AsyncMock, return_value=[]),
+        ):
+            agent._entity_index = None
+            agent._entity_matcher = None
+            agent._ha_client = None
+
+            await agent.handle_task(task)
+
+        system_msg = mock_llm.call_args.args[0][0]["content"]
+        assert "Recently controlled entities" not in system_msg

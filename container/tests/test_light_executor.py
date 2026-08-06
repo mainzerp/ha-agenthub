@@ -210,7 +210,6 @@ class TestExecuteLightAction:
         assert call.kwargs == {
             "agent_id": "light-agent",
             "preferred_domains": ("light", "switch"),
-            "verbatim_terms": None,
         }
 
     @pytest.mark.asyncio
@@ -917,90 +916,83 @@ class TestExecuteLightActionCondition:
 
 
 # ---------------------------------------------------------------------------
-# M-14: verbatim_terms forwarding to entity resolution
+# Phase 5: LLM-picked entity_id on the write path (Style A)
 # ---------------------------------------------------------------------------
 
 
-class TestVerbatimTermsForwarding:
-    """execute_light_action must forward verbatim_terms on write and read paths."""
+class TestWritePathDirectEntityId:
+    """execute_light_action honors a validated LLM-supplied entity_id."""
 
-    @staticmethod
-    def _resolved_payload(entity_id: str = "light.kueche", friendly_name: str = "Küche") -> dict:
-        return {
-            "entity_id": entity_id,
-            "friendly_name": friendly_name,
-            "resolution": {"metadata": {"resolution_path": "verbatim"}},
-            "not_found_result": None,
+    @pytest.fixture(autouse=True)
+    def _fast_state_verify(self, monkeypatch):
+        from app.agents import action_executor as _ae
+
+        async def _fast(key, *, default):
+            return {
+                "state_verify.ws_timeout_sec": 0.05,
+                "state_verify.poll_interval_sec": 0.01,
+                "state_verify.poll_max_sec": 0.05,
+            }.get(key, default)
+
+        monkeypatch.setattr(_ae, "_settings_float", _fast)
+
+    @pytest.fixture()
+    def ha_client(self):
+        client = AsyncMock()
+        client.call_service = AsyncMock(return_value=[{"entity_id": "light.kitchen", "state": "on"}])
+        client.get_state = AsyncMock(return_value={"state": "off", "attributes": {}})
+        return attach_expect_state_shim(client)
+
+    @pytest.fixture()
+    def entity_index(self):
+        entry = make_entity_index_entry("light.kitchen", "Kitchen Light")
+        index = MagicMock()
+        index.get_by_id = MagicMock(side_effect=lambda entity_id: entry if entity_id == "light.kitchen" else None)
+        index.list_entries_async = AsyncMock(return_value=[entry])
+        index.list_entries = MagicMock(return_value=[entry])
+        return index
+
+    @pytest.mark.asyncio
+    async def test_write_path_direct_entity_id_honored(self, ha_client, entity_index):
+        matcher = AsyncMock()
+        matcher.match = AsyncMock(return_value=[])
+        action = {"action": "turn_on", "entity": "", "entity_id": "light.kitchen", "parameters": {}}
+
+        result = await execute_light_action(action, ha_client, entity_index, matcher, agent_id="light-agent")
+
+        assert result["success"] is True
+        assert result["entity_id"] == "light.kitchen"
+        ha_client.call_service.assert_awaited_once_with("light", "turn_on", "light.kitchen", None)
+        # The validated direct id short-circuits the matcher.
+        matcher.match.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_write_path_hallucinated_entity_id_rejected_fail_closed(self, ha_client, entity_index):
+        matcher = AsyncMock()
+        matcher.match = AsyncMock(return_value=[])
+        action = {"action": "turn_on", "entity": "", "entity_id": "light.hallucinated", "parameters": {}}
+
+        result = await execute_light_action(action, ha_client, entity_index, matcher, agent_id="light-agent")
+
+        assert result["success"] is False
+        assert "Could not find" in result["speech"]
+        ha_client.call_service.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_set_brightness_on_switch_rejected(self, ha_client, entity_index):
+        # switch.* is in the broad read-side _ALLOWED_DOMAINS, but the
+        # per-action set for set_brightness is {"light"} only.
+        matcher = AsyncMock()
+        matcher.match = AsyncMock(return_value=[])
+        action = {
+            "action": "set_brightness",
+            "entity": "",
+            "entity_id": "switch.kitchen",
+            "parameters": {"brightness": 128},
         }
 
-    @pytest.mark.asyncio
-    async def test_write_path_forwards_verbatim_terms(self):
-        ha_client = AsyncMock()
-        ha_client.get_state = AsyncMock(return_value={"state": "on", "attributes": {}})
-        with patch(
-            "app.agents.light_executor.resolve_and_validate_entity",
-            new_callable=AsyncMock,
-            return_value=self._resolved_payload(),
-        ) as mock_resolve:
-            result = await execute_light_action(
-                {"action": "turn_on", "entity": "Küche", "parameters": {}},
-                ha_client,
-                MagicMock(),
-                MagicMock(),
-                agent_id="light-agent",
-                verbatim_terms=["Küche"],
-            )
+        result = await execute_light_action(action, ha_client, entity_index, matcher, agent_id="light-agent")
 
-        assert result["success"] is True
-        mock_resolve.assert_awaited_once()
-        assert mock_resolve.call_args.kwargs["verbatim_terms"] == ["Küche"]
-
-    @pytest.mark.asyncio
-    async def test_query_light_state_forwards_verbatim_terms(self):
-        ha_client = AsyncMock()
-        ha_client.get_state = AsyncMock(return_value={"state": "on", "attributes": {"friendly_name": "Küche"}})
-        with patch(
-            "app.agents.light_executor.resolve_and_validate_entity",
-            new_callable=AsyncMock,
-            return_value=self._resolved_payload(),
-        ) as mock_resolve:
-            result = await execute_light_action(
-                {"action": "query_light_state", "entity": "Küche"},
-                ha_client,
-                MagicMock(),
-                MagicMock(),
-                agent_id="light-agent",
-                verbatim_terms=["Küche"],
-            )
-
-        assert result["success"] is True
-        mock_resolve.assert_awaited_once()
-        assert mock_resolve.call_args.kwargs["verbatim_terms"] == ["Küche"]
-
-    @pytest.mark.asyncio
-    async def test_query_entity_history_forwards_verbatim_terms(self):
-        ha_client = AsyncMock()
-        with (
-            patch(
-                "app.agents.light_executor.resolve_and_validate_entity",
-                new_callable=AsyncMock,
-                return_value=self._resolved_payload(),
-            ) as mock_resolve,
-            patch(
-                "app.agents.light_executor.execute_recorder_history_query",
-                new_callable=AsyncMock,
-                return_value={"success": True, "entity_id": "light.kueche", "speech": "history"},
-            ),
-        ):
-            result = await execute_light_action(
-                {"action": "query_entity_history", "entity": "Küche", "parameters": {}},
-                ha_client,
-                MagicMock(),
-                MagicMock(),
-                agent_id="light-agent",
-                verbatim_terms=["Küche"],
-            )
-
-        assert result["success"] is True
-        mock_resolve.assert_awaited_once()
-        assert mock_resolve.call_args.kwargs["verbatim_terms"] == ["Küche"]
+        assert result["success"] is False
+        assert "Could not find" in result["speech"]
+        ha_client.call_service.assert_not_awaited()

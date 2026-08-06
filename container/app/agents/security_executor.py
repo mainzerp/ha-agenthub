@@ -108,7 +108,6 @@ async def execute_security_action(
     *,
     preferred_area_id: str | None = None,
     task_context: TaskContext | None = None,
-    verbatim_terms: list[str] | None = None,
 ) -> dict:
     """Resolve an entity, call a security HA service, and verify the result.
 
@@ -138,7 +137,6 @@ async def execute_security_action(
             parameters=action.get("parameters") or {},
             preferred_area_id=preferred_area_id,
             task_context=task_context,
-            verbatim_terms=verbatim_terms,
             action=action,
         )
 
@@ -163,8 +161,8 @@ async def execute_security_action(
         required_domains,
         _validate_domain,
         preferred_area_id=preferred_area_id,
-        verbatim_terms=verbatim_terms,
         span_collector=span_collector,
+        direct_entity_id=action.get("entity_id"),
     )
     if resolved["not_found_result"] is not None:
         return resolved["not_found_result"]
@@ -279,7 +277,6 @@ async def _query_security_state(
     span_collector=None,
     *,
     preferred_area_id: str | None = None,
-    verbatim_terms: list[str] | None = None,
     action: dict | None = None,
 ) -> dict:
     entity_id_direct = await _validate_direct_entity_id(
@@ -300,7 +297,6 @@ async def _query_security_state(
             _READ_DOMAINS,
             _validate_domain,
             preferred_area_id=preferred_area_id,
-            verbatim_terms=verbatim_terms,
             span_collector=span_collector,
         )
         if resolved["not_found_result"] is not None:
@@ -353,7 +349,6 @@ async def _query_security_entity_history(
     *,
     preferred_area_id: str | None = None,
     task_context: TaskContext | None = None,
-    verbatim_terms: list[str] | None = None,
 ) -> dict:
     """Recorder history for a single lock, alarm, camera, or security sensor entity."""
     resolved = await resolve_and_validate_entity(
@@ -364,7 +359,6 @@ async def _query_security_entity_history(
         _READ_DOMAINS,
         _validate_domain,
         preferred_area_id=preferred_area_id,
-        verbatim_terms=verbatim_terms,
         span_collector=span_collector,
     )
     if resolved["not_found_result"] is not None:
@@ -454,7 +448,6 @@ async def _handle_security_read_action(
     parameters: dict[str, Any] | None = None,
     preferred_area_id: str | None = None,
     task_context: TaskContext | None = None,
-    verbatim_terms: list[str] | None = None,
     action: dict | None = None,
 ) -> dict:
     if action_name == "query_security_state":
@@ -466,7 +459,6 @@ async def _handle_security_read_action(
             agent_id,
             span_collector=span_collector,
             preferred_area_id=preferred_area_id,
-            verbatim_terms=verbatim_terms,
             action=action,
         )
     if action_name == "list_security":
@@ -482,6 +474,5 @@ async def _handle_security_read_action(
             span_collector=span_collector,
             preferred_area_id=preferred_area_id,
             task_context=task_context,
-            verbatim_terms=verbatim_terms,
         )
     return {"success": False, "entity_id": "", "new_state": None, "speech": f"Unknown read action: {action_name}"}

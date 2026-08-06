@@ -174,7 +174,7 @@ class ClassificationEngine:
         load_prompt_async: Callable[[str], Awaitable[str]] | None = None,
         get_turns: Callable[[str | None], Awaitable[list[dict[str, Any]]]] | None = None,
         prefetched_turns: list[dict[str, Any]] | None = None,
-    ) -> tuple[list[tuple[str, str, float | None, list[str]]], bool]:
+    ) -> tuple[list[tuple[str, str, float | None]], bool]:
         """Classify user intent and produce a condensed task.
 
         The condensed task is a clear, actionable English description of
@@ -191,7 +191,7 @@ class ClassificationEngine:
 
         Returns:
             (classifications, routing_cached) where classifications is a list
-            of (target_agent_id, condensed_task, confidence, entities_list) tuples.
+            of (target_agent_id, condensed_task, confidence) tuples.
         """
         _call_llm = call_llm or self._call_llm
         _load_prompt = load_prompt_async or self._load_prompt_async
@@ -215,7 +215,7 @@ class ClassificationEngine:
                         condensed = user_text
                         subspan["span_name"] = "classify.cache_lookup"
                         subspan["status"] = "ok"
-                        return [(cache_result.agent_id, condensed, 1.0, [])], True
+                        return [(cache_result.agent_id, condensed, 1.0)], True
                     else:
                         logger.debug(
                             "Rejecting stale routing cache hit: %s for '%s'",
@@ -240,7 +240,7 @@ class ClassificationEngine:
                             condensed = user_text
                             subspan["span_name"] = "classify.cache_lookup"
                             subspan["status"] = "ok"
-                            return [(cache_result.agent_id, condensed, 1.0, [])], True
+                            return [(cache_result.agent_id, condensed, 1.0)], True
                         else:
                             logger.debug(
                                 "Rejecting stale routing cache hit: %s for '%s'",
@@ -254,7 +254,7 @@ class ClassificationEngine:
         t_cache = time.perf_counter()
 
         if _load_prompt is None or _call_llm is None:
-            return [(FALLBACK_AGENT, user_text, 0.0, [])], False
+            return [(FALLBACK_AGENT, user_text, 0.0)], False
 
         async with _optional_span(
             span_collector, "classify.prompt_and_descriptions", agent_id="orchestrator"
@@ -355,23 +355,21 @@ class ClassificationEngine:
                 FALLBACK_AGENT,
                 exc_info=True,
             )
-            return [(FALLBACK_AGENT, user_text, 0.0, [])], False
+            return [(FALLBACK_AGENT, user_text, 0.0)], False
         except Exception:
             logger.exception("Intent classification failed, falling back to %s", FALLBACK_AGENT)
-            return [(FALLBACK_AGENT, user_text, 0.0, [])], False
+            return [(FALLBACK_AGENT, user_text, 0.0)], False
 
-    async def parse_classification(
-        self, response: str, original_text: str
-    ) -> list[tuple[str, str, float | None, list[str]]]:
+    async def parse_classification(self, response: str, original_text: str) -> list[tuple[str, str, float | None]]:
         """Parse LLM classification response (single or multi-line).
 
         Expected format per line: "<agent-id> (<confidence>%): <condensed task>"
         Falls back to old format: "<agent-id>: <condensed task>"
         Falls back to general-agent if parsing fails.
 
-        Also parses optional ``@entities:`` lines that follow each
-        classification line, extracting entity/room/device names into
-        the 4th tuple element.
+        Legacy ``@entities:`` lines (verbatim_terms, retired in
+        ENTITY_RES_FOLLOWUP Phase A) are no longer parsed: they fall
+        through to the unknown-agent skip below and are ignored.
 
         P1-4: lines without an explicit ``(<nn>%)`` confidence yield
         ``None`` so downstream gating can distinguish "the model told us
@@ -380,14 +378,13 @@ class ClassificationEngine:
         synthetic confidence that was then exposed in traces as if the
         LLM had produced it.
 
-        Returns a list of ``(agent_id, condensed_task, confidence, entities_list)``
+        Returns a list of ``(agent_id, condensed_task, confidence)``
         tuples; ``confidence`` is ``None`` when the model did not supply
         one.
         """
         response = response.strip()
         known_agents = await self._get_known_agents()
         results: list[tuple[str, str, float | None]] = []
-        entities_per_result: list[list[str]] = []
 
         if known_agents:
             agent_alt = "|".join(re.escape(a) for a in sorted(known_agents, key=len, reverse=True))
@@ -401,15 +398,6 @@ class ClassificationEngine:
         lines = [line.strip() for line in response.split("\n") if line.strip()]
         for line in lines:
             line = line.lstrip()
-            if line.lower().startswith("@entities:"):
-                entity_part = line.split(":", 1)[1]
-                terms = [t.strip() for t in entity_part.split(",") if t.strip()]
-                # Associate with the most recently appended result
-                if entities_per_result:
-                    entities_per_result[-1].extend(terms)
-                else:
-                    logger.warning("Orphan @entities line with no preceding classification: %s", line[:100])
-                continue
             line = line.removeprefix("[SEQ]").strip()
             confidence: float | None
             match = re.match(r"^([\w-]+)\s*\((\d+)%?\)\s*:\s*(.+)$", line, re.DOTALL)
@@ -436,39 +424,30 @@ class ClassificationEngine:
                 condensed = original_text
 
             results.append((agent_id, condensed, confidence))
-            entities_per_result.append([])
 
         if not results:
-            return [(FALLBACK_AGENT, original_text, 0.0, [])]
+            return [(FALLBACK_AGENT, original_text, 0.0)]
 
-        seen: dict[str, tuple[str, float | None, list[str], list[str]]] = {}
-        for (agent_id, condensed, confidence), entities_list in zip(results, entities_per_result, strict=True):
+        seen: dict[str, tuple[str, float | None, list[str]]] = {}
+        for agent_id, condensed, confidence in results:
             if agent_id in seen:
-                existing_condensed, existing_conf, tasks, existing_entities = seen[agent_id]
+                existing_condensed, existing_conf, tasks = seen[agent_id]
                 existing_cmp = existing_conf if existing_conf is not None else -1.0
                 current_cmp = confidence if confidence is not None else -1.0
                 if current_cmp > existing_cmp:
                     tasks.append(existing_condensed)
-                    seen[agent_id] = (condensed, confidence, tasks, existing_entities + entities_list)
+                    seen[agent_id] = (condensed, confidence, tasks)
                 else:
                     tasks.append(condensed)
-                    seen[agent_id] = (existing_condensed, existing_conf, tasks, existing_entities + entities_list)
+                    seen[agent_id] = (existing_condensed, existing_conf, tasks)
             else:
-                seen[agent_id] = (condensed, confidence, [], entities_list)
+                seen[agent_id] = (condensed, confidence, [])
 
-        deduped: list[tuple[str, str, float | None, list[str]]] = []
-        for agent_id, (condensed, confidence, extra_tasks, all_entities) in seen.items():
+        deduped: list[tuple[str, str, float | None]] = []
+        for agent_id, (condensed, confidence, extra_tasks) in seen.items():
             if extra_tasks:
                 condensed = condensed + " ; " + " ; ".join(extra_tasks)
-            # Deduplicate entity terms preserving order
-            seen_terms: set[str] = set()
-            unique_entities: list[str] = []
-            for t in all_entities:
-                key = t.lower()
-                if key not in seen_terms:
-                    seen_terms.add(key)
-                    unique_entities.append(t)
-            deduped.append((agent_id, condensed, confidence, unique_entities))
+            deduped.append((agent_id, condensed, confidence))
 
         deduped.sort(key=lambda x: x[2] if x[2] is not None else -1.0, reverse=True)
         return deduped[:3]
@@ -480,7 +459,7 @@ class ClassificationEngine:
         conversation_id: str | None,
         span_collector=None,
         language: str = "en",
-    ) -> list[tuple[str, str, float | None, list[str]]]:
+    ) -> list[tuple[str, str, float | None]]:
         if self._load_prompt_async is None or self._call_llm is None:
             raise _RecoverableClassificationError("I couldn't determine what content to deliver.")
 
@@ -527,7 +506,7 @@ class ClassificationEngine:
 
     async def sanitize_or_repair_classifications(
         self,
-        classifications: list[tuple[str, str, float | None, list[str]]],
+        classifications: list[tuple[str, str, float | None]],
         *,
         user_text: str,
         conversation_id: str | None,
@@ -535,7 +514,7 @@ class ClassificationEngine:
         language: str = "en",
         allow_repair: bool = True,
         require_send_partner: bool = False,
-    ) -> tuple[list[tuple[str, str, float | None, list[str]]], bool]:
+    ) -> tuple[list[tuple[str, str, float | None]], bool]:
         """Sanitize classifications and optionally repair invalid send-agent routing.
 
         Returns ``(classifications, was_repaired)`` where ``was_repaired`` is

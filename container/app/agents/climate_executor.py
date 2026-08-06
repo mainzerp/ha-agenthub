@@ -140,7 +140,6 @@ async def execute_climate_action(
     *,
     preferred_area_id: str | None = None,
     task_context: TaskContext | None = None,
-    verbatim_terms: list[str] | None = None,
 ) -> dict:
     """Resolve an entity, call a climate HA service, and verify the result.
 
@@ -176,7 +175,6 @@ async def execute_climate_action(
             parameters=action.get("parameters") or {},
             preferred_area_id=preferred_area_id,
             task_context=task_context,
-            verbatim_terms=verbatim_terms,
             action=action,
         )
 
@@ -203,8 +201,8 @@ async def execute_climate_action(
         _CLIMATE_WRITE_DOMAINS,
         _validate_domain,
         preferred_area_id=preferred_area_id,
-        verbatim_terms=verbatim_terms,
         span_collector=span_collector,
+        direct_entity_id=action.get("entity_id"),
     )
     if resolved["not_found_result"] is not None:
         return resolved["not_found_result"]
@@ -346,7 +344,6 @@ async def _query_climate_state(
     span_collector=None,
     *,
     preferred_area_id: str | None = None,
-    verbatim_terms: list[str] | None = None,
     action: dict | None = None,
 ) -> dict:
     entity_id_direct = await _validate_direct_entity_id(
@@ -367,7 +364,6 @@ async def _query_climate_state(
             _CLIMATE_READ_DOMAINS,
             _validate_domain,
             preferred_area_id=preferred_area_id,
-            verbatim_terms=verbatim_terms,
             span_collector=span_collector,
         )
         if resolved["not_found_result"] is not None:
@@ -577,7 +573,6 @@ async def _resolve_weather_entity(
     span_collector=None,
     *,
     preferred_area_id: str | None = None,
-    verbatim_terms: list[str] | None = None,
 ) -> tuple[str | None, str, str | None]:
     """Resolve a weather entity from query or auto-discover the first visible weather.* entity."""
     entity_id = None
@@ -594,7 +589,6 @@ async def _resolve_weather_entity(
                     agent_id,
                     allowed_domains=_WEATHER_DOMAINS,
                     preferred_area_id=preferred_area_id,
-                    verbatim_terms=verbatim_terms,
                 )
                 em_span["metadata"] = resolution["metadata"]
                 entity_id = resolution["entity_id"]
@@ -675,7 +669,6 @@ async def _query_weather(
     span_collector=None,
     *,
     preferred_area_id: str | None = None,
-    verbatim_terms: list[str] | None = None,
     action: dict | None = None,
 ) -> dict:
     entity_id_direct = await _validate_direct_entity_id(
@@ -697,7 +690,6 @@ async def _query_weather(
             agent_id,
             span_collector=span_collector,
             preferred_area_id=preferred_area_id,
-            verbatim_terms=verbatim_terms,
         )
         resolution_metadata = {}
     if not entity_id:
@@ -752,7 +744,6 @@ async def _query_weather_forecast(
     *,
     parameters: dict[str, Any] | None = None,
     preferred_area_id: str | None = None,
-    verbatim_terms: list[str] | None = None,
     action: dict | None = None,
 ) -> dict:
     entity_id_direct = await _validate_direct_entity_id(
@@ -775,7 +766,6 @@ async def _query_weather_forecast(
             agent_id,
             span_collector=span_collector,
             preferred_area_id=preferred_area_id,
-            verbatim_terms=verbatim_terms,
         )
         resolution_metadata = {}
     if not entity_id:
@@ -793,6 +783,10 @@ async def _query_weather_forecast(
         resp = await ha_client.call_service(
             "weather", "get_forecasts", entity_id, {"type": forecast_type}, return_response=True
         )
+        # REST API wraps return_response bodies in a "service_response" envelope;
+        # WebSocket responses are already unwrapped. Normalize both shapes.
+        if isinstance(resp, dict) and isinstance(resp.get("service_response"), dict):
+            resp = resp["service_response"]
         forecasts = []
         if isinstance(resp, dict):
             # HA returns {entity_id: {"forecast": [...]}}
@@ -811,6 +805,11 @@ async def _query_weather_forecast(
                 "cacheable": False,
                 "metadata": resolution_metadata,
             }
+        logger.warning(
+            "weather.get_forecasts returned no forecast entries for %s (response keys: %s)",
+            entity_id,
+            list(resp.keys()) if isinstance(resp, dict) else type(resp).__name__,
+        )
     except Exception:
         logger.warning(
             "weather.get_forecasts service call failed for %s, falling back to state", entity_id, exc_info=True
@@ -855,7 +854,6 @@ async def _query_entity_history(
     *,
     preferred_area_id: str | None = None,
     task_context: TaskContext | None = None,
-    verbatim_terms: list[str] | None = None,
 ) -> dict:
     """Fetch Recorder history for a resolved climate/sensor/weather entity (visibility-respected)."""
     resolved = await resolve_and_validate_entity(
@@ -866,7 +864,6 @@ async def _query_entity_history(
         _HISTORY_DOMAINS,
         _validate_domain,
         preferred_area_id=preferred_area_id,
-        verbatim_terms=verbatim_terms,
         span_collector=span_collector,
     )
     if resolved["not_found_result"] is not None:
@@ -899,7 +896,6 @@ async def _handle_climate_read_action(
     parameters: dict[str, Any] | None = None,
     preferred_area_id: str | None = None,
     task_context: TaskContext | None = None,
-    verbatim_terms: list[str] | None = None,
     action: dict | None = None,
 ) -> dict:
     params = parameters or {}
@@ -912,7 +908,6 @@ async def _handle_climate_read_action(
             agent_id,
             span_collector=span_collector,
             preferred_area_id=preferred_area_id,
-            verbatim_terms=verbatim_terms,
             action=action,
         )
     if action_name == "list_climate":
@@ -926,7 +921,6 @@ async def _handle_climate_read_action(
             agent_id,
             span_collector=span_collector,
             preferred_area_id=preferred_area_id,
-            verbatim_terms=verbatim_terms,
             action=action,
         )
     if action_name == "query_weather_forecast":
@@ -939,7 +933,6 @@ async def _handle_climate_read_action(
             span_collector=span_collector,
             parameters=params,
             preferred_area_id=preferred_area_id,
-            verbatim_terms=verbatim_terms,
             action=action,
         )
     if action_name == "query_entity_history":
@@ -953,6 +946,5 @@ async def _handle_climate_read_action(
             span_collector=span_collector,
             preferred_area_id=preferred_area_id,
             task_context=task_context,
-            verbatim_terms=verbatim_terms,
         )
     return {"success": False, "entity_id": "", "new_state": None, "speech": f"Unknown read action: {action_name}"}

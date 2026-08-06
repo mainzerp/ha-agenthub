@@ -390,9 +390,11 @@ class TestStreamingMediation:
         task = _make_task("turn on light", conversation_id="conv-m10-partial")
         chunks = [c async for c in orch.handle_task_stream(task)]
 
-        # The partial mediated token was already spoken to the client.
+        # The partial mediated token was already spoken to the client; the
+        # trailing 10-char holdback (" mediated ") is dropped on mid-stream
+        # failure so a partial tag can never leak.
         token_chunks = [c for c in chunks if not c.get("done") and c.get("token")]
-        assert [c["token"] for c in token_chunks] == ["Partial mediated "]
+        assert "".join(c["token"] for c in token_chunks) == "Partial"
         done_chunks = [c for c in chunks if c.get("done")]
         assert len(done_chunks) == 1
         # mediated_speech suppressed (tokens were streamed) and the stored
@@ -608,8 +610,8 @@ class TestSequentialSendStreamingMetadata:
                 lang_turns=[],
                 span_collector=task.span_collector,
                 classifications=[
-                    ("general-agent", "Summarize", 0.95, []),
-                    ("send-agent", "Send it", 0.95, []),
+                    ("general-agent", "Summarize", 0.95),
+                    ("send-agent", "Send it", 0.95),
                 ],
                 routing_cached=False,
                 target_agent="general-agent",
@@ -663,8 +665,8 @@ class TestSequentialSendFillerRace:
                 lang_turns=[],
                 span_collector=task.span_collector,
                 classifications=[
-                    ("light-agent", "Turn on light", 0.95, []),
-                    ("send-agent", "Send it", 0.95, []),
+                    ("light-agent", "Turn on light", 0.95),
+                    ("send-agent", "Send it", 0.95),
                 ],
                 routing_cached=False,
                 target_agent="light-agent",
@@ -752,7 +754,8 @@ class TestFirstFrameLatency:
         chunks = [c async for c in orch.handle_task_stream(task)]
 
         token_chunks = [c for c in chunks if not c.get("done") and c.get("token")]
-        assert [c["token"] for c in token_chunks] == ["Friendly answer with reminder."]
+        # The trailing-tag holdback re-chunks frames; compare the spoken text.
+        assert "".join(c["token"] for c in token_chunks) == "Friendly answer with reminder."
         # The blocking mediation path was NOT used.
         orch._mediate_response.assert_not_called()
         done_chunks = [c for c in chunks if c.get("done")]
@@ -834,7 +837,8 @@ class TestFirstFrameLatency:
         # No raw agent tokens leaked downstream; the mediated tokens were
         # streamed instead.
         token_chunks = [c for c in chunks if not c.get("done") and c.get("token")]
-        assert [c["token"] for c in token_chunks] == ["Friendly: light is on."]
+        # The trailing-tag holdback re-chunks frames; compare the spoken text.
+        assert "".join(c["token"] for c in token_chunks) == "Friendly: light is on."
         # The blocking mediation path was NOT used.
         orch._mediate_response.assert_not_called()
         done_chunks = [c for c in chunks if c.get("done")]
@@ -915,3 +919,139 @@ class TestFirstFrameLatency:
         assert filler_idx < first_token_idx
         token_chunks = [c for c in chunks if not c.get("done") and c.get("token")]
         assert [c["token"] for c in token_chunks] == ["Real ", "answer."]
+
+
+# ---------------------------------------------------------------------------
+# ISSUE 3: [FOLLOWUP] marker must never leak into streamed token frames (TTS)
+# ---------------------------------------------------------------------------
+
+
+class TestFollowupTagNotStreamed:
+    @pytest.mark.asyncio
+    @patch("app.agents.orchestrator.SettingsRepository")
+    @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
+    @patch("app.llm.client.complete", new_callable=AsyncMock)
+    async def test_followup_tag_split_across_tokens_is_never_streamed(self, mock_complete, mock_track, mock_settings):
+        """A trailing [FOLLOWUP] marker split across token boundaries must not
+        appear in any token frame; the spoken text is the stripped text and
+        the done frame still signals the follow-up."""
+        mock_complete.return_value = "light-agent (95%): Turn on light"
+        mock_settings.get_value = AsyncMock(
+            side_effect=lambda k, d=None: {
+                "personality.prompt": "You are friendly.",
+                "orchestrator.organic_followup_enabled": "false",
+            }.get(k, d)
+        )
+        orch, dispatcher = _make_orchestrator()
+        orch._should_send_filler = AsyncMock(return_value=False)
+        orch._mediate_response = AsyncMock()
+
+        async def _stream(_request):
+            yield {"token": "Light is on.", "done": True}
+
+        dispatcher.dispatch_stream = _stream
+
+        async def _fake_mediation_stream(**kwargs):
+            yield "Gerne behilflich sein?"
+            yield "[FOL"
+            yield "LOWUP]"
+
+        orch._mediate_response_stream = _fake_mediation_stream
+
+        task = _make_task("turn on light", conversation_id="conv-i3-tag-split")
+        chunks = [c async for c in orch.handle_task_stream(task)]
+
+        token_chunks = [c for c in chunks if not c.get("done") and c.get("token")]
+        spoken = "".join(c["token"] for c in token_chunks)
+        assert "FOLLOWUP" not in spoken
+        assert "[FOL" not in spoken
+        assert spoken == "Gerne behilflich sein?"
+        done_chunks = [c for c in chunks if c.get("done")]
+        assert len(done_chunks) == 1
+        assert done_chunks[0].get("voice_followup") is True
+        assert done_chunks[0].get("mediated_speech") is None
+        orch._mediate_response.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch("app.agents.orchestrator.SettingsRepository")
+    @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
+    @patch("app.llm.client.complete", new_callable=AsyncMock)
+    async def test_stream_without_tag_flushes_holdback_and_sets_no_followup(
+        self, mock_complete, mock_track, mock_settings
+    ):
+        """Without the marker, the full mediated text still arrives across
+        frames (the 10-char holdback is flushed before the done frame) and no
+        voice_followup flag is set."""
+        mock_complete.return_value = "light-agent (95%): Turn on light"
+        mock_settings.get_value = AsyncMock(
+            side_effect=lambda k, d=None: {
+                "personality.prompt": "You are friendly.",
+                "orchestrator.organic_followup_enabled": "false",
+            }.get(k, d)
+        )
+        orch, dispatcher = _make_orchestrator()
+        orch._should_send_filler = AsyncMock(return_value=False)
+
+        async def _stream(_request):
+            yield {"token": "Light is on.", "done": True}
+
+        dispatcher.dispatch_stream = _stream
+
+        async def _fake_mediation_stream(**kwargs):
+            yield "Light "
+            yield "is on."
+
+        orch._mediate_response_stream = _fake_mediation_stream
+
+        task = _make_task("turn on light", conversation_id="conv-i3-no-tag")
+        chunks = [c async for c in orch.handle_task_stream(task)]
+
+        token_chunks = [c for c in chunks if not c.get("done") and c.get("token")]
+        assert "".join(c["token"] for c in token_chunks) == "Light is on."
+        done_chunks = [c for c in chunks if c.get("done")]
+        assert len(done_chunks) == 1
+        assert done_chunks[0].get("voice_followup") is None
+        assert done_chunks[0].get("mediated_speech") is None
+
+    @pytest.mark.asyncio
+    @patch("app.agents.orchestrator.SettingsRepository")
+    @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
+    @patch("app.llm.client.complete", new_callable=AsyncMock)
+    async def test_mid_stream_failure_drops_partial_tag_prefix(self, mock_complete, mock_track, mock_settings):
+        """A mid-stream MediationStreamError after a partial tag prefix emits
+        no tag fragment: the unflushed holdback is dropped."""
+        from app.agents.mediation import MediationStreamError
+
+        mock_complete.return_value = "light-agent (95%): Turn on light"
+        mock_settings.get_value = AsyncMock(
+            side_effect=lambda k, d=None: {
+                "personality.prompt": "You are friendly.",
+                "orchestrator.organic_followup_enabled": "false",
+            }.get(k, d)
+        )
+        orch, dispatcher = _make_orchestrator()
+        orch._should_send_filler = AsyncMock(return_value=False)
+
+        async def _stream(_request):
+            yield {"token": "Light is on.", "done": True}
+
+        dispatcher.dispatch_stream = _stream
+
+        async def _partial_mediation_stream(**kwargs):
+            yield "Partial answer [FO"
+            raise MediationStreamError("LLM stream broke mid-way")
+
+        orch._mediate_response_stream = _partial_mediation_stream
+        orch._store_turn = AsyncMock()
+
+        task = _make_task("turn on light", conversation_id="conv-i3-partial-tag")
+        chunks = [c async for c in orch.handle_task_stream(task)]
+
+        token_chunks = [c for c in chunks if not c.get("done") and c.get("token")]
+        spoken = "".join(c["token"] for c in token_chunks)
+        assert "[FO" not in spoken
+        assert "FOLLOWUP" not in spoken
+        # Only the text beyond the 10-char holdback was spoken.
+        assert spoken == "Partial "
+        done_chunks = [c for c in chunks if c.get("done")]
+        assert len(done_chunks) == 1
