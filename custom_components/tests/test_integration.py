@@ -6,8 +6,8 @@ without installing the full HA core package.
 
 import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
-import pytest
 
+import pytest
 
 # ---------------------------------------------------------------------------
 # 5.3.1  _normalize_url  --  config_flow.py
@@ -142,8 +142,8 @@ class TestNormalizeUrlConsistency:
     for all valid inputs."""
 
     def _get_fns(self):
-        from custom_components.ha_agenthub.config_flow import _normalize_url as cfg_norm
         from custom_components.ha_agenthub.__init__ import _normalize_url as ini_norm
+        from custom_components.ha_agenthub.config_flow import _normalize_url as cfg_norm
 
         return cfg_norm, ini_norm
 
@@ -676,9 +676,10 @@ class TestConfigEntrySourceOfTruth:
 
     @pytest.mark.asyncio
     async def test_setup_entry_prefers_data_over_options(self, hass):
+        from homeassistant.const import CONF_API_KEY, CONF_URL
+
         from custom_components.ha_agenthub import async_setup_entry
         from custom_components.ha_agenthub.const import DOMAIN
-        from homeassistant.const import CONF_API_KEY, CONF_URL
 
         entry = MagicMock()
         entry.entry_id = "e1"
@@ -696,9 +697,10 @@ class TestConfigEntrySourceOfTruth:
 
     @pytest.mark.asyncio
     async def test_migrate_entry_moves_url_and_api_key_from_options_to_data(self, hass):
+        from homeassistant.const import CONF_API_KEY, CONF_URL
+
         from custom_components.ha_agenthub import async_migrate_entry
         from custom_components.ha_agenthub.const import CONF_NAME
-        from homeassistant.const import CONF_API_KEY, CONF_URL
 
         entry = MagicMock()
         entry.entry_id = "e1"
@@ -781,7 +783,7 @@ class TestOptionsFlow:
 
     @pytest.mark.asyncio
     async def test_invalid_timeout_shows_form_error_without_validation(self):
-        flow, entry = self._make_flow()
+        flow, _entry = self._make_flow()
 
         with patch(
             "custom_components.ha_agenthub.config_flow._validate_connection",
@@ -803,7 +805,7 @@ class TestOptionsFlow:
 
     @pytest.mark.asyncio
     async def test_url_change_updates_unique_id_in_same_write(self):
-        flow, entry = self._make_flow()
+        flow, _entry = self._make_flow()
 
         with patch(
             "custom_components.ha_agenthub.config_flow._validate_connection",
@@ -827,7 +829,7 @@ class TestOptionsFlow:
 
     @pytest.mark.asyncio
     async def test_url_change_to_existing_unique_id_shows_error(self):
-        flow, entry = self._make_flow()
+        flow, _entry = self._make_flow()
         other = MagicMock()
         other.entry_id = "other-entry"
         other.unique_id = "http://taken.local"
@@ -875,7 +877,7 @@ class TestReauthFlow:
 
     @pytest.mark.asyncio
     async def test_reauth_same_url_leaves_unique_id_untouched(self):
-        flow, entry = self._make_flow()
+        flow, _entry = self._make_flow()
 
         with patch(
             "custom_components.ha_agenthub.config_flow._validate_connection",
@@ -894,7 +896,7 @@ class TestReauthFlow:
 
     @pytest.mark.asyncio
     async def test_reauth_url_change_updates_unique_id_in_same_write(self):
-        flow, entry = self._make_flow()
+        flow, _entry = self._make_flow()
 
         with patch(
             "custom_components.ha_agenthub.config_flow._validate_connection",
@@ -1020,8 +1022,9 @@ class TestReauthTriggerOnAuthFailure:
 class TestSetupEntryErrors:
     @pytest.mark.asyncio
     async def test_missing_url_raises_config_entry_error(self):
-        from custom_components.ha_agenthub import async_setup_entry
         from homeassistant.exceptions import ConfigEntryError
+
+        from custom_components.ha_agenthub import async_setup_entry
 
         hass = MagicMock()
         hass.data = {}

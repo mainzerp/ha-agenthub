@@ -10,17 +10,18 @@ import re
 import time
 from collections.abc import Callable
 from typing import Any, Literal
-
-import aiohttp
 from urllib.parse import urlparse
 
+import aiohttp
 from homeassistant.components import assist_pipeline, conversation
 from homeassistant.components.conversation import ConversationEntityFeature
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import MATCH_ALL
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
-from homeassistant.helpers import device_registry as dr, entity_registry as er, intent
+from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers import intent
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 try:
@@ -29,14 +30,14 @@ except (ImportError, ModuleNotFoundError):
     async_track_state_change_event = None
 
 from .const import (
+    CONF_WS_RECEIVE_TIMEOUT,
+    DEFAULT_WS_RECEIVE_TIMEOUT,
     DOMAIN,
-    WS_PATH,
     RECONNECT_BASE_DELAY,
     RECONNECT_MAX_DELAY,
     WS_HEARTBEAT_INTERVAL,
     WS_IDLE_THRESHOLD,
-    CONF_WS_RECEIVE_TIMEOUT,
-    DEFAULT_WS_RECEIVE_TIMEOUT,
+    WS_PATH,
 )
 
 logger = logging.getLogger(__name__)
@@ -1275,8 +1276,10 @@ class HaAgentHubConversationEntity(
                             )
                             if not "".join(speech_parts).strip():
                                 speech_parts = [
-                                    "The assistant could not complete that request. "
-                                    f"({stream_err})"
+                                    (
+                                        "The assistant could not complete that request. "
+                                        f"({stream_err})"
+                                    )
                                 ]
                         break
                 elif msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
