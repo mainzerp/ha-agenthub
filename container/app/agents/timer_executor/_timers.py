@@ -358,7 +358,6 @@ async def _delayed_action(
     entity_index: Any = None,
     entity_matcher: Any = None,
     agent_id: str | None = None,
-    verbatim_terms: list[str] | None = None,
 ) -> dict:
     action_name = action.get("action", "").lower()
     entity_query = (action.get("entity") or "delay timer").strip() or "delay timer"
@@ -423,7 +422,7 @@ async def _delayed_action(
         _DEFERRED_ALLOWED_DOMAINS,
         _validate_deferred_domain,
         preferred_area_id=area_id,
-        verbatim_terms=verbatim_terms,
+        direct_entity_id=action.get("entity_id"),
     )
     resolved_entity = resolved.get("entity_id")
     if not resolved_entity:
@@ -468,7 +467,6 @@ async def _sleep_timer(
     entity_index: Any = None,
     entity_matcher: Any = None,
     agent_id: str | None = None,
-    verbatim_terms: list[str] | None = None,
 ) -> dict:
     action_name = action.get("action", "").lower()
     entity_query = (action.get("entity") or "sleep timer").strip() or "sleep timer"
@@ -508,7 +506,7 @@ async def _sleep_timer(
         _SLEEP_TIMER_DOMAINS,
         _validate_media_player_domain,
         preferred_area_id=area_id,
-        verbatim_terms=verbatim_terms,
+        direct_entity_id=action.get("entity_id"),
     )
     resolved_player = resolved.get("entity_id")
     if not resolved_player:

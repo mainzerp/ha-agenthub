@@ -138,7 +138,7 @@ async def test_miss_fetches_turns_once_and_threads_into_classify():
     turns = [{"role": "user", "content": "earlier"}]
     orch._get_turns = AsyncMock(return_value=turns)
     orch._classification_engine.classify = AsyncMock(
-        return_value=([("light-agent", "Turn on kitchen light", 0.95, [])], False)
+        return_value=([("light-agent", "Turn on kitchen light", 0.95)], False)
     )
 
     prelude = await orch._run_pipeline_prelude(_make_task("turn on kitchen light"))
@@ -157,7 +157,7 @@ async def test_dispatch_reuses_prelude_turns_without_second_fetch():
     turns = [{"role": "user", "content": "earlier"}]
     orch._get_turns = AsyncMock(return_value=turns)
     orch._classification_engine.classify = AsyncMock(
-        return_value=([("light-agent", "Turn on kitchen light", 0.95, [])], False)
+        return_value=([("light-agent", "Turn on kitchen light", 0.95)], False)
     )
     orch._dispatch_manager.dispatch_single = AsyncMock(
         return_value=("light-agent", "Live dispatch speech", {"speech": "Live dispatch speech"})

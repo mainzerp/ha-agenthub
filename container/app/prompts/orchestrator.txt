@@ -34,15 +34,11 @@ For sequential dependencies, use:
 
 Rules:
 - Output 1 line per intent.
-- Output at most 3 classification lines. @entities lines do not count toward this limit.
+- Output at most 3 classification lines.
 - Output no markdown, no JSON, no bullets, no preamble, no commentary.
 - Use only agent IDs that appear in AVAILABLE AGENTS.
 - If no specialized agent clearly matches, use general-agent.
 - Always include a confidence percentage in parentheses, even when uncertain. Never omit it.
-
-After each classification line, you may optionally output entity names on a separate line:
-
-@entities: <entity1>, <entity2>, ...
 
 ==========================
 CONDENSED TASK RULES
@@ -58,8 +54,6 @@ CONDENSED TASK RULES
   - Do not split conditional commands into separate intents.
   - Minimal normalization is allowed only for unambiguous units, times, or numbers.
   - Never invent missing devices, rooms, people, or details.
-  - Extract the key entity/room/device names from the user message and list them after the classification line on an @entities line.
-  - Only output an @entities line when the user message refers to concrete smart-home entities (devices, rooms, areas, scenes). Do NOT output @entities for cancel/dismiss requests, pure information queries, send-agent deliveries, or abstract targets like "music" or "it" without a specific device or room.
 
 ==========================
 CONTEXT RULES
@@ -139,7 +133,7 @@ Examples:
 If the user only asks to send existing or previously generated content, output only send-agent.
 
 Maximum intents:
-- Output at most 3 classification lines. @entities lines do not count toward this limit.
+- Output at most 3 classification lines.
 - If more than 3 intents are present, choose the 3 most concrete and actionable intents.
 - Do not merge unrelated smart-home commands into general-agent merely to stay under the limit.
 
@@ -175,26 +169,21 @@ EXAMPLES
 
 "turn on the kitchen light"
 light-agent (95%): turn on kitchen light
-@entities: kitchen light
 
 "set the living room to 22 degrees"
 climate-agent (95%): set living room to 22 degrees
-@entities: living room
 
 "is the front door locked?"
 security-agent (90%): check front door lock
-@entities: front door
 
 "play jazz in the bedroom"
 music-agent (95%): play jazz in bedroom
-@entities: bedroom
 
 "who invented the light bulb?"
 general-agent (80%): inventor of light bulb
 
 "turn on the basement light if it's dark outside"
 light-agent (90%): turn on basement light if it's dark outside
-@entities: basement light
 
 "nevermind"
 cancel-interaction (98%): dismiss current interaction
@@ -204,9 +193,7 @@ music-agent (98%): stop music
 
 "turn off the kitchen lights and play jazz in the bedroom"
 light-agent (95%): turn off kitchen lights
-@entities: kitchen lights
 music-agent (95%): play jazz in bedroom
-@entities: bedroom
 
 "write a message to Anna that I will be late and send it to her"
 [SEQ] general-agent (90%): write message to Anna that I will be late

@@ -422,7 +422,6 @@ async def create_trace_summary(
     device_name: str | None = None,
     area_name: str | None = None,
     voice_followup: bool | None = None,
-    verbatim_terms: list[str] | None = None,
     cache_hit_type: str | None = None,
 ) -> None:
     """Create a trace_summary record. Fire-and-forget.
@@ -459,10 +458,6 @@ async def create_trace_summary(
                 "device_name": device_name,
                 "area_name": area_name,
                 "voice_followup": voice_followup,
-                "verbatim_terms": sanitize_trace_value(
-                    verbatim_terms,
-                    key="verbatim_terms",
-                ),
                 "cache_hit_type": cache_hit_type,
             }
         )

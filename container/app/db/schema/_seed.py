@@ -150,6 +150,14 @@ async def _seed_defaults(db: aiosqlite.Connection) -> None:
             "External embedding model (e.g., openai/text-embedding-3-small)",
         ),
         ("embedding.dimension", "384", "int", "embedding", "Embedding dimension (auto-detected from model)"),
+        (
+            "embedding.keepalive_interval_minutes",
+            "15",
+            "number",
+            "embedding",
+            "Keep-alive dummy encode interval for the local embedding model; 0 = disabled. "
+            "Values below 6 minutes are ineffective (embedding cache TTL is 300 s)",
+        ),
         # Entity matching settings
         (
             "entity_matching.confidence_threshold",
@@ -187,6 +195,27 @@ async def _seed_defaults(db: aiosqlite.Connection) -> None:
             "bool",
             "entity_matching",
             "Emit structured entity_match_diag log on matcher misses",
+        ),
+        (
+            "entity_matching.token_preselection.enabled",
+            "true",
+            "bool",
+            "entity_matching",
+            "Enable token-based candidate preselection (restart required)",
+        ),
+        (
+            "entity_matching.token_preselection.max_df_ratio",
+            "0.5",
+            "float",
+            "entity_matching",
+            "Ignore query tokens appearing in more than this fraction of indexed entities (restart required)",
+        ),
+        (
+            "entity_matching.token_preselection.max_candidates",
+            "20",
+            "int",
+            "entity_matching",
+            "Max candidates added by token preselection (restart required)",
         ),
         (
             "agents.actionable.primary_text_source",

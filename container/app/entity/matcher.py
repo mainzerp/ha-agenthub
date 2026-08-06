@@ -16,6 +16,7 @@ if TYPE_CHECKING:
 from app.entity.aliases import AliasResolver
 from app.entity.index import EntityIndex
 from app.entity.signals import AliasSignal, EmbeddingSignal, JaroWinklerSignal, LevenshteinSignal, PhoneticSignal
+from app.entity.tokens import normalize_tokenize
 from app.entity.visibility import filter_visible_results
 from app.models.entity_index import EntityIndexEntry
 
@@ -57,6 +58,58 @@ class MatchResult:
     signal_scores: dict[str, float] = field(default_factory=dict)
 
 
+_MAX_SPAN_TOKENS = 4
+# Floor-Regel: when a single query span covers ALL friendly-name tokens of a
+# candidate with similarity >= _FLOOR_MIN_SIMILARITY (the entity name stands
+# verbatim in the query), the final score is floored at _FLOOR_SCORE. This
+# replaces the deleted reverse-containment bonus; it never lowers a score.
+_FLOOR_SCORE = 0.65
+_FLOOR_MIN_SIMILARITY = 0.95
+
+
+def _query_spans(tokens: list[str], max_len: int = _MAX_SPAN_TOKENS) -> list[tuple[str, frozenset[str]]]:
+    """Enumerate unique contiguous n-gram spans (1..max_len) of normalized query tokens.
+
+    Returns (span_text, span_token_set) pairs; span_text is the space-joined
+    token sequence used for string similarity, the set is used for coverage.
+    """
+    spans: dict[tuple[str, frozenset[str]], None] = {}
+    for n in range(1, min(max_len, len(tokens)) + 1):
+        for i in range(len(tokens) - n + 1):
+            chunk = tokens[i : i + n]
+            spans[(" ".join(chunk), frozenset(chunk))] = None
+    return list(spans)
+
+
+def _idf_coverage(entity_tokens: set[str], span_tokens: frozenset[str], idf_map: dict[str, float]) -> float:
+    """IDF-weighted fraction of entity tokens covered by the span's tokens.
+
+    Tokens absent from ``idf_map`` (no postings) are skipped -- no df is
+    invented for them. When no entity token carries an IDF weight at all
+    (all unseen), falls back to plain unweighted coverage.
+    """
+    if not entity_tokens:
+        return 0.0
+    total = sum(idf_map[t] for t in entity_tokens if t in idf_map)
+    if total > 0.0:
+        matched = sum(idf_map[t] for t in entity_tokens & span_tokens if t in idf_map)
+        return matched / total
+    return len(entity_tokens & span_tokens) / len(entity_tokens)
+
+
+def _best_phonetic_token_match(query_tokens: list[str], entity_tokens: set[str]) -> float:
+    """Best phonetic score across all query-token/entity-token pairs."""
+    best = 0.0
+    for q_token in query_tokens:
+        for e_token in entity_tokens:
+            score = PhoneticSignal.score(q_token, e_token)
+            if score > best:
+                best = score
+                if best >= 1.0:
+                    return best
+    return best
+
+
 class EntityMatcher:
     """Hybrid entity matcher combining fuzzy, alias, and embedding signals.
 
@@ -79,6 +132,11 @@ class EntityMatcher:
         self._expansion_service: QueryExpansionService | None = None
         self._index_language: str | None = None
         self._log_misses: bool = True
+        # Token-based candidate preselection. Defaults live here (not only
+        # in load_config) because test fixtures bypass load_config.
+        self._token_preselection_enabled: bool = True
+        self._token_preselection_max_df_ratio: float = 0.5
+        self._token_preselection_max_candidates: int = 20
 
     async def load_config(self) -> None:
         """Load matching weights and thresholds from DB."""
@@ -119,6 +177,21 @@ class EntityMatcher:
             self._log_misses = (log_misses or "true").lower() in ("1", "true", "yes", "on")
         except Exception:
             self._log_misses = True
+        try:
+            preselection_enabled = await SettingsRepository.get_value(
+                "entity_matching.token_preselection.enabled", "true"
+            )
+            self._token_preselection_enabled = (preselection_enabled or "true").lower() in ("1", "true", "yes", "on")
+            df_ratio_raw = await SettingsRepository.get_value("entity_matching.token_preselection.max_df_ratio", "0.5")
+            self._token_preselection_max_df_ratio = float(df_ratio_raw or "0.5")
+            max_candidates_raw = await SettingsRepository.get_value(
+                "entity_matching.token_preselection.max_candidates", "20"
+            )
+            self._token_preselection_max_candidates = int(max_candidates_raw or "20")
+        except Exception:
+            self._token_preselection_enabled = True
+            self._token_preselection_max_df_ratio = 0.5
+            self._token_preselection_max_candidates = 20
         logger.info(
             "Entity matcher config: weights=%s threshold=%s top_n=%s",
             self._weights,
@@ -132,9 +205,9 @@ class EntityMatcher:
         candidates: list[EntityIndexEntry] | None = None,
         agent_id: str | None = None,
         *,
-        verbatim_terms: list[str] | None = None,
         preferred_domains: tuple[str, ...] | None = None,
         source_language: str | None = None,
+        top_n: int | None = None,
     ) -> list[MatchResult]:
         """Match a query against entities using all active signals.
 
@@ -142,80 +215,61 @@ class EntityMatcher:
             query: User text (e.g. "kitchen light", "living room lamp").
             candidates: Optional pre-filtered candidates. If None, uses entity_index search.
             agent_id: Optional agent ID for entity visibility filtering.
-            verbatim_terms: Optional original-language tokens preserved by
-                the orchestrator. Tried verbatim before any embedding-only
-                lookup so a translated condensed task ("bedroom") never
-                clobbers the user's original word ("Schlafzimmer").
             preferred_domains: Optional ordered tuple of HA domains. Used
                 only as a tie-breaker when scores are otherwise equal.
             source_language: Optional ISO language code for the original
                 user input; consumed by on-demand expansion fallback.
+            top_n: Optional override for the configured result-count cap.
+                The orchestrator's ingress resolution uses this to request an
+                oversampled unfiltered pool (agent_id=None) that is later
+                re-filtered per routed agent and cut to the envelope's K.
 
         Returns:
             Sorted list of MatchResult (highest score first), filtered by confidence threshold.
         """
         expansions_used: list[str] = []
-        # 1. Try verbatim terms first.
-        if verbatim_terms:
-            for term in verbatim_terms:
-                if not term:
-                    continue
-                results = await self._match_query(
-                    term,
-                    candidates=candidates,
-                    agent_id=agent_id,
-                    preferred_domains=preferred_domains,
-                )
-                if results:
-                    return results
-
-        # 2. Try the (possibly translated) main query.
+        # 1. Match the query directly.
         results = await self._match_query(
             query,
             candidates=candidates,
             agent_id=agent_id,
             preferred_domains=preferred_domains,
+            top_n=top_n,
         )
         if results:
             return results
 
-        # 3. On-demand expansion fallback.
-        if self._expansion_service is not None and (verbatim_terms or query):
-            tokens_to_expand: list[str] = []
-            if verbatim_terms:
-                tokens_to_expand.extend(t for t in verbatim_terms if t)
-            if query and query not in tokens_to_expand:
-                tokens_to_expand.append(query)
-            for token in tokens_to_expand:
-                try:
-                    expansions = await self._expansion_service.expand(
-                        token,
-                        source_language=source_language,
-                        index_language=self._index_language,
-                    )
-                except Exception:
-                    logger.debug("Expansion service raised", exc_info=True)
-                    expansions = []
-                for exp in expansions:
-                    if exp in expansions_used:
-                        continue
-                    expansions_used.append(exp)
-                    exp_results = await self._match_query(
-                        exp,
-                        candidates=candidates,
-                        agent_id=agent_id,
-                        preferred_domains=preferred_domains,
-                    )
-                    if exp_results:
-                        return exp_results
+        # 2. On-demand expansion fallback.
+        if self._expansion_service is not None and query:
+            try:
+                expansions = await self._expansion_service.expand(
+                    query,
+                    source_language=source_language,
+                    index_language=self._index_language,
+                )
+            except Exception:
+                logger.debug("Expansion service raised", exc_info=True)
+                expansions = []
+            for exp in expansions:
+                if exp in expansions_used:
+                    continue
+                expansions_used.append(exp)
+                exp_results = await self._match_query(
+                    exp,
+                    candidates=candidates,
+                    agent_id=agent_id,
+                    preferred_domains=preferred_domains,
+                    top_n=top_n,
+                )
+                if exp_results:
+                    return exp_results
 
         # Miss: emit structured diagnostic.
         if self._log_misses:
             with contextlib.suppress(Exception):
                 logger.info(
-                    "entity_match_diag query=%r verbatim_terms=%s expansions_used=%s top_candidates=%s",
+                    "entity_match_diag query=%r expansions_used=%s top_candidates=%s",
                     query,
-                    verbatim_terms or [],
                     expansions_used,
                     [],
                 )
@@ -228,9 +282,11 @@ class EntityMatcher:
         agent_id: str | None = None,
         *,
         preferred_domains: tuple[str, ...] | None = None,
+        top_n: int | None = None,
     ) -> list[MatchResult]:
         """Inner matcher: scores a single query string against the index."""
         results: dict[str, MatchResult] = {}
+        effective_top_n = top_n if top_n is not None and top_n > 0 else self._top_n
 
         # Embedding shortlist size: oversample up to a fixed cap when
         # downstream filtering (agent visibility or preferred-domain
@@ -241,7 +297,7 @@ class EntityMatcher:
         # landed on this cap -- so the cap is the documented fixed
         # behavior and the effective shortlist is unchanged.
         filtering_active = bool(agent_id) or bool(preferred_domains)
-        embedding_n = max(20, self._top_n * 2) if filtering_active else self._top_n * 2
+        embedding_n = max(20, effective_top_n * 2) if filtering_active else effective_top_n * 2
 
         # 1. Alias signal (fast path -- exact match)
         alias_result = await AliasSignal.score(query, self._alias_resolver)
@@ -304,32 +360,55 @@ class EntityMatcher:
                             signal_scores={"embedding": emb_score},
                         )
 
+            # 2c. Token-based preselection: rescue entities whose index tokens
+            # match individual query tokens even when the embedding shortlist
+            # missed them. Inserted before the visibility filter (Directive 5)
+            # so rescued candidates are filtered like any other candidate.
+            if self._token_preselection_enabled:
+                preselection_tokens = normalize_tokenize(query)
+                if preselection_tokens:
+                    try:
+                        rescued_entries = await self._entity_index.find_by_tokens_async(
+                            preselection_tokens,
+                            max_df_ratio=self._token_preselection_max_df_ratio,
+                            max_candidates=self._token_preselection_max_candidates,
+                        )
+                    except Exception:
+                        logger.debug("Token preselection unavailable, proceeding without it", exc_info=True)
+                        rescued_entries = []
+                    for entry in rescued_entries:
+                        if entry.entity_id in results:
+                            # Already shortlisted via alias or embedding: still
+                            # set the marker so diagnostics see the token hit
+                            # uniformly. The marker is DIAGNOSTICS ONLY -- it
+                            # has no scoring effect (the marker-gated
+                            # reverse-containment bonus was removed with the
+                            # span-scoring redesign; the Floor-Regel took its
+                            # place).
+                            results[entry.entity_id].signal_scores["token_preselection"] = 1.0
+                        else:
+                            results[entry.entity_id] = MatchResult(
+                                entity_id=entry.entity_id,
+                                friendly_name=entry.friendly_name or "",
+                                score=0.0,
+                                signal_scores={"token_preselection": 1.0},
+                            )
+
         # Apply entity visibility filtering before any scoring so hidden
         # entities are never scored or returned.
         if agent_id:
             results = {r.entity_id: r for r in await self._apply_visibility_rules(agent_id, list(results.values()))}
 
-        # 3. Levenshtein signal -- compare query against each candidate friendly_name
-        for _entity_id, result in results.items():
-            if result.friendly_name:
-                lev_score = LevenshteinSignal.score(query, result.friendly_name)
-                result.signal_scores["levenshtein"] = lev_score
-
-        # 3b. Jaro-Winkler signal
-        for _entity_id, result in results.items():
-            if result.friendly_name:
-                jw_score = JaroWinklerSignal.score(query, result.friendly_name)
-                result.signal_scores["jaro_winkler"] = jw_score
-
-        # 3c. Phonetic signal
-        for _entity_id, result in results.items():
-            if result.friendly_name:
-                ph_score = PhoneticSignal.score(query, result.friendly_name)
-                result.signal_scores["phonetic"] = ph_score
-
-        # Compute weighted score for each candidate
+        # 3. Span-based string signals. Score each candidate against its best
+        # normalized query n-gram span (1..4 tokens) instead of the whole
+        # query string: full-query scoring systematically deflated on
+        # sentence-length queries, which the deleted additive bonuses
+        # (containment, reverse-containment, token-overlap) only compensated
+        # for. Spans are enumerated once per query.
         query = query.lower().strip()
         query_containment = _normalize_for_containment(query)
+        query_tokens = [t for t in re.split(r"\W+", query_containment) if t]
+        spans = _query_spans(query_tokens)
 
         # Batch-fetch metadata for all candidates to avoid N+1 ChromaDB calls.
         candidate_ids = list(results.keys())
@@ -338,17 +417,58 @@ class EntityMatcher:
         else:
             entry_map = self._entity_index.get_by_ids(candidate_ids)
 
+        # IDF weights for span coverage: one locked read for all candidates.
+        entity_tokens_by_id: dict[str, set[str]] = {
+            r.entity_id: normalize_tokenize(r.friendly_name) for r in results.values() if r.friendly_name
+        }
+        all_entity_tokens: set[str] = set()
+        for toks in entity_tokens_by_id.values():
+            all_entity_tokens.update(toks)
+        try:
+            idf_map = self._entity_index.token_idf(all_entity_tokens) if all_entity_tokens else {}
+        except Exception:
+            logger.debug("token_idf unavailable, falling back to unweighted coverage", exc_info=True)
+            idf_map = {}
+
+        floored: set[str] = set()
+        for result in results.values():
+            entity_tokens = entity_tokens_by_id.get(result.entity_id)
+            if not entity_tokens:
+                continue
+            fn = result.friendly_name
+            fn_norm = _normalize_for_containment(fn)
+            best_lev = 0.0
+            best_jw = 0.0
+            for span_text, span_tokens in spans:
+                if not span_tokens & entity_tokens:
+                    continue
+                cov = _idf_coverage(entity_tokens, span_tokens, idf_map)
+                lev = LevenshteinSignal.score(span_text, fn)
+                jw = JaroWinklerSignal.score(span_text, fn)
+                best_lev = max(best_lev, lev * cov)
+                best_jw = max(best_jw, jw * cov)
+                # Floor-Regel detection: the entity name stands verbatim in
+                # the query (one span covers all friendly-name tokens with
+                # similarity >= 0.95 on normalized strings, so umlaut and
+                # digraph spellings count as the same name).
+                if (
+                    entity_tokens <= span_tokens
+                    and LevenshteinSignal.score(span_text, fn_norm) >= _FLOOR_MIN_SIMILARITY
+                ):
+                    floored.add(result.entity_id)
+            result.signal_scores["levenshtein"] = best_lev
+            result.signal_scores["jaro_winkler"] = best_jw
+
+            # 3c. Phonetic signal -- per-token best match.
+            result.signal_scores["phonetic"] = _best_phonetic_token_match(query_tokens, entity_tokens)
+
+        # Compute weighted score for each candidate
         for result in results.values():
             weighted_sum = 0.0
             for signal_name, weight in self._weights.items():
                 signal_score = result.signal_scores.get(signal_name, 0.0)
                 weighted_sum += weight * signal_score
             result.score = weighted_sum
-
-            # Containment bonus: query is a substring of friendly name
-            fn_containment = _normalize_for_containment(result.friendly_name or "")
-            if query_containment and fn_containment and query_containment in fn_containment:
-                result.score = min(1.0, result.score + 0.3)
 
             # Area bonus: query matches or is contained in normalized area
             # (slug) name OR human-readable area_name OR id_tokens.
@@ -374,29 +494,10 @@ class EntityMatcher:
                 if best_area_bonus:
                     result.score = min(1.0, result.score + best_area_bonus)
 
-                # Token-overlap bonus across the union of distinctive
-                # entity tokens. Language-agnostic: just normalized tokens.
-                query_tokens = {t for t in re.split(r"\W+", query.lower()) if t}
-                entity_tokens: set[str] = set()
-                for src in (
-                    idx_entry.friendly_name,
-                    idx_entry.area or "",
-                    idx_entry.area_name or "",
-                    idx_entry.device_name or "",
-                ):
-                    if src:
-                        entity_tokens.update(t for t in re.split(r"\W+", src.lower()) if t)
-                entity_tokens.update(t.lower() for t in (idx_entry.id_tokens or []) if t)
-                for alias in idx_entry.aliases or []:
-                    entity_tokens.update(t for t in re.split(r"\W+", alias.lower()) if t)
-                if query_tokens and entity_tokens:
-                    matched = query_tokens & entity_tokens
-                    if matched:
-                        coverage = len(matched) / len(query_tokens)
-                        if coverage >= 1.0:
-                            result.score = min(1.0, result.score + 0.20)
-                        elif coverage >= 0.5:
-                            result.score = min(1.0, result.score + 0.10)
+            # Floor-Regel: applied after the weighted sum and kept bonuses,
+            # capped at 1.0, and never lowers a score already above the floor.
+            if result.entity_id in floored:
+                result.score = min(1.0, max(result.score, _FLOOR_SCORE))
 
         # Filter by confidence and sort
         filtered = [r for r in results.values() if r.score >= self._confidence_threshold]
@@ -413,7 +514,7 @@ class EntityMatcher:
         else:
             filtered.sort(key=lambda r: r.score, reverse=True)
 
-        top_results = filtered[: self._top_n]
+        top_results = filtered[:effective_top_n]
 
         return top_results
 

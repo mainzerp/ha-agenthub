@@ -1,12 +1,43 @@
 # Version
 
-**Current Version:** 1.47.1
+**Current Version:** 1.48.1
 
 ## Recent Changes
 
-(tracking changes since 1.47.1)
+(tracking changes since 1.48.1)
 
 ## Version History
+
+### 1.48.1 (PATCH) -- Follow-up TTS leak, weather forecast envelope, entity-resolution reuse
+
+(LIVE_ISSUES work; commit 29c08b9)
+
+- fix(agents): `[FOLLOWUP]` marker no longer reaches TTS on streamed voice turns — streaming mediation now holds back a trailing 10-char window and flushes only the stripped remainder (`orchestrator.py` emission site; HA consumers see clean frames)
+- fix(agents): `query_weather_forecast` unwraps the REST `service_response` envelope from `weather.get_forecasts` (tolerant for both response shapes); adds a WARNING log in the previously silent empty-forecast branch
+- perf(agents): dispatched agents reuse the orchestrator's visibility-filtered ingress candidates (`DispatchTask.candidates`) when unambiguous instead of re-resolving serially (~400 ms saved per turn); ambiguity gap, visibility snapshot and ContextVar publication preserved
+- chore(release): bump version to 1.48.1
+
+### 1.48.0 (MINOR) -- Entity resolution redesign + token preselection
+
+(TOKEN_PRESELECTION + ENTITY_RES_REDESIGN + ENTITY_RES_FOLLOWUP work)
+
+- feat(entity): token-based candidate preselection with IDF ranking and df-ratio cap (TOKEN_PRESELECTION + Addenda A/B)
+- feat(entity): ingress entity resolution parallel to classification with two-phase visibility (unfiltered pool -> per-agent filter, K=5 on `DispatchTask.candidates`)
+- feat(entity): span-based scoring with IDF coverage + Floor-Regel (0.65 floor for verbatim full-name spans); containment/reverse-containment/token-overlap bonuses removed
+- feat(agents): agent LLM may emit `entity_id` from the candidate list for state-changing actions; deterministic-first validation extended with fail-closed existence check and per-action domain gates
+- feat(agents): `last_entities` anaphora hints; ambiguity annotation on close top-1/top-2 score gaps
+- refactor(entity): verbatim_terms retired end-to-end (stage a+b); Directive 4 rewritten to deterministic-exact-first
+- fix(agents): prose clarifying questions on the parse-miss path now request voice follow-up
+- chore(release): bump version to 1.48.0
+
+### 1.47.2 (PATCH) -- Routing-cache empty-cache guard + embedding keep-alive
+
+(CACHE_EMBED_WARMUP work)
+
+- fix(cache): skip semantic routing-cache tier (embedding encode + k-NN) when the routing cache has 0 entries; fixes a multi-second cache_lookup stall on the first turn after long idle when the cache is empty
+- feat(cache): add periodic embedding keep-alive (`run_embedding_keepalive`) that keeps the local SentenceTransformer model warm; new setting `embedding.keepalive_interval_minutes` (default 15, 0 = disabled, no-op for external embedding providers)
+- test(cache): cover empty-cache semantic skip and keep-alive loop (local/external/disabled)
+- chore(release): bump version to 1.47.2
 
 ### 1.47.1 (PATCH) -- Filler threshold slider allows 0 ms
 

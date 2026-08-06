@@ -243,19 +243,9 @@ def _with_visible_entries(result: dict[str, Any], visible_entries: list[Any] | N
     return result
 
 
-def _build_exact_terms(entity_query: str, verbatim_terms: list[str] | None) -> list[str]:
-    ordered_terms: list[str] = []
-    seen: set[str] = set()
-    for term in [*(verbatim_terms or []), entity_query]:
-        normalized = (term or "").strip()
-        if not normalized:
-            continue
-        key = normalized.lower()
-        if key in seen:
-            continue
-        seen.add(key)
-        ordered_terms.append(normalized)
-    return ordered_terms
+def _build_exact_terms(entity_query: str) -> list[str]:
+    normalized = (entity_query or "").strip()
+    return [normalized] if normalized else []
 
 
 def _normalized_entry_fields(entry: Any) -> tuple[Any, str, list[str], str]:
@@ -283,7 +273,6 @@ async def resolve_entity_deterministic_first(
     *,
     allowed_domains: frozenset[str] | None = None,
     preferred_area_id: str | None = None,
-    verbatim_terms: list[str] | None = None,
     preferred_domains: tuple[str, ...] | None = None,
     enable_exact_alias: bool = True,
     enable_strip_device_noun: bool = False,
@@ -307,13 +296,12 @@ async def resolve_entity_deterministic_first(
       * ``preferred_domain`` biases ``_select_deterministic_candidate``
         toward a single entry of that domain (e.g. ``"light"``).
     """
-    ordered_terms = _build_exact_terms(entity_query, verbatim_terms)
+    ordered_terms = _build_exact_terms(entity_query)
     metadata: dict[str, Any] = {
         "query": entity_query,
         "normalized_query": _normalize_lookup_text(entity_query),
         "match_count": 0,
         "resolution_path": "unresolved",
-        "verbatim_terms_tried": ordered_terms,
     }
 
     # Lazy listing (P2): the exact entity_id stage runs BEFORE the full
@@ -536,7 +524,6 @@ async def resolve_entity_deterministic_first(
         matches = await entity_matcher.match(
             entity_query,
             agent_id=agent_id,
-            verbatim_terms=verbatim_terms,
             preferred_domains=preferred_domains or (tuple(sorted(allowed_domains)) if allowed_domains else None),
         )
         filtered_matches = (

@@ -40,7 +40,6 @@ class CalendarAgent(ActionableAgent):
         language = ctx.language if ctx else None
         timezone = ctx.timezone if ctx else None
         current_task = self._get_current_task()
-        verbatim_terms = list(getattr(current_task, "verbatim_terms", []) or []) if current_task else []
 
         resolver = UserIdentityResolver(ha_client=ha_client)
         user = await resolver.resolve_user(
@@ -73,7 +72,6 @@ class CalendarAgent(ActionableAgent):
             language=language,
             timezone=timezone,
             span_collector=span_collector,
-            verbatim_terms=verbatim_terms,
             default_calendar_ids=default_calendar_ids,
         )
 

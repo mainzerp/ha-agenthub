@@ -154,8 +154,8 @@ class TestDefaultDispatchStrategyMultiAgent:
             ]
         )
         classifications = [
-            ("light-agent", "turn on light", 0.95, []),
-            ("music-agent", "play jazz", 0.90, []),
+            ("light-agent", "turn on light", 0.95),
+            ("music-agent", "play jazz", 0.90),
         ]
         task = _make_task("turn on light and play jazz")
         result = await strategy.execute(
@@ -183,8 +183,8 @@ class TestDefaultDispatchStrategyMultiAgent:
             ]
         )
         classifications = [
-            ("light-agent", "turn on light", 0.95, []),
-            ("music-agent", "play jazz", 0.90, []),
+            ("light-agent", "turn on light", 0.95),
+            ("music-agent", "play jazz", 0.90),
         ]
         task = _make_task("turn on light and play jazz")
         result = await strategy.execute(
@@ -209,8 +209,8 @@ class TestDefaultDispatchStrategyMultiAgent:
             ]
         )
         classifications = [
-            ("light-agent", "turn on light", 0.95, []),
-            ("music-agent", "play jazz", 0.90, []),
+            ("light-agent", "turn on light", 0.95),
+            ("music-agent", "play jazz", 0.90),
         ]
         task = _make_task("turn on light and play jazz")
         result = await strategy.execute(
@@ -233,8 +233,8 @@ class TestDefaultDispatchStrategyMultiAgent:
             ]
         )
         classifications = [
-            ("light-agent", "turn on light", 0.95, []),
-            ("music-agent", "play jazz", 0.90, []),
+            ("light-agent", "turn on light", 0.95),
+            ("music-agent", "play jazz", 0.90),
         ]
         task = _make_task("turn on light and play jazz")
         result = await strategy.execute(
@@ -258,8 +258,8 @@ class TestDefaultDispatchStrategyMultiAgent:
             ]
         )
         classifications = [
-            ("light-agent", "turn on light", 0.95, []),
-            ("music-agent", "play jazz", 0.90, []),
+            ("light-agent", "turn on light", 0.95),
+            ("music-agent", "play jazz", 0.90),
         ]
         task = _make_task("turn on light and play jazz")
         result = await strategy.execute(
@@ -283,8 +283,8 @@ class TestDefaultDispatchStrategyMultiAgent:
             ]
         )
         classifications = [
-            ("light-agent", "turn on light", 0.95, []),
-            ("music-agent", "play jazz", 0.90, []),
+            ("light-agent", "turn on light", 0.95),
+            ("music-agent", "play jazz", 0.90),
         ]
         task = _make_task("turn on light and play jazz")
         result = await strategy.execute(
@@ -292,3 +292,115 @@ class TestDefaultDispatchStrategyMultiAgent:
         )
 
         assert result.agent_voice_followup is True
+
+
+# ---------------------------------------------------------------------------
+# ENTITY_RES_REDESIGN Phase 3: candidates passthrough
+# ---------------------------------------------------------------------------
+
+
+class TestDispatchStrategyCandidatesPassthrough:
+    def _make_strategy(self, dispatch_return=None):
+        dispatch_manager = AsyncMock()
+        dispatch_manager.dispatch_single = AsyncMock(
+            return_value=dispatch_return or ("light-agent", "Light is on.", {"speech": "Light is on."})
+        )
+        handle_sequential_send = AsyncMock(return_value=("send-agent", "Sent.", {"action_executed": None}))
+        strategy = DefaultDispatchStrategy(
+            dispatch_manager=dispatch_manager,
+            handle_sequential_send=handle_sequential_send,
+        )
+        return strategy, dispatch_manager, handle_sequential_send
+
+    @pytest.mark.asyncio
+    async def test_single_agent_candidates_passed_to_dispatch_single(self):
+        """The per-agent candidates map must reach dispatch_single for the
+        classified target agent."""
+        from app.models.agent import EntityCandidate
+
+        strategy, dm, _ = self._make_strategy()
+        cand = EntityCandidate(entity_id="light.couch", friendly_name="Couch", score=0.9)
+        classifications = [("light-agent", "turn on couch light", 0.95)]
+        task = _make_task("turn on couch light")
+        await strategy.execute(
+            task,
+            classifications,
+            "turn on couch light",
+            "conv-1",
+            [],
+            None,
+            "en",
+            TaskContext(),
+            candidates={"light-agent": [cand]},
+        )
+        call = dm.dispatch_single.await_args
+        assert call.kwargs["candidates"] == [cand]
+
+    @pytest.mark.asyncio
+    async def test_multi_agent_candidates_routed_per_agent(self):
+        """Multi-agent dispatch: each agent gets its own candidate slice."""
+        from app.models.agent import EntityCandidate
+
+        strategy, dm, _ = self._make_strategy()
+        dm.dispatch_single = AsyncMock(
+            side_effect=[
+                ("light-agent", "Light is on.", {"action_executed": None}),
+                ("music-agent", "Playing jazz.", {"action_executed": None}),
+            ]
+        )
+        light_cand = EntityCandidate(entity_id="light.couch", friendly_name="Couch", score=0.9)
+        music_cand = EntityCandidate(entity_id="media_player.living", friendly_name="Living", score=0.8)
+        classifications = [
+            ("light-agent", "turn on light", 0.95),
+            ("music-agent", "play jazz", 0.90),
+        ]
+        task = _make_task("turn on light and play jazz")
+        await strategy.execute(
+            task,
+            classifications,
+            "turn on light and play jazz",
+            "conv-1",
+            [],
+            None,
+            "en",
+            TaskContext(),
+            candidates={"light-agent": [light_cand], "music-agent": [music_cand]},
+        )
+        calls = dm.dispatch_single.await_args_list
+        assert calls[0].kwargs["candidates"] == [light_cand]
+        assert calls[1].kwargs["candidates"] == [music_cand]
+
+    @pytest.mark.asyncio
+    async def test_sequential_send_candidates_forwarded(self):
+        """Sequential send: the candidates map is forwarded to
+        handle_sequential_send (which restricts them to the content leg)."""
+        strategy, _dm, handle_sequential_send = self._make_strategy()
+        classifications = [
+            ("lists-agent", "list the tasks", 0.9),
+            ("send-agent", "send it", 0.9),
+        ]
+        task = _make_task("send my tasks")
+        await strategy.execute(
+            task,
+            classifications,
+            "send my tasks",
+            "conv-1",
+            [],
+            None,
+            "en",
+            TaskContext(),
+            candidates={"lists-agent": []},
+        )
+        call = handle_sequential_send.await_args
+        assert call.kwargs["candidates"] == {"lists-agent": []}
+
+    @pytest.mark.asyncio
+    async def test_no_candidates_defaults_to_none(self):
+        """Without a candidates map, dispatch_single receives None (the
+        DispatchTask then defaults to an empty list)."""
+        strategy, dm, _ = self._make_strategy()
+        classifications = [("light-agent", "turn on light", 0.95)]
+        task = _make_task()
+        await strategy.execute(task, classifications, "turn on light", "conv-1", [], None, "en", TaskContext())
+        call = dm.dispatch_single.await_args
+        assert call.kwargs["candidates"] is None

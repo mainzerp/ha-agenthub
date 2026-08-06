@@ -53,7 +53,6 @@ async def execute_calendar_action(
     language: str | None = None,
     timezone: str | None = None,
     span_collector=None,
-    verbatim_terms: list[str] | None = None,
     default_calendar_ids: list[str] | None = None,
 ) -> dict:
     """Dispatch a parsed calendar action."""
@@ -67,7 +66,6 @@ async def execute_calendar_action(
             entity_matcher,
             agent_id,
             span_collector,
-            verbatim_terms=verbatim_terms,
             default_calendar_ids=default_calendar_ids,
         )
     if action_name == "query_event":
@@ -78,7 +76,6 @@ async def execute_calendar_action(
             entity_matcher,
             agent_id,
             span_collector,
-            verbatim_terms=verbatim_terms,
             default_calendar_ids=default_calendar_ids,
         )
     if action_name == "create_event":
@@ -89,7 +86,6 @@ async def execute_calendar_action(
             entity_matcher,
             agent_id,
             span_collector,
-            verbatim_terms=verbatim_terms,
             default_calendar_ids=default_calendar_ids,
         )
     if action_name == "delete_event":
@@ -100,7 +96,6 @@ async def execute_calendar_action(
             entity_matcher,
             agent_id,
             span_collector,
-            verbatim_terms=verbatim_terms,
             default_calendar_ids=default_calendar_ids,
         )
     if action_name == "update_event":
@@ -111,7 +106,6 @@ async def execute_calendar_action(
             entity_matcher,
             agent_id,
             span_collector,
-            verbatim_terms=verbatim_terms,
             default_calendar_ids=default_calendar_ids,
         )
 
@@ -130,7 +124,6 @@ async def _resolve_calendar_entity(
     entity_matcher: Any,
     agent_id: str | None,
     span_collector=None,
-    verbatim_terms: list[str] | None = None,
     default_calendar_ids: list[str] | None = None,
 ) -> tuple[str | None, str | None, str | None]:
     """Resolve target calendar entity. Returns (entity_id, friendly_name, speech_error)."""
@@ -175,7 +168,6 @@ async def _resolve_calendar_entity(
                     entity_matcher,
                     agent_id,
                     allowed_domains=_CALENDAR_DOMAINS,
-                    verbatim_terms=verbatim_terms,
                 )
                 em_span["metadata"] = resolution["metadata"]
     except Exception:
@@ -195,7 +187,6 @@ async def _list_events(
     entity_matcher: Any,
     agent_id: str | None,
     span_collector=None,
-    verbatim_terms: list[str] | None = None,
     default_calendar_ids: list[str] | None = None,
 ) -> dict:
     params = action.get("parameters") or {}
@@ -217,7 +208,6 @@ async def _list_events(
         entity_matcher,
         agent_id,
         span_collector,
-        verbatim_terms=verbatim_terms,
         default_calendar_ids=default_calendar_ids,
     )
     if error:
@@ -265,7 +255,6 @@ async def _query_event(
     entity_matcher: Any,
     agent_id: str | None,
     span_collector=None,
-    verbatim_terms: list[str] | None = None,
     default_calendar_ids: list[str] | None = None,
 ) -> dict:
     params = action.get("parameters") or {}
@@ -286,7 +275,6 @@ async def _query_event(
         entity_matcher,
         agent_id,
         span_collector,
-        verbatim_terms=verbatim_terms,
         default_calendar_ids=default_calendar_ids,
     )
     if error:
@@ -338,7 +326,6 @@ async def _create_event(
     entity_matcher: Any,
     agent_id: str | None,
     span_collector=None,
-    verbatim_terms: list[str] | None = None,
     default_calendar_ids: list[str] | None = None,
 ) -> dict:
     action_name = action.get("action", "").lower()
@@ -372,7 +359,6 @@ async def _create_event(
         entity_matcher,
         agent_id,
         span_collector,
-        verbatim_terms=verbatim_terms,
         default_calendar_ids=default_calendar_ids,
     )
     if error:
@@ -414,7 +400,6 @@ async def _delete_event(
     entity_matcher: Any,
     agent_id: str | None,
     span_collector=None,
-    verbatim_terms: list[str] | None = None,
     default_calendar_ids: list[str] | None = None,
 ) -> dict:
     action_name = action.get("action", "").lower()
@@ -438,7 +423,6 @@ async def _delete_event(
         entity_matcher,
         agent_id,
         span_collector,
-        verbatim_terms=verbatim_terms,
         default_calendar_ids=default_calendar_ids,
     )
     if error:
@@ -531,7 +515,6 @@ async def _update_event(
     entity_matcher: Any,
     agent_id: str | None,
     span_collector=None,
-    verbatim_terms: list[str] | None = None,
     default_calendar_ids: list[str] | None = None,
 ) -> dict:
     action_name = action.get("action", "").lower()
@@ -554,7 +537,6 @@ async def _update_event(
         entity_matcher,
         agent_id,
         span_collector,
-        verbatim_terms=verbatim_terms,
         default_calendar_ids=default_calendar_ids,
     )
     if error:

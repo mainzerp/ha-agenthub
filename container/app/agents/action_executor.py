@@ -16,7 +16,7 @@ from app.entity.deterministic_resolver import (
     filter_matches_by_domain,  # noqa: F401  -- re-exported for test compat
     resolve_entity_deterministic_first,
 )
-from app.entity.visibility import entity_is_visible
+from app.entity.visibility import _index_has_async_get_by_id, entity_is_visible
 from app.ha_client.rest import mark_verified_ha_service_call
 
 logger = logging.getLogger(__name__)
@@ -60,12 +60,55 @@ async def _validate_direct_entity_id(
     *,
     agent_id: str | None = None,
     entity_index: Any | None = None,
+    allowed_domains: frozenset[str] | None = None,
 ) -> str | None:
+    """Validate an LLM-supplied direct entity_id (fail-closed on every stage).
+
+    Gate order: domain validator -> per-action allowed domains -> index
+    existence -> per-agent visibility. A check that errors or cannot
+    confirm the id rejects it; the caller then falls back to
+    deterministic-first resolution (Directive 4: an LLM-proposed
+    entity_id is validation input, never a trusted selection).
+
+    ``allowed_domains``: optional PER-ACTION domain set (e.g. light's
+    ``_ACTION_DOMAINS_LIGHT``). Write paths must pass their per-action
+    set, not the broad read-side ``_ALLOWED_DOMAINS``, so e.g.
+    ``set_brightness`` on ``switch.*`` is rejected.
+    """
     if not entity_id:
         return None
     if not validate_domain_fn(entity_id):
         logger.warning("Direct entity_id %s rejected by domain validator", entity_id)
         return None
+    if allowed_domains is not None:
+        domain = entity_id.split(".", 1)[0] if "." in entity_id else ""
+        if domain not in allowed_domains:
+            logger.warning(
+                "Direct entity_id %s rejected: domain '%s' not in per-action allowed domains %s",
+                entity_id,
+                domain,
+                sorted(allowed_domains),
+            )
+            return None
+    if entity_index is not None:
+        try:
+            if _index_has_async_get_by_id(entity_index):
+                entry = await entity_index.get_by_id_async(entity_id)
+            else:
+                entry = entity_index.get_by_id(entity_id)
+        except Exception:
+            logger.warning(
+                "Existence check failed for direct entity_id %s; rejecting (fail-closed)",
+                entity_id,
+                exc_info=True,
+            )
+            return None
+        if entry is None:
+            logger.warning(
+                "Direct entity_id %s not found in entity index; rejecting (fail-closed)",
+                entity_id,
+            )
+            return None
     if agent_id:
         try:
             visible = await entity_is_visible(agent_id, entity_id, entity_index)
@@ -110,13 +153,13 @@ async def resolve_and_validate_entity(
     validate_domain_fn,
     *,
     preferred_area_id: str | None = None,
-    verbatim_terms: list[str] | None = None,
     enable_strip_device_noun: bool = False,
     enable_area_fallback: bool = False,
     preferred_domain: str | None = None,
     span_collector=None,
     require_matcher: bool = False,
     visible_entries: list[Any] | None = None,
+    direct_entity_id: str | None = None,
 ) -> dict[str, Any]:
     """Resolve an entity query deterministically and validate its domain.
 
@@ -130,6 +173,14 @@ async def resolve_and_validate_entity(
     same agent) is reused -- but only when its domain coverage is a
     superset of ``allowed_domains``; otherwise a fresh listing is used.
 
+    ``direct_entity_id``: optional entity_id proposed by the agent LLM.
+    It is treated strictly as validation INPUT (Directive 4): it is
+    accepted only after passing ``_validate_direct_entity_id`` with the
+    caller's per-action ``allowed_domains`` (domain + per-action domain +
+    index existence + visibility, all fail-closed). When validation
+    fails, resolution falls back to the normal deterministic-first
+    pipeline.
+
     Returns a dict with keys:
         entity_id: resolved and validated entity_id (None if not found)
         friendly_name: friendly name of the resolved entity
@@ -139,6 +190,33 @@ async def resolve_and_validate_entity(
             (e.g. ``cacheable``, ``voice_followup``).
     """
     from app.analytics.tracer import _optional_span
+
+    if direct_entity_id:
+        validated_direct = await _validate_direct_entity_id(
+            direct_entity_id,
+            validate_domain_fn,
+            agent_id=agent_id,
+            entity_index=entity_index,
+            allowed_domains=allowed_domains,
+        )
+        if validated_direct:
+            metadata = _synthesize_direct_entity_metadata(validated_direct, entity_index)
+            friendly = metadata["top_friendly_name"]
+            return {
+                "entity_id": validated_direct,
+                "friendly_name": friendly,
+                "resolution": {
+                    "entity_id": validated_direct,
+                    "friendly_name": friendly,
+                    "speech": None,
+                    "metadata": metadata,
+                },
+                "not_found_result": None,
+            }
+        logger.warning(
+            "LLM-supplied direct entity_id '%s' failed validation; falling back to deterministic resolution",
+            direct_entity_id,
+        )
 
     if visible_entries is None:
         snapshot = _request_visible_entries.get()
@@ -175,8 +253,6 @@ async def resolve_and_validate_entity(
                     "allowed_domains": allowed_domains,
                     "preferred_area_id": preferred_area_id,
                 }
-                if verbatim_terms is not None:
-                    kwargs["verbatim_terms"] = verbatim_terms
                 if enable_strip_device_noun:
                     kwargs["enable_strip_device_noun"] = True
                 if enable_area_fallback:

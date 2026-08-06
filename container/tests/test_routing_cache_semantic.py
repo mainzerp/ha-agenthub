@@ -443,6 +443,61 @@ class TestTryRoutingSkipSemantic:
 
 
 # ---------------------------------------------------------------------------
+# Empty-cache semantic skip guard (no wasted embed on a fresh DB)
+# ---------------------------------------------------------------------------
+
+
+class TestEmptyCacheSemanticSkip:
+    @pytest.mark.asyncio
+    async def test_empty_cache_skips_embed_and_semantic_lookup(self, tmp_path):
+        store = _make_store(tmp_path)
+        try:
+            manager = _make_manager(store)
+            engine = _mock_engine(V_CLOSE)
+            lookup_spy = MagicMock(wraps=manager._routing_cache.lookup_semantic)
+
+            with (
+                patch(
+                    "app.cache.cache_manager.get_embedding_engine",
+                    new=AsyncMock(return_value=engine),
+                ),
+                patch("app.cache.cache_manager.track_cache_event_background") as track,
+                patch.object(manager._routing_cache, "lookup_semantic", lookup_spy),
+            ):
+                outcome = await manager.try_routing_skip(query_text="turn on kitchen light", language="en")
+
+            assert outcome is None
+            engine.embed.assert_not_awaited()
+            lookup_spy.assert_not_called()
+            track.assert_called_once_with(tier="routing", hit_type="miss")
+        finally:
+            store.close()
+
+    @pytest.mark.asyncio
+    async def test_non_empty_cache_runs_semantic_lookup(self, tmp_path):
+        store = _make_store(tmp_path)
+        try:
+            manager = _make_manager(store)
+            manager._routing_cache.store(make_routing_cache_entry(), embedding=V_STORED)
+            engine = _mock_engine(V_FAR)
+
+            with (
+                patch(
+                    "app.cache.cache_manager.get_embedding_engine",
+                    new=AsyncMock(return_value=engine),
+                ),
+                patch("app.cache.cache_manager.track_cache_event_background") as track,
+            ):
+                outcome = await manager.try_routing_skip(query_text="unrelated utterance", language="en")
+
+            assert outcome is None
+            engine.embed.assert_awaited_once()
+            track.assert_called_once_with(tier="routing", hit_type="miss")
+        finally:
+            store.close()
+
+
+# ---------------------------------------------------------------------------
 # CacheOrchestrator validation of semantic hits (fail-closed, Directive 2/7)
 # ---------------------------------------------------------------------------
 

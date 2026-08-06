@@ -316,7 +316,7 @@ class TestOrchestratorAgent:
         classifications, routing_cached = await orch._classify("Breche bitte den Einminutentimer ab.")
         assert routing_cached is True
         assert classifications[0][0] == "timer-agent"
-        _, condensed, _, _ = classifications[0]
+        _, condensed, _ = classifications[0]
         assert condensed == "Breche bitte den Einminutentimer ab."
         assert "set timer" not in condensed.lower()
 
@@ -333,7 +333,7 @@ class TestOrchestratorAgent:
         )
         classifications, routing_cached = await orch._classify("cancel my timer", cache_result=stale_cache)
         assert routing_cached is True
-        _, condensed, _, _ = classifications[0]
+        _, condensed, _ = classifications[0]
         assert condensed == "cancel my timer"
 
     @patch("app.agents.orchestrator.SettingsRepository")
@@ -359,7 +359,7 @@ class TestOrchestratorAgent:
         mock_complete.return_value = "general-agent (95%): summarize today\nsend-agent (94%): send to Laura"
         classifications, routing_cached = await orch._classify("send today summary to Laura")
         assert routing_cached is False
-        assert [agent_id for agent_id, _, _, _ in classifications] == ["general-agent", "send-agent"]
+        assert [agent_id for agent_id, _, _ in classifications] == ["general-agent", "send-agent"]
         mock_complete.assert_awaited_once()
 
     @patch("app.agents.orchestrator.SettingsRepository")
@@ -428,7 +428,6 @@ class TestOrchestratorAgent:
         assert results[0][0] == "light-agent"
         assert results[0][1] == "Turn on kitchen light"
         assert results[0][2] is None  # None when no confidence in format
-        assert results[0][3] == []
 
     async def test_parse_classification_no_colon_falls_back(self):
         orch = OrchestratorAgent(dispatcher=AsyncMock())
@@ -437,7 +436,6 @@ class TestOrchestratorAgent:
         assert results[0][0] == "general-agent"
         assert results[0][1] == "original text"
         assert results[0][2] == 0.0
-        assert results[0][3] == []
 
     async def test_parse_classification_multi_line(self):
         orch = OrchestratorAgent(dispatcher=AsyncMock())
@@ -453,10 +451,8 @@ class TestOrchestratorAgent:
         assert len(results) == 2
         assert results[0][0] == "light-agent"
         assert results[0][2] == 0.95
-        assert results[0][3] == []
         assert results[1][0] == "music-agent"
         assert results[1][2] == 0.90
-        assert results[1][3] == []
 
     async def test_parse_classification_unknown_agent_skipped(self):
         orch = OrchestratorAgent(dispatcher=AsyncMock())
@@ -470,7 +466,6 @@ class TestOrchestratorAgent:
         results = await orch._parse_classification(response, "original")
         assert len(results) == 1
         assert results[0][0] == "light-agent"
-        assert results[0][3] == []
 
     async def test_parse_classification_cap_at_3(self):
         orch = OrchestratorAgent(dispatcher=AsyncMock())
@@ -486,7 +481,6 @@ class TestOrchestratorAgent:
         response = "light-agent (95%): a\nmusic-agent (90%): b\nclimate-agent (85%): c\ntimer-agent (80%): d"
         results = await orch._parse_classification(response, "original")
         assert len(results) == 3
-        assert results[0][3] == []
 
     async def test_parse_classification_dedup_same_agent(self):
         orch = OrchestratorAgent(dispatcher=AsyncMock())
@@ -503,7 +497,6 @@ class TestOrchestratorAgent:
         assert results[0][2] == 0.9
         assert "task one" in results[0][1]
         assert "task two" in results[0][1]
-        assert results[0][3] == []
 
     async def test_parse_classification_strips_embedded_duplicates(self):
         orch = OrchestratorAgent(dispatcher=AsyncMock())
@@ -524,7 +517,6 @@ class TestOrchestratorAgent:
         assert abs(results[0][2] - 0.96) < 1e-6
         assert "climate-agent (" not in results[0][1]
         assert results[0][1].count("living room temperature") == 1
-        assert results[0][3] == []
 
     async def test_parse_classification_preserves_non_english_entities(self):
         orch = OrchestratorAgent(dispatcher=AsyncMock())
@@ -538,7 +530,6 @@ class TestOrchestratorAgent:
         assert len(results) == 1
         assert "wohnzimmer" in results[0][1].lower()
         assert "living room" not in results[0][1].lower()
-        assert results[0][3] == []
 
     async def test_parse_classification_multi_line_unaffected(self):
         orch = OrchestratorAgent(dispatcher=AsyncMock())
@@ -556,10 +547,9 @@ class TestOrchestratorAgent:
         by_agent = {r[0]: r for r in results}
         assert by_agent["light-agent"][1] == "turn on the shelf"
         assert by_agent["music-agent"][1] == "play jazz"
-        assert results[0][3] == []
-        assert results[1][3] == []
 
-    async def test_parse_classification_extracts_entities(self):
+    async def test_parse_classification_ignores_legacy_entities_line(self):
+        """Legacy @entities: lines (verbatim_terms, retired) are skipped gracefully."""
         orch = OrchestratorAgent(dispatcher=AsyncMock())
         orch._registry = AsyncMock()
         orch._registry.list_agents = AsyncMock(
@@ -567,11 +557,9 @@ class TestOrchestratorAgent:
         )
         response = "light-agent (95%): turn on kitchen light\n@entities: kitchen light"
         results = await orch._parse_classification(response, "original")
-        assert len(results) == 1
-        assert results[0][0] == "light-agent"
-        assert results[0][3] == ["kitchen light"]
+        assert results == [("light-agent", "turn on kitchen light", 0.95)]
 
-    async def test_parse_classification_multi_entity_terms(self):
+    async def test_parse_classification_ignores_multi_entity_terms_line(self):
         orch = OrchestratorAgent(dispatcher=AsyncMock())
         orch._registry = AsyncMock()
         orch._registry.list_agents = AsyncMock(
@@ -579,9 +567,9 @@ class TestOrchestratorAgent:
         )
         response = "light-agent (85%): schalte keller ein\n@entities: keller, licht"
         results = await orch._parse_classification(response, "original")
-        assert results[0][3] == ["keller", "licht"]
+        assert results == [("light-agent", "schalte keller ein", 0.85)]
 
-    async def test_parse_classification_orphan_entities_logged(self):
+    async def test_parse_classification_ignores_orphan_entities_line(self):
         orch = OrchestratorAgent(dispatcher=AsyncMock())
         orch._registry = AsyncMock()
         orch._registry.list_agents = AsyncMock(
@@ -589,8 +577,7 @@ class TestOrchestratorAgent:
         )
         response = "@entities: orphan\nlight-agent (95%): turn on light"
         results = await orch._parse_classification(response, "original")
-        assert len(results) == 1
-        assert results[0][3] == []  # orphan ignored
+        assert results == [("light-agent", "turn on light", 0.95)]
 
     async def test_classify_injects_language_hint_into_prompt(self):
         orch = OrchestratorAgent(dispatcher=AsyncMock())
@@ -1592,6 +1579,7 @@ class TestOrchestratorAgent:
             user_text="hello",
             agent_id="test-agent",
             response_text="world",
+            action_executed=None,
         )
 
     async def test_store_turn_db_failure_does_not_break_runtime(self, _mock_conversation_repo):
@@ -1605,6 +1593,68 @@ class TestOrchestratorAgent:
         assert entry is not None
         _, turns = entry
         assert len(turns) == 2
+
+    async def test_store_turn_records_resolved_entities(self, _mock_conversation_repo):
+        """ENTITY_RES_REDESIGN Phase 6: resolved entities persist as JSON in
+        the action_executed column and become anaphora recency hints."""
+        orch, *_ = self._make_orchestrator()
+        await orch._store_turn(
+            "conv-le",
+            "turn on the couch light",
+            "Couch light is on.",
+            agent_id="light-agent",
+            resolved_entities=[{"entity_id": "light.couch", "friendly_name": "Couch"}],
+        )
+        payload = json.loads(_mock_conversation_repo.insert.call_args.kwargs["action_executed"])
+        assert payload == [{"entity_id": "light.couch", "friendly_name": "Couch", "turn_index": 1}]
+        hints = await orch._conversation_manager.get_last_entities("conv-le")
+        assert [h["entity_id"] for h in hints] == ["light.couch"]
+
+    @patch("app.agents.orchestrator.SettingsRepository")
+    @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
+    @patch("app.llm.client.complete", new_callable=AsyncMock)
+    async def test_dispatch_envelope_carries_last_entities(
+        self, mock_complete, mock_track, mock_settings, _mock_conversation_repo
+    ):
+        """Phase 6: after a turn that resolved an entity, the next turn's
+        dispatch envelope carries it on TaskContext.last_entities."""
+        mock_settings.get_value = AsyncMock(side_effect=lambda k, d=None: "auto" if k == "language" else d)
+        orch, dispatcher, *_ = self._make_orchestrator()
+        await orch._store_turn(
+            "conv-le2",
+            "turn on the couch light",
+            "Couch light is on.",
+            agent_id="light-agent",
+            resolved_entities=[{"entity_id": "light.couch", "friendly_name": "Couch"}],
+        )
+        mock_complete.return_value = "light-agent: turn it off"
+        task = _make_task("turn it off", context=TaskContext(language="en"))
+        task.conversation_id = "conv-le2"
+        result = await orch.handle_task(task)
+        assert result["speech"] == "Done!"
+        request = dispatcher.dispatch.call_args.args[0]
+        dispatched_task = request.params["task"]
+        assert [e.entity_id for e in dispatched_task.context.last_entities] == ["light.couch"]
+        assert dispatched_task.context.last_entities[0].friendly_name == "Couch"
+
+    @patch("app.agents.orchestrator.SettingsRepository")
+    @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
+    @patch("app.llm.client.complete", new_callable=AsyncMock)
+    async def test_dispatch_envelope_without_prior_entities_has_empty_hints(
+        self, mock_complete, mock_track, mock_settings, _mock_conversation_repo
+    ):
+        """Phase 6: a conversation with no resolved entities dispatches with
+        an empty last_entities list (no hints invented)."""
+        mock_settings.get_value = AsyncMock(side_effect=lambda k, d=None: "auto" if k == "language" else d)
+        orch, dispatcher, *_ = self._make_orchestrator()
+        mock_complete.return_value = "light-agent: turn on the kitchen light"
+        task = _make_task("turn on the kitchen light", context=TaskContext(language="en"))
+        task.conversation_id = "conv-le3"
+        result = await orch.handle_task(task)
+        assert result["speech"] == "Done!"
+        request = dispatcher.dispatch.call_args.args[0]
+        dispatched_task = request.params["task"]
+        assert dispatched_task.context.last_entities == []
 
     @patch("app.agents.orchestrator.SettingsRepository")
     @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
@@ -2131,8 +2181,8 @@ class TestOrchestratorSequentialSend:
             ]
         )
         classifications = [
-            ("general-agent", "find lasagna recipe", 0.9, []),
-            ("send-agent", "send to Laura Handy", 0.95, []),
+            ("general-agent", "find lasagna recipe", 0.9),
+            ("send-agent", "send to Laura Handy", 0.95),
         ]
         user_text = "find lasagna recipe and send to Laura Handy"
         routed_to, speech, _result = await orchestrator._handle_sequential_send(
@@ -2163,8 +2213,8 @@ class TestOrchestratorSequentialSend:
             ]
         )
         classifications = [
-            ("general-agent", "find recipe", 0.9, []),
-            ("send-agent", "send to phone", 0.95, []),
+            ("general-agent", "find recipe", 0.9),
+            ("send-agent", "send to phone", 0.95),
         ]
         await orchestrator._handle_sequential_send(
             classifications,
@@ -2190,8 +2240,8 @@ class TestOrchestratorSequentialSend:
             )
         )
         classifications = [
-            ("general-agent", "find recipe", 0.9, []),
-            ("send-agent", "send to Laura Handy", 0.95, []),
+            ("general-agent", "find recipe", 0.9),
+            ("send-agent", "send to Laura Handy", 0.95),
         ]
         _routed_to, speech, _result = await orchestrator._handle_sequential_send(
             classifications,
