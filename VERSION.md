@@ -1,12 +1,24 @@
 # Version
 
-**Current Version:** 1.48.1
+**Current Version:** 1.48.2
 
 ## Recent Changes
 
-(tracking changes since 1.48.1)
+(tracking changes since 1.48.2)
 
 ## Version History
+
+### 1.48.2 (PATCH) -- Alpine template fix, cryptography CVE bump, brand assets
+
+(commits 8e08442, fd7c657, cd53ff1 + dependency bumps #66-#74)
+
+- fix(dashboard): correct Alpine `x-for` typo in device class agent mapping (commit fd7c657) — device-class agent mapping list rendered incorrectly
+- fix(deps): bump cryptography 49.0.0 -> 50.0.0, fixes CVE-2026-69247 (commit cd53ff1)
+- chore(brand): restyle favicon and brand assets to the warm amber dashboard theme (commit 8e08442)
+- chore(deps): bump fastapi 0.139.0 -> 0.140.0 (#73), sentence-transformers (#70)
+- chore(deps-dev): bump ruff 0.15.21 -> 0.16.0 (#71), pre-commit 4.6.0 -> 4.6.1 (#72), mypy (#66)
+- chore(deps): bump actions/setup-python 6 -> 7 (#69), github/codeql-action 4 -> 4.37.3 (#74)
+- chore(release): bump version to 1.48.2
 
 ### 1.48.1 (PATCH) -- Follow-up TTS leak, weather forecast envelope, entity-resolution reuse
 
