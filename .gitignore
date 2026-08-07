@@ -15,11 +15,11 @@ venv/
 env/
 
 # IDE
-.vscode/*
+.vscode/
 .idea/
 *.swp
 *.swo
-!.vscode/settings.json
+.omp/
 
 # Environment
 .env
