@@ -23,5 +23,3 @@ expected:
   service_calls:
     - {domain: camera, service: turn_on, target_entity: camera.front_door}
   speech_contains: ["front"]
-
-
