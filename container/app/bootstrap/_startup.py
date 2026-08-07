@@ -41,7 +41,7 @@ logger = logging.getLogger(__name__)
 async def setup_application(app: FastAPI) -> None:
     """Run the full application startup sequence (behavior preserved)."""
     _configure_logging()
-    logger.info("Starting agent-assist container")
+    logger.info("Starting ha-agenthub container")
     reset_active_ws_connections()
     await init_db()
 

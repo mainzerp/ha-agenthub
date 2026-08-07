@@ -5,7 +5,7 @@ description: Retrieve and filter ha-agenthub application logs via the Admin API.
 
 # AgentHub Logs via Admin API
 
-Agent-assist exposes application logs through the REST admin API. No Docker or SSH access is required.
+HA-AgentHub exposes application logs through the REST admin API. No Docker or SSH access is required.
 
 For Home Assistant entity debugging, use the `ha-debug` skill instead.
 

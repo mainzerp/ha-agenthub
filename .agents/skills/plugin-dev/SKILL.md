@@ -1,9 +1,9 @@
 ---
 name: plugin-dev
-description: Create a plugin for agent-assist following the BasePlugin pattern. Use when adding optional, hot-loadable functionality that extends agents, registers MCP servers, adds API routes, or reacts to system events.
+description: Create a plugin for HA-AgentHub following the BasePlugin pattern. Use when adding optional, hot-loadable functionality that extends agents, registers MCP servers, adds API routes, or reacts to system events.
 ---
 
-# Creating an agent-assist Plugin
+# Creating an HA-AgentHub Plugin
 
 Plugins are single `.py` files placed in the plugin directory (configured at runtime). The `PluginLoader` discovers them automatically and runs them through a 4-phase lifecycle.
 

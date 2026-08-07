@@ -1,11 +1,11 @@
 ---
 name: agent-routing-debug
-description: Debug routing and cache problems in agent-assist — wrong agent selected, stale cache entry, semantic threshold mismatch, or dispatcher errors. Use when a voice request reaches the wrong agent or is never dispatched.
+description: Debug routing and cache problems in HA-AgentHub — wrong agent selected, stale cache entry, semantic threshold mismatch, or dispatcher errors. Use when a voice request reaches the wrong agent or is never dispatched.
 ---
 
 # Agent Routing & Cache Debugging
 
-Routing in agent-assist has two layers:
+Routing in HA-AgentHub has two layers:
 1. **RoutingCache** (`container/app/cache/routing_cache.py`) — vector similarity lookup (threshold 0.92) that short-circuits the LLM for repeated intents
 2. **Orchestrator LLM** — classifies intent → `agent_id` when cache misses
 

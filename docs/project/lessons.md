@@ -9,7 +9,7 @@
 > unavailable. It intentionally carries only the operationally critical facts —
 > do not grow it back into a full log; put new learnings into Athenaeum.
 
-## Athenaeum Concepts (agent-assist learnings)
+## Athenaeum Concepts (HA-AgentHub learnings)
 
 - `/athenaeum/ha-agenthub-testing-lessons` — test patterns, mock conventions, calibration trap, host gotchas
 - `/athenaeum/ha-agenthub-async-security-anti-patterns` — event-loop discipline, exception handling, security pitfalls

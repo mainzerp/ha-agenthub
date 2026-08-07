@@ -1,6 +1,6 @@
 ---
 name: mcp-server-dev
-description: Add a new MCP server (tool provider) to agent-assist. Use when adding external tool access (APIs, databases, CLI tools) that agents can call via the MCP tool-calling protocol.
+description: Add a new MCP server (tool provider) to HA-AgentHub. Use when adding external tool access (APIs, databases, CLI tools) that agents can call via the MCP tool-calling protocol.
 ---
 
 # Adding a New MCP Server
@@ -11,7 +11,7 @@ MCP servers expose tools that agents (primarily `GeneralAgent`) can call via the
 
 | Path | Use when |
 |------|---------|
-| **Built-in server** (stdio subprocess) | Tool ships with agent-assist, packaged dependency |
+| **Built-in server** (stdio subprocess) | Tool ships with HA-AgentHub, packaged dependency |
 | **External server** (registered via UI/API) | Third-party MCP server, separate process |
 
 ---

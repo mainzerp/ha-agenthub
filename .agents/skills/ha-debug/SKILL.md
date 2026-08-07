@@ -1,6 +1,6 @@
 ---
 name: ha-debug
-description: Debug Home Assistant entity resolution, cache, and log issues in agent-assist via the Admin API. Use when an entity is not found, routed wrong, or returning unexpected results.
+description: Debug Home Assistant entity resolution, cache, and log issues in HA-AgentHub via the Admin API. Use when an entity is not found, routed wrong, or returning unexpected results.
 ---
 
 # Home Assistant Debugging via Admin API
@@ -98,6 +98,6 @@ Check `total_entities` and `last_ingest_at` to confirm the index is populated an
 |---------|-------------|-----|
 | Entity not found for German query | Umlaut normalization mismatch | Check entity aliases in admin UI |
 | Wrong agent handles request | Stale routing cache entry | Invalidate routing cache entry |
-| Action succeeds but state not updated | HA recorder delay | Check HA logs, not agent-assist |
+| Action succeeds but state not updated | HA recorder delay | Check HA logs, not HA-AgentHub |
 | `condensed_task` looks corrupted | Cache schema mismatch after upgrade | Clear routing cache for that entry |
 | Score < 0.92 on routing cache lookup | Below semantic threshold | Request goes to LLM for fresh routing (expected) |

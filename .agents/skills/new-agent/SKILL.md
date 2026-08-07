@@ -1,6 +1,6 @@
 ---
 name: new-agent
-description: Create a new domain agent for agent-assist. Use when adding a new Home Assistant domain (e.g. climate, cover, vacuum) as a routable agent with its own LLM prompt and HA executor.
+description: Create a new domain agent for HA-AgentHub. Use when adding a new Home Assistant domain (e.g. climate, cover, vacuum) as a routable agent with its own LLM prompt and HA executor.
 ---
 
 # Creating a New Domain Agent

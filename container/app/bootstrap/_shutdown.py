@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 
 async def teardown(app: FastAPI) -> None:
     """Run the full application shutdown sequence (order preserved)."""
-    logger.info("Shutting down agent-assist container")
+    logger.info("Shutting down ha-agenthub container")
 
     # Plugin shutdown (isolated -- errors must not block remaining cleanup)
     plugin_loader = getattr(app.state, "plugin_loader", None)

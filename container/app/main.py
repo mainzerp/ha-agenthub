@@ -53,7 +53,7 @@ def create_app() -> FastAPI:
     from app import __version__
 
     app = FastAPI(
-        title="agent-assist",
+        title="ha-agenthub",
         version=__version__,
         lifespan=lifespan,
     )
