@@ -36,8 +36,8 @@ logger = logging.getLogger(__name__)
 COLLECTION_ENTITY_INDEX = "entity_index"
 COLLECTION_RESPONSE_CACHE = "response_cache"
 
-# Default embedding dimension for the local model (intfloat/multilingual-e5-small).
-_DEFAULT_DIM = 384
+# Default embedding dimension for the local model (intfloat/multilingual-e5-base).
+_DEFAULT_DIM = 768
 
 
 def _serialize_vec(vector: list[float]) -> bytes:

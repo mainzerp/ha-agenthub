@@ -149,7 +149,7 @@ async def _seed_defaults(db: aiosqlite.Connection) -> None:
             "embedding",
             "External embedding model (e.g., openai/text-embedding-3-small)",
         ),
-        ("embedding.dimension", "384", "int", "embedding", "Embedding dimension (auto-detected from model)"),
+        ("embedding.dimension", "768", "int", "embedding", "Embedding dimension (auto-detected from model)"),
         (
             "embedding.keepalive_interval_minutes",
             "15",

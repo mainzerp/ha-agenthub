@@ -67,9 +67,11 @@ The export and import API surface uses the `action` tier name.
 | Key | Default | Type | Description |
 |-----|---------|------|-------------|
 | `embedding.provider` | `local` | string | Embedding provider: `local` or `external` |
-| `embedding.local_model` | `intfloat/multilingual-e5-small` | string | Local embedding model name |
+| `embedding.local_model` | `intfloat/multilingual-e5-base` | string | Local embedding model name |
 | `embedding.external_model` | (empty) | string | External model (e.g., `openai/text-embedding-3-small`) |
-| `embedding.dimension` | `384` | int | Embedding vector dimension |
+| `embedding.dimension` | `768` | int | Embedding vector dimension |
+
+Changing the embedding model requires a container restart; the entity index, routing cache, and session memory are re-embedded automatically.
 
 ### Session Memory Settings
 

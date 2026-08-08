@@ -100,7 +100,7 @@ Current runtime notes:
 | Web framework | FastAPI | Main HTTP, WebSocket, setup, API, and dashboard runtime |
 | ASGI server | Uvicorn | Container application server |
 | LLM integration | litellm | Provider abstraction for local and hosted LLMs |
-| Local embeddings | `intfloat/multilingual-e5-small` | Seeded default local embedding model |
+| Local embeddings | `intfloat/multilingual-e5-base` | Seeded default local embedding model |
 | Vector storage | sqlite-vec (SQLite) | Entity index, routing cache semantic tier, and session memory embeddings; routing and action caches moved to SQLite in v1.37.0 |
 | Structured data | SQLite + aiosqlite | Settings, secrets, traces, analytics, users, history, custom agents |
 | Agent protocol | A2A over JSON-RPC 2.0 envelopes | Current transport is in-process |
@@ -243,7 +243,7 @@ Current seeded defaults that materially affect matching:
 
 | Setting | Current Default |
 | --- | --- |
-| `embedding.local_model` | `intfloat/multilingual-e5-small` |
+| `embedding.local_model` | `intfloat/multilingual-e5-base` |
 | `entity_matching.confidence_threshold` | `0.60` |
 | `entity_matching.top_n_candidates` | `3` |
 | `entity_matching.expansion.enabled` | `true` |
@@ -480,7 +480,7 @@ Selected seeded defaults that materially shape behavior:
 | Setting | Current Default |
 | --- | --- |
 | `embedding.provider` | `local` |
-| `embedding.local_model` | `intfloat/multilingual-e5-small` |
+| `embedding.local_model` | `intfloat/multilingual-e5-base` |
 | `cache.routing.threshold` | `0.92` |
 | `cache.response.threshold` | `0.95` |
 | `cache.response.partial_threshold` | `0.80` |

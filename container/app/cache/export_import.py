@@ -97,21 +97,11 @@ def iter_export_chunks(
     tiers: list[str],
     *,
     app_version: str,
+    embedding_model: str = "unknown",
 ) -> Iterator[bytes]:
     """Yield UTF-8 JSON bytes that together form one v4 export envelope."""
 
     requested = [tier for tier in tiers if tier in ALLOWED_TIERS]
-    embedding_model = "unknown"
-    try:
-        from app.config import settings as _runtime_settings
-
-        embedding_model = (
-            getattr(_runtime_settings, "embedding_local_model", None)
-            or getattr(_runtime_settings, "embedding_model", None)
-            or "unknown"
-        )
-    except Exception:
-        logger.debug("Failed to read embedding model from settings", exc_info=True)
     header = {
         "format_version": SUPPORTED_FORMAT_VERSION,
         "exported_at": datetime.now(UTC).isoformat(),
@@ -250,9 +240,9 @@ async def import_envelope(
     source_model = envelope.get("embedding_model")
     if source_model and source_model != "unknown":
         try:
-            from app.config import settings as _runtime_settings
+            from app.db.repositories.settings import SettingsRepository
 
-            local_model = getattr(_runtime_settings, "embedding_local_model", None)
+            local_model = await SettingsRepository.get_value("embedding.local_model")
             if local_model and local_model != source_model:
                 summary.warnings.append(
                     f"embedding model mismatch: export={source_model!r} runtime={local_model!r} (entries will be re-embedded)"

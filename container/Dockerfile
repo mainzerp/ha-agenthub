@@ -63,6 +63,12 @@ ENV CHROMADB_PERSIST_DIR=/data/chromadb
 ENV SQLITE_DB_PATH=/data/agent_assist.db
 ENV HF_HOME=/data/hf_cache
 
+# Pre-download the default local embedding model so first start does not
+# block on a ~1.1 GB download and HF_HUB_OFFLINE=1 works out of the box.
+# Keep in sync with DEFAULT_LOCAL_EMBEDDING_MODEL in app/defaults.py.
+ARG EMBEDDING_MODEL=intfloat/multilingual-e5-base
+RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('${EMBEDDING_MODEL}')"
+
 EXPOSE 8080
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \

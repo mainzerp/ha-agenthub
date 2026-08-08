@@ -142,9 +142,10 @@ class EmbeddingEngine:
             defaults = {
                 "all-MiniLM-L6-v2": 384,
                 "all-mpnet-base-v2": 768,
-                # 0.23.0: multilingual default.
-                DEFAULT_LOCAL_EMBEDDING_MODEL: 384,
-                "intfloat/multilingual-e5-base": 768,
+                # 0.23.0: multilingual default (now e5-base, 768d).
+                DEFAULT_LOCAL_EMBEDDING_MODEL: 768,
+                # Rollback target: previous multilingual default (384d).
+                "intfloat/multilingual-e5-small": 384,
                 "paraphrase-multilingual-MiniLM-L12-v2": 384,
             }
             dimensions = defaults.get(self._model_name or "")
@@ -158,7 +159,7 @@ class EmbeddingEngine:
         }
 
     async def embed(self, text: str) -> list[float]:
-        """Embed a single text string. Returns 384-dim float list for local model."""
+        """Embed a single text string. Returns a float list with the model's embedding dimension."""
         return (await self.embed_batch([text]))[0]
 
     async def embed_batch(self, texts: list[str]) -> list[list[float]]:

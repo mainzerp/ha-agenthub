@@ -79,7 +79,7 @@ Key points:
   points to the sqlite-vec entity-index data directory (default `/data/chromadb`).
 - `start_period: 120s` accommodates the local embedding model warm-up
   and entity-index priming on first start.
-- `HF_HUB_OFFLINE=1` disables Hugging Face network calls so the embedding model loads strictly from cached weights baked into the image. The compose default is `0` (online). Set to `1` for air-gapped installs.
+- `HF_HUB_OFFLINE=1` disables Hugging Face network calls so the embedding model loads strictly from local weights. The default embedding model (`intfloat/multilingual-e5-base`) is baked into the image at build time and additionally cached in the `/data` volume, which makes the image roughly 1.1 GB larger. The compose default is `0` (online). Set to `1` for air-gapped installs.
 - Only infrastructure environment variables are set here. All other
   configuration (HA connection, LLM keys, agent settings) is done
   through the setup wizard and stored in SQLite.

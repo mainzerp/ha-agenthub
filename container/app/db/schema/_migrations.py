@@ -850,6 +850,37 @@ async def _migrate_to_40(db: aiosqlite.Connection) -> None:
     await db.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (40)")
 
 
+async def _migrate_to_41(db: aiosqlite.Connection) -> None:
+    # Migration 41: switch the default local embedding model from
+    # multilingual-e5-small (384d) to multilingual-e5-base (768d).
+    # Admin overrides are preserved: only databases still carrying the
+    # old default are flipped. The dimension update runs first and is
+    # guarded by an EXISTS check on the old model so an admin who
+    # overrode the model to another 384d model keeps their dimension.
+    await db.execute(
+        """
+        UPDATE settings
+        SET value = '768'
+        WHERE key = 'embedding.dimension'
+          AND value = '384'
+          AND EXISTS (
+              SELECT 1 FROM settings s2
+              WHERE s2.key = 'embedding.local_model'
+                AND s2.value = 'intfloat/multilingual-e5-small'
+          )
+        """
+    )
+    await db.execute(
+        """
+        UPDATE settings
+        SET value = 'intfloat/multilingual-e5-base'
+        WHERE key = 'embedding.local_model'
+          AND value = 'intfloat/multilingual-e5-small'
+        """
+    )
+    await db.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (41)")
+
+
 # Ordered registry of (version, migration_callable). Each migration records
 # its own version marker. Applied in ascending order for versions greater
 # than the current schema version.
@@ -893,6 +924,7 @@ MIGRATIONS: list[tuple[int, Callable[[aiosqlite.Connection], Awaitable[None]]]] 
     (38, _migrate_to_38),
     (39, _migrate_to_39),
     (40, _migrate_to_40),
+    (41, _migrate_to_41),
 ]
 
 

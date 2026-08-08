@@ -581,7 +581,7 @@ def mock_settings() -> dict[str, str]:
         "embedding.provider": "local",
         "embedding.local_model": DEFAULT_LOCAL_EMBEDDING_MODEL,
         "embedding.external_model": "",
-        "embedding.dimension": "384",
+        "embedding.dimension": "768",
         "entity_matching.confidence_threshold": "0.60",
         "entity_matching.top_n_candidates": "3",
         "rewrite.model": "groq/llama-3.1-8b-instant",

@@ -207,7 +207,8 @@ class TestSeedData:
         assert "a2a.default_timeout" in keys
 
     async def test_current_runtime_defaults_seeded(self, db_repository):
-        assert await SettingsRepository.get_value("embedding.local_model") == "intfloat/multilingual-e5-small"
+        assert await SettingsRepository.get_value("embedding.local_model") == "intfloat/multilingual-e5-base"
+        assert await SettingsRepository.get_value("embedding.dimension") == "768"
         assert await SettingsRepository.get_value("entity_matching.confidence_threshold") == "0.60"
         assert await SettingsRepository.get_value("general.conversation_context_turns") == "3"
 
@@ -1192,6 +1193,71 @@ class TestMigrationV40:
             "idx_memory_turns_convrow",
         }
         assert len(schema_versions) == 1
+
+
+# ---------------------------------------------------------------------------
+# Schema migration v41 -- embedding model switch to multilingual-e5-base
+# ---------------------------------------------------------------------------
+
+
+class TestMigrationV41:
+    async def test_migration_v41_flips_old_default_model_and_dimension(self, db_repository):
+        from app.db.schema import _run_migrations
+
+        async with aiosqlite.connect(str(db_repository)) as db:
+            db.row_factory = aiosqlite.Row
+            # Simulate a pre-v41 DB still on the old e5-small default.
+            await db.execute(
+                "UPDATE settings SET value = 'intfloat/multilingual-e5-small' WHERE key = 'embedding.local_model'"
+            )
+            await db.execute("UPDATE settings SET value = '384' WHERE key = 'embedding.dimension'")
+            await db.execute("DELETE FROM schema_version WHERE version >= 41")
+            await db.commit()
+
+            await _run_migrations(db)
+            await _run_migrations(db)
+            await db.commit()
+
+            rows = await (
+                await db.execute(
+                    "SELECT key, value FROM settings WHERE key IN ('embedding.local_model', 'embedding.dimension')"
+                )
+            ).fetchall()
+            schema_versions = await (
+                await db.execute("SELECT version FROM schema_version WHERE version = 41")
+            ).fetchall()
+
+        values = {row[0]: row[1] for row in rows}
+        assert values["embedding.local_model"] == "intfloat/multilingual-e5-base"
+        assert values["embedding.dimension"] == "768"
+        assert len(schema_versions) == 1
+
+    async def test_migration_v41_preserves_admin_override(self, db_repository):
+        from app.db.schema import _run_migrations
+
+        async with aiosqlite.connect(str(db_repository)) as db:
+            db.row_factory = aiosqlite.Row
+            # Admin overrode the model to another 384d model: both values
+            # must survive the migration untouched.
+            await db.execute(
+                "UPDATE settings SET value = 'paraphrase-multilingual-MiniLM-L12-v2' WHERE key = 'embedding.local_model'"
+            )
+            await db.execute("UPDATE settings SET value = '384' WHERE key = 'embedding.dimension'")
+            await db.execute("DELETE FROM schema_version WHERE version >= 41")
+            await db.commit()
+
+            await _run_migrations(db)
+            await db.commit()
+
+            rows = await (
+                await db.execute(
+                    "SELECT key, value FROM settings WHERE key IN ('embedding.local_model', 'embedding.dimension')"
+                )
+            ).fetchall()
+
+        values = {row[0]: row[1] for row in rows}
+        assert values["embedding.local_model"] == "paraphrase-multilingual-MiniLM-L12-v2"
+        assert values["embedding.dimension"] == "384"
 
 
 class TestSessionMemoryRepositories:

@@ -1330,6 +1330,25 @@ class TestEmbeddingEngine:
         assert engine._provider == "local"
         assert engine._model_name == DEFAULT_LOCAL_EMBEDDING_MODEL
 
+    def test_get_info_fallback_dimensions_for_unloaded_default_model(self):
+        engine = EmbeddingEngine()
+        engine._provider = "local"
+        engine._model_name = DEFAULT_LOCAL_EMBEDDING_MODEL
+        engine._local_model = None
+
+        info = engine.get_info()
+        assert info["model"] == DEFAULT_LOCAL_EMBEDDING_MODEL
+        assert info["dimensions"] == 768
+
+    def test_get_info_fallback_dimensions_for_e5_small_rollback(self):
+        engine = EmbeddingEngine()
+        engine._provider = "local"
+        engine._model_name = "intfloat/multilingual-e5-small"
+        engine._local_model = None
+
+        info = engine.get_info()
+        assert info["dimensions"] == 384
+
     def test_get_local_model_restores_startup_logger_levels_on_success(self):
         import sys
         import types

@@ -24,6 +24,7 @@ from app.cache.sqlite_cache_store import (
     COLLECTION_ROUTING_CACHE,
 )
 from app.config import settings
+from app.db.repositories.settings import SettingsRepository
 from app.runtime_setup import ensure_setup_runtime_initialized
 from app.security.auth import require_admin_session
 from app.util import raise_api_error
@@ -234,7 +235,13 @@ async def export_cache(
     filename = build_export_filename(tiers, datetime.now(UTC))
 
     try:
-        generator = iter_export_chunks(cache_manager, tiers, app_version=app_version)
+        embedding_model = await SettingsRepository.get_value("embedding.local_model") or "unknown"
+    except Exception:
+        logger.debug("Failed to read embedding model for export header", exc_info=True)
+        embedding_model = "unknown"
+
+    try:
+        generator = iter_export_chunks(cache_manager, tiers, app_version=app_version, embedding_model=embedding_model)
     except Exception:
         logger.warning("Failed to start cache export", exc_info=True)
         raise_api_error("Cache export failed", status_code=500)
