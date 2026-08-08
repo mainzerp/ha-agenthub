@@ -433,6 +433,55 @@
                     <button class="btn btn-primary btn-sm" @click="saveSection('orchestrator')">Save Orchestrator</button>
                 </div>
             </section>
+
+            <!-- Section 8: Memory -->
+            <section data-category="memory" x-show="activeCategory === 'memory'" x-cloak>
+                <h3 class="section-title">Session Memory</h3>
+                <p class="text-muted mb-md text-80">Semantic recall of past conversations. Matches are injected into the General Agent as score-annotated suggestions, never as verified facts.</p>
+                <div class="form-grid-2">
+                    <div class="form-group">
+                        <label class="form-label">Memory Enabled</label>
+                        <input type="checkbox" x-model="s['memory.enabled']">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Scope</label>
+                        <select class="form-input" x-model="s['memory.scope']">
+                            <option value="user">Per-user</option>
+                            <option value="global">Global</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Wait Mode</label>
+                        <select class="form-input" x-model="s['memory.wait_mode']">
+                            <option value="best_effort">Best effort (no added latency)</option>
+                            <option value="blocking">Blocking (wait up to timeout)</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Wait Timeout (ms)</label>
+                        <input type="number" class="form-input" x-model.number="s['memory.wait_timeout_ms']" min="0" max="10000">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Similarity Threshold: <span class="text-mono" x-text="s['memory.similarity_threshold']"></span></label>
+                        <input type="range" min="0" max="1" step="0.01" x-model.number="s['memory.similarity_threshold']">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Max Matches</label>
+                        <input type="number" class="form-input" x-model.number="s['memory.max_matches']" min="1" max="10">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Max Snippet Chars</label>
+                        <input type="number" class="form-input" x-model.number="s['memory.max_snippet_chars']" min="50" max="2000">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Max Continuation Turns</label>
+                        <input type="number" class="form-input" x-model.number="s['memory.max_continuation_turns']" min="0" max="20">
+                    </div>
+                </div>
+                <div class="form-actions">
+                    <button class="btn btn-primary btn-sm" @click="saveSection('memory')">Save Memory</button>
+                </div>
+            </section>
         </div>
     </div>
 </div>
@@ -488,6 +537,7 @@ function settingsPage() {
             { key: 'agents', label: 'Agents', count: 0 },
             { key: 'home_context', label: 'Home Context', count: 0 },
             { key: 'orchestrator', label: 'Orchestrator', count: 0 },
+            { key: 'memory', label: 'Memory', count: 0 },
         ],
 
         init() {

@@ -155,6 +155,8 @@ class DispatchManager:
             context.device_name = incoming_context.device_name
             context.area_name = incoming_context.area_name
             context.user_id = incoming_context.user_id
+            # Session memory: matches resolved by the prelude overlap task.
+            context.memory_context = incoming_context.memory_context
             context.source = incoming_context.source
             context.language = incoming_context.language
             context.injection_detected = incoming_context.injection_detected
@@ -212,6 +214,8 @@ class DispatchManager:
                 latency_ms = (time.perf_counter() - t0) * 1000
                 span["metadata"]["latency_ms"] = round(latency_ms, 1)
                 span["metadata"]["dispatch_timeout_sec"] = dispatch_timeout
+                if context.memory_context:
+                    span["metadata"]["memory_matches"] = len(context.memory_context)
                 result_data = self.normalize_agent_result(response, agent_id=target_agent)
                 _t_norm = time.perf_counter()
                 logger.info(

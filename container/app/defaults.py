@@ -27,3 +27,14 @@ CACHE_DEFAULTS: dict[str, object] = {
     "cache.validator.max_tokens": 1024,
     "cache.validator.batch_size": 10,
 }
+
+MEMORY_DEFAULTS: dict[str, object] = {
+    "memory.enabled": True,
+    "memory.scope": "user",
+    "memory.wait_mode": "blocking",
+    "memory.wait_timeout_ms": 800,
+    "memory.similarity_threshold": 0.85,
+    "memory.max_matches": 3,
+    "memory.max_snippet_chars": 300,
+    "memory.max_continuation_turns": 5,
+}

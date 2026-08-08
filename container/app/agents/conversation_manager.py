@@ -13,6 +13,8 @@ from collections import OrderedDict
 from typing import Any
 
 from app.db.repository import ConversationRepository, SettingsRepository
+from app.memory import get_memory_service
+from app.util.tasks import spawn
 
 logger = logging.getLogger(__name__)
 
@@ -160,6 +162,9 @@ class ConversationManager:
         assistant_text: str,
         agent_id: str | None = None,
         resolved_entities: list[dict[str, Any]] | None = None,
+        user_id: str | None = None,
+        language: str | None = None,
+        source: str | None = None,
     ) -> None:
         """Store a conversation turn, keeping the configured number of exchanges.
 
@@ -206,16 +211,40 @@ class ConversationManager:
             if stamped_entities:
                 self._record_last_entities(conversation_id, stamped_entities, now)
 
+        conversation_row_id = 0
         try:
-            await ConversationRepository.insert(
+            conversation_row_id = await ConversationRepository.insert(
                 conversation_id=conversation_id,
                 user_text=user_text,
                 agent_id=agent_id,
                 response_text=assistant_text,
                 action_executed=json.dumps(stamped_entities) if stamped_entities else None,
+                user_id=user_id,
             )
         except Exception:
             logger.warning("Failed to persist conversation turn to DB", exc_info=True)
+
+        # Session memory: fire-and-forget per-turn embedding. Single funnel,
+        # so every store_turn call site is covered. Fully guarded -- a memory
+        # failure must never surface into the request path.
+        if conversation_row_id:
+            try:
+                memory = get_memory_service()
+                if memory is not None and await memory.is_enabled():
+                    spawn(
+                        memory.index_turn(
+                            conversation_id=conversation_id,
+                            conversation_row_id=conversation_row_id,
+                            user_id=user_id,
+                            user_text=user_text,
+                            response_text=assistant_text,
+                            language=language,
+                            source=source,
+                        ),
+                        name="memory-index-turn",
+                    )
+            except Exception:
+                logger.warning("Session-memory hook failed for %s", conversation_id, exc_info=True)
 
     def _record_last_entities(
         self,

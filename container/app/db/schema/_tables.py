@@ -164,7 +164,42 @@ async def _create_tables(db: aiosqlite.Connection) -> None:
             action_executed TEXT,
             cache_hit TEXT,
             latency_ms REAL,
+            user_id TEXT,
             created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+    """)
+
+    # Session memory: relational metadata only. The vectors live in the
+    # dedicated session_memory.db sqlite-vec sidecar (app.memory.vector_store)
+    # -- the main-DB layer never loads the vec extension. memory_turns
+    # deliberately holds NO text columns; snippet text is fetched by joining
+    # conversations on conversation_row_id. user_id NULL = anonymous bucket.
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS memory_sessions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            conversation_id TEXT NOT NULL UNIQUE,
+            user_id TEXT,
+            summary_text TEXT,
+            turn_count INTEGER NOT NULL DEFAULT 0,
+            first_turn_at INTEGER,
+            last_turn_at INTEGER,
+            language TEXT,
+            source TEXT,
+            created_at INTEGER,
+            updated_at INTEGER
+        )
+    """)
+
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS memory_turns (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id INTEGER NOT NULL,
+            conversation_row_id INTEGER NOT NULL,
+            user_id TEXT,
+            vec_rowid INTEGER,
+            embedding_model TEXT,
+            embedding_dim INTEGER,
+            created_at INTEGER
         )
     """)
 

@@ -68,7 +68,10 @@ def _make_task(description: str = "turn on kitchen light", context: TaskContext 
 class TestOrchestratorAgent:
     @pytest.fixture(autouse=True)
     def _mock_conversation_repo(self):
-        with patch("app.agents.conversation_manager.ConversationRepository") as mock_repo:
+        with (
+            patch("app.agents.conversation_manager.ConversationRepository") as mock_repo,
+            patch("app.agents.conversation_manager.get_memory_service", return_value=None),
+        ):
             mock_repo.insert = AsyncMock(return_value=1)
             yield mock_repo
 
@@ -1580,6 +1583,7 @@ class TestOrchestratorAgent:
             agent_id="test-agent",
             response_text="world",
             action_executed=None,
+            user_id=None,
         )
 
     async def test_store_turn_db_failure_does_not_break_runtime(self, _mock_conversation_repo):
@@ -3000,7 +3004,10 @@ class TestClassifySpan:
 class TestResponseCacheFallThrough:
     @pytest.fixture(autouse=True)
     def _mock_conversation_repo(self):
-        with patch("app.agents.conversation_manager.ConversationRepository") as mock_repo:
+        with (
+            patch("app.agents.conversation_manager.ConversationRepository") as mock_repo,
+            patch("app.agents.conversation_manager.get_memory_service", return_value=None),
+        ):
             mock_repo.insert = AsyncMock(return_value=1)
             yield mock_repo
 
@@ -3174,7 +3181,10 @@ class TestExecuteCachedActionVerification:
 class TestFollowupDetection:
     @pytest.fixture(autouse=True)
     def _mock_conversation_repo(self):
-        with patch("app.agents.conversation_manager.ConversationRepository") as mock_repo:
+        with (
+            patch("app.agents.conversation_manager.ConversationRepository") as mock_repo,
+            patch("app.agents.conversation_manager.get_memory_service", return_value=None),
+        ):
             mock_repo.insert = AsyncMock(return_value=1)
             yield mock_repo
 
@@ -3298,7 +3308,10 @@ class TestFollowupDetection:
 class TestOrchestratorPhase3Gaps:
     @pytest.fixture(autouse=True)
     def _mock_conversation_repo(self):
-        with patch("app.agents.conversation_manager.ConversationRepository") as mock_repo:
+        with (
+            patch("app.agents.conversation_manager.ConversationRepository") as mock_repo,
+            patch("app.agents.conversation_manager.get_memory_service", return_value=None),
+        ):
             mock_repo.insert = AsyncMock(return_value=1)
             yield mock_repo
 

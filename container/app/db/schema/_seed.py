@@ -2,7 +2,7 @@
 
 import aiosqlite
 
-from app.defaults import CACHE_DEFAULTS, DEFAULT_LOCAL_EMBEDDING_MODEL
+from app.defaults import CACHE_DEFAULTS, DEFAULT_LOCAL_EMBEDDING_MODEL, MEMORY_DEFAULTS
 
 
 async def _seed_defaults(db: aiosqlite.Connection) -> None:
@@ -324,6 +324,63 @@ async def _seed_defaults(db: aiosqlite.Connection) -> None:
             "int",
             "calendar",
             "How many hours ahead to look for upcoming calendar events",
+        ),
+        # Session memory settings
+        (
+            "memory.enabled",
+            "true" if MEMORY_DEFAULTS["memory.enabled"] else "false",
+            "bool",
+            "memory",
+            "Enable session memory lookup and storage globally",
+        ),
+        (
+            "memory.scope",
+            MEMORY_DEFAULTS["memory.scope"],
+            "string",
+            "memory",
+            "Memory visibility scope: 'user' (per-user) or 'global'",
+        ),
+        (
+            "memory.wait_mode",
+            MEMORY_DEFAULTS["memory.wait_mode"],
+            "string",
+            "memory",
+            "Memory lookup wait mode: 'best_effort' (zero added latency) or 'blocking' (wait up to timeout)",
+        ),
+        (
+            "memory.wait_timeout_ms",
+            str(MEMORY_DEFAULTS["memory.wait_timeout_ms"]),
+            "int",
+            "memory",
+            "Timeout in milliseconds for blocking memory lookups",
+        ),
+        (
+            "memory.similarity_threshold",
+            str(MEMORY_DEFAULTS["memory.similarity_threshold"]),
+            "float",
+            "memory",
+            "Minimum cosine similarity for a session memory match",
+        ),
+        (
+            "memory.max_matches",
+            str(MEMORY_DEFAULTS["memory.max_matches"]),
+            "int",
+            "memory",
+            "Maximum number of past sessions injected as context",
+        ),
+        (
+            "memory.max_snippet_chars",
+            str(MEMORY_DEFAULTS["memory.max_snippet_chars"]),
+            "int",
+            "memory",
+            "Per-snippet character cap for injected memory matches",
+        ),
+        (
+            "memory.max_continuation_turns",
+            str(MEMORY_DEFAULTS["memory.max_continuation_turns"]),
+            "int",
+            "memory",
+            "Maximum turns copied from a matched previous session on continuation",
         ),
         # Rewrite agent settings
         ("rewrite.model", "groq/llama-3.1-8b-instant", "string", "rewrite", "LLM model for rewrite agent"),

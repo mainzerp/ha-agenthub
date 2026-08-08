@@ -9,7 +9,7 @@ import random
 import time
 import uuid
 from collections.abc import AsyncGenerator
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field, is_dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 
@@ -33,6 +33,7 @@ from app.analytics.tracer import _optional_span
 from app.cache.cache_manager import ActionReplayOutcome, RoutingSkipOutcome
 from app.db.repository import SettingsRepository
 from app.ha_client.home_context import populate_task_context_home_context
+from app.memory import get_memory_service
 from app.models.agent import (
     CANCEL_INTERACTION_AGENT,
     FALLBACK_AGENT,
@@ -127,6 +128,58 @@ async def _cancel_filler_future(filler_future: asyncio.Task | None) -> None:
             await filler_future
     elif not filler_future.cancelled():
         filler_future.exception()
+
+
+def _consume_memory_task_result(memory_task: asyncio.Task) -> None:
+    """Done-callback for abandoned memory searches: consume/log the outcome."""
+    if memory_task.cancelled():
+        return
+    exc = memory_task.exception()
+    if exc is not None:
+        logger.debug("Session-memory search failed", exc_info=exc)
+
+
+async def _resolve_memory_context(
+    task: IngressTask,
+    memory_task: asyncio.Task | None,
+    memory_service: Any,
+) -> None:
+    """Resolve the session-memory prelude task into ``task.context.memory_context``.
+
+    Wait behavior follows the ``memory.wait_mode`` setting:
+    ``best_effort`` takes the result only when the search already
+    finished during classification -- zero added latency; a still-pending
+    task keeps running with a done-callback that consumes its outcome.
+    ``blocking`` (default) waits up to ``memory.wait_timeout_ms`` and
+    proceeds with ``memory_context=None`` on timeout. Failures never
+    block dispatch.
+    """
+    if memory_task is None or memory_service is None:
+        return
+    try:
+        wait_mode, wait_timeout_ms = await memory_service.wait_config()
+        matches: Any = None
+        if wait_mode == "blocking":
+            try:
+                matches = await asyncio.wait_for(asyncio.shield(memory_task), timeout=wait_timeout_ms / 1000)
+            except TimeoutError:
+                if not memory_task.done():
+                    memory_task.add_done_callback(_consume_memory_task_result)
+        elif memory_task.done():
+            matches = memory_task.result()
+        else:
+            memory_task.add_done_callback(_consume_memory_task_result)
+        if matches and task.context is not None:
+            task.context.memory_context = [asdict(m) if is_dataclass(m) else dict(m) for m in matches]
+            top = task.context.memory_context[0]
+            logger.info(
+                "Session memory: %d match(es) attached (top session=%s sim=%.3f)",
+                len(matches),
+                top.get("conversation_id", "?"),
+                float(top.get("similarity") or 0.0),
+            )
+    except Exception:
+        logger.debug("Session-memory resolution failed", exc_info=True)
 
 
 @dataclass
@@ -573,6 +626,8 @@ class OrchestratorAgent(BaseAgent):
                 language=content_language,
                 sequential_send=True,
                 injection_detected=incoming_context.injection_detected if incoming_context else False,
+                # Session memory: matches resolved by the prelude overlap task.
+                memory_context=incoming_context.memory_context if incoming_context else None,
                 # Phase 6: anaphora recency hints ride the content leg like
                 # the rest of the conversation context.
                 last_entities=list(incoming_context.last_entities) if incoming_context else [],
@@ -1026,6 +1081,21 @@ class OrchestratorAgent(BaseAgent):
                     )
                 )
 
+        # Session memory: overlap the memory search with the classification
+        # LLM call on the cache-miss path (action-cache replays early-exit
+        # above and never pay the embed cost -- D6). Read-only; failures and
+        # slow searches never block dispatch (see _resolve_memory_context).
+        memory_task: asyncio.Task | None = None
+        memory_service = get_memory_service()
+        if memory_service is not None and await memory_service.is_enabled():
+            memory_task = asyncio.create_task(
+                memory_service.search(
+                    user_text,
+                    task.context.user_id if task.context else None,
+                    current_conversation_id=conversation_id,
+                )
+            )
+
         if publish_events and self._event_bus is not None:
             await self._event_bus.publish(
                 "pipeline.pre_classify", {"task": task, "user_text": user_text, "language": detected_language}
@@ -1058,6 +1128,11 @@ class OrchestratorAgent(BaseAgent):
                 ingress_task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await ingress_task
+            # Same for the memory overlap task: read-only, safe to cancel.
+            if memory_task is not None and not memory_task.done():
+                memory_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await memory_task
             return PipelinePreludeResult(
                 conversation_id=conversation_id,
                 detected_language=detected_language,
@@ -1089,6 +1164,8 @@ class OrchestratorAgent(BaseAgent):
             classifications=classifications,
             span_collector=span_collector,
         )
+
+        await _resolve_memory_context(task, memory_task, memory_service)
 
         logger.debug(
             "Routed to %s (%s): %s (conversation=%s)",
@@ -1343,7 +1420,14 @@ class OrchestratorAgent(BaseAgent):
         # path only) as an anaphora recency hint for later turns.
         resolved_entities = await extract_resolved_entities(action_executed, getattr(self, "_entity_index", None))
         await self._store_turn(
-            conversation_id, user_text, speech, agent_id=routed_to, resolved_entities=resolved_entities
+            conversation_id,
+            user_text,
+            speech,
+            agent_id=routed_to,
+            resolved_entities=resolved_entities,
+            user_id=task.context.user_id if task.context else None,
+            language=language,
+            source=task.context.source if task.context else None,
         )
         if span_collector:
             await self._create_trace(
@@ -1982,6 +2066,8 @@ class OrchestratorAgent(BaseAgent):
             context.user_id = task.context.user_id
             context.source = task.context.source
             context.injection_detected = task.context.injection_detected
+            # Session memory: matches resolved by the prelude overlap task.
+            context.memory_context = task.context.memory_context
             # Phase 6: anaphora recency hints populated in the prelude.
             context.last_entities = list(task.context.last_entities)
         if self._ha_client:
@@ -2628,9 +2714,19 @@ class OrchestratorAgent(BaseAgent):
         assistant_text: str,
         agent_id: str | None = None,
         resolved_entities: list[dict[str, Any]] | None = None,
+        user_id: str | None = None,
+        language: str | None = None,
+        source: str | None = None,
     ) -> None:
         await self._conversation_manager.store_turn(
-            conversation_id, user_text, assistant_text, agent_id, resolved_entities=resolved_entities
+            conversation_id,
+            user_text,
+            assistant_text,
+            agent_id,
+            resolved_entities=resolved_entities,
+            user_id=user_id,
+            language=language,
+            source=source,
         )
 
     def _evict_stale_conversations(self) -> None:

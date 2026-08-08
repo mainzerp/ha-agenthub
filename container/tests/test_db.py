@@ -12,9 +12,11 @@ from app.db.repository import (
     AdminAccountRepository,
     AgentConfigRepository,
     AliasRepository,
+    ConversationRepository,
     CustomAgentRepository,
     EntityVisibilityRepository,
     McpServerRepository,
+    MemoryRepository,
     ScheduledTimersRepository,
     SecretsRepository,
     SendDeviceMappingRepository,
@@ -1123,6 +1125,179 @@ class TestMigrationV39:
         column_names = {row[1] for row in columns}
         assert "cache_hit_type" in column_names
         assert len(schema_versions) == 1
+
+
+class TestMigrationV40:
+    async def test_migration_v40_applies_idempotently(self, db_repository):
+        from app.db.schema import _run_migrations
+
+        async with aiosqlite.connect(str(db_repository)) as db:
+            db.row_factory = aiosqlite.Row
+            # Simulate a pre-v40 DB: no memory tables, conversations without user_id.
+            await db.execute("DROP TABLE IF EXISTS memory_sessions")
+            await db.execute("DROP TABLE IF EXISTS memory_turns")
+            await db.execute("ALTER TABLE conversations RENAME TO conversations_old")
+            await db.execute(
+                """
+                CREATE TABLE conversations (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    conversation_id TEXT NOT NULL,
+                    user_text TEXT NOT NULL,
+                    agent_id TEXT,
+                    response_text TEXT,
+                    action_executed TEXT,
+                    cache_hit TEXT,
+                    latency_ms REAL,
+                    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+                )
+                """
+            )
+            await db.execute(
+                """
+                INSERT INTO conversations (
+                    id, conversation_id, user_text, agent_id, response_text,
+                    action_executed, cache_hit, latency_ms, created_at
+                )
+                SELECT
+                    id, conversation_id, user_text, agent_id, response_text,
+                    action_executed, cache_hit, latency_ms, created_at
+                FROM conversations_old
+                """
+            )
+            await db.execute("DROP TABLE conversations_old")
+            await db.execute("DELETE FROM schema_version WHERE version >= 40")
+            await db.commit()
+
+            await _run_migrations(db)
+            await _run_migrations(db)
+            await db.commit()
+
+            conv_columns = await (await db.execute("PRAGMA table_info(conversations)")).fetchall()
+            tables = await (
+                await db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'memory_%'")
+            ).fetchall()
+            indexes = await (
+                await db.execute("SELECT name FROM sqlite_master WHERE type='index' AND name LIKE 'idx_memory_%'")
+            ).fetchall()
+            schema_versions = await (
+                await db.execute("SELECT version FROM schema_version WHERE version = 40")
+            ).fetchall()
+
+        assert "user_id" in {row[1] for row in conv_columns}
+        assert {row[0] for row in tables} == {"memory_sessions", "memory_turns"}
+        assert {row[0] for row in indexes} == {
+            "idx_memory_sessions_user",
+            "idx_memory_turns_session",
+            "idx_memory_turns_user",
+            "idx_memory_turns_convrow",
+        }
+        assert len(schema_versions) == 1
+
+
+class TestSessionMemoryRepositories:
+    async def test_conversation_insert_round_trips_user_id(self, db_repository):
+        row_id = await ConversationRepository.insert(
+            conversation_id="conv-mem-1",
+            user_text="hello",
+            response_text="hi",
+            user_id="user-1",
+        )
+        assert row_id > 0
+        rows = await ConversationRepository.get_by_conversation_id("conv-mem-1")
+        assert rows[0]["user_id"] == "user-1"
+
+    async def test_conversation_insert_defaults_user_id_null(self, db_repository):
+        await ConversationRepository.insert(conversation_id="conv-mem-anon", user_text="hello")
+        rows = await ConversationRepository.get_by_conversation_id("conv-mem-anon")
+        assert rows[0]["user_id"] is None
+
+    async def test_memory_repository_round_trip(self, db_repository):
+        now = int(time.time())
+        row_id = await ConversationRepository.insert(
+            conversation_id="conv-mem-2",
+            user_text="what did we discuss",
+            response_text="we discussed timers",
+            user_id="user-1",
+        )
+
+        session_id = await MemoryRepository.upsert_session(
+            conversation_id="conv-mem-2",
+            user_id="user-1",
+            summary_text="what did we discuss",
+            language="en",
+            source="ha",
+            turn_epoch=now,
+        )
+        assert session_id > 0
+
+        turn_id = await MemoryRepository.insert_turn_ref(
+            session_id=session_id,
+            conversation_row_id=row_id,
+            user_id="user-1",
+            created_at=now,
+        )
+        assert turn_id > 0
+
+        # Turn starts unembedded, then gets its vector reference.
+        unembedded = await MemoryRepository.list_unembedded_turns(limit=10)
+        assert [t["turn_id"] for t in unembedded] == [turn_id]
+        assert unembedded[0]["user_text"] == "what did we discuss"
+
+        await MemoryRepository.set_turn_vec(turn_id, 42, "test-model", 384)
+        assert await MemoryRepository.list_unembedded_turns(limit=10) == []
+
+        turns = await MemoryRepository.get_session_turns("conv-mem-2")
+        assert len(turns) == 1
+        assert turns[0]["user_text"] == "what did we discuss"
+        assert turns[0]["response_text"] == "we discussed timers"
+        assert turns[0]["user_id"] == "user-1"
+
+        assert await MemoryRepository.count_turns() == 1
+
+        fetched = await MemoryRepository.get_turns_by_ids([turn_id])
+        assert fetched[0]["conversation_id"] == "conv-mem-2"
+        assert fetched[0]["session_id"] == session_id
+
+    async def test_upsert_session_bumps_turn_count_and_keeps_digest(self, db_repository):
+        now = int(time.time())
+        first_id = await MemoryRepository.upsert_session(
+            conversation_id="conv-mem-3",
+            user_id=None,
+            summary_text="first message",
+            language="en",
+            source="ha",
+            turn_epoch=now,
+        )
+        second_id = await MemoryRepository.upsert_session(
+            conversation_id="conv-mem-3",
+            user_id=None,
+            summary_text="second message",
+            language="en",
+            source="ha",
+            turn_epoch=now + 60,
+        )
+        assert second_id == first_id
+
+        async with aiosqlite.connect(str(db_repository)) as db:
+            db.row_factory = aiosqlite.Row
+            row = await (
+                await db.execute("SELECT * FROM memory_sessions WHERE conversation_id = 'conv-mem-3'")
+            ).fetchone()
+        assert row["turn_count"] == 2
+        assert row["last_turn_at"] == now + 60
+        # The deterministic digest always reflects the FIRST user message.
+        assert row["summary_text"] == "first message"
+
+    async def test_reset_vec_refs_clears_all(self, db_repository):
+        now = int(time.time())
+        row_id = await ConversationRepository.insert(conversation_id="conv-mem-4", user_text="x")
+        session_id = await MemoryRepository.upsert_session("conv-mem-4", None, "x", None, None, now)
+        turn_id = await MemoryRepository.insert_turn_ref(session_id, row_id, None, now)
+        await MemoryRepository.set_turn_vec(turn_id, 7, "m", 384)
+
+        cleared = await MemoryRepository.reset_vec_refs()
+        assert cleared >= 1
+        assert any(t["turn_id"] == turn_id for t in await MemoryRepository.list_unembedded_turns(limit=50))
 
 
 # ---------------------------------------------------------------------------

@@ -807,6 +807,49 @@ async def _migrate_to_39(db: aiosqlite.Connection) -> None:
     await db.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (39)")
 
 
+async def _migrate_to_40(db: aiosqlite.Connection) -> None:
+    # Migration 40: Session memory. Per-user attribution on conversations
+    # (NULL = anonymous bucket) plus the relational metadata tables for the
+    # session-memory feature. The turn vectors live in the dedicated
+    # session_memory.db sqlite-vec sidecar, not in the main DB. Dual-DDL
+    # convention: the same CREATE TABLE statements exist in _tables.py so
+    # fresh DBs that skip migrations still have the tables.
+    if not await _column_exists(db, "conversations", "user_id"):
+        await db.execute("ALTER TABLE conversations ADD COLUMN user_id TEXT")
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS memory_sessions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            conversation_id TEXT NOT NULL UNIQUE,
+            user_id TEXT,
+            summary_text TEXT,
+            turn_count INTEGER NOT NULL DEFAULT 0,
+            first_turn_at INTEGER,
+            last_turn_at INTEGER,
+            language TEXT,
+            source TEXT,
+            created_at INTEGER,
+            updated_at INTEGER
+        )
+    """)
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS memory_turns (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id INTEGER NOT NULL,
+            conversation_row_id INTEGER NOT NULL,
+            user_id TEXT,
+            vec_rowid INTEGER,
+            embedding_model TEXT,
+            embedding_dim INTEGER,
+            created_at INTEGER
+        )
+    """)
+    await db.execute("CREATE INDEX IF NOT EXISTS idx_memory_sessions_user ON memory_sessions(user_id)")
+    await db.execute("CREATE INDEX IF NOT EXISTS idx_memory_turns_session ON memory_turns(session_id)")
+    await db.execute("CREATE INDEX IF NOT EXISTS idx_memory_turns_user ON memory_turns(user_id)")
+    await db.execute("CREATE INDEX IF NOT EXISTS idx_memory_turns_convrow ON memory_turns(conversation_row_id)")
+    await db.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (40)")
+
+
 # Ordered registry of (version, migration_callable). Each migration records
 # its own version marker. Applied in ascending order for versions greater
 # than the current schema version.
@@ -849,6 +892,7 @@ MIGRATIONS: list[tuple[int, Callable[[aiosqlite.Connection], Awaitable[None]]]] 
     (37, _migrate_to_37),
     (38, _migrate_to_38),
     (39, _migrate_to_39),
+    (40, _migrate_to_40),
 ]
 
 

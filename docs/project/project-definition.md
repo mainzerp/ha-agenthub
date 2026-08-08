@@ -101,7 +101,7 @@ Current runtime notes:
 | ASGI server | Uvicorn | Container application server |
 | LLM integration | litellm | Provider abstraction for local and hosted LLMs |
 | Local embeddings | `intfloat/multilingual-e5-small` | Seeded default local embedding model |
-| Vector storage | ChromaDB | Entity index persistence; routing and action caches moved to SQLite in v1.37.0 |
+| Vector storage | sqlite-vec (SQLite) | Entity index, routing cache semantic tier, and session memory embeddings; routing and action caches moved to SQLite in v1.37.0 |
 | Structured data | SQLite + aiosqlite | Settings, secrets, traces, analytics, users, history, custom agents |
 | Agent protocol | A2A over JSON-RPC 2.0 envelopes | Current transport is in-process |
 | Entity matching | rapidfuzz, pyphonetics, embedding search, optional LLM expansion | Deterministic resolution runs before hybrid fallback |

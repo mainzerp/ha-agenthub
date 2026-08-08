@@ -28,3 +28,7 @@ async def _create_indexes(db: aiosqlite.Connection) -> None:
     await db.execute(
         "CREATE INDEX IF NOT EXISTS idx_cache_validator_runs_started_at ON cache_validator_runs(started_at)"
     )
+    await db.execute("CREATE INDEX IF NOT EXISTS idx_memory_sessions_user ON memory_sessions(user_id)")
+    await db.execute("CREATE INDEX IF NOT EXISTS idx_memory_turns_session ON memory_turns(session_id)")
+    await db.execute("CREATE INDEX IF NOT EXISTS idx_memory_turns_user ON memory_turns(user_id)")
+    await db.execute("CREATE INDEX IF NOT EXISTS idx_memory_turns_convrow ON memory_turns(conversation_row_id)")

@@ -46,6 +46,7 @@ async def _initialize_setup_dependent_services(app: FastAPI, *, source: str) -> 
     from app.bootstrap._ha_client import setup_ha_client
     from app.bootstrap._llm import setup_llm_client
     from app.bootstrap._mcp import setup_mcp
+    from app.bootstrap._memory import setup_memory
     from app.bootstrap._monitors import setup_monitors
 
     # Phase 1: HA client, embedding engine, vector store, HomeContext, AliasResolver, preload
@@ -63,6 +64,9 @@ async def _initialize_setup_dependent_services(app: FastAPI, *, source: str) -> 
     # Phase 5: Cache manager + purge + validator (depends on cache_store, rewrite_agent, llm_client)
     llm_client = await setup_llm_client(app, source)
     await setup_cache(app, source, cache_store, rewrite_agent, entity_index, ha_client, llm_client)
+
+    # Phase 5b: Session memory service + startup backfill (no-op when disabled)
+    await setup_memory(app)
 
     # Phase 6: MCP servers (depends on mcp_registry, mcp_tool_manager)
     await setup_mcp(app, source)

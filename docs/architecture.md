@@ -203,15 +203,30 @@ The legacy term still appears in the on-disk sqlite-vec collection name
 for backward compatibility.
 
 The cache system stores SHA-256 hash keys of incoming requests in
-SQLite. Lookup is by exact hash match (not semantic similarity):
+SQLite. The routing cache additionally has a semantic similarity tier
+(sqlite-vec k-NN over stored query embeddings, consulted after an
+exact-hash miss); the action cache is exact-hash only:
 
-- **Routing Cache** -- Caches the mapping from user intent to target agent. A hit (exact SHA-256 hash match) skips LLM-based intent classification entirely. Max entries: 50,000 with LRU eviction.
+- **Routing Cache** -- Caches the mapping from user intent to target agent. A hit (exact SHA-256 hash match, or semantic match above `cache.routing.semantic_threshold` with fail-closed validation) skips LLM-based intent classification entirely. Max entries: 50,000 with LRU eviction.
 - **Action Cache** -- Caches full agent responses including executed actions.
   - **Hit** (exact hash match): Returns the cached response directly (optionally rewritten by the rewrite agent for variety).
   - **Miss**: No cache involvement; the request proceeds through the full agent pipeline.
   - Max entries: 50,000 with LRU eviction.
 
 Cache entries are reactively invalidated when an executed action fails. Entries are also invalidated when relevant entity fields change (name, `area_id`, `device_id`, hidden, disabled, aliases, labels) and visibility is rechecked on action-cache replay.
+
+## Session Memory
+
+Session memory gives the General Agent semantic recall of past conversations ("we talked about X yesterday").
+
+- **Component** -- `MemoryService` (orchestrator-owned, no LLM call at query time) with `MemoryRepository` (relational metadata in the main DB) and a dedicated `SessionMemoryVectorStore` (sqlite-vec sidecar DB `session_memory.db`).
+- **Write path** -- `ConversationManager.store_turn` embeds each stored turn (raw text from `conversations`) fire-and-forget; per-turn vectors go to the vec store, session rollup metadata to `memory_sessions`/`memory_turns` (deterministic digest summary, no LLM summarization).
+- **Read path** -- on cache-missed requests the orchestrator runs the memory search as a parallel prelude task (overlapped with classification). Matches are grouped per session (the current session is excluded -- its turns are already in the live context -- and sessions whose best-matched text duplicates a higher-ranked session are dropped), filtered by `memory.similarity_threshold` and `memory.scope` (per-user or global; rows without a user form an anonymous bucket), and attached to `TaskContext.memory_context`.
+- **Injection** -- the General Agent appends matches to its system prompt (after the byte-stable static head) as score-annotated context: recall questions about past conversations are answered from this content; otherwise it is background only, never a basis for actions. For the top cross-session match, up to `memory.max_continuation_turns` turn pairs of the old session are copied into the context; the old session is never modified or reactivated.
+- **Wait modes** -- `blocking` (default, waits up to `memory.wait_timeout_ms`; `best_effort` rarely lands a match with cached routing or fast LLM providers) or `best_effort` (zero added latency).
+- **Lifecycle** -- unlimited retention by design; on embedding-model change the vec table is reset and turns are lazily re-embedded by a startup backfill. Cache-hit (replayed) requests receive no memory lookup and pay no embed cost.
+
+Settings keys: `memory.enabled`, `memory.scope`, `memory.wait_mode`, `memory.wait_timeout_ms`, `memory.similarity_threshold`, `memory.max_matches`, `memory.max_snippet_chars`, `memory.max_continuation_turns` (see [Configuration](configuration.md)).
 
 ## Entity Matching
 
@@ -230,7 +245,7 @@ By default, a weighted score above 0.60 returns a single confident match. Below 
 ## Data Storage
 
 - **SQLite** -- Primary store for all structured data: settings, agent configs, custom agents, aliases, MCP servers, secrets (Fernet-encrypted), admin accounts (bcrypt-hashed), setup state, conversations, analytics, and trace spans.
-- **sqlite-vec** -- Vector store for entity index embeddings only. Routing and action caches are stored in SQLite. The on-disk collection literal is still `response_cache` for backward compatibility. Persisted to disk under `/data`.
+- **sqlite-vec** -- Vector store for entity index embeddings, the routing cache semantic tier, and session memory turn embeddings. Entity index and routing cache embeddings live in dedicated SQLite databases; session memory uses its own `session_memory.db`. Persisted to disk under `/data`.
 
 ## Plugin Architecture
 

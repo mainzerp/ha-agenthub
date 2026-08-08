@@ -19,14 +19,15 @@ class ConversationRepository:
         action_executed: str | None = None,
         cache_hit: str | None = None,
         latency_ms: float | None = None,
+        user_id: str | None = None,
     ) -> int:
         async with get_db_write() as db:
             cursor = await db.execute(
                 "INSERT INTO conversations "
                 "(conversation_id, user_text, agent_id, response_text, "
-                "action_executed, cache_hit, latency_ms) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (conversation_id, user_text, agent_id, response_text, action_executed, cache_hit, latency_ms),
+                "action_executed, cache_hit, latency_ms, user_id) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (conversation_id, user_text, agent_id, response_text, action_executed, cache_hit, latency_ms, user_id),
             )
             return cursor.lastrowid or 0
 

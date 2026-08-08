@@ -184,6 +184,10 @@ class TaskContext(BaseModel):
     location_name: str = ""
     local_time: str = ""
     injection_detected: bool = False
+    # Session memory: serialized MemoryMatch dicts from the prelude overlap
+    # search (cache-miss path only). Read-only context for the General
+    # Agent's system-prompt injection; None = no memory for this turn.
+    memory_context: list[dict] | None = None
 
 
 class ActionExecuted(BaseModel):

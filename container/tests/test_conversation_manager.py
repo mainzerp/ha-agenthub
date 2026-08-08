@@ -8,6 +8,7 @@ the ``extract_resolved_entities`` helper (success path only).
 
 from __future__ import annotations
 
+import asyncio
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -22,10 +23,14 @@ def _mock_repos():
     with (
         patch("app.agents.conversation_manager.ConversationRepository") as mock_repo,
         patch("app.agents.conversation_manager.SettingsRepository") as mock_settings,
+        patch("app.agents.conversation_manager.get_memory_service") as mock_get_memory,
     ):
         mock_repo.insert = AsyncMock(return_value=1)
         mock_repo.get_by_conversation_id = AsyncMock(return_value=[])
         mock_settings.get_value = AsyncMock(side_effect=lambda k, d=None: d)
+        # Default: no memory service (existing tests are unaffected). New
+        # memory tests re-patch this with a mock service.
+        mock_get_memory.return_value = None
         yield mock_repo
 
 
@@ -154,6 +159,77 @@ class TestGetLastEntities:
         mgr = ConversationManager()
         _mock_repos.get_by_conversation_id.side_effect = RuntimeError("db down")
         assert await mgr.get_last_entities("conv-err") == []
+
+
+class TestSessionMemoryHook:
+    async def test_user_id_persisted(self, _mock_repos):
+        mgr = ConversationManager()
+        await mgr.store_turn("conv-mem", "hello", "hi", user_id="user-1", language="en", source="ha")
+        kwargs = _mock_repos.insert.call_args.kwargs
+        assert kwargs["user_id"] == "user-1"
+
+    async def test_memory_hook_fires_once_with_correct_args(self, _mock_repos):
+        service = MagicMock()
+        service.is_enabled = AsyncMock(return_value=True)
+        service.index_turn = AsyncMock()
+        with patch("app.agents.conversation_manager.get_memory_service", return_value=service):
+            mgr = ConversationManager()
+            await mgr.store_turn(
+                "conv-mem-2",
+                "what did we discuss",
+                "we discussed timers",
+                agent_id="general-agent",
+                user_id="user-1",
+                language="en",
+                source="ha",
+            )
+            # Let the fire-and-forget task run.
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
+
+        service.index_turn.assert_awaited_once()
+        kwargs = service.index_turn.await_args.kwargs
+        assert kwargs["conversation_id"] == "conv-mem-2"
+        assert kwargs["conversation_row_id"] == 1  # insert mock returns 1
+        assert kwargs["user_id"] == "user-1"
+        assert kwargs["user_text"] == "what did we discuss"
+        assert kwargs["response_text"] == "we discussed timers"
+        assert kwargs["language"] == "en"
+        assert kwargs["source"] == "ha"
+
+    async def test_memory_disabled_creates_no_task(self, _mock_repos):
+        service = MagicMock()
+        service.is_enabled = AsyncMock(return_value=False)
+        service.index_turn = AsyncMock()
+        with patch("app.agents.conversation_manager.get_memory_service", return_value=service):
+            mgr = ConversationManager()
+            await mgr.store_turn("conv-mem-3", "hello", "hi", user_id="user-1")
+            await asyncio.sleep(0)
+
+        service.index_turn.assert_not_called()
+
+    async def test_memory_failure_does_not_affect_stored_turn(self, _mock_repos):
+        with patch(
+            "app.agents.conversation_manager.get_memory_service",
+            side_effect=RuntimeError("memory init exploded"),
+        ):
+            mgr = ConversationManager()
+            await mgr.store_turn("conv-mem-4", "hello", "hi", user_id="user-1")
+
+        # The turn was still persisted despite the memory hook exploding.
+        _mock_repos.insert.assert_awaited_once()
+        assert _mock_repos.insert.call_args.kwargs["user_id"] == "user-1"
+
+    async def test_memory_hook_skipped_when_insert_failed(self, _mock_repos):
+        _mock_repos.insert = AsyncMock(side_effect=RuntimeError("db down"))
+        service = MagicMock()
+        service.is_enabled = AsyncMock(return_value=True)
+        service.index_turn = AsyncMock()
+        with patch("app.agents.conversation_manager.get_memory_service", return_value=service):
+            mgr = ConversationManager()
+            await mgr.store_turn("conv-mem-5", "hello", "hi")
+
+        service.index_turn.assert_not_called()
 
 
 class TestExtractResolvedEntities:

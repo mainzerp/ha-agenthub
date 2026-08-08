@@ -340,7 +340,15 @@ class CacheOrchestrator:
             if self._get_turns is not None:
                 prior_turns = await self._get_turns(conversation_id)
             if self._store_turn is not None:
-                await self._store_turn(conversation_id, user_text, speech, agent_id=target_agent)
+                await self._store_turn(
+                    conversation_id,
+                    user_text,
+                    speech,
+                    agent_id=target_agent,
+                    user_id=task_context.user_id if task_context else None,
+                    language=task_context.language if task_context else None,
+                    source=task_context.source if task_context else None,
+                )
 
         vf_effective = False
         if self._merge_voice_followup_and_organic is not None:

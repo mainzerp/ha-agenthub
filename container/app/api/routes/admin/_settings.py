@@ -115,6 +115,17 @@ def _validate_setting_value(key: str, value: str, value_type: str) -> None:
             detail=f"Invalid value for '{key}': expected {value_type}",
         ) from None
 
+    _allowed_values = {
+        "memory.scope": ("user", "global"),
+        "memory.wait_mode": ("best_effort", "blocking"),
+    }
+    allowed = _allowed_values.get(key)
+    if allowed is not None and value not in allowed:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid value for '{key}': expected one of {', '.join(allowed)}",
+        )
+
 
 async def _load_wake_briefing_settings() -> dict[str, Any]:
     try:

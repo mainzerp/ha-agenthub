@@ -516,7 +516,14 @@ class DefaultFinalizationStrategy(FinalizationStrategy):
                 # (success path only) as an anaphora recency hint.
                 resolved_entities = await extract_resolved_entities(action_executed)
                 await self._conversation_manager.store_turn(
-                    conversation_id, user_text, speech, agent_id=routed_to, resolved_entities=resolved_entities
+                    conversation_id,
+                    user_text,
+                    speech,
+                    agent_id=routed_to,
+                    resolved_entities=resolved_entities,
+                    user_id=task.context.user_id if task and task.context else None,
+                    language=language,
+                    source=task.context.source if task and task.context else None,
                 )
                 if span_collector:
                     await self._create_trace(

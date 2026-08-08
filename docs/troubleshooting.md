@@ -81,7 +81,7 @@ Navigate to `http://<host>:8080/setup/` and use the "Test" button for each provi
 - Compound-utterance bypass: Structurally compound utterances intentionally bypass the cache via `cache.compound_utterance_bypass`. If you expect exact matches to be cached, avoid compound-utterance bypass or test with simple, single-intent utterances.
 - SQLite cache tables missing or inaccessible: The routing cache and action cache live in the SQLite database (`/data/agent_assist.db`). Check startup logs for schema/DB errors.
 - sqlite-vec entity index not initialized: The action cache relies on the entity index; check the Entity Index dashboard page and startup logs for embedding or vec0 errors.
-- Threshold settings: `cache.routing.semantic_threshold` and `cache.action.semantic_threshold` are legacy values retained for backward compatibility. The caches use exact SHA-256 hash matching, so threshold values do not affect hit behavior.
+- Threshold settings: the routing cache consults its semantic sqlite-vec tier after an exact-hash miss; raise `cache.routing.semantic_threshold` (default 0.92) if semantically similar but wrong requests get routed to the wrong agent, lower it to increase semantic hit rate. `cache.action.semantic_threshold` is a legacy value retained for backward compatibility -- the action cache uses exact SHA-256 hash matching only.
 
 **Verify cache tables and entity index:**
 
@@ -97,6 +97,14 @@ conn.close()
 ```
 
 The `/data/chromadb` directory is the legacy path that now holds sqlite-vec entity-index data. It is not used for cache storage.
+
+## Session Memory Matches
+
+Session memory matches are injected into the General Agent's system prompt with visible similarity scores: recall questions about past conversations are answered from this content, but it never triggers actions (false-positive lesson from v1.9.6). If recalled content looks wrong, raise `memory.similarity_threshold`; if nothing is recalled:
+
+- Verify `memory.enabled` is `true` and check the request logs for `Session memory: N match(es) attached` (or `memory_matches` in the dispatch trace span) — absent means the search found nothing or the request was served from the cache (cache-hit requests skip the memory lookup).
+- With `memory.wait_mode` = `best_effort`, matches frequently arrive too late when routing is cached or the LLM provider is fast; use `blocking` (default).
+- In per-user scope (`memory.scope` = `user`), sessions are only visible to the same user; requests without a user ID only see the anonymous bucket.
 
 ## Setup Wizard Issues
 

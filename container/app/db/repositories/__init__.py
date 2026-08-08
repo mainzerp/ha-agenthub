@@ -24,6 +24,7 @@ from app.db.repositories.custom_agent import (  # noqa: F401
 from app.db.repositories.entity_matching_config import EntityMatchingConfigRepository  # noqa: F401
 from app.db.repositories.entity_visibility import EntityVisibilityRepository  # noqa: F401
 from app.db.repositories.mcp import AgentMcpToolsRepository, McpServerRepository  # noqa: F401
+from app.db.repositories.memory import MemoryRepository  # noqa: F401
 from app.db.repositories.plugin import PluginRepository  # noqa: F401
 from app.db.repositories.query_synonym_cache import QuerySynonymCacheRepository  # noqa: F401
 from app.db.repositories.scheduled_timers import ScheduledTimersRepository  # noqa: F401

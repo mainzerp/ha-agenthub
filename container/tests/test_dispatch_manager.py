@@ -239,6 +239,44 @@ class TestDispatchManagerStandalone:
         request = dispatcher.dispatch.await_args.args[0]
         assert request.params["task"].context.sequential_send is True
 
+    @patch("app.agents.dispatch_manager.track_request", new_callable=AsyncMock)
+    async def test_dispatch_single_copies_memory_context(self, mock_track_request):
+        """Session memory: dispatch_single carries memory_context into the rebuilt TaskContext."""
+        from app.models.agent import TaskContext
+
+        dm, dispatcher, _ = self._make_dispatch_manager(dispatch_side_effect=[{"speech": "ok"}])
+        matches = [{"conversation_id": "conv-old", "similarity": 0.91, "matched_text": "timers"}]
+        incoming = TaskContext(source="api", memory_context=matches)
+        await dm.dispatch_single(
+            target_agent="general-agent",
+            condensed_task="what did we discuss",
+            user_text="what did we discuss yesterday",
+            conversation_id="conv-mem-ctx",
+            turns=[],
+            span_collector=[],
+            incoming_context=incoming,
+        )
+        request = dispatcher.dispatch.await_args.args[0]
+        assert request.params["task"].context.memory_context == matches
+
+    @patch("app.agents.dispatch_manager.track_request", new_callable=AsyncMock)
+    async def test_dispatch_single_memory_context_defaults_none(self, mock_track_request):
+        """Without incoming memory, the rebuilt context carries memory_context=None."""
+        from app.models.agent import TaskContext
+
+        dm, dispatcher, _ = self._make_dispatch_manager(dispatch_side_effect=[{"speech": "ok"}])
+        await dm.dispatch_single(
+            target_agent="general-agent",
+            condensed_task="hi",
+            user_text="hi",
+            conversation_id="conv-mem-none",
+            turns=[],
+            span_collector=[],
+            incoming_context=TaskContext(source="api"),
+        )
+        request = dispatcher.dispatch.await_args.args[0]
+        assert request.params["task"].context.memory_context is None
+
 
 # ---------------------------------------------------------------------------
 # ENTITY_RES_REDESIGN Phase 3: DispatchTask.candidates envelope

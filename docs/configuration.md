@@ -71,6 +71,24 @@ The export and import API surface uses the `action` tier name.
 | `embedding.external_model` | (empty) | string | External model (e.g., `openai/text-embedding-3-small`) |
 | `embedding.dimension` | `384` | int | Embedding vector dimension |
 
+### Session Memory Settings
+
+Retention is unlimited by design (no auto-delete). Memory data is
+stored unencrypted, like `conversations`. Requests served from the
+cache (routing or action hit) receive no memory injection and pay no
+embedding cost.
+
+| Key | Default | Type | Description |
+|-----|---------|------|-------------|
+| `memory.enabled` | `true` | bool | Master toggle for session memory lookup (read path) and turn indexing (write path) |
+| `memory.scope` | `user` | string | Match visibility: `user` (per-user) or `global`. Rows without a user form an anonymous bucket: visible in global scope and to anonymous requests in per-user scope. |
+| `memory.wait_mode` | `blocking` | string | `blocking` = wait up to `memory.wait_timeout_ms` for the lookup (default; with cached routing or fast LLM providers `best_effort` rarely finishes in time); `best_effort` = zero added latency (matches used only if the lookup finished during classification) |
+| `memory.wait_timeout_ms` | `800` | int | Timeout in milliseconds for blocking memory lookups |
+| `memory.similarity_threshold` | `0.85` | float | Minimum cosine similarity for a session memory match. Deliberately below the routing cache threshold (0.92): injected context is not executed, so recall matters more. Matches are injected with visible similarity scores; the General Agent answers recall questions from them but never executes actions based on them. |
+| `memory.max_matches` | `3` | int | Maximum number of past sessions injected as context |
+| `memory.max_snippet_chars` | `300` | int | Per-snippet character cap for injected memory matches |
+| `memory.max_continuation_turns` | `5` | int | Maximum turns copied from a matched previous session on continuation |
+
 ### Entity Matching Settings
 
 | Key | Default | Type | Description |

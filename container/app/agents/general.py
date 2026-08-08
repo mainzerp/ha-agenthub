@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import AsyncGenerator
+from datetime import UTC, datetime
 from typing import Any
 
 from app.agents.base import BaseAgent
@@ -19,6 +20,14 @@ from app.analytics.tracer import _optional_span
 from app.models.agent import AgentCard, AgentErrorCode, DispatchTask, TaskResult
 
 logger = logging.getLogger(__name__)
+
+
+def _memory_date_label(epoch: Any) -> str:
+    """Format a memory match's last-activity epoch as a YYYY-MM-DD label."""
+    try:
+        return datetime.fromtimestamp(int(epoch), tz=UTC).date().isoformat()
+    except (TypeError, ValueError, OSError, OverflowError):
+        return "unknown date"
 
 
 @agent(
@@ -66,6 +75,11 @@ class GeneralAgent(BaseAgent):
             time_location=self._build_time_location_context(task.context),
             sequential_send=bool(task.context and task.context.sequential_send),
         )
+        # Session memory: appended AFTER the byte-stable static head
+        # (prefix-cache constraint). Matches are score-annotated suggestions,
+        # never verified facts.
+        if task.context and task.context.memory_context:
+            system_prompt += self._render_memory_context(task.context.memory_context)
 
         messages = [{"role": "system", "content": system_prompt}]
 
@@ -81,6 +95,46 @@ class GeneralAgent(BaseAgent):
         if task.context and task.context.sequential_send:
             llm_kwargs["max_tokens"] = 2048
         return messages, llm_kwargs
+
+    def _render_memory_context(self, matches: list[dict]) -> str:
+        """Render session-memory matches as a score-annotated prompt block.
+
+        Historical user text is delimiter-wrapped exactly like live user
+        input (injection safety); memory enters via the system prompt, never
+        as a raw user message (Prime Directive).
+        """
+        lines = [
+            "",
+            "## Possibly related past conversations (semantic memory matches, similarity scores shown). "
+            "If any of this content answers the user's question, use it in your answer (you may mention "
+            "it comes from an earlier conversation). Otherwise treat it as background context only: "
+            "not verified facts, never a basis for actions.",
+        ]
+        for match in matches:
+            if not isinstance(match, dict):
+                continue
+            try:
+                score = float(match.get("similarity") or 0.0)
+            except (TypeError, ValueError):
+                score = 0.0
+            date_label = _memory_date_label(match.get("last_turn_at"))
+            for turn in match.get("snippet_turns") or []:
+                if not isinstance(turn, dict):
+                    continue
+                user_text = self._wrap_user_input(str(turn.get("user_text") or ""))
+                response_text = str(turn.get("response_text") or "")
+                lines.append(f'- [score {score:.2f}, {date_label}] User: {user_text} / Assistant: "{response_text}"')
+            continuation = match.get("continuation_turns") or []
+            if continuation:
+                lines.append(
+                    "### Previous session content (copied as context — continue only if the user references it)"
+                )
+                for turn in continuation:
+                    if not isinstance(turn, dict):
+                        continue
+                    lines.append(f"User: {self._wrap_user_input(str(turn.get('user_text') or ''))}")
+                    lines.append(f"Assistant: {turn.get('response_text') or ''}")
+        return "\n".join(lines)
 
     async def handle_task(self, task: DispatchTask) -> TaskResult:
         span_collector = task.span_collector
