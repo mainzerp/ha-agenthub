@@ -1,12 +1,22 @@
 # Version
 
-**Current Version:** 1.48.2
+**Current Version:** 1.49.0
 
 ## Recent Changes
 
-(tracking changes since 1.48.2)
+(tracking changes since 1.49.0)
 
 ## Version History
+
+### 1.49.0 (MINOR) -- Semantic session memory, e5-base embeddings, trace span fixes
+
+(commits 40f0ede, 079b748, 25a7182)
+
+- feat(memory): add semantic session memory with recall injection — past-session turns embedded (session_memory.db) and matched into the orchestrator context; blocking/best-effort wait modes, per-user scoping (commit 40f0ede)
+- feat(trace): add memory_retrieval and fix ingress_resolution timeline spans — ingress/memory overlap with classify now visible in the trace timeline (commit 079b748)
+- feat(embedding): switch default local model to multilingual-e5-base (384d -> 768d); auto-rebuild of entity index, routing cache and session memory on model change; Dockerfile bakes model weights; export/import embedding_model header fixed; measured thresholds unchanged (commit 25a7182)
+- refactor: rename display identifiers from agent-assist to ha-agenthub (commit 1a59acd)
+- chore(release): bump version to 1.49.0
 
 ### 1.48.2 (PATCH) -- Alpine template fix, cryptography CVE bump, brand assets
 
