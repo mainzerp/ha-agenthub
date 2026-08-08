@@ -62,6 +62,46 @@ class TestBuildResponse:
         assert _build_response("ha_call", {"target": "e"}) == "e"
         assert _build_response("ha_call", {}) == ""
 
+        # memory_retrieval
+        assert (
+            _build_response("memory_retrieval", {"match_count": 2, "top_similarity": 0.91})
+            == "2 session match(es), top sim 0.91"
+        )
+        assert _build_response("memory_retrieval", {"match_count": 0}) == "no session match"
+        assert _build_response("memory_retrieval", {"match_count": 1, "abandoned": True}) == (
+            "1 session match(es) (abandoned)"
+        )
+        assert _build_response("memory_retrieval", {"match_count": 0, "timed_out": True}) == (
+            "no session match (timed out)"
+        )
+
+        # ingress_resolution
+        assert _build_response("ingress_resolution", {"pool_count": 20}) == "entity pool: 20 candidate(s)"
+        assert _build_response("ingress_resolution", {}) == ""
+
+        # ingress_candidates
+        assert (
+            _build_response(
+                "ingress_candidates", {"candidates": {"light-agent": [{"entity_id": "x"}], "media-agent": []}}
+            )
+            == "light-agent: 1, media-agent: 0"
+        )
+        assert _build_response("ingress_candidates", {"candidates": {}}) == "no candidates"
+
+        # entity_resolution
+        assert _build_response("entity_resolution", {"resolved_count": 3, "resolve_ms": 12}) == (
+            "3 entities resolved (12ms)"
+        )
+        assert _build_response("entity_resolution", {"resolved_count": 3}) == "3 entities resolved"
+        assert _build_response("entity_resolution", {}) == ""
+
+        # entity_match
+        assert _build_response("entity_match", {"entity_id": "light.couch"}) == "light.couch"
+        assert _build_response("entity_match", {"match_count": 2, "resolution_path": "cache"}) == (
+            "2 match(es) via cache"
+        )
+        assert _build_response("entity_match", {}) == ""
+
         # fallback
         assert _build_response("dispatch", {"agent_response": " dispatched "}) == " dispatched "
         assert _build_response("unknown", {}) == ""
@@ -208,3 +248,47 @@ class TestCacheHitVisibility:
             body = resp.json()
             assert body["cache_hit_type"] == "routing_hit"
             assert body["routing_cached"] is True
+
+
+@pytest.mark.asyncio
+class TestAgentExecutionsPreludeSpans:
+    """Prelude/lookup spans with an agent_id must appear in agent_executions."""
+
+    async def test_detail_includes_prelude_spans_in_agent_executions(self, db_repository):
+        from app.db.repository import TraceSpanRepository, TraceSummaryRepository
+
+        await TraceSummaryRepository.create(
+            {
+                "trace_id": "trace-prelude",
+                "conversation_id": "conv-trace-prelude",
+                "user_input": "turn on the kitchen light",
+                "final_response": "Done.",
+                "agents": ["light-agent"],
+                "source": "ws",
+                "routing_agent": "light-agent",
+                "routing_confidence": 1.0,
+            }
+        )
+        now = datetime.now(UTC).isoformat()
+        await TraceSpanRepository.insert(
+            "trace-prelude", "memory_retrieval", now, 5.0, agent_id="orchestrator", metadata={"match_count": 1}
+        )
+        await TraceSpanRepository.insert(
+            "trace-prelude", "ingress_resolution", now, 3.0, agent_id="orchestrator", metadata={"pool_count": 20}
+        )
+        await TraceSpanRepository.insert(
+            "trace-prelude",
+            "entity_resolution",
+            now,
+            4.0,
+            agent_id="light-agent",
+            metadata={"resolved_count": 2, "resolve_ms": 4},
+        )
+
+        app = _build_app()
+        async for client in _client_for(app):
+            resp = await client.get("/api/admin/traces/trace-prelude")
+            assert resp.status_code == 200
+            executions = resp.json()["agent_executions"]
+            names = {e["span_name"] for e in executions}
+            assert {"memory_retrieval", "ingress_resolution", "entity_resolution"} <= names

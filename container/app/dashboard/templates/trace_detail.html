@@ -506,6 +506,114 @@
                                 <span class="text-mono" x-text="selectedSpan.metadata.length"></span>
                             </div>
                         </template>
+                        <template x-if="selectedSpan.metadata && selectedSpan.metadata.match_count !== undefined">
+                            <div class="span-detail-row">
+                                <span class="span-detail-label">Memory Matches</span>
+                                <span class="text-mono" x-text="selectedSpan.metadata.match_count"></span>
+                            </div>
+                        </template>
+                        <template x-if="selectedSpan.metadata && selectedSpan.metadata.top_similarity !== undefined">
+                            <div class="span-detail-row">
+                                <span class="span-detail-label">Top Similarity</span>
+                                <span class="text-mono" x-text="selectedSpan.metadata.top_similarity"></span>
+                            </div>
+                        </template>
+                        <template x-if="selectedSpan.metadata && selectedSpan.metadata.matched_conversation_id">
+                            <div class="span-detail-row">
+                                <span class="span-detail-label">Matched Session</span>
+                                <span class="text-mono" x-text="selectedSpan.metadata.matched_conversation_id"></span>
+                            </div>
+                        </template>
+                        <template x-if="selectedSpan.metadata && selectedSpan.metadata.wait_mode">
+                            <div class="span-detail-row">
+                                <span class="span-detail-label">Memory Wait Mode</span>
+                                <span class="text-mono" x-text="selectedSpan.metadata.wait_mode"></span>
+                            </div>
+                        </template>
+                        <template x-if="selectedSpan.metadata && selectedSpan.metadata.timed_out !== undefined">
+                            <div class="span-detail-row">
+                                <span class="span-detail-label">Timed Out</span>
+                                <span :class="selectedSpan.metadata.timed_out ? 'badge badge-red' : 'badge badge-green'" x-text="selectedSpan.metadata.timed_out ? 'Yes' : 'No'"></span>
+                            </div>
+                        </template>
+                        <template x-if="selectedSpan.metadata && selectedSpan.metadata.matches_attached !== undefined">
+                            <div class="span-detail-row">
+                                <span class="span-detail-label">Matches Attached</span>
+                                <span :class="selectedSpan.metadata.matches_attached ? 'badge badge-green' : 'badge badge-red'" x-text="selectedSpan.metadata.matches_attached ? 'Yes' : 'No'"></span>
+                            </div>
+                        </template>
+                        <template x-if="selectedSpan.metadata && selectedSpan.metadata.abandoned !== undefined">
+                            <div class="span-detail-row">
+                                <span class="span-detail-label">Abandoned</span>
+                                <span :class="selectedSpan.metadata.abandoned ? 'badge badge-red' : 'badge badge-green'" x-text="selectedSpan.metadata.abandoned ? 'Yes' : 'No'"></span>
+                            </div>
+                        </template>
+                        <template x-if="selectedSpan.metadata && selectedSpan.metadata.cancelled !== undefined">
+                            <div class="span-detail-row">
+                                <span class="span-detail-label">Cancelled</span>
+                                <span :class="selectedSpan.metadata.cancelled ? 'badge badge-red' : 'badge badge-green'" x-text="selectedSpan.metadata.cancelled ? 'Yes' : 'No'"></span>
+                            </div>
+                        </template>
+                        <template x-if="selectedSpan.metadata && selectedSpan.metadata.pool_count !== undefined">
+                            <div class="span-detail-row">
+                                <span class="span-detail-label">Entity Pool</span>
+                                <span class="text-mono" x-text="selectedSpan.metadata.pool_count"></span>
+                            </div>
+                        </template>
+                        <template x-if="selectedSpan.metadata && selectedSpan.metadata.top_n !== undefined">
+                            <div class="span-detail-row">
+                                <span class="span-detail-label">Top N</span>
+                                <span class="text-mono" x-text="selectedSpan.metadata.top_n"></span>
+                            </div>
+                        </template>
+                        <template x-if="selectedSpan.metadata && selectedSpan.metadata.candidates && Object.keys(selectedSpan.metadata.candidates).length > 0">
+                            <div class="span-detail-row span-detail-wide">
+                                <span class="span-detail-label">Ingress Candidates</span>
+                                <pre class="span-detail-content" x-text="JSON.stringify(selectedSpan.metadata.candidates, null, 2)"></pre>
+                            </div>
+                        </template>
+                        <template x-if="selectedSpan.metadata && selectedSpan.metadata.resolved_count !== undefined">
+                            <div class="span-detail-row">
+                                <span class="span-detail-label">Entities Resolved</span>
+                                <span class="text-mono" x-text="selectedSpan.metadata.resolved_count"></span>
+                            </div>
+                        </template>
+                        <template x-if="selectedSpan.metadata && selectedSpan.metadata.resolve_ms !== undefined">
+                            <div class="span-detail-row">
+                                <span class="span-detail-label">Resolve Time</span>
+                                <span class="text-mono" x-text="selectedSpan.metadata.resolve_ms + 'ms'"></span>
+                            </div>
+                        </template>
+                        <template x-if="selectedSpan.metadata && selectedSpan.metadata.state_fetch_ms !== undefined">
+                            <div class="span-detail-row">
+                                <span class="span-detail-label">State Fetch</span>
+                                <span class="text-mono" x-text="selectedSpan.metadata.state_fetch_ms + 'ms'"></span>
+                            </div>
+                        </template>
+                        <template x-if="selectedSpan.metadata && selectedSpan.metadata.has_state_context !== undefined">
+                            <div class="span-detail-row">
+                                <span class="span-detail-label">State Context</span>
+                                <span :class="selectedSpan.metadata.has_state_context ? 'badge badge-green' : 'badge badge-red'" x-text="selectedSpan.metadata.has_state_context ? 'Yes' : 'No'"></span>
+                            </div>
+                        </template>
+                        <template x-if="selectedSpan.metadata && selectedSpan.metadata.memory_matches !== undefined">
+                            <div class="span-detail-row">
+                                <span class="span-detail-label">Memory Matches Attached</span>
+                                <span class="text-mono" x-text="selectedSpan.metadata.memory_matches"></span>
+                            </div>
+                        </template>
+                        <template x-if="selectedSpan.metadata && selectedSpan.metadata.query">
+                            <div class="span-detail-row">
+                                <span class="span-detail-label">Match Query</span>
+                                <span class="text-mono" x-text="selectedSpan.metadata.query"></span>
+                            </div>
+                        </template>
+                        <template x-if="selectedSpan.metadata && selectedSpan.metadata.resolution_path">
+                            <div class="span-detail-row">
+                                <span class="span-detail-label">Resolution Path</span>
+                                <span class="text-mono" x-text="selectedSpan.metadata.resolution_path"></span>
+                            </div>
+                        </template>
                         <template x-if="selectedSpan.created_at">
                             <div class="span-detail-row">
                                 <span class="span-detail-label">Created</span>
@@ -636,6 +744,8 @@ function traceDetailPage() {
             };
 
             const classToHex = window._agentClassToHex || {};
+            const spanColors = window._traceSpanColors || {};
+            const spanLabels = window._traceSpanLabels || {};
 
             const items = this.ganttSpans.map((span, idx) => {
                 const start = new Date(span.start_time);
@@ -643,9 +753,11 @@ function traceDetailPage() {
                 const isError = span.status === 'error';
                 const depth = getDepth(span);
                 const indent = '\u00A0\u00A0'.repeat(depth);
+                const spanPrefix = span.span_name.split('.')[0];
                 const agentCls = span.agent_id ? window.dashAgentClass(span.agent_id) : 'muted';
-                const color = isError ? '#d4756b' : (classToHex[agentCls] || '#8a8580');
-                const label = indent + span.span_name + (span.agent_id ? ' (' + span.agent_id + ')' : '') + ' [' + Math.round(span.duration_ms) + 'ms]';
+                const color = isError ? '#d4756b' : (spanColors[span.span_name] || spanColors[spanPrefix] || classToHex[agentCls] || '#8a8580');
+                const spanLabel = spanLabels[span.span_name] || spanLabels[spanPrefix] || span.span_name;
+                const label = indent + spanLabel + (span.agent_id ? ' (' + span.agent_id + ')' : '') + ' [' + Math.round(span.duration_ms) + 'ms]';
 
                 return {
                     id: idx,

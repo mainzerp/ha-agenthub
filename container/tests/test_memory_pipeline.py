@@ -9,6 +9,7 @@ a cache-replay hit (D6); the best_effort / blocking wait modes of
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -33,7 +34,7 @@ _litellm_mock.RateLimitError = _RateLimitError
 sys.modules.setdefault("litellm", _litellm_mock)
 
 from app.agents.general import GeneralAgent  # noqa: E402
-from app.agents.orchestrator import OrchestratorAgent, _resolve_memory_context  # noqa: E402
+from app.agents.orchestrator import OrchestratorAgent, _resolve_memory_context, _trace_memory_retrieval  # noqa: E402
 from app.cache.cache_manager import ActionReplayOutcome  # noqa: E402
 from app.memory.service import MemoryMatch  # noqa: E402
 from app.models.agent import AgentCard, DispatchTask, IngressTask, TaskContext  # noqa: E402
@@ -149,6 +150,115 @@ class TestResolveMemoryContext:
 
 
 # ---------------------------------------------------------------------------
+# memory_retrieval trace span
+# ---------------------------------------------------------------------------
+
+
+class _FakeSpanCollector:
+    """Minimal span collector recording span metadata by span name."""
+
+    def __init__(self):
+        self.spans: dict[str, dict] = {}
+        self.order: list[tuple[str, str]] = []
+
+    def start_span(self, name, **kwargs):
+        span: dict = {"metadata": {}}
+        self.spans[name] = span
+        self.order.append(("open", name))
+
+        @contextlib.asynccontextmanager
+        async def _cm():
+            try:
+                yield span
+            finally:
+                self.order.append(("close", name))
+
+        return _cm()
+
+
+class TestTraceMemoryRetrieval:
+    def _make_task(self) -> IngressTask:
+        return IngressTask(description="what did we discuss", conversation_id="conv-new", context=TaskContext())
+
+    def _make_span_state(self) -> dict:
+        return {"resolved": asyncio.Event(), "metadata": {}}
+
+    async def test_blocking_match_span_metadata(self):
+        task = self._make_task()
+        service = _make_memory_service(wait_mode="blocking")
+        memory_task = asyncio.create_task(service.search("q", None))
+        state = self._make_span_state()
+        collector = _FakeSpanCollector()
+        span_task = asyncio.create_task(_trace_memory_retrieval(memory_task, collector, state))
+
+        await _resolve_memory_context(task, memory_task, service, span_state=state)
+        await span_task
+
+        meta = collector.spans["memory_retrieval"]["metadata"]
+        assert meta["match_count"] == 1
+        assert meta["top_similarity"] == 0.91
+        assert meta["matched_conversation_id"] == "conv-old"
+        assert meta["wait_mode"] == "blocking"
+        assert meta["timed_out"] is False
+        assert meta["matches_attached"] is True
+        assert ("close", "memory_retrieval") in collector.order
+
+    async def test_best_effort_pending_span_abandoned(self):
+        task = self._make_task()
+        service = _make_memory_service()  # best_effort
+        gate = asyncio.Event()
+
+        async def _slow_search():
+            await gate.wait()
+            return [_make_match()]
+
+        memory_task = asyncio.create_task(_slow_search())
+        state = self._make_span_state()
+        collector = _FakeSpanCollector()
+        span_task = asyncio.create_task(_trace_memory_retrieval(memory_task, collector, state))
+
+        await _resolve_memory_context(task, memory_task, service, span_state=state)
+
+        # Span still open: resolution is deferred to the abandon
+        # done-callback, which fires when the late search finishes.
+        assert ("close", "memory_retrieval") not in collector.order
+        assert task.context.memory_context is None
+
+        gate.set()
+        await span_task
+
+        meta = collector.spans["memory_retrieval"]["metadata"]
+        assert meta["abandoned"] is True
+        assert meta["matches_attached"] is False
+        assert meta["match_count"] == 1
+        assert ("close", "memory_retrieval") in collector.order
+
+    async def test_cancelled_search_closes_span(self):
+        gate = asyncio.Event()
+
+        async def _slow_search():
+            await gate.wait()
+            return [_make_match()]
+
+        memory_task = asyncio.create_task(_slow_search())
+        state = self._make_span_state()
+        collector = _FakeSpanCollector()
+        span_task = asyncio.create_task(_trace_memory_retrieval(memory_task, collector, state))
+        await asyncio.sleep(0)  # let the span task open its span
+
+        memory_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await memory_task
+        with contextlib.suppress(asyncio.CancelledError):
+            await span_task
+
+        assert span_task.done()
+        meta = collector.spans["memory_retrieval"]["metadata"]
+        assert meta["cancelled"] is True
+        assert ("close", "memory_retrieval") in collector.order
+
+
+# ---------------------------------------------------------------------------
 # Prelude: task creation only on the cache-miss path
 # ---------------------------------------------------------------------------
 
@@ -197,7 +307,9 @@ class TestPreludeMemoryTask:
             return_value=([("light-agent", "Turn on kitchen light", 0.95)], False)
         )
         service = _make_memory_service()
+        collector = _FakeSpanCollector()
         task = _make_prelude_task("turn on kitchen light")
+        task.span_collector = collector
 
         with patch("app.agents.orchestrator.get_memory_service", return_value=service):
             prelude = await orch._run_pipeline_prelude(task)
@@ -208,7 +320,18 @@ class TestPreludeMemoryTask:
         # task into memory_context is covered by TestResolveMemoryContext.)
         service.search.assert_called_once()
         assert service.search.call_args.args[0] == "turn on kitchen light"
-        await asyncio.sleep(0)  # let the abandoned/finished task settle
+        # Let the search/span tasks settle (the abandoned-search done-callback
+        # needs extra loop turns to resolve and close the span).
+        for _ in range(10):
+            await asyncio.sleep(0)
+            if ("close", "memory_retrieval") in collector.order:
+                break
+
+        # The memory_retrieval span recorded the concurrent search.
+        span = collector.spans.get("memory_retrieval")
+        assert span is not None
+        assert span["metadata"]["match_count"] == 1
+        assert ("close", "memory_retrieval") in collector.order
 
     async def test_no_memory_task_on_cache_replay_hit(self):
         orch = _make_orchestrator()

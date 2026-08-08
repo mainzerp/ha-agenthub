@@ -130,8 +130,16 @@ async def _cancel_filler_future(filler_future: asyncio.Task | None) -> None:
         filler_future.exception()
 
 
-def _consume_memory_task_result(memory_task: asyncio.Task) -> None:
-    """Done-callback for abandoned memory searches: consume/log the outcome."""
+def _consume_memory_task_result(memory_task: asyncio.Task, state: dict[str, Any] | None = None) -> None:
+    """Done-callback for abandoned memory searches: consume/log the outcome.
+
+    When a trace span state is attached, mark the span as abandoned and
+    resolve it so the ``memory_retrieval`` span closes as soon as the late
+    search finishes.
+    """
+    if state is not None:
+        state["metadata"].update({"matches_attached": False, "abandoned": True})
+        state["resolved"].set()
     if memory_task.cancelled():
         return
     exc = memory_task.exception()
@@ -139,10 +147,70 @@ def _consume_memory_task_result(memory_task: asyncio.Task) -> None:
         logger.debug("Session-memory search failed", exc_info=exc)
 
 
+async def _trace_memory_retrieval(
+    search_task: asyncio.Task,
+    span_collector: Any,
+    state: dict[str, Any],
+) -> None:
+    """Record the ``memory_retrieval`` span for a concurrent memory search.
+
+    Opens when the search task starts (concurrent with ``classify``) and
+    closes when ``_resolve_memory_context`` (or the abandon callback) sets
+    ``state["resolved"]``. Only suffix-safe / innocuous metadata keys.
+    """
+    async with _optional_span(span_collector, "memory_retrieval", agent_id="orchestrator") as span:
+        try:
+            matches = await asyncio.shield(search_task)
+        except asyncio.CancelledError:
+            span["metadata"]["cancelled"] = True
+            raise
+        # search exceptions propagate -> start_span records status="error"
+        top = matches[0] if matches else None
+        span["metadata"]["match_count"] = len(matches) if matches else 0
+        if top is not None:
+            similarity = getattr(top, "similarity", None) if not isinstance(top, dict) else top.get("similarity")
+            if similarity is not None:
+                span["metadata"]["top_similarity"] = round(float(similarity), 4)
+            conversation_id = (
+                getattr(top, "conversation_id", None) if not isinstance(top, dict) else top.get("conversation_id")
+            )
+            if conversation_id:
+                span["metadata"]["matched_conversation_id"] = str(conversation_id)
+        await state["resolved"].wait()
+        span["metadata"].update(state["metadata"])
+
+
+async def _trace_ingress_match(
+    match_coro: Any,
+    span_collector: Any,
+    *,
+    routing_cached: bool,
+    top_n: int,
+) -> Any:
+    """Wrap the ingress matcher coroutine in the ``ingress_resolution`` span.
+
+    The span opens when the matcher task starts and closes when the match
+    resolves, so the timeline shows the true matcher duration overlapping
+    ``classify``. Metadata deliberately contains NO entity ids -- the pool
+    is unfiltered and must never reach the trace (Directive 5).
+    """
+    async with _optional_span(span_collector, "ingress_resolution", agent_id="orchestrator") as span:
+        try:
+            pool = await match_coro
+        except asyncio.CancelledError:
+            span["metadata"]["cancelled"] = True
+            raise
+        span["metadata"]["pool_count"] = len(pool) if pool else 0
+        span["metadata"]["routing_cached"] = routing_cached
+        span["metadata"]["top_n"] = top_n
+        return pool
+
+
 async def _resolve_memory_context(
     task: IngressTask,
     memory_task: asyncio.Task | None,
     memory_service: Any,
+    span_state: dict[str, Any] | None = None,
 ) -> None:
     """Resolve the session-memory prelude task into ``task.context.memory_context``.
 
@@ -153,6 +221,11 @@ async def _resolve_memory_context(
     ``blocking`` (default) waits up to ``memory.wait_timeout_ms`` and
     proceeds with ``memory_context=None`` on timeout. Failures never
     block dispatch.
+
+    ``span_state`` (when given) feeds the ``memory_retrieval`` trace span:
+    each outcome records its wait metadata and signals ``resolved``; for
+    abandoned (still-pending) searches the signal is deferred to the
+    done-callback so the span closes when the late search finishes.
     """
     if memory_task is None or memory_service is None:
         return
@@ -164,11 +237,29 @@ async def _resolve_memory_context(
                 matches = await asyncio.wait_for(asyncio.shield(memory_task), timeout=wait_timeout_ms / 1000)
             except TimeoutError:
                 if not memory_task.done():
-                    memory_task.add_done_callback(_consume_memory_task_result)
+                    # Abandoned: the done-callback resolves the span state
+                    # when the late search finishes.
+                    memory_task.add_done_callback(lambda t: _consume_memory_task_result(t, span_state))
+                    if span_state is not None:
+                        span_state["metadata"].update(
+                            {"wait_mode": wait_mode, "timed_out": True, "matches_attached": False}
+                        )
+                elif span_state is not None:
+                    span_state["metadata"].update(
+                        {"wait_mode": wait_mode, "timed_out": True, "matches_attached": False}
+                    )
+                    span_state["resolved"].set()
         elif memory_task.done():
             matches = memory_task.result()
         else:
-            memory_task.add_done_callback(_consume_memory_task_result)
+            # Abandoned best-effort search: the done-callback resolves the
+            # span state when the late search finishes.
+            memory_task.add_done_callback(lambda t: _consume_memory_task_result(t, span_state))
+        if span_state is not None and not span_state["resolved"].is_set() and memory_task.done():
+            span_state["metadata"].update(
+                {"wait_mode": wait_mode, "timed_out": False, "matches_attached": bool(matches)}
+            )
+            span_state["resolved"].set()
         if matches and task.context is not None:
             task.context.memory_context = [asdict(m) if is_dataclass(m) else dict(m) for m in matches]
             top = task.context.memory_context[0]
@@ -1063,20 +1154,30 @@ class OrchestratorAgent(BaseAgent):
         if self._entity_matcher is not None:
             if routing_skip is not None:
                 ingress_task = asyncio.create_task(
-                    self._entity_matcher.match(
-                        user_text,
-                        agent_id=routing_skip.agent_id,
-                        preferred_domains=_agent_preferred_domains(routing_skip.agent_id),
-                        source_language=detected_language,
+                    _trace_ingress_match(
+                        self._entity_matcher.match(
+                            user_text,
+                            agent_id=routing_skip.agent_id,
+                            preferred_domains=_agent_preferred_domains(routing_skip.agent_id),
+                            source_language=detected_language,
+                            top_n=_INGRESS_CANDIDATE_K,
+                        ),
+                        span_collector,
+                        routing_cached=True,
                         top_n=_INGRESS_CANDIDATE_K,
                     )
                 )
             else:
                 ingress_task = asyncio.create_task(
-                    self._entity_matcher.match(
-                        user_text,
-                        agent_id=None,
-                        source_language=detected_language,
+                    _trace_ingress_match(
+                        self._entity_matcher.match(
+                            user_text,
+                            agent_id=None,
+                            source_language=detected_language,
+                            top_n=_INGRESS_POOL_SIZE,
+                        ),
+                        span_collector,
+                        routing_cached=False,
                         top_n=_INGRESS_POOL_SIZE,
                     )
                 )
@@ -1085,7 +1186,14 @@ class OrchestratorAgent(BaseAgent):
         # LLM call on the cache-miss path (action-cache replays early-exit
         # above and never pay the embed cost -- D6). Read-only; failures and
         # slow searches never block dispatch (see _resolve_memory_context).
+        # The memory_retrieval span task opens with the search and closes
+        # when _resolve_memory_context (or its abandon done-callback)
+        # resolves the span state. Flush boundary: an abandoned best-effort
+        # search finishing after the collector flushed produces no span
+        # (silently dropped), by design.
         memory_task: asyncio.Task | None = None
+        memory_span_state: dict[str, Any] | None = None
+        memory_span_task: asyncio.Task | None = None
         memory_service = get_memory_service()
         if memory_service is not None and await memory_service.is_enabled():
             memory_task = asyncio.create_task(
@@ -1094,6 +1202,10 @@ class OrchestratorAgent(BaseAgent):
                     task.context.user_id if task.context else None,
                     current_conversation_id=conversation_id,
                 )
+            )
+            memory_span_state = {"resolved": asyncio.Event(), "metadata": {}}
+            memory_span_task = asyncio.create_task(
+                _trace_memory_retrieval(memory_task, span_collector, memory_span_state)
             )
 
         if publish_events and self._event_bus is not None:
@@ -1129,10 +1241,19 @@ class OrchestratorAgent(BaseAgent):
                 with contextlib.suppress(asyncio.CancelledError):
                     await ingress_task
             # Same for the memory overlap task: read-only, safe to cancel.
+            # Cancelling it makes the span task's shield await raise
+            # CancelledError, closing the memory_retrieval span with
+            # cancelled=True; the span task then finishes on its own.
             if memory_task is not None and not memory_task.done():
                 memory_task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await memory_task
+            # Defensive: consume the span task too (normally it already
+            # finished when memory_task unwound).
+            if memory_span_task is not None and not memory_span_task.done():
+                memory_span_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await memory_span_task
             return PipelinePreludeResult(
                 conversation_id=conversation_id,
                 detected_language=detected_language,
@@ -1165,7 +1286,7 @@ class OrchestratorAgent(BaseAgent):
             span_collector=span_collector,
         )
 
-        await _resolve_memory_context(task, memory_task, memory_service)
+        await _resolve_memory_context(task, memory_task, memory_service, span_state=memory_span_state)
 
         logger.debug(
             "Routed to %s (%s): %s (conversation=%s)",
@@ -1217,7 +1338,7 @@ class OrchestratorAgent(BaseAgent):
         re-ranked by the agent's preferred domains, and cut to
         ``_INGRESS_CANDIDATE_K``. Only this post-filter list is returned
         (for the DispatchTask envelope) and recorded on the
-        ``ingress_resolution`` span -- the unfiltered pool never leaves
+        ``ingress_candidates`` span -- the unfiltered pool never leaves
         this method. On a routing-cache hit the matcher already ran a
         single fully-filtered pass for the known agent, so its result is
         used directly.
@@ -1263,7 +1384,7 @@ class OrchestratorAgent(BaseAgent):
                         for r in top
                     ]
 
-        async with _optional_span(span_collector, "ingress_resolution", agent_id="orchestrator") as span:
+        async with _optional_span(span_collector, "ingress_candidates", agent_id="orchestrator") as span:
             span["metadata"]["candidates"] = {
                 aid: [
                     {"entity_id": c.entity_id, "friendly_name": c.friendly_name, "score": round(c.score, 4)}

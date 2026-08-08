@@ -49,6 +49,11 @@ _included_span_names = {
     "mediation",
     "mcp_tool_call",
     "ha_call",
+    "memory_retrieval",
+    "ingress_resolution",
+    "ingress_candidates",
+    "entity_resolution",
+    "entity_match",
 }
 
 
@@ -84,6 +89,56 @@ def _build_response(span_name: str, metadata: dict) -> str:
         if service and target:
             return f"{service} -> {target}"
         return target or service or ""
+
+    if span_name == "memory_retrieval":
+        match_count = metadata.get("match_count")
+        if match_count:
+            text = f"{match_count} session match(es)"
+            top_similarity = metadata.get("top_similarity")
+            if top_similarity is not None:
+                text += f", top sim {top_similarity}"
+        else:
+            text = "no session match"
+        if metadata.get("abandoned"):
+            text += " (abandoned)"
+        elif metadata.get("timed_out"):
+            text += " (timed out)"
+        elif metadata.get("cancelled"):
+            text += " (cancelled)"
+        return text
+
+    if span_name == "ingress_resolution":
+        pool_count = metadata.get("pool_count")
+        if pool_count is not None:
+            return f"entity pool: {pool_count} candidate(s)"
+        return ""
+
+    if span_name == "ingress_candidates":
+        candidates = metadata.get("candidates") or {}
+        if isinstance(candidates, dict) and candidates:
+            return ", ".join(f"{agent_id}: {len(cands)}" for agent_id, cands in candidates.items())
+        return "no candidates"
+
+    if span_name == "entity_resolution":
+        resolved_count = metadata.get("resolved_count")
+        resolve_ms = metadata.get("resolve_ms")
+        if resolved_count is not None and resolve_ms is not None:
+            return f"{resolved_count} entities resolved ({resolve_ms}ms)"
+        if resolved_count is not None:
+            return f"{resolved_count} entities resolved"
+        return ""
+
+    if span_name == "entity_match":
+        entity_id = metadata.get("entity_id")
+        if entity_id:
+            return str(entity_id)
+        match_count = metadata.get("match_count")
+        resolution_path = metadata.get("resolution_path")
+        if match_count is not None and resolution_path:
+            return f"{match_count} match(es) via {resolution_path}"
+        if match_count is not None:
+            return f"{match_count} match(es)"
+        return ""
 
     return str(metadata.get("agent_response", "") or "")
 

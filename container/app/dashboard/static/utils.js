@@ -78,10 +78,14 @@
         'dispatch_content': '#7498b3',
         'dispatch_send': '#5a7c96',
         'entity_match': '#b98fa8',
+        'entity_resolution': '#a97f9c',
         'filler_generate': '#8fbf9b',
         'filler_send': '#6fa87e',
         'llm_call': '#e2a84b',
         'ha_action': '#7dab8c',
+        'ingress_candidates': '#5a8a96',
+        'ingress_resolution': '#6a9ea6',
+        'memory_retrieval': '#7ba6a0',
         'return': '#d98a9a',
         'rewrite': '#d98a5c',
         'mediation': '#e0a374',
@@ -89,6 +93,29 @@
         'ha_call': '#5e8f70',
         'llm_provider_call': '#c98f38',
         'cache_fallthrough': '#d4756b',
+    };
+
+    var _traceSpanLabels = {
+        'cache_lookup': 'Cache Lookup',
+        'classify': 'Classification',
+        'dispatch': 'Dispatch',
+        'dispatch_content': 'Dispatch (Content)',
+        'dispatch_send': 'Dispatch (Send)',
+        'entity_match': 'Entity Match',
+        'entity_resolution': 'Entity Resolution',
+        'filler_generate': 'Filler (Generate)',
+        'filler_send': 'Filler (Send)',
+        'ha_action': 'HA Action',
+        'ha_call': 'HA Call',
+        'ingress_candidates': 'Ingress Candidates',
+        'ingress_resolution': 'Ingress Entity Match',
+        'llm_call': 'LLM Call',
+        'llm_provider_call': 'LLM Provider Call',
+        'mcp_tool_call': 'MCP Tool Call',
+        'mediation': 'Mediation',
+        'memory_retrieval': 'Memory Retrieval',
+        'return': 'Response',
+        'rewrite': 'Rewrite',
     };
 
     /* === Format helpers === */
@@ -180,6 +207,7 @@
     window._agentColorPalette = _agentColorPalette;
     window._agentClassToHex = _agentClassToHex;
     window._traceSpanColors = _traceSpanColors;
+    window._traceSpanLabels = _traceSpanLabels;
     window.chartColors = chartColors;
     window.chartRgba = chartRgba;
     window.dashChartLegendPosition = dashChartLegendPosition;

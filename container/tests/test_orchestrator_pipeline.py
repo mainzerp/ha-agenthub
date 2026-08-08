@@ -15,6 +15,7 @@ mediation applies (personality set OR reminder pending).
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import sys
 from types import SimpleNamespace
@@ -44,6 +45,7 @@ _litellm_mock.RateLimitError = _RateLimitError
 sys.modules.setdefault("litellm", _litellm_mock)
 
 import app.llm.client  # noqa: E402,F401 -- force module load for patch targets
+from app.agents.classification_engine import _RecoverableClassificationError  # noqa: E402
 from app.agents.orchestrator import _INGRESS_CANDIDATE_K, _INGRESS_POOL_SIZE, OrchestratorAgent  # noqa: E402
 from app.agents.task_pipeline import CacheReplayResult  # noqa: E402
 from app.cache.cache_manager import ActionReplayOutcome, RoutingSkipOutcome  # noqa: E402
@@ -400,14 +402,19 @@ class _FakeSpanCollector:
 
     def __init__(self):
         self.spans: dict[str, dict] = {}
+        self.order: list[tuple[str, str]] = []
 
     def start_span(self, name, **kwargs):
         span: dict = {"metadata": {}}
         self.spans[name] = span
+        self.order.append(("open", name))
 
         @contextlib.asynccontextmanager
         async def _cm():
-            yield span
+            try:
+                yield span
+            finally:
+                self.order.append(("close", name))
 
         return _cm()
 
@@ -517,11 +524,101 @@ class TestIngressResolutionPrelude:
         assert cands[0].friendly_name == "Couch"
         assert cands[0].score == 0.9
 
-        # Span: only post-filter data, hidden entity nowhere.
+        # Spans: the matcher-duration span carries no entity ids at all
+        # (Directive 5); only the post-filter ingress_candidates span may
+        # name entities, and only visible ones.
+        resolution_span = collector.spans.get("ingress_resolution")
+        assert resolution_span is not None
+        assert resolution_span["metadata"]["pool_count"] == 2
+        assert "light.secret" not in str(resolution_span["metadata"])
+        assert "light.couch" not in str(resolution_span["metadata"])
+
+        candidates_span = collector.spans.get("ingress_candidates")
+        assert candidates_span is not None
+        assert "light.secret" not in str(candidates_span["metadata"])
+        assert "light.couch" in str(candidates_span["metadata"])
+
+    @pytest.mark.asyncio
+    @patch("app.agents.orchestrator.SettingsRepository")
+    async def test_ingress_span_open_during_classification(self, mock_settings):
+        """The ingress_resolution span must be open while classification
+        runs (true overlap) and close only after the matcher resolves."""
+        mock_settings.get_value = AsyncMock(return_value="")
+        gate = asyncio.Event()
+
+        async def _gated_match(*_args, **_kwargs):
+            await gate.wait()
+            return [_pool_item("light.couch", "Couch", 0.9)]
+
+        orch, _dispatcher, matcher = _make_orchestrator_with_matcher([])
+        matcher.match = _gated_match
+        orch._pipeline_director.run_cache_replay = AsyncMock(return_value=CacheReplayResult())
+        orch._pipeline_resolve_conversation_and_language = AsyncMock(return_value=("conv-ingress", "en", []))
+
+        collector = _FakeSpanCollector()
+
+        async def _classify(*_args, **_kwargs):
+            # Let the scheduled matcher task run its first segment.
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
+            # Mid-prelude: the matcher span is open but not yet closed.
+            assert ("open", "ingress_resolution") in collector.order
+            assert ("close", "ingress_resolution") not in collector.order
+            gate.set()
+            return ([("light-agent", "Turn on couch light", 0.95)], False, "light-agent", "Turn on couch light", 0.95)
+
+        orch._pipeline_director.run_classification = _classify
+
+        task = IngressTask(
+            description="turn on couch light",
+            conversation_id="conv-ingress-overlap",
+            context=TaskContext(language="en"),
+            span_collector=collector,
+        )
+        prelude = await orch._run_pipeline_prelude(task)
+
+        assert prelude.early_exit is None
+        assert ("close", "ingress_resolution") in collector.order
+        span = collector.spans["ingress_resolution"]
+        assert span["metadata"]["pool_count"] == 1
+        assert span["metadata"]["routing_cached"] is False
+        assert span["metadata"]["top_n"] == _INGRESS_POOL_SIZE
+
+    @pytest.mark.asyncio
+    @patch("app.agents.orchestrator.SettingsRepository")
+    async def test_ingress_span_cancelled_on_classification_error(self, mock_settings):
+        """A classification failure cancels the detached matcher task; the
+        ingress_resolution wrapper span closes with cancelled=True."""
+        mock_settings.get_value = AsyncMock(return_value="")
+        gate = asyncio.Event()
+
+        async def _gated_match(*_args, **_kwargs):
+            await gate.wait()
+            return [_pool_item("light.couch", "Couch", 0.9)]
+
+        orch, _dispatcher, matcher = _make_orchestrator_with_matcher([])
+        matcher.match = _gated_match
+        orch._pipeline_director.run_cache_replay = AsyncMock(return_value=CacheReplayResult())
+        orch._pipeline_director.run_classification = AsyncMock(
+            side_effect=_RecoverableClassificationError("bad output", code="parse_error")
+        )
+        orch._pipeline_resolve_conversation_and_language = AsyncMock(return_value=("conv-ingress", "en", []))
+
+        collector = _FakeSpanCollector()
+        task = IngressTask(
+            description="turn on couch light",
+            conversation_id="conv-ingress-cancel",
+            context=TaskContext(language="en"),
+            span_collector=collector,
+        )
+        prelude = await orch._run_pipeline_prelude(task)
+
+        assert prelude.early_exit is not None
+        assert prelude.early_exit["_exit_type"] == "classification_error"
         span = collector.spans.get("ingress_resolution")
         assert span is not None
-        assert "light.secret" not in str(span["metadata"])
-        assert "light.couch" in str(span["metadata"])
+        assert span["metadata"]["cancelled"] is True
+        gate.set()  # release the gated match so nothing dangles
 
     @pytest.mark.asyncio
     @patch("app.agents.orchestrator.SettingsRepository")
