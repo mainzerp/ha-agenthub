@@ -1,12 +1,20 @@
 # Version
 
-**Current Version:** 1.49.0
+**Current Version:** 1.49.1
 
 ## Recent Changes
 
-(tracking changes since 1.49.0)
+(tracking changes since 1.49.1)
 
 ## Version History
+
+### 1.49.1 (PATCH) -- mcp 2.0 migration, dependency updates
+
+(commits 1832fa1, 3dba00d, b83fba3, 51f64ea, 8444f49, 39a83b6; PRs #75-#80)
+
+- chore(deps): migrate to mcp 2.0.0 (#78) — low-level MCP servers (wikipedia, duckduckgo) rewritten to the v2 constructor-handler API with explicit ListToolsResult/CallToolResult and is_error error paths; MCP clients switched to snake_case tool attributes; external MCP servers unaffected (protocol negotiation)
+- chore(deps): bump aiohttp >=3.14.3 (#79), litellm >=1.95.0 (#77), fastapi 0.141.1 (#76), github/codeql-action 4.37.6 (#80)
+- chore(deps-dev): bump ruff 0.16.1 (#75)
 
 ### 1.49.0 (MINOR) -- Semantic session memory, e5-base embeddings, trace span fixes
 
