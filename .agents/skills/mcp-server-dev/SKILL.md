@@ -28,42 +28,53 @@ MCP servers expose tools that agents (primarily `GeneralAgent`) can call via the
 import json
 import logging
 
-from mcp.server import Server
+from mcp.server import Server, ServerRequestContext
 from mcp.server.stdio import stdio_server
-from mcp.types import TextContent, Tool
+from mcp.types import (
+    CallToolRequestParams,
+    CallToolResult,
+    ListToolsResult,
+    PaginatedRequestParams,
+    TextContent,
+    Tool,
+)
 
 logger = logging.getLogger(__name__)
-server = Server("<name>-server")
 
 
-@server.list_tools()
-async def list_tools() -> list[Tool]:
-    return [
-        Tool(
-            name="<tool_name>",
-            description="<What this tool does. Be specific — the LLM uses this to decide when to call it.>",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "param1": {"type": "string", "description": "..."},
-                    "param2": {"type": "integer", "description": "...", "default": 5},
+async def handle_list_tools(ctx: ServerRequestContext, params: PaginatedRequestParams | None) -> ListToolsResult:
+    return ListToolsResult(
+        tools=[
+            Tool(
+                name="<tool_name>",
+                description="<What this tool does. Be specific — the LLM uses this to decide when to call it.>",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "param1": {"type": "string", "description": "..."},
+                        "param2": {"type": "integer", "description": "...", "default": 5},
+                    },
+                    "required": ["param1"],
                 },
-                "required": ["param1"],
-            },
-        ),
-    ]
+            ),
+        ]
+    )
 
 
-@server.call_tool()
-async def call_tool(name: str, arguments: dict) -> list[TextContent]:
+async def handle_call_tool(ctx: ServerRequestContext, params: CallToolRequestParams) -> CallToolResult:
+    name = params.name
+    arguments = params.arguments or {}
     if name == "<tool_name>":
         try:
             result = ...  # call external service / library
-            return [TextContent(type="text", text=json.dumps(result, ensure_ascii=False))]
+            return CallToolResult(content=[TextContent(type="text", text=json.dumps(result, ensure_ascii=False))])
         except Exception as e:
             logger.exception("Tool '%s' failed", name)
-            return [TextContent(type="text", text=f"Error: {e}")]
-    return [TextContent(type="text", text=f"Unknown tool: {name}")]
+            return CallToolResult(content=[TextContent(type="text", text=f"Error: {e}")], is_error=True)
+    return CallToolResult(content=[TextContent(type="text", text=f"Unknown tool: {name}")], is_error=True)
+
+
+server = Server("<name>-server", on_list_tools=handle_list_tools, on_call_tool=handle_call_tool)
 
 
 async def main():
@@ -75,6 +86,15 @@ if __name__ == "__main__":
     import asyncio
     asyncio.run(main())
 ```
+
+Key points of the mcp 2.x server API:
+
+- Handlers are passed as constructor kwargs (`on_list_tools=`, `on_call_tool=`); the v1 decorators `@server.list_tools()` / `@server.call_tool()` no longer exist.
+- Handler signature is `(ctx, params)`; tool calls read `params.name` and `params.arguments or {}`.
+- Return `ListToolsResult(tools=[...])` and `CallToolResult(content=[...])` — never bare lists.
+- Model-readable errors: return `CallToolResult(..., is_error=True)`; do NOT raise (a raise becomes a JSON-RPC protocol error the model cannot read).
+- Use `input_schema=` (snake_case) in `Tool(...)`; v2 validates server responses strictly.
+- v2 does not validate call arguments against the schema — clamp/validate arguments manually in the handler.
 
 ### 2. Register in MCPServerRegistry
 
