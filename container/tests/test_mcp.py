@@ -67,7 +67,7 @@ class TestMCPClient:
         tool_mock = MagicMock()
         tool_mock.name = "get_weather"
         tool_mock.description = "Get weather info"
-        tool_mock.inputSchema = {"type": "object"}
+        tool_mock.input_schema = {"type": "object"}
         session = AsyncMock()
         session.list_tools = AsyncMock(return_value=MagicMock(tools=[tool_mock]))
         client._session = session
@@ -363,9 +363,10 @@ class TestDuckDuckGoServerTools:
         """Server exposes web_search and web_search_news tools."""
         pytest.importorskip("mcp")
         pytest.importorskip("ddgs")
-        from app.mcp.servers.duckduckgo_server import list_tools
+        from app.mcp.servers.duckduckgo_server import handle_list_tools
 
-        tools = await list_tools()
+        result = await handle_list_tools(None, None)
+        tools = result.tools
         names = {t.name for t in tools}
         assert "web_search" in names
         assert "web_search_news" in names
@@ -374,12 +375,13 @@ class TestDuckDuckGoServerTools:
         """web_search tool requires a 'query' parameter."""
         pytest.importorskip("mcp")
         pytest.importorskip("ddgs")
-        from app.mcp.servers.duckduckgo_server import list_tools
+        from app.mcp.servers.duckduckgo_server import handle_list_tools
 
-        tools = await list_tools()
+        result = await handle_list_tools(None, None)
+        tools = result.tools
         search_tool = next(t for t in tools if t.name == "web_search")
-        assert "query" in search_tool.inputSchema["properties"]
-        assert "query" in search_tool.inputSchema["required"]
+        assert "query" in search_tool.input_schema["properties"]
+        assert "query" in search_tool.input_schema["required"]
 
 
 class TestWikipediaServerTools:
@@ -395,9 +397,10 @@ class TestWikipediaServerTools:
         """Server exposes wikipedia_search and wikipedia_summary tools."""
         pytest.importorskip("mcp")
         pytest.importorskip("wikipedia")
-        from app.mcp.servers.wikipedia_server import list_tools
+        from app.mcp.servers.wikipedia_server import handle_list_tools
 
-        tools = await list_tools()
+        result = await handle_list_tools(None, None)
+        tools = result.tools
         names = {t.name for t in tools}
         assert "wikipedia_search" in names
         assert "wikipedia_summary" in names
@@ -406,23 +409,25 @@ class TestWikipediaServerTools:
         """wikipedia_search tool requires a 'query' parameter."""
         pytest.importorskip("mcp")
         pytest.importorskip("wikipedia")
-        from app.mcp.servers.wikipedia_server import list_tools
+        from app.mcp.servers.wikipedia_server import handle_list_tools
 
-        tools = await list_tools()
+        result = await handle_list_tools(None, None)
+        tools = result.tools
         search_tool = next(t for t in tools if t.name == "wikipedia_search")
-        assert "query" in search_tool.inputSchema["properties"]
-        assert "query" in search_tool.inputSchema["required"]
+        assert "query" in search_tool.input_schema["properties"]
+        assert "query" in search_tool.input_schema["required"]
 
     async def test_wikipedia_summary_tool_has_title_param(self):
         """wikipedia_summary tool requires a 'title' parameter."""
         pytest.importorskip("mcp")
         pytest.importorskip("wikipedia")
-        from app.mcp.servers.wikipedia_server import list_tools
+        from app.mcp.servers.wikipedia_server import handle_list_tools
 
-        tools = await list_tools()
+        result = await handle_list_tools(None, None)
+        tools = result.tools
         summary_tool = next(t for t in tools if t.name == "wikipedia_summary")
-        assert "title" in summary_tool.inputSchema["properties"]
-        assert "title" in summary_tool.inputSchema["required"]
+        assert "title" in summary_tool.input_schema["properties"]
+        assert "title" in summary_tool.input_schema["required"]
 
 
 # ---------------------------------------------------------------------------

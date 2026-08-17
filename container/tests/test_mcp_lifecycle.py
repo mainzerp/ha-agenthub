@@ -84,7 +84,7 @@ async def test_list_tools_round_trip_via_owner():
         tool = MagicMock()
         tool.name = "ping"
         tool.description = "p"
-        tool.inputSchema = {"type": "object"}
+        tool.input_schema = {"type": "object"}
         client._session.list_tools = AsyncMock(return_value=MagicMock(tools=[tool]))
 
         tools = await client.list_tools()

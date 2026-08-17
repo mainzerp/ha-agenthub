@@ -7,52 +7,62 @@ import json
 import logging
 
 import wikipedia  # type: ignore[import-untyped]
-from mcp.server import Server
+from mcp.server import Server, ServerRequestContext
 from mcp.server.stdio import stdio_server
-from mcp.types import TextContent, Tool
+from mcp.types import (
+    CallToolRequestParams,
+    CallToolResult,
+    ListToolsResult,
+    PaginatedRequestParams,
+    TextContent,
+    Tool,
+)
 
 logger = logging.getLogger(__name__)
-server = Server("wikipedia-search")
 
 
-@server.list_tools()
-async def list_tools() -> list[Tool]:
-    return [
-        Tool(
-            name="wikipedia_search",
-            description="Search Wikipedia for articles matching a query. Returns titles and short summaries.",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "query": {"type": "string", "description": "Search query"},
-                    "results": {"type": "integer", "description": "Max results (1-10)", "default": 3},
+async def handle_list_tools(ctx: ServerRequestContext, params: PaginatedRequestParams | None) -> ListToolsResult:
+    return ListToolsResult(
+        tools=[
+            Tool(
+                name="wikipedia_search",
+                description="Search Wikipedia for articles matching a query. Returns titles and short summaries.",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string", "description": "Search query"},
+                        "results": {"type": "integer", "description": "Max results (1-10)", "default": 3},
+                    },
+                    "required": ["query"],
                 },
-                "required": ["query"],
-            },
-        ),
-        Tool(
-            name="wikipedia_summary",
-            description="Get a summary of a Wikipedia article by exact title.",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "title": {"type": "string", "description": "Exact Wikipedia article title"},
-                    "sentences": {"type": "integer", "description": "Number of sentences (1-20)", "default": 5},
+            ),
+            Tool(
+                name="wikipedia_summary",
+                description="Get a summary of a Wikipedia article by exact title.",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "title": {"type": "string", "description": "Exact Wikipedia article title"},
+                        "sentences": {"type": "integer", "description": "Number of sentences (1-20)", "default": 5},
+                    },
+                    "required": ["title"],
                 },
-                "required": ["title"],
-            },
-        ),
-    ]
+            ),
+        ]
+    )
 
 
-@server.call_tool()
-async def call_tool(name: str, arguments: dict) -> list[TextContent]:
+async def handle_call_tool(ctx: ServerRequestContext, params: CallToolRequestParams) -> CallToolResult:
+    name = params.name
+    arguments = params.arguments or {}
     try:
         if name == "wikipedia_search":
             query = arguments.get("query", "")
             results = max(1, min(int(arguments.get("results", 3)), 10))
             if not query:
-                return [TextContent(type="text", text="Error: query is required")]
+                return CallToolResult(
+                    content=[TextContent(type="text", text="Error: query is required")], is_error=True
+                )
             search_results = await asyncio.to_thread(wikipedia.search, query, results=results)
             output = []
             for title in search_results:
@@ -61,21 +71,30 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                     output.append({"title": title, "summary": summary})
                 except Exception:
                     output.append({"title": title, "summary": ""})
-            return [TextContent(type="text", text=json.dumps(output, ensure_ascii=False))]
+            return CallToolResult(content=[TextContent(type="text", text=json.dumps(output, ensure_ascii=False))])
 
         elif name == "wikipedia_summary":
             title = arguments.get("title", "")
             sentences = max(1, min(int(arguments.get("sentences", 5)), 20))
             if not title:
-                return [TextContent(type="text", text="Error: title is required")]
+                return CallToolResult(
+                    content=[TextContent(type="text", text="Error: title is required")], is_error=True
+                )
             summary = await asyncio.to_thread(wikipedia.summary, title, sentences=sentences)
-            return [TextContent(type="text", text=json.dumps({"title": title, "summary": summary}, ensure_ascii=False))]
+            return CallToolResult(
+                content=[
+                    TextContent(type="text", text=json.dumps({"title": title, "summary": summary}, ensure_ascii=False))
+                ]
+            )
 
         else:
-            return [TextContent(type="text", text=f"Unknown tool: {name}")]
+            return CallToolResult(content=[TextContent(type="text", text=f"Unknown tool: {name}")], is_error=True)
     except Exception as e:
         logger.exception("Wikipedia tool '%s' failed", name)
-        return [TextContent(type="text", text=f"Wikipedia error: {e}")]
+        return CallToolResult(content=[TextContent(type="text", text=f"Wikipedia error: {e}")], is_error=True)
+
+
+server = Server("wikipedia-search", on_list_tools=handle_list_tools, on_call_tool=handle_call_tool)
 
 
 async def main():

@@ -405,7 +405,7 @@ class MCPClient:
                 {
                     "name": tool.name,
                     "description": getattr(tool, "description", "") or "",
-                    "input_schema": getattr(tool, "inputSchema", {}) or {},
+                    "input_schema": tool.input_schema or {},
                 }
                 for tool in result.tools
             ]
