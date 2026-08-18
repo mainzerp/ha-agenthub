@@ -291,11 +291,7 @@ button.sidebar-logout {
 }
 
 .app-footer--simple {
-    max-width: 960px;
-    margin-left: auto;
-    margin-right: auto;
     width: 100%;
-    border-radius: 0.5rem 0.5rem 0 0;
 }
 
 
