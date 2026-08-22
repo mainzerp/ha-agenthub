@@ -29,7 +29,7 @@ pydantic-settings==2.14.2
 mcp==2.0.0
 
 # Web search (DuckDuckGo -- zero API key)
-ddgs>=9.14.4,<10.0.0
+ddgs>=9.15.0,<10.0.0
 
 # Wikipedia search
 wikipedia>=1.4.0
