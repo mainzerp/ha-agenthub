@@ -1,12 +1,20 @@
 # Version
 
-**Current Version:** 1.49.1
+**Current Version:** 1.49.2
 
 ## Recent Changes
 
-(tracking changes since 1.49.1)
+(tracking changes since 1.49.2)
 
 ## Version History
+
+### 1.49.2 (PATCH) -- sentence-transformers 6.0, dependency updates
+
+(commits 257bcac, 7beaa15, ab47ed1, 907c85d, f87b243, 1e235ef, e03a595; PRs #81-#86)
+
+- chore(deps): bump sentence-transformers 5.6.1 -> 6.0.0 (#85) -- major upgrade verified via full Docker build + runtime smoke test (transformers 5.15.1, huggingface-hub 1.28.0, torch 2.13.0+cpu; e5-base encode returns correct 768d embeddings)
+- fix(dashboard): make login footer span full width (commit 257bcac)
+- chore(deps): bump uvicorn 0.51.0 -> 0.52.3 (#81), ddgs >=9.15.0 (#82), litellm >=1.97.0 (#83), pydantic-settings 2.14.2 -> 2.15.0 (#84), github/codeql-action 4.37.6 -> 4.37.7 (#86)
 
 ### 1.49.1 (PATCH) -- mcp 2.0 migration, dependency updates
 
