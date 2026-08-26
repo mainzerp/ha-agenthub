@@ -191,7 +191,7 @@ Unresolvable conflicts → report them explicitly; do NOT guess at a resolution.
 
 Release checklist (all required):
 
-- [ ] Bump `VERSION.md`, `app/__init__.py` (`__version__`), `pyproject.toml` (`version`) — all three must match.
+- [ ] Bump `VERSION.md`, `container/app/__init__.py` (`__version__`), `custom_components/ha_agenthub/manifest.json` (`version`) — all three must match. (`container/pyproject.toml` carries no version field.)
 - [ ] Add an entry under "Version History" in `VERSION.md` with key features/fixes and commit hashes. New features are tracked in `VERSION.md` as they are implemented.
 - [ ] Git tag matches the version in all three files.
 - [ ] GitHub release has an explicit title and notes listing every new feature, changed behavior, and removal. Auto-generated notes are a starting point, not a substitute.
