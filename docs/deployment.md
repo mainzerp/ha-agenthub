@@ -289,7 +289,7 @@ sqlite-vec entity-index data is stored at `CHROMADB_PERSIST_DIR` (default: `/dat
 docker cp ha-agenthub:/data/chromadb ./backup_chromadb
 ```
 
-The entity index can be rebuilt from scratch if the sqlite-vec data is lost, but backing it up avoids a cold start.
+The entity index can be rebuilt from scratch if the sqlite-vec data is lost, but backing it up avoids a cold start. Note that the same directory also holds `cache.db` (routing + action cache); losing it loses all cache entries -- use the cache export/import endpoints (see [Backup and Restore](backup-restore.md)) if cache contents matter.
 
 ### Restore
 
@@ -344,4 +344,4 @@ server {
 
 ### Enable Secure Cookies
 
-When running behind HTTPS, set `COOKIE_SECURE=true`. In the local-build stack (`docker-compose_local.yml`) you can set this in `.env`. In the production stack (`docker-compose.yml`) you must edit the compose file directly because the variable is not substituted.
+When running behind HTTPS, set `COOKIE_SECURE=true`. Both compose stacks substitute the variable from `.env` (`docker-compose_local.yml` defaults to `false`, `docker-compose.yml` defaults to `true`).

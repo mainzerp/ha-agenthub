@@ -16,7 +16,7 @@ A multi-agent AI assistant for Home Assistant with container-based A2A orchestra
 
 - **Multi-agent orchestration** -- 13 specialized domain agents coordinated by a central orchestrator via the A2A protocol
 - **A2A protocol** -- direct in-process agent-to-agent communication with registry, dispatcher, and transport
-- **Two-tier cache** -- Routing cache (skip intent classification) and action cache, formerly response cache (caches the full agent response after the pipeline runs) using SQLite-backed SHA-256 exact hash matching
+- **Two-tier cache** -- Routing cache (skip intent classification; SQLite-backed SHA-256 exact matching plus a semantic similarity tier; exact hits with persisted entity bindings additionally skip entity resolution) and action cache, formerly response cache (caches the full agent response after the pipeline runs; exact hash matching)
 - **Cache backup and restore** -- Export and import the routing and action caches as a portable JSON envelope via `/api/admin/cache/export` and `/api/admin/cache/import`
 - **Action-cache validator** -- Background validation of action-cache entries with configurable model/batch size, exposed via `/api/admin/cache/validate`
 - **Conditional actions** -- `ActionableAgent` skips redundant service calls when the current HA state already matches the requested end state
@@ -223,7 +223,7 @@ container/          Docker container (FastAPI backend)
     agents/         Specialized agents + orchestrator
     analytics/      Analytics aggregation and queries
     api/routes/     REST/SSE/WebSocket endpoints
-    cache/          Two-tier exact-hash cache (routing + action)
+    cache/          Two-tier cache (routing + action; exact + semantic routing tiers)
     dashboard/      Admin dashboard (HTMX + Jinja2 templates)
     db/             SQLite schema + repository
     entity/         Hybrid entity matcher

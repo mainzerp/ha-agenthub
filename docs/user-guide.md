@@ -110,11 +110,11 @@ Use this page to identify trends, measure the impact of a settings change, or de
 
 The **Request Traces** page at `/dashboard/traces` lists every processed request:
 
-- **Columns** -- trace ID, timestamp, user input, routed agent, latency, status, source, and confidence.
-- **Filters** -- filter by agent, status, latency range, or date.
+- **Columns** -- timestamp, user input, agents, duration, source, confidence, device, and label.
+- **Filters** -- filter by agent or label.
 - **Search** -- search user input or trace IDs.
 - **CSV export** -- export the filtered list for offline analysis.
-- **Trace detail** -- click a row to open a Gantt-style span visualization of every step the request took.
+- **Trace detail** -- click a row to open a Gantt-style span visualization of every step the request took. The span detail panel shows cache information when a request was served from the cache: the numeric cache tier (0 = miss, 1 = routing hit, 2 = routing + entity binding, 3 = action replay), the hit type, and whether a span was skipped because the routing cache supplied the entity binding (`source: routing_cache`).
 
 Trace previews and stored summaries are sanitized before persistence; secrets, tokens, and short verification codes are redacted.
 
@@ -256,7 +256,7 @@ The **Cache** page at `/dashboard/cache` inspects the two-tier cache:
 
 From this page you can:
 
-- Browse entries per tier with search and pagination.
+- Browse entries per tier with search and pagination. Routing entry details show the persisted entity candidates (`entity_id`, friendly name, match score) that power Tier-2 cache hits (routing + entity binding), alongside the `entity_ids` used for invalidation.
 - Flush the entire routing or action tier.
 - Delete a single entry without clearing the whole tier.
 - Export and import cache tiers as a JSON envelope.

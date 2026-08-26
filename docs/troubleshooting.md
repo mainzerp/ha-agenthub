@@ -79,7 +79,7 @@ Navigate to `http://<host>:8080/setup/` and use the "Test" button for each provi
 
 - Cache disabled globally: Verify `cache.enabled`, `cache.routing.enabled`, and `cache.action.enabled` are `true` in the admin dashboard.
 - Compound-utterance bypass: Structurally compound utterances intentionally bypass the cache via `cache.compound_utterance_bypass`. If you expect exact matches to be cached, avoid compound-utterance bypass or test with simple, single-intent utterances.
-- SQLite cache tables missing or inaccessible: The routing cache and action cache live in the SQLite database (`/data/agent_assist.db`). Check startup logs for schema/DB errors.
+- SQLite cache tables missing or inaccessible: The routing cache and action cache live in a dedicated SQLite database at `/data/chromadb/cache.db` (under `CHROMADB_PERSIST_DIR`). Check startup logs for schema/DB errors.
 - sqlite-vec entity index not initialized: The action cache relies on the entity index; check the Entity Index dashboard page and startup logs for embedding or vec0 errors.
 - Threshold settings: the routing cache consults its semantic sqlite-vec tier after an exact-hash miss; raise `cache.routing.semantic_threshold` (default 0.92) if semantically similar but wrong requests get routed to the wrong agent, lower it to increase semantic hit rate. `cache.action.semantic_threshold` is a legacy value retained for backward compatibility -- the action cache uses exact SHA-256 hash matching only.
 - Cold cache after upgrade: the routing-cache schema version 5 purges all pre-existing routing entries at the first boot after the upgrade (a cold cache start is expected; entries rebuild organically from new requests).
@@ -89,7 +89,7 @@ Navigate to `http://<host>:8080/setup/` and use the "Test" button for each provi
 ```bash
 docker exec ha-agenthub python -c "
 import sqlite3
-conn = sqlite3.connect('/data/agent_assist.db')
+conn = sqlite3.connect('/data/chromadb/cache.db')
 print('Tables:', conn.execute(\"SELECT name FROM sqlite_master WHERE type='table'\").fetchall())
 print('Routing rows:', conn.execute('SELECT COUNT(*) FROM routing_cache').fetchone()[0])
 print('Action rows:', conn.execute('SELECT COUNT(*) FROM action_cache').fetchone()[0])
@@ -97,7 +97,7 @@ conn.close()
 "
 ```
 
-The `/data/chromadb` directory is the legacy path that now holds sqlite-vec entity-index data. It is not used for cache storage.
+The `/data/chromadb` directory holds the sqlite-vec entity-index data and `cache.db` (both cache tiers). Losing it loses all cache entries; the entity index is rebuilt on the next sync.
 
 ## Session Memory Matches
 
@@ -247,11 +247,12 @@ orchestrator's terminal span.
 **Symptoms:** `POST /api/admin/cache/import` returns HTTP 400 with a
 `format_version` error.
 
-**Cause and remediation:** The importer accepts `format_version: 1`
-(legacy `tiers.response.entries`) and `format_version: 2`
-(canonical `tiers.action.entries`). A higher value is rejected
-because it was produced by a newer format than supported. Re-export from a
-container at the same or older minor version. See
+**Cause and remediation:** The importer only accepts
+`format_version: 4` envelopes (shape `{"tiers": {"routing": [...],
+"action": [...]}}`). Older envelopes (format_version 3 and below,
+including legacy `tiers.response` shapes) are rejected, as is anything
+newer than the running version. Re-export from a container at the
+same minor version. See
 [API reference](api-reference.md) (`Admin -- Cache` section) for
 the envelope shape.
 

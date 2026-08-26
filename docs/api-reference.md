@@ -396,10 +396,11 @@ List all Home Assistant entities grouped by domain and area.
 ## Admin -- Cache
 
 The action cache was named "response cache" in 0.20.x and earlier.
-Every cache endpoint accepts both the canonical `action` value and
-the legacy `response` alias for the `tier` parameter (URL query, JSON
-body, or multipart form). New responses emit `action` as the
-canonical key. The export envelope uses format_version 2; parse_envelope still accepts format_version 1 envelopes with tiers.response.
+Current endpoints accept only the canonical tier values `routing` and
+`action` (`export` additionally accepts `all`); the legacy `response`
+alias is no longer accepted. The export envelope uses
+`format_version: 4`; older envelopes (format_version 3 and below,
+including `tiers.response` shapes) are rejected on import.
 
 ### GET /api/admin/cache/stats
 
@@ -410,7 +411,7 @@ Get cache statistics per tier.
 Browse/search cache entries.
 
 **Query parameters:**
-- `tier` -- `routing`, `action`, or `response` (legacy alias for `action`; default: `routing`)
+- `tier` -- `routing` or `action` (default: `routing`)
 - `search` -- Text filter
 - `page` -- Page number (default: 1)
 - `per_page` -- Results per page (default: 50, max: 200)
@@ -428,16 +429,15 @@ Flush cache entries.
 ```
 
 Omit `tier` or set to `null` to flush all tiers. Accepted values:
-`routing`, `action`, or `response` (legacy alias).
+`routing` or `action`.
 
 ### GET /api/admin/cache/export
 
-Streams a JSON envelope (`format_version: 2`) of one or more cache
+Streams a JSON envelope (`format_version: 4`) of one or more cache
 tiers.
 
 **Query parameters:**
-- `tier` -- `routing`, `action`, `response` (legacy alias), or `all`
-  (default: `all`)
+- `tier` -- `routing`, `action`, or `all` (default: `all`)
 
 ### POST /api/admin/cache/import
 
@@ -446,18 +446,23 @@ Multipart upload that restores cache entries from an envelope.
 **Form fields:**
 - `file` -- the JSON envelope (max 50 MiB)
 - `mode` -- `merge` or `replace`
-- `tiers` -- CSV of tier names; accepts `action` and `response` as
-  aliases
-- `re_embed` -- `true` to recompute embeddings on import
+- `tiers` -- CSV of tier names (`routing`, `action`)
 
-New exports use the `tiers.action.entries` shape. `parse_envelope`
-still accepts `format_version: 1` envelopes that carry
-`tiers.response.entries` so backups produced on 0.20.x remain
-importable.
+The envelope shape is `{"format_version": 4, "tiers": {"routing":
+[<entry>, ...], "action": [<entry>, ...]}}`. Only `format_version: 4`
+envelopes are accepted; older exports must be regenerated. When the
+embedding model recorded in the envelope differs from the active one,
+the import emits a warning (routing semantic matching relies on
+embeddings, so consider flushing the routing tier after a model
+switch).
 
 ### DELETE /api/admin/cache/entries/{entry_id}
 
 Delete a single cache entry by its ID.
+
+**Query parameters:**
+- `tier` -- `routing` or `action` (default: `routing`; pass
+  `tier=action` to delete an action-cache entry)
 
 Auth: admin session. Added in 1.19.4.
 
@@ -661,7 +666,7 @@ and `/api/admin/entity-index/refresh` endpoints documented above.
 
 | Method | Path | Purpose |
 |--------|------|---------|
-| GET | `/api/admin/traces/export` | Export traces in NDJSON form for offline inspection. |
+| GET | `/api/admin/traces/export` | Export traces in CSV form for offline inspection. |
 | GET | `/api/admin/traces/labels` | List configured trace labels. |
 | PUT | `/api/admin/traces/{trace_id}/label` | Set or clear the label on a trace. |
 

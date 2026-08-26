@@ -248,6 +248,7 @@ By default, a weighted score above 0.60 returns a single confident match. Below 
 
 - **SQLite** -- Primary store for all structured data: settings, agent configs, custom agents, aliases, MCP servers, secrets (Fernet-encrypted), admin accounts (bcrypt-hashed), setup state, conversations, analytics, and trace spans.
 - **sqlite-vec** -- Vector store for entity index embeddings, the routing cache semantic tier, and session memory turn embeddings. Entity index and routing cache embeddings live in dedicated SQLite databases; session memory uses its own `session_memory.db`. Persisted to disk under `/data`.
+- **Cache DB** -- Routing and action cache entries (documents, metadata, and the semantic embeddings of the routing tier) live in `cache.db` under `CHROMADB_PERSIST_DIR` (default `/data/chromadb/cache.db`), separate from the primary SQLite store.
 
 ## Plugin Architecture
 
