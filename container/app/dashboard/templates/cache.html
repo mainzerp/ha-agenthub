@@ -167,6 +167,7 @@
                         <tr>
                             <th>Document</th>
                             <th>Agent</th>
+                            <th>Tier</th>
                             <th>Hits</th>
                             <th>Created</th>
                             <th>Last Accessed</th>
@@ -178,6 +179,9 @@
                             <tr :class="{ 'cache-row-selected': selectedEntry && selectedEntry.id === e.id }">
                                 <td class="truncate max-w-200" x-text="e.document"></td>
                                 <td><span class="badge badge-teal" x-text="e.agent_id || '-'"></span></td>
+                                <td><span class="badge"
+                                          :class="(dashParseJsonSafe(e.entity_candidates) || []).length > 0 ? 'badge-blue' : 'badge-muted'"
+                                          x-text="(dashParseJsonSafe(e.entity_candidates) || []).length > 0 ? 'Tier 2' : 'Tier 1'"></span></td>
                                 <td class="text-mono" x-text="e.hit_count || '0'"></td>
                                 <td class="text-mono text-xs" x-text="dashFormatTimestamp(e.created_at)"></td>
                                 <td class="text-mono text-xs" x-text="dashFormatTimestamp(e.last_accessed)"></td>
