@@ -53,7 +53,11 @@ class RoutingCacheEntry(BaseModel):
     agent_id: str
     confidence: float = 0.0
     entity_ids: list[str] = Field(default_factory=list)
+    # Tier-2 entity bindings: (entity_id, friendly_name, score) tuples from
+    # the ingress matcher pass of the originating turn. Consumed only on
+    # exact routing hits to skip a fresh matcher pass; empty = Tier 1.
+    entity_candidates: list[tuple[str, str, float]] = Field(default_factory=list)
     created_at: str | None = None
     last_accessed: str | None = None
     hit_count: int = 0
-    schema_version: int = 4
+    schema_version: int = 5

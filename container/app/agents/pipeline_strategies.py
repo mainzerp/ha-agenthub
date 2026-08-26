@@ -108,6 +108,7 @@ class FinalizationStrategy(ABC):
         used_origin_context: bool,
         confidence: float | None = None,
         condensed_task: str = "",
+        candidates: list | None = None,
     ) -> dict[str, Any]: ...
 
 
@@ -455,6 +456,7 @@ class DefaultFinalizationStrategy(FinalizationStrategy):
         used_origin_context: bool,
         confidence: float | None = None,
         condensed_task: str = "",
+        candidates: list | None = None,
     ) -> dict[str, Any]:
         has_error = dispatch_result.has_error
         target_agent = dispatch_result.target_agent
@@ -561,6 +563,7 @@ class DefaultFinalizationStrategy(FinalizationStrategy):
                 skip_mediation_on_error=True,
                 skip_response_cache=is_sequential_send,
                 used_origin_context=used_origin_context,
+                candidates=candidates,
             )
 
         response = {

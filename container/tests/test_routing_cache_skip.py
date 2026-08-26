@@ -32,7 +32,7 @@ sys.modules.setdefault("litellm", _litellm_mock)
 from app.agents.orchestrator import OrchestratorAgent
 from app.cache.cache_manager import CacheManager, RoutingSkipOutcome
 from app.cache.vector_store import VectorStore
-from app.models.agent import AgentCard, IngressTask, TaskContext
+from app.models.agent import AgentCard, EntityCandidate, IngressTask, TaskContext
 
 
 def _make_manager() -> CacheManager:
@@ -449,3 +449,199 @@ async def test_routing_skip_finalization_writes_trace_summary_row():
     assert kwargs["cache_hit_type"] == "routing_hit"
     # classify span present -> routing_duration_ms recorded (not None)
     assert kwargs["routing_duration_ms"] is not None
+
+
+@pytest.mark.asyncio
+async def test_exact_hit_with_entity_candidates_is_accepted():
+    """Tier 2: an exact routing hit carrying entity candidates passes the
+    fail-closed validation when every candidate entity is still visible, and
+    the outcome keeps the candidate payload intact."""
+    cache_manager = MagicMock()
+    cache_manager.try_replay_action = AsyncMock(return_value=None)
+    outcome = RoutingSkipOutcome(
+        kind="routing_hit",
+        entry_id="tier2-entry",
+        agent_id="light-agent",
+        condensed_task="Turn on kitchen light",
+        similarity=1.0,
+        entity_ids=["light.kitchen"],
+        entity_candidates=[("light.kitchen", "Kitchen", 0.91)],
+    )
+    cache_manager.try_routing_skip = AsyncMock(return_value=outcome)
+    cache_manager.invalidate_routing = MagicMock()
+
+    orch = _make_orchestrator(cache_manager)
+    orch._cache_orchestrator._entity_index = MagicMock()
+
+    with patch(
+        "app.agents.cache_orchestrator.entity_is_visible",
+        new=AsyncMock(return_value=True),
+    ):
+        action_replay, routing_skip = await orch._try_cache_replay(
+            task=_make_task("turn on kitchen light"),
+            user_text="turn on kitchen light",
+            language="en",
+        )
+
+    assert action_replay is None
+    assert routing_skip is not None
+    assert routing_skip.entity_candidates == [("light.kitchen", "Kitchen", 0.91)]
+    cache_manager.invalidate_routing.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_exact_hit_with_invisible_candidate_entity_is_invalidated():
+    """Tier 2: a routing-cache hit whose candidate entity is now invisible
+    must be invalidated and fall through to live orchestration (mirrors the
+    entity_ids harness above with the candidate payload populated)."""
+    cache_manager = MagicMock()
+    cache_manager.try_replay_action = AsyncMock(return_value=None)
+    stale_outcome = RoutingSkipOutcome(
+        kind="routing_hit",
+        entry_id="stale-entry-id",
+        agent_id="light-agent",
+        condensed_task="Turn on kitchen and living room lights",
+        similarity=0.99,
+        entity_ids=["light.kitchen", "light.living_room"],
+        entity_candidates=[
+            ("light.kitchen", "Kitchen", 0.91),
+            ("light.living_room", "Living Room", 0.88),
+        ],
+    )
+    cache_manager.try_routing_skip = AsyncMock(return_value=stale_outcome)
+    cache_manager.invalidate_routing = MagicMock()
+
+    orch = _make_orchestrator(cache_manager)
+    orch._cache_orchestrator._entity_index = MagicMock()
+
+    def _entity_visible(agent_id: str, entity_id: str, entity_index, **kwargs) -> bool:
+        return entity_id != "light.living_room"
+
+    with patch(
+        "app.agents.cache_orchestrator.entity_is_visible",
+        new=AsyncMock(side_effect=_entity_visible),
+    ):
+        action_replay, routing_skip = await orch._try_cache_replay(
+            task=_make_task("turn on the lights"),
+            user_text="turn on the lights",
+            language="en",
+        )
+
+    assert action_replay is None
+    assert routing_skip is None
+    cache_manager.invalidate_routing.assert_called_once_with("stale-entry-id")
+
+
+@pytest.mark.asyncio
+async def test_store_after_dispatch_passes_candidates_to_routing_store():
+    """Write path: the dispatch-envelope candidates are converted to
+    (entity_id, friendly_name, score) tuples and passed to the routing store."""
+    orch = OrchestratorAgent.__new__(OrchestratorAgent)
+    orch._cache_manager = MagicMock()
+    orch._cache_manager.store_routing_async = AsyncMock()
+    orch._cache_manager.store_action_async = AsyncMock()
+    orch._legacy_pipeline_enabled = MagicMock(return_value=False)
+    orch._get_bool_setting = AsyncMock(return_value=True)
+    orch._cache_orchestrator = CacheOrchestrator(cache_manager=orch._cache_manager)
+    orch._cache_orchestrator._get_bool_setting_impl = AsyncMock(return_value=True)
+
+    stored_action, stored_routing = await orch._store_after_dispatch(
+        user_text="what is the kitchen temperature",
+        language="en",
+        target_agent="climate-agent",
+        condensed_task="What is the kitchen temperature",
+        confidence=0.95,
+        speech="It is 21 degrees.",
+        action_executed={"success": True, "action": "query_state", "entity_id": "sensor.kitchen_temperature"},
+        has_error=False,
+        candidates=[
+            EntityCandidate(entity_id="sensor.kitchen_temperature", friendly_name="Kitchen Temperature", score=0.9),
+            EntityCandidate(entity_id="", friendly_name="skipped", score=0.5),
+        ],
+    )
+
+    assert (stored_action, stored_routing) == (False, True)
+    orch._cache_manager.store_action_async.assert_not_awaited()
+    orch._cache_manager.store_routing_async.assert_awaited_once()
+    kwargs = orch._cache_manager.store_routing_async.await_args.kwargs
+    assert kwargs["entity_candidates"] == [("sensor.kitchen_temperature", "Kitchen Temperature", 0.9)]
+    assert kwargs["entity_ids"] == ["sensor.kitchen_temperature"]
+
+
+class TestRoutingCacheTier2Persistence:
+    """SQLite roundtrip, schema purge, and invalidation coverage for the
+    Tier-2 entity_candidates payload (real SqliteCacheStore on tmp_path)."""
+
+    def _make_manager(self, tmp_path) -> CacheManager:
+        from app.cache.sqlite_cache_store import SqliteCacheStore
+
+        store = SqliteCacheStore(str(tmp_path / "cache.db"))
+        manager = CacheManager(store)
+        manager._routing_cache._enabled = True
+        return manager
+
+    @pytest.mark.asyncio
+    async def test_candidates_survive_sqlite_roundtrip(self, tmp_path):
+        manager = self._make_manager(tmp_path)
+        manager.store_routing(
+            "turn on kitchen light",
+            "light-agent",
+            0.95,
+            language="en",
+            entity_candidates=[("light.kitchen", "Kitchen", 0.91), ("light.kitchen_ceiling", "Ceiling", 0.84)],
+        )
+
+        with patch("app.cache.cache_manager.track_cache_event_background"):
+            outcome = await manager.try_routing_skip(query_text="turn on kitchen light", language="en")
+
+        assert outcome is not None
+        assert outcome.kind == "routing_hit"
+        assert outcome.entity_candidates == [
+            ("light.kitchen", "Kitchen", 0.91),
+            ("light.kitchen_ceiling", "Ceiling", 0.84),
+        ]
+        # entity_ids stays a superset of the candidate ids (invalidation scan).
+        assert set(outcome.entity_ids) >= {"light.kitchen", "light.kitchen_ceiling"}
+
+    @pytest.mark.asyncio
+    async def test_candidates_merged_into_entity_ids_and_invalidation_covers_them(self, tmp_path):
+        manager = self._make_manager(tmp_path)
+        manager.store_routing(
+            "turn on kitchen light",
+            "light-agent",
+            0.95,
+            language="en",
+            entity_candidates=[("light.kitchen", "Kitchen", 0.91)],
+        )
+
+        counts = await manager.invalidate_by_entity_id(["light.kitchen"])
+
+        assert counts["routing"] == 1
+        with patch("app.cache.cache_manager.track_cache_event_background"):
+            assert await manager.try_routing_skip(query_text="turn on kitchen light", language="en") is None
+
+    def test_purge_legacy_schema_entries_removes_pre_v5_entries(self, tmp_path):
+        from app.cache.routing_cache import make_routing_entry_id
+        from app.cache.sqlite_cache_store import COLLECTION_ROUTING_CACHE
+
+        manager = self._make_manager(tmp_path)
+        cache = manager._routing_cache
+        manager.store_routing("turn on kitchen light", "light-agent", 0.95, language="en")
+        manager.store_routing("turn on couch light", "light-agent", 0.95, language="en")
+        # Simulate a legacy (schema 4) row by rewriting its metadata.
+        legacy_id = make_routing_entry_id("turn on couch light", language="en")
+        page = manager._cache_store.get(COLLECTION_ROUTING_CACHE, ids=[legacy_id], include=["metadatas"])
+        meta = page["metadatas"][0]
+        meta["schema_version"] = "4"
+        manager._cache_store.upsert(
+            COLLECTION_ROUTING_CACHE,
+            ids=[legacy_id],
+            documents=["turn on couch light"],
+            metadatas=[meta],
+        )
+
+        removed = cache.purge_legacy_schema_entries(5)
+
+        assert removed == 1
+        assert cache.lookup("turn on couch light", language="en")[0] is None
+        assert cache.lookup("turn on kitchen light", language="en")[0] is not None

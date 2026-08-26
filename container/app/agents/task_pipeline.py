@@ -255,6 +255,7 @@ class PipelineDirector:
         used_origin_context: bool,
         confidence: float | None = None,
         condensed_task: str = "",
+        candidates: list | None = None,
     ) -> dict[str, Any]:
         return await self._finalization_strategy.execute(
             task=task,
@@ -269,4 +270,5 @@ class PipelineDirector:
             used_origin_context=used_origin_context,
             confidence=confidence,
             condensed_task=condensed_task,
+            candidates=candidates,
         )

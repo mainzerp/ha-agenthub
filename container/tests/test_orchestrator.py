@@ -802,7 +802,7 @@ class TestOrchestratorAgent:
         cache_span = next(s for s in collector._spans if s["span_name"] == "cache_lookup")
         assert cache_span["agent_id"] == "orchestrator"
         assert cache_span["metadata"]["hit_type"] == "miss"
-        assert cache_span["metadata"]["cache_tier"] == "both_miss"
+        assert cache_span["metadata"]["cache_tier"] == 0
 
     @patch("app.agents.orchestrator.SettingsRepository")
     @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
@@ -952,7 +952,7 @@ class TestOrchestratorAgent:
         cache_spans = [s for s in collector._spans if s["span_name"] == "cache_lookup"]
         assert len(cache_spans) == 1
         assert cache_spans[0]["metadata"]["hit_type"] == "miss"
-        assert cache_spans[0]["metadata"]["cache_tier"] == "both_miss"
+        assert cache_spans[0]["metadata"]["cache_tier"] == 0
         assert cache_spans[0]["metadata"].get("similarity") is None
 
     @patch("app.agents.orchestrator.SettingsRepository")
@@ -990,9 +990,54 @@ class TestOrchestratorAgent:
         assert len(cache_spans) == 1
         assert cache_spans[0]["metadata"]["hit_type"] == "routing_hit"
         assert cache_spans[0]["metadata"]["similarity"] == pytest.approx(0.96)
+        # No entity bindings on the outcome -> Tier 1 (fresh matcher pass).
+        assert cache_spans[0]["metadata"]["cache_tier"] == 1
         classify_spans = [s for s in collector._spans if s["span_name"] == "classify"]
         assert len(classify_spans) == 1
         assert classify_spans[0]["metadata"]["routing_cached"] is True
+
+    @patch("app.agents.orchestrator.SettingsRepository")
+    @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
+    @patch("app.llm.client.complete", new_callable=AsyncMock)
+    async def test_handle_task_cache_lookup_span_on_tier2_routing_hit(self, mock_complete, mock_track, mock_settings):
+        """An exact routing hit carrying entity candidates is tagged cache_tier=2."""
+        from app.analytics.tracer import SpanCollector
+        from app.cache.cache_manager import RoutingSkipOutcome
+
+        orch, dispatcher, *_ = self._make_orchestrator()
+        orch._cache_manager.try_replay_action = AsyncMock(return_value=None)
+        orch._cache_manager.try_routing_skip = AsyncMock(
+            return_value=RoutingSkipOutcome(
+                kind="routing_hit",
+                entry_id="routing-tier2",
+                agent_id="light-agent",
+                condensed_task="Turn on light",
+                similarity=1.0,
+                entity_ids=["light.kitchen"],
+                entity_candidates=[("light.kitchen", "Kitchen", 0.91)],
+            )
+        )
+        # The fail-closed visibility recheck runs against the entity index.
+        orch._cache_orchestrator._entity_index = MagicMock()
+        dispatcher.dispatch.return_value = {
+            "speech": "Done!",
+            "action_executed": {"success": True, "entity_id": "light.kitchen", "action": "turn_on"},
+        }
+        mock_complete.return_value = "light-agent: Turn on light"
+        mock_settings.get_value = AsyncMock(return_value="")
+        collector = SpanCollector("trace-cache-tier2")
+        task = _make_task("turn on light")
+        task.span_collector = collector
+        task.conversation_id = "conv-cache-tier2"
+        with (
+            patch("app.analytics.tracer.create_trace_summary", new_callable=AsyncMock),
+            patch("app.agents.cache_orchestrator.entity_is_visible", new=AsyncMock(return_value=True)),
+        ):
+            await orch.handle_task(task)
+        cache_spans = [s for s in collector._spans if s["span_name"] == "cache_lookup"]
+        assert len(cache_spans) == 1
+        assert cache_spans[0]["metadata"]["hit_type"] == "routing_hit"
+        assert cache_spans[0]["metadata"]["cache_tier"] == 2
 
     @patch("app.agents.orchestrator.SettingsRepository")
     @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)

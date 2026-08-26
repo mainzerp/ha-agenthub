@@ -674,6 +674,82 @@ class TestIngressResolutionPrelude:
 
     @pytest.mark.asyncio
     @patch("app.agents.orchestrator.SettingsRepository")
+    async def test_tier2_exact_hit_skips_matcher_and_builds_envelope_from_cache(self, mock_settings):
+        """Tier 2: an exact routing hit carrying entity candidates skips the
+        ingress matcher pass entirely; the envelope is built from the cached
+        (entity_id, friendly_name, score) tuples."""
+        mock_settings.get_value = AsyncMock(return_value="")
+        orch, _dispatcher, matcher = _make_orchestrator_with_matcher([])
+        routing_skip = RoutingSkipOutcome(
+            kind="routing_hit",
+            entry_id="route-tier2",
+            agent_id="light-agent",
+            condensed_task="turn on light",
+            similarity=1.0,
+            entity_ids=["light.couch"],
+            entity_candidates=[("light.couch", "Couch", 0.9)],
+        )
+        orch._pipeline_director.run_cache_replay = AsyncMock(return_value=CacheReplayResult(routing_skip=routing_skip))
+        _patch_prelude_classification(
+            orch,
+            [("light-agent", "turn on light", 1.0)],
+            routing_cached=True,
+        )
+
+        collector = _FakeSpanCollector()
+        task = IngressTask(
+            description="turn on light",
+            conversation_id="conv-ingress-tier2",
+            context=TaskContext(language="en"),
+            span_collector=collector,
+        )
+        prelude = await orch._run_pipeline_prelude(task)
+
+        assert prelude.early_exit is None
+        matcher.match.assert_not_awaited()
+        matcher.filter_visible_results.assert_not_called()
+        candidates = prelude.candidates["light-agent"]
+        assert [(c.entity_id, c.friendly_name, c.score) for c in candidates] == [("light.couch", "Couch", 0.9)]
+        ir_span = collector.spans["ingress_resolution"]
+        assert ir_span["metadata"]["skipped"] is True
+        assert ir_span["metadata"]["source"] == "routing_cache"
+        ic_span = collector.spans["ingress_candidates"]
+        assert ic_span["metadata"]["source"] == "routing_cache"
+
+    @pytest.mark.asyncio
+    @patch("app.agents.orchestrator.SettingsRepository")
+    async def test_semantic_hit_with_candidates_still_runs_matcher(self, mock_settings):
+        """Tier-1 fallback: a semantic routing hit NEVER consumes the cached
+        candidate payload, even when present -- the fresh filtered matcher
+        pass runs and the envelope is built from its pool."""
+        mock_settings.get_value = AsyncMock(return_value="")
+        pool = [_pool_item("light.couch", "Couch", 0.9)]
+        orch, _dispatcher, matcher = _make_orchestrator_with_matcher(pool)
+        routing_skip = RoutingSkipOutcome(
+            kind="semantic_hit",
+            entry_id="route-sem",
+            agent_id="light-agent",
+            condensed_task="turn on light",
+            similarity=0.95,
+            entity_ids=["light.stale"],
+            entity_candidates=[("light.stale", "Stale", 0.99)],
+        )
+        orch._pipeline_director.run_cache_replay = AsyncMock(return_value=CacheReplayResult(routing_skip=routing_skip))
+        _patch_prelude_classification(
+            orch,
+            [("light-agent", "turn on light", 1.0)],
+            routing_cached=True,
+        )
+
+        task = _make_task("turn on light", conversation_id="conv-ingress-sem-tier1")
+        prelude = await orch._run_pipeline_prelude(task)
+
+        matcher.match.assert_awaited_once()
+        # Envelope comes from the fresh matcher pool, not the cached payload.
+        assert [c.entity_id for c in prelude.candidates["light-agent"]] == ["light.couch"]
+
+    @pytest.mark.asyncio
+    @patch("app.agents.orchestrator.SettingsRepository")
     async def test_matcher_failure_degrades_to_empty_candidates(self, mock_settings):
         """A matcher failure must not fail the turn: candidates degrade to
         empty (the agent-side description fallback covers resolution)."""

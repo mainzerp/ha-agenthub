@@ -208,6 +208,8 @@ SQLite. The routing cache additionally has a semantic similarity tier
 exact-hash miss); the action cache is exact-hash only:
 
 - **Routing Cache** -- Caches the mapping from user intent to target agent. A hit (exact SHA-256 hash match, or semantic match above `cache.routing.semantic_threshold` with fail-closed validation) skips LLM-based intent classification entirely. Max entries: 50,000 with LRU eviction.
+  - **Tier 1**: a hit without entity bindings; the ingress entity matcher still runs a fresh visibility-filtered pass for the cached target agent.
+  - **Tier 2**: an *exact* hit that also carries the resolved entity candidates (`entity_id`, `friendly_name`, `score`) from the originating turn. The ingress matcher pass is skipped and the dispatch envelope is built from the cached bindings. Binding is exact-hit only -- semantic hits always take the Tier-1 path. The fail-closed per-entity visibility recheck runs before any hit is accepted, and the agent-side fast path re-filters against a fresh visible snapshot.
 - **Action Cache** -- Caches full agent responses including executed actions.
   - **Hit** (exact hash match): Returns the cached response directly (optionally rewritten by the rewrite agent for variety).
   - **Miss**: No cache involvement; the request proceeds through the full agent pipeline.

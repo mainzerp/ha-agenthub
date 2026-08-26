@@ -20,7 +20,13 @@ from app.analytics.tracer import _optional_span
 from app.cache.cache_manager import ActionReplayOutcome, CacheManager, RoutingSkipOutcome
 from app.db.repository import SettingsRepository
 from app.entity.visibility import entity_is_visible
-from app.models.agent import CANCEL_INTERACTION_AGENT, FALLBACK_AGENT, INTERNAL_ONLY_AGENTS, IngressTask
+from app.models.agent import (
+    CANCEL_INTERACTION_AGENT,
+    FALLBACK_AGENT,
+    INTERNAL_ONLY_AGENTS,
+    EntityCandidate,
+    IngressTask,
+)
 from app.models.cache import ActionCacheEntry, CachedAction
 
 logger = logging.getLogger(__name__)
@@ -215,7 +221,7 @@ class CacheOrchestrator:
                 cache_span["metadata"]["hit_type"] = "action_hit"
                 cache_span["metadata"]["similarity"] = action_hit.similarity
                 cache_span["metadata"]["cached_agent_id"] = action_hit.agent_id
-                cache_span["metadata"]["cache_tier"] = "action"
+                cache_span["metadata"]["cache_tier"] = 3
                 return action_hit, None
 
             routing_hit = await self._cache_manager.try_routing_skip(
@@ -235,16 +241,20 @@ class CacheOrchestrator:
                         await asyncio.to_thread(self._cache_manager.invalidate_routing, routing_hit.entry_id)
                     cache_span["metadata"]["hit_type"] = "semantic_invalid" if is_semantic else "routing_invalid"
                     cache_span["metadata"]["cached_agent_id"] = routing_hit.agent_id
-                    cache_span["metadata"]["cache_tier"] = "both_miss"
+                    cache_span["metadata"]["cache_tier"] = 0
                     return None, None
                 cache_span["metadata"]["hit_type"] = routing_hit.kind
                 cache_span["metadata"]["similarity"] = routing_hit.similarity
                 cache_span["metadata"]["cached_agent_id"] = routing_hit.agent_id
-                cache_span["metadata"]["cache_tier"] = "routing"
+                # Tier 2 = exact routing hit carrying entity bindings; Tier 1
+                # = routing hit that still needs the ingress matcher pass.
+                cache_span["metadata"]["cache_tier"] = (
+                    2 if routing_hit.kind == "routing_hit" and routing_hit.entity_candidates else 1
+                )
                 return None, routing_hit
 
             cache_span["metadata"]["hit_type"] = "miss"
-            cache_span["metadata"]["cache_tier"] = "both_miss"
+            cache_span["metadata"]["cache_tier"] = 0
             track_cache_event_background(tier="both_miss", hit_type="miss")
             return None, None
 
@@ -406,6 +416,7 @@ class CacheOrchestrator:
         action_executed,
         has_error: bool,
         task: IngressTask | None = None,
+        candidates: list[EntityCandidate] | None = None,
         merged_multi_agent: bool = False,
         used_origin_context: bool = False,
     ) -> tuple[bool, bool]:
@@ -431,6 +442,12 @@ class CacheOrchestrator:
                 entity_ids.append(entity_id)
             entity_ids = list(dict.fromkeys(entity_ids))
 
+        # Tier-2 entity bindings: the dispatch-envelope candidates for the
+        # target agent (visibility-filtered and ranked at ingress).
+        candidate_tuples = [
+            (c.entity_id, c.friendly_name or "", float(c.score or 0.0)) for c in (candidates or []) if c.entity_id
+        ]
+
         confidence_value = confidence if confidence is not None else 0.0
         readonly_action = self._is_readonly_action_result(action_executed)
         if isinstance(action_executed, dict) and action_executed.get("success"):
@@ -442,6 +459,7 @@ class CacheOrchestrator:
                         confidence_value,
                         language=language,
                         entity_ids=entity_ids,
+                        entity_candidates=candidate_tuples or None,
                     )
                     return False, True
                 except Exception:
@@ -498,6 +516,7 @@ class CacheOrchestrator:
                 confidence_value,
                 language=language,
                 entity_ids=entity_ids,
+                entity_candidates=candidate_tuples or None,
             )
             return False, True
         except Exception:

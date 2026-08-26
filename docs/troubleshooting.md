@@ -82,6 +82,7 @@ Navigate to `http://<host>:8080/setup/` and use the "Test" button for each provi
 - SQLite cache tables missing or inaccessible: The routing cache and action cache live in the SQLite database (`/data/agent_assist.db`). Check startup logs for schema/DB errors.
 - sqlite-vec entity index not initialized: The action cache relies on the entity index; check the Entity Index dashboard page and startup logs for embedding or vec0 errors.
 - Threshold settings: the routing cache consults its semantic sqlite-vec tier after an exact-hash miss; raise `cache.routing.semantic_threshold` (default 0.92) if semantically similar but wrong requests get routed to the wrong agent, lower it to increase semantic hit rate. `cache.action.semantic_threshold` is a legacy value retained for backward compatibility -- the action cache uses exact SHA-256 hash matching only.
+- Cold cache after upgrade: the routing-cache schema version 5 purges all pre-existing routing entries at the first boot after the upgrade (a cold cache start is expected; entries rebuild organically from new requests).
 
 **Verify cache tables and entity index:**
 

@@ -241,14 +241,18 @@ class TestRoutingCacheEntry:
         assert entry.agent_id == "light-agent"
         assert entry.hit_count == 1
         assert entry.language == "en"
-        assert entry.schema_version == 4
+        # Schema 5: routing entries may carry Tier-2 entity bindings.
+        assert entry.schema_version == 5
+        assert entry.entity_candidates == []
 
     def test_json_round_trip(self):
         entry = make_routing_cache_entry()
+        entry.entity_candidates = [("light.kitchen", "Kitchen", 0.9)]
         data = entry.model_dump_json()
         restored = RoutingCacheEntry.model_validate_json(data)
         assert restored.query_text == entry.query_text
-        assert restored.schema_version == 4
+        assert restored.schema_version == 5
+        assert restored.entity_candidates == [("light.kitchen", "Kitchen", 0.9)]
 
 
 class TestActionCacheEntry:

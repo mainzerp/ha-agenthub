@@ -89,6 +89,16 @@ def _agent_preferred_domains(agent_id: str) -> tuple[str, ...] | None:
     return tuple(sorted(d.lower() for d in allowed if d)) if allowed else None
 
 
+def _tier2_entity_binding(routing_skip: RoutingSkipOutcome | None) -> bool:
+    """True when a routing-cache hit carries a consumable Tier-2 binding.
+
+    Only EXACT routing hits (``kind == "routing_hit"``) with a non-empty
+    entity-candidate payload may skip the ingress matcher pass; semantic
+    hits always take the Tier-1 path (fresh filtered matcher pass).
+    """
+    return routing_skip is not None and routing_skip.kind == "routing_hit" and bool(routing_skip.entity_candidates)
+
+
 def _stringify_error(err: Any) -> str | None:
     """Normalize a chunk ``error`` value to ``str | None`` (Phase-1 contract).
 
@@ -874,6 +884,7 @@ class OrchestratorAgent(BaseAgent):
         action_executed,
         has_error: bool,
         task: IngressTask | None = None,
+        candidates: list[EntityCandidate] | None = None,
         merged_multi_agent: bool = False,
         used_origin_context: bool = False,
     ) -> tuple[bool, bool]:
@@ -888,6 +899,7 @@ class OrchestratorAgent(BaseAgent):
             action_executed=action_executed,
             has_error=has_error,
             task=task,
+            candidates=candidates,
             merged_multi_agent=merged_multi_agent,
             used_origin_context=used_origin_context,
         )
@@ -1150,9 +1162,17 @@ class OrchestratorAgent(BaseAgent):
         # routing-cache hit the agent is already known, so the matcher runs
         # a single fully visibility-filtered pass for that agent instead.
         routing_skip = cache_replay.routing_skip
+        tier2_hit = routing_skip if _tier2_entity_binding(routing_skip) else None
         ingress_task: asyncio.Task | None = None
         if self._entity_matcher is not None:
-            if routing_skip is not None:
+            if tier2_hit is not None:
+                # Tier 2: the exact routing hit carries resolved entity
+                # bindings, so the matcher pass is skipped entirely; the
+                # span is recorded as skipped to keep the trace shape.
+                async with _optional_span(span_collector, "ingress_resolution", agent_id=tier2_hit.agent_id) as ir_span:
+                    ir_span["metadata"]["skipped"] = True
+                    ir_span["metadata"]["source"] = "routing_cache"
+            elif routing_skip is not None:
                 ingress_task = asyncio.create_task(
                     _trace_ingress_match(
                         self._entity_matcher.match(
@@ -1347,42 +1367,57 @@ class OrchestratorAgent(BaseAgent):
         candidates (the agent-side description fallback covers it) rather
         than failing the turn.
         """
-        if ingress_task is None or self._entity_matcher is None:
-            return {}
-        try:
-            pool = await ingress_task
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            logger.debug("Ingress entity resolution failed", exc_info=True)
-            return {}
+        tier2_hit = routing_skip if _tier2_entity_binding(routing_skip) else None
 
         candidates_by_agent: dict[str, list[EntityCandidate]] = {}
-        if routing_skip is not None:
-            # Routing-cache hit: single pass was already visibility-filtered
-            # and preferred-domain ranked for this agent.
-            candidates_by_agent[routing_skip.agent_id] = [
-                EntityCandidate(entity_id=r.entity_id, friendly_name=r.friendly_name or "", score=r.score)
-                for r in pool[:_INGRESS_CANDIDATE_K]
+        source = "ingress_matcher"
+        if tier2_hit is not None:
+            # Tier 2: build the envelope from the cached entity bindings --
+            # the matcher pass was skipped in the prelude. No visibility
+            # re-filter here: the fail-closed per-entity recheck already ran
+            # in routing_hit_is_still_valid before the hit was accepted, and
+            # the agent fast path re-filters against a fresh snapshot anyway.
+            candidates_by_agent[tier2_hit.agent_id] = [
+                EntityCandidate(entity_id=eid, friendly_name=name or "", score=score)
+                for eid, name, score in tier2_hit.entity_candidates
             ]
+            source = "routing_cache"
+        elif ingress_task is None or self._entity_matcher is None:
+            return {}
         else:
-            seen: set[str] = set()
-            for agent_id, *_rest in classifications:
-                if agent_id in seen or agent_id in _INGRESS_NO_CANDIDATE_AGENTS:
-                    continue
-                seen.add(agent_id)
-                try:
-                    visible = await self._entity_matcher.filter_visible_results(agent_id, pool)
-                except Exception:
-                    logger.debug("Ingress candidate visibility filter failed for %s", agent_id, exc_info=True)
-                    continue
-                ranked = self._rerank_pool_for_agent(visible, _agent_preferred_domains(agent_id))
-                top = ranked[:_INGRESS_CANDIDATE_K]
-                if top:
-                    candidates_by_agent[agent_id] = [
-                        EntityCandidate(entity_id=r.entity_id, friendly_name=r.friendly_name or "", score=r.score)
-                        for r in top
-                    ]
+            try:
+                pool = await ingress_task
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.debug("Ingress entity resolution failed", exc_info=True)
+                return {}
+
+            if routing_skip is not None:
+                # Routing-cache hit: single pass was already visibility-filtered
+                # and preferred-domain ranked for this agent.
+                candidates_by_agent[routing_skip.agent_id] = [
+                    EntityCandidate(entity_id=r.entity_id, friendly_name=r.friendly_name or "", score=r.score)
+                    for r in pool[:_INGRESS_CANDIDATE_K]
+                ]
+            else:
+                seen: set[str] = set()
+                for agent_id, *_rest in classifications:
+                    if agent_id in seen or agent_id in _INGRESS_NO_CANDIDATE_AGENTS:
+                        continue
+                    seen.add(agent_id)
+                    try:
+                        visible = await self._entity_matcher.filter_visible_results(agent_id, pool)
+                    except Exception:
+                        logger.debug("Ingress candidate visibility filter failed for %s", agent_id, exc_info=True)
+                        continue
+                    ranked = self._rerank_pool_for_agent(visible, _agent_preferred_domains(agent_id))
+                    top = ranked[:_INGRESS_CANDIDATE_K]
+                    if top:
+                        candidates_by_agent[agent_id] = [
+                            EntityCandidate(entity_id=r.entity_id, friendly_name=r.friendly_name or "", score=r.score)
+                            for r in top
+                        ]
 
         async with _optional_span(span_collector, "ingress_candidates", agent_id="orchestrator") as span:
             span["metadata"]["candidates"] = {
@@ -1392,6 +1427,7 @@ class OrchestratorAgent(BaseAgent):
                 ]
                 for aid, cands in candidates_by_agent.items()
             }
+            span["metadata"]["source"] = source
         return candidates_by_agent
 
     @staticmethod
@@ -1499,6 +1535,7 @@ class OrchestratorAgent(BaseAgent):
         routed_to: str | None = None,
         skip_response_cache: bool = False,
         used_origin_context: bool = False,
+        candidates: list[EntityCandidate] | None = None,
         ret_span: dict | None = None,
     ) -> tuple[str, bool]:
         """Run post-mediation finalization: merge voice followup, store cache/turn/trace."""
@@ -1529,6 +1566,7 @@ class OrchestratorAgent(BaseAgent):
                 action_executed=action_executed,
                 has_error=has_error,
                 task=task,
+                candidates=candidates,
                 merged_multi_agent=False,
                 used_origin_context=used_origin_context,
             )
@@ -1588,6 +1626,7 @@ class OrchestratorAgent(BaseAgent):
         skip_mediation_on_error: bool = True,
         skip_response_cache: bool = False,
         used_origin_context: bool = False,
+        candidates: list[EntityCandidate] | None = None,
         mediation_inputs: tuple[str | None, bool] | None = None,
     ) -> tuple[str, bool]:
         """Run the shared single-agent / sequential-send finalization
@@ -1679,6 +1718,7 @@ class OrchestratorAgent(BaseAgent):
                 routed_to=routed_to,
                 skip_response_cache=skip_response_cache,
                 used_origin_context=used_origin_context,
+                candidates=candidates,
                 ret_span=ret_span,
             )
 
@@ -1895,6 +1935,7 @@ class OrchestratorAgent(BaseAgent):
             used_origin_context,
             confidence=confidence,
             condensed_task=condensed_task,
+            candidates=prelude.candidates.get(dispatch_result.target_agent) or None,
         )
         response["conversation_id"] = conversation_id
         return response
@@ -2695,6 +2736,7 @@ class OrchestratorAgent(BaseAgent):
                 routed_to=target_agent,
                 skip_response_cache=False,
                 used_origin_context=used_origin_context,
+                candidates=prelude.candidates.get(target_agent) or None,
             )
         else:
             # Existing blocking path. The mediation probe was already
@@ -2719,6 +2761,7 @@ class OrchestratorAgent(BaseAgent):
                 mediation_agent=target_agent,
                 skip_mediation_on_error=False,
                 used_origin_context=used_origin_context,
+                candidates=prelude.candidates.get(target_agent) or None,
                 mediation_inputs=(reminder_text, allow_organic_followup),
             )
 
