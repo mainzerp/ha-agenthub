@@ -326,6 +326,31 @@
                                     x-text="selectedSpan.metadata.routing_cached ? 'Yes' : 'No'"></span>
                             </div>
                         </template>
+                        <template x-if="selectedSpan.metadata && selectedSpan.metadata.cache_tier !== undefined">
+                            <div class="span-detail-row">
+                                <span class="span-detail-label">Cache Tier</span>
+                                <span class="badge badge-blue" x-text="'Tier ' + selectedSpan.metadata.cache_tier"></span>
+                            </div>
+                        </template>
+                        <template x-if="selectedSpan.metadata && selectedSpan.metadata.hit_type">
+                            <div class="span-detail-row">
+                                <span class="span-detail-label">Hit Type</span>
+                                <span class="text-mono" x-text="selectedSpan.metadata.hit_type"></span>
+                            </div>
+                        </template>
+                        <template x-if="selectedSpan.metadata && selectedSpan.metadata.skipped !== undefined">
+                            <div class="span-detail-row">
+                                <span class="span-detail-label">Skipped</span>
+                                <span :class="selectedSpan.metadata.skipped ? 'badge badge-green' : 'badge badge-muted'"
+                                    x-text="selectedSpan.metadata.skipped ? 'Yes' : 'No'"></span>
+                            </div>
+                        </template>
+                        <template x-if="selectedSpan.metadata && selectedSpan.metadata.source">
+                            <div class="span-detail-row">
+                                <span class="span-detail-label">Source</span>
+                                <span class="text-mono" x-text="selectedSpan.metadata.source"></span>
+                            </div>
+                        </template>
                         <template x-if="selectedSpan.metadata && selectedSpan.metadata.target_agent">
                             <div class="span-detail-row">
                                 <span class="span-detail-label">Target Agent</span>

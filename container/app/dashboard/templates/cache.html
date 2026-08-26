@@ -230,6 +230,10 @@
                             <div class="span-detail-label">Entity IDs</div>
                             <pre class="span-detail-content" x-text="JSON.stringify(dashParseJsonSafe(selectedEntry.entity_ids), null, 2) || '-'"></pre>
                         </div>
+                        <div class="span-detail-row span-detail-wide">
+                            <div class="span-detail-label">Entity Candidates (Tier 2)</div>
+                            <pre class="span-detail-content" x-text="JSON.stringify(dashParseJsonSafe(selectedEntry.entity_candidates), null, 2) || '-'"></pre>
+                        </div>
                         <div class="span-detail-row">
                             <div class="span-detail-label">Created At</div>
                             <pre class="span-detail-content" x-text="dashFormatTimestamp(selectedEntry.created_at)"></pre>
