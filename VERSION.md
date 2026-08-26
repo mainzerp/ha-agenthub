@@ -1,12 +1,21 @@
 # Version
 
-**Current Version:** 1.49.2
+**Current Version:** 1.50.0
 
 ## Recent Changes
 
-(tracking changes since 1.49.2)
+(tracking changes since 1.50.0)
 
 ## Version History
+
+### 1.50.0 (MINOR) -- routing cache tier 2: entity bindings, tier visibility in dashboard
+
+(commits 4bb1178, e3745bb)
+
+- feat(cache): routing-cache exact hits now persist and consume resolved entity candidates (entity_id, friendly_name, score), skipping the ingress matcher pass and the agent-side deterministic re-resolution (Tier 2); agent LLM and HA execution still run live (commit 4bb1178)
+- feat(cache): routing cache schema bumped to v5 (startup purges v4 entries; action cache unchanged); `cache_lookup` span metadata `cache_tier` migrated from strings to numeric 0-3 (commit 4bb1178)
+- feat(cache): semantic hits, empty candidate payloads and failed visibility rechecks fall back to Tier 1 (drift guard: entity bindings are consumed on exact hits only) (commit 4bb1178)
+- feat(dashboard): trace detail span panel shows cache tier badge (Tier 0-3), hit type, and skipped/source for cache-skipped spans; cache page routing entry detail shows entity candidates (commit e3745bb)
 
 ### 1.49.2 (PATCH) -- sentence-transformers 6.0, dependency updates
 
