@@ -1,12 +1,21 @@
 # Version
 
-**Current Version:** 1.50.0
+**Current Version:** 1.50.1
 
 ## Recent Changes
 
-(tracking changes since 1.50.0)
+(tracking changes since 1.50.1)
 
 ## Version History
+
+### 1.50.1 (PATCH) -- entity matcher underscore/plural tolerance, voice follow-up idle gating
+
+(commits a05ae48, 40aa91b, 6dcaa6e)
+
+- fix(entity): normalize underscores to spaces in tokenization and deterministic lookup so underscore-joined queries and cached snake_case query expansions match (e.g. jalousie_mitte -> cover.jalousie_mitte via exact_friendly_name) (commit a05ae48)
+- fix(entity): length-guarded near-miss token coverage (Levenshtein >= 0.85) in the span loop so close singular/plural name variants resolve (Jalousien Mitte -> Jalousie mitte, previously no_match); postings, embeddings and thresholds unchanged (commit a05ae48)
+- fix(integration): sentence-stream voice follow-up now waits for the satellite to return to idle (max 8 s) before assist_satellite.start_conversation and skips on a newer turn — fixes satellites stuck in processing when the response arrived in a single end-of-turn burst; shared _SatelliteIdleTracker with _post_filler_push, explicit HomeAssistantError handling (commit 40aa91b)
+- docs(troubleshooting): document matcher tolerance and follow-up idle gating (commit 6dcaa6e)
 
 ### 1.50.0 (MINOR) -- routing cache tier 2: entity bindings, tier visibility in dashboard
 
