@@ -182,13 +182,13 @@ docker compose restart ha-agenthub
 
 **Symptoms:** After a turn, the microphone does not stay open for follow-up.
 
-**Fix:** Check the `voice_followup` field in the conversation response. The orchestrator sets `ConversationResult.continue_conversation` based on the turn context. Since 1.19.2, this behavior has been refined; ensure your HA integration is up to date.
+**Fix:** Check the `voice_followup` field in the conversation response. The orchestrator sets `ConversationResult.continue_conversation` based on the turn context. Since 1.19.2, this behavior has been refined; ensure your HA integration is up to date. On streamed sentence handoffs the integration waits for the satellite to return to idle (max ~8 s) before re-opening the microphone and skips the follow-up when a new turn already started; if the satellite never reaches idle, the follow-up is dropped by design.
 
 ## Entity Not Found with LLM Clarification
 
 **Symptoms:** The assistant asks clarifying questions instead of acting when an entity is not found.
 
-**Fix:** Since 1.19.0, the orchestrator dispatches LLM clarification turns when entity resolution fails. This is expected behavior. If you prefer the old silent failure mode, there is no toggle; ensure entity aliases and visibility rules are correct to minimize not-found cases.
+**Fix:** Since 1.19.0, the orchestrator dispatches LLM clarification turns when entity resolution fails. This is expected behavior. If you prefer the old silent failure mode, there is no toggle; ensure entity aliases and visibility rules are correct to minimize not-found cases. The matcher tolerates underscore-joined queries (e.g. `jalousie_mitte`) and close singular/plural name variants; adding an HA alias remains the reliable fix for names that differ more.
 
 ## Log Inspection
 
