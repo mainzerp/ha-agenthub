@@ -57,6 +57,66 @@ PUSH_FINAL_WAIT_SECONDS = 45.0
 MAX_POST_FILLER_WAIT_SECONDS = 8.0
 
 
+class _SatelliteIdleTracker:
+    """Track a satellite's idle/busy transitions for follow-up gating.
+
+    Subscribes to state changes of the satellite entity; ``observed_idle``
+    is set once the satellite is (or becomes) idle, and ``aborted_new_turn``
+    marks a busy transition after idle (a new user turn) that should abort
+    any pending follow-up trigger.
+    """
+
+    def __init__(self, hass: HomeAssistant, satellite_entity_id: str | None) -> None:
+        self._hass = hass
+        self._satellite_entity_id = satellite_entity_id
+        self.observed_idle = asyncio.Event()
+        self.aborted_new_turn = False
+        self._unsub: Callable[[], None] | None = None
+
+    def start(self) -> None:
+        """Subscribe to satellite state changes and seed the current state."""
+        if not self._satellite_entity_id or async_track_state_change_event is None:
+            return
+
+        def _on_state(event) -> None:
+            new_state = event.data.get("new_state") if event else None
+            new_state_value = getattr(new_state, "state", None)
+            if new_state_value in _SAT_IDLE_STATES:
+                self.observed_idle.set()
+            elif new_state_value in _SAT_BUSY_STATES and self.observed_idle.is_set():
+                self.aborted_new_turn = True
+                self.observed_idle.set()
+
+        self._unsub = async_track_state_change_event(
+            self._hass,
+            [self._satellite_entity_id],
+            _on_state,
+        )
+        try:
+            current = self._hass.states.get(self._satellite_entity_id)
+            if current is not None and current.state in _SAT_IDLE_STATES:
+                self.observed_idle.set()
+        except (ValueError, KeyError):
+            logger.debug("ha-agenthub: state seed lookup failed", exc_info=True)
+
+    async def wait_idle(self, timeout: float) -> bool:
+        """Wait for the satellite to reach idle; return False on timeout."""
+        if not self.observed_idle.is_set():
+            try:
+                await asyncio.wait_for(self.observed_idle.wait(), timeout=timeout)
+            except asyncio.TimeoutError:
+                return False
+        return True
+
+    def close(self) -> None:
+        """Unsubscribe from satellite state changes."""
+        if self._unsub is not None:
+            try:
+                self._unsub()
+            except (ValueError, KeyError):
+                logger.debug("ha-agenthub: state listener unsub raised", exc_info=True)
+
+
 def _is_sentence_boundary(text: str) -> bool:
     """Return True if text ends with a sentence boundary and has at least one word."""
     if not text or not text.strip():
@@ -640,35 +700,12 @@ class HaAgentHubConversationEntity(
         """
         sentence_buffer = ""
         pending_sentences: list[str] = []
-        observed_idle = asyncio.Event()
-        aborted_new_turn = False
         voice_followup = False
         stream_sanitized = False
-        unsub: Callable[[], None] | None = None
-
-        def _on_state(event) -> None:
-            nonlocal aborted_new_turn
-            new_state = event.data.get("new_state") if event else None
-            new_state_value = getattr(new_state, "state", None)
-            if new_state_value in _SAT_IDLE_STATES:
-                observed_idle.set()
-            elif new_state_value in _SAT_BUSY_STATES and observed_idle.is_set():
-                aborted_new_turn = True
-                observed_idle.set()
+        tracker = _SatelliteIdleTracker(self.hass, satellite_entity_id)
 
         try:
-            if satellite_entity_id and async_track_state_change_event is not None:
-                unsub = async_track_state_change_event(
-                    self.hass,
-                    [satellite_entity_id],
-                    _on_state,
-                )
-                try:
-                    current = self.hass.states.get(satellite_entity_id)
-                    if current is not None and current.state in _SAT_IDLE_STATES:
-                        observed_idle.set()
-                except (ValueError, KeyError):
-                    logger.debug("ha-agenthub: state seed lookup failed", exc_info=True)
+            tracker.start()
 
             announced_any = False
             deadline_final = time.monotonic() + PUSH_FINAL_WAIT_SECONDS
@@ -714,7 +751,10 @@ class HaAgentHubConversationEntity(
                         sentence_buffer += token_text
                         if _is_sentence_boundary(sentence_buffer):
                             clean = sentence_buffer.strip()
-                            if observed_idle.is_set() and not aborted_new_turn:
+                            if (
+                                tracker.observed_idle.is_set()
+                                and not tracker.aborted_new_turn
+                            ):
                                 await self._announce_sentence(
                                     satellite_entity_id,
                                     clean,
@@ -738,7 +778,10 @@ class HaAgentHubConversationEntity(
                         voice_followup = bool(data.get("voice_followup", False))
                         if sentence_buffer.strip():
                             clean = sentence_buffer.strip()
-                            if observed_idle.is_set() and not aborted_new_turn:
+                            if (
+                                tracker.observed_idle.is_set()
+                                and not tracker.aborted_new_turn
+                            ):
                                 await self._announce_sentence(
                                     satellite_entity_id,
                                     clean,
@@ -770,22 +813,16 @@ class HaAgentHubConversationEntity(
                 )
                 return
 
-            if not observed_idle.is_set():
-                try:
-                    await asyncio.wait_for(
-                        observed_idle.wait(),
-                        timeout=MAX_POST_FILLER_WAIT_SECONDS,
-                    )
-                except asyncio.TimeoutError:
-                    logger.warning(
-                        "ha-agenthub: post-filler push satellite never reached idle within %.1fs key=%s sat=%s",
-                        MAX_POST_FILLER_WAIT_SECONDS,
-                        gate_key,
-                        satellite_entity_id,
-                    )
-                    return
+            if not await tracker.wait_idle(MAX_POST_FILLER_WAIT_SECONDS):
+                logger.warning(
+                    "ha-agenthub: post-filler push satellite never reached idle within %.1fs key=%s sat=%s",
+                    MAX_POST_FILLER_WAIT_SECONDS,
+                    gate_key,
+                    satellite_entity_id,
+                )
+                return
 
-            if aborted_new_turn:
+            if tracker.aborted_new_turn:
                 logger.info(
                     "ha-agenthub: abandoning post-filler push (new turn detected) key=%s sat=%s",
                     gate_key,
@@ -799,7 +836,7 @@ class HaAgentHubConversationEntity(
                     satellite_entity_id, sentence, stream_sanitized, gate_key
                 )
 
-            if voice_followup and satellite_entity_id and not aborted_new_turn:
+            if voice_followup and satellite_entity_id and not tracker.aborted_new_turn:
                 try:
                     await self.hass.services.async_call(
                         "assist_satellite",
@@ -815,6 +852,13 @@ class HaAgentHubConversationEntity(
                         "ha-agenthub: post-filler push triggered voice follow-up key=%s sat=%s",
                         gate_key,
                         satellite_entity_id,
+                    )
+                except HomeAssistantError:
+                    logger.warning(
+                        "ha-agenthub: assist_satellite.start_conversation raised HomeAssistantError in push key=%s sat=%s",
+                        gate_key,
+                        satellite_entity_id,
+                        exc_info=True,
                     )
                 except (aiohttp.ClientError, OSError):
                     logger.warning(
@@ -838,13 +882,7 @@ class HaAgentHubConversationEntity(
                 exc_info=True,
             )
         finally:
-            if unsub is not None:
-                try:
-                    unsub()
-                except (ValueError, KeyError):
-                    logger.debug(
-                        "ha-agenthub: state listener unsub raised", exc_info=True
-                    )
+            tracker.close()
             try:
                 if local_ws is not None and not local_ws.closed:
                     await local_ws.close()
@@ -894,12 +932,19 @@ class HaAgentHubConversationEntity(
         key: str,
         initial_buffer: str = "",
     ) -> None:
-        """Read remaining mediated tokens and announce sentence by sentence."""
+        """Read remaining mediated tokens and announce sentence by sentence.
+
+        The voice follow-up waits for the satellite to return to idle and
+        is skipped when a new turn was detected.
+        """
         sentence_buffer = initial_buffer
         voice_followup = False
         stream_sanitized = False
+        tracker = _SatelliteIdleTracker(self.hass, satellite_entity_id)
 
         try:
+            tracker.start()
+
             announced_any = False
             deadline_final = time.monotonic() + PUSH_FINAL_WAIT_SECONDS
             while True:
@@ -981,29 +1026,50 @@ class HaAgentHubConversationEntity(
                     break
 
             if voice_followup and satellite_entity_id:
-                try:
-                    await self.hass.services.async_call(
-                        "assist_satellite",
-                        "start_conversation",
-                        {
-                            "entity_id": satellite_entity_id,
-                            "start_message": "",
-                            "preannounce": False,
-                        },
-                        blocking=False,
-                    )
-                    logger.info(
-                        "ha-agenthub: sentence stream triggered voice follow-up key=%s sat=%s",
-                        gate_key,
-                        satellite_entity_id,
-                    )
-                except (aiohttp.ClientError, OSError):
+                if not await tracker.wait_idle(MAX_POST_FILLER_WAIT_SECONDS):
                     logger.warning(
-                        "ha-agenthub: assist_satellite.start_conversation failed in sentence stream key=%s sat=%s",
+                        "ha-agenthub: sentence stream satellite never reached idle within %.1fs key=%s sat=%s",
+                        MAX_POST_FILLER_WAIT_SECONDS,
                         gate_key,
                         satellite_entity_id,
-                        exc_info=True,
                     )
+                elif tracker.aborted_new_turn:
+                    logger.info(
+                        "ha-agenthub: sentence stream abandoning voice follow-up (new turn detected) key=%s sat=%s",
+                        gate_key,
+                        satellite_entity_id,
+                    )
+                else:
+                    try:
+                        await self.hass.services.async_call(
+                            "assist_satellite",
+                            "start_conversation",
+                            {
+                                "entity_id": satellite_entity_id,
+                                "start_message": "",
+                                "preannounce": False,
+                            },
+                            blocking=False,
+                        )
+                        logger.info(
+                            "ha-agenthub: sentence stream triggered voice follow-up key=%s sat=%s",
+                            gate_key,
+                            satellite_entity_id,
+                        )
+                    except HomeAssistantError:
+                        logger.warning(
+                            "ha-agenthub: assist_satellite.start_conversation raised HomeAssistantError in sentence stream key=%s sat=%s",
+                            gate_key,
+                            satellite_entity_id,
+                            exc_info=True,
+                        )
+                    except (aiohttp.ClientError, OSError):
+                        logger.warning(
+                            "ha-agenthub: assist_satellite.start_conversation failed in sentence stream key=%s sat=%s",
+                            gate_key,
+                            satellite_entity_id,
+                            exc_info=True,
+                        )
         except asyncio.CancelledError:
             logger.info(
                 "ha-agenthub: sentence stream cancelled key=%s sat=%s",
@@ -1019,6 +1085,7 @@ class HaAgentHubConversationEntity(
                 exc_info=True,
             )
         finally:
+            tracker.close()
             try:
                 if local_ws is not None and not local_ws.closed:
                     await local_ws.close()

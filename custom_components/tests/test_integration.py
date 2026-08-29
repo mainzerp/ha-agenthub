@@ -1372,3 +1372,426 @@ class TestSatelliteMappingCache:
         other.data = {"action": "update", "entity_id": "light.kitchen"}
         callback(other)
         assert entity._satellite_cache == {"dev-1": "assist_satellite.kitchen"}
+
+
+# ---------------------------------------------------------------------------
+# Voice follow-up gating: _sentence_stream_task + _post_filler_push parity
+# ---------------------------------------------------------------------------
+
+
+class _VoiceFollowupTestBase:
+    """Shared helpers for the satellite follow-up tests.
+
+    Unlike TestWsLockNarrowing, ``async_create_background_task`` actually
+    schedules the coroutine so the background push/stream task runs, and
+    ``async_track_state_change_event`` is patched with a fake that records
+    the state callback so tests can drive satellite transitions manually.
+    """
+
+    SAT = "assist_satellite.kitchen"
+
+    def _make_entity(self):
+        from custom_components.ha_agenthub.conversation import (
+            HaAgentHubConversationEntity,
+        )
+
+        entry = MagicMock()
+        entry.entry_id = "test-entry"
+        entry.options = {}
+        entry.async_create_background_task = MagicMock(
+            side_effect=lambda hass, coro, name=None: asyncio.create_task(coro)
+        )
+        entry.async_on_unload = MagicMock()
+        entity = HaAgentHubConversationEntity(entry, "http://example.com", "key")
+        entity.hass = MagicMock()
+        entity.hass.services.async_call = AsyncMock()
+        return entity
+
+    def _make_ws(self, receive):
+        ws = MagicMock()
+        ws.closed = False
+        ws.close = AsyncMock()
+        ws.receive = receive
+        return ws
+
+    def _make_user_input(self, cid: str = "c1", device_id: str | None = "dev-1"):
+        user_input = MagicMock()
+        user_input.conversation_id = cid
+        user_input.text = "hello"
+        user_input.language = "en"
+        user_input.device_id = device_id
+        return user_input
+
+    def _text_frame(self, payload: dict):
+        import json
+
+        import aiohttp
+
+        return MagicMock(type=aiohttp.WSMsgType.TEXT, data=json.dumps(payload))
+
+    def _state_event(self, state: str):
+        return MagicMock(data={"new_state": MagicMock(state=state)})
+
+    def _track_states(self):
+        """Patch the state subscription; return (patcher, recorded callbacks)."""
+        callbacks: list = []
+
+        def _fake_track(hass, entity_ids, callback):
+            callbacks.append(callback)
+            return MagicMock()
+
+        patcher = patch(
+            "custom_components.ha_agenthub.conversation.async_track_state_change_event",
+            side_effect=_fake_track,
+        )
+        return patcher, callbacks
+
+    def _service_calls(self, entity, service: str) -> list:
+        return [
+            call
+            for call in entity.hass.services.async_call.call_args_list
+            if call.args[1] == service
+        ]
+
+
+class TestSentenceStreamFollowup(_VoiceFollowupTestBase):
+    """The sentence stream gates the voice follow-up on satellite idle."""
+
+    @pytest.mark.asyncio
+    async def test_followup_waits_for_satellite_idle(self):
+        entity = self._make_entity()
+        entity.hass.states.get.return_value = MagicMock(state="responding")
+        done = self._text_frame(
+            {
+                "done": True,
+                "token": "Hallo.",
+                "voice_followup": True,
+                "sanitized": True,
+            }
+        )
+        ws = self._make_ws(AsyncMock(return_value=done))
+        patcher, callbacks = self._track_states()
+
+        with patcher:
+            task = asyncio.create_task(
+                entity._sentence_stream_task(
+                    local_ws=ws,
+                    satellite_entity_id=self.SAT,
+                    gate_key="g1",
+                    key=self.SAT,
+                )
+            )
+            await asyncio.sleep(0.05)
+            # Satellite still busy: the follow-up must not fire yet.
+            assert self._service_calls(entity, "start_conversation") == []
+            assert len(callbacks) == 1
+            callbacks[0](self._state_event("idle"))
+            await asyncio.wait_for(task, timeout=1.0)
+
+        calls = self._service_calls(entity, "start_conversation")
+        assert len(calls) == 1
+        assert calls[0].args[0] == "assist_satellite"
+        assert calls[0].args[2] == {
+            "entity_id": self.SAT,
+            "start_message": "",
+            "preannounce": False,
+        }
+        ws.close.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_followup_skipped_on_idle_timeout(self, caplog):
+        import logging
+
+        entity = self._make_entity()
+        entity.hass.states.get.return_value = MagicMock(state="responding")
+        done = self._text_frame(
+            {"done": True, "voice_followup": True, "sanitized": True}
+        )
+        ws = self._make_ws(AsyncMock(return_value=done))
+        patcher, _callbacks = self._track_states()
+
+        with (
+            patch(
+                "custom_components.ha_agenthub.conversation"
+                ".MAX_POST_FILLER_WAIT_SECONDS",
+                0.05,
+            ),
+            caplog.at_level(
+                logging.WARNING, logger="custom_components.ha_agenthub.conversation"
+            ),
+            patcher,
+        ):
+            task = asyncio.create_task(
+                entity._sentence_stream_task(
+                    local_ws=ws,
+                    satellite_entity_id=self.SAT,
+                    gate_key="g1",
+                    key=self.SAT,
+                )
+            )
+            await asyncio.wait_for(task, timeout=2.0)
+
+        assert self._service_calls(entity, "start_conversation") == []
+        assert any(
+            "sentence stream satellite never reached idle" in r.getMessage()
+            for r in caplog.records
+        )
+        ws.close.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_followup_aborted_by_new_turn(self, caplog):
+        import logging
+
+        entity = self._make_entity()
+        entity.hass.states.get.return_value = MagicMock(state="idle")
+        gate = asyncio.Event()
+
+        async def _receive():
+            await gate.wait()
+            return self._text_frame(
+                {"done": True, "voice_followup": True, "sanitized": True}
+            )
+
+        ws = self._make_ws(AsyncMock(side_effect=_receive))
+        patcher, callbacks = self._track_states()
+
+        with (
+            caplog.at_level(
+                logging.INFO, logger="custom_components.ha_agenthub.conversation"
+            ),
+            patcher,
+        ):
+            task = asyncio.create_task(
+                entity._sentence_stream_task(
+                    local_ws=ws,
+                    satellite_entity_id=self.SAT,
+                    gate_key="g1",
+                    key=self.SAT,
+                )
+            )
+            await asyncio.sleep(0.05)
+            assert len(callbacks) == 1
+            # Seeded idle, then busy again before the stream finished: new turn.
+            callbacks[0](self._state_event("listening"))
+            gate.set()
+            await asyncio.wait_for(task, timeout=1.0)
+
+        assert self._service_calls(entity, "start_conversation") == []
+        assert any(
+            "sentence stream abandoning voice follow-up" in r.getMessage()
+            for r in caplog.records
+        )
+        ws.close.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_followup_fires_immediately_when_seeded_idle(self):
+        entity = self._make_entity()
+        entity.hass.states.get.return_value = MagicMock(state="idle")
+        done = self._text_frame(
+            {"done": True, "voice_followup": True, "sanitized": True}
+        )
+        ws = self._make_ws(AsyncMock(return_value=done))
+        patcher, callbacks = self._track_states()
+
+        with patcher:
+            task = asyncio.create_task(
+                entity._sentence_stream_task(
+                    local_ws=ws,
+                    satellite_entity_id=self.SAT,
+                    gate_key="g1",
+                    key=self.SAT,
+                )
+            )
+            await asyncio.wait_for(task, timeout=1.0)
+
+        # Subscribed, but no state transition was needed.
+        assert len(callbacks) == 1
+        assert len(self._service_calls(entity, "start_conversation")) == 1
+        ws.close.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_sentence_boundary_early_return_spawns_stream(self):
+        import custom_components.ha_agenthub.conversation as conv_mod
+
+        entity = self._make_entity()
+        entity._resolve_satellite_entity = MagicMock(return_value=self.SAT)
+        entity.hass.states.get.return_value = MagicMock(state="idle")
+        frames = [
+            self._text_frame({"token": "Erster Satz."}),
+            self._text_frame(
+                {
+                    "done": True,
+                    "token": "Zweiter Satz.",
+                    "voice_followup": True,
+                    "sanitized": True,
+                }
+            ),
+        ]
+        ws = self._make_ws(AsyncMock(side_effect=frames))
+        recorded: list = []
+        real_result_cls = conv_mod.conversation.ConversationResult
+
+        def _recording_result(**kwargs):
+            recorded.append(kwargs)
+            return real_result_cls(**kwargs)
+
+        patcher, _callbacks = self._track_states()
+        with (
+            patch.object(
+                conv_mod.conversation,
+                "ConversationResult",
+                side_effect=_recording_result,
+            ),
+            patcher,
+        ):
+            result = await entity._process_via_ws_read(self._make_user_input(), ws)
+            # Socket ownership moved to the stream task, not closed here.
+            ws.close.assert_not_awaited()
+            stream_task = entity._inflight_pushes[self.SAT]
+            await asyncio.wait_for(stream_task, timeout=1.0)
+
+        assert result is not None
+        assert len(recorded) == 1
+        assert "continue_conversation" not in recorded[0]
+        response = recorded[0]["response"]
+        response.async_set_speech.assert_called_once_with("Erster Satz.")
+        # The stream task announced the rest, fired the follow-up, closed the socket.
+        assert len(self._service_calls(entity, "announce")) == 1
+        assert len(self._service_calls(entity, "start_conversation")) == 1
+        ws.close.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_start_conversation_home_assistant_error_logged(self, caplog):
+        import logging
+
+        from homeassistant.exceptions import HomeAssistantError
+
+        entity = self._make_entity()
+        entity.hass.states.get.return_value = MagicMock(state="idle")
+
+        async def _svc(domain, service, data, blocking=False):
+            if service == "start_conversation":
+                raise HomeAssistantError("boom")
+
+        entity.hass.services.async_call = AsyncMock(side_effect=_svc)
+        done = self._text_frame(
+            {"done": True, "voice_followup": True, "sanitized": True}
+        )
+        ws = self._make_ws(AsyncMock(return_value=done))
+        patcher, _callbacks = self._track_states()
+
+        with (
+            caplog.at_level(
+                logging.WARNING, logger="custom_components.ha_agenthub.conversation"
+            ),
+            patcher,
+        ):
+            task = asyncio.create_task(
+                entity._sentence_stream_task(
+                    local_ws=ws,
+                    satellite_entity_id=self.SAT,
+                    gate_key="g1",
+                    key=self.SAT,
+                )
+            )
+            await asyncio.wait_for(task, timeout=1.0)
+
+        assert any(
+            "start_conversation raised HomeAssistantError in sentence stream"
+            in r.getMessage()
+            for r in caplog.records
+        )
+        ws.close.assert_awaited_once()
+
+
+class TestPostFillerPushParity(_VoiceFollowupTestBase):
+    """Parity lock for _post_filler_push after the _SatelliteIdleTracker refactor."""
+
+    @pytest.mark.asyncio
+    async def test_pending_sentences_flushed_after_idle_then_followup(self):
+        entity = self._make_entity()
+        entity.hass.states.get.return_value = MagicMock(state="responding")
+        frames = [
+            self._text_frame({"token": "Eins."}),
+            self._text_frame({"token": "Zwei."}),
+            self._text_frame({"done": True, "voice_followup": True, "sanitized": True}),
+        ]
+        ws = self._make_ws(AsyncMock(side_effect=frames))
+        patcher, callbacks = self._track_states()
+
+        with patcher:
+            task = asyncio.create_task(
+                entity._post_filler_push(
+                    local_ws=ws,
+                    satellite_entity_id=self.SAT,
+                    gate_key="g1",
+                    key=self.SAT,
+                )
+            )
+            await asyncio.sleep(0.05)
+            # Satellite busy: sentences buffered, nothing announced yet.
+            entity.hass.services.async_call.assert_not_called()
+            callbacks[0](self._state_event("idle"))
+            await asyncio.wait_for(task, timeout=1.0)
+
+        services = [
+            call.args[1] for call in entity.hass.services.async_call.call_args_list
+        ]
+        assert services == ["announce", "announce", "start_conversation"]
+        announce_calls = self._service_calls(entity, "announce")
+        assert announce_calls[0].args[2]["message"] == "Eins."
+        assert announce_calls[1].args[2]["message"] == "Zwei."
+        ws.close.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_push_aborted_by_new_turn_skips_flush_and_followup(self, caplog):
+        import logging
+
+        entity = self._make_entity()
+        entity.hass.states.get.return_value = MagicMock(state="responding")
+        gate = asyncio.Event()
+        first = self._text_frame({"token": "Eins."})
+        done = self._text_frame(
+            {"done": True, "voice_followup": True, "sanitized": True}
+        )
+        calls = 0
+
+        async def _receive():
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                return first
+            await gate.wait()
+            return done
+
+        ws = self._make_ws(AsyncMock(side_effect=_receive))
+        patcher, callbacks = self._track_states()
+
+        with (
+            caplog.at_level(
+                logging.INFO, logger="custom_components.ha_agenthub.conversation"
+            ),
+            patcher,
+        ):
+            task = asyncio.create_task(
+                entity._post_filler_push(
+                    local_ws=ws,
+                    satellite_entity_id=self.SAT,
+                    gate_key="g1",
+                    key=self.SAT,
+                )
+            )
+            await asyncio.sleep(0.05)
+            assert len(callbacks) == 1
+            # Idle reached, then busy again before the final frame: new turn.
+            callbacks[0](self._state_event("idle"))
+            callbacks[0](self._state_event("listening"))
+            gate.set()
+            await asyncio.wait_for(task, timeout=1.0)
+
+        entity.hass.services.async_call.assert_not_called()
+        assert any(
+            "abandoning post-filler push (new turn detected)" in r.getMessage()
+            for r in caplog.records
+        )
+        ws.close.assert_awaited_once()
