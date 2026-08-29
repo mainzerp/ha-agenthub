@@ -380,6 +380,7 @@ class TestMediaExecutorDomainValidation:
 
 
 from app.agents.automation_executor import execute_automation_action  # noqa: E402
+from app.agents.cover_executor import execute_cover_action  # noqa: E402
 from app.agents.scene_executor import execute_scene_action  # noqa: E402
 from app.agents.security_executor import execute_security_action  # noqa: E402
 
@@ -502,6 +503,35 @@ class TestSharedDeterministicResolution:
         )
 
         assert result["success"] is True
+        matcher.match.assert_not_awaited()
+        index.search.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_cover_underscore_query_resolves_exact_friendly_name(self):
+        """A3 regression guard: a user-typed snake_case query "jalousie_mitte"
+        normalizes to "jalousie mitte" and hits the exact friendly_name stage."""
+        ha_client = AsyncMock()
+        ha_client.get_state = AsyncMock(
+            return_value={
+                "state": "open",
+                "attributes": {"friendly_name": "Jalousie mitte", "current_position": 100},
+            }
+        )
+        matcher = AsyncMock(spec=EntityMatcher)
+        matcher.match = AsyncMock()
+        index = _make_listable_entity_index(make_entity_index_entry("cover.jalousie_mitte", "Jalousie mitte"))
+
+        result = await execute_cover_action(
+            {"action": "query_cover_state", "entity": "jalousie_mitte", "parameters": {}},
+            ha_client,
+            index,
+            matcher,
+            agent_id="cover-agent",
+        )
+
+        assert result["success"] is True
+        assert result["entity_id"] == "cover.jalousie_mitte"
+        assert result["metadata"]["resolution_path"] == "exact_friendly_name"
         matcher.match.assert_not_awaited()
         index.search.assert_not_called()
 

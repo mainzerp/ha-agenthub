@@ -17,8 +17,11 @@ import pytest_asyncio
 from fastapi import FastAPI
 
 from app.api.routes import entity_index_api
-from app.entity.matcher import MatchResult
+from app.entity.aliases import AliasResolver
+from app.entity.index import EntityIndex
+from app.entity.matcher import EntityMatcher, MatchResult
 from app.security.auth import require_admin_session
+from tests.helpers import make_entity_index_entry
 
 
 def _make_entry(entity_id: str, friendly_name: str, area: str | None = None):
@@ -625,3 +628,89 @@ async def test_match_preview_diagnostics_with_hybrid_error(preview_client):
     data = resp.json()
     assert data["hybrid_error"] == "boom"
     assert data["diagnostics"]["reason"] == "filtered_out"
+
+
+@pytest.mark.asyncio
+async def test_match_preview_underscore_query_exact_friendly_name(preview_client):
+    """A3 end-to-end: the real deterministic resolver normalizes the
+    user-typed snake_case query "jalousie_mitte" to "jalousie mitte" and
+    resolves via exact_friendly_name."""
+    client, ei, _em = preview_client
+    target = _make_entry("cover.jalousie_mitte", "Jalousie mitte", area=None)
+    ei.list_entries = MagicMock(return_value=[target])
+    ei.get_by_id = MagicMock(side_effect=lambda eid: target if eid == target.entity_id else None)
+
+    with patch(
+        "app.db.repository.EntityVisibilityRepository.get_rules",
+        new=AsyncMock(return_value=[]),
+    ):
+        resp = await client.get(
+            "/api/admin/entity-index/match-preview",
+            params={"q": "jalousie_mitte"},
+        )
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    det = data["deterministic"]
+    assert det["error"] is None
+    assert det["entity_id"] == "cover.jalousie_mitte"
+    assert det["metadata"]["resolution_path"] == "exact_friendly_name"
+
+
+@pytest.mark.asyncio
+async def test_match_preview_plural_query_hybrid_near_miss():
+    """B4 end-to-end: a real EntityMatcher surfaces the singular-named
+    cover.jalousie_mitte for the plural query "Jalousien Mitte" via
+    near-miss token coverage (Floor-Regel lifts the score to >= 0.65)."""
+    app = FastAPI()
+    app.dependency_overrides[require_admin_session] = lambda: {"user": "test"}
+    app.include_router(entity_index_api.router)
+
+    target = make_entity_index_entry("cover.jalousie_mitte", "Jalousie mitte", area=None)
+
+    entity_index = MagicMock(spec=EntityIndex)
+    entity_index.search_async = AsyncMock(return_value=[])
+    entity_index.find_by_tokens_async = AsyncMock(return_value=[target])
+    entity_index.get_by_id = MagicMock(side_effect=lambda eid: target if eid == target.entity_id else None)
+
+    def _get_by_ids(ids):
+        return {eid: target for eid in ids if eid == target.entity_id}
+
+    entity_index.get_by_ids = MagicMock(side_effect=_get_by_ids)
+    entity_index.get_by_ids_async = AsyncMock(side_effect=_get_by_ids)
+    entity_index.token_idf = MagicMock(side_effect=lambda tokens: {t: 1.0 for t in tokens})
+    entity_index.list_entries = MagicMock(return_value=[target])
+    entity_index.list_entries_async = AsyncMock(return_value=[target])
+
+    alias_resolver = AsyncMock(spec=AliasResolver)
+    alias_resolver.resolve = AsyncMock(return_value=None)
+
+    matcher = EntityMatcher(entity_index, alias_resolver)
+    matcher._weights = {
+        "levenshtein": 0.20,
+        "jaro_winkler": 0.20,
+        "phonetic": 0.15,
+        "embedding": 0.30,
+        "alias": 0.15,
+    }
+    matcher._confidence_threshold = 0.5
+    matcher._top_n = 3
+
+    app.state.entity_index = entity_index
+    app.state.entity_matcher = matcher
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        with patch(
+            "app.db.repository.EntityVisibilityRepository.get_rules",
+            new=AsyncMock(return_value=[]),
+        ):
+            resp = await client.get(
+                "/api/admin/entity-index/match-preview",
+                params={"q": "Jalousien Mitte"},
+            )
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["hybrid_error"] is None
+    assert data["hybrid"], "expected B4 near-miss coverage to surface the entity"
+    assert data["hybrid"][0]["entity_id"] == "cover.jalousie_mitte"
+    assert data["hybrid"][0]["score"] >= 0.65

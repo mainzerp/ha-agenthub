@@ -66,6 +66,13 @@ _MAX_SPAN_TOKENS = 4
 _FLOOR_SCORE = 0.65
 _FLOOR_MIN_SIMILARITY = 0.95
 
+# Near-miss token coverage: an entity token counts as covered by a span
+# when a span token is a close Levenshtein match (German plural/singular,
+# e.g. "jalousien" vs "jalousie"). Length-guarded so short tokens never
+# conflate. Only affects coverage/Floor-Regel, never the postings index.
+_COVERAGE_NEAR_MISS_MIN_SIMILARITY = 0.85
+_COVERAGE_NEAR_MISS_MIN_TOKEN_LEN = 4
+
 
 def _query_spans(tokens: list[str], max_len: int = _MAX_SPAN_TOKENS) -> list[tuple[str, frozenset[str]]]:
     """Enumerate unique contiguous n-gram spans (1..max_len) of normalized query tokens.
@@ -407,7 +414,7 @@ class EntityMatcher:
         # for. Spans are enumerated once per query.
         query = query.lower().strip()
         query_containment = _normalize_for_containment(query)
-        query_tokens = [t for t in re.split(r"\W+", query_containment) if t]
+        query_tokens = [t for t in re.split(r"[\W_]+", query_containment) if t]
         spans = _query_spans(query_tokens)
 
         # Batch-fetch metadata for all candidates to avoid N+1 ChromaDB calls.
@@ -442,7 +449,21 @@ class EntityMatcher:
             for span_text, span_tokens in spans:
                 if not span_tokens & entity_tokens:
                     continue
-                cov = _idf_coverage(entity_tokens, span_tokens, idf_map)
+                # Near-miss coverage: an entity token also counts as covered
+                # when a span token is a close Levenshtein match (e.g. German
+                # plural "jalousien" vs singular "jalousie"). Computed once
+                # per (candidate, span); only affects coverage/Floor-Regel.
+                covered = span_tokens | {
+                    et
+                    for et in entity_tokens - span_tokens
+                    if len(et) >= _COVERAGE_NEAR_MISS_MIN_TOKEN_LEN
+                    and any(
+                        len(st) >= _COVERAGE_NEAR_MISS_MIN_TOKEN_LEN
+                        and LevenshteinSignal.score(et, st) >= _COVERAGE_NEAR_MISS_MIN_SIMILARITY
+                        for st in span_tokens
+                    )
+                }
+                cov = _idf_coverage(entity_tokens, covered, idf_map)
                 lev = LevenshteinSignal.score(span_text, fn)
                 jw = JaroWinklerSignal.score(span_text, fn)
                 best_lev = max(best_lev, lev * cov)
@@ -450,11 +471,10 @@ class EntityMatcher:
                 # Floor-Regel detection: the entity name stands verbatim in
                 # the query (one span covers all friendly-name tokens with
                 # similarity >= 0.95 on normalized strings, so umlaut and
-                # digraph spellings count as the same name).
-                if (
-                    entity_tokens <= span_tokens
-                    and LevenshteinSignal.score(span_text, fn_norm) >= _FLOOR_MIN_SIMILARITY
-                ):
+                # digraph spellings count as the same name). Near-miss
+                # coverage lets plural spellings ("Jalousien Mitte" vs
+                # "Jalousie mitte") reach the floor too.
+                if entity_tokens <= covered and LevenshteinSignal.score(span_text, fn_norm) >= _FLOOR_MIN_SIMILARITY:
                     floored.add(result.entity_id)
             result.signal_scores["levenshtein"] = best_lev
             result.signal_scores["jaro_winkler"] = best_jw

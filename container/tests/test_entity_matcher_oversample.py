@@ -185,10 +185,15 @@ async def test_hidden_entities_excluded_before_scoring():
     called_ids = {r.entity_id for r in vis_mock.await_args.args[1]}
     assert called_ids == {"light.hidden", "light.visible"}
     assert not any(r.entity_id == "light.hidden" for r in results)
-    # Span signature: score(span_text, friendly_name) -- the hidden entity is
-    # never scored, and only query spans reach the signal.
-    scored_friendly_names = {call.args[1] for call in lev_mock.call_args_list}
-    assert "Hidden Light" not in scored_friendly_names
-    scored_spans = {call.args[0] for call in lev_mock.call_args_list}
-    assert scored_spans
+    # The hidden entity is never scored at all (checked across every call).
+    all_second_args = {call.args[1] for call in lev_mock.call_args_list}
+    assert "Hidden Light" not in all_second_args
+    # Span signature: score(span_text, friendly_name) -- only query spans
+    # reach the signal. Filter to these calls: the B4 near-miss coverage by
+    # design also calls score(entity_token, span_token) with token pairs
+    # (second arg is a span token, never a friendly name).
+    visible_names = {visible.friendly_name, visible.friendly_name.lower().strip()}
+    span_calls = [c for c in lev_mock.call_args_list if len(c.args) >= 2 and c.args[1] in visible_names]
+    assert span_calls, "no span-based scoring calls observed"
+    scored_spans = {call.args[0] for call in span_calls}
     assert scored_spans <= {"hidden", "light", "hidden light"}

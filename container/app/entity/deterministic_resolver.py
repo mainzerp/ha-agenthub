@@ -17,7 +17,7 @@ from app.entity.visibility import entity_is_visible, filter_visible_results
 logger = logging.getLogger(__name__)
 
 _ENTITY_ID_RE = re.compile(r"^[a-z0-9_]+\.[a-z0-9_]+$")
-_NON_WORD_LOOKUP_RE = re.compile(r"[^\w\s\.]")
+_NON_WORD_LOOKUP_RE = re.compile(r"[^\w\s.]|_")
 _WHITESPACE_RE = re.compile(r"\s+")
 
 # Device nouns that may trail a user query (e.g. "Keller light" -> "Keller").
@@ -80,7 +80,13 @@ def _supports_method(obj: Any, method_name: str) -> bool:
 
 
 def _normalize_lookup_text(text: str) -> str:
-    """Normalize an entity lookup query for deterministic comparisons."""
+    """Normalize an entity lookup query for deterministic comparisons.
+
+    Lowercase, NFKD, strip combining marks, replace non-word characters
+    AND underscores with spaces (``_`` is a ``\\w`` char but acts as a
+    word separator in user-typed snake_case queries like
+    "jalousie_mitte"), then collapse whitespace.
+    """
     normalized = unicodedata.normalize("NFKD", text.lower().strip())
     normalized = "".join(ch for ch in normalized if unicodedata.category(ch) != "Mn")
     normalized = _NON_WORD_LOOKUP_RE.sub(" ", normalized)

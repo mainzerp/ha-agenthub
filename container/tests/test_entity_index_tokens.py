@@ -14,6 +14,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from app.entity.index import EntityIndex
+from app.entity.tokens import normalize_tokenize
 from tests.helpers import make_entity_index_entry
 
 
@@ -199,3 +200,19 @@ class TestTokenIdf:
         weights = await index.token_idf_async({"couch"})
         assert set(weights.keys()) == {"couch"}
         assert weights["couch"] >= 0.0
+
+
+class TestUnderscoreTokenization:
+    """A2: underscores act as token separators (snake_case user queries)."""
+
+    def test_normalize_tokenize_splits_underscores(self):
+        assert normalize_tokenize("jalousie_mitte") == {"jalousie", "mitte"}
+
+    def test_underscore_query_tokens_hit_postings(self):
+        """Regression guard: query-side underscore tokens must match the
+        index postings built from a space-separated friendly name."""
+        index, _store = _make_index()
+        index.populate([make_entity_index_entry("cover.jalousie_mitte", "Jalousie mitte", area=None)])
+        # Single-entity index: df/N is 1.0, so max_df_ratio=1.0 disables the cap.
+        hits = index.find_by_tokens({"jalousie", "mitte"}, max_df_ratio=1.0)
+        assert [e.entity_id for e in hits] == ["cover.jalousie_mitte"]

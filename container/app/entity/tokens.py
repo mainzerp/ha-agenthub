@@ -18,14 +18,15 @@ def normalize_tokenize(text: str) -> set[str]:
 
     Mirrors ``matcher._normalize_for_containment``: lowercase, NFKD,
     strip combining marks (Mn), collapse German digraphs
-    (ae->a, oe->o, ue->u), then split on non-word characters and drop
-    empties.
+    (ae->a, oe->o, ue->u), then split on non-word characters AND
+    underscores (``_`` is a ``\\w`` char but acts as a separator in
+    user-typed snake_case queries) and drop empties.
     """
     text = text.lower().strip()
     text = unicodedata.normalize("NFKD", text)
     text = "".join(c for c in text if unicodedata.category(c) != "Mn")
     text = text.replace("ae", "a").replace("oe", "o").replace("ue", "u")
-    return {t for t in re.split(r"\W+", text) if t}
+    return {t for t in re.split(r"[\W_]+", text) if t}
 
 
 def entry_tokens(entry: EntityIndexEntry) -> set[str]:

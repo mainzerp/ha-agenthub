@@ -666,6 +666,46 @@ class TestEntityMatcher:
         assert "embedding" in shortlisted[0].signal_scores
         assert "token_preselection" not in shortlisted[0].signal_scores
 
+    async def test_match_underscore_query_resolves(self):
+        """A2: a user-typed snake_case query "jalousie_mitte" tokenizes to
+        {"jalousie", "mitte"}, so token preselection rescues the entry named
+        "Jalousie mitte" and the span signals score it above threshold."""
+        matcher, mock_index, mock_alias = self._make_matcher()
+        matcher._confidence_threshold = 0.5
+        mock_alias.resolve = AsyncMock(return_value=None)
+
+        entry = make_entity_index_entry("cover.jalousie_mitte", "Jalousie mitte", area=None)
+        mock_index.search_async = AsyncMock(return_value=[])
+        mock_index.find_by_tokens_async = AsyncMock(return_value=[entry])
+        mock_index.get_by_id = MagicMock(side_effect=lambda eid: entry if eid == entry.entity_id else None)
+
+        with patch("app.entity.matcher.EntityVisibilityRepository"):
+            results = await matcher._match_query("jalousie_mitte")
+
+        mock_index.find_by_tokens_async.assert_awaited_once()
+        assert mock_index.find_by_tokens_async.await_args.args[0] == {"jalousie", "mitte"}
+        assert [r.entity_id for r in results] == ["cover.jalousie_mitte"]
+
+    async def test_match_plural_query_matches_singular_name(self):
+        """B4: plural query "Jalousien Mitte" vs singular friendly name
+        "Jalousie mitte": near-miss token coverage lifts coverage to 1.0 and
+        the Floor-Regel fires (pre-fix score ~0.34, no floor)."""
+        matcher, mock_index, mock_alias = self._make_matcher()
+        matcher._confidence_threshold = 0.5
+        mock_alias.resolve = AsyncMock(return_value=None)
+
+        entry = make_entity_index_entry("cover.jalousie_mitte", "Jalousie mitte", area=None)
+        mock_index.search_async = AsyncMock(return_value=[])
+        mock_index.find_by_tokens_async = AsyncMock(return_value=[entry])
+        mock_index.get_by_id = MagicMock(side_effect=lambda eid: entry if eid == entry.entity_id else None)
+
+        with patch("app.entity.matcher.EntityVisibilityRepository"):
+            results = await matcher._match_query("Jalousien Mitte")
+
+        assert len(results) == 1
+        assert results[0].entity_id == "cover.jalousie_mitte"
+        assert results[0].score == pytest.approx(0.65)
+
     async def test_floor_lifts_contained_full_name_to_floor_score(self):
         """Floor-Regel: full friendly name contained in a sentence, weak
         embedding hit -> weighted sum below 0.65, floor lifts it to 0.65."""
