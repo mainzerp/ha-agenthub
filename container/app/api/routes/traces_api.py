@@ -51,6 +51,7 @@ _included_span_names = {
     "ha_call",
     "memory_retrieval",
     "entity_resolution",
+    "entity_validate",
     "entity_match",
 }
 
@@ -106,13 +107,28 @@ def _build_response(span_name: str, metadata: dict) -> str:
         return text
 
     if span_name == "entity_resolution":
+        recall_count = metadata.get("recall_count")
+        recall_text = f", {recall_count} candidate(s) recalled" if recall_count is not None else ""
         resolved_count = metadata.get("resolved_count")
         resolve_ms = metadata.get("resolve_ms")
         if resolved_count is not None and resolve_ms is not None:
-            return f"{resolved_count} entities resolved ({resolve_ms}ms)"
+            return f"{resolved_count} entities resolved ({resolve_ms}ms){recall_text}"
         if resolved_count is not None:
-            return f"{resolved_count} entities resolved"
+            return f"{resolved_count} entities resolved{recall_text}"
+        if recall_count is not None:
+            return f"{recall_count} candidate(s) recalled"
         return ""
+
+    if span_name == "entity_validate":
+        entity_id = metadata.get("entity_id") or ""
+        resolution_path = metadata.get("resolution_path")
+        if resolution_path == "llm_entity_id":
+            return f"accepted: {entity_id}"
+        if resolution_path == "rejected_entity_id":
+            return f"rejected: {entity_id}"
+        if resolution_path:
+            return f"{resolution_path}: {entity_id}" if entity_id else str(resolution_path)
+        return entity_id
 
     if span_name == "entity_match":
         entity_id = metadata.get("entity_id")

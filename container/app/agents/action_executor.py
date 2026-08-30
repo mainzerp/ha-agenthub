@@ -231,62 +231,67 @@ async def resolve_and_validate_entity(
         allowed_entity_ids = _request_candidate_ids.get()
 
     if direct_entity_id:
-        validated_direct: str | None = None
-        if allowed_entity_ids is not None and direct_entity_id not in allowed_entity_ids:
-            logger.warning(
-                "LLM-supplied entity_id '%s' not in the recalled candidate set; rejecting (fail-closed)",
-                direct_entity_id,
-            )
-        else:
-            validated_direct = await _validate_direct_entity_id(
-                direct_entity_id,
-                validate_domain_fn,
-                agent_id=agent_id,
-                entity_index=entity_index,
-                allowed_domains=allowed_domains,
-            )
-        if validated_direct:
-            metadata = _synthesize_direct_entity_metadata(validated_direct, entity_index)
-            friendly = metadata["top_friendly_name"]
-            return {
-                "entity_id": validated_direct,
-                "friendly_name": friendly,
-                "resolution": {
+        async with _optional_span(span_collector, "entity_validate", agent_id=agent_id) as ev_span:
+            ev_span["metadata"]["entity_id"] = direct_entity_id
+            validated_direct: str | None = None
+            if allowed_entity_ids is not None and direct_entity_id not in allowed_entity_ids:
+                logger.warning(
+                    "LLM-supplied entity_id '%s' not in the recalled candidate set; rejecting (fail-closed)",
+                    direct_entity_id,
+                )
+            else:
+                validated_direct = await _validate_direct_entity_id(
+                    direct_entity_id,
+                    validate_domain_fn,
+                    agent_id=agent_id,
+                    entity_index=entity_index,
+                    allowed_domains=allowed_domains,
+                )
+            if validated_direct:
+                ev_span["metadata"]["resolution_path"] = "llm_entity_id"
+                metadata = _synthesize_direct_entity_metadata(validated_direct, entity_index)
+                friendly = metadata["top_friendly_name"]
+                return {
                     "entity_id": validated_direct,
                     "friendly_name": friendly,
-                    "speech": None,
-                    "metadata": metadata,
-                },
-                "not_found_result": None,
-            }
-        if allowed_entity_ids is not None:
-            # Closed candidate contract: an LLM-picked id that is not in the
-            # recalled candidate set (or failed validation) is a
-            # hallucination -- reject fail-closed without a matcher re-run.
-            # The not-found speech triggers the clarifying-question path.
-            resolution = {
-                "entity_id": None,
-                "friendly_name": entity_query,
-                "speech": None,
-                "metadata": {
-                    "query": entity_query,
-                    "match_count": 0,
-                    "resolution_path": "rejected_entity_id",
-                    "rejected_entity_id": direct_entity_id,
-                },
-            }
-            return {
-                "entity_id": None,
-                "friendly_name": entity_query,
-                "resolution": resolution,
-                "not_found_result": {
-                    "success": False,
+                    "resolution": {
+                        "entity_id": validated_direct,
+                        "friendly_name": friendly,
+                        "speech": None,
+                        "metadata": metadata,
+                    },
+                    "not_found_result": None,
+                }
+            if allowed_entity_ids is not None:
+                # Closed candidate contract: an LLM-picked id that is not in the
+                # recalled candidate set (or failed validation) is a
+                # hallucination -- reject fail-closed without a matcher re-run.
+                # The not-found speech triggers the clarifying-question path.
+                ev_span["metadata"]["resolution_path"] = "rejected_entity_id"
+                resolution = {
                     "entity_id": None,
-                    "new_state": None,
-                    "speech": f"Could not find an entity matching '{entity_query}'.",
-                    "metadata": resolution["metadata"],
-                },
-            }
+                    "friendly_name": entity_query,
+                    "speech": None,
+                    "metadata": {
+                        "query": entity_query,
+                        "match_count": 0,
+                        "resolution_path": "rejected_entity_id",
+                        "rejected_entity_id": direct_entity_id,
+                    },
+                }
+                return {
+                    "entity_id": None,
+                    "friendly_name": entity_query,
+                    "resolution": resolution,
+                    "not_found_result": {
+                        "success": False,
+                        "entity_id": None,
+                        "new_state": None,
+                        "speech": f"Could not find an entity matching '{entity_query}'.",
+                        "metadata": resolution["metadata"],
+                    },
+                }
+            ev_span["metadata"]["resolution_path"] = "fallback_deterministic"
         logger.warning(
             "LLM-supplied direct entity_id '%s' failed validation; falling back to deterministic resolution",
             direct_entity_id,

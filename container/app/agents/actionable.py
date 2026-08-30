@@ -559,6 +559,13 @@ class ActionableAgent(BaseAgent):
                 # measures the longer of the two parallel branches
                 # (previously the state fetch alone).
                 er_span["metadata"]["state_fetch_ms"] = round((_t2 - _t1) * 1000, 1)
+                # Keyword recall (closed contract): surface the candidate
+                # pool in the trace so recall gaps are debuggable.
+                scored_recall = recalled or []
+                er_span["metadata"]["recall_count"] = len(scored_recall)
+                er_span["metadata"]["recall_candidates"] = [
+                    {"entity_id": getattr(entry, "entity_id", "") or "", "hits": hits} for entry, hits in scored_recall
+                ]
             if entity_state_context:
                 system_prompt += f"\n\nContext: {entity_state_context}"
         except asyncio.CancelledError:

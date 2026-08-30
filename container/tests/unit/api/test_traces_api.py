@@ -81,6 +81,24 @@ class TestBuildResponse:
         )
         assert _build_response("entity_resolution", {"resolved_count": 3}) == "3 entities resolved"
         assert _build_response("entity_resolution", {}) == ""
+        assert (
+            _build_response("entity_resolution", {"resolved_count": 0, "resolve_ms": 5, "recall_count": 4})
+            == "0 entities resolved (5ms), 4 candidate(s) recalled"
+        )
+        assert _build_response("entity_resolution", {"recall_count": 0}) == "0 candidate(s) recalled"
+
+        # entity_validate
+        assert (
+            _build_response("entity_validate", {"entity_id": "light.couch", "resolution_path": "llm_entity_id"})
+            == "accepted: light.couch"
+        )
+        assert (
+            _build_response(
+                "entity_validate", {"entity_id": "light.gibts_nicht", "resolution_path": "rejected_entity_id"}
+            )
+            == "rejected: light.gibts_nicht"
+        )
+        assert _build_response("entity_validate", {}) == ""
 
         # entity_match
         assert _build_response("entity_match", {"entity_id": "light.couch"}) == "light.couch"
