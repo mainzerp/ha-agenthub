@@ -1,12 +1,24 @@
 # Version
 
-**Current Version:** 1.50.1
+**Current Version:** 1.51.0
 
 ## Recent Changes
 
-(tracking changes since 1.50.1)
+(tracking changes since 1.51.0)
 
 ## Version History
+
+### 1.51.0 (MINOR) -- entity resolution rework: agent-side keyword recall, closed entity_id contract
+
+(commits 505ad36, 9ed39d5, c1f85e8)
+
+- feat(entity-resolution): orchestrator pre-resolution removed (no ingress matcher pass, no candidate envelope); the orchestrator routes only (commit 505ad36)
+- feat(entity-resolution): agents recall entities themselves -- keyword-only over agent-visible entities (name/alias/area tokens, compound containment), whole list for small domains, top-12 otherwise; embeddings removed from entity matching entirely (embedding infra stays for routing cache and memory) (commit 505ad36)
+- feat(entity-resolution): closed contract -- the agent LLM selects an entity_id verbatim from the injected candidate list; the executor validates fail-closed (hallucinated ids rejected, no matcher re-run) instead of resolving a free-form name string (commit 505ad36)
+- fix(entity): compound words without spaces now match (space-insensitive exact friendly-name compare; compound-aware span admission with the existing floor rule), e.g. "Innenhofüberdachung" -> light.innenhof_uberdachung (commit 505ad36)
+- fix(cache): routing cache hygiene -- only verified routing decisions are cached (schema v6, v5 entries purged at startup), and a served routing entry is invalidated when the cached agent's turn fails (no more wrong-agent cache lock-in) (commit 505ad36)
+- refactor(traces): dead ingress span rendering removed (commit 9ed39d5)
+- feat(traces): entity_resolution span carries recall metadata (candidate pool with hit counts); new entity_validate span surfaces accepted vs rejected LLM entity picks in the timeline (commit c1f85e8)
 
 ### 1.50.1 (PATCH) -- entity matcher underscore/plural tolerance, voice follow-up idle gating
 
