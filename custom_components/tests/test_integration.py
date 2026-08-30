@@ -9,6 +9,34 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+
+class _FakeChatLog:
+    """Stand-in for HA's ChatLog: records streamed deltas and added content.
+
+    ``async_add_delta_content_stream`` mirrors the real API shape (an async
+    generator consuming the delta stream) so the production ``async for``
+    loop drives the receive loop exactly as HA core would.
+    """
+
+    def __init__(self):
+        self.deltas: list[dict] = []
+        self.added_content: list = []
+        self.stream_agent_ids: list = []
+
+    def async_add_delta_content_stream(self, agent_id, stream):
+        self.stream_agent_ids.append(agent_id)
+
+        async def _consume():
+            async for delta in stream:
+                self.deltas.append(delta)
+                yield delta
+
+        return _consume()
+
+    async def async_add_assistant_content_without_tools(self, content):
+        self.added_content.append(content)
+
+
 # ---------------------------------------------------------------------------
 # 5.3.1  _normalize_url  --  config_flow.py
 # ---------------------------------------------------------------------------
@@ -368,7 +396,9 @@ class TestWsReceiveTimeout:
             ) as mock_wait,
         ):
             mock_wait.return_value = entity._ws.receive.return_value
-            await entity._process_via_ws(user_input)
+            chat_log = _FakeChatLog()
+            turn_ws = await entity._ws_send_locked(user_input)
+            await entity._process_via_ws_read(user_input, chat_log, turn_ws)
 
         timeout = mock_wait.call_args.kwargs["timeout"]
         assert timeout == DEFAULT_WS_RECEIVE_TIMEOUT
@@ -401,7 +431,9 @@ class TestWsReceiveTimeout:
             ) as mock_wait,
         ):
             mock_wait.return_value = entity._ws.receive.return_value
-            await entity._process_via_ws(user_input)
+            chat_log = _FakeChatLog()
+            turn_ws = await entity._ws_send_locked(user_input)
+            await entity._process_via_ws_read(user_input, chat_log, turn_ws)
 
         timeout = mock_wait.call_args.kwargs["timeout"]
         assert timeout == 200.0
@@ -437,7 +469,9 @@ class TestWsReceiveTimeout:
             ) as mock_wait,
         ):
             mock_wait.return_value = entity._ws.receive.return_value
-            await entity._process_via_ws(user_input)
+            chat_log = _FakeChatLog()
+            turn_ws = await entity._ws_send_locked(user_input)
+            await entity._process_via_ws_read(user_input, chat_log, turn_ws)
 
         timeout = mock_wait.call_args.kwargs["timeout"]
         assert timeout == DEFAULT_WS_RECEIVE_TIMEOUT
@@ -517,11 +551,15 @@ class TestWsLockNarrowing:
 
         with patch.object(entity, "_connect_ws_locked", side_effect=_connect_second):
             turn1 = asyncio.create_task(
-                entity._async_bridge_to_container(self._make_user_input("c1", "one"))
+                entity._async_bridge_to_container(
+                    self._make_user_input("c1", "one"), _FakeChatLog()
+                )
             )
             await asyncio.sleep(0.05)  # turn 1 is now blocked in its read
             turn2 = asyncio.create_task(
-                entity._async_bridge_to_container(self._make_user_input("c2", "two"))
+                entity._async_bridge_to_container(
+                    self._make_user_input("c2", "two"), _FakeChatLog()
+                )
             )
             # Turn 2 completes while turn 1 is still blocked in its read --
             # with the pre-P1 whole-cycle lock this would time out.
@@ -557,7 +595,7 @@ class TestWsLockNarrowing:
             entity, "_process_via_rest", new_callable=AsyncMock
         ) as mock_rest:
             result = await entity._async_bridge_to_container(
-                self._make_user_input("c1", "hello")
+                self._make_user_input("c1", "hello"), _FakeChatLog()
             )
 
         # _WsDroppedAfterSendError semantics preserved: the request may have
@@ -598,7 +636,7 @@ class TestWsLockNarrowing:
             ) as mock_disconnect,
         ):
             await entity._async_bridge_to_container(
-                self._make_user_input("c1", "hello")
+                self._make_user_input("c1", "hello"), _FakeChatLog()
             )
 
         mock_disconnect.assert_awaited_once()
@@ -990,18 +1028,18 @@ class TestReauthTriggerOnAuthFailure:
         user_input = self._make_user_input()
 
         entity._session = self._FakeSession(self._FakeResponse(401))
-        await entity._process_via_rest(user_input)
-        await entity._process_via_rest(user_input)
+        await entity._process_via_rest(user_input, _FakeChatLog())
+        await entity._process_via_rest(user_input, _FakeChatLog())
         entity._entry.async_start_reauth.assert_called_once_with(entity.hass)
 
         # A successful response resets the episode guard.
         entity._session = self._FakeSession(
             self._FakeResponse(200, {"speech": "ok", "conversation_id": "c1"})
         )
-        await entity._process_via_rest(user_input)
+        await entity._process_via_rest(user_input, _FakeChatLog())
 
         entity._session = self._FakeSession(self._FakeResponse(403))
-        await entity._process_via_rest(user_input)
+        await entity._process_via_rest(user_input, _FakeChatLog())
         assert entity._entry.async_start_reauth.call_count == 2
 
     @pytest.mark.asyncio
@@ -1010,7 +1048,7 @@ class TestReauthTriggerOnAuthFailure:
         user_input = self._make_user_input()
 
         entity._session = self._FakeSession(self._FakeResponse(503))
-        await entity._process_via_rest(user_input)
+        await entity._process_via_rest(user_input, _FakeChatLog())
         entity._entry.async_start_reauth.assert_not_called()
 
 
@@ -1115,7 +1153,9 @@ class TestUserIdForwarding:
             ) as mock_wait,
         ):
             mock_wait.return_value = ws.receive.return_value
-            await entity._process_via_ws(user_input)
+            chat_log = _FakeChatLog()
+            turn_ws = await entity._ws_send_locked(user_input)
+            await entity._process_via_ws_read(user_input, chat_log, turn_ws)
         return ws.send_json.call_args.args[0]
 
     def test_origin_context_includes_user_id(self):
@@ -1160,7 +1200,7 @@ class TestUserIdForwarding:
         entity._session = session
         context = MagicMock()
         context.user_id = "user-123"
-        await entity._process_via_rest(self._make_user_input(context))
+        await entity._process_via_rest(self._make_user_input(context), _FakeChatLog())
         assert session.posted_payload["user_id"] == "user-123"
 
     @pytest.mark.asyncio
@@ -1170,7 +1210,7 @@ class TestUserIdForwarding:
             self._FakeResponse(200, {"speech": "ok", "conversation_id": "c1"})
         )
         entity._session = session
-        await entity._process_via_rest(self._make_user_input(None))
+        await entity._process_via_rest(self._make_user_input(None), _FakeChatLog())
         assert "user_id" not in session.posted_payload
 
 
@@ -1275,539 +1315,12 @@ class TestWsSessionReuse:
 
 
 # ---------------------------------------------------------------------------
-# P3: satellite mapping cache + registry-event invalidation
+# Streaming-path shared helpers
 # ---------------------------------------------------------------------------
 
 
-class TestSatelliteMappingCache:
-    """P3 step 5: device->satellite resolution is memoized per device and
-    cleared on assist_satellite registry updates."""
-
-    def _make_entity(self):
-        from custom_components.ha_agenthub.conversation import (
-            HaAgentHubConversationEntity,
-        )
-
-        entry = MagicMock()
-        entry.entry_id = "test-entry"
-        entry.options = {}
-        entry.async_create_background_task = MagicMock(return_value=MagicMock())
-        entry.async_on_unload = MagicMock()
-        entity = HaAgentHubConversationEntity(entry, "http://example.com", "key")
-        entity.hass = MagicMock()
-        return entity
-
-    def test_resolution_memoized_per_device(self):
-        entity = self._make_entity()
-        sat_entry = MagicMock()
-        sat_entry.domain = "assist_satellite"
-        sat_entry.entity_id = "assist_satellite.kitchen"
-
-        with patch("custom_components.ha_agenthub.conversation.er") as mock_er:
-            mock_er.async_entries_for_device.return_value = [sat_entry]
-            first = entity._resolve_satellite_entity("dev-1")
-            second = entity._resolve_satellite_entity("dev-1")
-
-        assert first == "assist_satellite.kitchen"
-        assert second == "assist_satellite.kitchen"
-        mock_er.async_entries_for_device.assert_called_once()
-
-    def test_negative_result_cached(self):
-        entity = self._make_entity()
-
-        with patch("custom_components.ha_agenthub.conversation.er") as mock_er:
-            mock_er.async_entries_for_device.return_value = []
-            assert entity._resolve_satellite_entity("dev-2") is None
-            assert entity._resolve_satellite_entity("dev-2") is None
-
-        mock_er.async_entries_for_device.assert_called_once()
-
-    def test_per_entry_logs_demoted_to_debug(self, caplog):
-        import logging
-
-        entity = self._make_entity()
-        sat_entry = MagicMock()
-        sat_entry.domain = "assist_satellite"
-        sat_entry.entity_id = "assist_satellite.kitchen"
-
-        with (
-            patch("custom_components.ha_agenthub.conversation.er") as mock_er,
-            caplog.at_level(
-                logging.DEBUG, logger="custom_components.ha_agenthub.conversation"
-            ),
-        ):
-            mock_er.async_entries_for_device.return_value = [sat_entry]
-            entity._resolve_satellite_entity("dev-1")
-
-        info_records = [r for r in caplog.records if r.levelno == logging.INFO]
-        assert not any("registry entries" in r.getMessage() for r in info_records)
-        assert not any("entry domain=" in r.getMessage() for r in info_records)
-
-    @pytest.mark.asyncio
-    async def test_registry_update_clears_cache(self, monkeypatch):
-        import custom_components.ha_agenthub.conversation as conv_mod
-
-        entity = self._make_entity()
-        monkeypatch.setattr(entity, "async_on_remove", lambda cb: None, raising=False)
-        monkeypatch.setattr(
-            conv_mod.conversation.ConversationEntity,
-            "async_added_to_hass",
-            AsyncMock(),
-            raising=False,
-        )
-
-        await entity.async_added_to_hass()
-
-        callback = entity.hass.bus.async_listen.call_args.args[1]
-
-        entity._satellite_cache["dev-1"] = "assist_satellite.kitchen"
-        event = MagicMock()
-        event.data = {"action": "remove", "entity_id": "assist_satellite.kitchen"}
-        callback(event)
-        assert entity._satellite_cache == {}
-
-        # Unrelated entity updates keep the cache intact.
-        entity._satellite_cache["dev-1"] = "assist_satellite.kitchen"
-        other = MagicMock()
-        other.data = {"action": "update", "entity_id": "light.kitchen"}
-        callback(other)
-        assert entity._satellite_cache == {"dev-1": "assist_satellite.kitchen"}
-
-
-# ---------------------------------------------------------------------------
-# Voice follow-up gating: _sentence_stream_task + _post_filler_push parity
-# ---------------------------------------------------------------------------
-
-
-class _VoiceFollowupTestBase:
-    """Shared helpers for the satellite follow-up tests.
-
-    Unlike TestWsLockNarrowing, ``async_create_background_task`` actually
-    schedules the coroutine so the background push/stream task runs, and
-    ``async_track_state_change_event`` is patched with a fake that records
-    the state callback so tests can drive satellite transitions manually.
-    """
-
-    SAT = "assist_satellite.kitchen"
-
-    def _make_entity(self):
-        from custom_components.ha_agenthub.conversation import (
-            HaAgentHubConversationEntity,
-        )
-
-        entry = MagicMock()
-        entry.entry_id = "test-entry"
-        entry.options = {}
-        entry.async_create_background_task = MagicMock(
-            side_effect=lambda hass, coro, name=None: asyncio.create_task(coro)
-        )
-        entry.async_on_unload = MagicMock()
-        entity = HaAgentHubConversationEntity(entry, "http://example.com", "key")
-        entity.hass = MagicMock()
-        entity.hass.services.async_call = AsyncMock()
-        return entity
-
-    def _make_ws(self, receive):
-        ws = MagicMock()
-        ws.closed = False
-        ws.close = AsyncMock()
-        ws.receive = receive
-        return ws
-
-    def _make_user_input(self, cid: str = "c1", device_id: str | None = "dev-1"):
-        user_input = MagicMock()
-        user_input.conversation_id = cid
-        user_input.text = "hello"
-        user_input.language = "en"
-        user_input.device_id = device_id
-        return user_input
-
-    def _text_frame(self, payload: dict):
-        import json
-
-        import aiohttp
-
-        return MagicMock(type=aiohttp.WSMsgType.TEXT, data=json.dumps(payload))
-
-    def _state_event(self, state: str):
-        return MagicMock(data={"new_state": MagicMock(state=state)})
-
-    def _track_states(self):
-        """Patch the state subscription; return (patcher, recorded callbacks)."""
-        callbacks: list = []
-
-        def _fake_track(hass, entity_ids, callback):
-            callbacks.append(callback)
-            return MagicMock()
-
-        patcher = patch(
-            "custom_components.ha_agenthub.conversation.async_track_state_change_event",
-            side_effect=_fake_track,
-        )
-        return patcher, callbacks
-
-    def _service_calls(self, entity, service: str) -> list:
-        return [
-            call
-            for call in entity.hass.services.async_call.call_args_list
-            if call.args[1] == service
-        ]
-
-
-class TestSentenceStreamFollowup(_VoiceFollowupTestBase):
-    """The sentence stream gates the voice follow-up on satellite idle."""
-
-    @pytest.mark.asyncio
-    async def test_followup_waits_for_satellite_idle(self):
-        entity = self._make_entity()
-        entity.hass.states.get.return_value = MagicMock(state="responding")
-        done = self._text_frame(
-            {
-                "done": True,
-                "token": "Hallo.",
-                "voice_followup": True,
-                "sanitized": True,
-            }
-        )
-        ws = self._make_ws(AsyncMock(return_value=done))
-        patcher, callbacks = self._track_states()
-
-        with patcher:
-            task = asyncio.create_task(
-                entity._sentence_stream_task(
-                    local_ws=ws,
-                    satellite_entity_id=self.SAT,
-                    gate_key="g1",
-                    key=self.SAT,
-                )
-            )
-            await asyncio.sleep(0.05)
-            # Satellite still busy: the follow-up must not fire yet.
-            assert self._service_calls(entity, "start_conversation") == []
-            assert len(callbacks) == 1
-            callbacks[0](self._state_event("idle"))
-            await asyncio.wait_for(task, timeout=1.0)
-
-        calls = self._service_calls(entity, "start_conversation")
-        assert len(calls) == 1
-        assert calls[0].args[0] == "assist_satellite"
-        assert calls[0].args[2] == {
-            "entity_id": self.SAT,
-            "start_message": "",
-            "preannounce": False,
-        }
-        ws.close.assert_awaited_once()
-
-    @pytest.mark.asyncio
-    async def test_followup_skipped_on_idle_timeout(self, caplog):
-        import logging
-
-        entity = self._make_entity()
-        entity.hass.states.get.return_value = MagicMock(state="responding")
-        done = self._text_frame(
-            {"done": True, "voice_followup": True, "sanitized": True}
-        )
-        ws = self._make_ws(AsyncMock(return_value=done))
-        patcher, _callbacks = self._track_states()
-
-        with (
-            patch(
-                "custom_components.ha_agenthub.conversation"
-                ".MAX_POST_FILLER_WAIT_SECONDS",
-                0.05,
-            ),
-            caplog.at_level(
-                logging.WARNING, logger="custom_components.ha_agenthub.conversation"
-            ),
-            patcher,
-        ):
-            task = asyncio.create_task(
-                entity._sentence_stream_task(
-                    local_ws=ws,
-                    satellite_entity_id=self.SAT,
-                    gate_key="g1",
-                    key=self.SAT,
-                )
-            )
-            await asyncio.wait_for(task, timeout=2.0)
-
-        assert self._service_calls(entity, "start_conversation") == []
-        assert any(
-            "sentence stream satellite never reached idle" in r.getMessage()
-            for r in caplog.records
-        )
-        ws.close.assert_awaited_once()
-
-    @pytest.mark.asyncio
-    async def test_followup_aborted_by_new_turn(self, caplog):
-        import logging
-
-        entity = self._make_entity()
-        entity.hass.states.get.return_value = MagicMock(state="idle")
-        gate = asyncio.Event()
-
-        async def _receive():
-            await gate.wait()
-            return self._text_frame(
-                {"done": True, "voice_followup": True, "sanitized": True}
-            )
-
-        ws = self._make_ws(AsyncMock(side_effect=_receive))
-        patcher, callbacks = self._track_states()
-
-        with (
-            caplog.at_level(
-                logging.INFO, logger="custom_components.ha_agenthub.conversation"
-            ),
-            patcher,
-        ):
-            task = asyncio.create_task(
-                entity._sentence_stream_task(
-                    local_ws=ws,
-                    satellite_entity_id=self.SAT,
-                    gate_key="g1",
-                    key=self.SAT,
-                )
-            )
-            await asyncio.sleep(0.05)
-            assert len(callbacks) == 1
-            # Seeded idle, then busy again before the stream finished: new turn.
-            callbacks[0](self._state_event("listening"))
-            gate.set()
-            await asyncio.wait_for(task, timeout=1.0)
-
-        assert self._service_calls(entity, "start_conversation") == []
-        assert any(
-            "sentence stream abandoning voice follow-up" in r.getMessage()
-            for r in caplog.records
-        )
-        ws.close.assert_awaited_once()
-
-    @pytest.mark.asyncio
-    async def test_followup_fires_immediately_when_seeded_idle(self):
-        entity = self._make_entity()
-        entity.hass.states.get.return_value = MagicMock(state="idle")
-        done = self._text_frame(
-            {"done": True, "voice_followup": True, "sanitized": True}
-        )
-        ws = self._make_ws(AsyncMock(return_value=done))
-        patcher, callbacks = self._track_states()
-
-        with patcher:
-            task = asyncio.create_task(
-                entity._sentence_stream_task(
-                    local_ws=ws,
-                    satellite_entity_id=self.SAT,
-                    gate_key="g1",
-                    key=self.SAT,
-                )
-            )
-            await asyncio.wait_for(task, timeout=1.0)
-
-        # Subscribed, but no state transition was needed.
-        assert len(callbacks) == 1
-        assert len(self._service_calls(entity, "start_conversation")) == 1
-        ws.close.assert_awaited_once()
-
-    @pytest.mark.asyncio
-    async def test_sentence_boundary_early_return_spawns_stream(self):
-        """A genuine mid-stream sentence boundary (done absent) still takes
-        the sentence-stream handoff; its early return carries no
-        continue_conversation. Single-burst done frames no longer reach
-        this path -- see TestSameTurnContinueConversation."""
-        import custom_components.ha_agenthub.conversation as conv_mod
-
-        entity = self._make_entity()
-        entity._resolve_satellite_entity = MagicMock(return_value=self.SAT)
-        entity.hass.states.get.return_value = MagicMock(state="idle")
-        frames = [
-            self._text_frame({"token": "Erster Satz."}),
-            self._text_frame(
-                {
-                    "done": True,
-                    "token": "Zweiter Satz.",
-                    "voice_followup": True,
-                    "sanitized": True,
-                }
-            ),
-        ]
-        ws = self._make_ws(AsyncMock(side_effect=frames))
-        recorded: list = []
-        real_result_cls = conv_mod.conversation.ConversationResult
-
-        def _recording_result(**kwargs):
-            recorded.append(kwargs)
-            return real_result_cls(**kwargs)
-
-        patcher, _callbacks = self._track_states()
-        with (
-            patch.object(
-                conv_mod.conversation,
-                "ConversationResult",
-                side_effect=_recording_result,
-            ),
-            patcher,
-        ):
-            result = await entity._process_via_ws_read(self._make_user_input(), ws)
-            # Socket ownership moved to the stream task, not closed here.
-            ws.close.assert_not_awaited()
-            stream_task = entity._inflight_pushes[self.SAT]
-            await asyncio.wait_for(stream_task, timeout=1.0)
-
-        assert result is not None
-        assert len(recorded) == 1
-        assert "continue_conversation" not in recorded[0]
-        response = recorded[0]["response"]
-        response.async_set_speech.assert_called_once_with("Erster Satz.")
-        # The stream task announced the rest, fired the follow-up, closed the socket.
-        assert len(self._service_calls(entity, "announce")) == 1
-        assert len(self._service_calls(entity, "start_conversation")) == 1
-        ws.close.assert_awaited_once()
-
-    @pytest.mark.asyncio
-    async def test_start_conversation_home_assistant_error_logged(self, caplog):
-        import logging
-
-        from homeassistant.exceptions import HomeAssistantError
-
-        entity = self._make_entity()
-        entity.hass.states.get.return_value = MagicMock(state="idle")
-
-        async def _svc(domain, service, data, blocking=False):
-            if service == "start_conversation":
-                raise HomeAssistantError("boom")
-
-        entity.hass.services.async_call = AsyncMock(side_effect=_svc)
-        done = self._text_frame(
-            {"done": True, "voice_followup": True, "sanitized": True}
-        )
-        ws = self._make_ws(AsyncMock(return_value=done))
-        patcher, _callbacks = self._track_states()
-
-        with (
-            caplog.at_level(
-                logging.WARNING, logger="custom_components.ha_agenthub.conversation"
-            ),
-            patcher,
-        ):
-            task = asyncio.create_task(
-                entity._sentence_stream_task(
-                    local_ws=ws,
-                    satellite_entity_id=self.SAT,
-                    gate_key="g1",
-                    key=self.SAT,
-                )
-            )
-            await asyncio.wait_for(task, timeout=1.0)
-
-        assert any(
-            "start_conversation raised HomeAssistantError in sentence stream"
-            in r.getMessage()
-            for r in caplog.records
-        )
-        ws.close.assert_awaited_once()
-
-
-class TestPostFillerPushParity(_VoiceFollowupTestBase):
-    """Parity lock for _post_filler_push after the _SatelliteIdleTracker refactor."""
-
-    @pytest.mark.asyncio
-    async def test_pending_sentences_flushed_after_idle_then_followup(self):
-        entity = self._make_entity()
-        entity.hass.states.get.return_value = MagicMock(state="responding")
-        frames = [
-            self._text_frame({"token": "Eins."}),
-            self._text_frame({"token": "Zwei."}),
-            self._text_frame({"done": True, "voice_followup": True, "sanitized": True}),
-        ]
-        ws = self._make_ws(AsyncMock(side_effect=frames))
-        patcher, callbacks = self._track_states()
-
-        with patcher:
-            task = asyncio.create_task(
-                entity._post_filler_push(
-                    local_ws=ws,
-                    satellite_entity_id=self.SAT,
-                    gate_key="g1",
-                    key=self.SAT,
-                )
-            )
-            await asyncio.sleep(0.05)
-            # Satellite busy: sentences buffered, nothing announced yet.
-            entity.hass.services.async_call.assert_not_called()
-            callbacks[0](self._state_event("idle"))
-            await asyncio.wait_for(task, timeout=1.0)
-
-        services = [
-            call.args[1] for call in entity.hass.services.async_call.call_args_list
-        ]
-        assert services == ["announce", "announce", "start_conversation"]
-        announce_calls = self._service_calls(entity, "announce")
-        assert announce_calls[0].args[2]["message"] == "Eins."
-        assert announce_calls[1].args[2]["message"] == "Zwei."
-        ws.close.assert_awaited_once()
-
-    @pytest.mark.asyncio
-    async def test_push_aborted_by_new_turn_skips_flush_and_followup(self, caplog):
-        import logging
-
-        entity = self._make_entity()
-        entity.hass.states.get.return_value = MagicMock(state="responding")
-        gate = asyncio.Event()
-        first = self._text_frame({"token": "Eins."})
-        done = self._text_frame(
-            {"done": True, "voice_followup": True, "sanitized": True}
-        )
-        calls = 0
-
-        async def _receive():
-            nonlocal calls
-            calls += 1
-            if calls == 1:
-                return first
-            await gate.wait()
-            return done
-
-        ws = self._make_ws(AsyncMock(side_effect=_receive))
-        patcher, callbacks = self._track_states()
-
-        with (
-            caplog.at_level(
-                logging.INFO, logger="custom_components.ha_agenthub.conversation"
-            ),
-            patcher,
-        ):
-            task = asyncio.create_task(
-                entity._post_filler_push(
-                    local_ws=ws,
-                    satellite_entity_id=self.SAT,
-                    gate_key="g1",
-                    key=self.SAT,
-                )
-            )
-            await asyncio.sleep(0.05)
-            assert len(callbacks) == 1
-            # Idle reached, then busy again before the final frame: new turn.
-            callbacks[0](self._state_event("idle"))
-            callbacks[0](self._state_event("listening"))
-            gate.set()
-            await asyncio.wait_for(task, timeout=1.0)
-
-        entity.hass.services.async_call.assert_not_called()
-        assert any(
-            "abandoning post-filler push (new turn detected)" in r.getMessage()
-            for r in caplog.records
-        )
-        ws.close.assert_awaited_once()
-
-
-class TestSameTurnContinueConversation(_VoiceFollowupTestBase):
-    """FOLLOW_UP_QUESTION: a done frame carrying the speech as a single
-    token burst returns continue_conversation in the same turn (no
-    sentence-stream handoff, no start_conversation). The filler-first path
-    keeps the start_conversation fallback but records a pending-follow-up
-    entry so the answer leg is re-correlated to the original
-    conversation_id."""
+class _WsStreamTestBase:
+    """Shared helpers for the WS streaming / REST fallback tests."""
 
     class _FakeResponse:
         def __init__(self, status, payload=None):
@@ -1834,10 +1347,58 @@ class TestSameTurnContinueConversation(_VoiceFollowupTestBase):
             self.posted_payload = kwargs.get("json")
             return self._response
 
+    def _make_entity(self):
+        from custom_components.ha_agenthub.conversation import (
+            HaAgentHubConversationEntity,
+        )
+
+        entry = MagicMock()
+        entry.entry_id = "test-entry"
+        entry.options = {}
+        entry.async_create_background_task = MagicMock(return_value=MagicMock())
+        entry.async_on_unload = MagicMock()
+        entity = HaAgentHubConversationEntity(entry, "http://example.com", "key")
+        entity.hass = MagicMock()
+        entity.hass.services.async_call = AsyncMock()
+        return entity
+
+    def _make_ws(self, receive):
+        ws = MagicMock()
+        ws.closed = False
+        ws.send_json = AsyncMock()
+        ws.close = AsyncMock()
+        ws.receive = receive
+        return ws
+
+    def _make_user_input(self, cid: str = "c1", device_id: str | None = "dev-1"):
+        user_input = MagicMock()
+        user_input.conversation_id = cid
+        user_input.text = "hello"
+        user_input.language = "en"
+        user_input.device_id = device_id
+        return user_input
+
+    def _text_frame(self, payload: dict):
+        import json
+
+        import aiohttp
+
+        return MagicMock(type=aiohttp.WSMsgType.TEXT, data=json.dumps(payload))
+
+
+# ---------------------------------------------------------------------------
+# FOLLOW_UP_QUESTION: in-turn continue_conversation on every response path
+# ---------------------------------------------------------------------------
+
+
+class TestSameTurnContinueConversation(_WsStreamTestBase):
+    """A done frame carrying the speech returns continue_conversation in the
+    same turn, so HA keeps the chat session and the satellite re-listens
+    natively -- on the WS token path, the WS mediated path, and REST."""
+
     @pytest.mark.asyncio
     async def test_single_burst_done_returns_continue_conversation(self):
         entity = self._make_entity()
-        entity._resolve_satellite_entity = MagicMock(return_value=self.SAT)
         done = self._text_frame(
             {
                 "done": True,
@@ -1847,14 +1408,14 @@ class TestSameTurnContinueConversation(_VoiceFollowupTestBase):
             }
         )
         ws = self._make_ws(AsyncMock(return_value=done))
+        chat_log = _FakeChatLog()
 
-        result = await entity._process_via_ws_read(self._make_user_input(), ws)
+        result = await entity._process_via_ws_read(
+            self._make_user_input(), chat_log, ws
+        )
 
         assert result is not None
         assert result.continue_conversation is True
-        # No sentence-stream handoff and no start_conversation fallback.
-        assert entity._inflight_pushes == {}
-        entity.hass.services.async_call.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_direct_done_mediated_returns_continue_conversation(self):
@@ -1868,12 +1429,14 @@ class TestSameTurnContinueConversation(_VoiceFollowupTestBase):
             }
         )
         ws = self._make_ws(AsyncMock(return_value=done))
+        chat_log = _FakeChatLog()
 
-        result = await entity._process_via_ws_read(self._make_user_input(), ws)
+        result = await entity._process_via_ws_read(
+            self._make_user_input(), chat_log, ws
+        )
 
         assert result is not None
         assert result.continue_conversation is True
-        assert entity._inflight_pushes == {}
 
     @pytest.mark.asyncio
     async def test_rest_response_returns_continue_conversation(self):
@@ -1890,22 +1453,26 @@ class TestSameTurnContinueConversation(_VoiceFollowupTestBase):
         )
         entity._session = session
 
-        result = await entity._process_via_rest(self._make_user_input())
+        result = await entity._process_via_rest(self._make_user_input(), _FakeChatLog())
 
         assert result.continue_conversation is True
 
-    @pytest.mark.asyncio
-    async def test_filler_first_records_and_correlates_answer_leg(self):
-        import time
 
+# ---------------------------------------------------------------------------
+# Chat-log delta streaming (filler preamble + token stream + in-turn result)
+# ---------------------------------------------------------------------------
+
+
+class TestDeltaStreaming(_WsStreamTestBase):
+    """The WS read streams frames into the chat log as content deltas:
+    filler frames become the in-stream preamble, tokens concatenate, the
+    done frame terminates the stream, and every path returns in-turn."""
+
+    @pytest.mark.asyncio
+    async def test_filler_frame_becomes_in_stream_preamble(self):
         entity = self._make_entity()
-        entity._resolve_satellite_entity = MagicMock(return_value=self.SAT)
-        entity.hass.states.get.return_value = MagicMock(state="idle")
-        entity.hass.async_create_task = MagicMock(
-            side_effect=lambda coro: asyncio.create_task(coro)
-        )
         frames = [
-            self._text_frame({"filler_push": "Einen Moment."}),
+            self._text_frame({"filler_push": "**Einen Moment.**", "done": False}),
             self._text_frame(
                 {
                     "done": True,
@@ -1916,83 +1483,173 @@ class TestSameTurnContinueConversation(_VoiceFollowupTestBase):
             ),
         ]
         ws = self._make_ws(AsyncMock(side_effect=frames))
-        patcher, _callbacks = self._track_states()
+        chat_log = _FakeChatLog()
 
-        # Turn 1 (question leg): filler-first return + background push.
-        with patcher:
-            result1 = await entity._process_via_ws_read(
-                self._make_user_input(cid="c1"), ws
-            )
-            assert result1 is not None
-            push_task = entity._inflight_pushes[self.SAT]
-            await asyncio.wait_for(push_task, timeout=1.0)
-
-        assert len(self._service_calls(entity, "start_conversation")) == 1
-        entry = entity._pending_followups.get("device:dev-1")
-        assert entry is not None
-        assert entry[0] == "c1"
-        assert entry[1] > time.monotonic()
-
-        # Turn 2 (answer leg): fresh HA chat-session id; the original id
-        # goes on the wire, the HA-side id is restored on the result.
-        done2 = self._text_frame(
-            {
-                "done": True,
-                "token": "Das Wohnzimmerlicht ist an",
-                "conversation_id": "c1",
-                "sanitized": True,
-            }
+        result = await entity._process_via_ws_read(
+            self._make_user_input(), chat_log, ws
         )
-        ws2 = self._make_ws(AsyncMock(return_value=done2))
-        ws2.send_json = AsyncMock()
-        entity._ws = ws2
-        entity._ws_last_active = time.monotonic()
 
-        answer_input = self._make_user_input(cid="fresh-ulid")
-        answer_input.text = "das Wohnzimmer"
-        result2 = await entity._async_handle_message(answer_input, MagicMock())
-
-        payload = ws2.send_json.call_args.args[0]
-        assert payload["conversation_id"] == "c1"
-        assert result2.conversation_id == "fresh-ulid"
-        # The entry was consumed by the answer turn.
-        assert "device:dev-1" not in entity._pending_followups
+        # The filler (markdown-stripped) opens the assistant message.
+        assert chat_log.deltas[0] == {
+            "role": "assistant",
+            "content": "Einen Moment. ",
+        }
+        assert chat_log.deltas[1] == {"content": "Welches Licht meintest du?"}
+        # Result speech = filler preamble + answer, matching the chat log.
+        speech = result.response.async_set_speech.call_args.args[0]
+        assert speech == "Einen Moment. Welches Licht meintest du?"
+        assert result.continue_conversation is True
+        # Clean done: the socket is offered back as the shared connection.
+        assert entity._ws is ws
+        ws.close.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_expired_pending_followup_is_ignored(self):
-        import time
-
+    async def test_multi_token_stream_forwards_deltas_verbatim(self):
         entity = self._make_entity()
-        entity._pending_followups["device:dev-1"] = ("c1", time.monotonic() - 1)
+        frames = [
+            self._text_frame({"token": "Das "}),
+            self._text_frame({"token": "Wohnzimmerlicht "}),
+            self._text_frame({"token": "ist an."}),
+            self._text_frame({"done": True, "voice_followup": True, "sanitized": True}),
+        ]
+        ws = self._make_ws(AsyncMock(side_effect=frames))
+        chat_log = _FakeChatLog()
+
+        result = await entity._process_via_ws_read(
+            self._make_user_input(), chat_log, ws
+        )
+
+        assert chat_log.deltas == [
+            {"role": "assistant"},
+            {"content": "Das "},
+            {"content": "Wohnzimmerlicht "},
+            {"content": "ist an."},
+        ]
+        speech = result.response.async_set_speech.call_args.args[0]
+        assert speech == "Das Wohnzimmerlicht ist an."
+        assert result.continue_conversation is True
+        assert result.conversation_id == "c1"
+        assert entity._ws is ws
+
+    @pytest.mark.asyncio
+    async def test_single_burst_done_with_token_streams_content(self):
+        """Regression for the single-burst shape: a done frame carrying the
+        whole speech as one token burst streams the content and returns the
+        in-turn continue_conversation flag."""
+        entity = self._make_entity()
         done = self._text_frame(
             {
                 "done": True,
-                "token": "OK",
-                "conversation_id": "fresh-ulid",
+                "token": "Welches Licht meintest du?",
+                "voice_followup": True,
                 "sanitized": True,
             }
         )
         ws = self._make_ws(AsyncMock(return_value=done))
-        ws.send_json = AsyncMock()
-        entity._ws = ws
-        entity._ws_last_active = time.monotonic()
+        chat_log = _FakeChatLog()
 
-        result = await entity._async_bridge_to_container(
-            self._make_user_input(cid="fresh-ulid")
+        result = await entity._process_via_ws_read(
+            self._make_user_input(), chat_log, ws
         )
 
-        payload = ws.send_json.call_args.args[0]
-        assert payload["conversation_id"] == "fresh-ulid"
-        assert result.conversation_id == "fresh-ulid"
-        assert entity._pending_followups == {}
+        assert chat_log.deltas == [
+            {"role": "assistant"},
+            {"content": "Welches Licht meintest du?"},
+        ]
+        assert result.continue_conversation is True
 
     @pytest.mark.asyncio
-    async def test_unkeyable_turn_skips_pending_followup(self):
+    async def test_done_mediated_without_tokens_is_final_delta(self):
         entity = self._make_entity()
-        user_input = self._make_user_input(device_id=None)
-        user_input.context = None
+        done = self._text_frame(
+            {"done": True, "mediated_speech": "Alles erledigt.", "sanitized": True}
+        )
+        ws = self._make_ws(AsyncMock(return_value=done))
+        chat_log = _FakeChatLog()
 
-        assert entity._followup_correlation_key(user_input) is None
-        entity._record_pending_followup(None, "c1")
-        assert entity._pending_followups == {}
-        assert entity._pop_pending_followup(user_input) is None
+        result = await entity._process_via_ws_read(
+            self._make_user_input(), chat_log, ws
+        )
+
+        assert chat_log.deltas == [
+            {"role": "assistant"},
+            {"content": "Alles erledigt."},
+        ]
+        speech = result.response.async_set_speech.call_args.args[0]
+        assert speech == "Alles erledigt."
+        assert result.continue_conversation is False
+
+    @pytest.mark.asyncio
+    async def test_error_done_with_empty_speech_yields_canned_error(self):
+        entity = self._make_entity()
+        done = self._text_frame({"done": True, "error": "boom", "sanitized": True})
+        ws = self._make_ws(AsyncMock(return_value=done))
+        chat_log = _FakeChatLog()
+
+        result = await entity._process_via_ws_read(
+            self._make_user_input(), chat_log, ws
+        )
+
+        canned = "The assistant could not complete that request. (boom)"
+        assert chat_log.deltas == [
+            {"role": "assistant"},
+            {"content": canned},
+        ]
+        speech = result.response.async_set_speech.call_args.args[0]
+        assert speech == canned
+
+    @pytest.mark.asyncio
+    async def test_ws_closed_mid_stream_returns_canned_drop_message(self):
+        import time
+
+        entity = self._make_entity()
+        ws = self._make_ws(AsyncMock(return_value=MagicMock(type=2)))  # CLOSED
+        entity._ws = ws
+        entity._ws_last_active = time.monotonic()
+        chat_log = _FakeChatLog()
+        ws_msg_types = type("WSMsgType", (), {"TEXT": 1, "CLOSED": 2, "ERROR": 3})
+
+        with patch(
+            "custom_components.ha_agenthub.conversation.aiohttp.WSMsgType",
+            ws_msg_types,
+        ):
+            result = await entity._async_bridge_to_container(
+                self._make_user_input(), chat_log
+            )
+
+        speech = result.response.async_set_speech.call_args.args[0]
+        assert "connection dropped" in speech
+        # The aborted delta stream added nothing; the canned message was
+        # added explicitly so display and speech stay consistent.
+        assert chat_log.deltas == []
+        assert [c.content for c in chat_log.added_content] == [
+            (
+                "The connection dropped before the reply finished. "
+                "If the action may have run, check your devices."
+            )
+        ]
+        # The failed turn closed its own socket instead of reusing it.
+        ws.close.assert_awaited_once()
+        assert entity._ws is None
+
+    @pytest.mark.asyncio
+    async def test_rest_turn_adds_speech_to_chat_log(self):
+        entity = self._make_entity()
+        session = self._FakeSession(
+            self._FakeResponse(
+                200,
+                {
+                    "speech": "Das Licht ist an.",
+                    "conversation_id": "c1",
+                    "sanitized": True,
+                },
+            )
+        )
+        entity._session = session
+        chat_log = _FakeChatLog()
+
+        result = await entity._process_via_rest(self._make_user_input(), chat_log)
+
+        assert [c.content for c in chat_log.added_content] == ["Das Licht ist an."]
+        speech = result.response.async_set_speech.call_args.args[0]
+        assert speech == "Das Licht ist an."

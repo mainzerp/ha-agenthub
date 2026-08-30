@@ -54,9 +54,6 @@ def _mock_homeassistant_deps():
         "homeassistant.helpers.entity_platform": {
             "AddConfigEntryEntitiesCallback": MagicMock,
         },
-        "homeassistant.helpers.event": {
-            "async_track_state_change_event": MagicMock,
-        },
         "voluptuous": MagicMock(),
         "aiohttp": MagicMock(),
     }

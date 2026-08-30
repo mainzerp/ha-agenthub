@@ -120,30 +120,6 @@ class TestSseBridge:
         assert resp.status_code == 200
         assert "text/event-stream" in resp.headers.get("content-type", "")
 
-    async def test_sse_emits_is_filler_unsanitized(self, light_scenario_app):
-        """Mock dispatcher that yields a filler token; assert is_filler and sanitized=False."""
-        from app.api.routes import conversation as conv_routes
-
-        old_dispatcher = conv_routes._dispatcher
-
-        async def _filler_stream(req):
-            yield {"token": "One moment...", "is_filler": True, "done": False}
-            yield {"token": "", "done": True}
-
-        mock_d = MagicMock()
-        mock_d.dispatch_stream = _filler_stream
-
-        async with HAMimicClient(light_scenario_app) as client:
-            conv_routes._dispatcher = mock_d
-            try:
-                tokens = await client.sse_turn("do something")
-                assert len(tokens) >= 2
-                first = tokens[0]
-                assert first.get("is_filler") is True
-                assert first.get("sanitized") is False
-            finally:
-                conv_routes._dispatcher = old_dispatcher
-
     async def test_sse_done_frame_has_all_fields(self, mimic: HAMimicClient):
         tokens = await mimic.sse_turn("turn on the kitchen light")
         done_frame = tokens[-1]

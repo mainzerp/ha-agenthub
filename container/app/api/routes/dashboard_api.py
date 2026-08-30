@@ -780,12 +780,9 @@ async def admin_chat_stream(request: Request, payload: ChatRequest):
                     done=chunk.get("done", False),
                     conversation_id=chunk.get("conversation_id") if chunk.get("done") else None,
                     mediated_speech=chunk.get("mediated_speech") if chunk.get("done") else None,
-                    is_filler=chunk.get("is_filler", False),
                     error=chunk.get("error") if chunk.get("done") else None,
                     voice_followup=bool(chunk.get("voice_followup")) if chunk.get("done") else False,
-                    sanitized=bool(chunk.get("sanitized", True))
-                    if chunk.get("done")
-                    else not chunk.get("is_filler", False),
+                    sanitized=bool(chunk.get("sanitized", True)),
                     directive=chunk.get("directive") if chunk.get("done") else None,
                     reason=chunk.get("reason") if chunk.get("done") else None,
                     filler_push=chunk.get("filler_push") if not chunk.get("done") else None,

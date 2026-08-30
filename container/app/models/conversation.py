@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, field_validator
 
 logger = logging.getLogger(__name__)
 
@@ -80,23 +80,20 @@ class StreamToken(BaseModel):
     done: bool = False
     conversation_id: str | None = None
     mediated_speech: str | None = None
-    is_filler: bool = False
     error: str | None = None
     voice_followup: bool = False
     # P3-1: True when ``token`` / ``mediated_speech`` has already been
     # sanitized by the backend. The orchestrator strips Markdown before
     # emitting accumulated/mediated speech, so the HA integration can
     # skip its defensive ``_strip_markdown`` re-pass when this flag is set.
-    # Filler tokens are NOT sanitized backend-side; the HA integration
-    # still strips them in ``_speak_filler``.
     sanitized: bool = True
     # Same directive carrier as ``ConversationResponse`` so a ``done=True``
     # frame can short-circuit the stream if needed.
     directive: str | None = None
     reason: str | None = None
-    # Container-directed filler text pushed outside the Assist pipeline
-    # via assist_satellite.announce.  When present the integration must
-    # play it immediately and continue reading the stream.
+    # Container-generated interim filler sentence. When present the
+    # integration prepends it to the assistant message as an in-stream
+    # preamble (chat-log delta) and continues reading the stream.
     filler_push: str | None = None
     action_executed: ActionResult | None = None
     routed_agent: str | None = None
@@ -137,10 +134,3 @@ class StreamToken(BaseModel):
             logger.warning("StreamToken coerced token=None to empty string")
             return ""
         return value
-
-    @model_validator(mode="after")
-    def _force_unsanitized_filler(self) -> StreamToken:
-        """Keep filler chunks marked as unsanitized for downstream stripping."""
-        if self.is_filler:
-            self.sanitized = False
-        return self

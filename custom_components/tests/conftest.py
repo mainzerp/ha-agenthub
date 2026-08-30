@@ -74,7 +74,8 @@ class _MockConversationEntityFeature:
 
 
 class _MockConversationEntity:
-    pass
+    # Mirrors HA's Entity base: entity_id is None until the platform assigns it.
+    entity_id = None
 
 
 class _MockConversationResult:
@@ -84,6 +85,12 @@ class _MockConversationResult:
         self.response = response
         self.conversation_id = conversation_id
         self.continue_conversation = continue_conversation
+
+
+class _MockAssistantContent:
+    def __init__(self, agent_id=None, content=None, **kwargs):
+        self.agent_id = agent_id
+        self.content = content
 
 
 class _MockAddConfigEntryEntitiesCallback:
@@ -127,6 +134,9 @@ def _mock_homeassistant_deps():
             "ConversationEntity": _MockConversationEntity,
             "ConversationEntityFeature": _MockConversationEntityFeature,
             "ConversationResult": _MockConversationResult,
+            "AssistantContent": _MockAssistantContent,
+            "AssistantContentDeltaDict": dict,
+            "ChatLog": MagicMock,
         },
         "homeassistant.helpers.device_registry": {
             "DeviceInfo": MagicMock,
@@ -138,9 +148,6 @@ def _mock_homeassistant_deps():
         "homeassistant.helpers.intent": {"IntentResponse": MagicMock},
         "homeassistant.helpers.entity_platform": {
             "AddConfigEntryEntitiesCallback": _MockAddConfigEntryEntitiesCallback,
-        },
-        "homeassistant.helpers.event": {
-            "async_track_state_change_event": MagicMock,
         },
         "voluptuous": {
             "Schema": MagicMock,

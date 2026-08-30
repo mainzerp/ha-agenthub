@@ -440,7 +440,7 @@ async def _seed_defaults(db: aiosqlite.Connection) -> None:
         ),
         (
             "orchestrator.mediation_streaming_enabled",
-            "false",
+            "true",
             "bool",
             "orchestrator",
             "Stream mediated tokens incrementally to the client for earlier TTS start",

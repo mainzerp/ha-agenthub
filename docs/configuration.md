@@ -152,7 +152,7 @@ relevant route before tuning.
 
 | Key | Default | Type | Description |
 |-----|---------|------|-------------|
-| `filler.enabled` | `false` | bool | Emit interim TTS "thinking" tokens (`StreamToken.is_filler=true`) while the real answer is being generated. |
+| `filler.enabled` | `false` | bool | Emit a short interim "thinking" sentence (`filler_push` frame) while the real answer is being generated. The HA integration speaks it as an in-stream preamble to the response. |
 | `filler.threshold_ms` | `1000` | int | Minimum elapsed milliseconds before the filler agent is allowed to emit. |
 
 > **Recommendation:** Use `llama-3.1-8b-instant` for fast, low-cost filler generation.

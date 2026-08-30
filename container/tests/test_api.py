@@ -381,37 +381,6 @@ class TestConversationEndpoints:
         )
         assert resp.status_code == 401
 
-    async def test_sse_passes_through_is_filler(self, authed_client: httpx.AsyncClient):
-        """SSE endpoint should include is_filler field in streamed tokens."""
-        import json as _json
-
-        from app.api.routes import conversation as conv_routes
-
-        # Mock dispatcher that yields a filler token
-        async def _filler_stream(req):
-            yield {"token": "One moment...", "is_filler": True, "done": False}
-            yield {"token": "Here is the answer", "done": False}
-            yield {"token": "", "done": True}
-
-        old_dispatcher = conv_routes._dispatcher
-        mock_d = MagicMock()
-        mock_d.dispatch_stream = _filler_stream
-        conv_routes._dispatcher = mock_d
-
-        try:
-            resp = await authed_client.post(
-                "/api/conversation/stream",
-                json={"text": "search something"},
-            )
-            assert resp.status_code == 200
-            lines = [line for line in resp.text.splitlines() if line.startswith("data:")]
-            assert len(lines) >= 2
-            first_data = _json.loads(lines[0].removeprefix("data:").strip())
-            assert first_data.get("is_filler") is True
-            assert first_data.get("sanitized") is False
-        finally:
-            conv_routes._dispatcher = old_dispatcher
-
     async def test_sse_passes_through_status_frames(self, authed_client: httpx.AsyncClient):
         """M-3: SSE forwards multi-agent status/agents markers on non-done frames."""
         import json as _json
@@ -2073,10 +2042,9 @@ class TestStreamFrameParity:
             done=chunk.get("done", False),
             conversation_id=chunk.get("conversation_id") if chunk.get("done") else None,
             mediated_speech=chunk.get("mediated_speech") if chunk.get("done") else None,
-            is_filler=chunk.get("is_filler", False),
             error=chunk.get("error") if chunk.get("done") else None,
             voice_followup=bool(chunk.get("voice_followup")) if chunk.get("done") else False,
-            sanitized=bool(chunk.get("sanitized", True)) if chunk.get("done") else not chunk.get("is_filler", False),
+            sanitized=bool(chunk.get("sanitized", True)),
             directive=chunk.get("directive") if chunk.get("done") else None,
             reason=chunk.get("reason") if chunk.get("done") else None,
             filler_push=chunk.get("filler_push") if not chunk.get("done") else None,
@@ -2098,7 +2066,6 @@ class TestStreamFrameParity:
             {"token": "Hello", "done": False},
             {"token": None, "done": False},
             {"filler_push": "One moment", "done": False},
-            {"token": "Hmm", "done": False, "is_filler": True},
             {"token": "", "done": False, "status": "multi_agent", "agents": ["a", "b"]},
             {
                 "token": "Done.",

@@ -86,24 +86,10 @@ class TestStreamToken:
         st = StreamToken(token="Hi")
         assert st.done is False
         assert st.conversation_id is None
-        assert st.is_filler is False
 
     def test_done_token(self):
         st = make_stream_token(token="", done=True)
         assert st.done is True
-
-    def test_is_filler_defaults_false(self):
-        st = StreamToken(token="hello")
-        assert st.is_filler is False
-
-    def test_is_filler_serialization(self):
-        st = StreamToken(token="One moment...", is_filler=True)
-        data = st.model_dump()
-        assert data["is_filler"] is True
-        assert data["sanitized"] is False
-        restored = StreamToken.model_validate(data)
-        assert restored.is_filler is True
-        assert restored.sanitized is False
 
     def test_error_dict_coerced_to_message_string(self):
         """Phase-1 contract: dict-shaped errors coerce to their message string."""

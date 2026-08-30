@@ -1,16 +1,26 @@
 # Version
 
-**Current Version:** 1.51.0
+**Current Version:** 2.0.0
 
 ## Recent Changes
 
-(tracking changes since 1.51.0)
+(tracking changes since 2.0.0)
 
+## Version History
+
+### 2.0.0 (MAJOR) -- HA floor 2025.4, official chat-log/TTS streaming replaces push machinery
+
+(commits 3d51899 + release commit)
+
+BREAKING: the minimum Home Assistant version is now 2025.4.0 (`continue_conversation` on `ConversationResult` and the `ConversationEntity.async_process` default wrapper are required). For spoken streaming, HA >= 2025.7/2025.8 + a streaming TTS engine (wyoming-piper 1.6+) + ESPHome firmware >= 2025.6.2 is recommended.
+
+- feat(integration): official chat-log delta streaming -- `_attr_supports_streaming = True` and responses are streamed via `chat_log.async_add_delta_content_stream`, so HA >= 2025.7 pipelines feed tokens to streaming TTS while the turn is still running
+- feat(integration): the container filler becomes an in-stream preamble (first content of the assistant message) instead of an out-of-band early return; the final result speech is filler prefix + answer, so chat-log content and spoken text agree
+- fix(integration): every response path (WS token stream, mediated done, single-burst done, REST, canned errors) now returns `ConversationResult(continue_conversation=...)` in the same turn
+- refactor(integration): push machinery removed -- filler-first handoff, `_post_filler_push`, `_sentence_stream_task`, satellite idle gating, `assist_satellite.announce`/`start_conversation` fallbacks, and the pending-follow-up correlation map are gone; REST turns and the canned connection-drop message are added to the chat log explicitly
 - fix(container): every clarifying-question path now sets `voice_followup` -- not-found LLM clarification and deterministic `_ambiguous` disambiguation for all domains (previously light-only), and parse-miss questions follow the spoken-question heuristic (trailing `?`) instead of the recall-ambiguity gate
 - fix(integration): follow-up questions return `ConversationResult(continue_conversation=True)` in the same turn on every path where the flag is knowable -- single-burst done frames no longer take the sentence-stream handoff, so HA keeps the chat session (same `conversation_id`) and ESPHome satellites re-listen natively
 - fix(integration): the filler-first `assist_satellite.start_conversation` fallback (which always opens a fresh HA chat session) now records a pending-follow-up entry keyed by device/user (TTL 300 s) so the answer turn is re-correlated to the original `conversation_id` container-side
-
-## Version History
 
 ### 1.51.0 (MINOR) -- entity resolution rework: agent-side keyword recall, closed entity_id contract
 

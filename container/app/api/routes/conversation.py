@@ -100,17 +100,15 @@ def _apply_stream_chunk(
     instead of one construction + validation per chunk. Assignment does not
     re-run pydantic validators, so the coercions the model validators applied
     on construction are mirrored here (``token=None`` -> ``""``, dict-shaped
-    ``error`` -> ``str``, filler chunks forced unsanitized). Every field is
-    assigned unconditionally so no stale value leaks between chunks; the
-    emitted field set stays byte-identical to per-chunk construction.
+    ``error`` -> ``str``). Every field is assigned unconditionally so no
+    stale value leaks between chunks; the emitted field set stays
+    byte-identical to per-chunk construction.
     """
     done = bool(chunk.get("done", False))
-    is_filler = bool(chunk.get("is_filler", False))
     frame.token = chunk.get("token") or ""
     frame.done = done
     frame.conversation_id = chunk.get("conversation_id") if done else None
     frame.mediated_speech = chunk.get("mediated_speech") if done else None
-    frame.is_filler = is_filler
     error = chunk.get("error") if done else None
     if error is not None and not isinstance(error, str):
         if isinstance(error, dict):
@@ -122,10 +120,7 @@ def _apply_stream_chunk(
             error = str(error)
     frame.error = error
     frame.voice_followup = bool(chunk.get("voice_followup")) if done else False
-    frame.sanitized = bool(chunk.get("sanitized", True)) if done else not is_filler
-    if is_filler:
-        # Mirror the _force_unsanitized_filler model validator.
-        frame.sanitized = False
+    frame.sanitized = bool(chunk.get("sanitized", True))
     frame.directive = chunk.get("directive") if done else None
     frame.reason = chunk.get("reason") if done else None
     frame.filler_push = chunk.get("filler_push") if not done else None

@@ -182,22 +182,19 @@ docker compose restart ha-agenthub
 
 **Symptoms:** After a clarifying question, the microphone does not stay open for the follow-up answer, or the answer is not understood in context.
 
-**How it works now:** every container path that speaks a clarifying question (entity not found, ambiguous recall, deterministic disambiguation) sets `voice_followup=True`. The integration returns `ConversationResult(continue_conversation=True)` in the same turn on the direct, single-burst and REST paths -- HA core keeps the chat session (same `conversation_id`) and ESPHome satellites re-listen natively after TTS. Only the filler-first path cannot know the flag in-turn; there the background push falls back to `assist_satellite.start_conversation`, and a pending-follow-up map (keyed by device, else user; TTL 300 s) re-links the answer turn to the original `conversation_id` so the container sees the question turn's history.
+**How it works now:** every container path that speaks a clarifying question (entity not found, ambiguous recall, deterministic disambiguation) sets `voice_followup=True`. The integration returns `ConversationResult(continue_conversation=True)` in the same turn on every response path (WS token stream, mediated done, single-burst done, REST) -- HA core keeps the chat session (same `conversation_id`) and ESPHome satellites re-listen natively after TTS.
 
-**Path matrix:**
+**Version requirements:**
 
-| Question delivered via | Re-listen mechanism | Answer correlation |
-| ---------------------- | ------------------- | ------------------ |
-| Direct WS done / single-burst done / REST | `continue_conversation=True` (official) | Same `conversation_id`, native |
-| Filler-first (or residual mid-stream handoff) | `assist_satellite.start_conversation` fallback | Pending-follow-up map restores the original id |
+- The integration requires HA >= 2025.4.0 (manifest floor).
+- Spoken streaming (filler preamble and tokens spoken while the turn is still running) needs HA >= 2025.7 (default-on since 2025.8), a streaming TTS engine such as wyoming-piper 1.6+, and ESPHome firmware >= 2025.6.2. On older cores or buffering TTS engines the full response is spoken at end of turn.
+- Responses shorter than ~60 streamed characters still buffer before TTS starts (HA core limitation, feature request #4133).
 
 **Checks and limits:**
 
 - Update both the container and the HA integration -- older integrations never set `continue_conversation` on streamed turns, and older containers only set `voice_followup` for light-domain questions.
-- The fallback still requires: a resolvable `assist_satellite.*` entity for the device, the final frame within 45 s, the satellite idle within ~8 s, and no new turn in between. Any failure: the question is spoken, the mic never re-opens.
 - HA chat sessions expire after 5 minutes and ESPHome devices reset their stored `conversation_id` after 300 s (`conversation_timeout`) -- answers later than that lose correlation on every path (HA-core limits).
-- Wyoming satellites are ANNOUNCE-only: no re-listen is possible there; the question is still spoken.
-- On HA versions older than the manifest floor (2025.1.0) `continue_conversation` is silently dropped by a signature probe.
+- Wyoming satellites work as plain conversation targets; they are ANNOUNCE-only, so no re-listen is possible there -- the question is still spoken.
 
 ## Entity Not Found with LLM Clarification
 

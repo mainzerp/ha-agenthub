@@ -136,11 +136,6 @@ function chatPage() {
                         if (!line.startsWith('data: ')) continue;
                         try {
                             const data = JSON.parse(line.slice(6));
-                            if (data.is_filler && data.token) {
-                                this.messages.push({ role: 'filler', text: data.token });
-                                this.scrollToBottom();
-                                continue;
-                            }
                             if (data.filler_push) {
                                 // Container-pushed filler played outside the
                                 // pipeline: render like a filler frame.

@@ -129,14 +129,16 @@ result as context. Per-action domain filtering in the executors
 ensures, for example, that a `camera_turn_on` step
 cannot land on a same-named `lock` or `switch` entity.
 
-### Filler / Interim TTS
+### Filler / In-Stream Preamble
 
 When `filler.enabled` is `true` and the orchestrator's first useful
 token takes longer than `filler.threshold_ms`, the filler agent
-emits short interim tokens marked with `StreamToken.is_filler=true`.
-The HA integration speaks these immediately while the real reply
-continues to be generated. Once the real first token arrives, the
-filler stops emitting and the stream continues normally.
+generates one short interim sentence, emitted as a `filler_push` frame
+on the SSE/WS streams. The HA integration prepends it to the assistant
+message as an in-stream preamble (the first chat-log content delta), so
+on HA >= 2025.7 with a streaming TTS engine it is spoken early while
+the real reply continues to generate. The final result speech is filler
+prefix + answer, so chat-log content and spoken text agree.
 
 ### Voice Follow-Up Questions
 
@@ -144,20 +146,13 @@ When a turn ends in a clarifying question (entity not found, ambiguous
 recall, deterministic disambiguation), the container sets
 `voice_followup=True` on the terminal response. The HA integration maps
 that to `ConversationResult(continue_conversation=True)` **in the same
-turn** on every path where the flag is knowable (direct done frame,
-single-burst done frame, REST) -- HA core keeps the chat session (same
+turn** on every response path (WS token stream, mediated done,
+single-burst done, REST) -- HA core keeps the chat session (same
 `conversation_id`) and ESPHome satellites re-listen natively after TTS.
-
-The exception is the filler-first path: the filler return happens before
-the flag is knowable, so the background push task falls back to
-`assist_satellite.start_conversation`. Because that service always opens
-a NEW HA chat session (fresh `conversation_id`), the integration records
-the original id in a pending-follow-up map (keyed by `device_id`, else
-`user_id`, TTL 300 s) and substitutes it on the answer turn's outgoing
-payload, restoring the HA-side id on the returned result. Answer-leg
-correlation in the container is keyed strictly by `conversation_id`:
-the classify stage injects the stored history plus a previous-agent hint
-and condenses the short answer against the pending question.
+Answer-leg correlation in the container is keyed strictly by
+`conversation_id`: the classify stage injects the stored history plus a
+previous-agent hint and condenses the short answer against the pending
+question.
 
 ### Mediation Streaming
 

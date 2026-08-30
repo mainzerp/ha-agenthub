@@ -237,7 +237,7 @@ async def test_streaming_mediation_buffers_tokens_until_terminal_frame(mock_comp
 
     chunks = [c async for c in orch.handle_task_stream(task)]
 
-    raw_tokens = [c for c in chunks if not c["done"] and not c.get("is_filler") and c.get("token")]
+    raw_tokens = [c for c in chunks if not c["done"] and c.get("token")]
     assert raw_tokens == []
 
     final = [c for c in chunks if c["done"]]

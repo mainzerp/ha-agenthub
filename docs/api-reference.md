@@ -122,12 +122,11 @@ data: {"token": "", "done": true, "conversation_id": "abc123"}
 | `token` | string | Token text fragment. |
 | `done` | bool | True on the terminal event. |
 | `conversation_id` | string \| null | Set on the terminal event. |
-| `mediated_speech` | string \| null | Final mediated speech replacement (set when the personality / mediation pipeline rewrites the streamed tokens). |
-| `is_filler` | bool | Marks tokens emitted by the filler agent (interim TTS while the real answer is being computed). |
+| `mediated_speech` | string \| null | Final mediated speech replacement (set when the personality / mediation pipeline rewrites the streamed tokens; only when no tokens were streamed). |
 | `error` | string \| null | Set when the stream is terminating due to an error. |
 | `voice_followup` | bool | Mirrors the REST `voice_followup` flag on the terminal event. |
 | `sanitized` | bool | When true, the integration must skip its defensive markdown stripper because the container already sanitised the speech. |
-| `filler_push` | bool | When true, the integration should push filler tokens immediately rather than buffering them. |
+| `filler_push` | string \| null | Interim filler sentence; the HA integration prepends it to the assistant message as an in-stream preamble. |
 
 ### WS /ws/conversation
 

@@ -892,7 +892,24 @@ class TestConversationEntityConcurrency:
 
 
 class TestHAConversationWSCloseError:
-    """Tests for _process_via_ws raising on CLOSED/ERROR instead of returning partial speech."""
+    """Tests for the WS read raising on CLOSED/ERROR instead of returning partial speech."""
+
+    class _FakeChatLog:
+        """Stand-in for HA's ChatLog: consumes and records streamed deltas."""
+
+        def __init__(self):
+            self.deltas: list[dict] = []
+
+        def async_add_delta_content_stream(self, agent_id, stream):
+            async def _consume():
+                async for delta in stream:
+                    self.deltas.append(delta)
+                    yield delta
+
+            return _consume()
+
+        async def async_add_assistant_content_without_tools(self, content):
+            pass
 
     @pytest.fixture(autouse=True)
     def _mock_homeassistant(self):
@@ -957,7 +974,7 @@ class TestHAConversationWSCloseError:
     def _bind_real_ws_methods(entity):
         """Bind the real WS helpers onto a MagicMock entity.
 
-        P1 split ``_process_via_ws`` into a locked send phase
+        P1 split the WS processing into a locked send phase
         (``_ws_send_locked``) and an unlocked read phase
         (``_process_via_ws_read``) with real socket-disposition helpers; a
         plain MagicMock self must provide them as real coroutines.
@@ -986,7 +1003,6 @@ class TestHAConversationWSCloseError:
 
         sys.path.insert(0, str(Path(__file__).resolve().parents[1].parent))
         from custom_components.ha_agenthub.conversation import (
-            HaAgentHubConversationEntity,
             _WsDroppedAfterSendError,
         )
 
@@ -1011,7 +1027,8 @@ class TestHAConversationWSCloseError:
         user_input.device_id = None
 
         with pytest.raises(_WsDroppedAfterSendError) as exc_info:
-            await HaAgentHubConversationEntity._process_via_ws(entity, user_input)
+            turn_ws = await entity._ws_send_locked(user_input)
+            await entity._process_via_ws_read(user_input, self._FakeChatLog(), turn_ws)
         assert isinstance(exc_info.value.__cause__, aiohttp.ClientError)
         assert "closed mid-stream" in str(exc_info.value.__cause__)
 
@@ -1024,7 +1041,6 @@ class TestHAConversationWSCloseError:
 
         sys.path.insert(0, str(Path(__file__).resolve().parents[1].parent))
         from custom_components.ha_agenthub.conversation import (
-            HaAgentHubConversationEntity,
             _WsDroppedAfterSendError,
         )
 
@@ -1049,7 +1065,8 @@ class TestHAConversationWSCloseError:
         user_input.device_id = None
 
         with pytest.raises(_WsDroppedAfterSendError) as exc_info:
-            await HaAgentHubConversationEntity._process_via_ws(entity, user_input)
+            turn_ws = await entity._ws_send_locked(user_input)
+            await entity._process_via_ws_read(user_input, self._FakeChatLog(), turn_ws)
         assert isinstance(exc_info.value.__cause__, aiohttp.ClientError)
         assert "error mid-stream" in str(exc_info.value.__cause__)
         assert entity._ws is None
@@ -1062,7 +1079,6 @@ class TestHAConversationWSCloseError:
 
         sys.path.insert(0, str(Path(__file__).resolve().parents[1].parent))
         from custom_components.ha_agenthub.conversation import (
-            HaAgentHubConversationEntity,
             _WsDroppedAfterSendError,
         )
 
@@ -1083,7 +1099,8 @@ class TestHAConversationWSCloseError:
         user_input.device_id = None
 
         with pytest.raises(_WsDroppedAfterSendError) as exc_info:
-            await HaAgentHubConversationEntity._process_via_ws(entity, user_input)
+            turn_ws = await entity._ws_send_locked(user_input)
+            await entity._process_via_ws_read(user_input, self._FakeChatLog(), turn_ws)
         assert isinstance(exc_info.value.__cause__, aiohttp.ClientError)
         assert "closed mid-stream" in str(exc_info.value.__cause__)
 
@@ -1100,7 +1117,6 @@ class TestHAConversationWSCloseError:
         import aiohttp
 
         sys.path.insert(0, str(Path(__file__).resolve().parents[1].parent))
-        from custom_components.ha_agenthub.conversation import HaAgentHubConversationEntity
 
         entity = MagicMock()
         entity._ws = AsyncMock()
@@ -1122,7 +1138,8 @@ class TestHAConversationWSCloseError:
         sentinel = object()
         entity._build_result = MagicMock(return_value=sentinel)
 
-        result = await HaAgentHubConversationEntity._process_via_ws(entity, user_input)
+        result_turn_ws = await entity._ws_send_locked(user_input)
+        result = await entity._process_via_ws_read(user_input, self._FakeChatLog(), result_turn_ws)
         assert result is sentinel
         # Speech must include the error description rather than be empty.
         speech_arg = entity._build_result.call_args.args[0]
@@ -1270,7 +1287,9 @@ class TestHAConversationRestFallbackMessages:
         return HaAgentHubConversationEntity
 
     @staticmethod
-    def _build_rest_entity(response=None, error=None):
+    def _build_rest_entity(conversation_entity, response=None, error=None):
+        import types
+
         class _FakeResponse:
             def __init__(self, status_code, payload=None):
                 self.status = status_code
@@ -1303,14 +1322,26 @@ class TestHAConversationRestFallbackMessages:
         entity._url = "http://ha.local"
         entity._resolve_origin_context = MagicMock(return_value={})
         entity._build_result = MagicMock(
-            side_effect=lambda speech, conversation_id, language, sanitized=False: {
+            side_effect=lambda speech, conversation_id, language, sanitized=False, continue_conversation=False: {
                 "speech": speech,
                 "conversation_id": conversation_id,
                 "language": language,
                 "sanitized": sanitized,
             }
         )
+        # ``_process_via_rest`` delegates to these helpers; bind the real
+        # implementations onto the MagicMock self.
+        for name in ("_rest_result", "_add_assistant_chat_log_content"):
+            setattr(
+                entity,
+                name,
+                types.MethodType(getattr(conversation_entity, name), entity),
+            )
         return entity, _FakeResponse
+
+    class _FakeChatLog:
+        async def async_add_assistant_content_without_tools(self, content):
+            pass
 
     @staticmethod
     def _build_user_input():
@@ -1323,24 +1354,24 @@ class TestHAConversationRestFallbackMessages:
     @pytest.mark.parametrize("status_code", [401, 403])
     async def test_rest_fallback_reports_auth_failures(self, status_code):
         conversation_entity = self._import_conversation_module()
-        entity, response_type = self._build_rest_entity(response=None)
+        entity, response_type = self._build_rest_entity(conversation_entity, response=None)
         entity._session = type(
             "_FakeSession", (), {"post": lambda self, *args, **kwargs: response_type(status_code), "closed": False}
         )()
 
-        result = await conversation_entity._process_via_rest(entity, self._build_user_input())
+        result = await conversation_entity._process_via_rest(entity, self._build_user_input(), self._FakeChatLog())
 
         assert "API key was rejected" in result["speech"]
         assert "integration settings" in result["speech"]
 
     async def test_rest_fallback_reports_backend_errors(self):
         conversation_entity = self._import_conversation_module()
-        entity, response_type = self._build_rest_entity(response=None)
+        entity, response_type = self._build_rest_entity(conversation_entity, response=None)
         entity._session = type(
             "_FakeSession", (), {"post": lambda self, *args, **kwargs: response_type(503), "closed": False}
         )()
 
-        result = await conversation_entity._process_via_rest(entity, self._build_user_input())
+        result = await conversation_entity._process_via_rest(entity, self._build_user_input(), self._FakeChatLog())
 
         assert "returned an error" in result["speech"]
         assert "container logs" in result["speech"]
@@ -1349,9 +1380,9 @@ class TestHAConversationRestFallbackMessages:
         import aiohttp
 
         conversation_entity = self._import_conversation_module()
-        entity, _ = self._build_rest_entity(error=aiohttp.ClientError("connection refused"))
+        entity, _ = self._build_rest_entity(conversation_entity, error=aiohttp.ClientError("connection refused"))
 
-        result = await conversation_entity._process_via_rest(entity, self._build_user_input())
+        result = await conversation_entity._process_via_rest(entity, self._build_user_input(), self._FakeChatLog())
 
         assert "container is unavailable" in result["speech"]
         assert "reachable from Home Assistant" in result["speech"]
@@ -1429,7 +1460,7 @@ class TestHAConversationCoalesceWindow:
 
         bridge_calls = 0
 
-        async def _fake_bridge(user_input, key):
+        async def _fake_bridge(user_input, key, chat_log):
             nonlocal bridge_calls
             bridge_calls += 1
             await asyncio.sleep(0.001)
@@ -1468,7 +1499,7 @@ class TestHAConversationCoalesceWindow:
         gate = asyncio.Event()
         bridge_calls = 0
 
-        async def _fake_bridge(user_input, key):
+        async def _fake_bridge(user_input, key, chat_log):
             nonlocal bridge_calls
             bridge_calls += 1
             await gate.wait()

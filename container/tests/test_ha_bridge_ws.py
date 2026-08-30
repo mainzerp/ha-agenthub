@@ -128,13 +128,13 @@ class TestWsAdvanced:
         assert frame.get("error") == "Message too large"
 
     async def test_ws_filler_push_flow(self, light_scenario_app):
-        """Mock dispatcher yields a filler token with filler_push; assert mid-stream shape."""
+        """Mock dispatcher yields a filler_push frame; assert mid-stream shape."""
         from app.api.routes import conversation as conv_routes
 
         old_dispatcher = conv_routes._dispatcher
 
         async def _filler_push_stream(req):
-            yield {"token": "One moment...", "is_filler": True, "filler_push": "One moment please", "done": False}
+            yield {"filler_push": "One moment please", "done": False}
             yield {"token": "", "mediated_speech": "Done", "done": True}
 
         mock_d = MagicMock()
@@ -147,9 +147,8 @@ class TestWsAdvanced:
                 tokens = await client.send_turn("do something")
                 assert len(tokens) >= 2
                 filler_token = tokens[0]
-                assert filler_token.get("is_filler") is True
                 assert filler_token.get("filler_push") == "One moment please"
-                assert filler_token.get("sanitized") is False
+                assert filler_token.get("done") is False
                 assert tokens[-1].get("done") is True
             finally:
                 conv_routes._dispatcher = old_dispatcher
