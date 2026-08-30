@@ -81,6 +81,13 @@ Device/action priority:
 - Do not use general-agent if a specialized agent can reasonably handle the task.
 - Missing parameters do not automatically lower routing confidence if the domain is clear.
 
+Action-verb affinity:
+- The action verb constrains the domain, in any language. When the verb and the device name point to different domains, prefer the verb's domain and lower confidence (70-89%) if the device type stays uncertain.
+- Switching actions (turn on/off and their equivalents in the user's language) target switchable devices: lights, switches, plugs, media players. Route to the matching switch-capable agent (usually light-agent or media-agent).
+- Covers are opened/closed/raised/lowered, never switched on or off: do NOT route switching actions to cover-agent, even when the device name sounds like a cover (awning, canopy, roof, shutter terminology in any language).
+- Positioning actions (open/close/raise/lower/stop and their equivalents in the user's language) target covers, doors, windows, locks. Route to cover-agent or security-agent.
+- If a name could be several device types (a structure and its lighting, a door and its lock), pick the agent whose action vocabulary matches the verb.
+
 Cancel/dismiss interaction:
 - Use cancel-interaction only when the user's sole intent is to stop, dismiss, abort, or cancel the current assistant interaction.
 - Examples:
