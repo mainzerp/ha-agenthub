@@ -1611,6 +1611,10 @@ class TestSentenceStreamFollowup(_VoiceFollowupTestBase):
 
     @pytest.mark.asyncio
     async def test_sentence_boundary_early_return_spawns_stream(self):
+        """A genuine mid-stream sentence boundary (done absent) still takes
+        the sentence-stream handoff; its early return carries no
+        continue_conversation. Single-burst done frames no longer reach
+        this path -- see TestSameTurnContinueConversation."""
         import custom_components.ha_agenthub.conversation as conv_mod
 
         entity = self._make_entity()
@@ -1795,3 +1799,200 @@ class TestPostFillerPushParity(_VoiceFollowupTestBase):
             for r in caplog.records
         )
         ws.close.assert_awaited_once()
+
+
+class TestSameTurnContinueConversation(_VoiceFollowupTestBase):
+    """FOLLOW_UP_QUESTION: a done frame carrying the speech as a single
+    token burst returns continue_conversation in the same turn (no
+    sentence-stream handoff, no start_conversation). The filler-first path
+    keeps the start_conversation fallback but records a pending-follow-up
+    entry so the answer leg is re-correlated to the original
+    conversation_id."""
+
+    class _FakeResponse:
+        def __init__(self, status, payload=None):
+            self.status = status
+            self._payload = payload or {}
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def json(self):
+            return self._payload
+
+    class _FakeSession:
+        closed = False
+
+        def __init__(self, response):
+            self._response = response
+            self.posted_payload = None
+
+        def post(self, *args, **kwargs):
+            self.posted_payload = kwargs.get("json")
+            return self._response
+
+    @pytest.mark.asyncio
+    async def test_single_burst_done_returns_continue_conversation(self):
+        entity = self._make_entity()
+        entity._resolve_satellite_entity = MagicMock(return_value=self.SAT)
+        done = self._text_frame(
+            {
+                "done": True,
+                "token": "Welches Licht meintest du?",
+                "voice_followup": True,
+                "sanitized": True,
+            }
+        )
+        ws = self._make_ws(AsyncMock(return_value=done))
+
+        result = await entity._process_via_ws_read(self._make_user_input(), ws)
+
+        assert result is not None
+        assert result.continue_conversation is True
+        # No sentence-stream handoff and no start_conversation fallback.
+        assert entity._inflight_pushes == {}
+        entity.hass.services.async_call.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_direct_done_mediated_returns_continue_conversation(self):
+        entity = self._make_entity()
+        done = self._text_frame(
+            {
+                "done": True,
+                "mediated_speech": "Welches Licht meintest du?",
+                "voice_followup": True,
+                "sanitized": True,
+            }
+        )
+        ws = self._make_ws(AsyncMock(return_value=done))
+
+        result = await entity._process_via_ws_read(self._make_user_input(), ws)
+
+        assert result is not None
+        assert result.continue_conversation is True
+        assert entity._inflight_pushes == {}
+
+    @pytest.mark.asyncio
+    async def test_rest_response_returns_continue_conversation(self):
+        entity = self._make_entity()
+        session = self._FakeSession(
+            self._FakeResponse(
+                200,
+                {
+                    "speech": "Welches Licht meintest du?",
+                    "conversation_id": "c1",
+                    "voice_followup": True,
+                },
+            )
+        )
+        entity._session = session
+
+        result = await entity._process_via_rest(self._make_user_input())
+
+        assert result.continue_conversation is True
+
+    @pytest.mark.asyncio
+    async def test_filler_first_records_and_correlates_answer_leg(self):
+        import time
+
+        entity = self._make_entity()
+        entity._resolve_satellite_entity = MagicMock(return_value=self.SAT)
+        entity.hass.states.get.return_value = MagicMock(state="idle")
+        entity.hass.async_create_task = MagicMock(
+            side_effect=lambda coro: asyncio.create_task(coro)
+        )
+        frames = [
+            self._text_frame({"filler_push": "Einen Moment."}),
+            self._text_frame(
+                {
+                    "done": True,
+                    "mediated_speech": "Welches Licht meintest du?",
+                    "voice_followup": True,
+                    "sanitized": True,
+                }
+            ),
+        ]
+        ws = self._make_ws(AsyncMock(side_effect=frames))
+        patcher, _callbacks = self._track_states()
+
+        # Turn 1 (question leg): filler-first return + background push.
+        with patcher:
+            result1 = await entity._process_via_ws_read(
+                self._make_user_input(cid="c1"), ws
+            )
+            assert result1 is not None
+            push_task = entity._inflight_pushes[self.SAT]
+            await asyncio.wait_for(push_task, timeout=1.0)
+
+        assert len(self._service_calls(entity, "start_conversation")) == 1
+        entry = entity._pending_followups.get("device:dev-1")
+        assert entry is not None
+        assert entry[0] == "c1"
+        assert entry[1] > time.monotonic()
+
+        # Turn 2 (answer leg): fresh HA chat-session id; the original id
+        # goes on the wire, the HA-side id is restored on the result.
+        done2 = self._text_frame(
+            {
+                "done": True,
+                "token": "Das Wohnzimmerlicht ist an",
+                "conversation_id": "c1",
+                "sanitized": True,
+            }
+        )
+        ws2 = self._make_ws(AsyncMock(return_value=done2))
+        ws2.send_json = AsyncMock()
+        entity._ws = ws2
+        entity._ws_last_active = time.monotonic()
+
+        answer_input = self._make_user_input(cid="fresh-ulid")
+        answer_input.text = "das Wohnzimmer"
+        result2 = await entity._async_handle_message(answer_input, MagicMock())
+
+        payload = ws2.send_json.call_args.args[0]
+        assert payload["conversation_id"] == "c1"
+        assert result2.conversation_id == "fresh-ulid"
+        # The entry was consumed by the answer turn.
+        assert "device:dev-1" not in entity._pending_followups
+
+    @pytest.mark.asyncio
+    async def test_expired_pending_followup_is_ignored(self):
+        import time
+
+        entity = self._make_entity()
+        entity._pending_followups["device:dev-1"] = ("c1", time.monotonic() - 1)
+        done = self._text_frame(
+            {
+                "done": True,
+                "token": "OK",
+                "conversation_id": "fresh-ulid",
+                "sanitized": True,
+            }
+        )
+        ws = self._make_ws(AsyncMock(return_value=done))
+        ws.send_json = AsyncMock()
+        entity._ws = ws
+        entity._ws_last_active = time.monotonic()
+
+        result = await entity._async_bridge_to_container(
+            self._make_user_input(cid="fresh-ulid")
+        )
+
+        payload = ws.send_json.call_args.args[0]
+        assert payload["conversation_id"] == "fresh-ulid"
+        assert result.conversation_id == "fresh-ulid"
+        assert entity._pending_followups == {}
+
+    @pytest.mark.asyncio
+    async def test_unkeyable_turn_skips_pending_followup(self):
+        entity = self._make_entity()
+        user_input = self._make_user_input(device_id=None)
+        user_input.context = None
+
+        assert entity._followup_correlation_key(user_input) is None
+        entity._record_pending_followup(None, "c1")
+        assert entity._pending_followups == {}
+        assert entity._pop_pending_followup(user_input) is None

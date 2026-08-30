@@ -78,9 +78,12 @@ class _MockConversationEntity:
 
 
 class _MockConversationResult:
-    def __init__(self, response=None, conversation_id=None, continue_conversation=True):
+    def __init__(
+        self, response=None, conversation_id=None, continue_conversation=False
+    ):
         self.response = response
         self.conversation_id = conversation_id
+        self.continue_conversation = continue_conversation
 
 
 class _MockAddConfigEntryEntitiesCallback:

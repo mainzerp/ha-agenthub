@@ -619,9 +619,8 @@ class TestHandleTaskExecution:
 
     @pytest.mark.asyncio
     async def test_parse_miss_question_with_close_gap_requests_voice_followup(self):
-        """ENTITY_RES_FOLLOWUP Phase B (recall-based): a prose clarifying
-        question with an ambiguous top-1/top-2 recall tie sets
-        voice_followup so the user's answer is re-dispatched."""
+        """FOLLOW_UP_QUESTION: a prose clarifying question (trailing "?")
+        requests a voice follow-up so the user's answer is re-dispatched."""
         agent = LightAgent()
         task = make_dispatch_task(description="turn on the light")
 
@@ -650,9 +649,10 @@ class TestHandleTaskExecution:
         assert result.voice_followup is True
 
     @pytest.mark.asyncio
-    async def test_parse_miss_question_with_clear_gap_no_voice_followup(self):
-        """A clarifying question with a clear top-1/top-2 hit-count gap does
-        not request a voice follow-up."""
+    async def test_parse_miss_question_with_clear_gap_requests_voice_followup(self):
+        """FOLLOW_UP_QUESTION: the recall-ambiguity gate is gone -- a
+        clarifying question requests a voice follow-up even when the
+        top-1/top-2 recall gap was clear."""
         agent = LightAgent()
         task = make_dispatch_task(description="turn on the kitchen light")
 
@@ -678,7 +678,7 @@ class TestHandleTaskExecution:
             result = await agent.handle_task(task)
 
         assert result.error is None
-        assert result.voice_followup is False
+        assert result.voice_followup is True
 
     @pytest.mark.asyncio
     async def test_parse_miss_prose_without_question_no_voice_followup(self):
@@ -712,9 +712,9 @@ class TestHandleTaskExecution:
         assert result.voice_followup is False
 
     @pytest.mark.asyncio
-    async def test_parse_miss_question_single_candidate_no_voice_followup(self):
-        """A single candidate is never ambiguous: a clarifying question does
-        not request a voice follow-up."""
+    async def test_parse_miss_question_single_candidate_requests_voice_followup(self):
+        """FOLLOW_UP_QUESTION: a clarifying question requests a voice
+        follow-up even when recall returned a single candidate."""
         agent = LightAgent()
         task = make_dispatch_task(description="turn on the kitchen light")
 
@@ -737,12 +737,12 @@ class TestHandleTaskExecution:
             result = await agent.handle_task(task)
 
         assert result.error is None
-        assert result.voice_followup is False
+        assert result.voice_followup is True
 
     @pytest.mark.asyncio
-    async def test_parse_miss_question_without_candidates_no_voice_followup(self):
-        """No envelope candidates: a clarifying question does not request a
-        voice follow-up."""
+    async def test_parse_miss_question_without_candidates_requests_voice_followup(self):
+        """No envelope candidates: a clarifying question still requests a
+        voice follow-up (spoken-question heuristic, like cache safeguard R-A)."""
         agent = LightAgent()
         task = make_dispatch_task(description="turn on the kitchen light")
 
@@ -754,6 +754,122 @@ class TestHandleTaskExecution:
                 new_callable=AsyncMock,
                 return_value="Which light did you mean?",
             ),
+        ):
+            agent._ha_client = AsyncMock()
+            agent._entity_index = None
+            agent._entity_matcher = None
+
+            result = await agent.handle_task(task)
+
+        assert result.error is None
+        assert result.voice_followup is True
+
+    @pytest.mark.asyncio
+    async def test_not_found_clarification_requests_voice_followup(self):
+        """FOLLOW_UP_QUESTION: an executor not-found result whose speech is
+        replaced by an LLM clarifying question requests a voice follow-up."""
+        agent = LightAgent()
+        task = make_dispatch_task(description="turn on the kitchen light")
+
+        with (
+            patch.object(agent, "_load_prompt_async", new_callable=AsyncMock, return_value="You are a light agent."),
+            patch.object(
+                agent,
+                "_call_llm",
+                new_callable=AsyncMock,
+                side_effect=[
+                    '{"action": "turn_on", "entity": "kitchen light"}',
+                    "Which light did you mean exactly?",
+                ],
+            ),
+            patch.object(
+                agent,
+                "_do_execute",
+                new_callable=AsyncMock,
+                return_value={
+                    "speech": "I could not find a device named kitchen light.",
+                    "success": False,
+                    "entity_id": None,
+                },
+            ),
+            _visible_passthrough(),
+        ):
+            agent._ha_client = AsyncMock()
+            agent._entity_index = None
+            agent._entity_matcher = None
+
+            result = await agent.handle_task(task)
+
+        assert result.error is None
+        assert result.speech == "Which light did you mean exactly?"
+        assert result.voice_followup is True
+
+    @pytest.mark.asyncio
+    async def test_not_found_ambiguous_disambiguation_requests_voice_followup(self):
+        """FOLLOW_UP_QUESTION: the targeted deterministic disambiguation
+        speech (resolution_path *_ambiguous, no trailing "?") also requests
+        a voice follow-up."""
+        agent = LightAgent()
+        task = make_dispatch_task(description="turn on the kitchen light")
+
+        with (
+            patch.object(agent, "_load_prompt_async", new_callable=AsyncMock, return_value="You are a light agent."),
+            patch.object(
+                agent,
+                "_call_llm",
+                new_callable=AsyncMock,
+                return_value='{"action": "turn_on", "entity": "kitchen"}',
+            ),
+            patch.object(
+                agent,
+                "_do_execute",
+                new_callable=AsyncMock,
+                return_value={
+                    "speech": "Multiple entities match 'kitchen'. Please be more specific.",
+                    "success": False,
+                    "entity_id": None,
+                    "metadata": {"resolution_path": "deterministic_ambiguous"},
+                },
+            ),
+            _visible_passthrough(),
+        ):
+            agent._ha_client = AsyncMock()
+            agent._entity_index = None
+            agent._entity_matcher = None
+
+            result = await agent.handle_task(task)
+
+        assert result.error is None
+        assert result.speech == "Multiple entities match 'kitchen'. Please be more specific."
+        assert result.voice_followup is True
+
+    @pytest.mark.asyncio
+    async def test_not_found_plain_statement_no_voice_followup(self):
+        """With _clarify_on_not_found disabled the executor's plain
+        statement (no trailing "?") does not request a voice follow-up."""
+        agent = LightAgent()
+        agent._clarify_on_not_found = False
+        task = make_dispatch_task(description="turn on the kitchen light")
+
+        with (
+            patch.object(agent, "_load_prompt_async", new_callable=AsyncMock, return_value="You are a light agent."),
+            patch.object(
+                agent,
+                "_call_llm",
+                new_callable=AsyncMock,
+                return_value='{"action": "turn_on", "entity": "kitchen light"}',
+            ),
+            patch.object(
+                agent,
+                "_do_execute",
+                new_callable=AsyncMock,
+                return_value={
+                    "speech": "I could not find a device named kitchen light.",
+                    "success": False,
+                    "entity_id": None,
+                },
+            ),
+            _visible_passthrough(),
         ):
             agent._ha_client = AsyncMock()
             agent._entity_index = None

@@ -50,12 +50,6 @@ _current_task_var: contextvars.ContextVar[DispatchTask | None] = contextvars.Con
 _current_task_context_var: contextvars.ContextVar[TaskContext | None] = contextvars.ContextVar(
     "actionable_current_task_context", default=None
 )
-# Per-request scored keyword-recall candidates (list of (entry, hit_count)).
-# Published after the pre-LLM recall so ``_handle_parse_miss`` can recompute
-# the ambiguity gate without a second recall.
-_recalled_candidates_var: contextvars.ContextVar[list[tuple[Any, int]] | None] = contextvars.ContextVar(
-    "actionable_recalled_candidates", default=None
-)
 
 
 def strip_json_blocks(text: str) -> str:
@@ -327,19 +321,14 @@ class ActionableAgent(BaseAgent):
     def _handle_parse_miss(self, task: DispatchTask, response: str) -> TaskResult:
         """Return the fallback result when the LLM response has no valid action.
 
-        ENTITY_RES_FOLLOWUP Phase B: when the stripped fallback speech is a
-        clarifying question (right-trimmed text ends with ``?``) and the
-        recalled candidates are ambiguous (top-1/top-2 hit-count gap below
-        ``_AMBIGUITY_SCORE_GAP``, recomputed statelessly from the per-request
-        recall stash -- the same condition that injected the Phase 7
-        annotation), request a voice follow-up so the user's answer is
-        re-dispatched. Normal prose answers, clear score gaps, and recalls
-        with fewer than two candidates keep ``voice_followup=False``.
+        FOLLOW_UP_QUESTION: when the stripped fallback speech is a
+        clarifying question (right-trimmed text ends with ``?``), request a
+        voice follow-up so the user's answer is re-dispatched -- the same
+        spoken-question heuristic as cache safeguard R-A. Normal prose
+        answers keep ``voice_followup=False``.
         """
         speech = strip_json_blocks(response)
-        followup = False
-        if speech.rstrip().endswith("?"):
-            followup = _recall_is_ambiguous(_recalled_candidates_var.get() or [])
+        followup = speech.rstrip().endswith("?")
         return TaskResult(speech=speech, voice_followup=followup)
 
     async def handle_task(self, task: DispatchTask) -> TaskResult:
@@ -355,11 +344,10 @@ class ActionableAgent(BaseAgent):
         # snapshot; the pre-LLM keyword recall publishes a fresh one
         # for the post-LLM ``resolve_and_validate_entity`` pass-through.
         visible_entries_token = set_request_visible_entries(None, None, None)
-        # ENTITY_RESOLUTION_REWORK: clear any inherited candidate-id gate
-        # and recall stash; the pre-LLM keyword recall publishes fresh
-        # values for the executor's closed-contract validation.
+        # ENTITY_RESOLUTION_REWORK: clear any inherited candidate-id gate;
+        # the pre-LLM keyword recall publishes fresh values for the
+        # executor's closed-contract validation.
         candidate_ids_token = set_request_candidate_ids(None)
-        recalled_token = _recalled_candidates_var.set(None)
         try:
             try:
                 return await self._handle_task_inner(task)
@@ -372,7 +360,6 @@ class ActionableAgent(BaseAgent):
                     "Sorry, something went wrong while handling that request.",
                 )
         finally:
-            _recalled_candidates_var.reset(recalled_token)
             reset_request_candidate_ids(candidate_ids_token)
             reset_request_visible_entries(visible_entries_token)
             _current_task_var.reset(task_token)
@@ -463,7 +450,6 @@ class ActionableAgent(BaseAgent):
             # (anaphora hints stay validatable). Published here in the
             # parent context because a ContextVar set inside a gather child
             # would not propagate back.
-            _recalled_candidates_var.set(recalled)
             candidate_ids = {getattr(entry, "entity_id", "") or "" for entry, _hits in recalled}
             candidate_ids.discard("")
             if task.context:
@@ -573,6 +559,17 @@ class ActionableAgent(BaseAgent):
                         "speech": await self._generate_not_found_speech(entity_query, task, span_collector),
                     }
 
+                # FOLLOW_UP_QUESTION: every clarifying question produced on a
+                # not-found result -- the LLM/deterministic localized
+                # clarification (speech ends with "?") or the targeted
+                # deterministic disambiguation ("_ambiguous", no "?") --
+                # requests a voice follow-up. When _clarify_on_not_found is
+                # False the plain English statement has no trailing "?" and
+                # is_ambiguous is False, so the flag stays False.
+                final_speech = result.get("speech") or ""
+                is_not_found = not result.get("success") and result.get("entity_id") is None and not result.get("error")
+                followup_question = is_not_found and (is_ambiguous or final_speech.rstrip().endswith("?"))
+
                 metadata = result.get("metadata") or {}
                 _t5 = time.perf_counter()
                 logger.info(
@@ -591,7 +588,7 @@ class ActionableAgent(BaseAgent):
                         directive=result.get("directive"),
                         reason=result.get("reason"),
                         metadata=metadata,
-                        voice_followup=bool(result.get("voice_followup")),
+                        voice_followup=bool(result.get("voice_followup")) or followup_question,
                     )
                 explicit_error = result.get("error")
                 if explicit_error:
@@ -602,12 +599,12 @@ class ActionableAgent(BaseAgent):
                         speech=result.get("speech", ""),
                         error=error,
                         metadata=metadata,
-                        voice_followup=bool(result.get("voice_followup")),
+                        voice_followup=bool(result.get("voice_followup")) or followup_question,
                     )
                 return TaskResult(
                     speech=result["speech"],
                     metadata=metadata,
-                    voice_followup=bool(result.get("voice_followup")),
+                    voice_followup=bool(result.get("voice_followup")) or followup_question,
                     action_executed=ActionExecuted(
                         action=action.get("action", ""),
                         entity_id=result.get("entity_id") or "",

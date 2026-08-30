@@ -6,6 +6,10 @@
 
 (tracking changes since 1.51.0)
 
+- fix(container): every clarifying-question path now sets `voice_followup` -- not-found LLM clarification and deterministic `_ambiguous` disambiguation for all domains (previously light-only), and parse-miss questions follow the spoken-question heuristic (trailing `?`) instead of the recall-ambiguity gate
+- fix(integration): follow-up questions return `ConversationResult(continue_conversation=True)` in the same turn on every path where the flag is knowable -- single-burst done frames no longer take the sentence-stream handoff, so HA keeps the chat session (same `conversation_id`) and ESPHome satellites re-listen natively
+- fix(integration): the filler-first `assist_satellite.start_conversation` fallback (which always opens a fresh HA chat session) now records a pending-follow-up entry keyed by device/user (TTL 300 s) so the answer turn is re-correlated to the original `conversation_id` container-side
+
 ## Version History
 
 ### 1.51.0 (MINOR) -- entity resolution rework: agent-side keyword recall, closed entity_id contract

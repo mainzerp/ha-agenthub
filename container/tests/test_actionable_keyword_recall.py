@@ -160,18 +160,14 @@ async def test_ambiguity_annotation_on_tied_recall():
 
 
 @pytest.mark.asyncio
-async def test_handle_parse_miss_followup_uses_recall_stash():
-    """The voice-followup gate reads the per-request recall stash."""
-    from app.agents.actionable import _recalled_candidates_var
-
+async def test_handle_parse_miss_followup_question_heuristic():
+    """FOLLOW_UP_QUESTION: a parse-miss speech ending in "?" requests a
+    voice follow-up; plain prose does not."""
     agent = _make_agent([])
-    scored = [(_entry("light.a", "A"), 2), (_entry("light.b", "B"), 2)]
-    token = _recalled_candidates_var.set(scored)
-    try:
-        result = agent._handle_parse_miss(_task("x"), "Did you mean A or B?")
-    finally:
-        _recalled_candidates_var.reset(token)
-    assert result.voice_followup is True
+    question = agent._handle_parse_miss(_task("x"), "Did you mean A or B?")
+    prose = agent._handle_parse_miss(_task("x"), "I am not sure which light you mean.")
+    assert question.voice_followup is True
+    assert prose.voice_followup is False
 
 
 @pytest.mark.asyncio

@@ -138,6 +138,27 @@ The HA integration speaks these immediately while the real reply
 continues to be generated. Once the real first token arrives, the
 filler stops emitting and the stream continues normally.
 
+### Voice Follow-Up Questions
+
+When a turn ends in a clarifying question (entity not found, ambiguous
+recall, deterministic disambiguation), the container sets
+`voice_followup=True` on the terminal response. The HA integration maps
+that to `ConversationResult(continue_conversation=True)` **in the same
+turn** on every path where the flag is knowable (direct done frame,
+single-burst done frame, REST) -- HA core keeps the chat session (same
+`conversation_id`) and ESPHome satellites re-listen natively after TTS.
+
+The exception is the filler-first path: the filler return happens before
+the flag is knowable, so the background push task falls back to
+`assist_satellite.start_conversation`. Because that service always opens
+a NEW HA chat session (fresh `conversation_id`), the integration records
+the original id in a pending-follow-up map (keyed by `device_id`, else
+`user_id`, TTL 300 s) and substitutes it on the answer turn's outgoing
+payload, restoring the HA-side id on the returned result. Answer-leg
+correlation in the container is keyed strictly by `conversation_id`:
+the classify stage injects the stored history plus a previous-agent hint
+and condenses the short answer against the pending question.
+
 ### Mediation Streaming
 
 When `orchestrator.mediation_streaming_enabled` is `true`, the
