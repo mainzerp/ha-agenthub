@@ -45,11 +45,10 @@ _litellm_mock.RateLimitError = _RateLimitError
 sys.modules.setdefault("litellm", _litellm_mock)
 
 import app.llm.client  # noqa: E402,F401 -- force module load for patch targets
-from app.agents.classification_engine import _RecoverableClassificationError  # noqa: E402
-from app.agents.orchestrator import _INGRESS_CANDIDATE_K, _INGRESS_POOL_SIZE, OrchestratorAgent  # noqa: E402
+from app.agents.orchestrator import OrchestratorAgent  # noqa: E402
 from app.agents.task_pipeline import CacheReplayResult  # noqa: E402
 from app.cache.cache_manager import ActionReplayOutcome, RoutingSkipOutcome  # noqa: E402
-from app.models.agent import AgentCard, DispatchTask, EntityCandidate, IngressTask, TaskContext  # noqa: E402
+from app.models.agent import AgentCard, DispatchTask, IngressTask, TaskContext  # noqa: E402
 
 
 def _make_task(text: str, *, conversation_id: str = "conv-pipe") -> IngressTask:
@@ -252,7 +251,6 @@ async def test_streaming_mediation_buffers_tokens_until_terminal_frame(mock_comp
 @patch("app.llm.client.complete", new_callable=AsyncMock)
 async def test_stream_with_filler_cancels_reader_on_timeout(mock_complete, mock_track, mock_settings):
     """CONT-6.3: When filler threshold is exceeded, the reader task must be cancelled in finally."""
-    import asyncio
 
     mock_settings.get_value = AsyncMock(return_value="")
     mock_complete.return_value = "light-agent (95%): Turn on light"
@@ -393,7 +391,7 @@ class TestRunPipelineDefensiveFallback:
 
 
 # ---------------------------------------------------------------------------
-# ENTITY_RES_REDESIGN Phase 3: ingress resolution + DispatchTask.candidates
+# ENTITY_RESOLUTION_REWORK: prelude without orchestrator pre-resolution
 # ---------------------------------------------------------------------------
 
 
@@ -419,27 +417,23 @@ class _FakeSpanCollector:
         return _cm()
 
 
-def _pool_item(entity_id: str, friendly_name: str, score: float):
-    return SimpleNamespace(entity_id=entity_id, friendly_name=friendly_name, score=score)
+def _make_orchestrator_with_matcher(pool):
+    """Orchestrator with a mocked entity matcher.
 
-
-def _make_orchestrator_with_matcher(pool, *, visible_ids: set[str] | None = None):
-    """Orchestrator with a mocked entity matcher for ingress resolution.
-
-    ``visible_ids`` filters the pool in the mocked filter_visible_results
-    (simulating the per-agent visibility pass); None = everything visible.
+    The orchestrator no longer runs an ingress matcher pass
+    (ENTITY_RESOLUTION_REWORK); the double exists to PROVE the matcher is
+    never invoked from the prelude.
     """
     orch, dispatcher = _make_orchestrator()
     matcher = AsyncMock()
     matcher.match = AsyncMock(return_value=list(pool))
-    if visible_ids is None:
-        matcher.filter_visible_results = AsyncMock(side_effect=lambda _agent_id, results: list(results))
-    else:
-        matcher.filter_visible_results = AsyncMock(
-            side_effect=lambda _agent_id, results: [r for r in results if r.entity_id in visible_ids]
-        )
+    matcher.filter_visible_results = AsyncMock(side_effect=lambda _agent_id, results: list(results))
     orch._entity_matcher = matcher
     return orch, dispatcher, matcher
+
+
+def _pool_item(entity_id: str, friendly_name: str, score: float):
+    return SimpleNamespace(entity_id=entity_id, friendly_name=friendly_name, score=score)
 
 
 def _patch_prelude_classification(orch, classifications, routing_cached=False):
@@ -448,15 +442,14 @@ def _patch_prelude_classification(orch, classifications, routing_cached=False):
     orch._pipeline_director.run_classification = AsyncMock(
         return_value=(classifications, routing_cached, target_agent, condensed_task, confidence)
     )
-    orch._pipeline_resolve_conversation_and_language = AsyncMock(return_value=("conv-ingress", "en", []))
+    orch._pipeline_resolve_conversation_and_language = AsyncMock(return_value=("conv-prelude", "en", []))
 
 
-class TestIngressResolutionPrelude:
+class TestPreludeWithoutIngressResolution:
     @pytest.mark.asyncio
     @patch("app.agents.orchestrator.SettingsRepository")
     async def test_matcher_not_started_on_action_replay_hit(self, mock_settings):
-        """The matcher must only start AFTER an action-cache miss: a replay
-        hit short-circuits the prelude and never touches the matcher."""
+        """A replay hit short-circuits the prelude and never touches the matcher."""
         mock_settings.get_value = AsyncMock(return_value="")
         pool = [_pool_item("light.couch", "Couch", 0.9)]
         orch, _dispatcher, matcher = _make_orchestrator_with_matcher(pool)
@@ -472,222 +465,59 @@ class TestIngressResolutionPrelude:
             return_value={"speech": "Light is on.", "routed_to": "light-agent"}
         )
 
-        task = _make_task("turn on couch light", conversation_id="conv-ingress-replay")
+        task = _make_task("turn on couch light", conversation_id="conv-prelude-replay")
         prelude = await orch._run_pipeline_prelude(task)
 
         assert prelude.early_exit is not None
         assert prelude.early_exit["_exit_type"] == "cache_replay"
         matcher.match.assert_not_called()
         matcher.filter_visible_results.assert_not_called()
-        assert prelude.candidates == {}
+        assert prelude.routing_entry_id is None
 
     @pytest.mark.asyncio
     @patch("app.agents.orchestrator.SettingsRepository")
-    async def test_unfiltered_pool_filtered_per_agent_before_envelope_and_span(self, mock_settings):
-        """The unfiltered ingress pool must never reach the envelope or the
-        trace: only the post-filter per-agent K-list may appear."""
+    async def test_cache_miss_never_runs_ingress_matcher(self, mock_settings):
+        """The prelude routes only: no matcher pass, no ingress spans, no
+        entity pool leaves the orchestrator (agents recall entities
+        themselves)."""
         mock_settings.get_value = AsyncMock(return_value="")
-        pool = [
-            _pool_item("light.couch", "Couch", 0.9),
-            _pool_item("light.secret", "Secret", 0.8),
-        ]
-        orch, _dispatcher, matcher = _make_orchestrator_with_matcher(pool, visible_ids={"light.couch"})
+        pool = [_pool_item("light.couch", "Couch", 0.9)]
+        orch, _dispatcher, matcher = _make_orchestrator_with_matcher(pool)
         orch._pipeline_director.run_cache_replay = AsyncMock(return_value=CacheReplayResult())
         _patch_prelude_classification(orch, [("light-agent", "Turn on couch light", 0.95)])
 
         collector = _FakeSpanCollector()
         task = IngressTask(
             description="turn on couch light",
-            conversation_id="conv-ingress",
-            context=TaskContext(language="en"),
-            span_collector=collector,
-        )
-        prelude = await orch._run_pipeline_prelude(task)
-
-        # Pool requested unfiltered (agent_id=None) and oversampled.
-        matcher.match.assert_awaited_once()
-        call = matcher.match.await_args
-        assert call.args[0] == "turn on couch light"
-        assert call.kwargs["agent_id"] is None
-        assert call.kwargs["top_n"] == _INGRESS_POOL_SIZE
-
-        # Per-agent visibility filter applied to the precomputed pool.
-        matcher.filter_visible_results.assert_awaited_once()
-        filter_call = matcher.filter_visible_results.await_args
-        assert filter_call.args[0] == "light-agent"
-        assert {r.entity_id for r in filter_call.args[1]} == {"light.couch", "light.secret"}
-
-        # Envelope candidates: post-filter only.
-        cands = prelude.candidates["light-agent"]
-        assert [c.entity_id for c in cands] == ["light.couch"]
-        assert isinstance(cands[0], EntityCandidate)
-        assert cands[0].friendly_name == "Couch"
-        assert cands[0].score == 0.9
-
-        # Spans: the matcher-duration span carries no entity ids at all
-        # (Directive 5); only the post-filter ingress_candidates span may
-        # name entities, and only visible ones.
-        resolution_span = collector.spans.get("ingress_resolution")
-        assert resolution_span is not None
-        assert resolution_span["metadata"]["pool_count"] == 2
-        assert "light.secret" not in str(resolution_span["metadata"])
-        assert "light.couch" not in str(resolution_span["metadata"])
-
-        candidates_span = collector.spans.get("ingress_candidates")
-        assert candidates_span is not None
-        assert "light.secret" not in str(candidates_span["metadata"])
-        assert "light.couch" in str(candidates_span["metadata"])
-
-    @pytest.mark.asyncio
-    @patch("app.agents.orchestrator.SettingsRepository")
-    async def test_ingress_span_open_during_classification(self, mock_settings):
-        """The ingress_resolution span must be open while classification
-        runs (true overlap) and close only after the matcher resolves."""
-        mock_settings.get_value = AsyncMock(return_value="")
-        gate = asyncio.Event()
-
-        async def _gated_match(*_args, **_kwargs):
-            await gate.wait()
-            return [_pool_item("light.couch", "Couch", 0.9)]
-
-        orch, _dispatcher, matcher = _make_orchestrator_with_matcher([])
-        matcher.match = _gated_match
-        orch._pipeline_director.run_cache_replay = AsyncMock(return_value=CacheReplayResult())
-        orch._pipeline_resolve_conversation_and_language = AsyncMock(return_value=("conv-ingress", "en", []))
-
-        collector = _FakeSpanCollector()
-
-        async def _classify(*_args, **_kwargs):
-            # Let the scheduled matcher task run its first segment.
-            await asyncio.sleep(0)
-            await asyncio.sleep(0)
-            # Mid-prelude: the matcher span is open but not yet closed.
-            assert ("open", "ingress_resolution") in collector.order
-            assert ("close", "ingress_resolution") not in collector.order
-            gate.set()
-            return ([("light-agent", "Turn on couch light", 0.95)], False, "light-agent", "Turn on couch light", 0.95)
-
-        orch._pipeline_director.run_classification = _classify
-
-        task = IngressTask(
-            description="turn on couch light",
-            conversation_id="conv-ingress-overlap",
+            conversation_id="conv-prelude-miss",
             context=TaskContext(language="en"),
             span_collector=collector,
         )
         prelude = await orch._run_pipeline_prelude(task)
 
         assert prelude.early_exit is None
-        assert ("close", "ingress_resolution") in collector.order
-        span = collector.spans["ingress_resolution"]
-        assert span["metadata"]["pool_count"] == 1
-        assert span["metadata"]["routing_cached"] is False
-        assert span["metadata"]["top_n"] == _INGRESS_POOL_SIZE
-
-    @pytest.mark.asyncio
-    @patch("app.agents.orchestrator.SettingsRepository")
-    async def test_ingress_span_cancelled_on_classification_error(self, mock_settings):
-        """A classification failure cancels the detached matcher task; the
-        ingress_resolution wrapper span closes with cancelled=True."""
-        mock_settings.get_value = AsyncMock(return_value="")
-        gate = asyncio.Event()
-
-        async def _gated_match(*_args, **_kwargs):
-            await gate.wait()
-            return [_pool_item("light.couch", "Couch", 0.9)]
-
-        orch, _dispatcher, matcher = _make_orchestrator_with_matcher([])
-        matcher.match = _gated_match
-        orch._pipeline_director.run_cache_replay = AsyncMock(return_value=CacheReplayResult())
-        orch._pipeline_director.run_classification = AsyncMock(
-            side_effect=_RecoverableClassificationError("bad output", code="parse_error")
-        )
-        orch._pipeline_resolve_conversation_and_language = AsyncMock(return_value=("conv-ingress", "en", []))
-
-        collector = _FakeSpanCollector()
-        task = IngressTask(
-            description="turn on couch light",
-            conversation_id="conv-ingress-cancel",
-            context=TaskContext(language="en"),
-            span_collector=collector,
-        )
-        prelude = await orch._run_pipeline_prelude(task)
-
-        assert prelude.early_exit is not None
-        assert prelude.early_exit["_exit_type"] == "classification_error"
-        span = collector.spans.get("ingress_resolution")
-        assert span is not None
-        assert span["metadata"]["cancelled"] is True
-        gate.set()  # release the gated match so nothing dangles
-
-    @pytest.mark.asyncio
-    @patch("app.agents.orchestrator.SettingsRepository")
-    async def test_post_filter_cut_to_k(self, mock_settings):
-        """The per-agent candidate list is cut to the envelope K."""
-        mock_settings.get_value = AsyncMock(return_value="")
-        pool = [_pool_item(f"light.l{i}", f"L{i}", 0.9 - i * 0.01) for i in range(8)]
-        orch, _dispatcher, _matcher = _make_orchestrator_with_matcher(pool)
-        orch._pipeline_director.run_cache_replay = AsyncMock(return_value=CacheReplayResult())
-        _patch_prelude_classification(orch, [("light-agent", "Turn on light", 0.95)])
-
-        task = _make_task("turn on light", conversation_id="conv-ingress-k")
-        prelude = await orch._run_pipeline_prelude(task)
-
-        assert len(prelude.candidates["light-agent"]) == _INGRESS_CANDIDATE_K
-        # Score order preserved (pool already sorted, no preferred-domain inversion).
-        scores = [c.score for c in prelude.candidates["light-agent"]]
-        assert scores == sorted(scores, reverse=True)
-
-    @pytest.mark.asyncio
-    @patch("app.agents.orchestrator.SettingsRepository")
-    async def test_routing_cache_hit_runs_single_filtered_pass(self, mock_settings):
-        """On a routing-cache hit the agent is known: the matcher runs
-        directly with that agent_id (fully filtered) instead of the
-        unfiltered pool + post-filter dance."""
-        mock_settings.get_value = AsyncMock(return_value="")
-        pool = [_pool_item("light.couch", "Couch", 0.9)]
-        orch, _dispatcher, matcher = _make_orchestrator_with_matcher(pool)
-        routing_skip = RoutingSkipOutcome(
-            kind="routing",
-            entry_id="route-1",
-            agent_id="light-agent",
-            condensed_task="turn on light",
-            similarity=0.99,
-        )
-        orch._pipeline_director.run_cache_replay = AsyncMock(return_value=CacheReplayResult(routing_skip=routing_skip))
-        _patch_prelude_classification(
-            orch,
-            [("light-agent", "turn on light", 1.0)],
-            routing_cached=True,
-        )
-
-        task = _make_task("turn on light", conversation_id="conv-ingress-routing")
-        prelude = await orch._run_pipeline_prelude(task)
-
-        matcher.match.assert_awaited_once()
-        call = matcher.match.await_args
-        assert call.kwargs["agent_id"] == "light-agent"
-        assert call.kwargs["top_n"] == _INGRESS_CANDIDATE_K
-        # No second visibility pass -- the single pass was already filtered.
+        assert prelude.target_agent == "light-agent"
+        matcher.match.assert_not_called()
         matcher.filter_visible_results.assert_not_called()
-        assert [c.entity_id for c in prelude.candidates["light-agent"]] == ["light.couch"]
+        assert "ingress_resolution" not in collector.spans
+        assert "ingress_candidates" not in collector.spans
+        assert prelude.routing_entry_id is None
 
     @pytest.mark.asyncio
     @patch("app.agents.orchestrator.SettingsRepository")
-    async def test_tier2_exact_hit_skips_matcher_and_builds_envelope_from_cache(self, mock_settings):
-        """Tier 2: an exact routing hit carrying entity candidates skips the
-        ingress matcher pass entirely; the envelope is built from the cached
-        (entity_id, friendly_name, score) tuples."""
+    async def test_routing_cache_hit_threads_entry_id(self, mock_settings):
+        """A served routing-cache hit threads its entry id onto the prelude
+        result (R-B: a failed cached-agent turn invalidates the entry at
+        finalization)."""
         mock_settings.get_value = AsyncMock(return_value="")
         orch, _dispatcher, matcher = _make_orchestrator_with_matcher([])
         routing_skip = RoutingSkipOutcome(
             kind="routing_hit",
-            entry_id="route-tier2",
+            entry_id="route-1",
             agent_id="light-agent",
             condensed_task="turn on light",
             similarity=1.0,
             entity_ids=["light.couch"],
-            entity_candidates=[("light.couch", "Couch", 0.9)],
         )
         orch._pipeline_director.run_cache_replay = AsyncMock(return_value=CacheReplayResult(routing_skip=routing_skip))
         _patch_prelude_classification(
@@ -696,89 +526,26 @@ class TestIngressResolutionPrelude:
             routing_cached=True,
         )
 
-        collector = _FakeSpanCollector()
-        task = IngressTask(
-            description="turn on light",
-            conversation_id="conv-ingress-tier2",
-            context=TaskContext(language="en"),
-            span_collector=collector,
-        )
+        task = _make_task("turn on light", conversation_id="conv-prelude-routing")
         prelude = await orch._run_pipeline_prelude(task)
 
         assert prelude.early_exit is None
-        matcher.match.assert_not_awaited()
-        matcher.filter_visible_results.assert_not_called()
-        candidates = prelude.candidates["light-agent"]
-        assert [(c.entity_id, c.friendly_name, c.score) for c in candidates] == [("light.couch", "Couch", 0.9)]
-        ir_span = collector.spans["ingress_resolution"]
-        assert ir_span["metadata"]["skipped"] is True
-        assert ir_span["metadata"]["source"] == "routing_cache"
-        ic_span = collector.spans["ingress_candidates"]
-        assert ic_span["metadata"]["source"] == "routing_cache"
-
-    @pytest.mark.asyncio
-    @patch("app.agents.orchestrator.SettingsRepository")
-    async def test_semantic_hit_with_candidates_still_runs_matcher(self, mock_settings):
-        """Tier-1 fallback: a semantic routing hit NEVER consumes the cached
-        candidate payload, even when present -- the fresh filtered matcher
-        pass runs and the envelope is built from its pool."""
-        mock_settings.get_value = AsyncMock(return_value="")
-        pool = [_pool_item("light.couch", "Couch", 0.9)]
-        orch, _dispatcher, matcher = _make_orchestrator_with_matcher(pool)
-        routing_skip = RoutingSkipOutcome(
-            kind="semantic_hit",
-            entry_id="route-sem",
-            agent_id="light-agent",
-            condensed_task="turn on light",
-            similarity=0.95,
-            entity_ids=["light.stale"],
-            entity_candidates=[("light.stale", "Stale", 0.99)],
-        )
-        orch._pipeline_director.run_cache_replay = AsyncMock(return_value=CacheReplayResult(routing_skip=routing_skip))
-        _patch_prelude_classification(
-            orch,
-            [("light-agent", "turn on light", 1.0)],
-            routing_cached=True,
-        )
-
-        task = _make_task("turn on light", conversation_id="conv-ingress-sem-tier1")
-        prelude = await orch._run_pipeline_prelude(task)
-
-        matcher.match.assert_awaited_once()
-        # Envelope comes from the fresh matcher pool, not the cached payload.
-        assert [c.entity_id for c in prelude.candidates["light-agent"]] == ["light.couch"]
-
-    @pytest.mark.asyncio
-    @patch("app.agents.orchestrator.SettingsRepository")
-    async def test_matcher_failure_degrades_to_empty_candidates(self, mock_settings):
-        """A matcher failure must not fail the turn: candidates degrade to
-        empty (the agent-side description fallback covers resolution)."""
-        mock_settings.get_value = AsyncMock(return_value="")
-        orch, _dispatcher, matcher = _make_orchestrator_with_matcher([])
-        matcher.match = AsyncMock(side_effect=RuntimeError("embedding engine down"))
-        orch._pipeline_director.run_cache_replay = AsyncMock(return_value=CacheReplayResult())
-        _patch_prelude_classification(orch, [("light-agent", "Turn on light", 0.95)])
-
-        task = _make_task("turn on light", conversation_id="conv-ingress-fail")
-        prelude = await orch._run_pipeline_prelude(task)
-
-        assert prelude.early_exit is None
-        assert prelude.candidates == {}
-        assert prelude.target_agent == "light-agent"
+        assert prelude.routing_cached is True
+        assert prelude.routing_entry_id == "route-1"
+        matcher.match.assert_not_called()
 
 
-class TestIngressCandidatesDispatch:
+class TestDispatchTaskWithoutCandidates:
     @pytest.mark.asyncio
     @patch("app.agents.orchestrator.SettingsRepository")
     @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
     @patch("app.llm.client.complete", new_callable=AsyncMock)
-    async def test_streaming_dispatch_task_carries_candidates(self, mock_complete, mock_track, mock_settings):
-        """The streaming single-agent DispatchTask construction site is
-        populated from the prelude's post-filter candidates."""
+    async def test_streaming_dispatch_task_carries_no_candidates(self, mock_complete, mock_track, mock_settings):
+        """The streaming DispatchTask construction site no longer carries
+        entity candidates (agent-side keyword recall replaced them)."""
         mock_settings.get_value = AsyncMock(return_value="")
         mock_complete.return_value = "light-agent (95%): Turn on couch light"
-        pool = [_pool_item("light.couch", "Couch", 0.9)]
-        orch, dispatcher, _matcher = _make_orchestrator_with_matcher(pool)
+        orch, dispatcher = _make_orchestrator()
 
         captured: dict = {}
 
@@ -787,20 +554,18 @@ class TestIngressCandidatesDispatch:
             yield {"token": "Light is on.", "done": True}
 
         dispatcher.dispatch_stream = mock_stream
-        task = _make_task("turn on couch light", conversation_id="conv-stream-cands")
+        task = _make_task("turn on couch light", conversation_id="conv-stream-nocands")
 
         chunks = [c async for c in orch.handle_task_stream(task)]
         assert chunks[-1]["done"] is True
         dispatched = captured["task"]
         assert isinstance(dispatched, DispatchTask)
-        assert [c.entity_id for c in dispatched.candidates] == ["light.couch"]
+        assert not hasattr(dispatched, "candidates")
 
     @pytest.mark.asyncio
-    async def test_sequential_send_candidates_on_content_leg_only(self):
-        """Sequential send: the content leg carries the agent's candidates,
-        the send-agent leg always dispatches without candidates."""
-        orch, _dispatcher, _matcher = _make_orchestrator_with_matcher([])
-        cand = EntityCandidate(entity_id="light.couch", friendly_name="Couch", score=0.9)
+    async def test_sequential_send_dispatches_without_candidates(self):
+        """Sequential send: neither leg receives a candidates kwarg."""
+        orch, _dispatcher = _make_orchestrator()
         orch._dispatch_single = AsyncMock(
             side_effect=[
                 ("lists-agent", "Here is the content.", {"speech": "Here is the content."}),
@@ -818,11 +583,10 @@ class TestIngressCandidatesDispatch:
             [],
             None,
             None,
-            candidates={"lists-agent": [cand]},
         )
 
         assert routed_to == "lists-agent, send-agent"
         assert speech == "Sent."
         content_call, send_call = orch._dispatch_single.await_args_list
-        assert content_call.kwargs["candidates"] == [cand]
-        assert send_call.kwargs.get("candidates") is None
+        assert "candidates" not in content_call.kwargs
+        assert "candidates" not in send_call.kwargs

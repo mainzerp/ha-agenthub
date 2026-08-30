@@ -44,9 +44,15 @@ def _no_visibility_rules(monkeypatch):
 
 def _make_listable_entity_index(*entries):
     entry_list = list(entries)
+
+    def _by_domains(domains=None):
+        if not domains:
+            return list(entry_list)
+        return [e for e in entry_list if e.domain in domains]
+
     index = MagicMock(spec=EntityIndex)
-    index.list_entries_async = AsyncMock(return_value=entry_list)
-    index.list_entries = MagicMock(return_value=entry_list)
+    index.list_entries_async = AsyncMock(side_effect=_by_domains)
+    index.list_entries = MagicMock(side_effect=_by_domains)
     index.get_by_id = MagicMock(
         side_effect=lambda entity_id: next((e for e in entry_list if e.entity_id == entity_id), None)
     )
@@ -1081,7 +1087,9 @@ class TestClimateExecutorWeatherActions:
 from app.agents.action_executor import (  # noqa: E402
     _validate_direct_entity_id,
     is_read_only_action,
+    reset_request_candidate_ids,
     resolve_and_validate_entity,
+    set_request_candidate_ids,
 )
 
 
@@ -1465,3 +1473,139 @@ class TestResolveAndValidateEntityDirectEntityId:
 
         assert result["entity_id"] is None
         assert result["not_found_result"] is not None
+
+
+class TestResolveAndValidateEntityCandidateGate:
+    """ENTITY_RESOLUTION_REWORK: closed-contract candidate-id gate.
+
+    When ``allowed_entity_ids`` is active (explicit kwarg or the
+    request-scoped ContextVar published by ActionableAgent's keyword
+    recall), an LLM-picked ``direct_entity_id`` outside the set is
+    rejected fail-closed WITHOUT a deterministic matcher re-run.
+    """
+
+    @pytest.mark.asyncio
+    async def test_direct_id_in_allowed_set_accepted_without_matcher(self, monkeypatch):
+        index = _make_listable_entity_index(make_entity_index_entry("light.kitchen", "Kitchen Light"))
+        resolver = AsyncMock(side_effect=AssertionError("deterministic resolver must not run"))
+        monkeypatch.setattr("app.agents.action_executor.resolve_entity_deterministic_first", resolver)
+
+        result = await resolve_and_validate_entity(
+            "kitchen",
+            index,
+            None,
+            "light-agent",
+            frozenset({"light"}),
+            lambda eid: True,
+            direct_entity_id="light.kitchen",
+            allowed_entity_ids={"light.kitchen"},
+        )
+
+        assert result["entity_id"] == "light.kitchen"
+        assert result["not_found_result"] is None
+        resolver.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_direct_id_not_in_allowed_set_rejected_fail_closed(self, monkeypatch):
+        index = _make_listable_entity_index(make_entity_index_entry("light.kitchen", "Kitchen Light"))
+        resolver = AsyncMock(side_effect=AssertionError("deterministic resolver must not run"))
+        monkeypatch.setattr("app.agents.action_executor.resolve_entity_deterministic_first", resolver)
+
+        result = await resolve_and_validate_entity(
+            "hallucinated lamp",
+            index,
+            None,
+            "light-agent",
+            frozenset({"light"}),
+            lambda eid: True,
+            direct_entity_id="light.hallucinated",
+            allowed_entity_ids={"light.kitchen"},
+        )
+
+        assert result["entity_id"] is None
+        assert result["not_found_result"] is not None
+        assert result["not_found_result"]["success"] is False
+        assert result["resolution"]["metadata"]["resolution_path"] == "rejected_entity_id"
+        resolver.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_empty_allowed_set_rejects_every_direct_id(self, monkeypatch):
+        index = _make_listable_entity_index(make_entity_index_entry("light.kitchen", "Kitchen Light"))
+        resolver = AsyncMock(side_effect=AssertionError("deterministic resolver must not run"))
+        monkeypatch.setattr("app.agents.action_executor.resolve_entity_deterministic_first", resolver)
+
+        result = await resolve_and_validate_entity(
+            "kitchen",
+            index,
+            None,
+            "light-agent",
+            frozenset({"light"}),
+            lambda eid: True,
+            direct_entity_id="light.kitchen",
+            allowed_entity_ids=set(),
+        )
+
+        assert result["entity_id"] is None
+        assert result["not_found_result"] is not None
+        resolver.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_free_form_entity_still_runs_deterministic_first(self, monkeypatch):
+        """No direct_entity_id: the gate does not apply; the documented
+        free-form fallback keeps deterministic-first resolution."""
+        index = _make_listable_entity_index(make_entity_index_entry("light.kitchen", "Kitchen Light"))
+        resolver = AsyncMock(
+            return_value={
+                "entity_id": "light.kitchen",
+                "friendly_name": "Kitchen Light",
+                "speech": None,
+                "metadata": {"resolution_path": "exact_friendly_name"},
+            }
+        )
+        monkeypatch.setattr("app.agents.action_executor.resolve_entity_deterministic_first", resolver)
+
+        result = await resolve_and_validate_entity(
+            "Kitchen Light",
+            index,
+            None,
+            "light-agent",
+            frozenset({"light"}),
+            lambda eid: True,
+            allowed_entity_ids={"light.other"},
+        )
+
+        assert result["entity_id"] == "light.kitchen"
+        resolver.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_contextvar_publishes_gate_when_kwarg_omitted(self, monkeypatch):
+        index = _make_listable_entity_index(make_entity_index_entry("light.kitchen", "Kitchen Light"))
+        resolver = AsyncMock(side_effect=AssertionError("deterministic resolver must not run"))
+        monkeypatch.setattr("app.agents.action_executor.resolve_entity_deterministic_first", resolver)
+
+        token = set_request_candidate_ids({"light.kitchen"})
+        try:
+            accepted = await resolve_and_validate_entity(
+                "kitchen",
+                index,
+                None,
+                "light-agent",
+                frozenset({"light"}),
+                lambda eid: True,
+                direct_entity_id="light.kitchen",
+            )
+            rejected = await resolve_and_validate_entity(
+                "hallucinated lamp",
+                index,
+                None,
+                "light-agent",
+                frozenset({"light"}),
+                lambda eid: True,
+                direct_entity_id="light.hallucinated",
+            )
+        finally:
+            reset_request_candidate_ids(token)
+
+        assert accepted["entity_id"] == "light.kitchen"
+        assert rejected["entity_id"] is None
+        resolver.assert_not_awaited()

@@ -295,11 +295,11 @@ class TestDefaultDispatchStrategyMultiAgent:
 
 
 # ---------------------------------------------------------------------------
-# ENTITY_RES_REDESIGN Phase 3: candidates passthrough
+# ENTITY_RESOLUTION_REWORK: no candidates passthrough
 # ---------------------------------------------------------------------------
 
 
-class TestDispatchStrategyCandidatesPassthrough:
+class TestDispatchStrategyNoCandidates:
     def _make_strategy(self, dispatch_return=None):
         dispatch_manager = AsyncMock()
         dispatch_manager.dispatch_single = AsyncMock(
@@ -313,13 +313,10 @@ class TestDispatchStrategyCandidatesPassthrough:
         return strategy, dispatch_manager, handle_sequential_send
 
     @pytest.mark.asyncio
-    async def test_single_agent_candidates_passed_to_dispatch_single(self):
-        """The per-agent candidates map must reach dispatch_single for the
-        classified target agent."""
-        from app.models.agent import EntityCandidate
-
+    async def test_single_agent_dispatch_without_candidates_kwarg(self):
+        """dispatch_single is invoked without the removed candidates kwarg
+        (agents recall entities themselves)."""
         strategy, dm, _ = self._make_strategy()
-        cand = EntityCandidate(entity_id="light.couch", friendly_name="Couch", score=0.9)
         classifications = [("light-agent", "turn on couch light", 0.95)]
         task = _make_task("turn on couch light")
         await strategy.execute(
@@ -331,16 +328,13 @@ class TestDispatchStrategyCandidatesPassthrough:
             None,
             "en",
             TaskContext(),
-            candidates={"light-agent": [cand]},
         )
         call = dm.dispatch_single.await_args
-        assert call.kwargs["candidates"] == [cand]
+        assert "candidates" not in call.kwargs
 
     @pytest.mark.asyncio
-    async def test_multi_agent_candidates_routed_per_agent(self):
-        """Multi-agent dispatch: each agent gets its own candidate slice."""
-        from app.models.agent import EntityCandidate
-
+    async def test_multi_agent_dispatch_without_candidates_kwarg(self):
+        """Multi-agent dispatch: no leg receives a candidates kwarg."""
         strategy, dm, _ = self._make_strategy()
         dm.dispatch_single = AsyncMock(
             side_effect=[
@@ -348,8 +342,6 @@ class TestDispatchStrategyCandidatesPassthrough:
                 ("music-agent", "Playing jazz.", {"action_executed": None}),
             ]
         )
-        light_cand = EntityCandidate(entity_id="light.couch", friendly_name="Couch", score=0.9)
-        music_cand = EntityCandidate(entity_id="media_player.living", friendly_name="Living", score=0.8)
         classifications = [
             ("light-agent", "turn on light", 0.95),
             ("music-agent", "play jazz", 0.90),
@@ -364,16 +356,14 @@ class TestDispatchStrategyCandidatesPassthrough:
             None,
             "en",
             TaskContext(),
-            candidates={"light-agent": [light_cand], "music-agent": [music_cand]},
         )
         calls = dm.dispatch_single.await_args_list
-        assert calls[0].kwargs["candidates"] == [light_cand]
-        assert calls[1].kwargs["candidates"] == [music_cand]
+        assert all("candidates" not in call.kwargs for call in calls)
 
     @pytest.mark.asyncio
-    async def test_sequential_send_candidates_forwarded(self):
-        """Sequential send: the candidates map is forwarded to
-        handle_sequential_send (which restricts them to the content leg)."""
+    async def test_sequential_send_without_candidates_kwarg(self):
+        """Sequential send: handle_sequential_send is invoked without the
+        removed candidates kwarg."""
         strategy, _dm, handle_sequential_send = self._make_strategy()
         classifications = [
             ("lists-agent", "list the tasks", 0.9),
@@ -389,18 +379,6 @@ class TestDispatchStrategyCandidatesPassthrough:
             None,
             "en",
             TaskContext(),
-            candidates={"lists-agent": []},
         )
         call = handle_sequential_send.await_args
-        assert call.kwargs["candidates"] == {"lists-agent": []}
-
-    @pytest.mark.asyncio
-    async def test_no_candidates_defaults_to_none(self):
-        """Without a candidates map, dispatch_single receives None (the
-        DispatchTask then defaults to an empty list)."""
-        strategy, dm, _ = self._make_strategy()
-        classifications = [("light-agent", "turn on light", 0.95)]
-        task = _make_task()
-        await strategy.execute(task, classifications, "turn on light", "conv-1", [], None, "en", TaskContext())
-        call = dm.dispatch_single.await_args
-        assert call.kwargs["candidates"] is None
+        assert "candidates" not in call.kwargs

@@ -225,8 +225,8 @@ class TestSeedData:
             rows = await cursor.fetchall()
         weights = {row[0]: row[1] for row in rows}
         assert "weight.levenshtein" in weights
-        assert "weight.embedding" in weights
-        assert float(weights["weight.embedding"]) == 0.30
+        # The embedding signal was removed in ENTITY_RESOLUTION_REWORK.
+        assert "weight.embedding" not in weights
 
     async def test_setup_steps_seeded(self, db_repository):
         steps = await SetupStateRepository.get_all_steps()

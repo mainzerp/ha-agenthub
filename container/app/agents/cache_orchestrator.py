@@ -24,7 +24,6 @@ from app.models.agent import (
     CANCEL_INTERACTION_AGENT,
     FALLBACK_AGENT,
     INTERNAL_ONLY_AGENTS,
-    EntityCandidate,
     IngressTask,
 )
 from app.models.cache import ActionCacheEntry, CachedAction
@@ -246,11 +245,11 @@ class CacheOrchestrator:
                 cache_span["metadata"]["hit_type"] = routing_hit.kind
                 cache_span["metadata"]["similarity"] = routing_hit.similarity
                 cache_span["metadata"]["cached_agent_id"] = routing_hit.agent_id
-                # Tier 2 = exact routing hit carrying entity bindings; Tier 1
-                # = routing hit that still needs the ingress matcher pass.
-                cache_span["metadata"]["cache_tier"] = (
-                    2 if routing_hit.kind == "routing_hit" and routing_hit.entity_candidates else 1
-                )
+                # Tier 1 = routing hit served from the routing cache. (The
+                # Tier-2 entity-binding tier was removed in
+                # ENTITY_RESOLUTION_REWORK; agents recall entities
+                # themselves.)
+                cache_span["metadata"]["cache_tier"] = 1
                 return None, routing_hit
 
             cache_span["metadata"]["hit_type"] = "miss"
@@ -416,7 +415,6 @@ class CacheOrchestrator:
         action_executed,
         has_error: bool,
         task: IngressTask | None = None,
-        candidates: list[EntityCandidate] | None = None,
         merged_multi_agent: bool = False,
         used_origin_context: bool = False,
     ) -> tuple[bool, bool]:
@@ -442,12 +440,6 @@ class CacheOrchestrator:
                 entity_ids.append(entity_id)
             entity_ids = list(dict.fromkeys(entity_ids))
 
-        # Tier-2 entity bindings: the dispatch-envelope candidates for the
-        # target agent (visibility-filtered and ranked at ingress).
-        candidate_tuples = [
-            (c.entity_id, c.friendly_name or "", float(c.score or 0.0)) for c in (candidates or []) if c.entity_id
-        ]
-
         confidence_value = confidence if confidence is not None else 0.0
         readonly_action = self._is_readonly_action_result(action_executed)
         if isinstance(action_executed, dict) and action_executed.get("success"):
@@ -459,7 +451,6 @@ class CacheOrchestrator:
                         confidence_value,
                         language=language,
                         entity_ids=entity_ids,
-                        entity_candidates=candidate_tuples or None,
                     )
                     return False, True
                 except Exception:
@@ -509,6 +500,16 @@ class CacheOrchestrator:
                     logger.warning("Failed to store action cache entry", exc_info=True)
                     return False, False
 
+        # R-A (ENTITY_RESOLUTION_REWORK): never cache routing decisions from
+        # unverified turns -- a failed action or a turn that ended in a
+        # clarifying question carries no verified agent/entity binding, so
+        # serving it later would misroute the same phrasing.
+        if isinstance(action_executed, dict):
+            if not action_executed.get("success"):
+                return False, False
+        elif speech.rstrip().endswith("?"):
+            return False, False
+
         try:
             await self._cache_manager.store_routing_async(
                 user_text,
@@ -516,12 +517,27 @@ class CacheOrchestrator:
                 confidence_value,
                 language=language,
                 entity_ids=entity_ids,
-                entity_candidates=candidate_tuples or None,
             )
             return False, True
         except Exception:
             logger.warning("Failed to store routing decision", exc_info=True)
             return False, False
+
+    async def invalidate_served_routing(self, entry_id: str, *, reason: str) -> None:
+        """Invalidate a served routing-cache entry after the cached agent's turn failed (R-B).
+
+        Thin wrapper over ``CacheManager.invalidate_routing``; failures are
+        contained (the next identical phrasing simply re-classifies via LLM
+        on the next turn either way once the entry is gone).
+        """
+        if not entry_id or not self._cache_manager:
+            return
+        try:
+            await asyncio.to_thread(self._cache_manager.invalidate_routing, entry_id)
+        except Exception:
+            logger.debug("Failed to invalidate served routing entry %s", entry_id, exc_info=True)
+        else:
+            logger.info("Invalidated served routing entry %s (reason=%s)", entry_id, reason)
 
     async def execute_cached_action(self, cached_action) -> dict[str, Any] | None:
         """Execute a cached action via HA client. Fast path: direct REST call only.

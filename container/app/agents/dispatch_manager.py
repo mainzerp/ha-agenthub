@@ -21,7 +21,7 @@ from app.analytics.collector import track_agent_timeout, track_request, track_re
 from app.analytics.tracer import _optional_span
 from app.db.repository import SettingsRepository
 from app.ha_client.home_context import populate_task_context_home_context
-from app.models.agent import CANCEL_INTERACTION_AGENT, FALLBACK_AGENT, DispatchTask, EntityCandidate, TaskContext
+from app.models.agent import CANCEL_INTERACTION_AGENT, FALLBACK_AGENT, DispatchTask, TaskContext
 
 logger = logging.getLogger(__name__)
 
@@ -144,7 +144,6 @@ class DispatchManager:
         skip_dispatch_span: bool = False,
         *,
         resolved_language: str | None = None,
-        candidates: list[EntityCandidate] | None = None,
     ) -> tuple[str, str, dict[str, Any] | None]:
         """Dispatch a single task to one agent and return (agent_id, speech, result_dict)."""
         t_dispatch = time.perf_counter()
@@ -187,7 +186,6 @@ class DispatchManager:
             description=condensed_task,
             conversation_id=conversation_id,
             context=context,
-            candidates=candidates or [],
         )
         request = build_send_request(
             target_agent,

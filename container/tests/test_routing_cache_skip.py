@@ -32,7 +32,7 @@ sys.modules.setdefault("litellm", _litellm_mock)
 from app.agents.orchestrator import OrchestratorAgent
 from app.cache.cache_manager import CacheManager, RoutingSkipOutcome
 from app.cache.vector_store import VectorStore
-from app.models.agent import AgentCard, EntityCandidate, IngressTask, TaskContext
+from app.models.agent import AgentCard, IngressTask, TaskContext
 
 
 def _make_manager() -> CacheManager:
@@ -452,20 +452,18 @@ async def test_routing_skip_finalization_writes_trace_summary_row():
 
 
 @pytest.mark.asyncio
-async def test_exact_hit_with_entity_candidates_is_accepted():
-    """Tier 2: an exact routing hit carrying entity candidates passes the
-    fail-closed validation when every candidate entity is still visible, and
-    the outcome keeps the candidate payload intact."""
+async def test_exact_hit_with_entity_ids_is_accepted():
+    """An exact routing hit passes the fail-closed validation when every
+    referenced entity is still visible; the outcome keeps entity_ids."""
     cache_manager = MagicMock()
     cache_manager.try_replay_action = AsyncMock(return_value=None)
     outcome = RoutingSkipOutcome(
         kind="routing_hit",
-        entry_id="tier2-entry",
+        entry_id="exact-entry",
         agent_id="light-agent",
         condensed_task="Turn on kitchen light",
         similarity=1.0,
         entity_ids=["light.kitchen"],
-        entity_candidates=[("light.kitchen", "Kitchen", 0.91)],
     )
     cache_manager.try_routing_skip = AsyncMock(return_value=outcome)
     cache_manager.invalidate_routing = MagicMock()
@@ -485,15 +483,17 @@ async def test_exact_hit_with_entity_candidates_is_accepted():
 
     assert action_replay is None
     assert routing_skip is not None
-    assert routing_skip.entity_candidates == [("light.kitchen", "Kitchen", 0.91)]
+    assert routing_skip.entity_ids == ["light.kitchen"]
+    # The Tier-2 entity_candidates payload was removed
+    # (ENTITY_RESOLUTION_REWORK); agents recall entities themselves.
+    assert not hasattr(routing_skip, "entity_candidates")
     cache_manager.invalidate_routing.assert_not_called()
 
 
 @pytest.mark.asyncio
-async def test_exact_hit_with_invisible_candidate_entity_is_invalidated():
-    """Tier 2: a routing-cache hit whose candidate entity is now invisible
-    must be invalidated and fall through to live orchestration (mirrors the
-    entity_ids harness above with the candidate payload populated)."""
+async def test_exact_hit_with_invisible_entity_is_invalidated():
+    """A routing-cache hit whose referenced entity is now invisible must be
+    invalidated and fall through to live orchestration."""
     cache_manager = MagicMock()
     cache_manager.try_replay_action = AsyncMock(return_value=None)
     stale_outcome = RoutingSkipOutcome(
@@ -503,10 +503,6 @@ async def test_exact_hit_with_invisible_candidate_entity_is_invalidated():
         condensed_task="Turn on kitchen and living room lights",
         similarity=0.99,
         entity_ids=["light.kitchen", "light.living_room"],
-        entity_candidates=[
-            ("light.kitchen", "Kitchen", 0.91),
-            ("light.living_room", "Living Room", 0.88),
-        ],
     )
     cache_manager.try_routing_skip = AsyncMock(return_value=stale_outcome)
     cache_manager.invalidate_routing = MagicMock()
@@ -533,9 +529,9 @@ async def test_exact_hit_with_invisible_candidate_entity_is_invalidated():
 
 
 @pytest.mark.asyncio
-async def test_store_after_dispatch_passes_candidates_to_routing_store():
-    """Write path: the dispatch-envelope candidates are converted to
-    (entity_id, friendly_name, score) tuples and passed to the routing store."""
+async def test_store_after_dispatch_stores_routing_without_entity_candidates():
+    """Write path: read-only turns store a routing entry with entity_ids
+    only (Tier-2 entity_candidates were removed)."""
     orch = OrchestratorAgent.__new__(OrchestratorAgent)
     orch._cache_manager = MagicMock()
     orch._cache_manager.store_routing_async = AsyncMock()
@@ -554,23 +550,116 @@ async def test_store_after_dispatch_passes_candidates_to_routing_store():
         speech="It is 21 degrees.",
         action_executed={"success": True, "action": "query_state", "entity_id": "sensor.kitchen_temperature"},
         has_error=False,
-        candidates=[
-            EntityCandidate(entity_id="sensor.kitchen_temperature", friendly_name="Kitchen Temperature", score=0.9),
-            EntityCandidate(entity_id="", friendly_name="skipped", score=0.5),
-        ],
     )
 
     assert (stored_action, stored_routing) == (False, True)
     orch._cache_manager.store_action_async.assert_not_awaited()
     orch._cache_manager.store_routing_async.assert_awaited_once()
     kwargs = orch._cache_manager.store_routing_async.await_args.kwargs
-    assert kwargs["entity_candidates"] == [("sensor.kitchen_temperature", "Kitchen Temperature", 0.9)]
+    assert "entity_candidates" not in kwargs
     assert kwargs["entity_ids"] == ["sensor.kitchen_temperature"]
 
 
-class TestRoutingCacheTier2Persistence:
-    """SQLite roundtrip, schema purge, and invalidation coverage for the
-    Tier-2 entity_candidates payload (real SqliteCacheStore on tmp_path)."""
+@pytest.mark.asyncio
+async def test_served_routing_entry_invalidated_when_cached_agent_turn_fails():
+    """R-B: a routing-cached turn whose agent resolved no entity (pool
+    count 0 / failed action) invalidates the served entry at
+    finalization."""
+    orch = _make_orchestrator(MagicMock())
+    orch._store_turn = AsyncMock()
+    orch._store_after_dispatch = AsyncMock(return_value=(False, False))
+    orch._cache_orchestrator.invalidate_served_routing = AsyncMock()
+
+    await orch._finalize_post_mediation(
+        task=_make_task("Innenhofuber dachung ausschalten"),
+        user_text="Innenhofuber dachung ausschalten",
+        target_agent="cover-agent",
+        confidence=1.0,
+        condensed_task="Innenhofuber dachung ausschalten",
+        mediated_speech="Welches Geraet meinst du?",
+        original_speech="Welches Geraet meinst du?",
+        action_executed={"action": "turn_off", "entity_id": "", "success": False},
+        has_error=False,
+        span_collector=None,
+        conversation_id="conv-routing-cache",
+        language="de",
+        turns=[],
+        classifications=[("cover-agent", "Innenhofuber dachung ausschalten", 1.0)],
+        voice_followup_requested=True,
+        routing_entry_id="route-poisoned",
+    )
+
+    orch._cache_orchestrator.invalidate_served_routing.assert_awaited_once_with(
+        "route-poisoned", reason="cached_agent_turn_failed"
+    )
+
+
+@pytest.mark.asyncio
+async def test_served_routing_entry_kept_when_cached_agent_turn_succeeds():
+    """R-B: a successful routing-cached turn keeps the served entry."""
+    orch = _make_orchestrator(MagicMock())
+    orch._store_turn = AsyncMock()
+    orch._store_after_dispatch = AsyncMock(return_value=(True, False))
+    orch._cache_orchestrator.invalidate_served_routing = AsyncMock()
+
+    await orch._finalize_post_mediation(
+        task=_make_task("turn on kitchen light"),
+        user_text="turn on kitchen light",
+        target_agent="light-agent",
+        confidence=1.0,
+        condensed_task="Turn on kitchen light",
+        mediated_speech="Done.",
+        original_speech="Done.",
+        action_executed={"action": "turn_on", "entity_id": "light.kitchen", "success": True},
+        has_error=False,
+        span_collector=None,
+        conversation_id="conv-routing-cache",
+        language="en",
+        turns=[],
+        classifications=[("light-agent", "Turn on kitchen light", 1.0)],
+        voice_followup_requested=False,
+        routing_entry_id="route-good",
+    )
+
+    orch._cache_orchestrator.invalidate_served_routing.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_served_routing_entry_invalidated_when_no_action_executed():
+    """R-B: action_executed=None on a routing-cached turn also counts as a
+    failed turn and invalidates the served entry."""
+    orch = _make_orchestrator(MagicMock())
+    orch._store_turn = AsyncMock()
+    orch._store_after_dispatch = AsyncMock(return_value=(False, False))
+    orch._cache_orchestrator.invalidate_served_routing = AsyncMock()
+
+    await orch._finalize_post_mediation(
+        task=_make_task("turn on kitchen light"),
+        user_text="turn on kitchen light",
+        target_agent="light-agent",
+        confidence=1.0,
+        condensed_task="Turn on kitchen light",
+        mediated_speech="Which light did you mean?",
+        original_speech="Which light did you mean?",
+        action_executed=None,
+        has_error=False,
+        span_collector=None,
+        conversation_id="conv-routing-cache",
+        language="en",
+        turns=[],
+        classifications=[("light-agent", "Turn on kitchen light", 1.0)],
+        voice_followup_requested=True,
+        routing_entry_id="route-unresolved",
+    )
+
+    orch._cache_orchestrator.invalidate_served_routing.assert_awaited_once_with(
+        "route-unresolved", reason="cached_agent_turn_failed"
+    )
+
+
+class TestRoutingCachePersistence:
+    """SQLite roundtrip, schema invalidation, and entity invalidation
+    coverage (real SqliteCacheStore on tmp_path)."""
 
     def _make_manager(self, tmp_path) -> CacheManager:
         from app.cache.sqlite_cache_store import SqliteCacheStore
@@ -581,14 +670,14 @@ class TestRoutingCacheTier2Persistence:
         return manager
 
     @pytest.mark.asyncio
-    async def test_candidates_survive_sqlite_roundtrip(self, tmp_path):
+    async def test_entity_ids_survive_sqlite_roundtrip(self, tmp_path):
         manager = self._make_manager(tmp_path)
         manager.store_routing(
             "turn on kitchen light",
             "light-agent",
             0.95,
             language="en",
-            entity_candidates=[("light.kitchen", "Kitchen", 0.91), ("light.kitchen_ceiling", "Ceiling", 0.84)],
+            entity_ids=["light.kitchen", "light.kitchen_ceiling"],
         )
 
         with patch("app.cache.cache_manager.track_cache_event_background"):
@@ -596,22 +685,19 @@ class TestRoutingCacheTier2Persistence:
 
         assert outcome is not None
         assert outcome.kind == "routing_hit"
-        assert outcome.entity_candidates == [
-            ("light.kitchen", "Kitchen", 0.91),
-            ("light.kitchen_ceiling", "Ceiling", 0.84),
-        ]
-        # entity_ids stays a superset of the candidate ids (invalidation scan).
-        assert set(outcome.entity_ids) >= {"light.kitchen", "light.kitchen_ceiling"}
+        assert set(outcome.entity_ids) == {"light.kitchen", "light.kitchen_ceiling"}
+        # The Tier-2 entity_candidates payload was removed.
+        assert not hasattr(outcome, "entity_candidates")
 
     @pytest.mark.asyncio
-    async def test_candidates_merged_into_entity_ids_and_invalidation_covers_them(self, tmp_path):
+    async def test_invalidation_by_entity_id_covers_routing_entries(self, tmp_path):
         manager = self._make_manager(tmp_path)
         manager.store_routing(
             "turn on kitchen light",
             "light-agent",
             0.95,
             language="en",
-            entity_candidates=[("light.kitchen", "Kitchen", 0.91)],
+            entity_ids=["light.kitchen"],
         )
 
         counts = await manager.invalidate_by_entity_id(["light.kitchen"])
@@ -620,7 +706,9 @@ class TestRoutingCacheTier2Persistence:
         with patch("app.cache.cache_manager.track_cache_event_background"):
             assert await manager.try_routing_skip(query_text="turn on kitchen light", language="en") is None
 
-    def test_purge_legacy_schema_entries_removes_pre_v5_entries(self, tmp_path):
+    def test_schema_v5_rows_are_ignored_after_v6_bump(self, tmp_path):
+        """R-A purge: rows stored by the pre-rework schema (v5) are treated
+        as a cache miss on read."""
         from app.cache.routing_cache import make_routing_entry_id
         from app.cache.sqlite_cache_store import COLLECTION_ROUTING_CACHE
 
@@ -628,11 +716,11 @@ class TestRoutingCacheTier2Persistence:
         cache = manager._routing_cache
         manager.store_routing("turn on kitchen light", "light-agent", 0.95, language="en")
         manager.store_routing("turn on couch light", "light-agent", 0.95, language="en")
-        # Simulate a legacy (schema 4) row by rewriting its metadata.
+        # Simulate a legacy (schema 5) row by rewriting its metadata.
         legacy_id = make_routing_entry_id("turn on couch light", language="en")
         page = manager._cache_store.get(COLLECTION_ROUTING_CACHE, ids=[legacy_id], include=["metadatas"])
         meta = page["metadatas"][0]
-        meta["schema_version"] = "4"
+        meta["schema_version"] = "5"
         manager._cache_store.upsert(
             COLLECTION_ROUTING_CACHE,
             ids=[legacy_id],
@@ -640,7 +728,30 @@ class TestRoutingCacheTier2Persistence:
             metadatas=[meta],
         )
 
-        removed = cache.purge_legacy_schema_entries(5)
+        assert cache.lookup("turn on couch light", language="en")[0] is None
+        assert cache.lookup("turn on kitchen light", language="en")[0] is not None
+
+    def test_purge_legacy_schema_entries_removes_pre_v6_entries(self, tmp_path):
+        from app.cache.routing_cache import make_routing_entry_id
+        from app.cache.sqlite_cache_store import COLLECTION_ROUTING_CACHE
+
+        manager = self._make_manager(tmp_path)
+        cache = manager._routing_cache
+        manager.store_routing("turn on kitchen light", "light-agent", 0.95, language="en")
+        manager.store_routing("turn on couch light", "light-agent", 0.95, language="en")
+        # Simulate a legacy (schema 5) row by rewriting its metadata.
+        legacy_id = make_routing_entry_id("turn on couch light", language="en")
+        page = manager._cache_store.get(COLLECTION_ROUTING_CACHE, ids=[legacy_id], include=["metadatas"])
+        meta = page["metadatas"][0]
+        meta["schema_version"] = "5"
+        manager._cache_store.upsert(
+            COLLECTION_ROUTING_CACHE,
+            ids=[legacy_id],
+            documents=["turn on couch light"],
+            metadatas=[meta],
+        )
+
+        removed = cache.purge_legacy_schema_entries(6)
 
         assert removed == 1
         assert cache.lookup("turn on couch light", language="en")[0] is None

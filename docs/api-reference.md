@@ -657,10 +657,16 @@ Auth: admin session.
 
 | Method | Path | Purpose |
 |--------|------|---------|
-| GET | `/api/admin/entity-index/match-preview` | Live-test the hybrid matcher against a query string and return the top candidates. |
+| GET | `/api/admin/entity-index/match-preview` | Live-test the deterministic resolver + hybrid matcher against a query string and return the top candidates. |
 
 Auth: admin session. Companion to the existing `/api/admin/entity-index/stats`
 and `/api/admin/entity-index/refresh` endpoints documented above.
+
+Note: the runtime primary path for entity selection is agent-side keyword
+recall + LLM selection from a closed candidate list; this endpoint previews
+the deterministic/matcher FALLBACK that runs when the LLM emits a free-form
+entity name. The matcher is embedding-less (alias + token preselection +
+string signals).
 
 ## Admin -- Traces
 

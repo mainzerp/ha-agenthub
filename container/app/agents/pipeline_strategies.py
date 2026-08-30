@@ -85,8 +85,6 @@ class DispatchStrategy(ABC):
         span_collector,
         language: str,
         incoming_context,
-        *,
-        candidates: dict[str, list[Any]] | None = None,
     ) -> DispatchResult: ...
 
 
@@ -108,7 +106,7 @@ class FinalizationStrategy(ABC):
         used_origin_context: bool,
         confidence: float | None = None,
         condensed_task: str = "",
-        candidates: list | None = None,
+        routing_entry_id: str | None = None,
     ) -> dict[str, Any]: ...
 
 
@@ -269,8 +267,6 @@ class DefaultDispatchStrategy(DispatchStrategy):
         span_collector,
         language: str,
         incoming_context,
-        *,
-        candidates: dict[str, list[Any]] | None = None,
     ) -> DispatchResult:
         is_sequential_send = any(a == "send-agent" for a, _, _ in classifications) and any(
             a != "send-agent" for a, _, _ in classifications
@@ -291,7 +287,6 @@ class DefaultDispatchStrategy(DispatchStrategy):
                 span_collector,
                 incoming_context,
                 resolved_language=language,
-                candidates=candidates,
             )
             action_executed = (result or {}).get("action_executed")
             has_error = bool((result or {}).get("error"))
@@ -321,7 +316,6 @@ class DefaultDispatchStrategy(DispatchStrategy):
                 span_collector,
                 incoming_context=incoming_context,
                 resolved_language=language,
-                candidates=(candidates or {}).get(target_agent),
             )
             action_executed = (result or {}).get("action_executed")
             routed_to = agent_id
@@ -356,7 +350,6 @@ class DefaultDispatchStrategy(DispatchStrategy):
                 span_collector,
                 incoming_context=incoming_context,
                 resolved_language=language,
-                candidates=(candidates or {}).get(aid),
             )
             for aid, ctask, _ in classifications
         ]
@@ -456,7 +449,7 @@ class DefaultFinalizationStrategy(FinalizationStrategy):
         used_origin_context: bool,
         confidence: float | None = None,
         condensed_task: str = "",
-        candidates: list | None = None,
+        routing_entry_id: str | None = None,
     ) -> dict[str, Any]:
         has_error = dispatch_result.has_error
         target_agent = dispatch_result.target_agent
@@ -563,7 +556,7 @@ class DefaultFinalizationStrategy(FinalizationStrategy):
                 skip_mediation_on_error=True,
                 skip_response_cache=is_sequential_send,
                 used_origin_context=used_origin_context,
-                candidates=candidates,
+                routing_entry_id=routing_entry_id,
             )
 
         response = {

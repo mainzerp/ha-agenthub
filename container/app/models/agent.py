@@ -83,22 +83,6 @@ class IngressTask(BaseModel):
     span_collector: Any = Field(default=None, exclude=True)
 
 
-class EntityCandidate(BaseModel):
-    """Post-filter entity candidate resolved at ingress and carried on the
-    dispatch envelope.
-
-    Populated by the orchestrator's ingress resolution stage
-    (``_run_pipeline_prelude``): an unfiltered oversampled matcher pool is
-    re-filtered per routed agent (visibility, Directive 5) and re-ranked by
-    the agent's preferred domains, then cut to the top K. Only this
-    post-filter list may leave the orchestrator.
-    """
-
-    entity_id: str
-    friendly_name: str = ""
-    score: float = 0.0
-
-
 class DispatchTask(BaseModel):
     """Task dispatched from orchestrator to a specialized agent via A2A."""
 
@@ -107,14 +91,6 @@ class DispatchTask(BaseModel):
     description: str = Field(..., description="Condensed task with preserved entity names")
     conversation_id: str | None = None
     context: TaskContext | None = None
-    # ENTITY_RES_REDESIGN Phase 3: post-filter (visibility + preferred-domain
-    # re-rank) top-K entity candidates from ingress resolution. Content
-    # agents only -- filler and send-agent legs always carry an empty list.
-    # Optional: agents that ignore the field keep working unchanged.
-    candidates: list[EntityCandidate] = Field(
-        default_factory=list,
-        description="Post-filter top-K entity candidates from ingress resolution (content agents only)",
-    )
 
     # Runtime-only: not serialized, not included in model_dump()
     span_collector: Any = Field(default=None, exclude=True)

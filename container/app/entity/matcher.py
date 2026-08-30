@@ -15,7 +15,7 @@ if TYPE_CHECKING:
     from app.entity.expansion import QueryExpansionService
 from app.entity.aliases import AliasResolver
 from app.entity.index import EntityIndex
-from app.entity.signals import AliasSignal, EmbeddingSignal, JaroWinklerSignal, LevenshteinSignal, PhoneticSignal
+from app.entity.signals import AliasSignal, JaroWinklerSignal, LevenshteinSignal, PhoneticSignal
 from app.entity.tokens import normalize_tokenize
 from app.entity.visibility import filter_visible_results
 from app.models.entity_index import EntityIndexEntry
@@ -30,22 +30,6 @@ def _normalize_for_containment(text: str) -> str:
     text = "".join(c for c in text if unicodedata.category(c) != "Mn")
     text = text.replace("ae", "a").replace("oe", "o").replace("ue", "u")
     return text
-
-
-_DIGRAPH_RE = re.compile(r"(ae|oe|ue)", re.IGNORECASE)
-
-
-def _digraphs_to_umlauts(text: str) -> str | None:
-    """Convert German digraphs to umlauts: ae->a, oe->o, ue->u.
-    Returns None if no digraphs are found in the text.
-    """
-    if not _DIGRAPH_RE.search(text):
-        return None
-    mapping = {"ae": "\u00e4", "oe": "\u00f6", "ue": "\u00fc", "Ae": "\u00c4", "Oe": "\u00d6", "Ue": "\u00dc"}
-    result = text
-    for digraph, umlaut in mapping.items():
-        result = result.replace(digraph, umlaut)
-    return result
 
 
 @dataclass
@@ -118,9 +102,12 @@ def _best_phonetic_token_match(query_tokens: list[str], entity_tokens: set[str])
 
 
 class EntityMatcher:
-    """Hybrid entity matcher combining fuzzy, alias, and embedding signals.
+    """Hybrid entity matcher combining fuzzy, alias, and token signals.
 
-    Uses all 5 signals (Levenshtein, Jaro-Winkler, Phonetic, Embedding, Alias).
+    Uses 4 signals (Levenshtein, Jaro-Winkler, Phonetic, Alias) plus
+    token-based candidate preselection. The embedding signal was removed
+    in ENTITY_RESOLUTION_REWORK (embeddings stay for the routing cache and
+    memory, not for entity matching).
     Weights are loaded from entity_matching_config table.
     """
 
@@ -154,12 +141,13 @@ class EntityMatcher:
             rows = await cursor.fetchall()
             raw_weights = {row[0]: float(row[1]) for row in rows}
 
-        # All 5 active signals
+        # Active signals (the embedding signal was removed in
+        # ENTITY_RESOLUTION_REWORK; a stale ``weight.embedding`` row is
+        # deleted by schema migration 42 and ignored here).
         active_keys = [
             "weight.levenshtein",
             "weight.jaro_winkler",
             "weight.phonetic",
-            "weight.embedding",
             "weight.alias",
         ]
         active_raw = {k: raw_weights.get(k, 0.0) for k in active_keys}
@@ -168,11 +156,10 @@ class EntityMatcher:
             self._weights = {k.split(".")[-1]: v / total for k, v in active_raw.items()}
         else:
             self._weights = {
-                "levenshtein": 0.2,
-                "jaro_winkler": 0.2,
-                "phonetic": 0.2,
-                "embedding": 0.2,
-                "alias": 0.2,
+                "levenshtein": 0.25,
+                "jaro_winkler": 0.25,
+                "phonetic": 0.25,
+                "alias": 0.25,
             }
 
         conf_raw = await SettingsRepository.get_value("entity_matching.confidence_threshold", "0.60")
@@ -226,10 +213,8 @@ class EntityMatcher:
                 only as a tie-breaker when scores are otherwise equal.
             source_language: Optional ISO language code for the original
                 user input; consumed by on-demand expansion fallback.
-            top_n: Optional override for the configured result-count cap.
-                The orchestrator's ingress resolution uses this to request an
-                oversampled unfiltered pool (agent_id=None) that is later
-                re-filtered per routed agent and cut to the envelope's K.
+            top_n: Optional override for the configured result-count cap
+                (used by the match-preview endpoint and tests).
 
         Returns:
             Sorted list of MatchResult (highest score first), filtered by confidence threshold.
@@ -295,17 +280,6 @@ class EntityMatcher:
         results: dict[str, MatchResult] = {}
         effective_top_n = top_n if top_n is not None and top_n > 0 else self._top_n
 
-        # Embedding shortlist size: oversample up to a fixed cap when
-        # downstream filtering (agent visibility or preferred-domain
-        # re-ranking) will prune candidates before the top_n slice.
-        # The dead ``entity_matching.oversample_factor`` setting was
-        # removed (L6): for top_n >= 10 the min() clamp made any factor a
-        # no-op, and with the shipped default factor the shortlist always
-        # landed on this cap -- so the cap is the documented fixed
-        # behavior and the effective shortlist is unchanged.
-        filtering_active = bool(agent_id) or bool(preferred_domains)
-        embedding_n = max(20, effective_top_n * 2) if filtering_active else effective_top_n * 2
-
         # 1. Alias signal (fast path -- exact match)
         alias_result = await AliasSignal.score(query, self._alias_resolver)
         if alias_result:
@@ -317,7 +291,9 @@ class EntityMatcher:
                 signal_scores={"alias": alias_score},
             )
 
-        # 2. Embedding signal -- vector search (skipped when candidates provided)
+        # 2. Candidate seeding (embedding recall was removed in
+        # ENTITY_RESOLUTION_REWORK: entity matching is keyword/string-signal
+        # only; embeddings stay for the routing cache and memory).
         if candidates:
             for entry in candidates:
                 results[entry.entity_id] = MatchResult(
@@ -326,80 +302,38 @@ class EntityMatcher:
                     score=0.0,
                     signal_scores={},
                 )
-            embedding_results = []
-            umlaut_results = []
-        else:
-            try:
-                embedding_results = await EmbeddingSignal.score(query, self._entity_index, n=embedding_n)
-            except Exception:
-                logger.warning("Embedding signal unavailable, proceeding with remaining signals")
-                embedding_results = []
-            for entity_id, friendly_name, emb_score in embedding_results:
-                if entity_id in results:
-                    results[entity_id].signal_scores["embedding"] = emb_score
-                    results[entity_id].friendly_name = friendly_name
-                else:
-                    results[entity_id] = MatchResult(
-                        entity_id=entity_id,
-                        friendly_name=friendly_name,
-                        score=0.0,
-                        signal_scores={"embedding": emb_score},
-                    )
-
-            # 2b. Digraph->umlaut dual embedding search
-            umlaut_query = _digraphs_to_umlauts(query)
-            if umlaut_query:
+        # 2b. Token-based preselection: rescue entities whose index tokens
+        # match individual query tokens. Inserted before the visibility
+        # filter (Directive 5) so rescued candidates are filtered like any
+        # other candidate.
+        elif self._token_preselection_enabled:
+            preselection_tokens = normalize_tokenize(query)
+            if preselection_tokens:
                 try:
-                    umlaut_results = await EmbeddingSignal.score(umlaut_query, self._entity_index, n=embedding_n)
+                    rescued_entries = await self._entity_index.find_by_tokens_async(
+                        preselection_tokens,
+                        max_df_ratio=self._token_preselection_max_df_ratio,
+                        max_candidates=self._token_preselection_max_candidates,
+                    )
                 except Exception:
-                    umlaut_results = []
-                for entity_id, friendly_name, emb_score in umlaut_results:
-                    if entity_id in results:
-                        existing = results[entity_id].signal_scores.get("embedding", 0.0)
-                        if emb_score > existing:
-                            results[entity_id].signal_scores["embedding"] = emb_score
-                            results[entity_id].friendly_name = friendly_name
+                    logger.debug("Token preselection unavailable, proceeding without it", exc_info=True)
+                    rescued_entries = []
+                for entry in rescued_entries:
+                    if entry.entity_id in results:
+                        # Already shortlisted via alias: still set the marker
+                        # so diagnostics see the token hit uniformly. The
+                        # marker is DIAGNOSTICS ONLY -- it has no scoring
+                        # effect (the marker-gated reverse-containment bonus
+                        # was removed with the span-scoring redesign; the
+                        # Floor-Regel took its place).
+                        results[entry.entity_id].signal_scores["token_preselection"] = 1.0
                     else:
-                        results[entity_id] = MatchResult(
-                            entity_id=entity_id,
-                            friendly_name=friendly_name,
+                        results[entry.entity_id] = MatchResult(
+                            entity_id=entry.entity_id,
+                            friendly_name=entry.friendly_name or "",
                             score=0.0,
-                            signal_scores={"embedding": emb_score},
+                            signal_scores={"token_preselection": 1.0},
                         )
-
-            # 2c. Token-based preselection: rescue entities whose index tokens
-            # match individual query tokens even when the embedding shortlist
-            # missed them. Inserted before the visibility filter (Directive 5)
-            # so rescued candidates are filtered like any other candidate.
-            if self._token_preselection_enabled:
-                preselection_tokens = normalize_tokenize(query)
-                if preselection_tokens:
-                    try:
-                        rescued_entries = await self._entity_index.find_by_tokens_async(
-                            preselection_tokens,
-                            max_df_ratio=self._token_preselection_max_df_ratio,
-                            max_candidates=self._token_preselection_max_candidates,
-                        )
-                    except Exception:
-                        logger.debug("Token preselection unavailable, proceeding without it", exc_info=True)
-                        rescued_entries = []
-                    for entry in rescued_entries:
-                        if entry.entity_id in results:
-                            # Already shortlisted via alias or embedding: still
-                            # set the marker so diagnostics see the token hit
-                            # uniformly. The marker is DIAGNOSTICS ONLY -- it
-                            # has no scoring effect (the marker-gated
-                            # reverse-containment bonus was removed with the
-                            # span-scoring redesign; the Floor-Regel took its
-                            # place).
-                            results[entry.entity_id].signal_scores["token_preselection"] = 1.0
-                        else:
-                            results[entry.entity_id] = MatchResult(
-                                entity_id=entry.entity_id,
-                                friendly_name=entry.friendly_name or "",
-                                score=0.0,
-                                signal_scores={"token_preselection": 1.0},
-                            )
 
         # Apply entity visibility filtering before any scoring so hidden
         # entities are never scored or returned.
@@ -447,22 +381,37 @@ class EntityMatcher:
             best_lev = 0.0
             best_jw = 0.0
             for span_text, span_tokens in spans:
-                if not span_tokens & entity_tokens:
+                # Compound containment: an entity token (>= 4 chars) that is a
+                # substring of a span token counts as a hit, so a compound
+                # query like "innenhofuberdachung" admits the entity
+                # "Innenhof Überdachung" even without exact token overlap.
+                compound_hits = {
+                    et
+                    for et in entity_tokens
+                    if len(et) >= _COVERAGE_NEAR_MISS_MIN_TOKEN_LEN
+                    and any(len(st) >= _COVERAGE_NEAR_MISS_MIN_TOKEN_LEN and et in st for st in span_tokens)
+                }
+                if not span_tokens & entity_tokens and not compound_hits:
                     continue
                 # Near-miss coverage: an entity token also counts as covered
                 # when a span token is a close Levenshtein match (e.g. German
-                # plural "jalousien" vs singular "jalousie"). Computed once
-                # per (candidate, span); only affects coverage/Floor-Regel.
-                covered = span_tokens | {
-                    et
-                    for et in entity_tokens - span_tokens
-                    if len(et) >= _COVERAGE_NEAR_MISS_MIN_TOKEN_LEN
-                    and any(
-                        len(st) >= _COVERAGE_NEAR_MISS_MIN_TOKEN_LEN
-                        and LevenshteinSignal.score(et, st) >= _COVERAGE_NEAR_MISS_MIN_SIMILARITY
-                        for st in span_tokens
-                    )
-                }
+                # plural "jalousien" vs singular "jalousie") or contains it as
+                # a compound (see compound_hits above). Computed once per
+                # (candidate, span); only affects coverage/Floor-Regel.
+                covered = (
+                    span_tokens
+                    | compound_hits
+                    | {
+                        et
+                        for et in entity_tokens - span_tokens
+                        if len(et) >= _COVERAGE_NEAR_MISS_MIN_TOKEN_LEN
+                        and any(
+                            len(st) >= _COVERAGE_NEAR_MISS_MIN_TOKEN_LEN
+                            and LevenshteinSignal.score(et, st) >= _COVERAGE_NEAR_MISS_MIN_SIMILARITY
+                            for st in span_tokens
+                        )
+                    }
+                )
                 cov = _idf_coverage(entity_tokens, covered, idf_map)
                 lev = LevenshteinSignal.score(span_text, fn)
                 jw = JaroWinklerSignal.score(span_text, fn)

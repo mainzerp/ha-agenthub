@@ -555,12 +555,13 @@ async def _seed_defaults(db: aiosqlite.Connection) -> None:
         default_agents,
     )
 
-    # Default entity matching weights
+    # Default entity matching weights (the embedding signal was removed in
+    # ENTITY_RESOLUTION_REWORK; existing databases get the stale
+    # ``weight.embedding`` row deleted by schema migration 42).
     default_matching = [
         ("weight.levenshtein", "0.20", "Levenshtein distance signal weight"),
         ("weight.jaro_winkler", "0.20", "Jaro-Winkler similarity signal weight"),
         ("weight.phonetic", "0.15", "Phonetic matching signal weight"),
-        ("weight.embedding", "0.30", "Embedding similarity signal weight"),
         ("weight.alias", "0.15", "Alias resolution signal weight"),
     ]
 

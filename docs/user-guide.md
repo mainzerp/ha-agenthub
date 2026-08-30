@@ -181,7 +181,7 @@ The **Entity Index** page at `/dashboard/entity-index` manages how Home Assistan
 - **Index status** -- shows the number of indexed entities, last refresh time, and per-domain breakdown.
 - **Refresh** -- trigger a manual refresh from HA (`POST /api/admin/entity-index/refresh`).
 - **Aliases** -- create aliases such as "nightstand lamp" that map to `light.bedroom_nightstand`.
-- **Matching signal weights** -- adjust the weights for Levenshtein, Jaro-Winkler, phonetic, embedding, and alias signals.
+- **Matching signal weights** -- adjust the weights for Levenshtein, Jaro-Winkler, phonetic, and alias signals.
 - **Per-agent visibility rules** -- control which entities each agent can see.
 
 Use this page when commands match the wrong device or no device at all.
@@ -256,7 +256,7 @@ The **Cache** page at `/dashboard/cache` inspects the two-tier cache:
 
 From this page you can:
 
-- Browse entries per tier with search and pagination. Routing entry details show the persisted entity candidates (`entity_id`, friendly name, match score) that power Tier-2 cache hits (routing + entity binding), alongside the `entity_ids` used for invalidation.
+- Browse entries per tier with search and pagination. Routing entry details show the `entity_ids` used for visibility validation and invalidation.
 - Flush the entire routing or action tier.
 - Delete a single entry without clearing the whole tier.
 - Export and import cache tiers as a JSON envelope.

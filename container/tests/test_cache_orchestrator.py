@@ -207,3 +207,76 @@ class TestCacheOrchestratorEdgeCases:
         assert result == (False, True)
         cm.store_routing_async.assert_awaited_once()
         cm.store_action_async.assert_not_called()
+
+
+class TestVerifiedStoreGate:
+    """R-A (ENTITY_RESOLUTION_REWORK): the fallback routing-store branch
+    must not cache routing decisions from unverified turns."""
+
+    @pytest.mark.asyncio
+    async def test_clarifying_question_turn_is_not_stored(self):
+        """Informational turn ending in a clarifying question: no store."""
+        co, cm = _make_cache_orchestrator()
+        with (
+            patch.object(co, "_get_bool_setting_impl", new=AsyncMock(return_value=True)),
+            patch.object(co, "legacy_pipeline_enabled", return_value=False),
+        ):
+            result = await co.store_after_dispatch(
+                user_text="Innenhofueberdachung ausschalten",
+                language="de",
+                target_agent="cover-agent",
+                condensed_task="Innenhofueberdachung ausschalten",
+                confidence=0.9,
+                speech="Welches Geraet meinst du?",
+                action_executed=None,
+                has_error=False,
+                task=IngressTask(description="Innenhofueberdachung ausschalten"),
+            )
+        assert result == (False, False)
+        cm.store_routing_async.assert_not_called()
+        cm.store_action_async.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_failed_action_turn_is_not_stored(self):
+        """action_executed with success falsy: no routing store."""
+        co, cm = _make_cache_orchestrator()
+        with (
+            patch.object(co, "_get_bool_setting_impl", new=AsyncMock(return_value=True)),
+            patch.object(co, "legacy_pipeline_enabled", return_value=False),
+        ):
+            result = await co.store_after_dispatch(
+                user_text="turn on kitchen light",
+                language="en",
+                target_agent="light-agent",
+                condensed_task="turn on kitchen light",
+                confidence=0.9,
+                speech="I could not find that device.",
+                action_executed={"success": False, "action": "turn_on", "entity_id": ""},
+                has_error=False,
+                task=IngressTask(description="turn on kitchen light"),
+            )
+        assert result == (False, False)
+        cm.store_routing_async.assert_not_called()
+        cm.store_action_async.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_informational_answer_is_still_stored(self):
+        """Successful informational answers keep storing (no question mark)."""
+        co, cm = _make_cache_orchestrator()
+        with (
+            patch.object(co, "_get_bool_setting_impl", new=AsyncMock(return_value=True)),
+            patch.object(co, "legacy_pipeline_enabled", return_value=False),
+        ):
+            result = await co.store_after_dispatch(
+                user_text="hello there",
+                language="en",
+                target_agent="general-agent",
+                condensed_task="Say hello",
+                confidence=0.88,
+                speech="Hello!",
+                action_executed=None,
+                has_error=False,
+                task=IngressTask(description="hello there"),
+            )
+        assert result == (False, True)
+        cm.store_routing_async.assert_awaited_once()

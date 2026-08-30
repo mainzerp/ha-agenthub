@@ -21,7 +21,7 @@ from app.agents.cache_orchestrator import CacheOrchestrator
 from app.agents.cancel_speech import generate_cancel_speech
 from app.agents.classification_engine import ClassificationEngine, _RecoverableClassificationError
 from app.agents.conversation_manager import ConversationManager, extract_resolved_entities
-from app.agents.decorator import _AGENT_CLASSES, agent
+from app.agents.decorator import agent
 from app.agents.dispatch_manager import DispatchManager
 from app.agents.filler_coordinator import FillerCoordinator
 from app.agents.language_detect import detect_user_language
@@ -37,11 +37,9 @@ from app.memory import get_memory_service
 from app.models.agent import (
     CANCEL_INTERACTION_AGENT,
     FALLBACK_AGENT,
-    INTERNAL_ONLY_AGENTS,
     AgentCard,
     BackgroundTask,
     DispatchTask,
-    EntityCandidate,
     IngressTask,
     LastEntity,
     TaskContext,
@@ -59,44 +57,6 @@ _CANNED_GENERAL_ERROR_SPEECH = "I couldn't process that request right now."
 _FOLLOWUP_TAG = "[FOLLOWUP]"
 
 _PERSONALITY_CACHE_TTL_SEC: float = 300.0
-
-# ENTITY_RES_REDESIGN Phase 3 (ingress resolution): the matcher runs at
-# ingress on the raw user text and produces an UNFILTERED (agent_id=None,
-# pre-routing) oversampled pool of _INGRESS_POOL_SIZE candidates. After
-# routing, the pool is re-filtered per agent (visibility, Directive 5) via
-# EntityMatcher.filter_visible_results, re-ranked by the agent's preferred
-# domains, and cut to _INGRESS_CANDIDATE_K for the DispatchTask envelope.
-# The unfiltered pool must never reach agents, spans, or traces.
-_INGRESS_POOL_SIZE: int = 20
-_INGRESS_CANDIDATE_K: int = 5
-# Agents whose dispatch legs never carry entity candidates:
-# send-agent and filler legs always get an empty list.
-_INGRESS_NO_CANDIDATE_AGENTS: frozenset[str] = INTERNAL_ONLY_AGENTS | frozenset(
-    {"send-agent", CANCEL_INTERACTION_AGENT}
-)
-
-
-def _agent_preferred_domains(agent_id: str) -> tuple[str, ...] | None:
-    """Preferred-domain tuple for an agent's candidate re-rank.
-
-    Reads the registered class metadata (same source the agent itself uses
-    for ``allowed_domains``); plugin/custom agents without decorator
-    metadata get no re-rank (score order is kept).
-    """
-    cls = _AGENT_CLASSES.get(agent_id)
-    meta = getattr(cls, "_agent_meta", None) if cls is not None else None
-    allowed = meta.get("allowed_domains") if meta else None
-    return tuple(sorted(d.lower() for d in allowed if d)) if allowed else None
-
-
-def _tier2_entity_binding(routing_skip: RoutingSkipOutcome | None) -> bool:
-    """True when a routing-cache hit carries a consumable Tier-2 binding.
-
-    Only EXACT routing hits (``kind == "routing_hit"``) with a non-empty
-    entity-candidate payload may skip the ingress matcher pass; semantic
-    hits always take the Tier-1 path (fresh filtered matcher pass).
-    """
-    return routing_skip is not None and routing_skip.kind == "routing_hit" and bool(routing_skip.entity_candidates)
 
 
 def _stringify_error(err: Any) -> str | None:
@@ -190,32 +150,6 @@ async def _trace_memory_retrieval(
         span["metadata"].update(state["metadata"])
 
 
-async def _trace_ingress_match(
-    match_coro: Any,
-    span_collector: Any,
-    *,
-    routing_cached: bool,
-    top_n: int,
-) -> Any:
-    """Wrap the ingress matcher coroutine in the ``ingress_resolution`` span.
-
-    The span opens when the matcher task starts and closes when the match
-    resolves, so the timeline shows the true matcher duration overlapping
-    ``classify``. Metadata deliberately contains NO entity ids -- the pool
-    is unfiltered and must never reach the trace (Directive 5).
-    """
-    async with _optional_span(span_collector, "ingress_resolution", agent_id="orchestrator") as span:
-        try:
-            pool = await match_coro
-        except asyncio.CancelledError:
-            span["metadata"]["cancelled"] = True
-            raise
-        span["metadata"]["pool_count"] = len(pool) if pool else 0
-        span["metadata"]["routing_cached"] = routing_cached
-        span["metadata"]["top_n"] = top_n
-        return pool
-
-
 async def _resolve_memory_context(
     task: IngressTask,
     memory_task: asyncio.Task | None,
@@ -304,9 +238,10 @@ class PipelinePreludeResult:
     confidence: float | None
     used_origin_context: bool
     early_exit: dict[str, Any] | None = None
-    # ENTITY_RES_REDESIGN Phase 3: post-filter per-agent entity candidates
-    # from ingress resolution (agent_id -> top-K EntityCandidate list).
-    candidates: dict[str, list[EntityCandidate]] = field(default_factory=dict)
+    # ENTITY_RESOLUTION_REWORK (R-B): entry id of the served routing-cache
+    # hit, so a failed cached-agent turn can invalidate the entry at
+    # finalization time. None when the turn was not routing-cached.
+    routing_entry_id: str | None = None
 
 
 @dataclass
@@ -380,8 +315,9 @@ class OrchestratorAgent(BaseAgent):
         self._cache_manager = cache_manager
         self._filler_agent = filler_agent
         self._event_bus = event_bus
-        # ENTITY_RES_REDESIGN Phase 3: entity matcher for ingress resolution
-        # (optional; None disables the ingress stage, e.g. in unit tests).
+        # Unused since ENTITY_RESOLUTION_REWORK removed the orchestrator's
+        # ingress matcher pass (agents do their own keyword recall). The
+        # constructor param stays for factory/test compatibility.
         self._entity_matcher = entity_matcher
         self._default_timeout: int = 5
         self._max_iterations: int = 3
@@ -658,7 +594,6 @@ class OrchestratorAgent(BaseAgent):
         skip_dispatch_span: bool = False,
         *,
         resolved_language: str | None = None,
-        candidates: list[EntityCandidate] | None = None,
     ) -> tuple[str, str, dict[str, Any] | None]:
         return await self._dispatch_manager.dispatch_single(
             target_agent,
@@ -670,7 +605,6 @@ class OrchestratorAgent(BaseAgent):
             incoming_context=incoming_context,
             skip_dispatch_span=skip_dispatch_span,
             resolved_language=resolved_language,
-            candidates=candidates,
         )
 
     async def _handle_sequential_send(
@@ -683,13 +617,10 @@ class OrchestratorAgent(BaseAgent):
         incoming_context,
         *,
         resolved_language: str | None = None,
-        candidates: dict[str, list[EntityCandidate]] | None = None,
     ) -> tuple[str, str, dict[str, Any] | None]:
         """Handle sequential dispatch: content agent -> send agent.
 
         Returns (routed_to, speech, result_dict) like _dispatch_single.
-        Entity candidates ride on the content leg only; the send-agent leg
-        always dispatches without candidates.
         """
         content_agents = [(a, t, c) for a, t, c in classifications if a != "send-agent"]
         send_classification = next(((a, t, c) for a, t, c in classifications if a == "send-agent"), None)
@@ -705,7 +636,6 @@ class OrchestratorAgent(BaseAgent):
                 span_collector,
                 incoming_context=incoming_context,
                 resolved_language=resolved_language,
-                candidates=(candidates or {}).get(classifications[0][0]) if classifications else None,
             )
 
         _send_agent_id, send_task_text, _send_confidence = send_classification
@@ -747,7 +677,6 @@ class OrchestratorAgent(BaseAgent):
                     incoming_context=content_context,
                     skip_dispatch_span=True,
                     resolved_language=resolved_language,
-                    candidates=(candidates or {}).get(content_aid),
                 )
                 span["metadata"]["content_agent"] = content_agent_id
                 span["metadata"]["content_length"] = len(content_speech or "")
@@ -884,7 +813,6 @@ class OrchestratorAgent(BaseAgent):
         action_executed,
         has_error: bool,
         task: IngressTask | None = None,
-        candidates: list[EntityCandidate] | None = None,
         merged_multi_agent: bool = False,
         used_origin_context: bool = False,
     ) -> tuple[bool, bool]:
@@ -899,7 +827,6 @@ class OrchestratorAgent(BaseAgent):
             action_executed=action_executed,
             has_error=has_error,
             task=task,
-            candidates=candidates,
             merged_multi_agent=merged_multi_agent,
             used_origin_context=used_origin_context,
         )
@@ -1152,55 +1079,10 @@ class OrchestratorAgent(BaseAgent):
 
         used_origin_context = bool(task and task.context and (task.context.area_id or task.context.device_id))
 
-        # ENTITY_RES_REDESIGN Phase 3: ingress entity resolution. Started
-        # only AFTER the action-cache miss (replay hits never pay for it)
-        # and after the turn prefetch, so it overlaps the classification LLM
-        # call -- the dominant prelude cost. The pool is UNFILTERED
-        # (agent_id=None, the target agent is only known after routing) and
-        # oversampled; the result is returned as a VALUE, never published
-        # via ContextVar (gather-child caveat, see actionable.py). On a
-        # routing-cache hit the agent is already known, so the matcher runs
-        # a single fully visibility-filtered pass for that agent instead.
+        # Routing-cache hit: classification is skipped for this agent; the
+        # served entry id is threaded onto the prelude result so a FAILED
+        # cached-agent turn can invalidate the entry at finalization (R-B).
         routing_skip = cache_replay.routing_skip
-        tier2_hit = routing_skip if _tier2_entity_binding(routing_skip) else None
-        ingress_task: asyncio.Task | None = None
-        if self._entity_matcher is not None:
-            if tier2_hit is not None:
-                # Tier 2: the exact routing hit carries resolved entity
-                # bindings, so the matcher pass is skipped entirely; the
-                # span is recorded as skipped to keep the trace shape.
-                async with _optional_span(span_collector, "ingress_resolution", agent_id=tier2_hit.agent_id) as ir_span:
-                    ir_span["metadata"]["skipped"] = True
-                    ir_span["metadata"]["source"] = "routing_cache"
-            elif routing_skip is not None:
-                ingress_task = asyncio.create_task(
-                    _trace_ingress_match(
-                        self._entity_matcher.match(
-                            user_text,
-                            agent_id=routing_skip.agent_id,
-                            preferred_domains=_agent_preferred_domains(routing_skip.agent_id),
-                            source_language=detected_language,
-                            top_n=_INGRESS_CANDIDATE_K,
-                        ),
-                        span_collector,
-                        routing_cached=True,
-                        top_n=_INGRESS_CANDIDATE_K,
-                    )
-                )
-            else:
-                ingress_task = asyncio.create_task(
-                    _trace_ingress_match(
-                        self._entity_matcher.match(
-                            user_text,
-                            agent_id=None,
-                            source_language=detected_language,
-                            top_n=_INGRESS_POOL_SIZE,
-                        ),
-                        span_collector,
-                        routing_cached=False,
-                        top_n=_INGRESS_POOL_SIZE,
-                    )
-                )
 
         # Session memory: overlap the memory search with the classification
         # LLM call on the cache-miss path (action-cache replays early-exit
@@ -1254,13 +1136,8 @@ class OrchestratorAgent(BaseAgent):
                 prefetched_turns=lang_turns,
             )
         except _RecoverableClassificationError as exc:
-            # Never abandon the detached ingress task: cancel it and await
-            # it so a mid-flight matcher unwinds cleanly.
-            if ingress_task is not None and not ingress_task.done():
-                ingress_task.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await ingress_task
-            # Same for the memory overlap task: read-only, safe to cancel.
+            # Never abandon the detached memory overlap task: read-only,
+            # safe to cancel.
             # Cancelling it makes the span task's shield await raise
             # CancelledError, closing the memory_retrieval span with
             # cancelled=True; the span task then finishes on its own.
@@ -1299,13 +1176,6 @@ class OrchestratorAgent(BaseAgent):
                 },
             )
 
-        candidates = await self._resolve_ingress_candidates(
-            ingress_task,
-            routing_skip=routing_skip,
-            classifications=classifications,
-            span_collector=span_collector,
-        )
-
         await _resolve_memory_context(task, memory_task, memory_service, span_state=memory_span_state)
 
         logger.debug(
@@ -1339,110 +1209,8 @@ class OrchestratorAgent(BaseAgent):
             condensed_task=condensed_task,
             confidence=confidence,
             used_origin_context=used_origin_context,
-            candidates=candidates,
+            routing_entry_id=(routing_skip.entry_id or None) if routing_skip is not None else None,
         )
-
-    async def _resolve_ingress_candidates(
-        self,
-        ingress_task: asyncio.Task | None,
-        *,
-        routing_skip: RoutingSkipOutcome | None,
-        classifications: list[tuple[str, str, float | None]],
-        span_collector,
-    ) -> dict[str, list[EntityCandidate]]:
-        """Turn the ingress matcher pool into per-agent envelope candidates.
-
-        Two-phase visibility (Directive 5): the pool the matcher produced at
-        ingress is UNFILTERED (agent_id=None). It is re-filtered here per
-        routed agent via :meth:`EntityMatcher.filter_visible_results`,
-        re-ranked by the agent's preferred domains, and cut to
-        ``_INGRESS_CANDIDATE_K``. Only this post-filter list is returned
-        (for the DispatchTask envelope) and recorded on the
-        ``ingress_candidates`` span -- the unfiltered pool never leaves
-        this method. On a routing-cache hit the matcher already ran a
-        single fully-filtered pass for the known agent, so its result is
-        used directly.
-
-        Fail-soft: a matcher/visibility failure degrades to empty
-        candidates (the agent-side description fallback covers it) rather
-        than failing the turn.
-        """
-        tier2_hit = routing_skip if _tier2_entity_binding(routing_skip) else None
-
-        candidates_by_agent: dict[str, list[EntityCandidate]] = {}
-        source = "ingress_matcher"
-        if tier2_hit is not None:
-            # Tier 2: build the envelope from the cached entity bindings --
-            # the matcher pass was skipped in the prelude. No visibility
-            # re-filter here: the fail-closed per-entity recheck already ran
-            # in routing_hit_is_still_valid before the hit was accepted, and
-            # the agent fast path re-filters against a fresh snapshot anyway.
-            candidates_by_agent[tier2_hit.agent_id] = [
-                EntityCandidate(entity_id=eid, friendly_name=name or "", score=score)
-                for eid, name, score in tier2_hit.entity_candidates
-            ]
-            source = "routing_cache"
-        elif ingress_task is None or self._entity_matcher is None:
-            return {}
-        else:
-            try:
-                pool = await ingress_task
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                logger.debug("Ingress entity resolution failed", exc_info=True)
-                return {}
-
-            if routing_skip is not None:
-                # Routing-cache hit: single pass was already visibility-filtered
-                # and preferred-domain ranked for this agent.
-                candidates_by_agent[routing_skip.agent_id] = [
-                    EntityCandidate(entity_id=r.entity_id, friendly_name=r.friendly_name or "", score=r.score)
-                    for r in pool[:_INGRESS_CANDIDATE_K]
-                ]
-            else:
-                seen: set[str] = set()
-                for agent_id, *_rest in classifications:
-                    if agent_id in seen or agent_id in _INGRESS_NO_CANDIDATE_AGENTS:
-                        continue
-                    seen.add(agent_id)
-                    try:
-                        visible = await self._entity_matcher.filter_visible_results(agent_id, pool)
-                    except Exception:
-                        logger.debug("Ingress candidate visibility filter failed for %s", agent_id, exc_info=True)
-                        continue
-                    ranked = self._rerank_pool_for_agent(visible, _agent_preferred_domains(agent_id))
-                    top = ranked[:_INGRESS_CANDIDATE_K]
-                    if top:
-                        candidates_by_agent[agent_id] = [
-                            EntityCandidate(entity_id=r.entity_id, friendly_name=r.friendly_name or "", score=r.score)
-                            for r in top
-                        ]
-
-        async with _optional_span(span_collector, "ingress_candidates", agent_id="orchestrator") as span:
-            span["metadata"]["candidates"] = {
-                aid: [
-                    {"entity_id": c.entity_id, "friendly_name": c.friendly_name, "score": round(c.score, 4)}
-                    for c in cands
-                ]
-                for aid, cands in candidates_by_agent.items()
-            }
-            span["metadata"]["source"] = source
-        return candidates_by_agent
-
-    @staticmethod
-    def _rerank_pool_for_agent(pool: list, preferred_domains: tuple[str, ...] | None) -> list:
-        """Sort a candidate pool by score with the agent's preferred domains
-        as tie-breaker (mirrors the matcher's preferred-domain sort)."""
-        if preferred_domains:
-
-            def _sort_key(r) -> tuple:
-                domain = r.entity_id.split(".")[0].lower() if "." in r.entity_id else ""
-                domain_rank = preferred_domains.index(domain) if domain in preferred_domains else len(preferred_domains)
-                return (-r.score, domain_rank)
-
-            return sorted(pool, key=_sort_key)
-        return sorted(pool, key=lambda r: r.score, reverse=True)
 
     @staticmethod
     def _pipeline_record_classify_span(
@@ -1535,7 +1303,7 @@ class OrchestratorAgent(BaseAgent):
         routed_to: str | None = None,
         skip_response_cache: bool = False,
         used_origin_context: bool = False,
-        candidates: list[EntityCandidate] | None = None,
+        routing_entry_id: str | None = None,
         ret_span: dict | None = None,
     ) -> tuple[str, bool]:
         """Run post-mediation finalization: merge voice followup, store cache/turn/trace."""
@@ -1566,7 +1334,6 @@ class OrchestratorAgent(BaseAgent):
                 action_executed=action_executed,
                 has_error=has_error,
                 task=task,
-                candidates=candidates,
                 merged_multi_agent=False,
                 used_origin_context=used_origin_context,
             )
@@ -1575,6 +1342,20 @@ class OrchestratorAgent(BaseAgent):
             ret_span["metadata"]["cache_stored_action"] = cache_stored_action
             ret_span["metadata"]["cache_stored_response"] = cache_stored_response
             ret_span["metadata"]["cache_stored_routing"] = cache_stored_routing
+        # R-B (ENTITY_RESOLUTION_REWORK): the served routing-cache entry sent
+        # this turn to the cached agent; when that turn failed (no action or
+        # a failed action) the entry is poison -- invalidate it so the next
+        # identical phrasing re-classifies via LLM. ``has_error`` is too
+        # narrow here; the action_executed signal is the reliable one.
+        if routing_entry_id:
+            ae = action_executed.model_dump() if hasattr(action_executed, "model_dump") else action_executed
+            if not isinstance(ae, dict) or not ae.get("success"):
+                await self._cache_orchestrator.invalidate_served_routing(
+                    routing_entry_id,
+                    reason="cached_agent_turn_failed",
+                )
+                if ret_span is not None:
+                    ret_span["metadata"]["routing_cache_invalidated"] = True
         # ENTITY_RES_REDESIGN Phase 6: remember the acted-on entity (success
         # path only) as an anaphora recency hint for later turns.
         resolved_entities = await extract_resolved_entities(action_executed, getattr(self, "_entity_index", None))
@@ -1626,7 +1407,7 @@ class OrchestratorAgent(BaseAgent):
         skip_mediation_on_error: bool = True,
         skip_response_cache: bool = False,
         used_origin_context: bool = False,
-        candidates: list[EntityCandidate] | None = None,
+        routing_entry_id: str | None = None,
         mediation_inputs: tuple[str | None, bool] | None = None,
     ) -> tuple[str, bool]:
         """Run the shared single-agent / sequential-send finalization
@@ -1718,7 +1499,7 @@ class OrchestratorAgent(BaseAgent):
                 routed_to=routed_to,
                 skip_response_cache=skip_response_cache,
                 used_origin_context=used_origin_context,
-                candidates=candidates,
+                routing_entry_id=routing_entry_id,
                 ret_span=ret_span,
             )
 
@@ -1876,7 +1657,6 @@ class OrchestratorAgent(BaseAgent):
             span_collector,
             detected_language,
             task.context,
-            candidates=prelude.candidates,
         )
         if self._event_bus is not None:
             await self._event_bus.publish(
@@ -1935,7 +1715,7 @@ class OrchestratorAgent(BaseAgent):
             used_origin_context,
             confidence=confidence,
             condensed_task=condensed_task,
-            candidates=prelude.candidates.get(dispatch_result.target_agent) or None,
+            routing_entry_id=prelude.routing_entry_id,
         )
         response["conversation_id"] = conversation_id
         return response
@@ -2250,7 +2030,6 @@ class OrchestratorAgent(BaseAgent):
             description=condensed_task,
             conversation_id=conversation_id,
             context=context,
-            candidates=prelude.candidates.get(target_agent, []),
         )
 
         # 3. Dispatch via A2A message/stream
@@ -2736,7 +2515,7 @@ class OrchestratorAgent(BaseAgent):
                 routed_to=target_agent,
                 skip_response_cache=False,
                 used_origin_context=used_origin_context,
-                candidates=prelude.candidates.get(target_agent) or None,
+                routing_entry_id=prelude.routing_entry_id,
             )
         else:
             # Existing blocking path. The mediation probe was already
@@ -2761,7 +2540,7 @@ class OrchestratorAgent(BaseAgent):
                 mediation_agent=target_agent,
                 skip_mediation_on_error=False,
                 used_origin_context=used_origin_context,
-                candidates=prelude.candidates.get(target_agent) or None,
+                routing_entry_id=prelude.routing_entry_id,
                 mediation_inputs=(reminder_text, allow_organic_followup),
             )
 

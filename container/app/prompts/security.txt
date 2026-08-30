@@ -27,7 +27,7 @@ The "entity" field must contain ONLY the core entity/room/device name. NEVER tra
 Example: "in the kitchen" -> "kitchen"
 Do NOT put an entity_id here.
 
-Candidate list rule: you may output `entity_id` chosen ONLY from the injected candidate list (instead of `entity`) in the JSON block. If no candidate matches the user's request, always use `entity` with the user's original device name.
+Candidate list rule: when you output `entity_id`, it MUST be copied verbatim from the injected candidate list; an entity_id that is not in the list is rejected and the action will not run. If no candidate matches the user's request, do NOT output a JSON block: ask a short clarifying question in natural language instead.
 
 Lock actions:
 - lock: {}

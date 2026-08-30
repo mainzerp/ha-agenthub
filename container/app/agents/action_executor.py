@@ -50,6 +50,30 @@ def reset_request_visible_entries(token: contextvars.Token) -> None:
     _request_visible_entries.reset(token)
 
 
+# Per-request closed-contract candidate-id gate (ENTITY_RESOLUTION_REWORK).
+# Published by ActionableAgent after its pre-LLM keyword recall: the set of
+# entity_ids the agent LLM may legitimately emit (recalled candidates plus
+# last_entities anaphora hints). ``None`` means "no gate" (legacy/direct
+# callers); an empty set means the recall found nothing and EVERY
+# LLM-supplied entity_id is rejected fail-closed.
+_request_candidate_ids: contextvars.ContextVar[frozenset[str] | None] = contextvars.ContextVar(
+    "action_executor_candidate_ids", default=None
+)
+
+
+def set_request_candidate_ids(
+    candidate_ids: set[str] | frozenset[str] | None,
+) -> contextvars.Token:
+    """Publish the per-request candidate-id gate (``None`` clears)."""
+    value = frozenset(candidate_ids) if candidate_ids is not None else None
+    return _request_candidate_ids.set(value)
+
+
+def reset_request_candidate_ids(token: contextvars.Token) -> None:
+    """Restore the gate published before ``token`` was created."""
+    _request_candidate_ids.reset(token)
+
+
 def is_read_only_action(action_name: str) -> bool:
     return action_name.lower().startswith(_READ_ONLY_ACTION_PREFIXES)
 
@@ -160,6 +184,7 @@ async def resolve_and_validate_entity(
     require_matcher: bool = False,
     visible_entries: list[Any] | None = None,
     direct_entity_id: str | None = None,
+    allowed_entity_ids: set[str] | None = None,
 ) -> dict[str, Any]:
     """Resolve an entity query deterministically and validate its domain.
 
@@ -179,7 +204,18 @@ async def resolve_and_validate_entity(
     caller's per-action ``allowed_domains`` (domain + per-action domain +
     index existence + visibility, all fail-closed). When validation
     fails, resolution falls back to the normal deterministic-first
-    pipeline.
+    pipeline -- UNLESS ``allowed_entity_ids`` is active (see below).
+
+    ``allowed_entity_ids``: optional closed-contract candidate set
+    (ENTITY_RESOLUTION_REWORK). When omitted, the set published by
+    ``set_request_candidate_ids`` (same request) is used; ``None`` there
+    means no gate. When the gate is active, an LLM-supplied
+    ``direct_entity_id`` is accepted iff it is in the set AND passes
+    ``_validate_direct_entity_id``; otherwise the call returns a
+    not-found result immediately (fail-closed, no matcher re-run), which
+    triggers the agent's clarifying-question path. The free-form
+    ``entity`` path is unaffected and keeps deterministic-first
+    resolution.
 
     Returns a dict with keys:
         entity_id: resolved and validated entity_id (None if not found)
@@ -191,14 +227,24 @@ async def resolve_and_validate_entity(
     """
     from app.analytics.tracer import _optional_span
 
+    if allowed_entity_ids is None:
+        allowed_entity_ids = _request_candidate_ids.get()
+
     if direct_entity_id:
-        validated_direct = await _validate_direct_entity_id(
-            direct_entity_id,
-            validate_domain_fn,
-            agent_id=agent_id,
-            entity_index=entity_index,
-            allowed_domains=allowed_domains,
-        )
+        validated_direct: str | None = None
+        if allowed_entity_ids is not None and direct_entity_id not in allowed_entity_ids:
+            logger.warning(
+                "LLM-supplied entity_id '%s' not in the recalled candidate set; rejecting (fail-closed)",
+                direct_entity_id,
+            )
+        else:
+            validated_direct = await _validate_direct_entity_id(
+                direct_entity_id,
+                validate_domain_fn,
+                agent_id=agent_id,
+                entity_index=entity_index,
+                allowed_domains=allowed_domains,
+            )
         if validated_direct:
             metadata = _synthesize_direct_entity_metadata(validated_direct, entity_index)
             friendly = metadata["top_friendly_name"]
@@ -212,6 +258,34 @@ async def resolve_and_validate_entity(
                     "metadata": metadata,
                 },
                 "not_found_result": None,
+            }
+        if allowed_entity_ids is not None:
+            # Closed candidate contract: an LLM-picked id that is not in the
+            # recalled candidate set (or failed validation) is a
+            # hallucination -- reject fail-closed without a matcher re-run.
+            # The not-found speech triggers the clarifying-question path.
+            resolution = {
+                "entity_id": None,
+                "friendly_name": entity_query,
+                "speech": None,
+                "metadata": {
+                    "query": entity_query,
+                    "match_count": 0,
+                    "resolution_path": "rejected_entity_id",
+                    "rejected_entity_id": direct_entity_id,
+                },
+            }
+            return {
+                "entity_id": None,
+                "friendly_name": entity_query,
+                "resolution": resolution,
+                "not_found_result": {
+                    "success": False,
+                    "entity_id": None,
+                    "new_state": None,
+                    "speech": f"Could not find an entity matching '{entity_query}'.",
+                    "metadata": resolution["metadata"],
+                },
             }
         logger.warning(
             "LLM-supplied direct entity_id '%s' failed validation; falling back to deterministic resolution",

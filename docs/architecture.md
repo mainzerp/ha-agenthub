@@ -207,9 +207,8 @@ SQLite. The routing cache additionally has a semantic similarity tier
 (sqlite-vec k-NN over stored query embeddings, consulted after an
 exact-hash miss); the action cache is exact-hash only:
 
-- **Routing Cache** -- Caches the mapping from user intent to target agent. A hit (exact SHA-256 hash match, or semantic match above `cache.routing.semantic_threshold` with fail-closed validation) skips LLM-based intent classification entirely. Max entries: 50,000 with LRU eviction.
-  - **Tier 1**: a hit without entity bindings; the ingress entity matcher still runs a fresh visibility-filtered pass for the cached target agent.
-  - **Tier 2**: an *exact* hit that also carries the resolved entity candidates (`entity_id`, `friendly_name`, `score`) from the originating turn. The ingress matcher pass is skipped and the dispatch envelope is built from the cached bindings. Binding is exact-hit only -- semantic hits always take the Tier-1 path. The fail-closed per-entity visibility recheck runs before any hit is accepted, and the agent-side fast path re-filters against a fresh visible snapshot.
+- **Routing Cache** -- Caches the mapping from user intent to target agent. A hit (exact SHA-256 hash match, or semantic match above `cache.routing.semantic_threshold` with fail-closed validation) skips LLM-based intent classification entirely. Max entries: 50,000 with LRU eviction. Entity resolution is NOT cached: the routed agent recalls its own entities via keyword matching (see Entity Matching).
+  - **Hygiene**: turns that resolved no entity (failed action or a clarifying-question ending) are never stored, and a served entry is invalidated when the cached agent's turn fails, so a poisoned phrasing re-classifies via LLM on the next turn. Entries below the current schema version are treated as a miss on read.
 - **Action Cache** -- Caches full agent responses including executed actions.
   - **Hit** (exact hash match): Returns the cached response directly (optionally rewritten by the rewrite agent for variety).
   - **Miss**: No cache involvement; the request proceeds through the full agent pipeline.
@@ -232,17 +231,13 @@ Settings keys: `memory.enabled`, `memory.scope`, `memory.wait_mode`, `memory.wai
 
 ## Entity Matching
 
-The hybrid entity matcher combines five signals with configurable weights:
+Entity selection is agent-side, not orchestrator-side. The orchestrator only routes; it never resolves or forwards entity candidates.
 
-| Signal | Method | Example |
-|--------|--------|---------|
-| Fuzzy string | Levenshtein + Jaro-Winkler | "bedroom lite" ~ "bedroom light" |
-| Phonetic | Soundex + Metaphone | "bedroom lite" sounds like "bedroom light" |
-| Embedding | sqlite-vec vector similarity | Semantic closeness |
-| Alias | Exact lookup from DB | "nightstand lamp" = `light.bedroom_nightstand` |
-| Domain | HA entity domain filtering | "light" commands only match `light.*` entities |
+- **Keyword recall** -- each actionable agent filters its visible entities by normalized token overlap against the task description (plus the last user turn for follow-ups), with compound containment (a German compound like "Innenhofüberdachung" hits the tokens of "Innenhof Überdachung"). Small domains inject the whole visible list; larger domains inject the top 12.
+- **Closed contract** -- the candidate block lists `entity_id -- friendly_name (state)`; the LLM must emit an `entity_id` verbatim from that list. The executor validates the picked id against the recalled set fail-closed (no matcher re-run); an id outside the set is rejected and the agent asks a clarifying question. When the LLM emits only a free-form entity name, the executor falls back to deterministic-first resolution.
+- **Deterministic-first fallback** -- exact entity_id, exact friendly_name (space-insensitive, so compounds match spaced names), exact alias, then the hybrid matcher: alias fast path, token-based candidate preselection, and span-scored string signals (Levenshtein, Jaro-Winkler, phonetic) with an area bonus and a coverage floor rule. Embedding-based entity recall was removed; embeddings remain in use for the routing cache semantic tier and session memory.
 
-By default, a weighted score above 0.60 returns a single confident match. Below the configured threshold, the top-N candidates are sent to the LLM for disambiguation.
+By default, a weighted matcher score above 0.60 returns a confident match. Below the configured threshold, resolution fails closed and the agent asks which device the user means.
 
 ## Data Storage
 

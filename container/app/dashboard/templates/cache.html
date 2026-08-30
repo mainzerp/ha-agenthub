@@ -167,7 +167,6 @@
                         <tr>
                             <th>Document</th>
                             <th>Agent</th>
-                            <th>Tier</th>
                             <th>Hits</th>
                             <th>Created</th>
                             <th>Last Accessed</th>
@@ -179,9 +178,6 @@
                             <tr :class="{ 'cache-row-selected': selectedEntry && selectedEntry.id === e.id }">
                                 <td class="truncate max-w-200" x-text="e.document"></td>
                                 <td><span class="badge badge-teal" x-text="e.agent_id || '-'"></span></td>
-                                <td><span class="badge"
-                                          :class="(dashParseJsonSafe(e.entity_candidates) || []).length > 0 ? 'badge-blue' : 'badge-muted'"
-                                          x-text="(dashParseJsonSafe(e.entity_candidates) || []).length > 0 ? 'Tier 2' : 'Tier 1'"></span></td>
                                 <td class="text-mono" x-text="e.hit_count || '0'"></td>
                                 <td class="text-mono text-xs" x-text="dashFormatTimestamp(e.created_at)"></td>
                                 <td class="text-mono text-xs" x-text="dashFormatTimestamp(e.last_accessed)"></td>
@@ -233,10 +229,6 @@
                         <div class="span-detail-row span-detail-wide">
                             <div class="span-detail-label">Entity IDs</div>
                             <pre class="span-detail-content" x-text="JSON.stringify(dashParseJsonSafe(selectedEntry.entity_ids), null, 2) || '-'"></pre>
-                        </div>
-                        <div class="span-detail-row span-detail-wide">
-                            <div class="span-detail-label">Entity Candidates (Tier 2)</div>
-                            <pre class="span-detail-content" x-text="JSON.stringify(dashParseJsonSafe(selectedEntry.entity_candidates), null, 2) || '-'"></pre>
                         </div>
                         <div class="span-detail-row">
                             <div class="span-detail-label">Created At</div>

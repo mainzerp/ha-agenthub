@@ -881,6 +881,15 @@ async def _migrate_to_41(db: aiosqlite.Connection) -> None:
     await db.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (41)")
 
 
+async def _migrate_to_42(db: aiosqlite.Connection) -> None:
+    # Migration 42 (ENTITY_RESOLUTION_REWORK): the embedding signal was
+    # removed from entity matching (embeddings stay for the routing cache
+    # and memory). Delete the stale weight row; the matcher no longer reads
+    # it either way.
+    await db.execute("DELETE FROM entity_matching_config WHERE key = 'weight.embedding'")
+    await db.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (42)")
+
+
 # Ordered registry of (version, migration_callable). Each migration records
 # its own version marker. Applied in ascending order for versions greater
 # than the current schema version.
@@ -925,6 +934,7 @@ MIGRATIONS: list[tuple[int, Callable[[aiosqlite.Connection], Awaitable[None]]]] 
     (39, _migrate_to_39),
     (40, _migrate_to_40),
     (41, _migrate_to_41),
+    (42, _migrate_to_42),
 ]
 
 

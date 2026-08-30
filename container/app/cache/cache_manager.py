@@ -62,7 +62,6 @@ class RoutingSkipOutcome:
     similarity: float
     language: str = "en"
     entity_ids: list[str] = field(default_factory=list)
-    entity_candidates: list[tuple[str, str, float]] = field(default_factory=list)
     lookup_ms: float | None = None
 
 
@@ -279,7 +278,6 @@ class CacheManager:
                 similarity=similarity,
                 language=entry.language,
                 entity_ids=entry.entity_ids or [],
-                entity_candidates=entry.entity_candidates or [],
                 lookup_ms=(time.perf_counter() - t0) * 1000,
             )
 
@@ -322,7 +320,6 @@ class CacheManager:
                         similarity=sem_similarity,
                         language=sem_entry.language,
                         entity_ids=sem_entry.entity_ids or [],
-                        entity_candidates=sem_entry.entity_candidates or [],
                         lookup_ms=(time.perf_counter() - t0) * 1000,
                     )
 
@@ -404,20 +401,15 @@ class CacheManager:
         *,
         language: str = "en",
         entity_ids: list[str] | None = None,
-        entity_candidates: list[tuple[str, str, float]] | None = None,
         embedding: list[float] | None = None,
     ) -> None:
         """Store a routing decision after dispatch or read-only handling."""
-        # entity_ids stays a superset of the candidate ids so the
-        # invalidation scan (which matches only entity_ids) covers them.
-        merged_ids = list(dict.fromkeys([*(entity_ids or []), *(c[0] for c in entity_candidates or [])]))
         entry = RoutingCacheEntry(
             query_text=query_text,
             language=language,
             agent_id=agent_id,
             confidence=confidence,
-            entity_ids=merged_ids,
-            entity_candidates=entity_candidates or [],
+            entity_ids=list(entity_ids or []),
         )
         self._routing_cache.store(entry, embedding=embedding)
 
@@ -429,7 +421,6 @@ class CacheManager:
         *,
         language: str = "en",
         entity_ids: list[str] | None = None,
-        entity_candidates: list[tuple[str, str, float]] | None = None,
     ) -> None:
         self.store_routing(
             query_text,
@@ -437,7 +428,6 @@ class CacheManager:
             confidence,
             language=language,
             entity_ids=entity_ids,
-            entity_candidates=entity_candidates,
         )
 
     async def store_routing_async(
@@ -448,7 +438,6 @@ class CacheManager:
         *,
         language: str = "en",
         entity_ids: list[str] | None = None,
-        entity_candidates: list[tuple[str, str, float]] | None = None,
     ) -> None:
         """Async wrapper around ``store_routing``.
 
@@ -471,7 +460,6 @@ class CacheManager:
             confidence,
             language=language,
             entity_ids=entity_ids,
-            entity_candidates=entity_candidates,
             embedding=embedding,
         )
 
@@ -483,7 +471,6 @@ class CacheManager:
         *,
         language: str = "en",
         entity_ids: list[str] | None = None,
-        entity_candidates: list[tuple[str, str, float]] | None = None,
     ) -> None:
         await self.store_routing_async(
             query_text,
@@ -491,7 +478,6 @@ class CacheManager:
             confidence,
             language=language,
             entity_ids=entity_ids,
-            entity_candidates=entity_candidates,
         )
 
     def store_action(self, entry: ActionCacheEntry) -> None:

@@ -222,8 +222,6 @@ class PipelineDirector:
         span_collector,
         language: str,
         incoming_context,
-        *,
-        candidates: dict[str, list[Any]] | None = None,
     ) -> DispatchResult:
         return await self._dispatch_strategy.execute(
             task=task,
@@ -234,7 +232,6 @@ class PipelineDirector:
             span_collector=span_collector,
             language=language,
             incoming_context=incoming_context,
-            candidates=candidates,
         )
 
     # ------------------------------------------------------------------
@@ -255,7 +252,7 @@ class PipelineDirector:
         used_origin_context: bool,
         confidence: float | None = None,
         condensed_task: str = "",
-        candidates: list | None = None,
+        routing_entry_id: str | None = None,
     ) -> dict[str, Any]:
         return await self._finalization_strategy.execute(
             task=task,
@@ -270,5 +267,5 @@ class PipelineDirector:
             used_origin_context=used_origin_context,
             confidence=confidence,
             condensed_task=condensed_task,
-            candidates=candidates,
+            routing_entry_id=routing_entry_id,
         )

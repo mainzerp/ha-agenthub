@@ -1081,6 +1081,7 @@ class TestCacheManagerExtended:
                     "created_at": "2025-01-01T00:00:00",
                     "last_accessed": "2025-01-01T00:00:00",
                     "language": "en",
+                    "schema_version": "6",
                 }
             ],
         }
@@ -1634,6 +1635,7 @@ class TestCacheTraceSimilarity:
                     "created_at": "2025-01-01T00:00:00",
                     "last_accessed": "2025-01-01T00:00:00",
                     "language": "en",
+                    "schema_version": "6",
                 }
             ],
         }
@@ -1675,6 +1677,7 @@ class TestCacheTraceSimilarity:
                     "created_at": "2025-01-01T00:00:00",
                     "last_accessed": "2025-01-01T00:00:00",
                     "language": "en",
+                    "schema_version": "6",
                 }
             ],
         }

@@ -990,7 +990,8 @@ class TestOrchestratorAgent:
         assert len(cache_spans) == 1
         assert cache_spans[0]["metadata"]["hit_type"] == "routing_hit"
         assert cache_spans[0]["metadata"]["similarity"] == pytest.approx(0.96)
-        # No entity bindings on the outcome -> Tier 1 (fresh matcher pass).
+        # Routing hits are always Tier 1 (the Tier-2 entity-binding tier was
+        # removed in ENTITY_RESOLUTION_REWORK).
         assert cache_spans[0]["metadata"]["cache_tier"] == 1
         classify_spans = [s for s in collector._spans if s["span_name"] == "classify"]
         assert len(classify_spans) == 1
@@ -999,8 +1000,11 @@ class TestOrchestratorAgent:
     @patch("app.agents.orchestrator.SettingsRepository")
     @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
     @patch("app.llm.client.complete", new_callable=AsyncMock)
-    async def test_handle_task_cache_lookup_span_on_tier2_routing_hit(self, mock_complete, mock_track, mock_settings):
-        """An exact routing hit carrying entity candidates is tagged cache_tier=2."""
+    async def test_handle_task_cache_lookup_span_on_routing_hit_with_entity_ids(
+        self, mock_complete, mock_track, mock_settings
+    ):
+        """An exact routing hit carrying entity_ids is tagged cache_tier=1
+        (the Tier-2 entity-binding tier was removed)."""
         from app.analytics.tracer import SpanCollector
         from app.cache.cache_manager import RoutingSkipOutcome
 
@@ -1009,12 +1013,11 @@ class TestOrchestratorAgent:
         orch._cache_manager.try_routing_skip = AsyncMock(
             return_value=RoutingSkipOutcome(
                 kind="routing_hit",
-                entry_id="routing-tier2",
+                entry_id="routing-exact",
                 agent_id="light-agent",
                 condensed_task="Turn on light",
                 similarity=1.0,
                 entity_ids=["light.kitchen"],
-                entity_candidates=[("light.kitchen", "Kitchen", 0.91)],
             )
         )
         # The fail-closed visibility recheck runs against the entity index.
@@ -1037,7 +1040,7 @@ class TestOrchestratorAgent:
         cache_spans = [s for s in collector._spans if s["span_name"] == "cache_lookup"]
         assert len(cache_spans) == 1
         assert cache_spans[0]["metadata"]["hit_type"] == "routing_hit"
-        assert cache_spans[0]["metadata"]["cache_tier"] == 2
+        assert cache_spans[0]["metadata"]["cache_tier"] == 1
 
     @patch("app.agents.orchestrator.SettingsRepository")
     @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)

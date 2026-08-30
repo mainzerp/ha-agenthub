@@ -163,7 +163,14 @@ async def match_preview(
 ) -> dict[str, Any]:
     """Preview how the entity resolver + hybrid matcher handle a query.
 
-    Surfaces exactly what each agent type receives:
+    Note (ENTITY_RESOLUTION_REWORK): the runtime primary path for entity
+    selection is agent-side keyword recall + LLM selection from a closed
+    candidate list; this endpoint previews the deterministic/matcher
+    FALLBACK that runs when the LLM emits a free-form entity name. The
+    matcher is embedding-less (alias + token preselection + string
+    signals); embeddings stay for the routing cache and memory only.
+
+    Surfaces exactly what each agent type receives on that fallback path:
 
         * ``deterministic`` -- the output of the same deterministic-first
             resolver used by the selected executor family. ``light-agent``

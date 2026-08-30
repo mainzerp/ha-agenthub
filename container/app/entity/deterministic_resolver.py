@@ -93,6 +93,11 @@ def _normalize_lookup_text(text: str) -> str:
     return _WHITESPACE_RE.sub(" ", normalized).strip()
 
 
+def _name_contains_term(norm_name: str, term: str) -> bool:
+    """Word-boundary containment of a normalized term in a normalized name."""
+    return norm_name.startswith(term + " ") or norm_name.endswith(" " + term) or f" {term} " in norm_name
+
+
 def _strip_trailing_device_noun(query: str) -> str | None:
     """Strip a trailing light/switch noun from a query like 'Keller light'."""
     normalized_query = _normalize_lookup_text(query)
@@ -351,6 +356,9 @@ async def resolve_entity_deterministic_first(
         )
 
     normalized_terms = {value for value in (_normalize_lookup_text(term) for term in ordered_terms) if value}
+    # Space-insensitive variants: a compound term like "innenhofuberdachung"
+    # must match the friendly_name "Innenhof Überdachung" at the exact stage.
+    squashed_terms = {value.replace(" ", "") for value in normalized_terms}
 
     # Normalized match fields are computed ONCE per visible-entries
     # snapshot and reused across the friendly_name / alias /
@@ -363,7 +371,11 @@ async def resolve_entity_deterministic_first(
     ambiguous_result: dict[str, Any] | None = None
 
     if normalized_entries:
-        exact_name_matches = [entry for entry, norm_name, _, _ in normalized_entries if norm_name in normalized_terms]
+        exact_name_matches = [
+            entry
+            for entry, norm_name, _, _ in normalized_entries
+            if norm_name in normalized_terms or norm_name.replace(" ", "") in squashed_terms
+        ]
         candidate, ambiguity = _select_deterministic_candidate(
             exact_name_matches,
             entity_query,
@@ -523,6 +535,55 @@ async def resolve_entity_deterministic_first(
             ambiguous_result = {
                 "match_count": len(area_matches),
                 "resolution_path": "exact_area_ambiguous",
+                "speech": ambiguity,
+            }
+
+    # Word-boundary containment stage (deterministic, embedding-free): the
+    # full normalized query appearing as a token-bounded substring of a
+    # friendly_name ("front door" inside "Front Door Lock") is a strong
+    # deterministic signal -- the removed embedding fallback used to cover
+    # this partial-name class. A space-insensitive variant covers compounds
+    # ("innenhofuberdachung" inside "innenhof uberdachung mitte"). Runs only
+    # when no earlier stage produced an ambiguity; disambiguation mirrors
+    # the exact stages (preferred area/domain, otherwise fail-closed).
+    if normalized_entries and ambiguous_result is None:
+        containment_matches = [
+            entry
+            for entry, norm_name, _, _ in normalized_entries
+            if any(
+                _name_contains_term(norm_name, term)
+                or (len(term) >= 4 and term.replace(" ", "") in norm_name.replace(" ", ""))
+                for term in normalized_terms
+            )
+        ]
+        candidate, ambiguity = _select_deterministic_candidate(
+            containment_matches,
+            entity_query,
+            preferred_area_id=preferred_area_id,
+            preferred_domain=preferred_domain,
+        )
+        if candidate:
+            metadata.update(
+                {
+                    "match_count": 1,
+                    "resolution_path": "friendly_name_containment",
+                    "top_entity_id": candidate.entity_id,
+                    "top_friendly_name": candidate.friendly_name or candidate.entity_id,
+                }
+            )
+            return _with_visible_entries(
+                _build_resolution_result(
+                    entity_query=entity_query,
+                    metadata=metadata,
+                    entity_id=candidate.entity_id,
+                    friendly_name=candidate.friendly_name or candidate.entity_id,
+                ),
+                visible_entries,
+            )
+        if ambiguity:
+            ambiguous_result = {
+                "match_count": len(containment_matches),
+                "resolution_path": "friendly_name_containment_ambiguous",
                 "speech": ambiguity,
             }
 

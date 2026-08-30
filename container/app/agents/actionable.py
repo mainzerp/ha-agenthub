@@ -16,13 +16,16 @@ from typing import Any
 
 from app.agents.action_executor import (
     parse_action,
+    reset_request_candidate_ids,
     reset_request_visible_entries,
+    set_request_candidate_ids,
     set_request_visible_entries,
 )
 from app.agents.base import BaseAgent, _render_prompt_template, language_code_to_name
 from app.agents.decorator import agent
 from app.analytics.tracer import _optional_span
 from app.entity.deterministic_resolver import resolve_entity_deterministic_first
+from app.entity.tokens import entry_tokens, normalize_tokenize
 from app.entity.visibility import filter_visible_results
 from app.models.agent import (
     ActionExecuted,
@@ -47,6 +50,12 @@ _current_task_var: contextvars.ContextVar[DispatchTask | None] = contextvars.Con
 )
 _current_task_context_var: contextvars.ContextVar[TaskContext | None] = contextvars.ContextVar(
     "actionable_current_task_context", default=None
+)
+# Per-request scored keyword-recall candidates (list of (entry, hit_count)).
+# Published after the pre-LLM recall so ``_handle_parse_miss`` can recompute
+# the ambiguity gate without a second recall.
+_recalled_candidates_var: contextvars.ContextVar[list[tuple[Any, int]] | None] = contextvars.ContextVar(
+    "actionable_recalled_candidates", default=None
 )
 
 
@@ -90,6 +99,26 @@ _AMBIGUITY_ANNOTATION = (
     "(for example, 'Did you mean <name 1> or <name 2>?') in the user's language."
 )
 
+# Agent-side keyword recall (ENTITY_RESOLUTION_REWORK): domains with at most
+# this many visible entities skip filtering -- the whole visible list is
+# injected. Larger domains are token-filtered down to the top N.
+_KEYWORD_RECALL_MAX_INJECT = 15
+_KEYWORD_RECALL_TOP_N = 12
+# Compound containment guard, mirroring the matcher's near-miss token-length
+# guard: an entity token of at least this length that is a substring of a
+# query token counts as a hit ("innenhof" inside "innenhofuberdachung").
+_KEYWORD_COMPOUND_MIN_TOKEN_LEN = 4
+
+
+def _recall_is_ambiguous(scored: list[tuple[Any, int]]) -> bool:
+    """True when the two best recall hit counts tie (gap below the threshold)."""
+    if len(scored) < 2:
+        return False
+    hits = sorted((hit_count for _entry, hit_count in scored), reverse=True)
+    if hits[0] <= 0:
+        return False
+    return hits[0] - hits[1] < _AMBIGUITY_SCORE_GAP
+
 
 class ActionableAgent(BaseAgent):
     """Base for domain agents that parse actions from LLM output and execute via HA.
@@ -129,49 +158,6 @@ class ActionableAgent(BaseAgent):
             return []
 
         agent_id = self.agent_card.agent_id
-
-        # Envelope fast path: the orchestrator already ran the ingress
-        # matcher and post-filtered (visibility + preferred-domain re-rank,
-        # Directive 5) the top-K candidates for this agent. When the top
-        # candidate is unambiguous, reuse it instead of re-running the
-        # deterministic-first resolution (embedding encode, k-NN search,
-        # umlaut dual search, scoring loop). Empty/ambiguous envelopes and
-        # missing index fall through to the matcher path unchanged.
-        candidates = [c for c in (task.candidates or []) if c.entity_id]
-        ambiguous = len(candidates) >= 2 and (
-            float(candidates[0].score or 0.0) - float(candidates[1].score or 0.0) < _AMBIGUITY_SCORE_GAP
-        )
-        if candidates and not ambiguous and self._entity_index is not None:
-            try:
-                entries = await self._entity_index.list_entries_async(domains=self._allowed_domains)
-                visible = await filter_visible_results(agent_id, entries, self._entity_index)
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                logger.debug("Envelope fast path snapshot failed", exc_info=True)
-            else:
-                if visible:
-                    # Publish the per-request snapshot so the post-LLM
-                    # executor resolution (resolve_and_validate_entity)
-                    # reuses it instead of re-listing the index.
-                    set_request_visible_entries(self._allowed_domains, agent_id, visible)
-                    top_id = candidates[0].entity_id
-                    if top_id in {getattr(e, "entity_id", None) for e in visible}:
-                        logger.debug(
-                            "Envelope fast path resolved %s (score %s) for %s",
-                            top_id,
-                            candidates[0].score,
-                            agent_id,
-                        )
-                        return [(top_id, candidates[0].friendly_name or top_id)]
-                    # Belt-and-braces Directive 5 check: a top candidate that
-                    # is not in the visible snapshot must not be selected.
-                    logger.warning(
-                        "Envelope top candidate %s missing from visible snapshot for %s; "
-                        "falling back to deterministic resolution",
-                        top_id,
-                        agent_id,
-                    )
 
         resolved: list[tuple[str, str]] = []
         seen_ids: set[str] = set()
@@ -250,70 +236,101 @@ class ActionableAgent(BaseAgent):
             return None
         return ", ".join(lines)
 
-    async def _build_query_candidate_context(self, task: DispatchTask) -> str | None:
-        """Build a candidate-entity block from the dispatch envelope.
+    async def _recall_keyword_candidates(self, task: DispatchTask) -> list[tuple[Any, int]]:
+        """Keyword/token entity recall over the agent's visible entities.
 
-        Primary source: ``task.candidates`` -- the orchestrator's post-filter
-        (visibility + preferred-domain re-rank) top-K list (two-phase
-        visibility, Directive 5; the unfiltered ingress pool never leaves
-        the orchestrator). Fallback for envelopes without candidates
-        (direct dispatch, fail-soft ingress): a single filtered matcher
-        pass over the condensed task description.
+        ENTITY_RESOLUTION_REWORK: agent-side recall replaces both the
+        orchestrator's ingress matcher pass and embedding-based entity
+        recall. Each visible entry is scored by normalized token overlap
+        against the task description plus the last user turn (anaphora
+        follow-ups), with compound containment (an entity token >=
+        ``_KEYWORD_COMPOUND_MIN_TOKEN_LEN`` chars contained in a query
+        token counts as a hit) so German compounds match their parts.
+
+        Small domains (<= ``_KEYWORD_RECALL_MAX_INJECT`` visible entities)
+        skip filtering: the whole visible list is returned in index order.
+        Larger domains return the top ``_KEYWORD_RECALL_TOP_N`` entries
+        with at least one hit.
+
+        Returns a list of ``(entry, hit_count)`` tuples.
         """
-        candidates: list[tuple[str, str, float]] = []
-        for cand in task.candidates or []:
-            entity_id = cand.entity_id or ""
-            if not entity_id:
-                continue
-            friendly_name = cand.friendly_name or entity_id
-            score = round(float(cand.score or 0.0), 2)
-            candidates.append((entity_id, friendly_name, score))
+        if self._entity_index is None:
+            return []
+        agent_id = self.agent_card.agent_id
+        entries = await self._entity_index.list_entries_async(domains=self._allowed_domains)
+        visible = await filter_visible_results(agent_id, entries, self._entity_index)
+        if not visible:
+            return []
 
-        if not candidates and task.description and self._entity_matcher is not None and self._entity_index is not None:
-            # Fallback: the envelope carried no candidates -- run one
-            # filtered matcher pass over the condensed description (same
-            # visibility and preferred-domain filters as the retired
-            # per-verbatim-term path).
-            agent_id = self.agent_card.agent_id
-            preferred_domains = tuple(sorted(self._allowed_domains)) if self._allowed_domains else None
-            try:
-                matches = await self._entity_matcher.match(
-                    task.description,
-                    agent_id=agent_id,
-                    preferred_domains=preferred_domains,
-                )
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                logger.debug("Candidate match failed for description fallback", exc_info=True)
-                matches = []
+        terms = [task.description] if task.description else []
+        if task.context and task.context.conversation_turns:
+            for turn in reversed(task.context.conversation_turns):
+                if turn.get("role") == "user" and turn.get("content"):
+                    terms.append(turn["content"])
+                    break
+        query_tokens: set[str] = set()
+        for term in terms:
+            query_tokens.update(normalize_tokenize(term))
 
-            for match in matches or []:
-                entity_id = getattr(match, "entity_id", "") or ""
-                if not entity_id:
-                    continue
-                friendly_name = getattr(match, "friendly_name", "") or entity_id
-                score = round(float(getattr(match, "score", 0.0) or 0.0), 2)
-                candidates.append((entity_id, friendly_name, score))
+        def _hits(entry: Any) -> int:
+            hits = 0
+            for token in entry_tokens(entry):
+                if token in query_tokens or (
+                    len(token) >= _KEYWORD_COMPOUND_MIN_TOKEN_LEN
+                    and any(len(qt) >= _KEYWORD_COMPOUND_MIN_TOKEN_LEN and token in qt for qt in query_tokens)
+                ):
+                    hits += 1
+            return hits
 
-        if not candidates:
-            return None
+        if len(visible) <= _KEYWORD_RECALL_MAX_INJECT:
+            return [(entry, _hits(entry)) for entry in visible]
 
-        lines = ["Candidate entities (choose the best match):"]
-        for idx, (entity_id, friendly_name, score) in enumerate(candidates, start=1):
-            lines.append(f"{idx}. {friendly_name} ({entity_id}) - score {score}")
+        scored = [(entry, _hits(entry)) for entry in visible]
+        scored = [pair for pair in scored if pair[1] > 0]
+        # Ties: shorter name first -- the LLM makes the final decision.
+        scored.sort(key=lambda pair: (-pair[1], len(getattr(pair[0], "friendly_name", "") or "")))
+        return scored[:_KEYWORD_RECALL_TOP_N]
+
+    async def _build_query_candidate_context(self, task: DispatchTask) -> tuple[str | None, list[tuple[Any, int]]]:
+        """Build the closed-contract candidate block from keyword recall.
+
+        Returns ``(block, scored_candidates)``. The block lists candidates
+        as ``entity_id -- friendly_name (state)``; the LLM must emit the
+        ``entity_id`` field verbatim from this list (an id outside the list
+        is rejected fail-closed by the executor, without a matcher re-run).
+        An empty recall yields a block instructing the LLM to ask which
+        device the user means (natural language, no JSON action).
+        """
+        recalled = await self._recall_keyword_candidates(task)
+
+        if not recalled:
+            return (
+                "No matching devices were found for this request. "
+                "Do NOT output a JSON action block. "
+                "Ask the user a short clarifying question in natural language to find out which device they mean.",
+                [],
+            )
+
+        lines = ["Candidate entities (choose from this list only):"]
+        for idx, (entry, _hits) in enumerate(recalled, start=1):
+            entity_id = getattr(entry, "entity_id", "") or ""
+            friendly_name = getattr(entry, "friendly_name", "") or entity_id
+            state = getattr(entry, "state", None) or "-"
+            lines.append(f"{idx}. {entity_id} — {friendly_name} ({state})")
         lines.append("")
         lines.append(
-            "You may emit an entity_id chosen ONLY from this candidate list in the JSON action block using the 'entity_id' field instead of 'entity'. "
-            "If none of the candidates matches the user's request, use the user's original entity name in the 'entity' field."
+            "You MUST emit the 'entity_id' field verbatim from this candidate list in the JSON action block. "
+            "An entity_id that is not in this list is rejected and the action will not run. "
+            "If none of the candidates fits the user's request, do NOT output a JSON action block: "
+            "ask a short clarifying question in natural language instead."
         )
         # Phase 7: ambiguous top-1/top-2 gap -> ask, don't guess. The
         # clarifying question rides the existing voice_followup round-trip;
         # the deterministic *_ambiguous executor speech stays as fallback.
-        if len(candidates) >= 2 and candidates[0][2] - candidates[1][2] < _AMBIGUITY_SCORE_GAP:
+        if _recall_is_ambiguous(recalled):
             lines.append("")
             lines.append(_AMBIGUITY_ANNOTATION)
-        return "\n".join(lines)
+        return "\n".join(lines), recalled
 
     def _build_last_entities_context(self, task: DispatchTask) -> str | None:
         """Build a compact anaphora recency-hint block from the task context.
@@ -359,26 +376,23 @@ class ActionableAgent(BaseAgent):
             logger.debug("Entity state context build failed for %s", self.agent_card.agent_id, exc_info=True)
             return None
 
-    async def _candidate_context_or_none(self, task: DispatchTask) -> str | None:
+    async def _candidate_context_or_none(self, task: DispatchTask) -> tuple[str | None, list[tuple[Any, int]] | None]:
         """Failure-contained wrapper around ``_build_query_candidate_context``.
 
         P3 parallel pre-LLM context: runs inside ``asyncio.gather`` next to the
         entity-state fetch, so a failing branch must not abort the other.
-
-        ENTITY_RES_REDESIGN Phase 4: the block primarily renders from
-        ``task.candidates`` (envelope), so a missing entity matcher no
-        longer disables it -- the matcher is only needed for the
-        description fallback inside ``_build_query_candidate_context``.
+        Returns ``(block, scored_candidates)``; ``(None, None)`` when the
+        injection is opted out or the recall failed.
         """
         if not self._inject_query_candidates:
-            return None
+            return None, None
         try:
             return await self._build_query_candidate_context(task)
         except asyncio.CancelledError:
             raise
         except Exception:
             logger.debug("Query candidate injection failed for %s", self.agent_card.agent_id, exc_info=True)
-            return None
+            return None, None
 
     async def _do_execute(self, action, ha_client, entity_index, entity_matcher, *, agent_id, span_collector=None):
         """Execute the parsed action. Subclasses must override."""
@@ -422,20 +436,17 @@ class ActionableAgent(BaseAgent):
 
         ENTITY_RES_FOLLOWUP Phase B: when the stripped fallback speech is a
         clarifying question (right-trimmed text ends with ``?``) and the
-        envelope candidates are ambiguous (top-1/top-2 score gap below
-        ``_AMBIGUITY_SCORE_GAP``, recomputed statelessly from
-        ``task.candidates`` -- the same condition that injected the Phase 7
+        recalled candidates are ambiguous (top-1/top-2 hit-count gap below
+        ``_AMBIGUITY_SCORE_GAP``, recomputed statelessly from the per-request
+        recall stash -- the same condition that injected the Phase 7
         annotation), request a voice follow-up so the user's answer is
-        re-dispatched. Normal prose answers, clear score gaps, and envelopes
+        re-dispatched. Normal prose answers, clear score gaps, and recalls
         with fewer than two candidates keep ``voice_followup=False``.
         """
         speech = strip_json_blocks(response)
         followup = False
         if speech.rstrip().endswith("?"):
-            candidates = [cand for cand in (task.candidates or []) if cand.entity_id]
-            if len(candidates) >= 2:
-                gap = float(candidates[0].score or 0.0) - float(candidates[1].score or 0.0)
-                followup = gap < _AMBIGUITY_SCORE_GAP
+            followup = _recall_is_ambiguous(_recalled_candidates_var.get() or [])
         return TaskResult(speech=speech, voice_followup=followup)
 
     async def handle_task(self, task: DispatchTask) -> TaskResult:
@@ -451,6 +462,11 @@ class ActionableAgent(BaseAgent):
         # snapshot; ``_resolve_relevant_entities`` publishes a fresh one
         # for the post-LLM ``resolve_and_validate_entity`` pass-through.
         visible_entries_token = set_request_visible_entries(None, None, None)
+        # ENTITY_RESOLUTION_REWORK: clear any inherited candidate-id gate
+        # and recall stash; the pre-LLM keyword recall publishes fresh
+        # values for the executor's closed-contract validation.
+        candidate_ids_token = set_request_candidate_ids(None)
+        recalled_token = _recalled_candidates_var.set(None)
         try:
             try:
                 return await self._handle_task_inner(task)
@@ -463,6 +479,8 @@ class ActionableAgent(BaseAgent):
                     "Sorry, something went wrong while handling that request.",
                 )
         finally:
+            _recalled_candidates_var.reset(recalled_token)
+            reset_request_candidate_ids(candidate_ids_token)
             reset_request_visible_entries(visible_entries_token)
             _current_task_var.reset(task_token)
             _current_task_context_var.reset(context_token)
@@ -524,11 +542,12 @@ class ActionableAgent(BaseAgent):
         # inside a gather child would not propagate back. Each parallel
         # branch keeps its own failure containment.
         candidate_context: str | None = None
+        recalled: list[tuple[Any, int]] | None = None
         try:
             async with _optional_span(span_collector, "entity_resolution", agent_id=agent_id) as er_span:
                 resolved_entities = await self._resolve_relevant_entities(task)
                 _t1 = time.perf_counter()
-                entity_state_context, candidate_context = await asyncio.gather(
+                entity_state_context, (candidate_context, recalled) = await asyncio.gather(
                     self._entity_state_context_or_none(resolved_entities),
                     self._candidate_context_or_none(task),
                 )
@@ -547,6 +566,20 @@ class ActionableAgent(BaseAgent):
         except Exception:
             logger.debug("Entity state injection failed for %s", agent_id, exc_info=True)
             candidate_context = None
+            recalled = None
+
+        if recalled is not None:
+            # Publish the closed-contract gate for the post-LLM executor
+            # validation: recalled candidate ids plus the last_entities ids
+            # (anaphora hints stay validatable). Published here in the
+            # parent context because a ContextVar set inside a gather child
+            # would not propagate back.
+            _recalled_candidates_var.set(recalled)
+            candidate_ids = {getattr(entry, "entity_id", "") or "" for entry, _hits in recalled}
+            candidate_ids.discard("")
+            if task.context:
+                candidate_ids.update(le.entity_id for le in task.context.last_entities if le.entity_id)
+            set_request_candidate_ids(candidate_ids)
 
         if candidate_context:
             system_prompt += f"\n\n{candidate_context}"

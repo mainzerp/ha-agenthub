@@ -614,7 +614,13 @@ class EntityIndex:
         return await loop.run_in_executor(None, self.sync, entities)
 
     async def search_async(self, query: str, n_results: int = 5) -> list[tuple[EntityIndexEntry, float]]:
-        """Async wrapper -- offloads search() to thread pool."""
+        """Async wrapper -- offloads search() to thread pool.
+
+        Dormant for entity matching since ENTITY_RESOLUTION_REWORK: the
+        matcher no longer runs vector recall (keyword/string signals only).
+        The sqlite-vec storage and ingest are intentionally kept; removal of
+        embedding generation is a separate, larger cleanup.
+        """
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, partial(self.search, query, n_results=n_results))
 

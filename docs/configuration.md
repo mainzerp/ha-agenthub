@@ -299,12 +299,11 @@ in-process capabilities scoped by their own tool behavior.
 
 ## Entity Matching Configuration
 
-Entity matching signal weights are stored in the `entity_matching_config` table and can be adjusted from the admin dashboard:
+Entity matching signal weights are stored in the `entity_matching_config` table and can be adjusted from the admin dashboard (the embedding signal was removed; a stale `weight.embedding` row is deleted by schema migration 42):
 
 - **Levenshtein distance** -- Fuzzy string matching
 - **Jaro-Winkler similarity** -- String similarity favoring prefix matches
 - **Phonetic matching** -- Soundex/Metaphone for sound-alike names
-- **Embedding similarity** -- sqlite-vec vector cosine similarity
 - **Alias lookup** -- Exact match from the aliases table
 
 Aliases are managed in the `aliases` table and can be created/deleted from the admin dashboard. Example: alias "nightstand lamp" resolves to `light.bedroom_nightstand`.
@@ -320,7 +319,7 @@ Cache can be flushed per tier or entirely from the admin dashboard or via the AP
 ## Analytics
 
 Stored traces and dashboard trace detail expose per-span whole-call latency (`latency_ms`) and, on streaming LLM calls, time-to-first-token (`ttft_ms`) and tokens-per-second (`tps`). Non-streaming calls record only `latency_ms` (first-chunk timing does not exist there).
-The `cache_lookup` span carries a numeric `cache_tier` metadata field: `0` = miss (neither tier), `1` = routing hit (ingress matcher still runs), `2` = exact routing hit with entity bindings (ingress matcher skipped), `3` = action hit.
+The `cache_lookup` span carries a numeric `cache_tier` metadata field: `0` = miss (neither tier), `1` = routing hit, `3` = action hit. (Tier 2 -- exact routing hit with cached entity bindings -- was removed; agents recall entities themselves.)
 The `/api/admin/analytics/tokens` endpoint aggregates average latency, TTFT, and TPS across requests, grouped by agent and provider.
 
 ## MCP Server Configuration

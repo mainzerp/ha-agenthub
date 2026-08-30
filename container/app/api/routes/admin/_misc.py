@@ -81,7 +81,6 @@ async def update_entity_matching_weights(payload: dict):
         "weight.levenshtein",
         "weight.jaro_winkler",
         "weight.phonetic",
-        "weight.embedding",
         "weight.alias",
     }
     items = payload.get("items", payload)

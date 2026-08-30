@@ -175,10 +175,9 @@ def test_parse_envelope_accepts_valid_v4_envelope():
 
 
 @pytest.mark.asyncio
-async def test_import_envelope_preserves_routing_entity_candidates():
-    """Tier-2 entity_candidates flow through export/import unchanged: the
-    optional pydantic field is validated by _validate_entry and serialized
-    into the stored metadata."""
+async def test_import_envelope_preserves_routing_entity_ids():
+    """Routing entity_ids flow through export/import unchanged; the removed
+    Tier-2 entity_candidates metadata key is no longer written."""
     store = MagicMock()
     store.count.return_value = 0
     store.upsert = MagicMock()
@@ -189,7 +188,7 @@ async def test_import_envelope_preserves_routing_entity_candidates():
     routing_entry = make_routing_cache_entry(
         query_text="what is the kitchen temperature",
     )
-    routing_entry.entity_candidates = [("sensor.kitchen_temperature", "Kitchen Temperature", 0.9)]
+    routing_entry.entity_ids = ["sensor.kitchen_temperature"]
 
     summary = await import_envelope(
         manager,
@@ -201,7 +200,8 @@ async def test_import_envelope_preserves_routing_entity_candidates():
     assert summary.tiers["routing"].imported == 1
     assert summary.tiers["routing"].skipped == 0
     metadata = store.upsert.call_args_list[0].kwargs["metadatas"][0]
-    assert json.loads(metadata["entity_candidates"]) == [["sensor.kitchen_temperature", "Kitchen Temperature", 0.9]]
+    assert json.loads(metadata["entity_ids"]) == ["sensor.kitchen_temperature"]
+    assert "entity_candidates" not in metadata
 
 
 def test_parse_envelope_rejects_legacy_v3_format():

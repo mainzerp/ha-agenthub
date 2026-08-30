@@ -20,7 +20,11 @@ from app.models.cache import RoutingCacheEntry
 
 logger = logging.getLogger(__name__)
 
-_ROUTING_CACHE_SCHEMA_VERSION = 5
+# v5 -> v6 (ENTITY_RESOLUTION_REWORK): Tier-2 entity_candidates were removed
+# (agents recall entities themselves) and unverified turns must no longer be
+# served from the routing cache. Entries below the current version are
+# treated as a miss on read (see _deserialize_entry).
+_ROUTING_CACHE_SCHEMA_VERSION = 6
 
 # Conservative default for the semantic routing tier: reuses the project's
 # historical routing threshold (no production data exists yet to tune it;
@@ -35,35 +39,6 @@ _SEMANTIC_K = 8
 
 def make_routing_entry_id(query_text: str, *, language: str = "en") -> str:
     return make_text_id(query_text, language)
-
-
-def _parse_entity_candidates(raw: object) -> list[tuple[str, str, float]]:
-    """Parse the JSON ``entity_candidates`` metadata key into tuples.
-
-    Defensive: any malformed payload degrades to ``[]`` (Tier 1), never
-    crashes. Items must be list/tuple of len 3 with a non-empty str id;
-    name is coerced to str, score to float.
-    """
-    if not raw:
-        return []
-    try:
-        items = json.loads(raw) if isinstance(raw, str) else raw
-    except Exception:
-        return []
-    if not isinstance(items, list):
-        return []
-    candidates: list[tuple[str, str, float]] = []
-    for item in items:
-        if not isinstance(item, (list, tuple)) or len(item) != 3:
-            continue
-        entity_id, name, score = item
-        if not isinstance(entity_id, str) or not entity_id:
-            continue
-        try:
-            candidates.append((entity_id, str(name or ""), float(score or 0.0)))
-        except (TypeError, ValueError):
-            continue
-    return candidates
 
 
 class RoutingCache(_BaseCache[RoutingCacheEntry]):
@@ -214,22 +189,17 @@ class RoutingCache(_BaseCache[RoutingCacheEntry]):
         language: str = "en",
         agent_id: str | None = None,
         entity_ids: list[str] | None = None,
-        entity_candidates: list[tuple[str, str, float]] | None = None,
         confidence: float = 0.0,
         embedding: list[float] | None = None,
     ) -> None:
         if entry is None:
             if query_text is None or agent_id is None:
                 raise ValueError("RoutingCache.store requires either an entry or full routing-cache fields")
-            # Keep entity_ids a superset of the candidate ids: the
-            # invalidation scan matches only the entity_ids metadata key.
-            merged_ids = list(dict.fromkeys([*(entity_ids or []), *(c[0] for c in entity_candidates or [])]))
             entry = RoutingCacheEntry(
                 query_text=query_text,
                 language=language,
                 agent_id=agent_id,
-                entity_ids=merged_ids,
-                entity_candidates=entity_candidates or [],
+                entity_ids=list(entity_ids or []),
                 confidence=confidence,
             )
         super().store(entry, embedding=embedding)
@@ -275,7 +245,6 @@ class RoutingCache(_BaseCache[RoutingCacheEntry]):
             "language": _normalize_language(entry.language),
             "confidence": str(entry.confidence),
             "entity_ids": json.dumps(entry.entity_ids or []),
-            "entity_candidates": json.dumps([list(c) for c in entry.entity_candidates or []]),
             "created_at": created_at,
             "last_accessed": last_accessed,
             "hit_count": str(entry.hit_count),
@@ -283,15 +252,20 @@ class RoutingCache(_BaseCache[RoutingCacheEntry]):
         }
 
     def _deserialize_entry(self, document: str, metadata: dict, *, similarity: float) -> RoutingCacheEntry | None:
+        # Read-path schema invalidation: entries stored by an older schema
+        # (e.g. v5 rows carrying Tier-2 entity_candidates, or routing rows
+        # stored from unverified turns) are treated as a cache miss.
+        schema_version = self._coerce_int(metadata.get("schema_version"), 0)
+        if schema_version < _ROUTING_CACHE_SCHEMA_VERSION:
+            return None
         return RoutingCacheEntry(
             query_text=document,
             language=metadata.get("language", "en"),
             agent_id=metadata.get("agent_id", ""),
             confidence=self._coerce_float(metadata.get("confidence"), 0.0),
             entity_ids=_parse_entity_ids(metadata.get("entity_ids")),
-            entity_candidates=_parse_entity_candidates(metadata.get("entity_candidates")),
             created_at=metadata.get("created_at") or None,
             last_accessed=metadata.get("last_accessed") or None,
             hit_count=self._coerce_int(metadata.get("hit_count"), 0),
-            schema_version=self._coerce_int(metadata.get("schema_version"), _ROUTING_CACHE_SCHEMA_VERSION),
+            schema_version=schema_version,
         )
