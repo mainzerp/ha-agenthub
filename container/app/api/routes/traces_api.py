@@ -50,8 +50,6 @@ _included_span_names = {
     "mcp_tool_call",
     "ha_call",
     "memory_retrieval",
-    "ingress_resolution",
-    "ingress_candidates",
     "entity_resolution",
     "entity_match",
 }
@@ -106,18 +104,6 @@ def _build_response(span_name: str, metadata: dict) -> str:
         elif metadata.get("cancelled"):
             text += " (cancelled)"
         return text
-
-    if span_name == "ingress_resolution":
-        pool_count = metadata.get("pool_count")
-        if pool_count is not None:
-            return f"entity pool: {pool_count} candidate(s)"
-        return ""
-
-    if span_name == "ingress_candidates":
-        candidates = metadata.get("candidates") or {}
-        if isinstance(candidates, dict) and candidates:
-            return ", ".join(f"{agent_id}: {len(cands)}" for agent_id, cands in candidates.items())
-        return "no candidates"
 
     if span_name == "entity_resolution":
         resolved_count = metadata.get("resolved_count")

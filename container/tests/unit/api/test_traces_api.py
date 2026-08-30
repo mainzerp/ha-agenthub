@@ -75,19 +75,6 @@ class TestBuildResponse:
             "no session match (timed out)"
         )
 
-        # ingress_resolution
-        assert _build_response("ingress_resolution", {"pool_count": 20}) == "entity pool: 20 candidate(s)"
-        assert _build_response("ingress_resolution", {}) == ""
-
-        # ingress_candidates
-        assert (
-            _build_response(
-                "ingress_candidates", {"candidates": {"light-agent": [{"entity_id": "x"}], "media-agent": []}}
-            )
-            == "light-agent: 1, media-agent: 0"
-        )
-        assert _build_response("ingress_candidates", {"candidates": {}}) == "no candidates"
-
         # entity_resolution
         assert _build_response("entity_resolution", {"resolved_count": 3, "resolve_ms": 12}) == (
             "3 entities resolved (12ms)"
@@ -274,9 +261,6 @@ class TestAgentExecutionsPreludeSpans:
             "trace-prelude", "memory_retrieval", now, 5.0, agent_id="orchestrator", metadata={"match_count": 1}
         )
         await TraceSpanRepository.insert(
-            "trace-prelude", "ingress_resolution", now, 3.0, agent_id="orchestrator", metadata={"pool_count": 20}
-        )
-        await TraceSpanRepository.insert(
             "trace-prelude",
             "entity_resolution",
             now,
@@ -291,4 +275,4 @@ class TestAgentExecutionsPreludeSpans:
             assert resp.status_code == 200
             executions = resp.json()["agent_executions"]
             names = {e["span_name"] for e in executions}
-            assert {"memory_retrieval", "ingress_resolution", "entity_resolution"} <= names
+            assert {"memory_retrieval", "entity_resolution"} <= names
