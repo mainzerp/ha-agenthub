@@ -178,14 +178,15 @@ class TestCancelledErrorPropagation:
         agent = LightAgent()
 
         with (
-            patch(
-                "app.agents.actionable.resolve_entity_deterministic_first",
+            patch.object(
+                agent,
+                "_recall_keyword_candidates",
                 new_callable=AsyncMock,
                 side_effect=asyncio.CancelledError(),
             ),
             pytest.raises(asyncio.CancelledError),
         ):
-            await agent._resolve_relevant_entities(MagicMock())
+            await agent._candidate_context_or_none(MagicMock())
 
     async def test_llm_complete_re_raises_cancelled_error(self):
         from app.llm.client import complete

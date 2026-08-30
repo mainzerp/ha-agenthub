@@ -24,7 +24,6 @@ from app.agents.action_executor import (
 from app.agents.base import BaseAgent, _render_prompt_template, language_code_to_name
 from app.agents.decorator import agent
 from app.analytics.tracer import _optional_span
-from app.entity.deterministic_resolver import resolve_entity_deterministic_first
 from app.entity.tokens import entry_tokens, normalize_tokenize
 from app.entity.visibility import filter_visible_results
 from app.models.agent import (
@@ -133,7 +132,6 @@ class ActionableAgent(BaseAgent):
     _clarify_on_not_found: bool = True
     _allowed_domains: frozenset[str] | None = None
     _supports_conditions: bool = False
-    _inject_query_candidates: bool = True
 
     def __init__(self, ha_client=None, entity_index=None, entity_matcher=None) -> None:
         super().__init__(ha_client=ha_client, entity_index=entity_index)
@@ -144,97 +142,6 @@ class ActionableAgent(BaseAgent):
 
     def _get_current_task_context(self) -> TaskContext | None:
         return _current_task_context_var.get()
-
-    async def _resolve_relevant_entities(self, task: DispatchTask) -> list[tuple[str, str]]:
-        """Resolve entity mentions from the condensed task description.
-
-        Returns a list of (entity_id, friendly_name) tuples.
-        """
-        # The condensed task is the single resolution query (verbatim_terms
-        # were retired in ENTITY_RES_FOLLOWUP Phase A).
-        terms = [task.description] if task.description else []
-
-        if not terms:
-            return []
-
-        agent_id = self.agent_card.agent_id
-
-        resolved: list[tuple[str, str]] = []
-        seen_ids: set[str] = set()
-        cached_visible_entries: list[Any] | None = None
-
-        for term in terms:
-            if len(resolved) >= 3:
-                break
-            try:
-                result = await resolve_entity_deterministic_first(
-                    term,
-                    self._entity_index,
-                    self._entity_matcher,
-                    agent_id,
-                    allowed_domains=self._allowed_domains,
-                    visible_entries=cached_visible_entries,
-                )
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                logger.debug("Entity resolution failed for term %r", term, exc_info=True)
-                continue
-
-            if cached_visible_entries is None:
-                cached_visible_entries = result.get("_visible_entries")
-                if cached_visible_entries:
-                    # Publish the per-request snapshot so the post-LLM
-                    # executor resolution (resolve_and_validate_entity)
-                    # reuses it instead of re-listing the index.
-                    set_request_visible_entries(self._allowed_domains, agent_id, cached_visible_entries)
-
-            entity_id = result.get("entity_id")
-            friendly_name = result.get("friendly_name")
-            if entity_id and entity_id not in seen_ids:
-                seen_ids.add(entity_id)
-                resolved.append((entity_id, friendly_name or entity_id))
-
-        return resolved
-
-    async def _build_relevant_entity_state_context(self, resolved_entities: list[tuple[str, str]]) -> str | None:
-        """Build a compact single-line string of current states for the given entities.
-
-        Queries the entity index first, falling back to ha_client.get_state().
-        Returns None if no states could be retrieved.
-        """
-        if not resolved_entities:
-            return None
-
-        lines: list[str] = []
-        for entity_id, friendly_name in resolved_entities:
-            state_value: str | None = None
-            # Try entity index first
-            if self._entity_index is not None:
-                try:
-                    entry = await self._entity_index.get_by_id_async(entity_id)
-                    if entry is not None:
-                        state_value = getattr(entry, "state", None)
-                except asyncio.CancelledError:
-                    raise
-                except Exception:
-                    logger.debug("get_by_id_async failed for %s", entity_id, exc_info=True)
-            # Fallback to HA client
-            if state_value is None and self._ha_client is not None:
-                try:
-                    state_resp = await self._ha_client.get_state(entity_id)
-                    if isinstance(state_resp, dict):
-                        state_value = state_resp.get("state")
-                except asyncio.CancelledError:
-                    raise
-                except Exception:
-                    logger.debug("ha_client.get_state failed for %s", entity_id, exc_info=True)
-            if state_value is not None:
-                lines.append(f"{friendly_name} ({entity_id}): {state_value}")
-
-        if not lines:
-            return None
-        return ", ".join(lines)
 
     async def _recall_keyword_candidates(self, task: DispatchTask) -> list[tuple[Any, int]]:
         """Keyword/token entity recall over the agent's visible entities.
@@ -366,30 +273,12 @@ class ActionableAgent(BaseAgent):
         )
         return "\n".join(lines)
 
-    async def _entity_state_context_or_none(self, resolved_entities: list[tuple[str, str]]) -> str | None:
-        """Failure-contained wrapper around ``_build_relevant_entity_state_context``.
-
-        P3 parallel pre-LLM context: runs inside ``asyncio.gather`` next to the
-        candidate-context build, so a failing branch must not abort the other.
-        """
-        try:
-            return await self._build_relevant_entity_state_context(resolved_entities)
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            logger.debug("Entity state context build failed for %s", self.agent_card.agent_id, exc_info=True)
-            return None
-
     async def _candidate_context_or_none(self, task: DispatchTask) -> tuple[str | None, list[tuple[Any, int]] | None]:
         """Failure-contained wrapper around ``_build_query_candidate_context``.
 
-        P3 parallel pre-LLM context: runs inside ``asyncio.gather`` next to the
-        entity-state fetch, so a failing branch must not abort the other.
         Returns ``(block, scored_candidates)``; ``(None, None)`` when the
-        injection is opted out or the recall failed.
+        recall failed -- a failing recall must never abort the turn.
         """
-        if not self._inject_query_candidates:
-            return None, None
         try:
             return await self._build_query_candidate_context(task)
         except asyncio.CancelledError:
@@ -463,7 +352,7 @@ class ActionableAgent(BaseAgent):
         context_token = _current_task_context_var.set(task.context)
         task_token = _current_task_var.set(task)
         # P2 resolver efficiency: clear any inherited visible-entries
-        # snapshot; ``_resolve_relevant_entities`` publishes a fresh one
+        # snapshot; the pre-LLM keyword recall publishes a fresh one
         # for the post-LLM ``resolve_and_validate_entity`` pass-through.
         visible_entries_token = set_request_visible_entries(None, None, None)
         # ENTITY_RESOLUTION_REWORK: clear any inherited candidate-id gate
@@ -491,6 +380,9 @@ class ActionableAgent(BaseAgent):
 
     async def _handle_task_inner(self, task: DispatchTask) -> TaskResult:
         _t0 = time.perf_counter()
+        # Pre-initialize the dispatch-timing marks: a failing candidate
+        # recall degrades fail-soft and must not break the timing log.
+        _t1 = _t2 = _t0
         agent_id = self.agent_card.agent_id
         span_collector = task.span_collector
         system_prompt = await self._load_prompt_async(self._prompt_name)
@@ -539,41 +431,18 @@ class ActionableAgent(BaseAgent):
             )
 
         # Inject the keyword-recall candidate block (closed contract). The
-        # candidate block already carries entity states, so when candidate
-        # injection is enabled the legacy resolve+state-context path is
-        # skipped: it ran the full matcher including LLM query expansion
-        # (extra LLM calls, hundreds of ms per turn) for information the
-        # candidate block already provides. The legacy path only remains
-        # for the injection opt-out configuration. The recall runs in the
-        # parent context so the visible-entries snapshot ContextVar it
-        # publishes propagates to the post-LLM executor validation.
+        # candidate block already carries entity states -- no separate
+        # resolve/state-context pass runs before the LLM. The recall runs
+        # in the parent context so the visible-entries snapshot ContextVar
+        # it publishes propagates to the post-LLM executor validation.
         candidate_context: str | None = None
         recalled: list[tuple[Any, int]] | None = None
         try:
             async with _optional_span(span_collector, "entity_resolution", agent_id=agent_id) as er_span:
-                if self._inject_query_candidates:
-                    _t1 = time.perf_counter()
-                    candidate_context, recalled = await self._candidate_context_or_none(task)
-                    _t2 = time.perf_counter()
-                    entity_state_context = None
-                    er_span["metadata"]["has_state_context"] = False
-                    er_span["metadata"]["state_context_source"] = "candidate_block"
-                    er_span["metadata"]["recall_ms"] = round((_t2 - _t1) * 1000, 1)
-                else:
-                    resolved_entities = await self._resolve_relevant_entities(task)
-                    _t1 = time.perf_counter()
-                    entity_state_context, (candidate_context, recalled) = await asyncio.gather(
-                        self._entity_state_context_or_none(resolved_entities),
-                        self._candidate_context_or_none(task),
-                    )
-                    _t2 = time.perf_counter()
-                    er_span["metadata"]["resolved_count"] = len(resolved_entities)
-                    er_span["metadata"]["has_state_context"] = entity_state_context is not None
-                    er_span["metadata"]["resolve_ms"] = round((_t1 - _t0) * 1000, 1)
-                    # P3: with the candidate build running concurrently this now
-                    # measures the longer of the two parallel branches
-                    # (previously the state fetch alone).
-                    er_span["metadata"]["state_fetch_ms"] = round((_t2 - _t1) * 1000, 1)
+                _t1 = time.perf_counter()
+                candidate_context, recalled = await self._candidate_context_or_none(task)
+                _t2 = time.perf_counter()
+                er_span["metadata"]["recall_ms"] = round((_t2 - _t1) * 1000, 1)
                 # Keyword recall (closed contract): surface the candidate
                 # pool in the trace so recall gaps are debuggable.
                 scored_recall = recalled or []
@@ -581,12 +450,10 @@ class ActionableAgent(BaseAgent):
                 er_span["metadata"]["recall_candidates"] = [
                     {"entity_id": getattr(entry, "entity_id", "") or "", "hits": hits} for entry, hits in scored_recall
                 ]
-            if entity_state_context:
-                system_prompt += f"\n\nContext: {entity_state_context}"
         except asyncio.CancelledError:
             raise
         except Exception:
-            logger.debug("Entity state injection failed for %s", agent_id, exc_info=True)
+            logger.debug("Candidate recall failed for %s", agent_id, exc_info=True)
             candidate_context = None
             recalled = None
 
@@ -607,11 +474,10 @@ class ActionableAgent(BaseAgent):
             system_prompt += f"\n\n{candidate_context}"
 
         # ENTITY_RES_REDESIGN Phase 6: anaphora recency hints render next to
-        # the candidate block and follow the same injection opt-out flag.
-        if self._inject_query_candidates:
-            last_entities_context = self._build_last_entities_context(task)
-            if last_entities_context:
-                system_prompt += f"\n\n{last_entities_context}"
+        # the candidate block.
+        last_entities_context = self._build_last_entities_context(task)
+        if last_entities_context:
+            system_prompt += f"\n\n{last_entities_context}"
 
         messages = [{"role": "system", "content": system_prompt}]
 

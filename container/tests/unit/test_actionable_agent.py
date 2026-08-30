@@ -1,4 +1,4 @@
-"""Tests for ActionableAgent base class: state injection, entity resolution, and subclasses."""
+"""Tests for ActionableAgent base class: candidate-block injection and subclasses."""
 
 from __future__ import annotations
 
@@ -55,7 +55,7 @@ from app.models.agent import (  # noqa: E402
 )
 
 # ---------------------------------------------------------------------------
-# _resolve_relevant_entities
+# Shared test doubles for keyword-recall tests
 # ---------------------------------------------------------------------------
 
 
@@ -85,201 +85,6 @@ def _visible_passthrough():
         new_callable=AsyncMock,
         side_effect=lambda _agent_id, entries, _index: entries,
     )
-
-
-class TestResolveRelevantEntities:
-    @pytest.mark.asyncio
-    async def test_returns_correct_entities(self):
-        agent = LightAgent()
-        task = make_dispatch_task(description="turn on the kitchen light")
-
-        with patch(
-            "app.agents.actionable.resolve_entity_deterministic_first",
-            new_callable=AsyncMock,
-            return_value={"entity_id": "light.kitchen_ceiling", "friendly_name": "Kitchen Ceiling"},
-        ) as mock_resolve:
-            result = await agent._resolve_relevant_entities(task)
-
-        assert len(result) == 1
-        assert result[0] == ("light.kitchen_ceiling", "Kitchen Ceiling")
-        mock_resolve.assert_awaited_once()
-        call_kwargs = mock_resolve.call_args.kwargs
-        assert call_kwargs.get("allowed_domains") == frozenset({"light", "switch", "sensor"})
-        assert mock_resolve.call_args.args[0] == "turn on the kitchen light"
-
-    @pytest.mark.asyncio
-    async def test_graceful_when_resolution_fails(self):
-        agent = LightAgent()
-        task = make_dispatch_task(description="turn on the unknown thing")
-
-        with patch(
-            "app.agents.actionable.resolve_entity_deterministic_first",
-            new_callable=AsyncMock,
-            side_effect=RuntimeError("boom"),
-        ):
-            result = await agent._resolve_relevant_entities(task)
-
-        assert result == []
-
-    @pytest.mark.asyncio
-    async def test_skips_unresolved_mentions(self):
-        agent = LightAgent()
-        task = make_dispatch_task(description="turn on the kitchen light")
-
-        with patch(
-            "app.agents.actionable.resolve_entity_deterministic_first",
-            new_callable=AsyncMock,
-            return_value={"entity_id": None, "friendly_name": None},
-        ):
-            result = await agent._resolve_relevant_entities(task)
-
-        assert result == []
-
-    @pytest.mark.asyncio
-    async def test_uses_description_as_resolution_query(self):
-        agent = LightAgent()
-        task = make_dispatch_task(description="turn on the kitchen light")
-
-        with patch(
-            "app.agents.actionable.resolve_entity_deterministic_first",
-            new_callable=AsyncMock,
-            return_value={"entity_id": "light.kitchen_ceiling", "friendly_name": "Kitchen Ceiling"},
-        ) as mock_resolve:
-            result = await agent._resolve_relevant_entities(task)
-
-        assert len(result) == 1
-        mock_resolve.assert_awaited_once()
-        assert mock_resolve.call_args.args[0] == "turn on the kitchen light"
-
-
-# ---------------------------------------------------------------------------
-# _build_relevant_entity_state_context
-# ---------------------------------------------------------------------------
-
-
-class TestBuildRelevantEntityStateContext:
-    @pytest.mark.asyncio
-    async def test_formats_from_entity_index(self):
-        agent = LightAgent()
-        index = AsyncMock()
-        index.get_by_id_async = AsyncMock(
-            return_value=DummyEntry("light.kitchen_ceiling", "Kitchen Ceiling", state="on")
-        )
-        agent._entity_index = index
-        agent._ha_client = None
-
-        result = await agent._build_relevant_entity_state_context([("light.kitchen_ceiling", "Kitchen Ceiling")])
-
-        assert result is not None
-        assert result == "Kitchen Ceiling (light.kitchen_ceiling): on"
-
-    @pytest.mark.asyncio
-    async def test_fallback_to_ha_client_when_index_lacks_state(self):
-        agent = LightAgent()
-        index = AsyncMock()
-        index.get_by_id_async = AsyncMock(
-            return_value=DummyEntry("light.kitchen_ceiling", "Kitchen Ceiling", state=None)
-        )
-        agent._entity_index = index
-
-        ha_client = AsyncMock()
-        ha_client.get_state = AsyncMock(return_value={"entity_id": "light.kitchen_ceiling", "state": "off"})
-        agent._ha_client = ha_client
-
-        result = await agent._build_relevant_entity_state_context([("light.kitchen_ceiling", "Kitchen Ceiling")])
-
-        assert result is not None
-        assert result == "Kitchen Ceiling (light.kitchen_ceiling): off"
-        ha_client.get_state.assert_awaited_once_with("light.kitchen_ceiling")
-
-    @pytest.mark.asyncio
-    async def test_fallback_to_ha_client_when_index_is_none(self):
-        agent = LightAgent()
-        agent._entity_index = None
-
-        ha_client = AsyncMock()
-        ha_client.get_state = AsyncMock(return_value={"entity_id": "light.kitchen_ceiling", "state": "on"})
-        agent._ha_client = ha_client
-
-        result = await agent._build_relevant_entity_state_context([("light.kitchen_ceiling", "Kitchen Ceiling")])
-
-        assert result is not None
-        assert result == "Kitchen Ceiling (light.kitchen_ceiling): on"
-
-    @pytest.mark.asyncio
-    async def test_returns_none_when_no_states_available(self):
-        agent = LightAgent()
-        index = AsyncMock()
-        index.get_by_id_async = AsyncMock(return_value=None)
-        agent._entity_index = index
-
-        ha_client = AsyncMock()
-        ha_client.get_state = AsyncMock(side_effect=Exception("no state"))
-        agent._ha_client = ha_client
-
-        result = await agent._build_relevant_entity_state_context([("light.unknown", "Unknown Light")])
-
-        assert result is None
-
-    @pytest.mark.asyncio
-    async def test_returns_none_for_empty_input(self):
-        agent = LightAgent()
-        result = await agent._build_relevant_entity_state_context([])
-        assert result is None
-
-    @pytest.mark.asyncio
-    async def test_multiple_entities(self):
-        agent = LightAgent()
-        index = AsyncMock()
-
-        async def _get_by_id(entity_id):
-            if entity_id == "light.kitchen_ceiling":
-                return DummyEntry(entity_id, "Kitchen Ceiling", state="on")
-            return DummyEntry(entity_id, "Living Room Lamp", state="off")
-
-        index.get_by_id_async = AsyncMock(side_effect=_get_by_id)
-        agent._entity_index = index
-        agent._ha_client = None
-
-        result = await agent._build_relevant_entity_state_context(
-            [
-                ("light.kitchen_ceiling", "Kitchen Ceiling"),
-                ("light.living_room_lamp", "Living Room Lamp"),
-            ]
-        )
-
-        assert result is not None
-        assert result == "Kitchen Ceiling (light.kitchen_ceiling): on, Living Room Lamp (light.living_room_lamp): off"
-
-
-# ---------------------------------------------------------------------------
-# Graceful degradation when entity_index is None
-# ---------------------------------------------------------------------------
-
-
-class TestGracefulDegradation:
-    @pytest.mark.asyncio
-    async def test_resolve_relevant_entities_with_none_index_and_matcher(self):
-        agent = LightAgent(entity_index=None, entity_matcher=None)
-        task = make_dispatch_task(description="turn on the kitchen light")
-
-        with patch(
-            "app.agents.actionable.resolve_entity_deterministic_first",
-            new_callable=AsyncMock,
-            return_value={"entity_id": None, "friendly_name": None},
-        ):
-            result = await agent._resolve_relevant_entities(task)
-
-        assert result == []
-
-    @pytest.mark.asyncio
-    async def test_build_context_with_none_index_and_ha_client(self):
-        agent = LightAgent(entity_index=None, entity_matcher=None)
-        agent._ha_client = None
-
-        result = await agent._build_relevant_entity_state_context([("light.kitchen_ceiling", "Kitchen Ceiling")])
-
-        assert result is None
 
 
 # ---------------------------------------------------------------------------
@@ -375,11 +180,6 @@ class TestHandleTaskInnerInjection:
         task = make_dispatch_task(description="hello")
 
         with (
-            patch(
-                "app.agents.actionable.resolve_entity_deterministic_first",
-                new_callable=AsyncMock,
-                return_value={"entity_id": None, "friendly_name": None},
-            ),
             patch.object(agent, "_load_prompt_async", new_callable=AsyncMock, return_value="You are a light agent."),
             patch.object(agent, "_call_llm", new_callable=AsyncMock, return_value="Hello there!") as mock_llm,
         ):
@@ -401,7 +201,7 @@ class TestHandleTaskInnerInjection:
         with (
             patch.object(
                 agent,
-                "_resolve_relevant_entities",
+                "_recall_keyword_candidates",
                 new_callable=AsyncMock,
                 side_effect=RuntimeError("injection failed"),
             ),
@@ -434,7 +234,6 @@ class TestHandleTaskInnerInjection:
                 new_callable=AsyncMock,
                 return_value='{"action": "query_light_state", "entity_id": "light.kitchen_ceiling"}',
             ) as mock_llm,
-            patch.object(agent, "_resolve_relevant_entities", new_callable=AsyncMock, return_value=[]),
             patch.object(agent, "_do_execute", new_callable=AsyncMock, return_value={"speech": "OK", "success": True}),
             _visible_passthrough(),
         ):
@@ -466,7 +265,6 @@ class TestHandleTaskInnerInjection:
                 new_callable=AsyncMock,
                 return_value="Which light did you mean?",
             ) as mock_llm,
-            patch.object(agent, "_resolve_relevant_entities", new_callable=AsyncMock, return_value=[]),
             _visible_passthrough(),
         ):
             agent._entity_index = index
@@ -499,7 +297,6 @@ class TestHandleTaskInnerInjection:
                 new_callable=AsyncMock,
                 return_value="Did you mean the Couch Light or the Kitchen Ceiling Light?",
             ) as mock_llm,
-            patch.object(agent, "_resolve_relevant_entities", new_callable=AsyncMock, return_value=[]),
             patch.object(agent, "_do_execute", new_callable=AsyncMock, return_value={"speech": "OK", "success": True}),
             _visible_passthrough(),
         ):
@@ -533,7 +330,6 @@ class TestHandleTaskInnerInjection:
                 new_callable=AsyncMock,
                 return_value='{"action": "turn_on", "entity_id": "light.kitchen_ceiling"}',
             ) as mock_llm,
-            patch.object(agent, "_resolve_relevant_entities", new_callable=AsyncMock, return_value=[]),
             patch.object(agent, "_do_execute", new_callable=AsyncMock, return_value={"speech": "OK", "success": True}),
             _visible_passthrough(),
         ):
@@ -563,7 +359,6 @@ class TestHandleTaskInnerInjection:
                 new_callable=AsyncMock,
                 return_value='{"action": "turn_on", "entity_id": "light.kitchen_ceiling"}',
             ) as mock_llm,
-            patch.object(agent, "_resolve_relevant_entities", new_callable=AsyncMock, return_value=[]),
             patch.object(agent, "_do_execute", new_callable=AsyncMock, return_value={"speech": "OK", "success": True}),
             _visible_passthrough(),
         ):
@@ -608,7 +403,6 @@ class TestHandleTaskExecution:
                     "new_state": "on",
                 },
             ),
-            patch.object(agent, "_resolve_relevant_entities", new_callable=AsyncMock, return_value=[]),
         ):
             agent._ha_client = AsyncMock()
             agent._entity_index = None
@@ -642,7 +436,6 @@ class TestHandleTaskExecution:
                 new_callable=AsyncMock,
                 return_value={"speech": "OK", "entity_id": "light.a", "success": True},
             ),
-            patch.object(agent, "_resolve_relevant_entities", new_callable=AsyncMock, return_value=[]),
         ):
             agent._ha_client = AsyncMock()
             agent._entity_index = None
@@ -677,7 +470,6 @@ class TestHandleTaskExecution:
                     "reason": "native timer",
                 },
             ),
-            patch.object(agent, "_resolve_relevant_entities", new_callable=AsyncMock, return_value=[]),
         ):
             agent._ha_client = AsyncMock()
             agent._entity_index = None
@@ -712,7 +504,6 @@ class TestHandleTaskExecution:
                     "error": {"code": "entity_not_found", "message": "not found"},
                 },
             ),
-            patch.object(agent, "_resolve_relevant_entities", new_callable=AsyncMock, return_value=[]),
         ):
             agent._ha_client = AsyncMock()
             agent._entity_index = None
@@ -738,7 +529,6 @@ class TestHandleTaskExecution:
                 return_value='{"action": "turn_on", "entity": "kitchen light"}',
             ),
             patch.object(agent, "_do_execute", new_callable=AsyncMock, side_effect=RuntimeError("HA timeout")),
-            patch.object(agent, "_resolve_relevant_entities", new_callable=AsyncMock, return_value=[]),
         ):
             agent._ha_client = AsyncMock()
             agent._entity_index = None
@@ -759,7 +549,6 @@ class TestHandleTaskExecution:
         with (
             patch.object(agent, "_load_prompt_async", new_callable=AsyncMock, return_value="You are a light agent."),
             patch.object(agent, "_call_llm", new_callable=AsyncMock, side_effect=RuntimeError("LLM down")),
-            patch.object(agent, "_resolve_relevant_entities", new_callable=AsyncMock, return_value=[]),
         ):
             agent._ha_client = AsyncMock()
             agent._entity_index = None
@@ -781,7 +570,6 @@ class TestHandleTaskExecution:
         with (
             patch.object(agent, "_load_prompt_async", new_callable=AsyncMock, return_value="You are a light agent."),
             patch.object(agent, "_call_llm", new_callable=AsyncMock, return_value=""),
-            patch.object(agent, "_resolve_relevant_entities", new_callable=AsyncMock, return_value=[]),
         ):
             agent._ha_client = AsyncMock()
             agent._entity_index = None
@@ -802,7 +590,6 @@ class TestHandleTaskExecution:
         with (
             patch.object(agent, "_load_prompt_async", new_callable=AsyncMock, return_value="You are a light agent."),
             patch.object(agent, "_call_llm", new_callable=AsyncMock, side_effect=asyncio.CancelledError()),
-            patch.object(agent, "_resolve_relevant_entities", new_callable=AsyncMock, return_value=[]),
         ):
             agent._ha_client = AsyncMock()
             agent._entity_index = None
@@ -819,7 +606,6 @@ class TestHandleTaskExecution:
         with (
             patch.object(agent, "_load_prompt_async", new_callable=AsyncMock, return_value="You are a light agent."),
             patch.object(agent, "_call_llm", new_callable=AsyncMock, return_value="Hello! How can I help?"),
-            patch.object(agent, "_resolve_relevant_entities", new_callable=AsyncMock, return_value=[]),
         ):
             agent._ha_client = AsyncMock()
             agent._entity_index = None
@@ -852,7 +638,6 @@ class TestHandleTaskExecution:
                 new_callable=AsyncMock,
                 return_value="Did you mean the Couch Light or the Kitchen Ceiling Light?",
             ),
-            patch.object(agent, "_resolve_relevant_entities", new_callable=AsyncMock, return_value=[]),
             _visible_passthrough(),
         ):
             agent._ha_client = AsyncMock()
@@ -884,7 +669,6 @@ class TestHandleTaskExecution:
                 new_callable=AsyncMock,
                 return_value="Did you mean the Kitchen Ceiling Light?",
             ),
-            patch.object(agent, "_resolve_relevant_entities", new_callable=AsyncMock, return_value=[]),
             _visible_passthrough(),
         ):
             agent._ha_client = AsyncMock()
@@ -916,7 +700,6 @@ class TestHandleTaskExecution:
                 new_callable=AsyncMock,
                 return_value="I am not sure which light you mean.",
             ),
-            patch.object(agent, "_resolve_relevant_entities", new_callable=AsyncMock, return_value=[]),
             _visible_passthrough(),
         ):
             agent._ha_client = AsyncMock()
@@ -945,7 +728,6 @@ class TestHandleTaskExecution:
                 new_callable=AsyncMock,
                 return_value="Did you mean the Kitchen Ceiling?",
             ),
-            patch.object(agent, "_resolve_relevant_entities", new_callable=AsyncMock, return_value=[]),
             _visible_passthrough(),
         ):
             agent._ha_client = AsyncMock()
@@ -972,7 +754,6 @@ class TestHandleTaskExecution:
                 new_callable=AsyncMock,
                 return_value="Which light did you mean?",
             ),
-            patch.object(agent, "_resolve_relevant_entities", new_callable=AsyncMock, return_value=[]),
         ):
             agent._ha_client = AsyncMock()
             agent._entity_index = None
@@ -996,7 +777,6 @@ class TestHandleTaskExecution:
                 new_callable=AsyncMock,
                 return_value='{"action": "turn_on", "entity": "kitchen light"}',
             ),
-            patch.object(agent, "_resolve_relevant_entities", new_callable=AsyncMock, return_value=[]),
         ):
             agent._ha_client = None
             agent._entity_index = None
@@ -1019,7 +799,6 @@ class TestHandleTaskExecution:
             patch.object(
                 agent, "_load_prompt_async", new_callable=AsyncMock, side_effect=TypeError("injection failed")
             ),
-            patch.object(agent, "_resolve_relevant_entities", new_callable=AsyncMock, return_value=[]),
         ):
             agent._ha_client = AsyncMock()
             agent._entity_index = None
@@ -1056,7 +835,6 @@ class TestHandleTaskExecution:
                 new_callable=AsyncMock,
                 return_value={"success": False, "entity_id": None, "error": None, "speech": "not found"},
             ),
-            patch.object(agent, "_resolve_relevant_entities", new_callable=AsyncMock, return_value=[]),
         ):
             agent._ha_client = AsyncMock()
             agent._entity_index = None
@@ -1095,7 +873,6 @@ class TestHandleTaskExecution:
                 new_callable=AsyncMock,
                 return_value={"success": False, "entity_id": None, "error": None, "speech": "not found"},
             ),
-            patch.object(agent, "_resolve_relevant_entities", new_callable=AsyncMock, return_value=[]),
         ):
             agent._ha_client = AsyncMock()
             agent._entity_index = None
@@ -1136,7 +913,6 @@ class TestHandleTaskExecution:
                 new_callable=AsyncMock,
                 return_value={"success": False, "entity_id": None, "error": None, "speech": "not found"},
             ),
-            patch.object(agent, "_resolve_relevant_entities", new_callable=AsyncMock, return_value=[]),
         ):
             agent._ha_client = AsyncMock()
             agent._entity_index = None
@@ -1182,7 +958,6 @@ class TestHandleTaskExecution:
                 new_callable=AsyncMock,
                 return_value="Which light did you mean?",
             ) as mock_not_found_speech,
-            patch.object(agent, "_resolve_relevant_entities", new_callable=AsyncMock, return_value=[]),
         ):
             agent._ha_client = AsyncMock()
             agent._entity_index = None
@@ -1304,7 +1079,6 @@ class TestLanguageDirectivePlacement:
                 return_value="You are a light agent. Few-shot examples follow.",
             ),
             patch.object(agent, "_call_llm", new_callable=AsyncMock, return_value="Hello there!") as mock_llm,
-            patch.object(agent, "_resolve_relevant_entities", new_callable=AsyncMock, return_value=[]),
         ):
             agent._entity_index = None
             agent._ha_client = None
@@ -1334,7 +1108,6 @@ class TestLanguageDirectivePlacement:
         with (
             patch.object(agent, "_load_prompt_async", new_callable=AsyncMock, return_value="You are a light agent."),
             patch.object(agent, "_call_llm", new_callable=AsyncMock, return_value="Hello there!") as mock_llm,
-            patch.object(agent, "_resolve_relevant_entities", new_callable=AsyncMock, return_value=[]),
         ):
             agent._entity_index = None
             agent._ha_client = None
@@ -1349,7 +1122,7 @@ class TestLanguageDirectivePlacement:
 class TestParallelPreLlmContext:
     """Candidate-block injection (closed contract): the keyword recall feeds
     the candidate block including states. The legacy resolve+state-context
-    path only runs when candidate injection is disabled."""
+    path has been removed."""
 
     @pytest.mark.asyncio
     async def test_failing_recall_branch_still_completes_turn(self):
@@ -1436,7 +1209,6 @@ class TestLastEntitiesContext:
             patch.object(
                 agent, "_call_llm", new_callable=AsyncMock, return_value='{"action": "turn_off", "entity": "couch"}'
             ) as mock_llm,
-            patch.object(agent, "_resolve_relevant_entities", new_callable=AsyncMock, return_value=[]),
             patch.object(agent, "_do_execute", new_callable=AsyncMock, return_value={"speech": "OK", "success": True}),
             _visible_passthrough(),
         ):
@@ -1467,7 +1239,6 @@ class TestLastEntitiesContext:
             patch.object(
                 agent, "_call_llm", new_callable=AsyncMock, return_value='{"action": "turn_off", "entity": "couch"}'
             ) as mock_llm,
-            patch.object(agent, "_resolve_relevant_entities", new_callable=AsyncMock, return_value=[]),
             patch.object(agent, "_do_execute", new_callable=AsyncMock, return_value={"speech": "OK", "success": True}),
             _visible_passthrough(),
         ):
@@ -1493,31 +1264,9 @@ class TestLastEntitiesContext:
         with (
             patch.object(agent, "_load_prompt_async", new_callable=AsyncMock, return_value="You are a light agent."),
             patch.object(agent, "_call_llm", new_callable=AsyncMock, return_value="Hello there!") as mock_llm,
-            patch.object(agent, "_resolve_relevant_entities", new_callable=AsyncMock, return_value=[]),
         ):
             agent._entity_index = AsyncMock()
             agent._entity_matcher = matcher
-            agent._ha_client = None
-
-            await agent.handle_task(task)
-
-        system_msg = mock_llm.call_args.args[0][0]["content"]
-        assert "Recently controlled entities" not in system_msg
-
-    @pytest.mark.asyncio
-    async def test_last_entities_block_follows_injection_opt_out(self):
-        """Agents that opt out of candidate injection get no recency block."""
-        agent = LightAgent()
-        agent._inject_query_candidates = False
-        task = self._make_task_with_last_entities()
-
-        with (
-            patch.object(agent, "_load_prompt_async", new_callable=AsyncMock, return_value="You are a light agent."),
-            patch.object(agent, "_call_llm", new_callable=AsyncMock, return_value="Hello there!") as mock_llm,
-            patch.object(agent, "_resolve_relevant_entities", new_callable=AsyncMock, return_value=[]),
-        ):
-            agent._entity_index = None
-            agent._entity_matcher = None
             agent._ha_client = None
 
             await agent.handle_task(task)
