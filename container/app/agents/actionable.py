@@ -261,6 +261,10 @@ class ActionableAgent(BaseAgent):
         visible = await filter_visible_results(agent_id, entries, self._entity_index)
         if not visible:
             return []
+        # Publish the per-request visible-entries snapshot so the post-LLM
+        # executor validation reuses it instead of re-listing the index
+        # (previously published by _resolve_relevant_entities).
+        set_request_visible_entries(self._allowed_domains, agent_id, visible)
 
         terms = [task.description] if task.description else []
         if task.context and task.context.conversation_turns:
@@ -534,31 +538,42 @@ class ActionableAgent(BaseAgent):
                 '- Example JSON: {"action": "turn_on", "entity": "Keller", "condition": {"entity": "outdoor brightness", "state": "dark"}}'
             )
 
-        # Inject relevant entity states (compact single-line format, after output rules).
-        # P3 parallel pre-LLM context: the entity-state fetch and the
-        # independent query-candidate build run concurrently. The resolution
-        # itself stays sequential in the parent context because it publishes
-        # the visible-entries snapshot ContextVar (P2) -- a ContextVar set
-        # inside a gather child would not propagate back. Each parallel
-        # branch keeps its own failure containment.
+        # Inject the keyword-recall candidate block (closed contract). The
+        # candidate block already carries entity states, so when candidate
+        # injection is enabled the legacy resolve+state-context path is
+        # skipped: it ran the full matcher including LLM query expansion
+        # (extra LLM calls, hundreds of ms per turn) for information the
+        # candidate block already provides. The legacy path only remains
+        # for the injection opt-out configuration. The recall runs in the
+        # parent context so the visible-entries snapshot ContextVar it
+        # publishes propagates to the post-LLM executor validation.
         candidate_context: str | None = None
         recalled: list[tuple[Any, int]] | None = None
         try:
             async with _optional_span(span_collector, "entity_resolution", agent_id=agent_id) as er_span:
-                resolved_entities = await self._resolve_relevant_entities(task)
-                _t1 = time.perf_counter()
-                entity_state_context, (candidate_context, recalled) = await asyncio.gather(
-                    self._entity_state_context_or_none(resolved_entities),
-                    self._candidate_context_or_none(task),
-                )
-                _t2 = time.perf_counter()
-                er_span["metadata"]["resolved_count"] = len(resolved_entities)
-                er_span["metadata"]["has_state_context"] = entity_state_context is not None
-                er_span["metadata"]["resolve_ms"] = round((_t1 - _t0) * 1000, 1)
-                # P3: with the candidate build running concurrently this now
-                # measures the longer of the two parallel branches
-                # (previously the state fetch alone).
-                er_span["metadata"]["state_fetch_ms"] = round((_t2 - _t1) * 1000, 1)
+                if self._inject_query_candidates:
+                    _t1 = time.perf_counter()
+                    candidate_context, recalled = await self._candidate_context_or_none(task)
+                    _t2 = time.perf_counter()
+                    entity_state_context = None
+                    er_span["metadata"]["has_state_context"] = False
+                    er_span["metadata"]["state_context_source"] = "candidate_block"
+                    er_span["metadata"]["recall_ms"] = round((_t2 - _t1) * 1000, 1)
+                else:
+                    resolved_entities = await self._resolve_relevant_entities(task)
+                    _t1 = time.perf_counter()
+                    entity_state_context, (candidate_context, recalled) = await asyncio.gather(
+                        self._entity_state_context_or_none(resolved_entities),
+                        self._candidate_context_or_none(task),
+                    )
+                    _t2 = time.perf_counter()
+                    er_span["metadata"]["resolved_count"] = len(resolved_entities)
+                    er_span["metadata"]["has_state_context"] = entity_state_context is not None
+                    er_span["metadata"]["resolve_ms"] = round((_t1 - _t0) * 1000, 1)
+                    # P3: with the candidate build running concurrently this now
+                    # measures the longer of the two parallel branches
+                    # (previously the state fetch alone).
+                    er_span["metadata"]["state_fetch_ms"] = round((_t2 - _t1) * 1000, 1)
                 # Keyword recall (closed contract): surface the candidate
                 # pool in the trace so recall gaps are debuggable.
                 scored_recall = recalled or []

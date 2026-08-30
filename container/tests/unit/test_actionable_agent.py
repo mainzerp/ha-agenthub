@@ -345,19 +345,14 @@ class TestHandleTaskInnerInjection:
         task = make_dispatch_task(description="turn on the kitchen light")
 
         with (
-            patch("app.agents.actionable.resolve_entity_deterministic_first", new_callable=AsyncMock) as mock_resolve,
             patch.object(agent, "_load_prompt_async", new_callable=AsyncMock, return_value="You are a light agent."),
             patch.object(
                 agent, "_call_llm", new_callable=AsyncMock, return_value='{"action": "turn_on", "entity": "kitchen"}'
             ) as mock_llm,
+            patch.object(agent, "_do_execute", new_callable=AsyncMock, return_value={"speech": "OK", "success": True}),
+            _visible_passthrough(),
         ):
-            mock_resolve.return_value = {"entity_id": "light.kitchen_ceiling", "friendly_name": "Kitchen Ceiling"}
-
-            index = AsyncMock()
-            index.get_by_id_async = AsyncMock(
-                return_value=DummyEntry("light.kitchen_ceiling", "Kitchen Ceiling", state="off")
-            )
-            agent._entity_index = index
+            agent._entity_index = _recall_index([DummyEntry("light.kitchen_ceiling", "Kitchen Ceiling", state="off")])
             agent._ha_client = None
             agent._entity_matcher = None
 
@@ -365,11 +360,14 @@ class TestHandleTaskInnerInjection:
 
         assert mock_llm.await_count == 1
         system_msg = mock_llm.call_args.args[0][0]["content"]
-        assert "Context: Kitchen Ceiling (light.kitchen_ceiling): off" in system_msg
+        # States are injected via the closed-contract candidate block; the
+        # legacy "Context:" line is gone when candidate injection is on.
+        assert "1. light.kitchen_ceiling — Kitchen Ceiling (off)" in system_msg
+        assert "Context:" not in system_msg
         assert "Output rules:" in system_msg
         assert "Conditional actions:" in system_msg
-        # Output rules must appear BEFORE the context line
-        assert system_msg.index("Output rules:") < system_msg.index("Context:")
+        # Output rules must appear BEFORE the candidate block
+        assert system_msg.index("Output rules:") < system_msg.index("Candidate entities")
 
     @pytest.mark.asyncio
     async def test_prompt_includes_state_aware_block_even_without_entities(self):
@@ -1349,44 +1347,42 @@ class TestLanguageDirectivePlacement:
 
 
 class TestParallelPreLlmContext:
-    """P3 step 3: entity-state fetch and candidate build run concurrently;
-    a failing branch must not lose the other's context block."""
+    """Candidate-block injection (closed contract): the keyword recall feeds
+    the candidate block including states. The legacy resolve+state-context
+    path only runs when candidate injection is disabled."""
 
     @pytest.mark.asyncio
-    async def test_failing_candidate_branch_keeps_state_context(self):
+    async def test_failing_recall_branch_still_completes_turn(self):
+        """A failing recall (index listing down) degrades fail-soft: no
+        candidate block, no state context, but the turn still completes."""
         agent = LightAgent()
         task = make_dispatch_task(description="turn on the kitchen light")
 
         index = AsyncMock()
-        # The recall fails (listing down); the state branch must survive.
         index.list_entries_async = AsyncMock(side_effect=RuntimeError("index listing down"))
-        index.get_by_id_async = AsyncMock(
-            return_value=DummyEntry("light.kitchen_ceiling", "Kitchen Ceiling", state="off")
-        )
 
         with (
-            patch(
-                "app.agents.actionable.resolve_entity_deterministic_first",
-                new_callable=AsyncMock,
-                return_value={"entity_id": "light.kitchen_ceiling", "friendly_name": "Kitchen Ceiling"},
-            ),
             patch.object(agent, "_load_prompt_async", new_callable=AsyncMock, return_value="You are a light agent."),
             patch.object(
                 agent, "_call_llm", new_callable=AsyncMock, return_value='{"action": "turn_on", "entity": "kitchen"}'
             ) as mock_llm,
+            patch.object(agent, "_do_execute", new_callable=AsyncMock, return_value={"speech": "OK", "success": True}),
         ):
             agent._entity_index = index
             agent._entity_matcher = None
-            agent._ha_client = None
+            agent._ha_client = AsyncMock()
 
-            await agent.handle_task(task)
+            result = await agent.handle_task(task)
 
         system_msg = mock_llm.call_args.args[0][0]["content"]
-        assert "Context: Kitchen Ceiling (light.kitchen_ceiling): off" in system_msg
         assert "Candidate entities (choose from this list only):" not in system_msg
+        assert "Context:" not in system_msg
+        assert result.speech == "OK"
 
     @pytest.mark.asyncio
-    async def test_failing_state_branch_keeps_candidate_context(self):
+    async def test_candidate_block_carries_states_without_legacy_context(self):
+        """With candidate injection enabled, states come from the candidate
+        block only -- no legacy state-context line is rendered."""
         agent = LightAgent()
         task = make_dispatch_task(description="is the kitchen light on?")
 
@@ -1398,13 +1394,6 @@ class TestParallelPreLlmContext:
                 new_callable=AsyncMock,
                 return_value='{"action": "query_light_state", "entity_id": "light.kitchen_ceiling"}',
             ) as mock_llm,
-            patch.object(agent, "_resolve_relevant_entities", new_callable=AsyncMock, return_value=[]),
-            patch.object(
-                agent,
-                "_build_relevant_entity_state_context",
-                new_callable=AsyncMock,
-                side_effect=RuntimeError("state fetch down"),
-            ),
             patch.object(agent, "_do_execute", new_callable=AsyncMock, return_value={"speech": "OK", "success": True}),
             _visible_passthrough(),
         ):
@@ -1416,7 +1405,7 @@ class TestParallelPreLlmContext:
 
         system_msg = mock_llm.call_args.args[0][0]["content"]
         assert "Candidate entities (choose from this list only):" in system_msg
-        assert "1. light.kitchen_ceiling \u2014 Kitchen Ceiling (-)" in system_msg
+        assert "1. light.kitchen_ceiling — Kitchen Ceiling (-)" in system_msg
         assert "Context:" not in system_msg
 
 
