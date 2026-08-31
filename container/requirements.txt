@@ -26,7 +26,7 @@ pydantic==2.13.4
 pydantic-settings==2.15.0
 
 # MCP integration
-mcp==2.0.0
+mcp==2.1.1
 
 # Web search (DuckDuckGo -- zero API key)
 ddgs>=9.15.0,<10.0.0
