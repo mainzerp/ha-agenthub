@@ -1,12 +1,21 @@
 # Version
 
-**Current Version:** 2.0.1
+**Current Version:** 2.0.2
 
 ## Recent Changes
 
-(tracking changes since 2.0.1)
+(tracking changes since 2.0.2)
 
 ## Version History
+
+### 2.0.2 (PATCH) -- dependency updates
+
+(commits cad112d, 5b9e4bf, 9e35465, 28a2184, f0e5397, 7bc7e96)
+
+- chore(deps): mcp 2.0.0 -> 2.1.1 -- low-level stdio servers are unaffected by the MCPServer outputSchema change (commit 5b9e4bf)
+- chore(deps): litellm >=1.97.0 -> >=1.98.0 -- proxy/UI/provider fixes only, no library API changes (commit 28a2184)
+- chore(deps-dev): mypy >=2.3.1, ruff 0.16.4, pre-commit 4.6.2 (commits 7bc7e96, 9e35465, cad112d)
+- chore(deps): github/codeql-action 4.37.7 -> 4.37.9 (commit f0e5397)
 
 ### 2.0.1 (PATCH) -- no-op executions never enter the action cache
 
