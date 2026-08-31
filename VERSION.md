@@ -1,12 +1,21 @@
 # Version
 
-**Current Version:** 2.0.2
+**Current Version:** 2.1.0
 
 ## Recent Changes
 
-(tracking changes since 2.0.2)
+(tracking changes since 2.1.0)
 
 ## Version History
+
+### 2.1.0 (MINOR) -- cache validator audit trail
+
+(commit 0bdb344)
+
+- feat(cache): the action-cache validator now writes a per-entry audit trail (`cache_validator_audit`, migration 43): run_id linkage, entry identity (entry_id, query_text, language, service, entity_id), verdict, raw LLM verdict, old/new response_text and original_response_text, deleted flag -- corrected and deleted entries are fully reconstructable (commit 0bdb344)
+- feat(api): paginated endpoint `GET /api/admin/cache/validate/history/{run_id}/entries` (commit 0bdb344)
+- feat(dashboard): validator history rows are clickable, drill-down detail panel with old/new texts and pagination (commit 0bdb344)
+- feat(config): new setting `cache.validator.audit_retention_days` (default 90) with automatic pruning after each scan (commit 0bdb344)
 
 ### 2.0.2 (PATCH) -- dependency updates
 
