@@ -260,7 +260,7 @@ From this page you can:
 - Flush the entire routing or action tier.
 - Delete a single entry without clearing the whole tier.
 - Export and import cache tiers as a JSON envelope.
-- Run the action-cache validator and view its history.
+- Run the action-cache validator and view its history. Each history row has a Details button showing the per-entry audit trail (verdict, LLM verdict, old/new response text) with pagination.
 
 Clearing the cache is useful when behavior feels stale or an entity has changed and old responses are no longer correct. See [Troubleshooting](troubleshooting.md) for more cache debugging steps.
 

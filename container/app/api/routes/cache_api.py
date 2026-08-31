@@ -25,6 +25,7 @@ from app.cache.sqlite_cache_store import (
 )
 from app.config import settings
 from app.db.repositories.settings import SettingsRepository
+from app.db.repository import CacheValidatorAuditRepository
 from app.runtime_setup import ensure_setup_runtime_initialized
 from app.security.auth import require_admin_session
 from app.util import raise_api_error
@@ -216,6 +217,28 @@ async def get_validation_history(request: Request):
     if validator is None:
         return {"status": "error", "detail": "Cache validator not initialized"}
     return {"status": "ok", "history": await validator.get_history()}
+
+
+@router.get("/validate/history/{run_id}/entries")
+async def get_validation_run_entries(
+    run_id: int,
+    page: int = Query(1, ge=1),
+    per_page: int = Query(50, ge=1, le=200),
+):
+    """Paginated per-entry audit records for one validation run."""
+    try:
+        entries, total = await CacheValidatorAuditRepository.list_for_run(run_id, page=page, per_page=per_page)
+        return {
+            "status": "ok",
+            "entries": entries,
+            "total": total,
+            "page": page,
+            "per_page": per_page,
+            "pages": (total + per_page - 1) // per_page if per_page else 0,
+        }
+    except Exception:
+        logger.warning("Failed to load validation audit entries", exc_info=True)
+        return {"status": "error", "detail": "Failed to load audit entries"}
 
 
 @router.get("/export")

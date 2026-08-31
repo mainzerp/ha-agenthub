@@ -262,6 +262,10 @@
                         <label class="form-label">Max Tokens</label>
                         <input type="number" class="form-input" x-model.number="s['cache.validator.max_tokens']" min="1">
                     </div>
+                    <div class="form-group">
+                        <label class="form-label">Audit Retention (days)</label>
+                        <input type="number" class="form-input" x-model.number="s['cache.validator.audit_retention_days']" min="1">
+                    </div>
                 </div>
                 <div class="form-actions">
                     <button class="btn btn-primary btn-sm" @click="saveSection('cache')">Save Cache</button>

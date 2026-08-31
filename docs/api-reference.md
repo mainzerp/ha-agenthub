@@ -477,6 +477,22 @@ history.
 Return recent cache-validation results, including run time, sample
 count, and any flagged entries.
 
+### GET /api/admin/cache/validate/history/{run_id}/entries
+
+Return the per-entry audit trail of one validation run, paginated.
+
+Query params: `page` (default 1, min 1), `per_page` (default 50, 1-200).
+
+Response: `{"status": "ok", "entries": [...], "total", "page", "per_page", "pages"}`.
+
+Each audit entry records `run_id`, `entry_id`, `query_text`, `language`,
+`agent_id`, `service`, `entity_id`, the final `verdict`
+(`consistent | correct_response | invalidate | no_action | error`), the raw
+`llm_verdict` where available, `old_response_text` / `new_response_text`
+and `old_original_response_text` / `new_original_response_text`, a `deleted`
+flag, and `created_at`. Rows older than
+`cache.validator.audit_retention_days` (default 90) are pruned after each run.
+
 ---
 
 ## Admin -- Home Assistant connection

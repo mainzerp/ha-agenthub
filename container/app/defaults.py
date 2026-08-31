@@ -26,6 +26,7 @@ CACHE_DEFAULTS: dict[str, object] = {
     "cache.validator.reasoning_effort": "low",
     "cache.validator.max_tokens": 1024,
     "cache.validator.batch_size": 10,
+    "cache.validator.audit_retention_days": 90,
 }
 
 MEMORY_DEFAULTS: dict[str, object] = {

@@ -437,10 +437,11 @@
                             <th>Corrected</th>
                             <th>Deleted</th>
                             <th>Errors</th>
+                            <th>Actions</th>
                         </tr>
                     </thead>
                     <tbody>
-                        <template x-for="h in validatorHistory" :key="h.started_at">
+                        <template x-for="h in validatorHistory" :key="h.id">
                             <tr>
                                 <td x-text="dashFormatTimestamp(h.started_at)"></td>
                                 <td x-text="h.scanned"></td>
@@ -448,11 +449,84 @@
                                 <td x-text="h.corrected"></td>
                                 <td x-text="h.deleted"></td>
                                 <td x-text="h.errors"></td>
+                                <td>
+                                    <button class="btn btn-sm btn-secondary" @click="showRunAudit(h)">Details</button>
+                                </td>
                             </tr>
                         </template>
                     </tbody>
                 </table>
             </div>
+
+            <template x-if="selectedRun && activeTab === 'validator'">
+                <div class="span-detail-panel mt-md">
+                    <div class="flex-between mb-sm">
+                        <h4 class="text-sm fw-600" x-text="'Run: ' + dashFormatTimestamp(selectedRun.started_at)"></h4>
+                        <button class="btn btn-sm btn-secondary" @click="closeRunAudit()">Close</button>
+                    </div>
+                    <div x-show="runAuditLoading" class="text-muted text-sm mb-sm">Loading audit entries...</div>
+                    <div x-show="!runAuditLoading && runAuditEntries.length === 0" class="text-muted text-sm mb-sm">
+                        No audit entries recorded for this run.
+                    </div>
+                    <template x-for="a in runAuditEntries" :key="a.id">
+                        <div class="span-detail-grid mb-md">
+                            <div class="span-detail-row span-detail-wide">
+                                <div class="span-detail-label">Query</div>
+                                <pre class="span-detail-content" x-text="a.query_text || '-'"></pre>
+                            </div>
+                            <div class="span-detail-row">
+                                <div class="span-detail-label">Verdict</div>
+                                <pre class="span-detail-content" x-text="a.verdict || '-'"></pre>
+                            </div>
+                            <div class="span-detail-row">
+                                <div class="span-detail-label">LLM Verdict</div>
+                                <pre class="span-detail-content" x-text="a.llm_verdict || '-'"></pre>
+                            </div>
+                            <div class="span-detail-row">
+                                <div class="span-detail-label">Service</div>
+                                <pre class="span-detail-content" x-text="a.service || '-'"></pre>
+                            </div>
+                            <div class="span-detail-row">
+                                <div class="span-detail-label">Entity</div>
+                                <pre class="span-detail-content" x-text="a.entity_id || '-'"></pre>
+                            </div>
+                            <div class="span-detail-row">
+                                <div class="span-detail-label">Deleted</div>
+                                <pre class="span-detail-content" x-text="a.deleted ? 'yes' : 'no'"></pre>
+                            </div>
+                            <template x-if="a.old_response_text !== null && a.old_response_text !== undefined">
+                                <div class="span-detail-row span-detail-wide">
+                                    <div class="span-detail-label">Old Response Text</div>
+                                    <pre class="span-detail-content" x-text="a.old_response_text"></pre>
+                                </div>
+                            </template>
+                            <template x-if="a.new_response_text !== null && a.new_response_text !== undefined">
+                                <div class="span-detail-row span-detail-wide">
+                                    <div class="span-detail-label">New Response Text</div>
+                                    <pre class="span-detail-content" x-text="a.new_response_text"></pre>
+                                </div>
+                            </template>
+                            <template x-if="a.old_original_response_text !== null && a.old_original_response_text !== undefined">
+                                <div class="span-detail-row span-detail-wide">
+                                    <div class="span-detail-label">Old Original Response Text</div>
+                                    <pre class="span-detail-content" x-text="a.old_original_response_text"></pre>
+                                </div>
+                            </template>
+                            <template x-if="a.new_original_response_text !== null && a.new_original_response_text !== undefined">
+                                <div class="span-detail-row span-detail-wide">
+                                    <div class="span-detail-label">New Original Response Text</div>
+                                    <pre class="span-detail-content" x-text="a.new_original_response_text"></pre>
+                                </div>
+                            </template>
+                        </div>
+                    </template>
+                    <div class="flex-between mt-sm" x-show="runAuditPages > 1">
+                        <button class="btn btn-sm btn-secondary" @click="loadRunAuditEntries(runAuditPage - 1)" :disabled="runAuditPage <= 1">Prev</button>
+                        <span class="text-muted text-sm" x-text="'Page ' + runAuditPage + ' / ' + runAuditPages + ' (' + runAuditTotal + ' entries)'"></span>
+                        <button class="btn btn-sm btn-secondary" @click="loadRunAuditEntries(runAuditPage + 1)" :disabled="runAuditPage >= runAuditPages">Next</button>
+                    </div>
+                </div>
+            </template>
         </div>
     </div>
 </div>
@@ -480,6 +554,12 @@ function cachePage() {
         validatorHistory: [],
         validatorBusy: false,
         validatorMessage: '',
+        selectedRun: null,
+        runAuditEntries: [],
+        runAuditPage: 1,
+        runAuditPages: 1,
+        runAuditTotal: 0,
+        runAuditLoading: false,
 
 
 
@@ -493,11 +573,40 @@ function cachePage() {
             this.selectedEntry = null;
         },
 
+        showRunAudit(run) {
+            this.selectedRun = run;
+            this.runAuditPage = 1;
+            this.runAuditEntries = [];
+            this.loadRunAuditEntries(1);
+        },
+
+        closeRunAudit() {
+            this.selectedRun = null;
+            this.runAuditEntries = [];
+        },
+
+        async loadRunAuditEntries(page) {
+            if (!this.selectedRun) return;
+            this.runAuditLoading = true;
+            var data = await window.dashboardApi.safeJson(
+                '/api/admin/cache/validate/history/' + this.selectedRun.id + '/entries?page=' + page + '&per_page=50'
+            );
+            if (data) {
+                this.runAuditEntries = data.entries || [];
+                this.runAuditTotal = data.total || 0;
+                this.runAuditPage = data.page || 1;
+                this.runAuditPages = data.pages || 1;
+            }
+            this.runAuditLoading = false;
+        },
+
         setActiveTab(name) {
             this.activeTab = name;
             this.tier = name;
             this.page = 1;
             this.selectedEntry = null;
+            this.selectedRun = null;
+            this.runAuditEntries = [];
             if (name === 'validator') {
                 this.loadValidatorHistory();
             } else {

@@ -341,3 +341,28 @@ async def _create_tables(db: aiosqlite.Connection) -> None:
             created_at TEXT NOT NULL DEFAULT (datetime('now'))
         )
     """)
+
+    # Per-entry audit trail for cache validator runs. Created in
+    # _create_tables (in addition to migration v43) so fresh test DBs
+    # that skip migrations still have the table. Both paths use
+    # IF NOT EXISTS and are safe to re-run.
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS cache_validator_audit (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id INTEGER NOT NULL REFERENCES cache_validator_runs(id),
+            entry_id TEXT NOT NULL,
+            query_text TEXT NOT NULL,
+            language TEXT NOT NULL,
+            agent_id TEXT,
+            service TEXT,
+            entity_id TEXT,
+            verdict TEXT NOT NULL,
+            llm_verdict TEXT,
+            old_response_text TEXT,
+            new_response_text TEXT,
+            old_original_response_text TEXT,
+            new_original_response_text TEXT,
+            deleted INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+    """)

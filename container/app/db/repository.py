@@ -10,6 +10,7 @@ from app.db.repositories import (  # noqa: F401
     AgentMcpToolsRepository,
     AliasRepository,
     AnalyticsRepository,
+    CacheValidatorAuditRepository,
     CacheValidatorRepository,
     CalendarEntitySettingsRepository,
     CalendarReminderStateRepository,

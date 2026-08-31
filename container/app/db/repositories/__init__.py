@@ -9,7 +9,11 @@ from app.db.repositories._utils import (  # noqa: F401
 from app.db.repositories.admin import AdminAccountRepository, SetupStateRepository  # noqa: F401
 from app.db.repositories.agent_config import AgentConfigRepository  # noqa: F401
 from app.db.repositories.alias import AliasRepository  # noqa: F401
-from app.db.repositories.analytics import AnalyticsRepository, CacheValidatorRepository  # noqa: F401
+from app.db.repositories.analytics import (  # noqa: F401
+    AnalyticsRepository,
+    CacheValidatorAuditRepository,
+    CacheValidatorRepository,
+)
 from app.db.repositories.calendar import (  # noqa: F401
     CalendarEntitySettingsRepository,
     CalendarReminderStateRepository,

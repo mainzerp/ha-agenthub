@@ -9,7 +9,7 @@ from datetime import UTC, datetime
 
 from app.cache.action_cache import ActionCache
 from app.cache.cache_manager import CacheManager
-from app.db.repository import CacheValidatorRepository, SettingsRepository
+from app.db.repository import CacheValidatorAuditRepository, CacheValidatorRepository, SettingsRepository
 from app.models.cache import ActionCacheEntry
 
 logger = logging.getLogger(__name__)
@@ -125,6 +125,10 @@ class ActionCacheValidator:
         started_at = datetime.now(UTC).isoformat()
         now = started_at
 
+        # Insert the run row up front so per-entry audit rows have a valid FK;
+        # counts are filled in via update_finished at the end of the run.
+        run_id = await CacheValidatorRepository.insert_started(started_at)
+
         # Filter pending entries: not validated and have cached_action
         pending = [e for e in entries if not e.validated_at and e.cached_action is not None]
 
@@ -135,6 +139,13 @@ class ActionCacheValidator:
                     entry_id = self._action_cache.make_entry_id(
                         entry.query_text,
                         language=entry.language,
+                    )
+                    await self._write_audit(
+                        run_id,
+                        entry,
+                        verdict="no_action",
+                        old_response_text=entry.response_text,
+                        deleted=True,
                     )
                     self._cache_manager.invalidate_action(entry_id)
                     deleted += 1
@@ -158,22 +169,48 @@ class ActionCacheValidator:
                 try:
                     if batch_failed:
                         # Fallback to single-entry validation
-                        is_valid, corrected_text = await self._validate_entry(entry)
+                        is_valid, corrected_text, llm_verdict = await self._validate_entry(entry)
                         if is_valid:
                             entry.validated_at = now
                             await self._cache_manager.update_action_entry(entry)
+                            await self._write_audit(
+                                run_id,
+                                entry,
+                                verdict="consistent",
+                                llm_verdict=llm_verdict,
+                            )
                             continue
                         inconsistent += 1
                         if corrected_text is not None:
+                            old_response = entry.response_text
+                            old_original = entry.original_response_text
                             entry.response_text = corrected_text
                             entry.original_response_text = corrected_text
                             entry.validated_at = now
                             await self._cache_manager.update_action_entry(entry)
                             corrected += 1
+                            await self._write_audit(
+                                run_id,
+                                entry,
+                                verdict="correct_response",
+                                llm_verdict=llm_verdict,
+                                old_response_text=old_response,
+                                new_response_text=corrected_text,
+                                old_original_response_text=old_original,
+                                new_original_response_text=corrected_text,
+                            )
                         else:
                             entry_id = self._action_cache.make_entry_id(
                                 entry.query_text,
                                 language=entry.language,
+                            )
+                            await self._write_audit(
+                                run_id,
+                                entry,
+                                verdict="invalidate",
+                                llm_verdict=llm_verdict,
+                                old_response_text=entry.response_text,
+                                deleted=True,
                             )
                             self._cache_manager.invalidate_action(entry_id)
                             deleted += 1
@@ -182,28 +219,54 @@ class ActionCacheValidator:
                         result = batch_results[j]
                         if result is None:
                             # This individual entry was unparseable, fallback
-                            is_valid, corrected_text = await self._validate_entry(entry)
+                            is_valid, corrected_text, llm_verdict = await self._validate_entry(entry)
                             if is_valid:
                                 entry.validated_at = now
                                 await self._cache_manager.update_action_entry(entry)
+                                await self._write_audit(
+                                    run_id,
+                                    entry,
+                                    verdict="consistent",
+                                    llm_verdict=llm_verdict,
+                                )
                                 continue
                             inconsistent += 1
                             if corrected_text is not None:
+                                old_response = entry.response_text
+                                old_original = entry.original_response_text
                                 entry.response_text = corrected_text
                                 entry.original_response_text = corrected_text
                                 entry.validated_at = now
                                 await self._cache_manager.update_action_entry(entry)
                                 corrected += 1
+                                await self._write_audit(
+                                    run_id,
+                                    entry,
+                                    verdict="correct_response",
+                                    llm_verdict=llm_verdict,
+                                    old_response_text=old_response,
+                                    new_response_text=corrected_text,
+                                    old_original_response_text=old_original,
+                                    new_original_response_text=corrected_text,
+                                )
                             else:
                                 entry_id = self._action_cache.make_entry_id(
                                     entry.query_text,
                                     language=entry.language,
                                 )
+                                await self._write_audit(
+                                    run_id,
+                                    entry,
+                                    verdict="invalidate",
+                                    llm_verdict=llm_verdict,
+                                    old_response_text=entry.response_text,
+                                    deleted=True,
+                                )
                                 self._cache_manager.invalidate_action(entry_id)
                                 deleted += 1
                         else:
                             is_valid, was_corrected, was_deleted = await self._process_validation_result(
-                                entry, result, now
+                                entry, result, now, run_id
                             )
                             if not is_valid:
                                 inconsistent += 1
@@ -214,6 +277,12 @@ class ActionCacheValidator:
                 except Exception:
                     logger.warning("Failed to validate cache entry", exc_info=True)
                     errors += 1
+                    await self._write_audit(
+                        run_id,
+                        entry,
+                        verdict="error",
+                        old_response_text=entry.response_text,
+                    )
 
         finished_at = datetime.now(UTC).isoformat()
         result = {
@@ -225,15 +294,27 @@ class ActionCacheValidator:
             "started_at": started_at,
             "finished_at": finished_at,
         }
-        await CacheValidatorRepository.insert(
+        await CacheValidatorRepository.update_finished(
+            run_id,
             scanned=result["scanned"],
             inconsistent=result["inconsistent"],
             corrected=result["corrected"],
             deleted=result["deleted"],
             errors=result["errors"],
-            started_at=result["started_at"],
             finished_at=result["finished_at"],
         )
+        # Prune audit rows past the retention window. Runs after
+        # update_finished so a prune failure cannot leave the run row
+        # unfinished, and so the just-written run's rows are never affected.
+        try:
+            retention_raw = await SettingsRepository.get_value("cache.validator.audit_retention_days", "90")
+            retention_days = int(str(retention_raw))
+            if retention_days > 0:
+                await CacheValidatorAuditRepository.cleanup_old(retention_days)
+        except (TypeError, ValueError):
+            pass
+        except Exception:
+            logger.warning("Failed to prune cache validator audit", exc_info=True)
         logger.info(
             "Cache validator scan complete: scanned=%d inconsistent=%d corrected=%d deleted=%d errors=%d",
             scanned,
@@ -247,6 +328,46 @@ class ActionCacheValidator:
     async def get_history(self) -> list[dict]:
         """Return the last 50 validation run records from persistent storage."""
         return await CacheValidatorRepository.list_recent(limit=50)
+
+    async def _write_audit(
+        self,
+        run_id: int,
+        entry: ActionCacheEntry,
+        *,
+        verdict: str,
+        llm_verdict: str | None = None,
+        old_response_text: str | None = None,
+        new_response_text: str | None = None,
+        old_original_response_text: str | None = None,
+        new_original_response_text: str | None = None,
+        deleted: bool = False,
+    ) -> None:
+        """Write one per-entry audit row; failures never break validation."""
+        try:
+            entry_id = self._action_cache.make_entry_id(
+                entry.query_text,
+                language=entry.language,
+            )
+            service = entry.cached_action.service if entry.cached_action is not None else None
+            entity_id = entry.cached_action.entity_id if entry.cached_action is not None else None
+            await CacheValidatorAuditRepository.insert_entry(
+                run_id=run_id,
+                entry_id=entry_id,
+                query_text=entry.query_text,
+                language=entry.language,
+                agent_id=entry.agent_id,
+                service=service,
+                entity_id=entity_id,
+                verdict=verdict,
+                llm_verdict=llm_verdict,
+                old_response_text=old_response_text,
+                new_response_text=new_response_text,
+                old_original_response_text=old_original_response_text,
+                new_original_response_text=new_original_response_text,
+                deleted=deleted,
+            )
+        except Exception:
+            logger.warning("Failed to write cache validator audit row", exc_info=True)
 
     async def _get_batch_size(self) -> int:
         """Read and clamp the configured batch size."""
@@ -382,6 +503,7 @@ class ActionCacheValidator:
         entry: ActionCacheEntry,
         result: str | None,
         now: str,
+        run_id: int,
     ) -> tuple[bool, bool, bool]:
         """Process a single validation result.
 
@@ -390,20 +512,46 @@ class ActionCacheValidator:
         if result == "consistent":
             entry.validated_at = now
             await self._cache_manager.update_action_entry(entry)
+            await self._write_audit(
+                run_id,
+                entry,
+                verdict="consistent",
+                llm_verdict="consistent",
+            )
             return True, False, False
 
         if result == "correct_response":
             corrected_text = await self._regenerate_response(entry)
             if corrected_text:
+                old_response = entry.response_text
+                old_original = entry.original_response_text
                 entry.response_text = corrected_text
                 entry.original_response_text = corrected_text
                 entry.validated_at = now
                 await self._cache_manager.update_action_entry(entry)
+                await self._write_audit(
+                    run_id,
+                    entry,
+                    verdict="correct_response",
+                    llm_verdict="correct_response",
+                    old_response_text=old_response,
+                    new_response_text=corrected_text,
+                    old_original_response_text=old_original,
+                    new_original_response_text=corrected_text,
+                )
                 return False, True, False
             else:
                 entry_id = self._action_cache.make_entry_id(
                     entry.query_text,
                     language=entry.language,
+                )
+                await self._write_audit(
+                    run_id,
+                    entry,
+                    verdict="invalidate",
+                    llm_verdict="correct_response",
+                    old_response_text=entry.response_text,
+                    deleted=True,
                 )
                 self._cache_manager.invalidate_action(entry_id)
                 return False, False, True
@@ -413,13 +561,21 @@ class ActionCacheValidator:
             entry.query_text,
             language=entry.language,
         )
+        await self._write_audit(
+            run_id,
+            entry,
+            verdict="invalidate",
+            llm_verdict=result,
+            old_response_text=entry.response_text,
+            deleted=True,
+        )
         self._cache_manager.invalidate_action(entry_id)
         return False, False, True
 
-    async def _validate_entry(self, entry: ActionCacheEntry) -> tuple[bool, str | None]:
-        """Return (is_valid, corrected_response_or_None)."""
+    async def _validate_entry(self, entry: ActionCacheEntry) -> tuple[bool, str | None, str | None]:
+        """Return (is_valid, corrected_response_or_None, llm_verdict_or_None)."""
         if entry.cached_action is None:
-            return False, None
+            return False, None, None
 
         service = entry.cached_action.service
         response_text = entry.response_text or ""
@@ -430,19 +586,19 @@ class ActionCacheValidator:
         if model and self._llm_client is not None:
             llm_result = await self._llm_validate_consistency(entry)
             if llm_result == "consistent":
-                return True, None
+                return True, None, llm_result
             if llm_result == "correct_response":
                 corrected_text = await self._regenerate_response(entry)
-                return False, corrected_text
+                return False, corrected_text, llm_result
             if llm_result == "invalidate":
-                return False, None
+                return False, None, llm_result
             # None (failure/unparseable) → fall through to deterministic check
 
         if not self._is_plausible(service, response_text):
             corrected_text = await self._regenerate_response(entry)
-            return False, corrected_text
+            return False, corrected_text, None
 
-        return True, None
+        return True, None, None
 
     async def _llm_validate_consistency(self, entry: ActionCacheEntry) -> str | None:
         """Ask the LLM to evaluate consistency across query, action, and response.

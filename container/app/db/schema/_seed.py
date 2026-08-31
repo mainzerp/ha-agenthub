@@ -123,6 +123,13 @@ async def _seed_defaults(db: aiosqlite.Connection) -> None:
             "cache",
             "Number of cache entries to validate in a single LLM batch call",
         ),
+        (
+            "cache.validator.audit_retention_days",
+            str(CACHE_DEFAULTS["cache.validator.audit_retention_days"]),
+            "int",
+            "cache",
+            "Days to retain per-entry cache validator audit records",
+        ),
         # Embedding settings
         (
             "embedding.provider",

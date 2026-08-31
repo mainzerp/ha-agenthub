@@ -890,6 +890,35 @@ async def _migrate_to_42(db: aiosqlite.Connection) -> None:
     await db.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (42)")
 
 
+async def _migrate_to_43(db: aiosqlite.Connection) -> None:
+    # Migration 43: Per-entry audit trail for cache validator runs.
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS cache_validator_audit (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id INTEGER NOT NULL REFERENCES cache_validator_runs(id),
+            entry_id TEXT NOT NULL,
+            query_text TEXT NOT NULL,
+            language TEXT NOT NULL,
+            agent_id TEXT,
+            service TEXT,
+            entity_id TEXT,
+            verdict TEXT NOT NULL,
+            llm_verdict TEXT,
+            old_response_text TEXT,
+            new_response_text TEXT,
+            old_original_response_text TEXT,
+            new_original_response_text TEXT,
+            deleted INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+    """)
+    await db.execute("CREATE INDEX IF NOT EXISTS idx_cache_validator_audit_run_id ON cache_validator_audit(run_id)")
+    await db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_cache_validator_audit_created_at ON cache_validator_audit(created_at)"
+    )
+    await db.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (43)")
+
+
 # Ordered registry of (version, migration_callable). Each migration records
 # its own version marker. Applied in ascending order for versions greater
 # than the current schema version.
@@ -935,6 +964,7 @@ MIGRATIONS: list[tuple[int, Callable[[aiosqlite.Connection], Awaitable[None]]]] 
     (40, _migrate_to_40),
     (41, _migrate_to_41),
     (42, _migrate_to_42),
+    (43, _migrate_to_43),
 ]
 
 

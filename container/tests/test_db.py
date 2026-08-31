@@ -12,6 +12,8 @@ from app.db.repository import (
     AdminAccountRepository,
     AgentConfigRepository,
     AliasRepository,
+    CacheValidatorAuditRepository,
+    CacheValidatorRepository,
     ConversationRepository,
     CustomAgentRepository,
     EntityVisibilityRepository,
@@ -1481,3 +1483,99 @@ class TestReadWriteSplit:
         )
         result = await SettingsRepository.get_value("test.rw_split")
         assert result == "hello"
+
+
+# ---------------------------------------------------------------------------
+# CacheValidatorRepository insert_started/update_finished + audit trail
+# ---------------------------------------------------------------------------
+
+
+class TestCacheValidatorAuditRepository:
+    async def test_insert_started_and_update_finished(self, db_repository):
+        run_id = await CacheValidatorRepository.insert_started("2026-01-01T00:00:00+00:00")
+        assert run_id > 0
+
+        await CacheValidatorRepository.update_finished(
+            run_id,
+            scanned=3,
+            inconsistent=1,
+            corrected=1,
+            deleted=0,
+            errors=0,
+            finished_at="2026-01-01T00:01:00+00:00",
+        )
+
+        rows = await CacheValidatorRepository.list_recent(limit=1)
+        assert rows[0]["id"] == run_id
+        assert rows[0]["scanned"] == 3
+        assert rows[0]["inconsistent"] == 1
+        assert rows[0]["corrected"] == 1
+        assert rows[0]["finished_at"] == "2026-01-01T00:01:00+00:00"
+
+    async def test_insert_entry_and_list_for_run_pagination(self, db_repository):
+        run_id = await CacheValidatorRepository.insert_started("2026-01-01T00:00:00+00:00")
+        for i in range(3):
+            await CacheValidatorAuditRepository.insert_entry(
+                run_id=run_id,
+                entry_id=f"entry-{i}",
+                query_text=f"query {i}",
+                language="en",
+                agent_id="light-agent",
+                service="light/turn_on",
+                entity_id="light.kitchen",
+                verdict="consistent",
+                llm_verdict="consistent",
+                old_response_text=None,
+                new_response_text=None,
+                old_original_response_text=None,
+                new_original_response_text=None,
+                deleted=False,
+            )
+
+        rows, total = await CacheValidatorAuditRepository.list_for_run(run_id, page=1, per_page=50)
+        assert total == 3
+        assert [r["entry_id"] for r in rows] == ["entry-0", "entry-1", "entry-2"]
+        assert rows[0]["deleted"] == 0
+
+        page1, total1 = await CacheValidatorAuditRepository.list_for_run(run_id, page=1, per_page=2)
+        page2, total2 = await CacheValidatorAuditRepository.list_for_run(run_id, page=2, per_page=2)
+        assert total1 == 3
+        assert total2 == 3
+        assert len(page1) == 2
+        assert len(page2) == 1
+
+    async def test_cleanup_old_deletes_only_expired_rows(self, db_repository):
+        run_id = await CacheValidatorRepository.insert_started("2026-01-01T00:00:00+00:00")
+        for entry_id in ("entry-old", "entry-new"):
+            await CacheValidatorAuditRepository.insert_entry(
+                run_id=run_id,
+                entry_id=entry_id,
+                query_text="query",
+                language="en",
+                agent_id="light-agent",
+                service="light/turn_on",
+                entity_id="light.kitchen",
+                verdict="invalidate",
+                llm_verdict=None,
+                old_response_text="old text",
+                new_response_text=None,
+                old_original_response_text=None,
+                new_original_response_text=None,
+                deleted=True,
+            )
+
+        # Backdate one row beyond the retention window
+        async with aiosqlite.connect(str(db_repository)) as db:
+            await db.execute(
+                "UPDATE cache_validator_audit SET created_at = datetime('now', '-120 days') "
+                "WHERE entry_id = 'entry-old'"
+            )
+            await db.commit()
+
+        deleted = await CacheValidatorAuditRepository.cleanup_old(90)
+        assert deleted == 1
+
+        rows, total = await CacheValidatorAuditRepository.list_for_run(run_id)
+        assert total == 1
+        assert rows[0]["entry_id"] == "entry-new"
+        assert rows[0]["deleted"] == 1

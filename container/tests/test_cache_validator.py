@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import contextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -191,9 +192,13 @@ async def test_run_once_corrects_one_deletes_one():
     with (
         patch("app.cache.cache_validator.SettingsRepository") as mock_settings,
         patch("app.cache.cache_validator.CacheValidatorRepository") as mock_repo,
+        patch("app.cache.cache_validator.CacheValidatorAuditRepository") as mock_audit,
     ):
         mock_settings.get_value = AsyncMock(return_value="true")
-        mock_repo.insert = AsyncMock(return_value=1)
+        mock_repo.insert_started = AsyncMock(return_value=1)
+        mock_repo.update_finished = AsyncMock()
+        mock_audit.insert_entry = AsyncMock()
+        mock_audit.cleanup_old = AsyncMock()
         result = await validator.run_once()
 
     assert result["scanned"] == 2
@@ -220,9 +225,13 @@ async def test_run_once_skips_when_disabled():
     with (
         patch("app.cache.cache_validator.SettingsRepository") as mock_settings,
         patch("app.cache.cache_validator.CacheValidatorRepository") as mock_repo,
+        patch("app.cache.cache_validator.CacheValidatorAuditRepository") as mock_audit,
     ):
         mock_settings.get_value = AsyncMock(return_value="false")
-        mock_repo.insert = AsyncMock(return_value=1)
+        mock_repo.insert_started = AsyncMock(return_value=1)
+        mock_repo.update_finished = AsyncMock()
+        mock_audit.insert_entry = AsyncMock()
+        mock_audit.cleanup_old = AsyncMock()
         result = await validator.run_once()
 
     assert result == {"scanned": 0, "inconsistent": 0, "corrected": 0, "deleted": 0, "errors": 0}
@@ -240,9 +249,13 @@ async def test_run_once_counts_valid_entries():
     with (
         patch("app.cache.cache_validator.SettingsRepository") as mock_settings,
         patch("app.cache.cache_validator.CacheValidatorRepository") as mock_repo,
+        patch("app.cache.cache_validator.CacheValidatorAuditRepository") as mock_audit,
     ):
         mock_settings.get_value = AsyncMock(return_value="true")
-        mock_repo.insert = AsyncMock(return_value=1)
+        mock_repo.insert_started = AsyncMock(return_value=1)
+        mock_repo.update_finished = AsyncMock()
+        mock_audit.insert_entry = AsyncMock()
+        mock_audit.cleanup_old = AsyncMock()
         result = await validator.run_once()
 
     assert result["scanned"] == 1
@@ -267,9 +280,13 @@ async def test_run_once_skips_validated_entries():
     with (
         patch("app.cache.cache_validator.SettingsRepository") as mock_settings,
         patch("app.cache.cache_validator.CacheValidatorRepository") as mock_repo,
+        patch("app.cache.cache_validator.CacheValidatorAuditRepository") as mock_audit,
     ):
         mock_settings.get_value = AsyncMock(return_value="true")
-        mock_repo.insert = AsyncMock(return_value=1)
+        mock_repo.insert_started = AsyncMock(return_value=1)
+        mock_repo.update_finished = AsyncMock()
+        mock_audit.insert_entry = AsyncMock()
+        mock_audit.cleanup_old = AsyncMock()
         result = await validator.run_once()
 
     assert result["scanned"] == 0
@@ -289,9 +306,13 @@ async def test_run_once_sets_validated_at_on_valid_entry():
     with (
         patch("app.cache.cache_validator.SettingsRepository") as mock_settings,
         patch("app.cache.cache_validator.CacheValidatorRepository") as mock_repo,
+        patch("app.cache.cache_validator.CacheValidatorAuditRepository") as mock_audit,
     ):
         mock_settings.get_value = AsyncMock(return_value="true")
-        mock_repo.insert = AsyncMock(return_value=1)
+        mock_repo.insert_started = AsyncMock(return_value=1)
+        mock_repo.update_finished = AsyncMock()
+        mock_audit.insert_entry = AsyncMock()
+        mock_audit.cleanup_old = AsyncMock()
         result = await validator.run_once()
 
     assert result["scanned"] == 1
@@ -316,9 +337,13 @@ async def test_run_once_sets_validated_at_on_corrected_entry():
     with (
         patch("app.cache.cache_validator.SettingsRepository") as mock_settings,
         patch("app.cache.cache_validator.CacheValidatorRepository") as mock_repo,
+        patch("app.cache.cache_validator.CacheValidatorAuditRepository") as mock_audit,
     ):
         mock_settings.get_value = AsyncMock(return_value="true")
-        mock_repo.insert = AsyncMock(return_value=1)
+        mock_repo.insert_started = AsyncMock(return_value=1)
+        mock_repo.update_finished = AsyncMock()
+        mock_audit.insert_entry = AsyncMock()
+        mock_audit.cleanup_old = AsyncMock()
         result = await validator.run_once()
 
     assert result["scanned"] == 1
@@ -340,9 +365,13 @@ async def test_history_recorded_after_run():
     with (
         patch("app.cache.cache_validator.SettingsRepository") as mock_settings,
         patch("app.cache.cache_validator.CacheValidatorRepository") as mock_repo,
+        patch("app.cache.cache_validator.CacheValidatorAuditRepository") as mock_audit,
     ):
         mock_settings.get_value = AsyncMock(return_value="true")
-        mock_repo.insert = AsyncMock(return_value=1)
+        mock_repo.insert_started = AsyncMock(return_value=1)
+        mock_repo.update_finished = AsyncMock()
+        mock_audit.insert_entry = AsyncMock()
+        mock_audit.cleanup_old = AsyncMock()
         mock_repo.list_recent = AsyncMock(
             return_value=[
                 {
@@ -358,10 +387,10 @@ async def test_history_recorded_after_run():
         )
         result = await validator.run_once()
 
-        mock_repo.insert.assert_awaited_once()
-        call_kwargs = mock_repo.insert.await_args.kwargs
+        mock_repo.insert_started.assert_awaited_once()
+        mock_repo.update_finished.assert_awaited_once()
+        call_kwargs = mock_repo.update_finished.await_args.kwargs
         assert call_kwargs["scanned"] == result["scanned"]
-        assert call_kwargs["started_at"] == result["started_at"]
         assert call_kwargs["finished_at"] == result["finished_at"]
 
         history = await validator.get_history()
@@ -481,10 +510,11 @@ async def test_validate_entry_llm_says_consistent():
                 "cache.validator.reasoning_effort": "low",
             }.get(key, default)
         )
-        is_valid, corrected = await validator._validate_entry(entry)
+        is_valid, corrected, llm_verdict = await validator._validate_entry(entry)
 
     assert is_valid is True
     assert corrected is None
+    assert llm_verdict == "consistent"
     llm_client.complete.assert_awaited_once()
 
 
@@ -514,10 +544,11 @@ async def test_validate_entry_llm_says_correct_response():
                 "cache.validator.reasoning_effort": "low",
             }.get(key, default)
         )
-        is_valid, corrected = await validator._validate_entry(entry)
+        is_valid, corrected, llm_verdict = await validator._validate_entry(entry)
 
     assert is_valid is False
     assert corrected == "Done, Kitchen Light is now off."
+    assert llm_verdict == "correct_response"
     assert llm_client.complete.await_count == 2
 
 
@@ -542,10 +573,11 @@ async def test_validate_entry_llm_says_invalidate():
                 "cache.validator.reasoning_effort": "low",
             }.get(key, default)
         )
-        is_valid, corrected = await validator._validate_entry(entry)
+        is_valid, corrected, llm_verdict = await validator._validate_entry(entry)
 
     assert is_valid is False
     assert corrected is None  # signals deletion
+    assert llm_verdict == "invalidate"
     llm_client.complete.assert_awaited_once()
 
 
@@ -570,7 +602,7 @@ async def test_validate_entry_llm_failure_falls_back_to_deterministic():
                 "cache.validator.model": "groq/openai/gpt-oss-20b",
             }.get(key, default)
         )
-        is_valid, corrected = await validator._validate_entry(entry)
+        is_valid, corrected, _ = await validator._validate_entry(entry)
 
     assert is_valid is False
     assert corrected == "Done, Kitchen Ceiling is now off."
@@ -599,7 +631,7 @@ async def test_validate_entry_llm_unparseable_falls_back():
                 "cache.validator.model": "groq/openai/gpt-oss-20b",
             }.get(key, default)
         )
-        is_valid, corrected = await validator._validate_entry(entry)
+        is_valid, corrected, _ = await validator._validate_entry(entry)
 
     assert is_valid is False
     assert corrected == "Done, Kitchen Ceiling is now off."
@@ -620,7 +652,7 @@ async def test_validate_entry_no_model_uses_deterministic():
                 "cache.validator.model": "",
             }.get(key, default)
         )
-        is_valid, corrected = await validator._validate_entry(entry)
+        is_valid, corrected, _ = await validator._validate_entry(entry)
 
     assert is_valid is True
     assert corrected is None
@@ -641,7 +673,7 @@ async def test_validate_entry_model_configured_but_no_client_uses_deterministic(
                 "cache.validator.model": "groq/openai/gpt-oss-20b",
             }.get(key, default)
         )
-        is_valid, corrected = await validator._validate_entry(entry)
+        is_valid, corrected, _ = await validator._validate_entry(entry)
 
     assert is_valid is True
     assert corrected is None
@@ -923,6 +955,7 @@ async def test_run_once_uses_batch_validation():
     with (
         patch("app.cache.cache_validator.SettingsRepository") as mock_settings,
         patch("app.cache.cache_validator.CacheValidatorRepository") as mock_repo,
+        patch("app.cache.cache_validator.CacheValidatorAuditRepository") as mock_audit,
     ):
         mock_settings.get_value = AsyncMock(
             side_effect=lambda key, default="": {
@@ -933,7 +966,10 @@ async def test_run_once_uses_batch_validation():
                 "cache.validator.reasoning_effort": "low",
             }.get(key, default)
         )
-        mock_repo.insert = AsyncMock(return_value=1)
+        mock_repo.insert_started = AsyncMock(return_value=1)
+        mock_repo.update_finished = AsyncMock()
+        mock_audit.insert_entry = AsyncMock()
+        mock_audit.cleanup_old = AsyncMock()
         result = await validator.run_once()
 
     assert result["scanned"] == 2
@@ -968,6 +1004,7 @@ async def test_run_once_batch_fallback_to_single_on_failure():
     with (
         patch("app.cache.cache_validator.SettingsRepository") as mock_settings,
         patch("app.cache.cache_validator.CacheValidatorRepository") as mock_repo,
+        patch("app.cache.cache_validator.CacheValidatorAuditRepository") as mock_audit,
     ):
         mock_settings.get_value = AsyncMock(
             side_effect=lambda key, default="": {
@@ -978,7 +1015,10 @@ async def test_run_once_batch_fallback_to_single_on_failure():
                 "cache.validator.reasoning_effort": "low",
             }.get(key, default)
         )
-        mock_repo.insert = AsyncMock(return_value=1)
+        mock_repo.insert_started = AsyncMock(return_value=1)
+        mock_repo.update_finished = AsyncMock()
+        mock_audit.insert_entry = AsyncMock()
+        mock_audit.cleanup_old = AsyncMock()
         result = await validator.run_once()
 
     assert result["scanned"] == 1
@@ -1000,6 +1040,7 @@ async def test_run_once_batch_size_one_disables_batching():
     with (
         patch("app.cache.cache_validator.SettingsRepository") as mock_settings,
         patch("app.cache.cache_validator.CacheValidatorRepository") as mock_repo,
+        patch("app.cache.cache_validator.CacheValidatorAuditRepository") as mock_audit,
     ):
         mock_settings.get_value = AsyncMock(
             side_effect=lambda key, default="": {
@@ -1010,7 +1051,10 @@ async def test_run_once_batch_size_one_disables_batching():
                 "cache.validator.reasoning_effort": "low",
             }.get(key, default)
         )
-        mock_repo.insert = AsyncMock(return_value=1)
+        mock_repo.insert_started = AsyncMock(return_value=1)
+        mock_repo.update_finished = AsyncMock()
+        mock_audit.insert_entry = AsyncMock()
+        mock_audit.cleanup_old = AsyncMock()
         result = await validator.run_once()
 
     assert result["scanned"] == 1
@@ -1034,6 +1078,7 @@ async def test_run_once_deletes_entries_with_no_cached_action():
     with (
         patch("app.cache.cache_validator.SettingsRepository") as mock_settings,
         patch("app.cache.cache_validator.CacheValidatorRepository") as mock_repo,
+        patch("app.cache.cache_validator.CacheValidatorAuditRepository") as mock_audit,
     ):
         mock_settings.get_value = AsyncMock(
             side_effect=lambda key, default="": {
@@ -1041,7 +1086,10 @@ async def test_run_once_deletes_entries_with_no_cached_action():
                 "cache.validator.batch_size": "10",
             }.get(key, default)
         )
-        mock_repo.insert = AsyncMock(return_value=1)
+        mock_repo.insert_started = AsyncMock(return_value=1)
+        mock_repo.update_finished = AsyncMock()
+        mock_audit.insert_entry = AsyncMock()
+        mock_audit.cleanup_old = AsyncMock()
         result = await validator.run_once()
 
     assert result["scanned"] == 0  # Not counted as scanned
@@ -1077,6 +1125,7 @@ async def test_run_once_batch_correct_response_triggers_regeneration():
     with (
         patch("app.cache.cache_validator.SettingsRepository") as mock_settings,
         patch("app.cache.cache_validator.CacheValidatorRepository") as mock_repo,
+        patch("app.cache.cache_validator.CacheValidatorAuditRepository") as mock_audit,
     ):
         mock_settings.get_value = AsyncMock(
             side_effect=lambda key, default="": {
@@ -1088,7 +1137,10 @@ async def test_run_once_batch_correct_response_triggers_regeneration():
                 "cache.validator.reasoning_effort": "low",
             }.get(key, default)
         )
-        mock_repo.insert = AsyncMock(return_value=1)
+        mock_repo.insert_started = AsyncMock(return_value=1)
+        mock_repo.update_finished = AsyncMock()
+        mock_audit.insert_entry = AsyncMock()
+        mock_audit.cleanup_old = AsyncMock()
         result = await validator.run_once()
 
     assert result["scanned"] == 1
@@ -1117,4 +1169,304 @@ def test_readonly_actions_coverage():
 def test_action_contradictions_coverage():
     assert "is now off" in _ACTION_CONTRADICTIONS["turn_on"]
     assert "is now on" in _ACTION_CONTRADICTIONS["turn_off"]
+
+
+# ---------------------------------------------------------------------------
+# Audit trail
+# ---------------------------------------------------------------------------
+
+
+@contextmanager
+def _patch_repos(settings=None):
+    """Patch the settings/run/audit repositories used inside run_once."""
+    with (
+        patch("app.cache.cache_validator.SettingsRepository") as mock_settings,
+        patch("app.cache.cache_validator.CacheValidatorRepository") as mock_repo,
+        patch("app.cache.cache_validator.CacheValidatorAuditRepository") as mock_audit,
+    ):
+        if isinstance(settings, dict):
+            mock_settings.get_value = AsyncMock(side_effect=lambda key, default="": settings.get(key, default))
+        else:
+            mock_settings.get_value = AsyncMock(return_value=settings or "true")
+        mock_repo.insert_started = AsyncMock(return_value=1)
+        mock_repo.update_finished = AsyncMock()
+        mock_audit.insert_entry = AsyncMock()
+        mock_audit.cleanup_old = AsyncMock()
+        yield mock_settings, mock_repo, mock_audit
+
+
+@pytest.mark.asyncio
+async def test_audit_written_for_fallback_consistent():
+    """Batch-failed fallback with a plausible entry records verdict consistent."""
+    entry = _make_entry(service="light/turn_on", response_text="Done, Kitchen Light is now on.")
+    validator = _make_validator(entries=[entry])
+
+    with _patch_repos() as (_, mock_repo, mock_audit):
+        mock_repo.insert_started = AsyncMock(return_value=7)
+        result = await validator.run_once()
+
+    assert result["scanned"] == 1
+    mock_audit.insert_entry.assert_awaited_once()
+    kwargs = mock_audit.insert_entry.await_args.kwargs
+    assert kwargs["run_id"] == 7
+    assert kwargs["entry_id"] == "entry-id-123"
+    assert kwargs["query_text"] == "turn on kitchen light"
+    assert kwargs["language"] == "en"
+    assert kwargs["agent_id"] == "light-agent"
+    assert kwargs["service"] == "light/turn_on"
+    assert kwargs["entity_id"] == "light.kitchen_ceiling"
+    assert kwargs["verdict"] == "consistent"
+    assert kwargs["llm_verdict"] is None
+    assert kwargs["deleted"] is False
+
+
+@pytest.mark.asyncio
+async def test_audit_written_for_correction_with_old_new_texts():
+    """Corrected entries record old/new of response_text and original_response_text."""
+    entry = _make_entry(
+        service="light/turn_off",
+        response_text="Done, Kitchen Light is now on.",
+        entity_id="light.kitchen_ceiling",
+    )
+    entity_index = MagicMock()
+    entity_index.get_by_id_async = AsyncMock(return_value=MagicMock(friendly_name="Kitchen Ceiling"))
+    validator = _make_validator(entries=[entry], entity_index=entity_index)
+
+    with _patch_repos() as (_, _, mock_audit):
+        result = await validator.run_once()
+
+    assert result["corrected"] == 1
+    mock_audit.insert_entry.assert_awaited_once()
+    kwargs = mock_audit.insert_entry.await_args.kwargs
+    assert kwargs["verdict"] == "correct_response"
+    assert kwargs["old_response_text"] == "Done, Kitchen Light is now on."
+    assert kwargs["new_response_text"] == "Done, Kitchen Ceiling is now off."
+    assert kwargs["old_original_response_text"] is None
+    assert kwargs["new_original_response_text"] == "Done, Kitchen Ceiling is now off."
+    assert kwargs["deleted"] is False
+
+
+@pytest.mark.asyncio
+async def test_audit_written_for_invalidate_deletion():
+    """Uncorrectable entries record verdict invalidate with deleted=True."""
+    entry = _make_entry(
+        service="light/turn_off",
+        response_text="Done, Unknown Light is now on.",
+        entity_id="",
+    )
+    validator = _make_validator(entries=[entry])
+
+    with _patch_repos() as (_, _, mock_audit):
+        result = await validator.run_once()
+
+    assert result["deleted"] == 1
+    mock_audit.insert_entry.assert_awaited_once()
+    kwargs = mock_audit.insert_entry.await_args.kwargs
+    assert kwargs["verdict"] == "invalidate"
+    assert kwargs["deleted"] is True
+    assert kwargs["old_response_text"] == "Done, Unknown Light is now on."
+    assert kwargs["new_response_text"] is None
+
+
+@pytest.mark.asyncio
+async def test_audit_written_for_no_action_deletion():
+    """Entries without cached_action record verdict no_action."""
+    entry = ActionCacheEntry.model_construct(
+        query_text="turn off unknown light",
+        language="en",
+        agent_id="light-agent",
+        response_text="Done, Unknown Light is now on.",
+        cached_action=None,
+    )
+    validator = _make_validator(entries=[entry])
+
+    with _patch_repos() as (_, _, mock_audit):
+        result = await validator.run_once()
+
+    assert result["deleted"] == 1
+    mock_audit.insert_entry.assert_awaited_once()
+    kwargs = mock_audit.insert_entry.await_args.kwargs
+    assert kwargs["verdict"] == "no_action"
+    assert kwargs["deleted"] is True
+    assert kwargs["service"] is None
+    assert kwargs["entity_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_audit_written_for_batch_consistent():
+    """Batch result consistent records the raw LLM verdict."""
+    entry = _make_entry(service="light/turn_on", response_text="Done, Kitchen Light is now on.")
+    llm_client = AsyncMock()
+    llm_client.complete = AsyncMock(return_value='["consistent"]')
+    validator = _make_validator(entries=[entry], llm_client=llm_client)
+
+    settings = {
+        "cache.validator.enabled": "true",
+        "cache.validator.batch_size": "10",
+        "cache.validator.model": "groq/openai/gpt-oss-20b",
+        "cache.validator.temperature": "0.2",
+        "cache.validator.reasoning_effort": "low",
+        "cache.validator.audit_retention_days": "90",
+    }
+    with _patch_repos(settings) as (_, _, mock_audit):
+        result = await validator.run_once()
+
+    assert result["scanned"] == 1
+    mock_audit.insert_entry.assert_awaited_once()
+    kwargs = mock_audit.insert_entry.await_args.kwargs
+    assert kwargs["verdict"] == "consistent"
+    assert kwargs["llm_verdict"] == "consistent"
+    assert kwargs["deleted"] is False
+
+
+@pytest.mark.asyncio
+async def test_audit_correct_response_regeneration_failure_records_invalidate():
+    """Batch correct_response with failed regeneration records invalidate + deleted."""
+    entry = _make_entry(
+        service="light/turn_off",
+        response_text="Done, Kitchen Light is now on.",
+        entity_id="",
+    )
+    llm_client = AsyncMock()
+    llm_client.complete = AsyncMock(side_effect=['["correct_response"]', RuntimeError("LLM down")])
+    validator = _make_validator(entries=[entry], llm_client=llm_client)
+
+    settings = {
+        "cache.validator.enabled": "true",
+        "cache.validator.batch_size": "10",
+        "cache.validator.model": "groq/openai/gpt-oss-20b",
+        "cache.validator.temperature": "0.2",
+        "cache.validator.reasoning_effort": "low",
+        "cache.validator.audit_retention_days": "90",
+    }
+    with _patch_repos(settings) as (_, _, mock_audit):
+        result = await validator.run_once()
+
+    assert result["deleted"] == 1
+    mock_audit.insert_entry.assert_awaited_once()
+    kwargs = mock_audit.insert_entry.await_args.kwargs
+    assert kwargs["verdict"] == "invalidate"
+    assert kwargs["llm_verdict"] == "correct_response"
+    assert kwargs["deleted"] is True
+    assert kwargs["old_response_text"] == "Done, Kitchen Light is now on."
+
+
+@pytest.mark.asyncio
+async def test_audit_written_for_per_entry_exception():
+    """A failing entry update records verdict error without aborting the run."""
+    entry = _make_entry(service="light/turn_on", response_text="Done, Kitchen Light is now on.")
+    llm_client = AsyncMock()
+    llm_client.complete = AsyncMock(return_value='["consistent"]')
+    validator = _make_validator(entries=[entry], llm_client=llm_client)
+    validator._cache_manager.update_action_entry = AsyncMock(side_effect=RuntimeError("store down"))
+
+    settings = {
+        "cache.validator.enabled": "true",
+        "cache.validator.batch_size": "10",
+        "cache.validator.model": "groq/openai/gpt-oss-20b",
+        "cache.validator.temperature": "0.2",
+        "cache.validator.reasoning_effort": "low",
+        "cache.validator.audit_retention_days": "90",
+    }
+    with _patch_repos(settings) as (_, _, mock_audit):
+        result = await validator.run_once()
+
+    assert result["errors"] == 1
+    mock_audit.insert_entry.assert_awaited_once()
+    kwargs = mock_audit.insert_entry.await_args.kwargs
+    assert kwargs["verdict"] == "error"
+    assert kwargs["old_response_text"] == "Done, Kitchen Light is now on."
+    assert kwargs["deleted"] is False
+
+
+@pytest.mark.asyncio
+async def test_audit_written_before_invalidate():
+    """The audit row is written before the entry is invalidated."""
+    entry = _make_entry(
+        service="light/turn_off",
+        response_text="Done, Unknown Light is now on.",
+        entity_id="",
+    )
+    validator = _make_validator(entries=[entry])
+
+    with _patch_repos() as (_, _, mock_audit):
+        parent = MagicMock()
+        parent.attach_mock(mock_audit.insert_entry, "insert_entry")
+        parent.attach_mock(validator._cache_manager.invalidate_action, "invalidate_action")
+        await validator.run_once()
+
+    names = [call[0] for call in parent.mock_calls]
+    assert "insert_entry" in names
+    assert "invalidate_action" in names
+    assert names.index("insert_entry") < names.index("invalidate_action")
+
+
+@pytest.mark.asyncio
+async def test_run_row_inserted_before_audit_and_updated_at_end():
+    """insert_started precedes per-entry audit writes; update_finished closes the run."""
+    entry = _make_entry(service="light/turn_on", response_text="Done, Kitchen Light is now on.")
+    validator = _make_validator(entries=[entry])
+
+    with _patch_repos() as (_, mock_repo, mock_audit):
+        parent = MagicMock()
+        parent.attach_mock(mock_repo.insert_started, "insert_started")
+        parent.attach_mock(mock_audit.insert_entry, "insert_entry")
+        parent.attach_mock(mock_repo.update_finished, "update_finished")
+        result = await validator.run_once()
+
+    names = [call[0] for call in parent.mock_calls]
+    assert names.index("insert_started") < names.index("insert_entry")
+    assert names.index("insert_entry") < names.index("update_finished")
+
+    mock_repo.insert_started.assert_awaited_once()
+    mock_repo.update_finished.assert_awaited_once()
+    assert mock_repo.update_finished.await_args[0][0] == 1
+    call_kwargs = mock_repo.update_finished.await_args.kwargs
+    assert call_kwargs["scanned"] == result["scanned"]
+    assert call_kwargs["finished_at"] == result["finished_at"]
+
+
+@pytest.mark.asyncio
+async def test_prune_uses_default_retention():
+    """cleanup_old runs with the configured (default 90) retention."""
+    settings = {
+        "cache.validator.enabled": "true",
+        "cache.validator.audit_retention_days": "90",
+    }
+    validator = _make_validator(entries=[])
+
+    with _patch_repos(settings) as (_, _, mock_audit):
+        await validator.run_once()
+
+    mock_audit.cleanup_old.assert_awaited_once_with(90)
+
+
+@pytest.mark.asyncio
+async def test_prune_uses_custom_retention():
+    """A custom retention value is passed through to cleanup_old."""
+    settings = {
+        "cache.validator.enabled": "true",
+        "cache.validator.audit_retention_days": "30",
+    }
+    validator = _make_validator(entries=[])
+
+    with _patch_repos(settings) as (_, _, mock_audit):
+        await validator.run_once()
+
+    mock_audit.cleanup_old.assert_awaited_once_with(30)
+
+
+@pytest.mark.asyncio
+async def test_prune_skipped_when_retention_zero():
+    """Retention of 0 disables pruning."""
+    settings = {
+        "cache.validator.enabled": "true",
+        "cache.validator.audit_retention_days": "0",
+    }
+    validator = _make_validator(entries=[])
+
+    with _patch_repos(settings) as (_, _, mock_audit):
+        await validator.run_once()
+
+    mock_audit.cleanup_old.assert_not_awaited()
     assert _ACTION_CONTRADICTIONS["toggle"] == []

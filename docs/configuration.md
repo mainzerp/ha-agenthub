@@ -61,6 +61,7 @@ The export and import API surface uses the `action` tier name.
 | `cache.validator.reasoning_effort` | `low` | string | Reasoning effort for cache validator LLM calls |
 | `cache.validator.max_tokens` | `1024` | int | Max tokens for cache validator LLM regeneration |
 | `cache.validator.batch_size` | `10` | int | Number of cache entries to validate in a single LLM batch call |
+| `cache.validator.audit_retention_days` | `90` | int | Days to retain per-entry validator audit records (`0` = keep forever) |
 
 ### Embedding Settings
 
