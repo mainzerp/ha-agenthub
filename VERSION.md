@@ -1,12 +1,18 @@
 # Version
 
-**Current Version:** 2.0.0
+**Current Version:** 2.0.1
 
 ## Recent Changes
 
-(tracking changes since 2.0.0)
+(tracking changes since 2.0.1)
 
 ## Version History
+
+### 2.0.1 (PATCH) -- no-op executions never enter the action cache
+
+(commit 5583d06)
+
+- fix(cache): executor no-op short-circuits (entity already in the target state) are now marked `noop=True`, propagated via `ActionExecuted`, and skipped at action-cache storage -- previously the state-dependent response text ("already off") was cached and would be factually wrong when replayed later (commit 5583d06)
 
 ### 2.0.0 (MAJOR) -- HA floor 2025.4, official chat-log/TTS streaming replaces push machinery
 
