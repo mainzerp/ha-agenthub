@@ -202,6 +202,7 @@ async def execute_media_action(
             "success": True,
             "entity_id": entity_id,
             "new_state": current_state,
+            "noop": True,
             "speech": f"Done, {friendly_name} is already {current_state}.",
         }
 

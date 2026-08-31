@@ -502,6 +502,7 @@ class TestExecuteLightAction:
         assert result["success"] is True
         assert result["new_state"] == "on"
         assert "already on" in result["speech"]
+        assert result["noop"] is True
         ha_client.call_service.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -513,6 +514,7 @@ class TestExecuteLightAction:
         assert result["success"] is True
         assert result["new_state"] == "off"
         assert "already off" in result["speech"]
+        assert result["noop"] is True
         ha_client.call_service.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -522,6 +524,7 @@ class TestExecuteLightAction:
         result = await execute_light_action(action, ha_client, entity_index, entity_matcher)
 
         assert result["success"] is True
+        assert "noop" not in result
         ha_client.call_service.assert_awaited_once()
 
     @pytest.mark.asyncio
@@ -531,6 +534,7 @@ class TestExecuteLightAction:
         result = await execute_light_action(action, ha_client, entity_index, entity_matcher)
 
         assert result["success"] is True
+        assert "noop" not in result
         ha_client.call_service.assert_awaited_once()
 
 

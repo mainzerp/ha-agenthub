@@ -124,6 +124,41 @@ class TestCacheOrchestratorEdgeCases:
         cm.store_action_async.assert_not_called()
 
     # ------------------------------------------------------------------
+    # G8: noop=True should skip storage
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_noop_skips_storage(self):
+        """G8: action_executed with noop=True should skip all cache storage."""
+        co, cm = _make_cache_orchestrator()
+        with (
+            patch.object(co, "_get_bool_setting_impl", new=AsyncMock(return_value=True)),
+            patch.object(co, "legacy_pipeline_enabled", return_value=False),
+        ):
+            result = await co.store_after_dispatch(
+                user_text="turn off light",
+                language="en",
+                target_agent="light-agent",
+                condensed_task="turn off light",
+                confidence=0.95,
+                speech="Done, Kitchen is already off.",
+                original_response_text="Done, Kitchen is already off.",
+                action_executed={
+                    "success": True,
+                    "action": "turn_off",
+                    "entity_id": "light.kitchen",
+                    "new_state": "off",
+                    "noop": True,
+                    "service_data": {},
+                },
+                has_error=False,
+                task=IngressTask(description="turn off light"),
+            )
+        assert result == (False, False)
+        cm.store_routing_async.assert_not_called()
+        cm.store_action_async.assert_not_called()
+
+    # ------------------------------------------------------------------
     # G8: condition in service_data should skip storage
     # ------------------------------------------------------------------
 

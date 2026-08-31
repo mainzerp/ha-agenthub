@@ -229,6 +229,7 @@ exact-hash miss); the action cache is exact-hash only:
   - **Hit** (exact hash match): Returns the cached response directly (optionally rewritten by the rewrite agent for variety).
   - **Miss**: No cache involvement; the request proceeds through the full agent pipeline.
   - Max entries: 50,000 with LRU eviction.
+  - No-op executions (entity already in the target state) are never stored: their response text is state-dependent and would be wrong on replay.
 
 Cache entries are reactively invalidated when an executed action fails. Entries are also invalidated when relevant entity fields change (name, `area_id`, `device_id`, hidden, disabled, aliases, labels) and visibility is rechecked on action-cache replay.
 

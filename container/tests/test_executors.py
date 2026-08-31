@@ -137,6 +137,7 @@ class TestClimateExecutor:
         )
         assert result["success"] is True
         assert "already off" in result["speech"]
+        assert result["noop"] is True
         ha.call_service.assert_not_awaited()
 
     async def test_turn_on_skips_when_already_heat(self):
@@ -151,6 +152,7 @@ class TestClimateExecutor:
         )
         assert result["success"] is True
         assert "already" in result["speech"]
+        assert result["noop"] is True
         ha.call_service.assert_not_awaited()
 
 
@@ -222,6 +224,7 @@ class TestSecurityExecutor:
         )
         assert result["success"] is True
         assert "already locked" in result["speech"]
+        assert result["noop"] is True
         ha.call_service.assert_not_awaited()
 
 
@@ -243,6 +246,7 @@ class TestCoverExecutor:
         )
         assert result["success"] is True
         assert "already open" in result["speech"]
+        assert result["noop"] is True
         ha.call_service.assert_not_awaited()
 
     async def test_close_cover_skips_when_already_closed(self):
@@ -257,6 +261,7 @@ class TestCoverExecutor:
         )
         assert result["success"] is True
         assert "already closed" in result["speech"]
+        assert result["noop"] is True
         ha.call_service.assert_not_awaited()
 
 
@@ -1584,6 +1589,7 @@ class TestMediaExecutor:
         )
         assert result["success"] is True
         assert "already off" in result["speech"]
+        assert result["noop"] is True
         ha.call_service.assert_not_awaited()
 
     async def test_play_skips_when_already_playing(self):
@@ -1598,6 +1604,7 @@ class TestMediaExecutor:
         )
         assert result["success"] is True
         assert "already playing" in result["speech"]
+        assert result["noop"] is True
         ha.call_service.assert_not_awaited()
 
 
@@ -1614,6 +1621,7 @@ class TestVacuumExecutor:
         )
         assert result["success"] is True
         assert "already cleaning" in result["speech"]
+        assert result["noop"] is True
         ha.call_service.assert_not_awaited()
 
     async def test_return_to_base_skips_when_already_returning(self):
@@ -1628,6 +1636,7 @@ class TestVacuumExecutor:
         )
         assert result["success"] is True
         assert "already returning" in result["speech"]
+        assert result["noop"] is True
         ha.call_service.assert_not_awaited()
 
 

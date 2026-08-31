@@ -611,6 +611,7 @@ class ActionableAgent(BaseAgent):
                         success=result.get("success", False),
                         new_state=result.get("new_state"),
                         cacheable=result.get("cacheable", True),
+                        noop=result.get("noop", False),
                         # P1-5: forward the action's structured parameters
                         # (brightness, color_temp, transition, ...) so the
                         # orchestrator can persist them on the response

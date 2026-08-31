@@ -459,6 +459,10 @@ class CacheOrchestrator:
 
             if action_executed.get("cacheable", True) is False:
                 return False, False
+            # No-op skip (entity already in target state): the speech is
+            # state-dependent and would be wrong on replay -- store nothing.
+            if action_executed.get("noop"):
+                return False, False
             raw_service_data = action_executed.get("service_data") or {}
             if isinstance(raw_service_data, dict) and "condition" in raw_service_data:
                 return False, False

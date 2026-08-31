@@ -174,6 +174,10 @@ class ActionExecuted(BaseModel):
     success: bool = Field(True, description="Whether the action succeeded")
     new_state: str | None = Field(None, description="Entity state after action")
     cacheable: bool = Field(True, description="Whether response may be stored in the response cache")
+    noop: bool = Field(
+        False,
+        description="True when the executor short-circuited because the entity was already in the target state",
+    )
     # P1-5: non-entity service payload parameters (brightness, color_temp,
     # rgb_color, transition, volume_level, ...). The orchestrator
     # replays a whitelisted subset of this on a response-cache hit so
