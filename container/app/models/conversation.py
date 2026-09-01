@@ -79,6 +79,10 @@ class StreamToken(BaseModel):
     token: str
     done: bool = False
     conversation_id: str | None = None
+    # Per-turn trace id, set only on the terminal ``done=True`` frame. The HA
+    # bridge parses only known keys, so this extra field is safe for older
+    # integrations (same compatibility argument as ``timings`` below).
+    trace_id: str | None = None
     mediated_speech: str | None = None
     error: str | None = None
     voice_followup: bool = False

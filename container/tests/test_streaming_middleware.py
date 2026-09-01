@@ -293,6 +293,51 @@ async def test_ws_conversation_mints_per_turn_trace(mock_summary):
     assert "root_span_id" not in ws.scope["state"]
 
 
+@pytest.mark.asyncio
+async def test_sse_done_frame_carries_trace_id():
+    """The terminal SSE frame of ``/api/conversation/stream`` carries the
+    per-request trace id (16 hex chars) minted by TracingMiddleware and
+    exposed on ``request.state.trace_id``."""
+    import json
+
+    import httpx
+
+    from app.api.routes import conversation as conv_routes
+    from tests.conftest import build_integration_test_app
+
+    async def _stream(req):
+        yield {"token": "hi", "conversation_id": "c1", "done": True}
+
+    fake_dispatcher = MagicMock()
+    fake_dispatcher.dispatch_stream = _stream
+
+    app = build_integration_test_app(setup_complete=True, override_api_key=True)
+
+    prev_dispatcher = conv_routes._dispatcher
+    conv_routes.set_dispatcher(fake_dispatcher)
+    try:
+        with patch(
+            "app.db.repository.SetupStateRepository.is_complete",
+            new_callable=AsyncMock,
+            return_value=True,
+        ):
+            transport = httpx.ASGITransport(app=app)
+            async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+                resp = await client.post("/api/conversation/stream", json={"text": "hello"})
+    finally:
+        conv_routes.set_dispatcher(prev_dispatcher)
+
+    assert resp.status_code == 200
+    frames = [json.loads(line[5:]) for line in resp.text.split("\n") if line.startswith("data:")]
+    done_frame = frames[-1]
+    assert done_frame["done"] is True
+    trace_id = done_frame["trace_id"]
+    assert trace_id is not None and len(trace_id) == 16
+    # The frame id is the same per-request id the middleware puts on the
+    # response header.
+    assert trace_id == resp.headers["x-trace-id"]
+
+
 # ---------------------------------------------------------------------------
 # P0: first_frame_ms root-span marker (SSE route stashes it on request.state)
 # ---------------------------------------------------------------------------

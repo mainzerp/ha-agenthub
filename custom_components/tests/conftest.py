@@ -69,6 +69,17 @@ class _FakeTextSelector:
         self.config = config
 
 
+class _FakeSelectSelectorConfig:
+    def __init__(self, options=None, mode=None, **kwargs):
+        self.options = options
+        self.mode = mode
+
+
+class _FakeSelectSelector:
+    def __init__(self, config=None):
+        self.config = config
+
+
 class _MockConversationEntityFeature:
     CONTROL = "control"
 
@@ -127,6 +138,8 @@ def _mock_homeassistant_deps():
             "TextSelector": _FakeTextSelector,
             "TextSelectorConfig": _FakeTextSelectorConfig,
             "TextSelectorType": _FakeTextSelectorType,
+            "SelectSelector": _FakeSelectSelector,
+            "SelectSelectorConfig": _FakeSelectSelectorConfig,
         },
         "homeassistant.components": {},
         "homeassistant.components.assist_pipeline": {},

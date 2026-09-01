@@ -32,6 +32,7 @@ from .const import (
     WS_IDLE_THRESHOLD,
     WS_PATH,
 )
+from .log_shipper import current_conversation_id, current_trace_id
 
 logger = logging.getLogger(__name__)
 
@@ -380,31 +381,42 @@ class HaAgentHubConversationEntity(
         cid = user_input.conversation_id or ""
         text = (user_input.text or "").strip()
         device_id = getattr(user_input, "device_id", None)
-        logger.debug(
-            "ha-agenthub: turn-entry cid=%s device_id=%s text_len=%d",
-            cid,
-            device_id,
-            len(text),
-        )
-        key = (cid, text)
-
-        coalesced = False
-        async with self._coalesce_lock:
-            existing = self._inflight_bridge.get(key)
-            now = time.monotonic()
-            if existing is not None and (now - existing[0]) < self._coalesce_window_sec:
-                bridge_task = existing[1]
-                coalesced = True
-            else:
-                bridge_task = self.hass.async_create_task(
-                    self._async_bridge_with_cleanup(user_input, key, chat_log)
-                )
-                self._inflight_bridge[key] = (now, bridge_task)
-        if coalesced:
-            logger.info(
-                "HA-AgentHub: coalescing duplicate request (same conversation + text) onto in-flight bridge"
+        # Expose the HA conversation id to the log shipper for this turn.
+        # The bridge task created below copies the current task context, so
+        # log records from the whole turn (including the delta-stream
+        # generator) carry the id.
+        cid_token = current_conversation_id.set(cid or None)
+        try:
+            logger.debug(
+                "ha-agenthub: turn-entry cid=%s device_id=%s text_len=%d",
+                cid,
+                device_id,
+                len(text),
             )
-        return await bridge_task
+            key = (cid, text)
+
+            coalesced = False
+            async with self._coalesce_lock:
+                existing = self._inflight_bridge.get(key)
+                now = time.monotonic()
+                if (
+                    existing is not None
+                    and (now - existing[0]) < self._coalesce_window_sec
+                ):
+                    bridge_task = existing[1]
+                    coalesced = True
+                else:
+                    bridge_task = self.hass.async_create_task(
+                        self._async_bridge_with_cleanup(user_input, key, chat_log)
+                    )
+                    self._inflight_bridge[key] = (now, bridge_task)
+            if coalesced:
+                logger.info(
+                    "HA-AgentHub: coalescing duplicate request (same conversation + text) onto in-flight bridge"
+                )
+            return await bridge_task
+        finally:
+            current_conversation_id.reset(cid_token)
 
     async def _async_bridge_with_cleanup(
         self,
@@ -591,6 +603,7 @@ class HaAgentHubConversationEntity(
             "conversation_id": user_input.conversation_id,
             "sanitized": False,
             "voice_followup": False,
+            "trace_id": None,
         }
 
         async def _delta_stream(
@@ -658,6 +671,10 @@ class HaAgentHubConversationEntity(
                         # before emitting).
                         box["sanitized"] = bool(data.get("sanitized", False))
                         box["voice_followup"] = bool(data.get("voice_followup", False))
+                        # Per-turn container trace id (present once the
+                        # container ships it; None against older containers).
+                        box["trace_id"] = data.get("trace_id")
+                        current_trace_id.set(box["trace_id"])
                         # The terminal frame carries ``mediated_speech`` only
                         # when no tokens were streamed.
                         mediated = data.get("mediated_speech")
@@ -764,6 +781,9 @@ class HaAgentHubConversationEntity(
                         user_input.conversation_id,
                     )
                 self._reauth_triggered = False
+                # The container's tracing middleware returns a per-request
+                # trace id on every response; expose it to the log shipper.
+                current_trace_id.set(resp.headers.get("X-Trace-Id"))
                 data = await resp.json()
                 return await self._rest_result(
                     user_input,

@@ -34,6 +34,11 @@ class LogBuffer:
         with self._lock:
             self._buffer.append(entry)
 
+    def add_entry(self, entry: dict[str, Any]) -> None:
+        """Append a pre-built entry dict (used by the log-ingest API)."""
+        with self._lock:
+            self._buffer.append(entry)
+
     def get_entries(
         self,
         level: str | None = None,

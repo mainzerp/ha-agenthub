@@ -539,7 +539,7 @@ class TestHAConfigFlow:
             result = await flow.async_step_init({"url": "http://ha.local/", "api_key": ""})
 
         assert result["type"] == "create_entry"
-        assert result["data"] == {"ws_receive_timeout": 120.0}
+        assert result["data"] == {"ws_receive_timeout": 120.0, "ship_logs": False, "ship_logs_level": "DEBUG"}
         entry.options = result["data"]
         assert entry.options["ws_receive_timeout"] == 120.0
 
@@ -1205,6 +1205,9 @@ class TestHAConfigEntryLifecycle:
         entry.entry_id = "entry-1"
         entry.title = "HA-AgentHub"
         entry.data = {"url": "http://ha.local", "api_key": "token"}
+        # Real dict for options: setup reads ship_logs flags from it (a bare
+        # MagicMock attribute would be truthy and misconfigure the shipper).
+        entry.options = {}
         entry.add_update_listener = MagicMock(side_effect=_add_update_listener)
         entry.async_on_unload = MagicMock()
 

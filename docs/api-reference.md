@@ -122,6 +122,7 @@ data: {"token": "", "done": true, "conversation_id": "abc123"}
 | `token` | string | Token text fragment. |
 | `done` | bool | True on the terminal event. |
 | `conversation_id` | string \| null | Set on the terminal event. |
+| `trace_id` | string \| null | Per-turn trace id (16 hex chars), set on the terminal event; correlates the stream with shipped logs and the traces dashboard. |
 | `mediated_speech` | string \| null | Final mediated speech replacement (set when the personality / mediation pipeline rewrites the streamed tokens; only when no tokens were streamed). |
 | `error` | string \| null | Set when the stream is terminating due to an error. |
 | `voice_followup` | bool | Mirrors the REST `voice_followup` flag on the terminal event. |
@@ -144,6 +145,52 @@ WebSocket endpoint for streaming conversation.
 ```
 
 **Receive:** Stream of token objects, same format as SSE events.
+
+---
+
+## Logs Ingest
+
+### POST /api/logs/ingest
+
+Accept a batch of log records shipped by the HA integration (opt-in `ship_logs` option). Records are appended to the in-memory log buffer with a `source: "ha"` marker and are visible via `GET /api/admin/logs`.
+
+**Auth:** Bearer token
+
+**Limits:** Max 100 records per request, max 256 KB request body, 120 requests/minute per IP.
+
+**Request body:** JSON array of log records:
+
+```json
+[
+  {
+    "timestamp": "2026-01-01T12:00:00.123456+00:00",
+    "level": "INFO",
+    "name": "custom_components.ha_agenthub.conversation",
+    "message": "Processing user request",
+    "lineno": 380,
+    "module": "conversation",
+    "funcName": "_async_handle_message",
+    "trace_id": "0123abcd5678ef01",
+    "conversation_id": "01JABC"
+  }
+]
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `timestamp` | string | yes | ISO 8601, must be timezone-aware. |
+| `level` | string | yes | One of `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL` (uppercase). |
+| `name` | string | yes | Logger name (max 128 chars). |
+| `message` | string | yes | Formatted message (max 2000 chars). |
+| `lineno` | int | no | Source line number (default 0). |
+| `module` | string | no | Source module name (default `""`). |
+| `funcName` | string | no | Source function name (default `""`). |
+| `trace_id` | string \| null | no | Container per-turn trace id (max 64 chars). |
+| `conversation_id` | string \| null | no | HA conversation id (max 64 chars). |
+
+**Response:** `200 {"accepted": N}`
+
+**Errors:** `401` invalid/missing Bearer token; `413` body over 256 KB; `422` schema validation failure; `429` rate limit exceeded; `503` log buffer unavailable.
 
 ---
 
@@ -829,6 +876,8 @@ Get all spans for a specific trace (for Gantt visualization).
 ### GET /api/admin/logs
 
 List recent log entries with optional filtering and pagination.
+
+Entries shipped by the HA integration via `POST /api/logs/ingest` carry a `source: "ha"` marker (and optional `trace_id` / `conversation_id` context keys); locally captured entries have no `source` key.
 
 **Query parameters:**
 - `level` -- Minimum level: `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`

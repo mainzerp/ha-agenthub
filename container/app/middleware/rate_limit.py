@@ -124,6 +124,12 @@ async def rate_limit_admin(request: Request) -> None:
     await _check_rate_limit(ip, max_requests=300, window_seconds=60, scope="admin")
 
 
+async def rate_limit_log_ingest(request: Request) -> None:
+    """120 requests per minute per IP for /api/logs/ingest (batched shipper traffic)."""
+    ip = _get_client_ip(request)
+    await _check_rate_limit(ip, max_requests=120, window_seconds=60, scope="log_ingest")
+
+
 class WsMessageRateLimiter:
     """Simple token bucket for per-connection WebSocket message rate limiting.
 

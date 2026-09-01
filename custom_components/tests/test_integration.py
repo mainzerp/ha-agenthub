@@ -815,7 +815,11 @@ class TestOptionsFlow:
 
         # The flow manager applies result["data"] to entry.options.
         assert result["type"] == "create_entry"
-        assert result["data"] == {"ws_receive_timeout": 45.0}
+        assert result["data"] == {
+            "ws_receive_timeout": 45.0,
+            "ship_logs": False,
+            "ship_logs_level": "DEBUG",
+        }
         entry.options = result["data"]
         assert entry.options["ws_receive_timeout"] == 45.0
 
@@ -828,6 +832,55 @@ class TestOptionsFlow:
         assert "unique_id" not in update_kwargs
         assert update_kwargs["data"]["url"] == "http://old.local"
         assert update_kwargs["data"]["api_key"] == "stored-token"
+
+    @pytest.mark.asyncio
+    async def test_ship_logs_options_persisted(self):
+        flow, _entry = self._make_flow()
+
+        with patch(
+            "custom_components.ha_agenthub.config_flow._validate_connection",
+            new=AsyncMock(return_value=None),
+        ):
+            result = await flow.async_step_init(
+                {
+                    "url": "http://old.local",
+                    "api_key": "",
+                    "name": "",
+                    "ws_receive_timeout": "45",
+                    "ship_logs": True,
+                    "ship_logs_level": "INFO",
+                }
+            )
+
+        assert result["type"] == "create_entry"
+        assert result["data"] == {
+            "ws_receive_timeout": 45.0,
+            "ship_logs": True,
+            "ship_logs_level": "INFO",
+        }
+
+    @pytest.mark.asyncio
+    async def test_ship_logs_level_out_of_list_falls_back_to_default(self):
+        flow, _entry = self._make_flow()
+
+        with patch(
+            "custom_components.ha_agenthub.config_flow._validate_connection",
+            new=AsyncMock(return_value=None),
+        ):
+            result = await flow.async_step_init(
+                {
+                    "url": "http://old.local",
+                    "api_key": "",
+                    "name": "",
+                    "ws_receive_timeout": "45",
+                    "ship_logs": True,
+                    "ship_logs_level": "TRACE",
+                }
+            )
+
+        assert result["type"] == "create_entry"
+        assert result["data"]["ship_logs"] is True
+        assert result["data"]["ship_logs_level"] == "DEBUG"
 
     @pytest.mark.asyncio
     async def test_invalid_timeout_shows_form_error_without_validation(self):
@@ -869,7 +922,11 @@ class TestOptionsFlow:
             )
 
         assert result["type"] == "create_entry"
-        assert result["data"] == {"ws_receive_timeout": 30.0}
+        assert result["data"] == {
+            "ws_receive_timeout": 30.0,
+            "ship_logs": False,
+            "ship_logs_level": "DEBUG",
+        }
         flow.hass.config_entries.async_update_entry.assert_called_once()
         update_kwargs = flow.hass.config_entries.async_update_entry.call_args.kwargs
         assert update_kwargs["unique_id"] == "http://new.local"
@@ -1002,9 +1059,10 @@ class TestReauthTriggerOnAuthFailure:
         return entity
 
     class _FakeResponse:
-        def __init__(self, status, payload=None):
+        def __init__(self, status, payload=None, headers=None):
             self.status = status
             self._payload = payload or {}
+            self.headers = headers or {}
 
         async def __aenter__(self):
             return self
@@ -1118,9 +1176,10 @@ class TestUserIdForwarding:
         return user_input
 
     class _FakeResponse:
-        def __init__(self, status, payload=None):
+        def __init__(self, status, payload=None, headers=None):
             self.status = status
             self._payload = payload or {}
+            self.headers = headers or {}
 
         async def __aenter__(self):
             return self
@@ -1333,9 +1392,10 @@ class _WsStreamTestBase:
     """Shared helpers for the WS streaming / REST fallback tests."""
 
     class _FakeResponse:
-        def __init__(self, status, payload=None):
+        def __init__(self, status, payload=None, headers=None):
             self.status = status
             self._payload = payload or {}
+            self.headers = headers or {}
 
         async def __aenter__(self):
             return self

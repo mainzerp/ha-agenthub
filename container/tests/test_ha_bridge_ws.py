@@ -45,6 +45,13 @@ class TestWsAdvanced:
             assert tokens1[-1].get("done") is True
             tokens2 = await client.send_turn("turn on the kitchen light")
             assert tokens2[-1].get("done") is True
+            # Each turn's terminal frame carries the per-turn trace id, and
+            # the two turns mint distinct ids.
+            trace1 = tokens1[-1].get("trace_id")
+            trace2 = tokens2[-1].get("trace_id")
+            assert trace1 is not None and len(trace1) == 16
+            assert trace2 is not None and len(trace2) == 16
+            assert trace1 != trace2
 
     async def test_ws_rate_limit_returns_error(self, light_scenario_app, _reset_rate_limit_store):
         """Exceed 20 burst messages; expect rate-limit error JSON."""

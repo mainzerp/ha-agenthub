@@ -232,6 +232,18 @@ Trace previews in the dashboard and stored trace summaries are sanitized before 
 
 Logs include timestamp, level, logger name, and message.
 
+## Shipped HA Logs Not Visible
+
+**Symptoms:** `ship_logs` is enabled in the HA integration options, but no entries from `custom_components.ha_agenthub` appear under `GET /api/admin/logs` or the dashboard logs view.
+
+**Checks:**
+
+- Is the `ship_logs` option actually enabled in the integration options dialog, and was the entry reloaded afterwards?
+- Is `ship_logs_level` set low enough? The level gate is on the shipper handler only -- the HA logger's own level still applies, so records below the effective HA log level never reach the shipper.
+- Is the container reachable from HA and the API key correct? A 401 from `/api/logs/ingest` triggers the integration's reauth flow; other failures drop the batch silently (drop-and-count with exponential backoff, no requeue).
+- When filtering the admin logs view by level, use the uppercase canonical levels (`DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`).
+- The log buffer is in-memory only: a container restart loses all previously shipped HA logs.
+
 ## Empty WebSocket Responses on HA Voice
 
 **Symptoms:** The HA voice pipeline says nothing back after a turn,

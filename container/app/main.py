@@ -81,6 +81,12 @@ def create_app() -> FastAPI:
     app.include_router(health_routes.router)
     app.include_router(setup_router)
     app.include_router(conversation_routes.router)
+
+    # Log ingest router (HA integration log shipping; per-route rate limit)
+    from app.api.routes import log_ingest_api as log_ingest_api_routes
+
+    app.include_router(log_ingest_api_routes.router)
+
     app.include_router(admin_routes.router, dependencies=[Depends(rate_limit_admin)])
     app.include_router(dashboard_api_routes.router, dependencies=[Depends(rate_limit_admin)])
     app.include_router(dashboard_router)

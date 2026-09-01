@@ -93,6 +93,7 @@ def _apply_stream_chunk(
     *,
     first_frame_ms: float | None,
     now_ms: float,
+    trace_id: str | None = None,
 ) -> StreamToken:
     """Populate the reusable per-turn ``frame`` from one dispatcher chunk.
 
@@ -108,6 +109,7 @@ def _apply_stream_chunk(
     frame.token = chunk.get("token") or ""
     frame.done = done
     frame.conversation_id = chunk.get("conversation_id") if done else None
+    frame.trace_id = trace_id if done else None
     frame.mediated_speech = chunk.get("mediated_speech") if done else None
     error = chunk.get("error") if done else None
     if error is not None and not isinstance(error, str):
@@ -284,7 +286,13 @@ async def conversation_sse(
                     first_frame_ms = now_ms
                     # Expose to TracingMiddleware for the root-span marker.
                     request.state.first_frame_ms = first_frame_ms
-                token = _apply_stream_chunk(frame, chunk, first_frame_ms=first_frame_ms, now_ms=now_ms)
+                token = _apply_stream_chunk(
+                    frame,
+                    chunk,
+                    first_frame_ms=first_frame_ms,
+                    now_ms=now_ms,
+                    trace_id=getattr(request.state, "trace_id", None),
+                )
                 yield f"data: {token.model_dump_json()}\n\n"
         finally:
             if span_collector and parent_token is not None:
@@ -392,7 +400,9 @@ async def ws_conversation(
                         # This frame is about to be sent and is therefore the
                         # first frame of the turn.
                         first_frame_ms = now_ms
-                    token = _apply_stream_chunk(frame, chunk, first_frame_ms=first_frame_ms, now_ms=now_ms)
+                    token = _apply_stream_chunk(
+                        frame, chunk, first_frame_ms=first_frame_ms, now_ms=now_ms, trace_id=trace_id
+                    )
                     await websocket.send_json(token.model_dump())
             except WebSocketDisconnect:
                 status = "error"

@@ -31,7 +31,9 @@
           "name": "Name",
           "url": "Container-URL",
           "api_key": "API-Schlüssel",
-          "ws_receive_timeout": "WebSocket-Empfangstimeout (Sekunden)"
+          "ws_receive_timeout": "WebSocket-Empfangstimeout (Sekunden)",
+          "ship_logs": "Logs an Container senden",
+          "ship_logs_level": "Log-Level für Versand"
         }
       }
     },

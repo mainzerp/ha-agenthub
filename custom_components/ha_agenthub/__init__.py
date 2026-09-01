@@ -9,7 +9,16 @@ from homeassistant.const import CONF_API_KEY, CONF_URL, Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryError
 
-from .const import CONF_NAME, DOMAIN, INTEGRATION_TITLE
+from .const import (
+    CONF_NAME,
+    CONF_SHIP_LOGS,
+    CONF_SHIP_LOGS_LEVEL,
+    DEFAULT_SHIP_LOGS,
+    DEFAULT_SHIP_LOGS_LEVEL,
+    DOMAIN,
+    INTEGRATION_TITLE,
+)
+from .log_shipper import LogShipper
 
 # Config entries created by the old ``agent_assist`` integration.
 _LEGACY_ENTRY_TITLES = frozenset({"Agent Assist"})
@@ -111,6 +120,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         "api_key": api_key,
     }
 
+    # Opt-in log shipping to the container (entry-scoped lifecycle).
+    shipper = None
+    if entry.options.get(CONF_SHIP_LOGS, DEFAULT_SHIP_LOGS):
+        shipper = LogShipper(
+            url,
+            api_key,
+            entry.options.get(CONF_SHIP_LOGS_LEVEL, DEFAULT_SHIP_LOGS_LEVEL),
+        )
+        shipper.start(hass, entry)
+    hass.data[DOMAIN][entry.entry_id]["log_shipper"] = shipper
+
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     return True
 
@@ -119,6 +139,9 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload HA-AgentHub config entry."""
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if unload_ok:
+        shipper = hass.data[DOMAIN][entry.entry_id].get("log_shipper")
+        if shipper:
+            await shipper.stop()
         hass.data[DOMAIN].pop(entry.entry_id, None)
         if not hass.data[DOMAIN]:
             hass.data.pop(DOMAIN, None)

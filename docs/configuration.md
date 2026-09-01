@@ -343,3 +343,17 @@ MCP tools are discovered automatically after connection and can be assigned to s
 - **Live Input Sanitization**: REST, SSE, WebSocket, and dashboard chat turns are sanitized once at ingress before they become `AgentTask` text. The sanitizer strips null/control characters, applies the configured length bound, and preserves normal entity and room names, including non-English characters such as German umlauts.
 - **Prompt-Injection Detection**: Known prompt-injection patterns are detected on the sanitized live text and propagated as additive task context metadata. Detection is not a hard rejection; deterministic routing, entity resolution, cache lookup, service execution, and action verification continue to use the sanitized plain text.
 - **Prompt Delimiting**: Free-form user content is wrapped with explicit user-input delimiters before it is placed in LLM prompt messages. The delimited form is only used at LLM message boundaries; cache keys, verbatim terms, entity matching, and Home Assistant service payloads use the sanitized plain text.
+
+## Home Assistant Integration Options
+
+These options live in the HA integration's options dialog (Settings -> Devices & Services -> HA-AgentHub -> Configure), not in the container. Changing them reloads the config entry.
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `ship_logs` | `false` | Ship the integration's own log records (`custom_components.ha_agenthub` package logger) to the container's log buffer via `POST /api/logs/ingest`, batched every 5 seconds. |
+| `ship_logs_level` | `DEBUG` | Minimum level for shipped records: `DEBUG`, `INFO`, `WARNING`, or `ERROR`. Gated by a handler-level filter only; the HA logger's own level still applies, so records below the effective HA log level never reach the shipper. |
+
+Notes:
+
+- Log content is shipped **as-is**; secret scrubbing is the shipper's responsibility (the container does not redact ingested records). Only the integration's own package logger is captured.
+- Shipped logs are **in-memory only** in the container's log buffer and are lost on container restart.

@@ -19,6 +19,8 @@ from homeassistant.const import CONF_API_KEY, CONF_URL
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.selector import (
+    SelectSelector,
+    SelectSelectorConfig,
     TextSelector,
     TextSelectorConfig,
     TextSelectorType,
@@ -26,12 +28,17 @@ from homeassistant.helpers.selector import (
 
 from .const import (
     CONF_NAME,
+    CONF_SHIP_LOGS,
+    CONF_SHIP_LOGS_LEVEL,
     CONF_WS_RECEIVE_TIMEOUT,
     DEFAULT_CONTAINER_URL,
+    DEFAULT_SHIP_LOGS,
+    DEFAULT_SHIP_LOGS_LEVEL,
     DEFAULT_WS_RECEIVE_TIMEOUT,
     DOMAIN,
     HEALTH_PATH,
     INTEGRATION_TITLE,
+    SHIP_LOGS_LEVELS,
 )
 
 logger = logging.getLogger(__name__)
@@ -81,6 +88,16 @@ def _build_options_schema(current: dict[str, Any]) -> vol.Schema:
                     CONF_WS_RECEIVE_TIMEOUT, DEFAULT_WS_RECEIVE_TIMEOUT
                 ),
             ): TextSelector(),
+            vol.Optional(
+                CONF_SHIP_LOGS,
+                default=current.get(CONF_SHIP_LOGS, DEFAULT_SHIP_LOGS),
+            ): bool,
+            vol.Optional(
+                CONF_SHIP_LOGS_LEVEL,
+                default=current.get(CONF_SHIP_LOGS_LEVEL, DEFAULT_SHIP_LOGS_LEVEL),
+            ): SelectSelector(
+                SelectSelectorConfig(options=SHIP_LOGS_LEVELS, mode="dropdown")
+            ),
         }
     )
 
@@ -243,6 +260,22 @@ class HaAgentHubOptionsFlow(OptionsFlow):
                 except (TypeError, ValueError):
                     errors[CONF_WS_RECEIVE_TIMEOUT] = "invalid_timeout"
                 else:
+                    ship_logs = bool(
+                        user_input.get(
+                            CONF_SHIP_LOGS,
+                            current.get(CONF_SHIP_LOGS, DEFAULT_SHIP_LOGS),
+                        )
+                    )
+                    ship_logs_level = str(
+                        user_input.get(
+                            CONF_SHIP_LOGS_LEVEL,
+                            current.get(CONF_SHIP_LOGS_LEVEL, DEFAULT_SHIP_LOGS_LEVEL),
+                        )
+                    )
+                    # The selector constrains UI input; fall back to the
+                    # default for out-of-list values instead of a new error.
+                    if ship_logs_level not in SHIP_LOGS_LEVELS:
+                        ship_logs_level = DEFAULT_SHIP_LOGS_LEVEL
                     new_api_key = (user_input.get(CONF_API_KEY) or "").strip()
                     api_key = new_api_key or current.get(CONF_API_KEY, "")
                     new_name = (user_input.get(CONF_NAME) or "").strip()
@@ -284,7 +317,11 @@ class HaAgentHubOptionsFlow(OptionsFlow):
                             self._entry, **entry_updates
                         )
                         return self.async_create_entry(
-                            data={CONF_WS_RECEIVE_TIMEOUT: ws_receive_timeout}
+                            data={
+                                CONF_WS_RECEIVE_TIMEOUT: ws_receive_timeout,
+                                CONF_SHIP_LOGS: ship_logs,
+                                CONF_SHIP_LOGS_LEVEL: ship_logs_level,
+                            }
                         )
 
         return self.async_show_form(
