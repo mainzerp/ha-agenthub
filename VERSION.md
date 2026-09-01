@@ -1,12 +1,24 @@
 # Version
 
-**Current Version:** 2.1.0
+**Current Version:** 2.2.0
 
 ## Recent Changes
 
-(tracking changes since 2.1.0)
+(tracking changes since 2.2.0)
 
 ## Version History
+
+### 2.2.0 (MINOR) -- HA integration log shipping + voice-path fixes
+
+(commits 117d502, 98d80b2, d7742da)
+
+- feat(logs): the HA integration can ship its log records to the container -- opt-in options toggle + level selector (default off), batched POST /api/logs/ingest (every 5 s, queue 500 / batch 100, drop-and-count with backoff); entries appear with source "ha" in the container log stream/dashboard (commit 117d502)
+- feat(logs): trace correlation -- the container returns trace_id on WS/SSE done frames (StreamToken.trace_id; X-Trace-Id header already existed on REST), and shipped integration logs carry trace_id/conversation_id (commit 117d502)
+- fix(integration): ESP intent-failed on every REST fallback turn -- the integration awaited the sync ChatLog.async_add_assistant_content_without_tools (TypeError); confirmed on HA 2026.8.3 (commit d7742da)
+- fix(integration): WS_IDLE_THRESHOLD 60 -> 25 s so dead-socket probes happen before uvicorn's 40 s idle kill (ws-ping-interval 30 + ws-ping-timeout 10) -- spaced-out voice commands use WS again instead of always falling back to REST (commit d7742da)
+- fix(container): routing-cache re-poisoning loop closed -- a poisoned served routing entry is invalidated BEFORE store_after_dispatch and no new routing row is stored for that turn (commit d7742da)
+- fix(integration): ConversationResult carries the HA-side conversation_id on all paths (container id no longer forwarded; HA regenerates unknown-but-valid ULIDs, which silently broke follow-up session continuity) (commit 98d80b2)
+- fix(container): routing store guard normalized -- action_executed None/non-dict (nothing executed) never stores routing. Behavior change: pure small talk is no longer routing-cached and re-classifies via LLM each turn (commit 98d80b2)
 
 ### 2.1.0 (MINOR) -- cache validator audit trail
 
