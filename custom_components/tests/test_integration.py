@@ -796,6 +796,18 @@ class TestOptionsFlow:
         flow.hass.config_entries.async_entries = MagicMock(return_value=[])
         return flow, entry
 
+    def test_timeout_default_formatted_as_string(self):
+        """The TextSelector default must be a string: stored options hold the
+        timeout as float, and a numeric default makes the HA frontend submit a
+        number for the untouched field, which its selector validation rejects
+        with "expected str"."""
+        from custom_components.ha_agenthub.config_flow import _timeout_default_str
+
+        assert _timeout_default_str(120.0) == "120"
+        assert _timeout_default_str(120) == "120"
+        assert _timeout_default_str(2.5) == "2.5"
+        assert _timeout_default_str("45") == "45"
+
     @pytest.mark.asyncio
     async def test_timeout_persisted_via_create_entry_single_write(self):
         flow, entry = self._make_flow()

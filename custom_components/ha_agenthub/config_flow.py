@@ -62,6 +62,16 @@ def _password_selector() -> TextSelector:
     return TextSelector(TextSelectorConfig(type=TextSelectorType.PASSWORD))
 
 
+def _timeout_default_str(value: Any) -> str:
+    """Format the stored numeric timeout as string for the TextSelector default.
+
+    Stored options hold the timeout as float; a numeric default in a text
+    selector makes the HA frontend submit a number for the untouched field,
+    which its selector validation rejects with "expected str".
+    """
+    return f"{float(value):g}"
+
+
 def _build_user_schema() -> vol.Schema:
     return vol.Schema(
         {
@@ -84,8 +94,8 @@ def _build_options_schema(current: dict[str, Any]) -> vol.Schema:
             vol.Optional(CONF_API_KEY, default=""): _password_selector(),
             vol.Optional(
                 CONF_WS_RECEIVE_TIMEOUT,
-                default=current.get(
-                    CONF_WS_RECEIVE_TIMEOUT, DEFAULT_WS_RECEIVE_TIMEOUT
+                default=_timeout_default_str(
+                    current.get(CONF_WS_RECEIVE_TIMEOUT, DEFAULT_WS_RECEIVE_TIMEOUT)
                 ),
             ): TextSelector(),
             vol.Optional(
