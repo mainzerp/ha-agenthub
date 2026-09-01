@@ -1,12 +1,18 @@
 # Version
 
-**Current Version:** 2.2.0
+**Current Version:** 2.2.1
 
 ## Recent Changes
 
-(tracking changes since 2.2.0)
+(tracking changes since 2.2.1)
 
 ## Version History
+
+### 2.2.1 (PATCH) -- options dialog "expected str" fix
+
+(commit e16adcd)
+
+- fix(integration): the options dialog could not be saved ("expected str") -- the WebSocket receive timeout TextSelector carried a numeric default (stored options hold floats, the fallback constant an int), which the HA frontend selector validation rejects for text fields; the default is now formatted as a string (commit e16adcd)
 
 ### 2.2.0 (MINOR) -- HA integration log shipping + voice-path fixes
 
