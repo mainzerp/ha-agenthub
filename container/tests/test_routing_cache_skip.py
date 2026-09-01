@@ -181,7 +181,10 @@ async def test_read_only_action_stores_routing_only_entry():
 
 
 @pytest.mark.asyncio
-async def test_conversational_answer_stores_routing_only_entry():
+async def test_conversational_answer_without_action_is_not_stored():
+    """Turns that executed nothing (action_executed=None) are unverified and
+    store no routing entry (R-A guard normalisation -- previously stored as
+    conversational routing)."""
     orch = OrchestratorAgent.__new__(OrchestratorAgent)
     orch._cache_manager = MagicMock()
     orch._cache_manager.store_routing_async = AsyncMock()
@@ -202,8 +205,8 @@ async def test_conversational_answer_stores_routing_only_entry():
         has_error=False,
     )
 
-    assert (stored_action, stored_routing) == (False, True)
-    orch._cache_manager.store_routing_async.assert_awaited_once()
+    assert (stored_action, stored_routing) == (False, False)
+    orch._cache_manager.store_routing_async.assert_not_awaited()
     orch._cache_manager.store_action_async.assert_not_awaited()
 
 

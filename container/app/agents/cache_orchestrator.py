@@ -505,13 +505,12 @@ class CacheOrchestrator:
                     return False, False
 
         # R-A (ENTITY_RESOLUTION_REWORK): never cache routing decisions from
-        # unverified turns -- a failed action or a turn that ended in a
-        # clarifying question carries no verified agent/entity binding, so
-        # serving it later would misroute the same phrasing.
-        if isinstance(action_executed, dict):
-            if not action_executed.get("success"):
-                return False, False
-        elif speech.rstrip().endswith("?"):
+        # unverified turns -- a failed action, a turn that ended in a
+        # clarifying question, or a turn where nothing was executed at all
+        # (action_executed None/non-dict, e.g. general-agent answers) carries
+        # no verified agent/entity binding, so serving it later would
+        # misroute the same phrasing.
+        if not isinstance(action_executed, dict) or not action_executed.get("success"):
             return False, False
 
         try:

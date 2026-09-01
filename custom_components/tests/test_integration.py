@@ -1467,6 +1467,51 @@ class TestSameTurnContinueConversation(_WsStreamTestBase):
 
         assert result.continue_conversation is True
 
+    @pytest.mark.asyncio
+    async def test_ws_done_frame_container_conversation_id_not_forwarded(self):
+        """A divergent container conversation_id on the done frame must not
+        leak into the result -- HA owns chat sessions and silently regenerates
+        unknown-but-valid ULIDs, which breaks session continuity."""
+        entity = self._make_entity()
+        done = self._text_frame(
+            {
+                "done": True,
+                "mediated_speech": "Das Licht ist an.",
+                "conversation_id": "container-ulid-x",
+                "sanitized": True,
+            }
+        )
+        ws = self._make_ws(AsyncMock(return_value=done))
+
+        result = await entity._process_via_ws_read(
+            self._make_user_input(), _FakeChatLog(), ws
+        )
+
+        assert result.conversation_id == "c1"
+
+    @pytest.mark.asyncio
+    async def test_ws_done_frame_container_conversation_id_ignored_when_input_none(
+        self,
+    ):
+        """With no HA-side id the result must carry None (HA assigns one
+        itself) -- never the container's correlation id."""
+        entity = self._make_entity()
+        done = self._text_frame(
+            {
+                "done": True,
+                "mediated_speech": "Das Licht ist an.",
+                "conversation_id": "container-ulid-x",
+                "sanitized": True,
+            }
+        )
+        ws = self._make_ws(AsyncMock(return_value=done))
+
+        result = await entity._process_via_ws_read(
+            self._make_user_input(cid=None), _FakeChatLog(), ws
+        )
+
+        assert result.conversation_id is None
+
 
 # ---------------------------------------------------------------------------
 # Chat-log delta streaming (filler preamble + token stream + in-turn result)
@@ -1663,3 +1708,25 @@ class TestDeltaStreaming(_WsStreamTestBase):
         assert [c.content for c in chat_log.added_content] == ["Das Licht ist an."]
         speech = result.response.async_set_speech.call_args.args[0]
         assert speech == "Das Licht ist an."
+
+    @pytest.mark.asyncio
+    async def test_rest_container_conversation_id_not_forwarded(self):
+        """A divergent container conversation_id in the REST response must not
+        override the HA-side id -- HA owns chat sessions and silently
+        regenerates unknown-but-valid ULIDs."""
+        entity = self._make_entity()
+        session = self._FakeSession(
+            self._FakeResponse(
+                200,
+                {
+                    "speech": "Das Licht ist an.",
+                    "conversation_id": "container-ulid-x",
+                    "sanitized": True,
+                },
+            )
+        )
+        entity._session = session
+
+        result = await entity._process_via_rest(self._make_user_input(), _FakeChatLog())
+
+        assert result.conversation_id == "c1"

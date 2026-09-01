@@ -647,9 +647,11 @@ class HaAgentHubConversationEntity(
                         box["tokens"] += token_text
 
                     if data.get("done", False):
-                        box["conversation_id"] = data.get(
-                            "conversation_id", box["conversation_id"]
-                        )
+                        # The container's conversation_id is deliberately NOT
+                        # forwarded into the result: HA owns chat sessions and
+                        # regenerates unknown-but-valid ULIDs, so adopting the
+                        # container id would silently break session continuity
+                        # (box starts from user_input.conversation_id).
                         # P3-1: the backend signals sanitization on the done
                         # frame. Honour it for both ``mediated_speech`` and
                         # accumulated tokens (the orchestrator strips both
@@ -767,7 +769,10 @@ class HaAgentHubConversationEntity(
                     user_input,
                     chat_log,
                     data.get("speech", ""),
-                    data.get("conversation_id", user_input.conversation_id),
+                    # HA owns chat sessions; the container's conversation_id
+                    # is only the container-internal correlation key and is
+                    # deliberately not forwarded into the result.
+                    user_input.conversation_id,
                     sanitized=bool(data.get("sanitized", False)),
                     continue_conversation=bool(data.get("voice_followup", False)),
                 )

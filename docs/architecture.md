@@ -152,7 +152,12 @@ single-burst done, REST) -- HA core keeps the chat session (same
 Answer-leg correlation in the container is keyed strictly by
 `conversation_id`: the classify stage injects the stored history plus a
 previous-agent hint and condenses the short answer against the pending
-question.
+question. On every response path the integration places the HA-side
+`conversation_id` (`user_input.conversation_id`) into the
+`ConversationResult`; the container's own `conversation_id` is a
+container-internal correlation key only and is never forwarded to HA
+(HA core regenerates unknown-but-valid ULIDs, which would silently break
+session continuity).
 
 ### Mediation Streaming
 

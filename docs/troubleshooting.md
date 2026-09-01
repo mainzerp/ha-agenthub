@@ -182,7 +182,7 @@ docker compose restart ha-agenthub
 
 **Symptoms:** After a clarifying question, the microphone does not stay open for the follow-up answer, or the answer is not understood in context.
 
-**How it works now:** every container path that speaks a clarifying question (entity not found, ambiguous recall, deterministic disambiguation) sets `voice_followup=True`. The integration returns `ConversationResult(continue_conversation=True)` in the same turn on every response path (WS token stream, mediated done, single-burst done, REST) -- HA core keeps the chat session (same `conversation_id`) and ESPHome satellites re-listen natively after TTS.
+**How it works now:** every container path that speaks a clarifying question (entity not found, ambiguous recall, deterministic disambiguation) sets `voice_followup=True`. The integration returns `ConversationResult(continue_conversation=True)` in the same turn on every response path (WS token stream, mediated done, single-burst done, REST) -- HA core keeps the chat session (same `conversation_id`) and ESPHome satellites re-listen natively after TTS. The result always carries the HA-side `conversation_id`; the container's internal correlation id is never forwarded to HA.
 
 **Version requirements:**
 

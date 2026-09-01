@@ -295,8 +295,10 @@ class TestVerifiedStoreGate:
         cm.store_action_async.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_informational_answer_is_still_stored(self):
-        """Successful informational answers keep storing (no question mark)."""
+    async def test_informational_answer_without_action_is_not_stored(self):
+        """Turns that executed nothing (action_executed=None) are unverified
+        and store no routing entry -- behaviour changed with the R-A guard
+        normalisation (previously stored as conversational routing)."""
         co, cm = _make_cache_orchestrator()
         with (
             patch.object(co, "_get_bool_setting_impl", new=AsyncMock(return_value=True)),
@@ -313,5 +315,5 @@ class TestVerifiedStoreGate:
                 has_error=False,
                 task=IngressTask(description="hello there"),
             )
-        assert result == (False, True)
-        cm.store_routing_async.assert_awaited_once()
+        assert result == (False, False)
+        cm.store_routing_async.assert_not_called()
