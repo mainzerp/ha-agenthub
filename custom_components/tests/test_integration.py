@@ -33,7 +33,9 @@ class _FakeChatLog:
 
         return _consume()
 
-    async def async_add_assistant_content_without_tools(self, content):
+    def async_add_assistant_content_without_tools(self, content):
+        # Sync @callback in HA core (2025.4+) -- must NOT be a coroutine,
+        # otherwise it masks the await-of-sync bug in the production code.
         self.added_content.append(content)
 
 
@@ -348,6 +350,14 @@ class TestWebSocketReconnect:
     def test_idle_threshold_gt_heartbeat(self):
         const = self._get_reconnect_constants()
         assert const.WS_IDLE_THRESHOLD > const.WS_HEARTBEAT_INTERVAL
+
+    def test_idle_threshold_below_container_idle_kill(self):
+        # uvicorn closes idle /ws/conversation sockets after
+        # ws-ping-interval (30s) + ws-ping-timeout (10s) = 40s. The probe
+        # threshold must stay below that or every request after >40s of
+        # silence sends on a dead socket and falls back to REST.
+        const = self._get_reconnect_constants()
+        assert const.WS_IDLE_THRESHOLD < 40
 
 
 # ---------------------------------------------------------------------------

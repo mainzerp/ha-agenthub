@@ -1322,7 +1322,28 @@ class OrchestratorAgent(BaseAgent):
             ret_span["metadata"]["final_response"] = speech
             ret_span["metadata"]["mediated"] = speech != original_speech
             ret_span["metadata"]["voice_followup"] = voice_followup_effective
-        if not skip_response_cache and target_agent != CANCEL_INTERACTION_AGENT:
+        # R-B (ENTITY_RESOLUTION_REWORK): the served routing-cache entry sent
+        # this turn to the cached agent; when that turn failed (no action or
+        # a failed action) the entry is poison -- invalidate it so the next
+        # identical phrasing re-classifies via LLM. ``has_error`` is too
+        # narrow here; the action_executed signal is the reliable one.
+        # This MUST run before _store_after_dispatch: a poisoned turn may not
+        # store a fresh routing row for the same phrasing, otherwise the cache
+        # re-poisons itself in the very turn that invalidated the served entry
+        # (observed live: misrouted command -> refusal statement -> routing
+        # re-stored -> same misroute on the next attempt).
+        served_entry_poisoned = False
+        if routing_entry_id:
+            ae = action_executed.model_dump() if hasattr(action_executed, "model_dump") else action_executed
+            if not isinstance(ae, dict) or not ae.get("success"):
+                served_entry_poisoned = True
+                await self._cache_orchestrator.invalidate_served_routing(
+                    routing_entry_id,
+                    reason="cached_agent_turn_failed",
+                )
+                if ret_span is not None:
+                    ret_span["metadata"]["routing_cache_invalidated"] = True
+        if not skip_response_cache and target_agent != CANCEL_INTERACTION_AGENT and not served_entry_poisoned:
             cache_stored_action, cache_stored_routing = await self._store_after_dispatch(
                 user_text=user_text,
                 language=language,
@@ -1342,20 +1363,6 @@ class OrchestratorAgent(BaseAgent):
             ret_span["metadata"]["cache_stored_action"] = cache_stored_action
             ret_span["metadata"]["cache_stored_response"] = cache_stored_response
             ret_span["metadata"]["cache_stored_routing"] = cache_stored_routing
-        # R-B (ENTITY_RESOLUTION_REWORK): the served routing-cache entry sent
-        # this turn to the cached agent; when that turn failed (no action or
-        # a failed action) the entry is poison -- invalidate it so the next
-        # identical phrasing re-classifies via LLM. ``has_error`` is too
-        # narrow here; the action_executed signal is the reliable one.
-        if routing_entry_id:
-            ae = action_executed.model_dump() if hasattr(action_executed, "model_dump") else action_executed
-            if not isinstance(ae, dict) or not ae.get("success"):
-                await self._cache_orchestrator.invalidate_served_routing(
-                    routing_entry_id,
-                    reason="cached_agent_turn_failed",
-                )
-                if ret_span is not None:
-                    ret_span["metadata"]["routing_cache_invalidated"] = True
         # ENTITY_RES_REDESIGN Phase 6: remember the acted-on entity (success
         # path only) as an anaphora recency hint for later turns.
         resolved_entities = await extract_resolved_entities(action_executed, getattr(self, "_entity_index", None))

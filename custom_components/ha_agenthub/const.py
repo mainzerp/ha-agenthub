@@ -15,4 +15,9 @@ DEFAULT_WS_RECEIVE_TIMEOUT = 120
 RECONNECT_BASE_DELAY = 1.0
 RECONNECT_MAX_DELAY = 30.0
 WS_HEARTBEAT_INTERVAL = 15
-WS_IDLE_THRESHOLD = 60
+# Must stay below the container's idle kill: uvicorn runs with
+# --ws-ping-interval 30 --ws-ping-timeout 10 (container/Dockerfile), which
+# closes an idle /ws/conversation socket 40s after connect. Probing only
+# after 60s meant every request following >40s of silence hit a dead
+# socket and fell back to REST.
+WS_IDLE_THRESHOLD = 25

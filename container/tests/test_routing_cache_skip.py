@@ -657,6 +657,75 @@ async def test_served_routing_entry_invalidated_when_no_action_executed():
     )
 
 
+@pytest.mark.asyncio
+async def test_poisoned_turn_does_not_restore_routing_entry():
+    """Regression: a routing-cached turn that fails must invalidate the
+    served entry WITHOUT storing a fresh routing row for the same phrasing.
+    Storing first and invalidating after re-poisoned the cache in the same
+    turn (observed live: misrouted command -> refusal statement ->
+    cache_stored_routing=True -> same misroute on the next attempt)."""
+    orch = _make_orchestrator(MagicMock())
+    orch._store_turn = AsyncMock()
+    orch._store_after_dispatch = AsyncMock(return_value=(False, True))
+    orch._cache_orchestrator.invalidate_served_routing = AsyncMock()
+
+    await orch._finalize_post_mediation(
+        task=_make_task("Keller ausschalten."),
+        user_text="Keller ausschalten.",
+        target_agent="general-agent",
+        confidence=1.0,
+        condensed_task="Keller ausschalten.",
+        mediated_speech="Ich kann nur Fragen beantworten.",
+        original_speech="Ich kann nur Fragen beantworten.",
+        action_executed=None,
+        has_error=False,
+        span_collector=None,
+        conversation_id="conv-routing-cache",
+        language="de",
+        turns=[],
+        classifications=[("general-agent", "Keller ausschalten.", 1.0)],
+        voice_followup_requested=False,
+        routing_entry_id="route-poisoned",
+    )
+
+    orch._cache_orchestrator.invalidate_served_routing.assert_awaited_once_with(
+        "route-poisoned", reason="cached_agent_turn_failed"
+    )
+    orch._store_after_dispatch.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_successful_served_turn_still_stores_cache():
+    """Successful routing-cached turns keep the normal store path (the
+    poisoned-turn guard must not suppress legitimate cache writes)."""
+    orch = _make_orchestrator(MagicMock())
+    orch._store_turn = AsyncMock()
+    orch._store_after_dispatch = AsyncMock(return_value=(True, False))
+    orch._cache_orchestrator.invalidate_served_routing = AsyncMock()
+
+    await orch._finalize_post_mediation(
+        task=_make_task("turn on kitchen light"),
+        user_text="turn on kitchen light",
+        target_agent="light-agent",
+        confidence=1.0,
+        condensed_task="Turn on kitchen light",
+        mediated_speech="Done.",
+        original_speech="Done.",
+        action_executed={"action": "turn_on", "entity_id": "light.kitchen", "success": True},
+        has_error=False,
+        span_collector=None,
+        conversation_id="conv-routing-cache",
+        language="en",
+        turns=[],
+        classifications=[("light-agent", "Turn on kitchen light", 1.0)],
+        voice_followup_requested=False,
+        routing_entry_id="route-good",
+    )
+
+    orch._cache_orchestrator.invalidate_served_routing.assert_not_awaited()
+    orch._store_after_dispatch.assert_awaited_once()
+
+
 class TestRoutingCachePersistence:
     """SQLite roundtrip, schema invalidation, and entity invalidation
     coverage (real SqliteCacheStore on tmp_path)."""

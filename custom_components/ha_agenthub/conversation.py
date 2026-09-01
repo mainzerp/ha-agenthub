@@ -814,11 +814,13 @@ class HaAgentHubConversationEntity(
         WS turns stream their content via
         :meth:`chat_log.async_add_delta_content_stream`; REST turns and the
         canned connection-drop message use this so the chat history matches
-        the spoken response.
+        the spoken response. ``async_add_assistant_content_without_tools``
+        is a sync ``@callback`` in HA core (2025.4+): awaiting it raises
+        ``TypeError`` and surfaces as ``intent-failed`` in the pipeline.
         """
         if not content:
             return
-        await chat_log.async_add_assistant_content_without_tools(
+        chat_log.async_add_assistant_content_without_tools(
             conversation.AssistantContent(
                 agent_id=self.entity_id or user_input.agent_id,
                 content=content,
