@@ -426,6 +426,89 @@ class TestLLMReasoningEffort:
         assert "drop_params" not in all_kwargs
 
 
+class TestAdaptiveMaxTokensRetry:
+    """finish_reason=length with empty content -> retry with doubled max_tokens."""
+
+    def _mock_repo(self, mock_repo, max_tokens=1024):
+        mock_repo.get = AsyncMock(
+            return_value={
+                "agent_id": "test-agent",
+                "enabled": True,
+                "model": "cerebras/qwen-3.8-27b",
+                "timeout": 5,
+                "max_iterations": 3,
+                "temperature": 0.2,
+                "max_tokens": max_tokens,
+                "description": "Test",
+                "reasoning_effort": None,
+            }
+        )
+
+    def _choice(self, content, finish_reason):
+        choice = MagicMock()
+        choice.message.content = content
+        choice.finish_reason = finish_reason
+        return MagicMock(choices=[choice], usage=None)
+
+    @patch("litellm.acompletion", new_callable=AsyncMock)
+    @patch("app.llm.client.resolve_provider_params", new_callable=AsyncMock, return_value={})
+    @patch("app.llm.client.AgentConfigRepository")
+    @patch("app.llm.client._LLM_EMPTY_RESPONSE_RETRY_DELAY_SEC", 0)
+    async def test_length_retry_doubles_max_tokens(self, mock_repo, mock_params, mock_acompletion):
+        self._mock_repo(mock_repo, max_tokens=1024)
+        mock_acompletion.side_effect = [
+            self._choice("", "length"),
+            self._choice("light-agent (90%): task", "stop"),
+        ]
+
+        from app.llm.client import complete
+
+        result = await complete("test-agent", [{"role": "user", "content": "test"}])
+
+        assert result == "light-agent (90%): task"
+        assert mock_acompletion.await_count == 2
+        first_kwargs = mock_acompletion.await_args_list[0].kwargs
+        second_kwargs = mock_acompletion.await_args_list[1].kwargs
+        assert first_kwargs["max_tokens"] == 1024
+        assert second_kwargs["max_tokens"] == 2048
+
+    @patch("litellm.acompletion", new_callable=AsyncMock)
+    @patch("app.llm.client.resolve_provider_params", new_callable=AsyncMock, return_value={})
+    @patch("app.llm.client.AgentConfigRepository")
+    @patch("app.llm.client._LLM_EMPTY_RESPONSE_RETRY_DELAY_SEC", 0)
+    async def test_non_length_empty_retry_keeps_budget(self, mock_repo, mock_params, mock_acompletion):
+        self._mock_repo(mock_repo, max_tokens=1024)
+        mock_acompletion.side_effect = [
+            self._choice("", "stop"),
+            self._choice("answer", "stop"),
+        ]
+
+        from app.llm.client import complete
+
+        result = await complete("test-agent", [{"role": "user", "content": "test"}])
+
+        assert result == "answer"
+        assert mock_acompletion.await_count == 2
+        second_kwargs = mock_acompletion.await_args_list[1].kwargs
+        assert second_kwargs["max_tokens"] == 1024
+
+    @patch("litellm.acompletion", new_callable=AsyncMock)
+    @patch("app.llm.client.resolve_provider_params", new_callable=AsyncMock, return_value={})
+    @patch("app.llm.client.AgentConfigRepository")
+    @patch("app.llm.client._LLM_EMPTY_RESPONSE_RETRY_DELAY_SEC", 0)
+    async def test_length_retry_still_empty_raises_with_retry_budget(self, mock_repo, mock_params, mock_acompletion):
+        self._mock_repo(mock_repo, max_tokens=1024)
+        mock_acompletion.side_effect = [
+            self._choice("", "length"),
+            self._choice("", "length"),
+        ]
+
+        from app.llm.client import complete
+
+        with pytest.raises(ValueError, match="max_tokens=2048"):
+            await complete("test-agent", [{"role": "user", "content": "test"}])
+
+
 class TestSanitizeToolName:
     def test_exact_match_returns_unchanged(self):
         from app.llm.client import _sanitize_tool_name

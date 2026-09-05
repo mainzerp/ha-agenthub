@@ -34,6 +34,12 @@ class LLMError(Exception):
 # the request hot path.
 _LLM_EMPTY_RESPONSE_RETRY_DELAY_SEC = 1.0
 
+# Upper bound for the adaptive budget retry: when a completion comes back
+# empty/truncated with finish_reason="length" (typical for reasoning models
+# whose thinking tokens exhaust max_tokens), the retry runs with doubled
+# max_tokens, capped here.
+_LLM_ADAPTIVE_RETRY_MAX_TOKENS_CAP = 32768
+
 
 def _sanitize_tool_name(name: str, valid_names: set[str]) -> str | None:
     """Return a valid tool name, or None if the name cannot be repaired."""
@@ -138,14 +144,34 @@ async def complete(
             )
         content = (response.choices[0].message.content or "").strip() if response.choices[0].message else ""
 
-        # Single retry on empty response (e.g. rate limiting)
+        # Single retry on empty response (e.g. rate limiting). When the
+        # completion was cut off (finish_reason="length" — typical for
+        # reasoning models whose thinking tokens exhaust max_tokens), the
+        # retry runs with a doubled token budget; same-budget retries would
+        # fail again deterministically.
         if not content:
-            logger.warning(
-                "Empty LLM response for agent=%s model=%s finish_reason=%s, retrying once after 1s",
-                agent_id,
-                model,
-                response.choices[0].finish_reason if response.choices else "unknown",
-            )
+            finish_reason_first = response.choices[0].finish_reason if response.choices else "unknown"
+            retry_max_tokens = max_tokens
+            if finish_reason_first == "length" and isinstance(max_tokens, int):
+                retry_max_tokens = min(max_tokens * 2, _LLM_ADAPTIVE_RETRY_MAX_TOKENS_CAP)
+            if retry_max_tokens != max_tokens:
+                logger.warning(
+                    "Empty LLM response for agent=%s model=%s finish_reason=length, "
+                    "retrying once with doubled max_tokens=%s (was %s)",
+                    agent_id,
+                    model,
+                    retry_max_tokens,
+                    max_tokens,
+                )
+                call_kwargs["max_tokens"] = retry_max_tokens
+                max_tokens = retry_max_tokens
+            else:
+                logger.warning(
+                    "Empty LLM response for agent=%s model=%s finish_reason=%s, retrying once after 1s",
+                    agent_id,
+                    model,
+                    finish_reason_first,
+                )
             await asyncio.sleep(_LLM_EMPTY_RESPONSE_RETRY_DELAY_SEC)
             async with _optional_span(span_collector, "llm_provider_call", agent_id=agent_id) as pspan:
                 t0 = time.perf_counter()
