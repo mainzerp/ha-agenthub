@@ -1,12 +1,20 @@
 # Version
 
-**Current Version:** 2.3.0
+**Current Version:** 2.3.1
 
 ## Recent Changes
 
-(tracking changes since 2.3.0)
+(tracking changes since 2.3.1)
 
 ## Version History
+
+### 2.3.1 (PATCH) -- adaptive max_tokens retry
+
+(commit eeda7f3)
+
+- fix(llm): empty completion with finish_reason=length (reasoning models exhausting max_tokens on thinking tokens) now retries once with a doubled token budget (cap 32768) instead of the same budget that failed deterministically; the error message names the retry budget (commit eeda7f3)
+- chore(db): higher seed default max_tokens for fresh installs: orchestrator 1024->4096, twelve agents 1024->2048; send/rewrite/filler unchanged (commit eeda7f3)
+- verified end-to-end on the local deployment: a forced finish_reason=length fires the doubled-budget retry and degrades gracefully; full container suite 3202 passed
 
 ### 2.3.0 (MINOR) -- language-aware orchestrator prompt rework
 
