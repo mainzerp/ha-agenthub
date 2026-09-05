@@ -1,12 +1,22 @@
 # Version
 
-**Current Version:** 2.2.1
+**Current Version:** 2.3.0
 
 ## Recent Changes
 
-(tracking changes since 2.2.1)
+(tracking changes since 2.3.0)
 
 ## Version History
+
+### 2.3.0 (MINOR) -- language-aware orchestrator prompt rework
+
+(commit f201778)
+
+- fix(orchestrator): misrouting when entity names imply the wrong domain (e.g. the light "Ambiente-Wohnen" routed to scene-agent): the routing prompt now puts a hard output contract first, uses prioritized routing rules (action verb beats entity name; scene-agent only on explicit scene wording), and bans invented domain words in condensed tasks (commit f201778)
+- feat(orchestrator): few-shot agent catalog externalized into per-language files `orchestrator_examples_<lang>.txt` (de, en default/fallback, es, fr, it) with language normalization and English fallback -- a new language is a new prompt file, no code change (commit f201778)
+- refactor(orchestrator): removed the phantom `[SEQ]` classification marker; sequential delivery order is enforced by the sanitizer (commit f201778)
+- fix(orchestrator): `strip_seq_rule` markers never matched the prompt, so sequential delivery rules were never stripped when send-agent is unavailable (commit f201778)
+- verified end-to-end against the local deployment (qwen-3.8-27b): 17/17 routing battery incl. the "Ambiente Wohnen" misrouting class; full container suite 3199 passed
 
 ### 2.2.1 (PATCH) -- options dialog "expected str" fix
 
