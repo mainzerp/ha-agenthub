@@ -101,6 +101,8 @@ def _make_classification_engine(cm: ConversationManager, classify_llm) -> Classi
     )
 
     async def _load_prompt(name: str) -> str:
+        if name.startswith("orchestrator_examples"):
+            return "EXAMPLES BLOCK"
         assert name == "orchestrator"
         return "Route the request. {agent_descriptions} {language_hint} {previous_agent_hint}"
 

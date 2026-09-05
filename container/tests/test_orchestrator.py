@@ -33,6 +33,7 @@ _litellm_mock.RateLimitError = _RateLimitError
 sys.modules.setdefault("litellm", _litellm_mock)
 
 import app.llm.client  # noqa: E402,F401 -- force module load for patch targets
+from app.agents.classification_engine import ClassificationEngine  # noqa: E402
 from app.agents.general import GeneralAgent  # noqa: E402
 from app.agents.mediation import _strip_followup_tag  # noqa: E402
 from app.agents.orchestrator import OrchestratorAgent  # noqa: E402
@@ -2735,15 +2736,19 @@ class TestStripSeqRule:
     def test_removes_seq_block(self):
         prompt = (
             "Some preamble.\n"
-            "Sequential dispatch rule:\n"
+            "SEQUENTIAL DELIVERY RULE:\n"
             "- If the user asks to send...\n"
             "  output TWO lines.\n"
-            "Format: <agent-id> (<confidence>%): <condensed task>\n"
+            "END SEQUENTIAL DELIVERY RULE\n"
+            "SEQUENTIAL DELIVERY EXAMPLE:\n"
+            "- send-agent example line\n"
+            "END SEQUENTIAL DELIVERY EXAMPLE\n"
             "Trailing content."
         )
         result = OrchestratorAgent._strip_seq_rule(prompt)
-        assert "Sequential dispatch rule:" not in result
-        assert "Format:" in result
+        assert "SEQUENTIAL DELIVERY RULE" not in result
+        assert "SEQUENTIAL DELIVERY EXAMPLE" not in result
+        assert "send-agent example line" not in result
         assert "Some preamble." in result
         assert "Trailing content." in result
 
@@ -2753,14 +2758,59 @@ class TestStripSeqRule:
         assert result == prompt
 
     def test_noop_when_only_start_marker(self):
-        prompt = "Sequential dispatch rule:\nSome content."
+        prompt = "SEQUENTIAL DELIVERY RULE:\nSome content."
         result = OrchestratorAgent._strip_seq_rule(prompt)
         assert result == prompt
 
     def test_noop_when_end_before_start(self):
-        prompt = "Format: something\nSequential dispatch rule:\nMore."
+        prompt = "END SEQUENTIAL DELIVERY RULE\nSEQUENTIAL DELIVERY RULE:\nMore."
         result = OrchestratorAgent._strip_seq_rule(prompt)
         assert result == prompt
+
+
+# ---------------------------------------------------------------------------
+# Language-specific few-shot examples
+# ---------------------------------------------------------------------------
+
+
+class TestExamplesPromptSelection:
+    """Tests for ClassificationEngine few-shot examples language selection."""
+
+    def test_examples_prompt_name_defaults_to_english(self):
+        assert ClassificationEngine.examples_prompt_name(None) == "orchestrator_examples_en"
+        assert ClassificationEngine.examples_prompt_name("") == "orchestrator_examples_en"
+        assert ClassificationEngine.examples_prompt_name("en") == "orchestrator_examples_en"
+
+    def test_examples_prompt_name_normalizes_region(self):
+        assert ClassificationEngine.examples_prompt_name("de-DE") == "orchestrator_examples_de"
+        assert ClassificationEngine.examples_prompt_name("DE") == "orchestrator_examples_de"
+        assert ClassificationEngine.examples_prompt_name("fr") == "orchestrator_examples_fr"
+
+    @pytest.mark.asyncio
+    async def test_load_agent_examples_uses_language_file(self):
+        async def loader(name: str) -> str:
+            return f"content-of-{name}"
+
+        result = await ClassificationEngine._load_agent_examples(loader, "de")
+        assert result == "content-of-orchestrator_examples_de"
+
+    @pytest.mark.asyncio
+    async def test_load_agent_examples_falls_back_to_english(self):
+        async def loader(name: str) -> str:
+            if name == "orchestrator_examples_fr":
+                raise FileNotFoundError(name)
+            return f"content-of-{name}"
+
+        result = await ClassificationEngine._load_agent_examples(loader, "fr")
+        assert result == "content-of-orchestrator_examples_en"
+
+    @pytest.mark.asyncio
+    async def test_load_agent_examples_raises_when_english_missing(self):
+        async def loader(name: str) -> str:
+            raise FileNotFoundError(name)
+
+        with pytest.raises(FileNotFoundError):
+            await ClassificationEngine._load_agent_examples(loader, "en")
 
 
 # ---------------------------------------------------------------------------

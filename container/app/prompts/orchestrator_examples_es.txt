@@ -1,0 +1,74 @@
+==========================
+3. AGENT CATALOG — POSITIVE / NEGATIVE EXAMPLES
+==========================
+
+Note: entity and device names below are opaque proper names (Rules 1+2);
+they appear verbatim in the user's own language.
+
+- light-agent (lights, switches, plugs):
+  YES "Enciende la luz de la cocina" → light-agent: encender la luz de la cocina
+  YES "Enciende Ambiente Wohnen" → light-agent: encender Ambiente Wohnen
+      ("Ambiente Wohnen" is a device name, not a scene — Rules 1+2)
+  NO  "Activa la escena noche de cine" → scene-agent, NOT light-agent
+
+- scene-agent (Home Assistant scene entities only):
+  YES "Activa la escena Panik" → scene-agent: activar la escena Panik
+  NO  "Enciende el Ambiente en el salón" → light-agent, NOT scene-agent
+
+- climate-agent (temperature, HVAC, fans, humidifiers, weather):
+  YES "Pon el salón a 22 grados" → climate-agent: poner el salón a 22 grados
+  YES "Enciende el ventilador" → climate-agent (fans belong to climate)
+  NO  "Enciende la lámpara del techo" → light-agent, NOT climate-agent
+
+- music-agent (music playback, playlists, music volume):
+  YES "Pon jazz en el dormitorio" → music-agent: poner jazz en el dormitorio
+  NO  "Enciende la tele" → media-agent, NOT music-agent
+  NO  "Para la música" → music-agent, NOT cancel-interaction
+
+- media-agent (TVs, speakers, casting, media players):
+  YES "Enciende la tele del salón" → media-agent: encender la tele del salón
+  NO  "Pon una playlist" → music-agent, NOT media-agent
+
+- cover-agent (blinds, shutters, awnings, garage doors):
+  YES "Abre la persiana del despacho" → cover-agent: abrir la persiana del despacho
+  NO  "Enciende las luces del toldo" → light-agent (switching verb wins, Rule 1)
+
+- vacuum-agent (robot vacuums):
+  YES "Inicia la aspiradora" → vacuum-agent: iniciar la aspiradora
+  NO  "Friega el suelo" → general-agent (no agent can mop)
+
+- timer-agent (timers, alarms, reminders, delayed actions):
+  YES "Pon un temporizador de 5 minutos" → timer-agent: poner temporizador de 5 minutos
+  NO  "¿Qué hay mañana en el calendario?" → calendar-agent, NOT timer-agent
+
+- calendar-agent (calendar events):
+  YES "Añade la cita del dentista para el viernes" → calendar-agent: añadir la cita del dentista para el viernes
+  NO  "Despiértame a las 7" → timer-agent, NOT calendar-agent
+
+- lists-agent (todo and shopping lists):
+  YES "Añade leche a la lista de la compra" → lists-agent: añadir leche a la lista de la compra
+  NO  "¿Qué citas tengo mañana?" → calendar-agent, NOT lists-agent
+
+- security-agent (locks, alarms, cameras, door/window/motion sensors):
+  YES "¿Está la puerta de entrada cerrada con llave?" → security-agent: comprobar la cerradura de la puerta de entrada
+  NO  "Cierra la persiana del despacho" → cover-agent, NOT security-agent
+
+- automation-agent (Home Assistant automations):
+  YES "Desactiva la automatización modo nocturno" → automation-agent: desactivar la automatización modo nocturno
+  NO  "Activa la escena Panik" → scene-agent, NOT automation-agent
+
+- general-agent (fallback, Q&A, web search, conversation):
+  YES "¿Quién inventó la bombilla?" → general-agent: inventor de la bombilla
+  NO  any clear device command → the matching specialized agent
+
+- cancel-interaction (dismiss the assistant interaction):
+  YES "Olvídalo" → cancel-interaction: cancelar la interacción actual
+  NO  "Para la música" → music-agent, NOT cancel-interaction
+
+SEQUENTIAL DELIVERY EXAMPLE:
+- send-agent (delivery only, always the second line):
+  YES "Escribe a Anna que llegaré tarde y envíaselo"
+      general-agent (90%): escribir mensaje a Anna que llegaré tarde
+      send-agent (95%): enviar mensaje a Anna
+  NO  send-agent as the only line — delivery always needs a content agent first
+END SEQUENTIAL DELIVERY EXAMPLE

@@ -152,14 +152,39 @@ class ClassificationEngine:
 
     @staticmethod
     def strip_seq_rule(prompt: str) -> str:
-        """Remove the sequential dispatch rule block when send-agent is unavailable."""
-        start_marker = "Sequential dispatch rule:"
-        end_marker = "Format:"
-        start_idx = prompt.find(start_marker)
-        end_idx = prompt.find(end_marker)
-        if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
-            return prompt[:start_idx] + prompt[end_idx:]
+        """Remove the sequential delivery blocks when send-agent is unavailable.
+
+        Markers must match the blocks in ``prompts/orchestrator.txt``:
+        ``SEQUENTIAL DELIVERY RULE:`` ... ``END SEQUENTIAL DELIVERY RULE`` and
+        ``SEQUENTIAL DELIVERY EXAMPLE:`` ... ``END SEQUENTIAL DELIVERY EXAMPLE``.
+        """
+        for start_marker, end_marker in (
+            ("SEQUENTIAL DELIVERY RULE:", "END SEQUENTIAL DELIVERY RULE"),
+            ("SEQUENTIAL DELIVERY EXAMPLE:", "END SEQUENTIAL DELIVERY EXAMPLE"),
+        ):
+            start_idx = prompt.find(start_marker)
+            end_idx = prompt.find(end_marker)
+            if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
+                prompt = prompt[:start_idx] + prompt[end_idx + len(end_marker) :]
         return prompt
+
+    @staticmethod
+    def examples_prompt_name(language: str | None) -> str:
+        """Few-shot examples prompt name for the given language, default English."""
+        lang = (language or "en").strip().lower().split("-", 1)[0]
+        return f"orchestrator_examples_{lang}" if lang else "orchestrator_examples_en"
+
+    @staticmethod
+    async def _load_agent_examples(load_prompt: Callable[[str], Awaitable[str]], language: str | None) -> str:
+        """Load language-specific few-shot examples, falling back to English."""
+        name = ClassificationEngine.examples_prompt_name(language)
+        try:
+            return await load_prompt(name)
+        except (FileNotFoundError, OSError):
+            if name == "orchestrator_examples_en":
+                raise
+            logger.warning("No orchestrator examples for language, falling back to English: %s", name)
+            return await load_prompt("orchestrator_examples_en")
 
     async def classify(
         self,
@@ -261,6 +286,7 @@ class ClassificationEngine:
         ) as subspan:
             system_prompt_template = await _load_prompt("orchestrator")
             agent_descriptions = await self.build_agent_descriptions()
+            agent_examples = await self._load_agent_examples(_load_prompt, language)
             subspan["span_name"] = "classify.prompt_and_descriptions"
             subspan["status"] = "ok"
         t_prompt = time.perf_counter()
@@ -271,8 +297,10 @@ class ClassificationEngine:
             )
         else:
             language_hint = ""
-        system_prompt = system_prompt_template.replace("{agent_descriptions}", agent_descriptions).replace(
-            "{language_hint}", language_hint
+        system_prompt = (
+            system_prompt_template.replace("{agent_descriptions}", agent_descriptions)
+            .replace("{language_hint}", language_hint)
+            .replace("{agent_examples}", agent_examples)
         )
         if "send-agent" not in agent_descriptions:
             system_prompt = self.strip_seq_rule(system_prompt)
@@ -465,6 +493,7 @@ class ClassificationEngine:
 
         system_prompt_template = await self._load_prompt_async("orchestrator")
         agent_descriptions = await self.build_agent_descriptions()
+        agent_examples = await self._load_agent_examples(self._load_prompt_async, language)
         lang = (language or "").strip().lower()
         if lang and lang != "en":
             language_hint = (
@@ -472,9 +501,10 @@ class ClassificationEngine:
             )
         else:
             language_hint = ""
-        system_prompt = system_prompt_template.replace("{agent_descriptions}", agent_descriptions).replace(
-            "{language_hint}",
-            language_hint,
+        system_prompt = (
+            system_prompt_template.replace("{agent_descriptions}", agent_descriptions)
+            .replace("{language_hint}", language_hint)
+            .replace("{agent_examples}", agent_examples)
         )
         system_prompt += (
             "\n\nHard routing rules:\n"
