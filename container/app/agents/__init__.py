@@ -15,10 +15,12 @@ from app.agents.calendar import CalendarAgent
 from app.agents.custom_loader import CustomAgentLoader, DynamicAgent
 from app.agents.decorator import agent as agent
 from app.agents.decorator import install_all_agents
+from app.agents.filler import FillerAgent
 from app.agents.general import GeneralAgent
 from app.agents.lists import ListsAgent
 from app.agents.orchestrator import OrchestratorAgent
 from app.agents.rewrite import RewriteAgent
+from app.agents.send import SendAgent
 from app.agents.timer import TimerAgent
 
 __all__ = [
@@ -30,6 +32,7 @@ __all__ = [
     "CustomAgentLoader",
     "DomainAgent",
     "DynamicAgent",
+    "FillerAgent",
     "GeneralAgent",
     "LightAgent",
     "ListsAgent",
@@ -39,6 +42,7 @@ __all__ = [
     "RewriteAgent",
     "SceneAgent",
     "SecurityAgent",
+    "SendAgent",
     "TimerAgent",
     "VacuumAgent",
     "agent",
