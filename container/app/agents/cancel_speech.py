@@ -63,7 +63,6 @@ async def generate_cancel_speech(language: str | None, user_text: str | None) ->
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_payload},
                 ],
-                max_tokens=30,
                 temperature=0.6,
             ),
             timeout=_CANCEL_LLM_TIMEOUT_SEC,

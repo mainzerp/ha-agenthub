@@ -97,7 +97,7 @@ class TestGenerateCancelSpeech:
         mock_complete.assert_awaited_once()
         kwargs = mock_complete.await_args.kwargs
         assert kwargs["agent_id"] == "filler-agent"
-        assert kwargs["max_tokens"] == 30
+        assert "max_tokens" not in kwargs  # agent_configs value applies (seed: 1024)
         assert kwargs["temperature"] == 0.6
 
     @patch("app.agents.cancel_speech.complete", new_callable=AsyncMock)
