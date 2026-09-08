@@ -112,7 +112,7 @@ async def startup(self, ctx: PluginContext) -> None:
     )
 ```
 
-**Via Admin API** (for external/third-party servers):
+**Via Admin API** (for external/third-party servers; login first via the `agenthub-csrf` skill to obtain `/tmp/aa_cookies.txt`):
 ```bash
 BASE="${AA_BASE_URL:-http://localhost:8080}"
 

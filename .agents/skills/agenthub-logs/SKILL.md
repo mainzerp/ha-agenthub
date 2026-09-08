@@ -11,17 +11,10 @@ For Home Assistant entity debugging, use the `ha-debug` skill instead.
 
 ## Environment setup
 
-Credentials and the live URL are stored in `secrets/.env.local`:
+Credentials and the live URL are stored in `secrets/.env.local`. Login requires a CSRF token — **use the `agenthub-csrf` skill first** to obtain the session cookie (`/tmp/aa_cookies.txt`). A plain username/password POST fails with 401.
 
 ```bash
 BASE="${AA_BASE_URL:-http://localhost:8080}"
-
-# Login to obtain session cookie
-curl -s -c /tmp/aa_cookies.txt -X POST "$BASE/dashboard/login" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  --data-urlencode username="$AA_USERNAME" \
-  --data-urlencode password="$AA_PASSWORD" \
-  --max-time 10
 ```
 
 All subsequent examples use `$BASE` and `-b /tmp/aa_cookies.txt`.

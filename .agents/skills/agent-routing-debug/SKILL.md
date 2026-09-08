@@ -20,12 +20,8 @@ Check the routing cache for the problematic query:
 ```bash
 BASE="${AA_BASE_URL:-http://localhost:8080}"
 
-# Login to obtain session cookie (credentials from secrets/.env.local)
-curl -s -c /tmp/aa_cookies.txt -X POST "$BASE/dashboard/login" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  --data-urlencode username="$AA_USERNAME" \
-  --data-urlencode password="$AA_PASSWORD" \
-  --max-time 10
+# Login requires a CSRF token — use the `agenthub-csrf` skill first to
+# obtain the session cookie (/tmp/aa_cookies.txt; credentials from secrets/.env.local)
 
 curl -s "$BASE/api/admin/cache/entries?tier=routing&per_page=100" \
   -b /tmp/aa_cookies.txt --max-time 10 | python3 -m json.tool

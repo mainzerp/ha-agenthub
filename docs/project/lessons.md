@@ -24,7 +24,8 @@
 - **Windows pytest hang:** the pytest process hangs on interpreter shutdown AFTER printing the full summary. Take verdicts from the printed summary lines; run long suites as a background task.
 - **Lint:** `ruff check` and `ruff format` must both pass before every push.
 - **Docker:** local development uses `container/docker-compose_local.yml` (not the root compose file). NEVER delete Docker volumes (`down -v`, `volume rm`) unless the user explicitly requests it.
-- **Secrets:** `secrets/.env.local` is JSON blocks (`{"live": {...}, "local": {...}}`), NOT shell-sourceable KEY=VALUE — parse with python, never `source` it.
+- **Secrets:** `secrets/.env.local` is shell-sourceable KEY=VALUE — `source secrets/.env.local`. It defines `AA_LIVE_*` (live instance), `AA_LOCAL_*` (local test instance), and the active `AA_BASE_URL`/`AA_USERNAME`/`AA_PASSWORD` selection used by the skills.
+- **Agent registration pitfall:** the `@agent` decorator only runs at import time — every decorated agent module MUST be imported in `container/app/agents/__init__.py`. `install_all_agents` skips unregistered classes silently (`cls_info is None -> continue`). Guarded by `container/tests/test_agent_registration.py`.
 - **Dashboard login:** needs CSRF — GET `/dashboard/login`, then send the `agent_assist_csrf` cookie value BOTH as cookie and as `csrf_token` form field.
 - **Live environment:** `http://192.168.120.200:6081`; live debugging works via the Admin API (`/api/admin/traces/{id}` span trees are the reliable evidence source).
 

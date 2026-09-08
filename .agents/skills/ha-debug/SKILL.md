@@ -5,17 +5,10 @@ description: Debug Home Assistant entity resolution, cache, and log issues in HA
 
 # Home Assistant Debugging via Admin API
 
-Set environment variables for the target instance (credentials from `secrets/.env.local`):
+Set environment variables for the target instance (credentials from `secrets/.env.local`). Login requires a CSRF token — **use the `agenthub-csrf` skill first** to obtain the session cookie (`/tmp/aa_cookies.txt`). A plain username/password POST fails with 401.
 
 ```bash
 BASE="${AA_BASE_URL:-http://localhost:8080}"
-
-# Login to obtain session cookie
-curl -s -c /tmp/aa_cookies.txt -X POST "$BASE/dashboard/login" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  --data-urlencode username="$AA_USERNAME" \
-  --data-urlencode password="$AA_PASSWORD" \
-  --max-time 10
 ```
 
 ## Debugging workflow
