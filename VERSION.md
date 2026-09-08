@@ -1,12 +1,21 @@
 # Version
 
-**Current Version:** 2.3.1
+**Current Version:** 2.3.2
 
 ## Recent Changes
 
-(tracking changes since 2.3.1)
+(tracking changes since 2.3.2)
 
 ## Version History
+
+### 2.3.2 (PATCH) -- filler-agent registration fix and cancel-ack token budget
+
+(commits 9bd07f4, b525150, 9773a1b)
+
+- fix(agents): restore filler-agent and send-agent registration via package imports -- both modules were never imported after the decorator refactor, so install_all_agents silently skipped them and every filler dispatch failed with "Agent not found: filler-agent"; includes a regression test covering all 17 built-in agent ids (commit 9bd07f4)
+- fix(agents): cancel-ack no longer overrides max_tokens=30 (reasoning models exhausted it on thinking tokens, producing empty acks); the agent_configs value applies instead (1024, admin-adjustable); fresh installs no longer preconfigure a filler-agent model (commit b525150)
+- docs(skills): new agenthub-csrf skill documents the CSRF login flow; admin-api skills reference it (commit 9773a1b)
+- full container suite 3203 passed; ruff check + format clean
 
 ### 2.3.1 (PATCH) -- adaptive max_tokens retry
 
