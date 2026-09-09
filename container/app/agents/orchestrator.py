@@ -659,6 +659,9 @@ class OrchestratorAgent(BaseAgent):
                 injection_detected=incoming_context.injection_detected if incoming_context else False,
                 # Session memory: matches resolved by the prelude overlap task.
                 memory_context=incoming_context.memory_context if incoming_context else None,
+                # Follow-up signal: pending-question state attached by the prelude.
+                pending_question=incoming_context.pending_question if incoming_context else None,
+                is_followup=incoming_context.is_followup if incoming_context else False,
                 # Phase 6: anaphora recency hints ride the content leg like
                 # the rest of the conversation context.
                 last_entities=list(incoming_context.last_entities) if incoming_context else [],
@@ -954,6 +957,14 @@ class OrchestratorAgent(BaseAgent):
         # DP-4: background turns returned above; only IngressTask reaches text reads.
         task = cast(IngressTask, task)
         user_text = task.description
+        # Follow-up signal: single-shot consume of the pending clarifying
+        # question from the previous turn. Aborts, topic changes, and
+        # answers each consume the entry exactly once; the next question
+        # turn re-sets it at finalization.
+        pending = self._conversation_manager.pop_pending_question(conversation_id)
+        if pending and task.context is not None:
+            task.context.pending_question = pending["question"]
+            task.context.is_followup = True
         lang_turns = await self._get_turns(conversation_id)
         # ENTITY_RES_REDESIGN Phase 6: attach anaphora recency hints (most
         # recent first) to the task context so every dispatch-envelope
@@ -1042,12 +1053,20 @@ class OrchestratorAgent(BaseAgent):
         user_text = task.description
 
         cache_language = await self._explicit_cache_language(context_language)
+        # Follow-up signal: while a clarifying question is pending, the
+        # answer turn must not be served from the action cache -- it has to
+        # reach classification so the answer merges with the earlier
+        # request. Non-consuming peek: the single-shot pop runs later in
+        # _pipeline_resolve_conversation_and_language.
+        pending_question_active = self._conversation_manager.has_pending_question(conversation_id)
+        if pending_question_active:
+            logger.debug("Skipping action-cache replay: pending clarifying question for %s", conversation_id)
         cache_replay = await self._pipeline_director.run_cache_replay(
             task,
             user_text,
             cache_language,
             span_collector,
-            skip_lookup=pre_classified is not None,
+            skip_lookup=pre_classified is not None or pending_question_active,
         )
         if cache_replay.action_replay is not None:
             replay = await self._finalize_action_replay_hit(
@@ -1134,6 +1153,7 @@ class OrchestratorAgent(BaseAgent):
                 classify_reason=classify_reason,
                 allow_classify_cache_lookup=allow_classify_cache_lookup,
                 prefetched_turns=lang_turns,
+                pending_question=task.context.pending_question if task.context else None,
             )
         except _RecoverableClassificationError as exc:
             # Never abandon the detached memory overlap task: read-only,
@@ -1318,6 +1338,12 @@ class OrchestratorAgent(BaseAgent):
             agent_requested=voice_followup_requested,
             mediated_followup=mediated_followup,
         )
+        # Follow-up signal: the finalization funnel is the single point
+        # reached by streaming, non-streaming, and sequential-send, so the
+        # pending-question state is set exactly once here when the spoken
+        # answer was a clarifying question.
+        if voice_followup_effective:
+            self._conversation_manager.set_pending_question(conversation_id, speech, routed_to)
         if ret_span is not None:
             ret_span["metadata"]["final_response"] = speech
             ret_span["metadata"]["mediated"] = speech != original_speech
@@ -2017,6 +2043,9 @@ class OrchestratorAgent(BaseAgent):
             context.injection_detected = task.context.injection_detected
             # Session memory: matches resolved by the prelude overlap task.
             context.memory_context = task.context.memory_context
+            # Follow-up signal: pending-question state attached by the prelude.
+            context.pending_question = task.context.pending_question
+            context.is_followup = task.context.is_followup
             # Phase 6: anaphora recency hints populated in the prelude.
             context.last_entities = list(task.context.last_entities)
         if self._ha_client:

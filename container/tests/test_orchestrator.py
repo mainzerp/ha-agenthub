@@ -3397,6 +3397,66 @@ class TestFollowupDetection:
         assert vf is False
         assert speech == "The kitchen light is now on."
 
+    async def test_finalize_sets_pending_question_on_effective_followup(self):
+        """voice_followup_effective=True records the pending question on the
+        ConversationManager with the mediated speech and routed agent."""
+        orch = self._make_orchestrator()
+        orch._store_after_dispatch = AsyncMock(return_value=(False, False))
+        orch._store_turn = AsyncMock()
+        task = make_ingress_task("kuche", conversation_id="cid-pending")
+
+        _speech, vf = await orch._finalize_post_mediation(
+            task=task,
+            user_text="kuche",
+            target_agent="light-agent",
+            confidence=0.9,
+            condensed_task="kuche",
+            mediated_speech="Welches Licht in der Küche meinst du?",
+            original_speech="Welches Licht in der Küche meinst du?",
+            action_executed=None,
+            has_error=False,
+            span_collector=None,
+            conversation_id="cid-pending",
+            language="de",
+            turns=[],
+            classifications=[("light-agent", "kuche", 0.9)],
+            voice_followup_requested=True,
+        )
+
+        assert vf is True
+        pending = orch._conversation_manager.pop_pending_question("cid-pending")
+        assert pending == {"question": "Welches Licht in der Küche meinst du?", "agent_id": "light-agent"}
+        # Single-shot: a second consume returns nothing.
+        assert orch._conversation_manager.pop_pending_question("cid-pending") is None
+
+    async def test_finalize_without_followup_sets_no_pending_question(self):
+        """voice_followup_effective=False leaves the pending-question map empty."""
+        orch = self._make_orchestrator()
+        orch._store_after_dispatch = AsyncMock(return_value=(False, False))
+        orch._store_turn = AsyncMock()
+        task = make_ingress_task("turn on the kitchen light", conversation_id="cid-no-followup")
+
+        _speech, vf = await orch._finalize_post_mediation(
+            task=task,
+            user_text="turn on the kitchen light",
+            target_agent="light-agent",
+            confidence=0.9,
+            condensed_task="turn on the kitchen light",
+            mediated_speech="The kitchen light is now on.",
+            original_speech="The kitchen light is now on.",
+            action_executed=None,
+            has_error=False,
+            span_collector=None,
+            conversation_id="cid-no-followup",
+            language="en",
+            turns=[],
+            classifications=[("light-agent", "turn on the kitchen light", 0.9)],
+            voice_followup_requested=False,
+        )
+
+        assert vf is False
+        assert orch._conversation_manager.has_pending_question("cid-no-followup") is False
+
 
 # ---------------------------------------------------------------------------
 # Phase 3 gaps: G3, G4, G5, G7, G9, G10, G13, G19, G27, G28

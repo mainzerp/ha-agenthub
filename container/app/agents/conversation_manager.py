@@ -32,6 +32,10 @@ _MAX_CONVERSATION_CONTEXT_TURNS = 20
 _MAX_LAST_ENTITIES_KEPT = 5
 _DEFAULT_LAST_ENTITIES_LIMIT = 3
 
+# Pending-question map: TTL for the single-shot follow-up signal set when
+# the last assistant turn was a clarifying question (voice_followup).
+_PENDING_QUESTION_TTL_SECONDS = 300
+
 
 async def extract_resolved_entities(
     action_executed: Any,
@@ -78,6 +82,10 @@ class ConversationManager:
         # ENTITY_RES_REDESIGN Phase 6: per-conversation recency hints
         # (most recent first), kept in lockstep with the turn buffer TTL.
         self._last_entities: OrderedDict[str, tuple[float, list[dict[str, Any]]]] = OrderedDict()
+        # Pending clarifying questions keyed by conversation_id. Set at
+        # finalization when voice_followup is effective; consumed
+        # single-shot by the orchestrator prelude on the answering turn.
+        self._pending_questions: OrderedDict[str, tuple[float, dict[str, Any]]] = OrderedDict()
 
     async def _get_conversation_context_turn_limit(self) -> int:
         fallback = _DEFAULT_CONVERSATION_CONTEXT_TURNS
@@ -329,6 +337,51 @@ class ConversationManager:
             self._evict_stale_conversations()
         return [dict(e) for e in entities[:limit]]
 
+    def set_pending_question(self, conversation_id: str, question: str, agent_id: str) -> None:
+        """Record that the last assistant turn asked a clarifying question.
+
+        Stored in memory only (no DB): the state is meaningless after a
+        container restart because HA's re-listen window is long gone.
+        """
+        if not conversation_id:
+            return
+        self._pending_questions[conversation_id] = (
+            time.monotonic(),
+            {"question": question, "agent_id": agent_id},
+        )
+        self._pending_questions.move_to_end(conversation_id)
+        self._evict_stale_conversations()
+
+    def has_pending_question(self, conversation_id: str | None) -> bool:
+        """Non-consuming, TTL-checked peek at the pending-question map."""
+        if not conversation_id:
+            return False
+        entry = self._pending_questions.get(conversation_id)
+        if entry is None:
+            return False
+        ts, _ = entry
+        if time.monotonic() - ts > _PENDING_QUESTION_TTL_SECONDS:
+            self._pending_questions.pop(conversation_id, None)
+            return False
+        return True
+
+    def pop_pending_question(self, conversation_id: str | None) -> dict[str, Any] | None:
+        """Single-shot, TTL-checked consume of the pending question.
+
+        Aborts, topic changes, and answers each consume the entry exactly
+        once; the next question turn re-sets it at finalization. Expired
+        entries are dropped and return None.
+        """
+        if not conversation_id:
+            return None
+        entry = self._pending_questions.pop(conversation_id, None)
+        if entry is None:
+            return None
+        ts, payload = entry
+        if time.monotonic() - ts > _PENDING_QUESTION_TTL_SECONDS:
+            return None
+        return payload
+
     def _evict_stale_conversations(self) -> None:
         """Remove conversations older than TTL and enforce max count."""
         now = time.monotonic()
@@ -351,3 +404,13 @@ class ConversationManager:
                 break
         while len(self._last_entities) > _MAX_CONVERSATIONS:
             self._last_entities.popitem(last=False)
+        # Pending questions share the lazy-eviction pattern with their own TTL.
+        while self._pending_questions:
+            oldest_key = next(iter(self._pending_questions))
+            ts, _ = self._pending_questions[oldest_key]
+            if now - ts > _PENDING_QUESTION_TTL_SECONDS:
+                self._pending_questions.pop(oldest_key)
+            else:
+                break
+        while len(self._pending_questions) > _MAX_CONVERSATIONS:
+            self._pending_questions.popitem(last=False)

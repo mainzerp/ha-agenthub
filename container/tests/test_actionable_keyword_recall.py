@@ -160,6 +160,34 @@ async def test_ambiguity_annotation_on_tied_recall():
 
 
 @pytest.mark.asyncio
+async def test_ambiguity_annotation_inverted_on_followup_turn():
+    """Composition contract: tied recall on a follow-up turn (answering a
+    pending clarifying question) inverts the annotation to choose-and-act
+    instead of re-asking."""
+    entries = [
+        _entry("light.kitchen_main", "Kitchen"),
+        _entry("light.kitchen_spots", "Kitchen"),
+    ]
+    agent = _make_agent(entries)
+
+    context = TaskContext(
+        conversation_turns=[],
+        is_followup=True,
+        pending_question="Did you mean Kitchen Main or Kitchen Spots?",
+    )
+    task = DispatchTask(description="turn on kitchen", context=context)
+
+    with _visible_passthrough():
+        block, scored = await agent._build_query_candidate_context(task)
+
+    assert len(scored) == 2
+    assert "answering your clarifying question" in block
+    assert "Did you mean Kitchen Main or Kitchen Spots?" in block
+    assert "Do not guess" not in block
+    assert "ambiguous" not in block
+
+
+@pytest.mark.asyncio
 async def test_handle_parse_miss_followup_question_heuristic():
     """FOLLOW_UP_QUESTION: a parse-miss speech ending in "?" requests a
     voice follow-up; plain prose does not."""

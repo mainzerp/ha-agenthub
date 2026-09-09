@@ -168,7 +168,8 @@ async def test_full_flow_innenhof_ueberdachung_ausschalten(monkeypatch):
     assert not any(eid.startswith("cover.") for eid in recalled_ids)
     # Compound logic: "Innenhofüberdachung" hits "Innenhof Überdachung".
     hits_by_id = {entry.entity_id: hits for entry, hits in scored}
-    assert hits_by_id["light.innenhof_uberdachung"] >= 2  # innenhof + uberdachung
+    name_hits, _identity_hits, _area_hits = hits_by_id["light.innenhof_uberdachung"]
+    assert name_hits >= 2  # innenhof + uberdachung (name class)
 
     # Stage 3: injected candidate block (closed contract).
     system_prompt = captured_messages[0][0]["content"]

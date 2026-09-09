@@ -67,6 +67,64 @@ def _make_orchestrator(cache_manager) -> OrchestratorAgent:
 
 
 @pytest.mark.asyncio
+async def test_pending_question_bypasses_routing_cache_and_runs_llm_classify():
+    """Follow-up signal: while a clarifying question is pending, the routing
+    cache lookup is bypassed so the answer always goes through LLM classify
+    with the merge hint."""
+    from app.agents.base import BaseAgent
+    from app.agents.classification_engine import ClassificationEngine
+
+    cache_manager = MagicMock()
+    cache_manager.process = AsyncMock(
+        return_value=MagicMock(hit_type="routing_hit", agent_id="light-agent", entity_ids=None)
+    )
+
+    registry = MagicMock()
+    registry.get_known_agents = AsyncMock(return_value={"light-agent", "general-agent"})
+    registry.list_agents = AsyncMock(
+        return_value=[
+            AgentCard(agent_id="light-agent", name="Light Agent", description="controls lights", skills=["light"]),
+        ]
+    )
+
+    async def _load_prompt(name: str) -> str:
+        if name.startswith("orchestrator_examples"):
+            return "EXAMPLES BLOCK"
+        return "Route. {agent_descriptions} {language_hint} {previous_agent_hint} {followup_hint}"
+
+    llm_calls: list = []
+
+    async def _llm(messages, **kwargs):
+        llm_calls.append(messages)
+        return "light-agent: turn on the kitchen light"
+
+    engine = ClassificationEngine(
+        agent_registry=registry,
+        cache_manager=cache_manager,
+        call_llm=_llm,
+        load_prompt_async=_load_prompt,
+        wrap_user_input=BaseAgent._wrap_user_input,
+        append_conversation_turn_messages=BaseAgent._append_conversation_turn_messages,
+    )
+
+    classifications, routing_cached = await engine.classify(
+        "kuche",
+        conversation_id="conv-routing-cache",
+        allow_cache_lookup=True,
+        prefetched_turns=[],
+        pending_question="Welches Licht meinst du?",
+    )
+
+    assert routing_cached is False
+    assert classifications[0][0] == "light-agent"
+    cache_manager.process.assert_not_called()
+    assert llm_calls, "LLM classify must run while a pending question is active"
+    system_content = llm_calls[0][0]["content"]
+    assert "clarifying question" in system_content
+    assert "Welches Licht meinst du?" in system_content
+
+
+@pytest.mark.asyncio
 async def test_exact_text_routing_hit_skips_classify():
     orch = _make_orchestrator(MagicMock())
     orch._cache_orchestrator.try_cache_replay = AsyncMock(

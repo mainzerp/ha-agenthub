@@ -21,7 +21,7 @@ from app.entity.signals import (
     LevenshteinSignal,
     PhoneticSignal,
 )
-from app.entity.tokens import entry_tokens, normalize_tokenize
+from app.entity.tokens import entry_field_tokens, entry_tokens, normalize_tokenize
 from app.security.sanitization import USER_INPUT_END, USER_INPUT_START
 from tests.helpers import make_entity_index_entry
 
@@ -950,6 +950,21 @@ class TestNormalizeTokenize:
         )
         tokens = entry_tokens(entry)
         assert {"couch", "lampe", "wohnzimmer", "ikea", "traadfri", "sofa", "licht"} <= tokens
+
+    def test_entry_field_tokens_class_split(self):
+        entry = make_entity_index_entry(
+            "light.couch",
+            "Couch Lampe",
+            area="wohnzimmer",
+            area_name="Wohnbereich",
+            device_name="IKEA Traadfri",
+            aliases=["Sofa Licht"],
+            id_tokens=["couch", "couch_lampe"],
+        )
+        name_tokens, identity_tokens, area_tokens = entry_field_tokens(entry)
+        assert name_tokens == {"couch", "lampe", "sofa", "licht"}
+        assert identity_tokens == {"ikea", "traadfri", "couch", "lampe"}
+        assert area_tokens == {"wohnzimmer", "wohnbereich"}
 
 
 # ---------------------------------------------------------------------------

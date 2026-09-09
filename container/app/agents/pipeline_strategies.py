@@ -68,6 +68,7 @@ class ClassificationStrategy(ABC):
         classify_reason: str | None = None,
         allow_classify_cache_lookup: bool = False,
         prefetched_turns: list[dict[str, Any]] | None = None,
+        pending_question: str | None = None,
     ) -> tuple[list[tuple[str, str, float | None]], bool, str, str, float | None]: ...
 
 
@@ -186,6 +187,7 @@ class DefaultClassificationStrategy(ClassificationStrategy):
         classify_reason: str | None = None,
         allow_classify_cache_lookup: bool = False,
         prefetched_turns: list[dict[str, Any]] | None = None,
+        pending_question: str | None = None,
     ) -> tuple[list[tuple[str, str, float | None]], bool, str, str, float | None]:
         from app.analytics.tracer import _optional_span
 
@@ -230,6 +232,7 @@ class DefaultClassificationStrategy(ClassificationStrategy):
                     load_prompt_async=self._load_prompt_async,
                     get_turns=self._get_turns,
                     prefetched_turns=prefetched_turns,
+                    pending_question=pending_question,
                 )
                 target_agent, condensed_task, confidence = classifications[0]
                 self._pipeline_record_classify_span(

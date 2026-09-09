@@ -199,6 +199,7 @@ class ClassificationEngine:
         load_prompt_async: Callable[[str], Awaitable[str]] | None = None,
         get_turns: Callable[[str | None], Awaitable[list[dict[str, Any]]]] | None = None,
         prefetched_turns: list[dict[str, Any]] | None = None,
+        pending_question: str | None = None,
     ) -> tuple[list[tuple[str, str, float | None]], bool]:
         """Classify user intent and produce a condensed task.
 
@@ -229,7 +230,13 @@ class ClassificationEngine:
         t_agents = time.perf_counter()
 
         async with _optional_span(span_collector, "classify.cache_lookup", agent_id="orchestrator") as subspan:
-            if cache_result is not None:
+            if pending_question:
+                # Follow-up signal: an answer to a pending clarifying
+                # question must always go through LLM classify with the
+                # merge hint -- a routing-cache hit would short-circuit
+                # classification and lose the merge.
+                logger.debug("Bypassing routing cache for pending clarifying question: '%s'", user_text[:80])
+            elif cache_result is not None:
                 if cache_result.hit_type == "routing_hit" and cache_result.agent_id:
                     if cache_result.agent_id == "send-agent" or cache_result.agent_id in INTERNAL_ONLY_AGENTS:
                         logger.debug(
@@ -327,6 +334,14 @@ class ClassificationEngine:
                             )
                         break
             messages[0]["content"] = messages[0]["content"].replace("{previous_agent_hint}", previous_agent_hint)
+            followup_hint = ""
+            if pending_question:
+                followup_hint = (
+                    f"The assistant's previous message was a clarifying question: '{pending_question}'. "
+                    "The user is answering it. Merge the answer with the earlier request into ONE "
+                    "condensed task for the same agent."
+                )
+            messages[0]["content"] = messages[0]["content"].replace("{followup_hint}", followup_hint)
             if turns:
                 self._append_conversation_turn_messages(messages, turns, max_content_length=300)
             subspan["span_name"] = "classify.conversation_turns"

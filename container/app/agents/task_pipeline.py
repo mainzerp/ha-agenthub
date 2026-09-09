@@ -193,6 +193,7 @@ class PipelineDirector:
         classify_reason: str | None = None,
         allow_classify_cache_lookup: bool = False,
         prefetched_turns: list[dict[str, Any]] | None = None,
+        pending_question: str | None = None,
     ) -> tuple[list[tuple[str, str, float | None]], bool, str, str, float | None]:
         return await self._classification_strategy.execute(
             task=task,
@@ -206,6 +207,7 @@ class PipelineDirector:
             classify_reason=classify_reason,
             allow_classify_cache_lookup=allow_classify_cache_lookup,
             prefetched_turns=prefetched_turns,
+            pending_question=pending_question,
         )
 
     # ------------------------------------------------------------------

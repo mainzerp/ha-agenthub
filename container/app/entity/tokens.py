@@ -32,9 +32,8 @@ def normalize_tokenize(text: str) -> set[str]:
 def entry_tokens(entry: EntityIndexEntry) -> set[str]:
     """Union of normalized tokens across an entry's distinctive fields.
 
-    Same field set as the token-overlap bonus in
-    ``EntityMatcher._match_query``: friendly_name, area, area_name,
-    device_name, aliases, and each id_tokens element.
+    Fields: friendly_name, area, area_name, device_name, aliases, and
+    each id_tokens element.
     """
     tokens: set[str] = set()
     for src in (
@@ -50,3 +49,28 @@ def entry_tokens(entry: EntityIndexEntry) -> set[str]:
     for token in entry.id_tokens or []:
         tokens.update(normalize_tokenize(token))
     return tokens
+
+
+def entry_field_tokens(
+    entry: EntityIndexEntry,
+) -> tuple[set[str], set[str], set[str]]:
+    """Per-field-class normalized token sets for an entry.
+
+    Returns ``(name_tokens, identity_tokens, area_tokens)``:
+
+    - name: ``friendly_name`` plus each of ``aliases``
+    - identity: ``device_name`` plus each of ``id_tokens``
+    - area: ``area`` plus ``area_name``
+
+    Used by the recall scorer so name evidence can outrank area evidence;
+    ``entry_tokens`` stays the flat union the index posting map depends on.
+    """
+    name_tokens: set[str] = set(normalize_tokenize(entry.friendly_name or ""))
+    identity_tokens: set[str] = set(normalize_tokenize(entry.device_name or ""))
+    area_tokens: set[str] = set(normalize_tokenize(entry.area or ""))
+    area_tokens.update(normalize_tokenize(entry.area_name or ""))
+    for alias in entry.aliases or []:
+        name_tokens.update(normalize_tokenize(alias))
+    for token in entry.id_tokens or []:
+        identity_tokens.update(normalize_tokenize(token))
+    return name_tokens, identity_tokens, area_tokens

@@ -152,7 +152,12 @@ single-burst done, REST) -- HA core keeps the chat session (same
 Answer-leg correlation in the container is keyed strictly by
 `conversation_id`: the classify stage injects the stored history plus a
 previous-agent hint and condenses the short answer against the pending
-question. On every response path the integration places the HA-side
+question. The container also records the pending question itself
+(in-memory, 300 s TTL, single-shot) when `voice_followup` is effective:
+the answering turn bypasses the action-cache replay and the routing
+cache, classification gets a follow-up merge hint so the condensed task
+is self-contained, and a tied candidate block inverts its ambiguity
+annotation to choose-and-act instead of re-asking. On every response path the integration places the HA-side
 `conversation_id` (`user_input.conversation_id`) into the
 `ConversationResult`; the container's own `conversation_id` is a
 container-internal correlation key only and is never forwarded to HA
@@ -255,7 +260,7 @@ Settings keys: `memory.enabled`, `memory.scope`, `memory.wait_mode`, `memory.wai
 
 Entity selection is agent-side, not orchestrator-side. The orchestrator only routes; it never resolves or forwards entity candidates.
 
-- **Keyword recall** -- each actionable agent filters its visible entities by normalized token overlap against the task description (plus the last user turn for follow-ups), with compound containment (a German compound like "Innenhofüberdachung" hits the tokens of "Innenhof Überdachung"). Small domains inject the whole visible list; larger domains inject the top 12.
+- **Keyword recall** -- each actionable agent filters its visible entities by normalized token overlap against the task description (plus the last user turn for follow-ups), with compound containment (a German compound like "Innenhofüberdachung" hits the tokens of "Innenhof Überdachung"). Hits are scored per field class `(name, identity, area)` so name/alias evidence outranks area-token evidence; a tied top-2 score tuple marks the recall ambiguous and annotates the candidate block to ask instead of guess. Small domains inject the whole visible list; larger domains inject the top 12.
 - **Closed contract** -- the candidate block lists `entity_id -- friendly_name (state)`; the LLM must emit an `entity_id` verbatim from that list. The executor validates the picked id against the recalled set fail-closed (no matcher re-run); an id outside the set is rejected and the agent asks a clarifying question. When the LLM emits only a free-form entity name, the executor falls back to deterministic-first resolution.
 - **Deterministic-first fallback** -- exact entity_id, exact friendly_name (space-insensitive, so compounds match spaced names), exact alias, then the hybrid matcher: alias fast path, token-based candidate preselection, and span-scored string signals (Levenshtein, Jaro-Winkler, phonetic) with an area bonus and a coverage floor rule. Embedding-based entity recall was removed; embeddings remain in use for the routing cache semantic tier and session memory.
 

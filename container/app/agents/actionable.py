@@ -24,7 +24,7 @@ from app.agents.action_executor import (
 from app.agents.base import BaseAgent, _render_prompt_template, language_code_to_name
 from app.agents.decorator import agent
 from app.analytics.tracer import _optional_span
-from app.entity.tokens import entry_tokens, normalize_tokenize
+from app.entity.tokens import entry_field_tokens, normalize_tokenize
 from app.entity.visibility import filter_visible_results
 from app.models.agent import (
     ActionExecuted,
@@ -92,6 +92,15 @@ _AMBIGUITY_ANNOTATION = (
     "(for example, 'Did you mean <name 1> or <name 2>?') in the user's language."
 )
 
+# Follow-up inversion: on the turn answering a pending clarifying question,
+# tied candidates are resolved by the answer instead of re-asking. The
+# pending question is interpolated verbatim.
+_CHOOSE_AND_ACT_ANNOTATION = (
+    "The user is answering your clarifying question '{pending_question}'. "
+    "Pick the candidate from the list that matches the answer and execute; "
+    "do NOT ask again unless no candidate fits."
+)
+
 # Agent-side keyword recall (ENTITY_RESOLUTION_REWORK): domains with at most
 # this many visible entities skip filtering -- the whole visible list is
 # injected. Larger domains are token-filtered down to the top N.
@@ -103,14 +112,21 @@ _KEYWORD_RECALL_TOP_N = 12
 _KEYWORD_COMPOUND_MIN_TOKEN_LEN = 4
 
 
-def _recall_is_ambiguous(scored: list[tuple[Any, int]]) -> bool:
-    """True when the two best recall hit counts tie (gap below the threshold)."""
+def _recall_is_ambiguous(scored: list[tuple[Any, tuple[int, int, int]]]) -> bool:
+    """True when the two best recall score tuples tie.
+
+    Scores are per-field-class int hit counts ``(name, identity, area)``;
+    with int tuple scores the ``< _AMBIGUITY_SCORE_GAP`` semantics reduce
+    to tuple equality, so ``_AMBIGUITY_SCORE_GAP`` is kept for documentation
+    (it mirrors the area re-rank gap in deterministic_resolver.py) and no
+    fractional scores are introduced.
+    """
     if len(scored) < 2:
         return False
-    hits = sorted((hit_count for _entry, hit_count in scored), reverse=True)
-    if hits[0] <= 0:
+    hits = sorted((hit_counts for _entry, hit_counts in scored), reverse=True)
+    if hits[0] == (0, 0, 0):
         return False
-    return hits[0] - hits[1] < _AMBIGUITY_SCORE_GAP
+    return hits[0] == hits[1]
 
 
 class ActionableAgent(BaseAgent):
@@ -137,23 +153,27 @@ class ActionableAgent(BaseAgent):
     def _get_current_task_context(self) -> TaskContext | None:
         return _current_task_context_var.get()
 
-    async def _recall_keyword_candidates(self, task: DispatchTask) -> list[tuple[Any, int]]:
+    async def _recall_keyword_candidates(self, task: DispatchTask) -> list[tuple[Any, tuple[int, int, int]]]:
         """Keyword/token entity recall over the agent's visible entities.
 
         ENTITY_RESOLUTION_REWORK: agent-side recall replaces both the
         orchestrator's ingress matcher pass and embedding-based entity
-        recall. Each visible entry is scored by normalized token overlap
-        against the task description plus the last user turn (anaphora
-        follow-ups), with compound containment (an entity token >=
+        recall. Each visible entry is scored per field class by normalized
+        token overlap against the task description plus the last user turn
+        (anaphora follow-ups), with compound containment (an entity token >=
         ``_KEYWORD_COMPOUND_MIN_TOKEN_LEN`` chars contained in a query
-        token counts as a hit) so German compounds match their parts.
+        token counts as a hit) so German compounds match their parts. The
+        score is a ``(name_hits, identity_hits, area_hits)`` tuple so
+        name/alias evidence outranks area-token evidence.
 
         Small domains (<= ``_KEYWORD_RECALL_MAX_INJECT`` visible entities)
-        skip filtering: the whole visible list is returned in index order.
-        Larger domains return the top ``_KEYWORD_RECALL_TOP_N`` entries
-        with at least one hit.
+        skip filtering: the whole visible list is returned, sorted by the
+        score tuple. Larger domains return the top ``_KEYWORD_RECALL_TOP_N``
+        entries with at least one hit in any class (pure area queries must
+        stay recallable).
 
-        Returns a list of ``(entry, hit_count)`` tuples.
+        Returns a list of ``(entry, (name_hits, identity_hits, area_hits))``
+        tuples.
         """
         if self._entity_index is None:
             return []
@@ -177,26 +197,37 @@ class ActionableAgent(BaseAgent):
         for term in terms:
             query_tokens.update(normalize_tokenize(term))
 
-        def _hits(entry: Any) -> int:
-            hits = 0
-            for token in entry_tokens(entry):
-                if token in query_tokens or (
-                    len(token) >= _KEYWORD_COMPOUND_MIN_TOKEN_LEN
-                    and any(len(qt) >= _KEYWORD_COMPOUND_MIN_TOKEN_LEN and token in qt for qt in query_tokens)
-                ):
-                    hits += 1
-            return hits
+        def _hits(entry: Any) -> tuple[int, int, int]:
+            counts = []
+            for class_tokens in entry_field_tokens(entry):
+                hits = 0
+                for token in class_tokens:
+                    if token in query_tokens or (
+                        len(token) >= _KEYWORD_COMPOUND_MIN_TOKEN_LEN
+                        and any(len(qt) >= _KEYWORD_COMPOUND_MIN_TOKEN_LEN and token in qt for qt in query_tokens)
+                    ):
+                        hits += 1
+                counts.append(hits)
+            return counts[0], counts[1], counts[2]
+
+        def _sort_key(pair: tuple[Any, tuple[int, int, int]]) -> tuple[int, int, int, int]:
+            name_hits, identity_hits, area_hits = pair[1]
+            # Ties: shorter name first -- the LLM makes the final decision.
+            return (-name_hits, -identity_hits, -area_hits, len(getattr(pair[0], "friendly_name", "") or ""))
 
         if len(visible) <= _KEYWORD_RECALL_MAX_INJECT:
-            return [(entry, _hits(entry)) for entry in visible]
+            scored = [(entry, _hits(entry)) for entry in visible]
+            scored.sort(key=_sort_key)
+            return scored
 
         scored = [(entry, _hits(entry)) for entry in visible]
-        scored = [pair for pair in scored if pair[1] > 0]
-        # Ties: shorter name first -- the LLM makes the final decision.
-        scored.sort(key=lambda pair: (-pair[1], len(getattr(pair[0], "friendly_name", "") or "")))
+        scored = [pair for pair in scored if any(pair[1])]
+        scored.sort(key=_sort_key)
         return scored[:_KEYWORD_RECALL_TOP_N]
 
-    async def _build_query_candidate_context(self, task: DispatchTask) -> tuple[str | None, list[tuple[Any, int]]]:
+    async def _build_query_candidate_context(
+        self, task: DispatchTask
+    ) -> tuple[str | None, list[tuple[Any, tuple[int, int, int]]]]:
         """Build the closed-contract candidate block from keyword recall.
 
         Returns ``(block, scored_candidates)``. The block lists candidates
@@ -232,9 +263,17 @@ class ActionableAgent(BaseAgent):
         # Phase 7: ambiguous top-1/top-2 gap -> ask, don't guess. The
         # clarifying question rides the existing voice_followup round-trip;
         # the deterministic *_ambiguous executor speech stays as fallback.
+        # Follow-up inversion: when this turn answers a pending clarifying
+        # question, tied candidates are resolved by the answer instead of
+        # re-asking (composition contract: ambiguity is computed once here).
         if _recall_is_ambiguous(recalled):
-            lines.append("")
-            lines.append(_AMBIGUITY_ANNOTATION)
+            context = task.context
+            if context is not None and context.is_followup and context.pending_question:
+                lines.append("")
+                lines.append(_CHOOSE_AND_ACT_ANNOTATION.format(pending_question=context.pending_question))
+            else:
+                lines.append("")
+                lines.append(_AMBIGUITY_ANNOTATION)
         return "\n".join(lines), recalled
 
     def _build_last_entities_context(self, task: DispatchTask) -> str | None:
@@ -267,7 +306,9 @@ class ActionableAgent(BaseAgent):
         )
         return "\n".join(lines)
 
-    async def _candidate_context_or_none(self, task: DispatchTask) -> tuple[str | None, list[tuple[Any, int]] | None]:
+    async def _candidate_context_or_none(
+        self, task: DispatchTask
+    ) -> tuple[str | None, list[tuple[Any, tuple[int, int, int]]] | None]:
         """Failure-contained wrapper around ``_build_query_candidate_context``.
 
         Returns ``(block, scored_candidates)``; ``(None, None)`` when the
@@ -423,7 +464,7 @@ class ActionableAgent(BaseAgent):
         # in the parent context so the visible-entries snapshot ContextVar
         # it publishes propagates to the post-LLM executor validation.
         candidate_context: str | None = None
-        recalled: list[tuple[Any, int]] | None = None
+        recalled: list[tuple[Any, tuple[int, int, int]]] | None = None
         try:
             async with _optional_span(span_collector, "entity_resolution", agent_id=agent_id) as er_span:
                 _t1 = time.perf_counter()
@@ -435,7 +476,11 @@ class ActionableAgent(BaseAgent):
                 scored_recall = recalled or []
                 er_span["metadata"]["recall_count"] = len(scored_recall)
                 er_span["metadata"]["recall_candidates"] = [
-                    {"entity_id": getattr(entry, "entity_id", "") or "", "hits": hits} for entry, hits in scored_recall
+                    {
+                        "entity_id": getattr(entry, "entity_id", "") or "",
+                        "hits": {"name": hits[0], "identity": hits[1], "area": hits[2]},
+                    }
+                    for entry, hits in scored_recall
                 ]
         except asyncio.CancelledError:
             raise

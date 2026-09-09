@@ -271,3 +271,34 @@ async def test_multi_target_visibility_recheck_invalidates_when_secondary_entity
 
     assert result is None
     manager._action_cache.invalidate_by_entry_id.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_pending_question_skips_action_cache_replay():
+    """Follow-up signal: while a clarifying question is pending, the action
+    cache replay lookup is skipped so the answer reaches classification."""
+    from app.agents.task_pipeline import CacheReplayResult
+
+    orch = _make_orchestrator(MagicMock())
+    orch._conversation_manager.set_pending_question("conv-action-cache", "Welches Licht meinst du?", "light-agent")
+    orch._pipeline_director.run_cache_replay = AsyncMock(return_value=CacheReplayResult())
+    orch._pipeline_director.run_classification = AsyncMock(
+        return_value=([("light-agent", "kuche", 0.9)], False, "light-agent", "kuche", 0.9)
+    )
+
+    prelude = await orch._run_pipeline_prelude(_make_task("kuche"))
+
+    assert prelude.early_exit is None
+    assert orch._pipeline_director.run_cache_replay.await_args.kwargs["skip_lookup"] is True
+
+    # Without a pending question the replay lookup runs as before.
+    orch2 = _make_orchestrator(MagicMock())
+    orch2._pipeline_director.run_cache_replay = AsyncMock(return_value=CacheReplayResult())
+    orch2._pipeline_director.run_classification = AsyncMock(
+        return_value=([("light-agent", "kuche", 0.9)], False, "light-agent", "kuche", 0.9)
+    )
+
+    prelude2 = await orch2._run_pipeline_prelude(_make_task("kuche"))
+
+    assert prelude2.early_exit is None
+    assert orch2._pipeline_director.run_cache_replay.await_args.kwargs["skip_lookup"] is False

@@ -104,7 +104,7 @@ def _make_classification_engine(cm: ConversationManager, classify_llm) -> Classi
         if name.startswith("orchestrator_examples"):
             return "EXAMPLES BLOCK"
         assert name == "orchestrator"
-        return "Route the request. {agent_descriptions} {language_hint} {previous_agent_hint}"
+        return "Route the request. {agent_descriptions} {language_hint} {previous_agent_hint} {followup_hint}"
 
     return ClassificationEngine(
         agent_registry=registry,
@@ -152,6 +152,8 @@ async def test_followup_roundtrip_question_then_answer():
 
         # The question turn is stored like any other turn under conversation_id X.
         await cm.store_turn(CID, USER_QUESTION_TEXT, result1.speech, agent_id="light-agent")
+        # Finalization records the pending clarifying question (single-shot).
+        cm.set_pending_question(CID, question_speech, "light-agent")
 
         # --- Turn 2: bare answer with the SAME conversation_id. ---
         classify_captured: list = []
@@ -160,10 +162,15 @@ async def test_followup_roundtrip_question_then_answer():
             classify_captured.append(messages)
             return f"light-agent: {CONDENSED_ANSWER_TASK}"
 
+        # The prelude consumes the pending entry exactly once and attaches it.
+        pending = cm.pop_pending_question(CID)
+        assert pending == {"question": question_speech, "agent_id": "light-agent"}
+
         engine = _make_classification_engine(cm, _classify_llm)
         classifications, routing_cached = await engine.classify(
             ANSWER_TEXT,
             conversation_id=CID,
+            pending_question=pending["question"],
         )
 
         assert routing_cached is False
@@ -171,9 +178,12 @@ async def test_followup_roundtrip_question_then_answer():
         assert classifications[0][1] == CONDENSED_ANSWER_TASK
 
         # The classify stage saw the question turn in history and injected the
-        # previous-agent hint.
+        # previous-agent hint plus the follow-up merge hint.
         system_content = classify_captured[0][0]["content"]
         assert "The previous turn was handled by light-agent." in system_content
+        assert "clarifying question" in system_content
+        assert question_speech in system_content
+        assert "Merge the answer with the earlier request" in system_content
         history_contents = [m["content"] for m in classify_captured[0]]
         assert any(question_speech in c for c in history_contents)
         assert any(USER_QUESTION_TEXT in c for c in history_contents)
@@ -203,6 +213,17 @@ async def test_followup_roundtrip_question_then_answer():
         assert call_args.args[0] == "light"
         assert call_args.args[1] == "turn_on"
         assert call_args.args[2] == "light.wohnzimmer"
+
+        # --- Turn 3: the pending entry was consumed single-shot; no hint. ---
+        assert cm.pop_pending_question(CID) is None
+        classify_captured.clear()
+        await engine.classify(
+            ANSWER_TEXT,
+            conversation_id=CID,
+            pending_question=None,
+        )
+        system_content3 = classify_captured[0][0]["content"]
+        assert "clarifying question" not in system_content3
 
 
 @pytest.mark.asyncio

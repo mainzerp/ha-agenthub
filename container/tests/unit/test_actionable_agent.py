@@ -372,10 +372,120 @@ class TestHandleTaskInnerInjection:
         assert "Candidate entities (choose from this list only):" in system_msg
         assert "very close scores" not in system_msg
 
+    @pytest.mark.asyncio
+    async def test_candidate_block_not_annotated_when_name_outranks_area(self):
+        """Field-class scoring: an exact name hit outranks area-only siblings.
 
-# ---------------------------------------------------------------------------
-# handle_task execution paths
-# ---------------------------------------------------------------------------
+        Query "kuche" with light.kuche (name "Kueche") plus siblings that
+        only share the area: no ambiguity annotation, and the name-matching
+        entry leads the candidate block.
+        """
+        agent = LightAgent()
+        task = make_dispatch_task(description="kuche")
+
+        exact = DummyEntry("light.kuche", "Küche")
+        exact.area = "kuche"
+        sibling_a = DummyEntry("light.kuchenzeile", "Küchenzeile")
+        sibling_a.area = "kuche"
+        sibling_b = DummyEntry("light.steckdose_1", "Steckdose 1")
+        sibling_b.area = "kuche"
+        entries = [sibling_a, exact, sibling_b]
+
+        with (
+            patch.object(agent, "_load_prompt_async", new_callable=AsyncMock, return_value="You are a light agent."),
+            patch.object(
+                agent,
+                "_call_llm",
+                new_callable=AsyncMock,
+                return_value='{"action": "turn_on", "entity_id": "light.kuche"}',
+            ) as mock_llm,
+            patch.object(agent, "_do_execute", new_callable=AsyncMock, return_value={"speech": "OK", "success": True}),
+            _visible_passthrough(),
+        ):
+            agent._entity_index = _recall_index(entries)
+            agent._entity_matcher = None
+            agent._ha_client = AsyncMock()
+
+            await agent.handle_task(task)
+
+        system_msg = mock_llm.call_args.args[0][0]["content"]
+        assert "Candidate entities (choose from this list only):" in system_msg
+        assert "very close scores" not in system_msg
+        candidate_lines = [line for line in system_msg.splitlines() if line.startswith(("1.", "2.", "3."))]
+        assert candidate_lines[0].startswith("1. light.kuche ")
+
+    @pytest.mark.asyncio
+    async def test_candidate_block_annotated_for_pure_area_query(self):
+        """A pure area query with no name match ties at the area class:
+        the ambiguity annotation still fires."""
+        agent = LightAgent()
+        task = make_dispatch_task(description="wohnzimmer")
+
+        couch = DummyEntry("light.couch", "Couch")
+        couch.area = "wohnzimmer"
+        ceiling = DummyEntry("light.deckenlampe", "Deckenlampe")
+        ceiling.area = "wohnzimmer"
+        entries = [couch, ceiling]
+
+        with (
+            patch.object(agent, "_load_prompt_async", new_callable=AsyncMock, return_value="You are a light agent."),
+            patch.object(
+                agent,
+                "_call_llm",
+                new_callable=AsyncMock,
+                return_value="Did you mean the Couch or the Deckenlampe?",
+            ) as mock_llm,
+            patch.object(agent, "_do_execute", new_callable=AsyncMock, return_value={"speech": "OK", "success": True}),
+            _visible_passthrough(),
+        ):
+            agent._entity_index = _recall_index(entries)
+            agent._entity_matcher = None
+            agent._ha_client = AsyncMock()
+
+            await agent.handle_task(task)
+
+        system_msg = mock_llm.call_args.args[0][0]["content"]
+        assert "Candidate entities (choose from this list only):" in system_msg
+        assert "very close scores" in system_msg
+
+    @pytest.mark.asyncio
+    async def test_candidate_block_not_annotated_for_compound_area_leak(self):
+        """Compound containment leak: query "kuchenzeile" area-matches every
+        kitchen entity via the shared area token -- those area-class hits
+        must not produce an ambiguity annotation."""
+        agent = LightAgent()
+        task = make_dispatch_task(description="kuchenzeile")
+
+        exact = DummyEntry("light.kuchenzeile", "Küchenzeile")
+        exact.area = "kuche"
+        sibling_a = DummyEntry("light.steckdose", "Steckdose")
+        sibling_a.area = "kuche"
+        sibling_b = DummyEntry("light.lichtband", "Lichtband")
+        sibling_b.area = "kuche"
+        entries = [sibling_a, exact, sibling_b]
+
+        with (
+            patch.object(agent, "_load_prompt_async", new_callable=AsyncMock, return_value="You are a light agent."),
+            patch.object(
+                agent,
+                "_call_llm",
+                new_callable=AsyncMock,
+                return_value='{"action": "turn_on", "entity_id": "light.kuchenzeile"}',
+            ) as mock_llm,
+            patch.object(agent, "_do_execute", new_callable=AsyncMock, return_value={"speech": "OK", "success": True}),
+            _visible_passthrough(),
+        ):
+            agent._entity_index = _recall_index(entries)
+            agent._entity_matcher = None
+            agent._ha_client = AsyncMock()
+
+            await agent.handle_task(task)
+
+        system_msg = mock_llm.call_args.args[0][0]["content"]
+        assert "Candidate entities (choose from this list only):" in system_msg
+        assert "very close scores" not in system_msg
+        candidate_lines = [line for line in system_msg.splitlines() if line.startswith(("1.", "2.", "3."))]
+        assert candidate_lines[0].startswith("1. light.kuchenzeile ")
 
 
 class TestHandleTaskExecution:

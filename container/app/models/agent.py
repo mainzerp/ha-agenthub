@@ -164,6 +164,12 @@ class TaskContext(BaseModel):
     # search (cache-miss path only). Read-only context for the General
     # Agent's system-prompt injection; None = no memory for this turn.
     memory_context: list[dict] | None = None
+    # Follow-up signal: set on the single turn that answers a pending
+    # clarifying question. Populated by the orchestrator prelude from the
+    # ConversationManager pending-question map (single-shot consume);
+    # read-only context for classification and agents.
+    pending_question: str | None = None
+    is_followup: bool = False
 
 
 class ActionExecuted(BaseModel):

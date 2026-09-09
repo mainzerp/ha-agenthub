@@ -20,6 +20,10 @@ Do not output explanations.
 {previous_agent_hint}
 --- END PREVIOUS AGENT HINT ---
 
+--- FOLLOW-UP HINT ---
+{followup_hint}
+--- END FOLLOW-UP HINT ---
+
 ==========================
 1. OUTPUT FORMAT (HARD CONTRACT)
 ==========================
