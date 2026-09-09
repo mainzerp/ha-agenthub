@@ -487,6 +487,84 @@ class TestHandleTaskInnerInjection:
         candidate_lines = [line for line in system_msg.splitlines() if line.startswith(("1.", "2.", "3."))]
         assert candidate_lines[0].startswith("1. light.kuchenzeile ")
 
+    @pytest.mark.asyncio
+    async def test_candidate_block_not_annotated_when_exact_name_breaks_prefix_tie(self):
+        """Exact-name bonus: query "Küche ausschalten" with prefix-named
+        siblings ("Küche Steckdose 1", "Satellite Küche Alarm on") that share
+        the name token "kuche" -- the exact name match on light.kuche breaks
+        the tie, so no ambiguity annotation fires and light.kuche leads.
+
+        Mirrors live trace 99ec85ff9e9149eb where all three tied at
+        (name=1, identity=1, area=1) before the bonus existed.
+        """
+        agent = LightAgent()
+        task = make_dispatch_task(description="Küche ausschalten")
+
+        exact = DummyEntry("light.kuche", "Küche")
+        exact.area = "kuche"
+        exact.device_name = "Küche"
+        prefix = DummyEntry("light.kuche_steckdose_1_2", "Küche Steckdose 1")
+        prefix.area = "kuche"
+        prefix.device_name = "Küche"
+        satellite = DummyEntry("switch.satellite_kuche_alarm_on", "Satellite Küche Alarm on")
+        satellite.area = "kuche"
+        satellite.device_name = "Satellite Küche"
+        entries = [prefix, satellite, exact]
+
+        with (
+            patch.object(agent, "_load_prompt_async", new_callable=AsyncMock, return_value="You are a light agent."),
+            patch.object(
+                agent,
+                "_call_llm",
+                new_callable=AsyncMock,
+                return_value='{"action": "turn_off", "entity_id": "light.kuche"}',
+            ) as mock_llm,
+            patch.object(agent, "_do_execute", new_callable=AsyncMock, return_value={"speech": "OK", "success": True}),
+            _visible_passthrough(),
+        ):
+            agent._entity_index = _recall_index(entries)
+            agent._entity_matcher = None
+            agent._ha_client = AsyncMock()
+
+            await agent.handle_task(task)
+
+        system_msg = mock_llm.call_args.args[0][0]["content"]
+        assert "Candidate entities (choose from this list only):" in system_msg
+        assert "very close scores" not in system_msg
+        candidate_lines = [line for line in system_msg.splitlines() if line.startswith(("1.", "2.", "3."))]
+        assert candidate_lines[0].startswith("1. light.kuche ")
+
+    @pytest.mark.asyncio
+    async def test_candidate_block_annotated_when_exact_names_tie(self):
+        """Two entries with the identical friendly name both receive the
+        exact-name bonus and stay tied -- the annotation still fires."""
+        agent = LightAgent()
+        task = make_dispatch_task(description="Küche ausschalten")
+
+        first = DummyEntry("light.kuche_decke", "Küche")
+        second = DummyEntry("light.kuche_spots", "Küche")
+        entries = [first, second]
+
+        with (
+            patch.object(agent, "_load_prompt_async", new_callable=AsyncMock, return_value="You are a light agent."),
+            patch.object(
+                agent,
+                "_call_llm",
+                new_callable=AsyncMock,
+                return_value="Did you mean the ceiling or the spots?",
+            ) as mock_llm,
+            patch.object(agent, "_do_execute", new_callable=AsyncMock, return_value={"speech": "OK", "success": True}),
+            _visible_passthrough(),
+        ):
+            agent._entity_index = _recall_index(entries)
+            agent._entity_matcher = None
+            agent._ha_client = AsyncMock()
+
+            await agent.handle_task(task)
+
+        system_msg = mock_llm.call_args.args[0][0]["content"]
+        assert "very close scores" in system_msg
+
 
 class TestHandleTaskExecution:
     @pytest.mark.asyncio

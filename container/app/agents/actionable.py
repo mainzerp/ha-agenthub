@@ -164,7 +164,12 @@ class ActionableAgent(BaseAgent):
         ``_KEYWORD_COMPOUND_MIN_TOKEN_LEN`` chars contained in a query
         token counts as a hit) so German compounds match their parts. The
         score is a ``(name_hits, identity_hits, area_hits)`` tuple so
-        name/alias evidence outranks area-token evidence.
+        name/alias evidence outranks area-token evidence. The name class
+        gets a +1 exact-name bonus when every token of the friendly name
+        (or of one alias) appears verbatim in the query, so an explicitly
+        named entity outranks partial name overlaps ("Küche" beats
+        "Küche Steckdose 1" for the query "Küche ausschalten"); identical
+        names both receive the bonus and stay tied.
 
         Small domains (<= ``_KEYWORD_RECALL_MAX_INJECT`` visible entities)
         skip filtering: the whole visible list is returned, sorted by the
@@ -208,6 +213,10 @@ class ActionableAgent(BaseAgent):
                     ):
                         hits += 1
                 counts.append(hits)
+            name_sources = [getattr(entry, "friendly_name", "") or ""]
+            name_sources.extend(getattr(entry, "aliases", None) or [])
+            if any((tokens := normalize_tokenize(src)) and tokens <= query_tokens for src in name_sources):
+                counts[0] += 1
             return counts[0], counts[1], counts[2]
 
         def _sort_key(pair: tuple[Any, tuple[int, int, int]]) -> tuple[int, int, int, int]:
