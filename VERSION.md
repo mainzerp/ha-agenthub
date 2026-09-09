@@ -1,12 +1,21 @@
 # Version
 
-**Current Version:** 2.3.2
+**Current Version:** 2.3.3
 
 ## Recent Changes
 
-(tracking changes since 2.3.2)
+(tracking changes since 2.3.3)
 
 ## Version History
+
+### 2.3.3 (PATCH) -- clarification loop termination and follow-up awareness
+
+(commit 85b6b1b)
+
+- fix(agents): keyword recall now scores entity tokens per field class (name/identity/area) instead of a flat set -- same-area siblings no longer tie with the exact name match, so the ambiguity annotation ("ask, don't guess") stopped firing on every turn of a clarification loop (commit 85b6b1b)
+- fix(agents): follow-up turns are now explicit: a pending-question map (300s TTL, single-shot) marks the answering turn via TaskContext is_followup/pending_question; the orchestrator classify gets a merge hint to fold the answer into one condensed task, action-cache replay and routing cache are bypassed while a question is pending, and the agent's candidate block inverts "do not guess" into choose-and-act (commit 85b6b1b)
+- diagnosed from live trace 30d2424343304672 ("Kueche ausschalten" asked three clarifying questions instead of acting)
+- full container suite 3212 passed (coverage 82.10%, gate 80%); HA integration suite 110 passed; ruff check + format clean
 
 ### 2.3.2 (PATCH) -- filler-agent registration fix and cancel-ack token budget
 
