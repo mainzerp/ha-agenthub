@@ -1,12 +1,20 @@
 # Version
 
-**Current Version:** 2.3.3
+**Current Version:** 2.3.4
 
 ## Recent Changes
 
-(tracking changes since 2.3.3)
+(tracking changes since 2.3.4)
 
 ## Version History
+
+### 2.3.4 (PATCH) -- exact-name bonus in recall scoring
+
+(commit 60ab198)
+
+- fix(agents): live verification of 2.3.3 showed the field-class scoring alone did not close the "Kueche ausschalten" clarification loop -- prefix-named siblings ("Kueche Steckdose 1", "Satellite Kueche ..." switches) contain the name token "kuche", so all candidates still tied and the ambiguity annotation kept firing. The name class now gets a +1 exact-name bonus when every token of the friendly name (or an alias) appears verbatim in the query; identical names both receive the bonus and stay tied (commit 60ab198)
+- verified end-to-end on the local deployment: "Kueche ausschalten" executes light.kuche immediately; a genuine tie (two "Sonos Move" media players) asks once, and the answer "Sonos Move 3" executes via the follow-up choose-and-act path with routing/action caches bypassed
+- targeted recall/actionable suites 222 passed; ruff check + format clean
 
 ### 2.3.3 (PATCH) -- clarification loop termination and follow-up awareness
 
