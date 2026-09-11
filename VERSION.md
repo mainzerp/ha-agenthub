@@ -1,12 +1,23 @@
 # Version
 
-**Current Version:** 2.3.4
+**Current Version:** 2.3.5
 
 ## Recent Changes
 
-(tracking changes since 2.3.4)
+(tracking changes since 2.3.5)
 
 ## Version History
+
+### 2.3.5 (PATCH) -- dependency updates
+
+(commits d84772a, 52026d1, c2f9aca, 094fe5c, 839207b)
+
+- chore(deps): litellm >=1.99.0,<2.0.0 (from >=1.98.0) in /container (#93, commit d84772a)
+- chore(deps): uvicorn 0.52.4 (from 0.52.3) in /container (#94, commit 52026d1)
+- chore(deps-dev): ruff 0.16.5 (from 0.16.4) in /container (#95, commit c2f9aca)
+- chore(deps): python-dotenv >=1.2.3 (from >=1.2.2) in /container (#96, commit 094fe5c)
+- chore(deps): pydantic 2.13.5 (from 2.13.4) in /container (#97, commit 839207b)
+- CI green on all merge runs (quality + security)
 
 ### 2.3.4 (PATCH) -- exact-name bonus in recall scoring
 
