@@ -1,12 +1,24 @@
 # Version
 
-**Current Version:** 2.3.5
+**Current Version:** 2.3.6
 
 ## Recent Changes
 
-(tracking changes since 2.3.5)
+(tracking changes since 2.3.6)
 
 ## Version History
+
+### 2.3.6 (PATCH) -- dependency updates
+
+(commits cdfdb5b, a08db34, b7c36cf, 41e4b3d, 01a01b4, da934bc)
+
+- chore(deps): github/codeql-action 4.38.0 (from 4.37.9) (#103, commit cdfdb5b)
+- chore(deps): cryptography 50.0.1 (from 50.0.0) in /container (#102, commit a08db34)
+- chore(deps-dev): ruff 0.16.6 (from 0.16.5) in /container (#101, commit b7c36cf)
+- chore(deps): mcp 2.2.0 (from 2.1.1) in /container (#100, commit 41e4b3d)
+- chore(deps): litellm >=1.100.0,<2.0.0 (from >=1.99.0) in /container (#99, commit 01a01b4)
+- chore(deps): ddgs >=9.16.0,<10.0.0 (from >=9.15.0) in /container (#98, commit da934bc)
+- CI green on all merge runs (quality + security)
 
 ### 2.3.5 (PATCH) -- dependency updates
 
