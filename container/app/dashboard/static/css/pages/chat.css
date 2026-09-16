@@ -1,1 +1,15 @@
-﻿/* Page-specific styles for chat */
+/* Keep messages and the composer within a comfortable reading width. */
+.chat-page { max-width: 58rem; margin-inline: auto; }
+.chat-container { min-height: 28rem; }
+.chat-messages > div { min-width: 0; }
+.chat-bubble { max-width: 85%; overflow-wrap: anywhere; line-height: 1.65; }
+.chat-bubble-user { margin-left: auto; }
+.chat-bubble-label { color: var(--text-secondary); font-size: 0.75rem; }
+.chat-suggestions { padding: 1rem; border-top: 1px solid var(--border); }
+.chat-suggestion-buttons { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 0.75rem; }
+.chat-suggestion-buttons .btn { white-space: normal; text-align: left; }
+.chat-input-bar .form-input { min-width: 0; }
+@media (max-width: 480px) {
+    .chat-bubble { max-width: 100%; }
+    .chat-messages, .chat-input-bar, .chat-suggestions { padding: 0.75rem; }
+}

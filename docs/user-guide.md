@@ -47,26 +47,23 @@ The **Operate** group contains the pages you will use most often to monitor and 
 
 ### System Overview
 
-![System Overview dashboard showing 24h/7d metrics and charts](screenshots/02_overview.png)
-
 The **System Overview** page at `/dashboard/` is the landing page. It shows:
 
-- **24h and 7d metric cards** -- total requests, cache hit rate, active agents, indexed entities, average latency, and active conversations.
+- **Primary metrics** -- requests, average latency, and cache hit rate for the current window; active agents, indexed entities, and conversations appear below. The page refreshes every 30 seconds and falls back to the last seven days when no recent data is available.
 - **Health badges** -- a quick color-coded summary of subsystem health.
 - **Request-trend chart** -- requests over the selected window.
-- **Agent-distribution chart** -- which agents handled the most requests.
-- **Cache-tier chart** -- routing and action cache hit/miss breakdown.
-- **Recent activity table** -- the latest requests with links to their traces.
+- **Agent-distribution chart** -- horizontal bars compare request counts by agent.
+- **Cache-tier chart** -- a stacked bar shows routing hits, action hits, and misses.
+- **Recent activity table** -- the latest requests, agents, and latency; **View all** opens Request Traces.
 
 Use this page to confirm the system is active and to spot sudden changes in cache hit rate or latency.
 
 ### Chat Test Interface
 
-![Chat Test Interface for sending test commands](screenshots/03_chat.png)
-
 The **Chat** page at `/dashboard/chat` lets you send test commands directly to the orchestrator without using Home Assistant. It is useful for checking how a command will be interpreted before you rely on it from a voice assistant.
 
-- Type a command in the input field and press **Send**.
+- Choose a sample prompt to fill and focus an empty composer, or type your own command. Suggestions preserve existing drafts and never send a request.
+- Review the command and press **Send**.
 - Watch the streamed response appear in the chat panel.
 - Click **Clear** to reset the conversation.
 
@@ -106,15 +103,18 @@ Use this page to identify trends, measure the impact of a settings change, or de
 
 ### Request Traces
 
-![Request Traces page showing searchable trace list](screenshots/06_traces.png)
-
 The **Request Traces** page at `/dashboard/traces` lists every processed request:
 
-- **Columns** -- timestamp, user input, agents, duration, source, confidence, device, and label.
-- **Filters** -- filter by agent or label.
-- **Search** -- search user input or trace IDs.
-- **CSV export** -- export the filtered list for offline analysis.
-- **Trace detail** -- click a row to open a Gantt-style span visualization of every step the request took. The span detail panel shows cache information when a request was served from the cache: the numeric cache tier (0 = miss, 1 = routing hit, 2 = routing + entity binding, 3 = action replay), the hit type, and whether a span was skipped because the routing cache supplied the entity binding (`source: routing_cache`).
+- **Request links** -- the utterance opens trace detail; timestamp, agents, duration, source, confidence, device, and label remain visible beside or below it. Phone layouts stack this information.
+- **Search and filters** -- search user input or trace IDs, then narrow by agent, label, or date. **Reset filters** clears the active selection.
+- **Paging and export** -- page controls appear above and below results; **Export CSV** exports the filtered list.
+- **Refresh states** -- existing results remain visible during refresh. Errors offer Retry; an empty dataset is distinguished from no filter matches.
+
+Trace detail starts with the request summary and input/response panels. The span timeline shows parent/child nesting and elapsed offsets, including parallel work. Select a span with pointer or keyboard to inspect **Overview**, **Input / Output**, and **Metadata**. Use **Fit**, zoom, and **Expand** to inspect dense traces; narrow screens scroll within the timeline.
+
+Expand routing/communication, agent executions, or the complete trace record for diagnostic payloads. Cache tier, hit type, skipped-span details, and unknown metadata remain reachable. Missing state or memory context is shown neutrally; recorded errors remain explicit.
+
+Cache metadata includes the numeric tier (0 = miss, 1 = routing hit, 2 = routing + entity binding, 3 = action replay), hit type, and skipped-span information when the routing cache supplied entity binding (`source: routing_cache`).
 
 Trace previews and stored summaries are sanitized before persistence; secrets, tokens, and short verification codes are redacted.
 
@@ -136,11 +136,10 @@ The **Configure** group is where you manage agents, runtime behavior, tools, and
 
 ### Agents
 
-![Agents page showing built-in agent configuration](screenshots/08_agents.png)
-
 The **Agents** page at `/dashboard/agents` lists all built-in agents and their settings:
 
-- Enable or disable each agent.
+- Filter locally by agent ID or description; clear the filter to restore the full list.
+- Enable or disable each agent, or use **Edit** and **Prompt** to inspect its configuration.
 - Set the LLM **model**, **timeout**, **temperature**, **max tokens**, and **reasoning effort**.
 
 Changes are saved in SQLite and take effect immediately without a restart. The orchestrator only routes to enabled agents.
@@ -268,9 +267,7 @@ Clearing the cache is useful when behavior feels stale or an entity has changed 
 
 ### Settings
 
-![Settings page showing advanced runtime options](screenshots/19_settings.png)
-
-The **Settings** page at `/dashboard/settings` is a unified editor for advanced runtime settings stored in SQLite. Categories include:
+The **Settings** page at `/dashboard/settings` is a unified editor for advanced runtime settings stored in SQLite. Choose a category in the left navigation; on narrow screens the category navigation sits above the form. Provider credentials and test/save controls remain in their category. Categories include:
 
 - **Cache** -- enable/disable tiers, thresholds, max entries, LRU behavior, and validator configuration.
 - **Embedding** -- local or external embedding provider and model.
@@ -301,8 +298,8 @@ These short procedures link the dashboard pages described above.
 
 3. **Inspect a slow or failed request**
    - Open **Request Traces** (`/dashboard/traces`).
-   - Filter by latency or status.
-   - Click a trace to open the Gantt-style detail page and see which span took the most time.
+   - Search the request text or trace ID, or filter by agent, label, or date.
+   - Open the request link, select a span in the timeline, and inspect its timing and diagnostic payloads.
 
 4. **Add an alias for a device**
    - Go to **Entity Index** (`/dashboard/entity-index`).
@@ -348,7 +345,7 @@ Many common problems can be diagnosed without opening a terminal. The dashboard 
 | Commands not working at all | **System Health** | HA Connection or Entity Index card status |
 | Wrong entity matched | **Entity Index** | Aliases, matching weights, visibility rules |
 | Slow responses | **Analytics** | Latency percentiles, cache hit rate, per-agent load |
-| A specific turn failed | **Request Traces** | Trace status, error messages, Gantt span times |
+| A specific turn failed | **Request Traces** | Recorded errors, span timing, and inspector payloads |
 | Strange runtime errors | **Logs** | Error-level entries and recent exceptions |
 | Stale or incorrect responses | **Cache** | Cache hit rate, individual entries to delete |
 
@@ -359,13 +356,9 @@ For terminal-based commands and more detailed remediation steps, see [Troublesho
 | Screenshot | Section | File |
 |------------|---------|------|
 | Login page | First Launch / Setup Wizard | `screenshots/01_login_page.png` |
-| System Overview | Operate -- System Overview | `screenshots/02_overview.png` |
-| Chat Test Interface | Operate -- Chat Test Interface | `screenshots/03_chat.png` |
 | System Health | Operate -- System Health | `screenshots/04_system_health.png` |
 | Analytics | Operate -- Analytics | `screenshots/05_analytics.png` |
-| Request Traces | Operate -- Request Traces | `screenshots/06_traces.png` |
 | Logs | Operate -- Logs | `screenshots/07_logs.png` |
-| Agents | Configure -- Agents | `screenshots/08_agents.png` |
 | Custom Agents | Configure -- Custom Agents | `screenshots/09_custom_agents.png` |
 | Personality | Configure -- Personality | `screenshots/10_personality.png` |
 | Entity Index | Configure -- Entity Index | `screenshots/11_entity_index.png` |
@@ -376,4 +369,3 @@ For terminal-based commands and more detailed remediation steps, see [Troublesho
 | Calendar | Domain Data -- Calendar | `screenshots/16_calendar.png` |
 | Persons | Domain Data -- Persons | `screenshots/17_persons.png` |
 | Cache | Performance -- Cache | `screenshots/18_cache.png` |
-| Settings | System -- Settings | `screenshots/19_settings.png` |

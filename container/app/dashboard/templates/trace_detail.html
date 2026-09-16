@@ -2,16 +2,17 @@
 {% block page_title %}Trace Detail{% endblock %}
 {% block page_css %}
 <link rel="stylesheet" href="{{ static_url(request, '/dashboard/static/css/pages/trace_detail.css') }}">
-<link rel="stylesheet" href="{{ static_url(request, '/dashboard/static/vendor/vis-timeline/vis-timeline-graph2d-7.7.3.min.css') }}">
+
 {% endblock %}
-{% block page_js %}<script src="{{ static_url(request, '/dashboard/static/vendor/vis-timeline/vis-timeline-graph2d-7.7.3.min.js') }}" defer></script>{% endblock %}
+
 {% block header_title %}Trace Detail{% endblock %}
 {% block page_subtitle %}<p class="page-subtitle">Inspect an individual request flow.</p>{% endblock %}
 {% block page_header_actions %}
 <a class="btn btn-sm btn-secondary" href="{{ root_url(request, '/dashboard/traces') }}">Back to List</a>
 {% endblock %}
 {% block page_content %}
-<div x-data="traceDetailPage()" x-init="init()">
+<div class="trace-detail-page" x-data="traceDetailPage()" x-init="init()">
+    <p x-show="loadError" role="alert" class="card trace-error">Could not load this trace. <button class="btn btn-sm btn-secondary" @click="loadDetail()">Retry</button></p>
 
     <template x-if="loading">
         <div class="card"><p class="text-muted">Loading trace detail...</p></div>
@@ -22,9 +23,10 @@
             <!-- Header -->
             <div class="card mb-md">
                 <div class="flex-between mb-md">
-                    <h3 class="card-title mb-0" x-text="'Trace: ' + (traceDetail.trace_id || '')"></h3>
+                    <h3 class="card-title mb-0" x-text="'Request summary'"></h3>
                 </div>
 
+                <div class="trace-id"><span>Trace </span><code :title="traceDetail.trace_id" x-text="shortId(traceDetail.trace_id)"></code> <button class="btn btn-sm btn-secondary" @click="copyId(traceDetail.trace_id)">Copy trace ID</button><span role="status" x-text="copyStatus"></span><input x-show="copyFallback" aria-label="ID to copy manually" class="form-input" readonly :value="copyFallback" @focus="$el.select()"></div>
                 <!-- Summary bar -->
                 <div class="flex-center gap-lg flex-wrap">
                     <div>
@@ -34,20 +36,23 @@
                     <div>
                         <span class="text-muted text-xs">Session</span><br>
                         <template x-if="traceDetail.conversation_id">
-                            <a class="text-teal text-mono text-sm conv-link" :href="rootUrl + '/dashboard/traces?search=' + encodeURIComponent(traceDetail.conversation_id)" x-text="traceDetail.conversation_id"></a>
+                            <a class="text-teal text-mono text-sm conv-link" :href="dashUrl('/dashboard/traces?search=' + encodeURIComponent(traceDetail.conversation_id))" :title="traceDetail.conversation_id" x-text="shortId(traceDetail.conversation_id)"></a>
                         </template>
+                        <button x-show="traceDetail.conversation_id" class="btn btn-sm btn-secondary" @click="copyId(traceDetail.conversation_id)">Copy</button>
                         <template x-if="!traceDetail.conversation_id">
                             <span class="text-mono text-sm">-</span>
                         </template>
                     </div>
                     <div>
                         <span class="text-muted text-xs">Duration</span><br>
-                        <span class="text-mono text-sm" x-text="traceDetail.duration_ms ? Math.round(traceDetail.duration_ms) + 'ms' : '-'"></span>
+                        <span class="text-mono text-sm" x-text="formatDuration(traceDetail.duration_ms)"></span>
                     </div>
                     <div>
                         <span class="text-muted text-xs">Source</span><br>
                         <span class="badge badge-blue text-2xs" x-text="traceDetail.source || '-'"></span>
                     </div>
+                    <div><span class="text-muted text-xs">Selected agent</span><br><span class="text-sm" x-text="traceDetail.routing?.all_agents || traceDetail.routing?.selected_agent || 'Not recorded'"></span></div>
+                    <div><span class="text-muted text-xs">Routing source</span><br><span class="text-sm" x-text="routingSource()"></span></div>
                     <div x-show="traceDetail.device_name || traceDetail.device_id">
                         <span class="text-muted text-xs">Satellite</span><br>
                         <span class="text-mono text-sm"
@@ -71,8 +76,8 @@
                         <span class="text-muted text-xs">Label</span><br>
                         <template x-if="!editingLabel">
                             <span>
-                                <span x-show="traceDetail.label" class="badge badge-blue text-2xs cursor-pointer"
-                                      x-text="traceDetail.label" @click="editingLabel = true; newLabel = traceDetail.label || ''"></span>
+                                <button x-show="traceDetail.label" class="btn btn-sm btn-secondary"
+                                      x-text="traceDetail.label" @click="editingLabel = true; newLabel = traceDetail.label || ''"></button>
                                 <button x-show="!traceDetail.label" class="btn btn-sm btn-secondary btn-sm"
                                         @click="editingLabel = true; newLabel = ''">+ Label</button>
                             </span>
@@ -80,7 +85,7 @@
                         <template x-if="editingLabel">
                             <span class="flex-center gap-xs">
                                 <input type="text" class="form-input form-input-xs"
-                                       x-model="newLabel" @keyup.enter="saveLabel()" @keyup.escape="editingLabel = false">
+                                       aria-label="Trace label" x-model="newLabel" @keyup.enter="saveLabel()" @keyup.escape="editingLabel = false">
                                 <button class="btn btn-sm btn-primary" @click="saveLabel()">Save</button>
                                 <button class="btn btn-sm btn-secondary" @click="editingLabel = false">Cancel</button>
                             </span>
@@ -89,6 +94,7 @@
                 </div>
             </div>
 
+            <div class="trace-conversation">
             <!-- User Input -->
             <div class="card mb-md bg-obsidian">
                 <h4 class="card-title mb-sm text-sm">User Input</h4>
@@ -101,6 +107,58 @@
                 <pre class="pre-cloud" x-text="traceDetail.final_response || '-'"></pre>
             </div>
 
+            </div>
+            <div class="trace-workbench">
+                <section class="card trace-timeline" aria-labelledby="timeline-heading">
+                    <div class="trace-toolbar">
+                        <h3 id="timeline-heading" class="card-title">Span timeline</h3>
+                        <div class="trace-controls">
+                            <button class="btn btn-sm btn-secondary" @click="fitTimeline()">Fit</button>
+                            <button class="btn btn-sm btn-secondary" aria-label="Zoom out timeline" :disabled="zoom <= 1" @click="zoom = Math.max(1, zoom / 2)">−</button>
+                            <span class="text-mono text-xs" x-text="zoom + '×'"></span>
+                            <button class="btn btn-sm btn-secondary" aria-label="Zoom in timeline" :disabled="zoom >= 8" @click="zoom = Math.min(8, zoom * 2)">+</button>
+                            <button class="btn btn-sm btn-secondary" :aria-expanded="expandedTimeline" @click="expandedTimeline = !expandedTimeline" x-text="expandedTimeline ? 'Compact' : 'Expand'"></button>
+                        </div>
+                    </div>
+                    <p class="text-muted text-sm">Elapsed time from first span. Select a span to inspect its details.</p>
+                    <p x-show="!ganttSpans.length" class="empty-state">No spans recorded.</p>
+                    <div class="waterfall-scroll" x-ref="waterfall" :class="{'is-expanded': expandedTimeline}" tabindex="0" aria-label="Scrollable span timeline">
+                        <div class="waterfall" :style="'width: ' + (zoom * 100) + '%'">
+                            <div class="waterfall-axis"><span>Span / agent</span><div><span>0 ms</span><span x-text="formatDuration(timelineDuration)"></span></div><span>Duration</span></div>
+                            <template x-for="row in ganttSpans" :key="row.key">
+                                <button class="waterfall-row" :class="{'is-selected': selectedSpan === row.span, 'is-error': row.span.status === 'error'}" :aria-pressed="selectedSpan === row.span" @click="selectedSpan = row.span">
+                                    <span class="waterfall-label" :style="'padding-left: ' + (Math.min(row.depth, 12) * 12 + 8) + 'px'" :title="row.span.span_name">
+                                        <strong x-text="row.span.span_name || 'Unnamed span'"></strong><small x-text="(row.span.agent_id || 'system') + (row.span.status === 'error' ? ' · Error' : '')"></small>
+                                    </span>
+                                    <span class="waterfall-track"><span class="waterfall-bar" :style="barStyle(row)"></span></span>
+                                    <span class="waterfall-duration" x-text="formatDuration(row.span.duration_ms)"></span>
+                                </button>
+                            </template>
+                        </div>
+                    </div>
+                </section>
+                <aside class="card trace-inspector" aria-label="Span inspector">
+                    <p x-show="!selectedSpan" class="text-muted">Select a span to inspect timing, payloads and metadata.</p>
+                    <template x-if="selectedSpan">
+                        <div>
+                            <header class="inspector-heading"><span class="text-muted text-xs">Selected span</span><h3 x-text="selectedSpan.span_name"></h3><span class="text-sm" x-text="selectedSpan.agent_id || 'system'"></span></header>
+                            <details open class="inspector-group"><summary>Overview</summary>
+                                <dl class="inspector-values"><dt>Duration</dt><dd x-text="formatDuration(selectedSpan.duration_ms)"></dd><dt>Status</dt><dd :class="{'trace-error': selectedSpan.status === 'error'}" x-text="selectedSpan.status || 'Not recorded'"></dd></dl>
+                                <template x-for="[key, value] in spanFields('overview')" :key="key"><dl class="inspector-values"><dt x-text="fieldLabel(key)"></dt><dd x-text="formatValue(value)"></dd></dl></template>
+                            </details>
+                            <details open class="inspector-group"><summary>Input / Output</summary>
+                                <p class="text-muted text-sm" x-show="!spanFields('payload').length">No payload recorded.</p>
+                                <template x-for="[key, value] in spanFields('payload')" :key="key"><details class="payload-disclosure"><summary x-text="fieldLabel(key)"></summary><pre x-text="formatValue(value)"></pre></details></template>
+                            </details>
+                            <details class="inspector-group"><summary>Metadata</summary>
+                                <template x-for="[key, value] in spanFields('metadata')" :key="key"><dl class="inspector-values"><dt x-text="fieldLabel(key)"></dt><dd :class="{'trace-error': key === 'error_type' || key === 'error' || (key === 'success' && value === false)}"><pre x-text="formatValue(value)"></pre></dd></dl></template>
+                                <details class="payload-disclosure"><summary>Span record</summary><pre x-text="formatValue(selectedSpan)"></pre></details>
+                            </details>
+                        </div>
+                    </template>
+                </aside>
+            </div>
+<details class="card trace-disclosure mb-md"><summary>Routing, instructions and communication</summary>
             <!-- Routing Decision -->
             <div class="card mb-md bg-obsidian">
                 <h4 class="card-title mb-sm text-sm">Routing Decision</h4>
@@ -126,7 +184,7 @@
                     </div>
                     <div class="span-detail-row">
                         <span class="span-detail-label">Routing Duration</span>
-                        <span class="text-mono" x-text="traceDetail.routing?.duration_ms ? Math.round(traceDetail.routing.duration_ms) + 'ms' : '-'"></span>
+                        <span class="text-mono" x-text="formatDuration(traceDetail.routing?.duration_ms)"></span>
                     </div>
                     <div class="span-detail-row">
                         <span class="span-detail-label">Routing Source</span>
@@ -135,7 +193,7 @@
                         </template>
                         <template x-if="!traceDetail.routing?.action_cache_hit">
                             <span class="badge" :class="traceDetail.routing_cached ? 'trace-stage-bar' : 'badge-muted'"
-                                x-text="traceDetail.routing_cached ? 'Routing Cached' : 'LLM'"></span>
+                                x-text="routingSource()"></span>
                         </template>
                     </div>
                 </div>
@@ -196,23 +254,23 @@
                                     <span class="text-muted text-2xs">Task:</span>
                                     <template x-if="comm.task_pass_through">
                                         <span class="text-xs text-silver italic"
-                                              x-text="comm.task + ' (forwarded as-is)'"></span>
+                                              x-text="formatValue(comm.task) + ' (forwarded as-is)'"></span>
                                     </template>
                                     <template x-if="!comm.task_pass_through">
-                                        <pre class="pre-cloud-sm" x-text="comm.task"></pre>
+                                        <pre class="pre-cloud-sm" x-text="formatValue(comm.task)"></pre>
                                     </template>
                                 </div>
                             </template>
                             <template x-if="comm.memory && comm.memory.length > 0">
                                 <div class="ml-2 mt-sm">
-                                    <div class="flex-center cursor-pointer"
+                                    <button class="btn btn-sm btn-secondary" :aria-expanded="!!comm._showMemory"
                                          @click="comm._showMemory = !comm._showMemory">
                                         <span class="text-xs text-teal-glow fw-600">Memory</span>
                                         <span class="text-3xs text-silver"
                                               x-text="'(' + comm.memory.length + ' prior messages)'"></span>
                                         <span class="text-3xs text-silver"
                                               x-text="comm._showMemory ? 'hide' : 'show'"></span>
-                                    </div>
+                                    </button>
                                     <div x-show="comm._showMemory" x-transition class="mt-25">
                                         <template x-for="(turn, tidx) in comm.memory" :key="tidx">
                                             <div class="memory-turn"
@@ -247,7 +305,7 @@
                                     <template x-if="comm.response">
                                         <div class="mt-xs">
                                             <span class="text-muted text-2xs">Result:</span>
-                                            <pre class="pre-cloud-xs" x-text="comm.response"></pre>
+                                            <pre class="pre-cloud-xs" x-text="formatValue(comm.response)"></pre>
                                         </div>
                                     </template>
                                 </div>
@@ -262,7 +320,7 @@
                             <template x-if="!comm.is_tool_call && !comm.response_unchanged && comm.response">
                                 <div class="ml-2">
                                     <span class="text-muted text-2xs">Response:</span>
-                                    <pre class="pre-cloud-sm" x-text="comm.response"></pre>
+                                    <pre class="pre-cloud-sm" x-text="formatValue(comm.response)"></pre>
                                 </div>
                             </template>
                         </div>
@@ -270,385 +328,8 @@
                 </div>
             </template>
 
-            <!-- Span Timeline (Gantt) -->
-            <div class="card mb-md bg-obsidian">
-                <h4 class="card-title mb-sm text-sm">Span Timeline</h4>
-                <div class="gantt-scroll-container">
-                    {% include "partials/_trace_gantt.html" %}
-                </div>
-            </div>
-
-            <!-- Span detail panel (on click) -->
-            <template x-if="selectedSpan">
-                <div class="span-detail-panel">
-                    <div class="flex-between mb-sm">
-                        <h4 class="card-title mb-0" x-text="selectedSpan.span_name + ' (' + (selectedSpan.agent_id || 'system') + ')'"></h4>
-                        <button class="btn btn-sm btn-secondary" @click="selectedSpan = null">Close</button>
-                    </div>
-                    <div class="span-detail-grid">
-                        <div class="span-detail-row">
-                            <span class="span-detail-label">Duration</span>
-                            <span class="text-mono" x-text="selectedSpan.duration_ms.toFixed(2) + 'ms'"></span>
-                        </div>
-                        <div class="span-detail-row">
-                            <span class="span-detail-label">Status</span>
-                            <span :class="selectedSpan.status === 'error' ? 'badge badge-red' : 'badge badge-green'" x-text="selectedSpan.status"></span>
-                        </div>
-                        <template x-if="selectedSpan.metadata && selectedSpan.metadata.user_input">
-                            <div class="span-detail-row span-detail-wide">
-                                <span class="span-detail-label">User Input</span>
-                                <pre class="span-detail-content" x-text="selectedSpan.metadata.user_input"></pre>
-                            </div>
-                        </template>
-                        <template x-if="selectedSpan.metadata && selectedSpan.metadata.condensed_task">
-                            <div class="span-detail-row span-detail-wide">
-                                <span class="span-detail-label">Condensed Task</span>
-                                <template x-if="selectedSpan.metadata.all_classifications">
-                                    <div>
-                                        <template x-for="[agent, info] in Object.entries(selectedSpan.metadata.all_classifications)" :key="agent">
-                                            <div class="mb-30 flex-center">
-                                                <span class="badge" :class="'badge-' + dashAgentClass(agent)"
-                                                      x-text="agent"></span>
-                                                <span class="text-xs text-cloud" x-text="info.task + ' (' + Math.round(info.confidence * 100) + '%)'"></span>
-                                            </div>
-                                        </template>
-                                    </div>
-                                </template>
-                                <template x-if="!selectedSpan.metadata.all_classifications">
-                                    <pre class="span-detail-content" x-text="selectedSpan.metadata.condensed_task"></pre>
-                                </template>
-                            </div>
-                        </template>
-                        <template x-if="selectedSpan.metadata && selectedSpan.metadata.routing_cached !== undefined">
-                            <div class="span-detail-row">
-                                <span class="span-detail-label">Routing Cached</span>
-                                <span class="badge" :class="selectedSpan.metadata.routing_cached ? 'trace-stage-bar' : 'badge-muted'"
-                                    x-text="selectedSpan.metadata.routing_cached ? 'Yes' : 'No'"></span>
-                            </div>
-                        </template>
-                        <template x-if="selectedSpan.metadata && selectedSpan.metadata.cache_tier !== undefined">
-                            <div class="span-detail-row">
-                                <span class="span-detail-label">Cache Tier</span>
-                                <span class="badge badge-blue" x-text="'Tier ' + selectedSpan.metadata.cache_tier"></span>
-                            </div>
-                        </template>
-                        <template x-if="selectedSpan.metadata && selectedSpan.metadata.hit_type">
-                            <div class="span-detail-row">
-                                <span class="span-detail-label">Hit Type</span>
-                                <span class="text-mono" x-text="selectedSpan.metadata.hit_type"></span>
-                            </div>
-                        </template>
-                        <template x-if="selectedSpan.metadata && selectedSpan.metadata.skipped !== undefined">
-                            <div class="span-detail-row">
-                                <span class="span-detail-label">Skipped</span>
-                                <span :class="selectedSpan.metadata.skipped ? 'badge badge-green' : 'badge badge-muted'"
-                                    x-text="selectedSpan.metadata.skipped ? 'Yes' : 'No'"></span>
-                            </div>
-                        </template>
-                        <template x-if="selectedSpan.metadata && selectedSpan.metadata.source">
-                            <div class="span-detail-row">
-                                <span class="span-detail-label">Source</span>
-                                <span class="text-mono" x-text="selectedSpan.metadata.source"></span>
-                            </div>
-                        </template>
-                        <template x-if="selectedSpan.metadata && selectedSpan.metadata.target_agent">
-                            <div class="span-detail-row">
-                                <span class="span-detail-label">Target Agent</span>
-                                <span class="text-mono" x-text="selectedSpan.metadata.target_agent"></span>
-                            </div>
-                        </template>
-                        <template x-if="selectedSpan.metadata && selectedSpan.metadata.llm_response">
-                            <div class="span-detail-row span-detail-wide">
-                                <span class="span-detail-label">LLM Response</span>
-                                <pre class="span-detail-content" x-text="selectedSpan.metadata.llm_response"></pre>
-                            </div>
-                        </template>
-                        <template x-if="selectedSpan.metadata && selectedSpan.metadata.agent_response">
-                            <div class="span-detail-row span-detail-wide">
-                                <span class="span-detail-label">Agent Response</span>
-                                <pre class="span-detail-content" x-text="selectedSpan.metadata.agent_response"></pre>
-                            </div>
-                        </template>
-                        <template x-if="selectedSpan.metadata && selectedSpan.metadata.action">
-                            <div class="span-detail-row">
-                                <span class="span-detail-label">Action</span>
-                                <span class="text-mono" x-text="selectedSpan.metadata.action"></span>
-                            </div>
-                        </template>
-                        <template x-if="selectedSpan.metadata && selectedSpan.metadata.entity">
-                            <div class="span-detail-row">
-                                <span class="span-detail-label">Entity</span>
-                                <span class="text-mono" x-text="selectedSpan.metadata.entity"></span>
-                            </div>
-                        </template>
-                        <template x-if="selectedSpan.metadata && selectedSpan.metadata.action_params && Object.keys(selectedSpan.metadata.action_params).length > 0">
-                            <div class="span-detail-row span-detail-wide">
-                                <span class="span-detail-label">Action Params</span>
-                                <pre class="span-detail-content" x-text="JSON.stringify(selectedSpan.metadata.action_params, null, 2)"></pre>
-                            </div>
-                        </template>
-                        <template x-if="selectedSpan.metadata && selectedSpan.metadata.result_speech">
-                            <div class="span-detail-row span-detail-wide">
-                                <span class="span-detail-label">Action Result</span>
-                                <pre class="span-detail-content" x-text="selectedSpan.metadata.result_speech"></pre>
-                            </div>
-                        </template>
-                        <template x-if="selectedSpan.metadata && selectedSpan.metadata.success !== undefined">
-                            <div class="span-detail-row">
-                                <span class="span-detail-label">Success</span>
-                                <span :class="selectedSpan.metadata.success ? 'badge badge-green' : 'badge badge-red'" x-text="selectedSpan.metadata.success ? 'Yes' : 'No'"></span>
-                            </div>
-                        </template>
-                        <template x-if="selectedSpan.metadata && selectedSpan.metadata.latency_ms">
-                            <div class="span-detail-row">
-                                <span class="span-detail-label">Latency</span>
-                                <span class="text-mono" x-text="selectedSpan.metadata.latency_ms + 'ms'"></span>
-                            </div>
-                        </template>
-                        <template x-if="selectedSpan.metadata && selectedSpan.metadata.status_code">
-                            <div class="span-detail-row">
-                                <span class="span-detail-label">Status Code</span>
-                                <span class="text-mono" x-text="selectedSpan.metadata.status_code"></span>
-                            </div>
-                        </template>
-                        <template x-if="selectedSpan.metadata && selectedSpan.metadata.device_name">
-                            <div class="span-detail-row">
-                                <span class="span-detail-label">Device</span>
-                                <span class="text-mono" x-text="selectedSpan.metadata.device_name"></span>
-                            </div>
-                        </template>
-                        <template x-if="selectedSpan.metadata && selectedSpan.metadata.device_id">
-                            <div class="span-detail-row">
-                                <span class="span-detail-label">Device ID</span>
-                                <span class="text-mono" x-text="selectedSpan.metadata.device_id"></span>
-                            </div>
-                        </template>
-                        <template x-if="selectedSpan.metadata && selectedSpan.metadata.area_name">
-                            <div class="span-detail-row">
-                                <span class="span-detail-label">Area</span>
-                                <span class="text-mono" x-text="selectedSpan.metadata.area_name"></span>
-                            </div>
-                        </template>
-                        <template x-if="selectedSpan.metadata && selectedSpan.metadata.area_id">
-                            <div class="span-detail-row">
-                                <span class="span-detail-label">Area ID</span>
-                                <span class="text-mono" x-text="selectedSpan.metadata.area_id"></span>
-                            </div>
-                        </template>
-                        <template x-if="selectedSpan.metadata && selectedSpan.metadata.domain">
-                            <div class="span-detail-row">
-                                <span class="span-detail-label">Domain</span>
-                                <span class="text-mono" x-text="selectedSpan.metadata.domain"></span>
-                            </div>
-                        </template>
-                        <template x-if="selectedSpan.metadata && selectedSpan.metadata.entity_id">
-                            <div class="span-detail-row">
-                                <span class="span-detail-label">Entity ID</span>
-                                <span class="text-mono" x-text="selectedSpan.metadata.entity_id"></span>
-                            </div>
-                        </template>
-                        <template x-if="selectedSpan.metadata && selectedSpan.metadata.language">
-                            <div class="span-detail-row">
-                                <span class="span-detail-label">Language</span>
-                                <span class="text-mono" x-text="selectedSpan.metadata.language"></span>
-                            </div>
-                        </template>
-                        <template x-if="selectedSpan.metadata && selectedSpan.metadata.model">
-                            <div class="span-detail-row">
-                                <span class="span-detail-label">Model</span>
-                                <span class="text-mono" x-text="selectedSpan.metadata.model"></span>
-                            </div>
-                        </template>
-                        <template x-if="selectedSpan.metadata && selectedSpan.metadata.ttft_ms">
-                            <div class="span-detail-row">
-                                <span class="span-detail-label">TTFT</span>
-                                <span class="text-mono" x-text="selectedSpan.metadata.ttft_ms + 'ms'"></span>
-                            </div>
-                        </template>
-                        <template x-if="selectedSpan.metadata && selectedSpan.metadata.latency_ms">
-                            <div class="span-detail-row">
-                                <span class="span-detail-label">Latency</span>
-                                <span class="text-mono" x-text="selectedSpan.metadata.latency_ms + 'ms'"></span>
-                            </div>
-                        </template>
-                        <template x-if="selectedSpan.metadata && selectedSpan.metadata.tps">
-                            <div class="span-detail-row">
-                                <span class="span-detail-label">TPS</span>
-                                <span class="text-mono" x-text="selectedSpan.metadata.tps"></span>
-                            </div>
-                        </template>
-                        <template x-if="selectedSpan.metadata && selectedSpan.metadata.tool_name">
-                            <div class="span-detail-row">
-                                <span class="span-detail-label">Tool</span>
-                                <span class="text-mono" x-text="selectedSpan.metadata.tool_name"></span>
-                            </div>
-                        </template>
-                        <template x-if="selectedSpan.metadata && selectedSpan.metadata.server_name">
-                            <div class="span-detail-row">
-                                <span class="span-detail-label">Server</span>
-                                <span class="text-mono" x-text="selectedSpan.metadata.server_name"></span>
-                            </div>
-                        </template>
-                        <template x-if="selectedSpan.metadata && selectedSpan.metadata.service">
-                            <div class="span-detail-row">
-                                <span class="span-detail-label">Service</span>
-                                <span class="text-mono" x-text="selectedSpan.metadata.service"></span>
-                            </div>
-                        </template>
-                        <template x-if="selectedSpan.metadata && selectedSpan.metadata.error_type">
-                            <div class="span-detail-row">
-                                <span class="span-detail-label">Error Type</span>
-                                <span class="text-mono" x-text="selectedSpan.metadata.error_type"></span>
-                            </div>
-                        </template>
-                        <template x-if="selectedSpan.metadata && selectedSpan.metadata.delivery_type">
-                            <div class="span-detail-row">
-                                <span class="span-detail-label">Delivery</span>
-                                <span class="text-mono" x-text="selectedSpan.metadata.delivery_type"></span>
-                            </div>
-                        </template>
-                        <template x-if="selectedSpan.metadata && selectedSpan.metadata.content_agent">
-                            <div class="span-detail-row">
-                                <span class="span-detail-label">Content Agent</span>
-                                <span class="text-mono" x-text="selectedSpan.metadata.content_agent"></span>
-                            </div>
-                        </template>
-                        <template x-if="selectedSpan.metadata && selectedSpan.metadata.count !== undefined">
-                            <div class="span-detail-row">
-                                <span class="span-detail-label">Count</span>
-                                <span class="text-mono" x-text="selectedSpan.metadata.count"></span>
-                            </div>
-                        </template>
-                        <template x-if="selectedSpan.metadata && selectedSpan.metadata.chars !== undefined">
-                            <div class="span-detail-row">
-                                <span class="span-detail-label">Chars</span>
-                                <span class="text-mono" x-text="selectedSpan.metadata.chars"></span>
-                            </div>
-                        </template>
-                        <template x-if="selectedSpan.metadata && selectedSpan.metadata.length !== undefined">
-                            <div class="span-detail-row">
-                                <span class="span-detail-label">Length</span>
-                                <span class="text-mono" x-text="selectedSpan.metadata.length"></span>
-                            </div>
-                        </template>
-                        <template x-if="selectedSpan.metadata && selectedSpan.metadata.match_count !== undefined">
-                            <div class="span-detail-row">
-                                <span class="span-detail-label">Memory Matches</span>
-                                <span class="text-mono" x-text="selectedSpan.metadata.match_count"></span>
-                            </div>
-                        </template>
-                        <template x-if="selectedSpan.metadata && selectedSpan.metadata.top_similarity !== undefined">
-                            <div class="span-detail-row">
-                                <span class="span-detail-label">Top Similarity</span>
-                                <span class="text-mono" x-text="selectedSpan.metadata.top_similarity"></span>
-                            </div>
-                        </template>
-                        <template x-if="selectedSpan.metadata && selectedSpan.metadata.matched_conversation_id">
-                            <div class="span-detail-row">
-                                <span class="span-detail-label">Matched Session</span>
-                                <span class="text-mono" x-text="selectedSpan.metadata.matched_conversation_id"></span>
-                            </div>
-                        </template>
-                        <template x-if="selectedSpan.metadata && selectedSpan.metadata.wait_mode">
-                            <div class="span-detail-row">
-                                <span class="span-detail-label">Memory Wait Mode</span>
-                                <span class="text-mono" x-text="selectedSpan.metadata.wait_mode"></span>
-                            </div>
-                        </template>
-                        <template x-if="selectedSpan.metadata && selectedSpan.metadata.timed_out !== undefined">
-                            <div class="span-detail-row">
-                                <span class="span-detail-label">Timed Out</span>
-                                <span :class="selectedSpan.metadata.timed_out ? 'badge badge-red' : 'badge badge-green'" x-text="selectedSpan.metadata.timed_out ? 'Yes' : 'No'"></span>
-                            </div>
-                        </template>
-                        <template x-if="selectedSpan.metadata && selectedSpan.metadata.matches_attached !== undefined">
-                            <div class="span-detail-row">
-                                <span class="span-detail-label">Matches Attached</span>
-                                <span :class="selectedSpan.metadata.matches_attached ? 'badge badge-green' : 'badge badge-red'" x-text="selectedSpan.metadata.matches_attached ? 'Yes' : 'No'"></span>
-                            </div>
-                        </template>
-                        <template x-if="selectedSpan.metadata && selectedSpan.metadata.abandoned !== undefined">
-                            <div class="span-detail-row">
-                                <span class="span-detail-label">Abandoned</span>
-                                <span :class="selectedSpan.metadata.abandoned ? 'badge badge-red' : 'badge badge-green'" x-text="selectedSpan.metadata.abandoned ? 'Yes' : 'No'"></span>
-                            </div>
-                        </template>
-                        <template x-if="selectedSpan.metadata && selectedSpan.metadata.cancelled !== undefined">
-                            <div class="span-detail-row">
-                                <span class="span-detail-label">Cancelled</span>
-                                <span :class="selectedSpan.metadata.cancelled ? 'badge badge-red' : 'badge badge-green'" x-text="selectedSpan.metadata.cancelled ? 'Yes' : 'No'"></span>
-                            </div>
-                        </template>
-                        <template x-if="selectedSpan.metadata && selectedSpan.metadata.pool_count !== undefined">
-                            <div class="span-detail-row">
-                                <span class="span-detail-label">Entity Pool</span>
-                                <span class="text-mono" x-text="selectedSpan.metadata.pool_count"></span>
-                            </div>
-                        </template>
-                        <template x-if="selectedSpan.metadata && selectedSpan.metadata.top_n !== undefined">
-                            <div class="span-detail-row">
-                                <span class="span-detail-label">Top N</span>
-                                <span class="text-mono" x-text="selectedSpan.metadata.top_n"></span>
-                            </div>
-                        </template>
-                        <template x-if="selectedSpan.metadata && selectedSpan.metadata.candidates && Object.keys(selectedSpan.metadata.candidates).length > 0">
-                            <div class="span-detail-row span-detail-wide">
-                                <span class="span-detail-label">Ingress Candidates</span>
-                                <pre class="span-detail-content" x-text="JSON.stringify(selectedSpan.metadata.candidates, null, 2)"></pre>
-                            </div>
-                        </template>
-                        <template x-if="selectedSpan.metadata && selectedSpan.metadata.resolved_count !== undefined">
-                            <div class="span-detail-row">
-                                <span class="span-detail-label">Entities Resolved</span>
-                                <span class="text-mono" x-text="selectedSpan.metadata.resolved_count"></span>
-                            </div>
-                        </template>
-                        <template x-if="selectedSpan.metadata && selectedSpan.metadata.resolve_ms !== undefined">
-                            <div class="span-detail-row">
-                                <span class="span-detail-label">Resolve Time</span>
-                                <span class="text-mono" x-text="selectedSpan.metadata.resolve_ms + 'ms'"></span>
-                            </div>
-                        </template>
-                        <template x-if="selectedSpan.metadata && selectedSpan.metadata.state_fetch_ms !== undefined">
-                            <div class="span-detail-row">
-                                <span class="span-detail-label">State Fetch</span>
-                                <span class="text-mono" x-text="selectedSpan.metadata.state_fetch_ms + 'ms'"></span>
-                            </div>
-                        </template>
-                        <template x-if="selectedSpan.metadata && selectedSpan.metadata.has_state_context !== undefined">
-                            <div class="span-detail-row">
-                                <span class="span-detail-label">State Context</span>
-                                <span :class="selectedSpan.metadata.has_state_context ? 'badge badge-green' : 'badge badge-red'" x-text="selectedSpan.metadata.has_state_context ? 'Yes' : 'No'"></span>
-                            </div>
-                        </template>
-                        <template x-if="selectedSpan.metadata && selectedSpan.metadata.memory_matches !== undefined">
-                            <div class="span-detail-row">
-                                <span class="span-detail-label">Memory Matches Attached</span>
-                                <span class="text-mono" x-text="selectedSpan.metadata.memory_matches"></span>
-                            </div>
-                        </template>
-                        <template x-if="selectedSpan.metadata && selectedSpan.metadata.query">
-                            <div class="span-detail-row">
-                                <span class="span-detail-label">Match Query</span>
-                                <span class="text-mono" x-text="selectedSpan.metadata.query"></span>
-                            </div>
-                        </template>
-                        <template x-if="selectedSpan.metadata && selectedSpan.metadata.resolution_path">
-                            <div class="span-detail-row">
-                                <span class="span-detail-label">Resolution Path</span>
-                                <span class="text-mono" x-text="selectedSpan.metadata.resolution_path"></span>
-                            </div>
-                        </template>
-                        <template x-if="selectedSpan.created_at">
-                            <div class="span-detail-row">
-                                <span class="span-detail-label">Created</span>
-                                <span class="text-mono" x-text="new Date(selectedSpan.created_at).toISOString()"></span>
-                            </div>
-                        </template>
-                    </div>
-                </div>
-            </template>
-
+</details>
+            <details class="card trace-disclosure mb-md"><summary>Agent executions</summary>
             <!-- Agent Executions -->
             <template x-if="traceDetail.agent_executions && traceDetail.agent_executions.length > 0">
                 <div class="card mb-md bg-obsidian">
@@ -675,15 +356,15 @@
                                                   x-text="exec.agent_id"></span>
                                         </td>
                                         <td class="text-mono text-xs" x-text="exec.span_name"></td>
-                                        <td class="text-mono" x-text="exec.duration_ms ? Math.round(exec.duration_ms) + 'ms' : '-'"></td>
-                                        <td class="text-mono" x-text="exec.ttft_ms ? Math.round(exec.ttft_ms) + 'ms' : '-'"></td>
-                                        <td class="text-mono" x-text="exec.tps ? exec.tps.toFixed(1) : '-'"></td>
-                                        <td class="text-mono" x-text="exec.latency_ms ? Math.round(exec.latency_ms) + 'ms' : '-'"></td>
+                                        <td class="text-mono" x-text="formatDuration(exec.duration_ms)"></td>
+                                        <td class="text-mono" x-text="formatDuration(exec.ttft_ms)"></td>
+                                        <td class="text-mono" x-text="exec.tps != null ? Number(exec.tps).toFixed(1) : '-'"></td>
+                                        <td class="text-mono" x-text="formatDuration(exec.latency_ms)"></td>
                                         <td>
-                                            <span :class="exec.status === 'error' ? 'badge badge-red' : 'badge badge-green'"
+                                            <span :class="exec.status === 'error' ? 'badge badge-red' : 'badge badge-muted'"
                                                   x-text="exec.status"></span>
                                         </td>
-                                        <td class="truncate max-w-200 text-xs"
+                                        <td class="execution-response text-xs"
                                             x-text="exec.response || '-'"></td>
                                     </tr>
                                 </template>
@@ -692,6 +373,8 @@
                     </div>
                 </div>
             </template>
+            </details>
+            <details class="card trace-disclosure"><summary>Complete trace record</summary><pre x-text="formatValue(traceDetail)"></pre></details>
         </div>
     </template>
 </div>
@@ -702,10 +385,48 @@ function traceDetailPage() {
         traceDetail: null,
         loading: true,
         ganttSpans: [],
-        timeline: null,
+        timelineDuration: 1,
+        zoom: 1,
+        expandedTimeline: false,
+        loadError: false,
         selectedSpan: null,
         editingLabel: false,
         newLabel: '',
+        copyStatus: '',
+        copyFallback: '',
+        shortId(value) {
+            return value && value.length > 18 ? value.slice(0, 8) + '…' + value.slice(-6) : value;
+        },
+        async copyId(value) {
+            this.copyStatus = '';
+            this.copyFallback = '';
+            try {
+                if (navigator.clipboard && window.isSecureContext) await navigator.clipboard.writeText(value);
+                else {
+                    const input = document.createElement('textarea');
+                    const previousFocus = document.activeElement;
+                    input.value = value;
+                    input.style.position = 'fixed';
+                    input.style.opacity = '0';
+                    document.body.appendChild(input);
+                    input.select();
+                    const copied = document.execCommand('copy');
+                    input.remove();
+                    if (previousFocus) previousFocus.focus();
+                    if (!copied) throw new Error('Copy unavailable');
+                }
+                this.copyStatus = 'Copied';
+            } catch (e) {
+                this.copyFallback = value;
+                this.copyStatus = 'Select the ID below to copy.';
+            }
+        },
+        routingSource() {
+            if (this.traceDetail.routing?.action_cache_hit) return 'Action cached';
+            if (this.traceDetail.routing_cached === true) return 'Routing cached';
+            if (this.traceDetail.routing_cached === false) return 'LLM';
+            return 'Not recorded';
+        },
         traceId: {{ trace_id | tojson }},
 
         async init() {
@@ -716,14 +437,13 @@ function traceDetailPage() {
 
         async loadDetail() {
             this.loading = true;
-            this.traceDetail = await window.dashboardApi.safeJson('/api/admin/traces/' + encodeURIComponent(this.traceId));
-            if (this.traceDetail) {
-                this.ganttSpans = (this.traceDetail.spans || []).slice().sort(function(a, b) {
-                    if (a.start_time < b.start_time) return -1;
-                    if (a.start_time > b.start_time) return 1;
-                    return 0;
-                });
-                this.$nextTick(function() { this.renderGantt(); }.bind(this));
+            this.loadError = false;
+            try {
+                this.traceDetail = await window.dashboardApi.safeJson('/api/admin/traces/' + encodeURIComponent(this.traceId));
+                if (this.traceDetail) this.renderGantt();
+                else this.loadError = true;
+            } catch (e) {
+                this.loadError = true;
             }
             this.loading = false;
         },
@@ -744,75 +464,59 @@ function traceDetailPage() {
             }
         },
 
+        formatDuration(value) {
+            return value != null && Number.isFinite(Number(value)) ? Math.max(0, Number(value)).toFixed(1) + ' ms' : 'Not recorded';
+        },
+        formatValue(value) {
+            if (value == null) return 'Not recorded';
+            if (typeof value === 'boolean') return value ? 'Yes' : 'No';
+            return typeof value === 'object' ? JSON.stringify(value, null, 2) : String(value);
+        },
+        fieldLabel(key) {
+            return key.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+        },
+        spanFields(group) {
+            const timings = ['ttft_ms', 'latency_ms', 'tps', 'resolve_ms', 'state_fetch_ms'];
+            const payloads = ['user_input', 'condensed_task', 'all_classifications', 'llm_response', 'agent_response', 'action_params', 'result_speech', 'candidates', 'response', 'input', 'output'];
+            return Object.entries(this.selectedSpan?.metadata || {}).filter(([key]) =>
+                group === 'overview' ? timings.includes(key) : group === 'payload' ? payloads.includes(key) : !timings.includes(key) && !payloads.includes(key));
+        },
+        fitTimeline() {
+            this.zoom = 1;
+            if (this.$refs.waterfall) this.$refs.waterfall.scrollLeft = 0;
+        },
+        barStyle(row) {
+            return 'left: ' + (row.offset / this.timelineDuration * 100) + '%; width: ' + (row.duration / this.timelineDuration * 100) + '%';
+        },
         renderGantt() {
-            if (typeof vis === 'undefined' || !vis.Timeline) {
-                setTimeout(() => this.renderGantt(), 100);
-                return;
-            }
-            const container = document.getElementById('gantt-container');
-            if (!container || this.ganttSpans.length === 0) return;
-
-            if (this.timeline) {
-                this.timeline.destroy();
-                this.timeline = null;
-            }
-
-            const spanById = {};
-            this.ganttSpans.forEach(span => {
-                const sid = span.metadata?.span_id;
-                if (sid) spanById[sid] = span;
-            });
-
-            const getDepth = (span) => {
-                if (!span.parent_span || !spanById[span.parent_span]) return 0;
-                return 1 + getDepth(spanById[span.parent_span]);
+            const spans = (this.traceDetail.spans || []).slice();
+            const time = value => {
+                const parsed = value == null ? NaN : new Date(value).getTime();
+                return Number.isFinite(parsed) ? parsed : null;
             };
-
-            const classToHex = window._agentClassToHex || {};
-            const spanColors = window._traceSpanColors || {};
-            const spanLabels = window._traceSpanLabels || {};
-
-            const items = this.ganttSpans.map((span, idx) => {
-                const start = new Date(span.start_time);
-                const end = span.end_time ? new Date(span.end_time) : new Date(start.getTime() + span.duration_ms);
-                const isError = span.status === 'error';
-                const depth = getDepth(span);
-                const indent = '\u00A0\u00A0'.repeat(depth);
-                const spanPrefix = span.span_name.split('.')[0];
-                const agentCls = span.agent_id ? window.dashAgentClass(span.agent_id) : 'muted';
-                const color = isError ? '#d4756b' : (spanColors[span.span_name] || spanColors[spanPrefix] || classToHex[agentCls] || '#8a8580');
-                const spanLabel = spanLabels[span.span_name] || spanLabels[spanPrefix] || span.span_name;
-                const label = indent + spanLabel + (span.agent_id ? ' (' + span.agent_id + ')' : '') + ' [' + Math.round(span.duration_ms) + 'ms]';
-
-                return {
-                    id: idx,
-                    content: label,
-                    start: start,
-                    end: end,
-                    style: 'background-color: ' + color + '; color: white; border: none; border-radius: 4px; font-size: 0.75rem; cursor: pointer;',
-                    title: span.span_name + '\nAgent: ' + (span.agent_id || '-') + '\nDuration: ' + span.duration_ms.toFixed(2) + 'ms\nStatus: ' + span.status + (span.created_at ? '\nCreated: ' + new Date(span.created_at).toISOString() : ''),
-                };
-            });
-
-            const dataset = new vis.DataSet(items);
-            const options = {
-                height: '250px',
-                stack: true,
-                showCurrentTime: false,
-                zoomMin: 1,
-                margin: { item: 4 },
+            const starts = spans.map(s => time(s.start_time)).filter(v => v !== null);
+            const origin = starts.length ? Math.min(...starts) : 0;
+            const byId = new Map(spans.map(s => [s.metadata?.span_id || s.span_id, s]));
+            const rows = spans.map((span, key) => {
+                const start = time(span.start_time);
+                const end = time(span.end_time);
+                const rawDuration = span.duration_ms == null ? NaN : Number(span.duration_ms);
+                const duration = Number.isFinite(rawDuration) ? Math.max(0, rawDuration) : (start !== null && end !== null ? Math.max(0, end - start) : 0);
+                return {span, key, depth: 0, offset: start === null ? 0 : Math.max(0, start - origin), duration};
+            }).sort((a, b) => a.offset - b.offset);
+            const visited = new Set();
+            const ordered = [];
+            const visit = (row, depth) => {
+                if (visited.has(row)) return;
+                visited.add(row);
+                row.depth = depth;
+                ordered.push(row);
+                rows.filter(child => child.span.parent_span && byId.get(child.span.parent_span) === row.span).forEach(child => visit(child, depth + 1));
             };
-
-            this.timeline = new vis.Timeline(container, dataset, options);
-
-            this.timeline.on('select', (properties) => {
-                if (properties.items.length > 0) {
-                    const idx = properties.items[0];
-                    this.selectedSpan = this.ganttSpans[idx];
-                } else {
-                    this.selectedSpan = null;
-                }
-            });
+            rows.filter(row => !row.span.parent_span || !byId.has(row.span.parent_span)).forEach(row => visit(row, 0));
+            rows.forEach(row => visit(row, 0));
+            this.ganttSpans = ordered;
+            this.timelineDuration = Math.max(1, ...rows.map(row => row.offset + row.duration));
         }
     };
 }

@@ -4,138 +4,45 @@
 {% block header_title %}Request Traces{% endblock %}
 {% block page_subtitle %}<p class="page-subtitle">Inspect individual request flows.</p>{% endblock %}
 {% block page_content %}
-<div x-data="tracesListPage()" x-init="init()">
-
-    <!-- Search & Filter Bar -->
-    <div class="card mb-md p-md">
-        <div class="form-row items-end">
-            <!-- Search -->
-            <div class="form-group mb-0 flex-1 min-w-200">
-                <label class="form-label">Search</label>
-                <input type="text" class="form-input" placeholder="Search user input..."
-                       x-model="search"
-                       @keyup.enter="page=1; loadTraces()"
-                       @input.debounce.500ms="page=1; loadTraces()">
-            </div>
-
-            <!-- Agent filter -->
-            <div class="form-group mb-0">
-                <label class="form-label">Agent</label>
-                <select class="form-input w-auto min-w-150"
-                        x-model="agentFilter" @change="page=1; loadTraces()">
-                    <option value="">All Agents</option>
-                    <template x-for="a in allAgents" :key="a">
-                        <option :value="a" x-text="a"></option>
-                    </template>
-                </select>
-            </div>
-
-            <!-- Label filter -->
-            <div class="form-group mb-0">
-                <label class="form-label">Label</label>
-                <select class="form-input w-auto min-w-120"
-                        x-model="labelFilter" @change="page=1; loadTraces()">
-                    <option value="">All Labels</option>
-                    <template x-for="l in allLabels" :key="l">
-                        <option :value="l" x-text="l"></option>
-                    </template>
-                </select>
-            </div>
-
-            <!-- Date From -->
-            <div class="form-group mb-0">
-                <label class="form-label">From</label>
-                <input type="date" class="form-input w-auto"
-                       x-model="dateFrom" @change="page=1; loadTraces()">
-            </div>
-
-            <!-- Date To -->
-            <div class="form-group mb-0">
-                <label class="form-label">To</label>
-                <input type="date" class="form-input w-auto"
-                       x-model="dateTo" @change="page=1; loadTraces()">
-            </div>
-
-            <!-- Export -->
-            <button class="btn btn-sm btn-secondary self-end" @click="exportCSV()">Export CSV</button>
+<div class="traces-page" x-data="tracesListPage()" x-init="init()">
+    <section class="card trace-filters" aria-label="Filter traces">
+        <label class="form-label" for="trace-search">Search requests</label>
+        <input id="trace-search" type="search" class="form-input" placeholder="Search user input or conversation..." x-model="search" @keyup.enter="page=1; loadTraces()" @input.debounce.500ms="page=1; loadTraces()">
+        <div class="trace-secondary-filters">
+            <div><label class="form-label" for="trace-agent">Agent</label><select id="trace-agent" class="form-input" x-model="agentFilter" @change="page=1; loadTraces()"><option value="">All agents</option><template x-for="a in allAgents" :key="a"><option :value="a" x-text="a"></option></template></select></div>
+            <div><label class="form-label" for="trace-label">Label</label><select id="trace-label" class="form-input" x-model="labelFilter" @change="page=1; loadTraces()"><option value="">All labels</option><template x-for="l in allLabels" :key="l"><option :value="l" x-text="l"></option></template></select></div>
+            <div><label class="form-label" for="trace-from">From</label><input id="trace-from" type="date" class="form-input" x-model="dateFrom" @change="page=1; loadTraces()"></div>
+            <div><label class="form-label" for="trace-to">To</label><input id="trace-to" type="date" class="form-input" x-model="dateTo" @change="page=1; loadTraces()"></div>
         </div>
-    </div>
-
-    <!-- Traces Table -->
-    <div class="card mb-lg">
-        <div class="flex-between mb-md">
-            <span class="text-muted text-sm" x-text="'Total: ' + total + ' traces'"></span>
-            <div class="flex-center">
-                <button class="btn btn-sm btn-secondary" :disabled="page <= 1" @click="page--; loadTraces()">Prev</button>
-                <span class="text-mono text-sm" x-text="page + ' / ' + pages"></span>
-                <button class="btn btn-sm btn-secondary" :disabled="page >= pages" @click="page++; loadTraces()">Next</button>
-            </div>
+        <div x-show="hasFilters" class="trace-active-filters"><span class="text-sm">Filters active</span><button class="btn btn-sm btn-secondary" @click="resetFilters()">Reset filters</button></div>
+    </section>
+    <section class="card trace-results" :aria-busy="loading" aria-label="Trace results">
+        <div class="trace-results-toolbar"><div><strong x-text="total + ' traces'"></strong><button class="btn btn-sm btn-secondary" @click="exportCSV()">Export CSV</button></div><nav class="trace-pagination" aria-label="Trace pages">
+    <button class="btn btn-sm btn-secondary" :disabled="loading || page <= 1" @click="page--; loadTraces()">Previous</button>
+    <span class="text-mono text-sm" x-text="page + ' / ' + pages"></span>
+    <button class="btn btn-sm btn-secondary" :disabled="loading || page >= pages" @click="page++; loadTraces()">Next</button>
+</nav></div>
+        <p class="trace-load-status text-muted text-sm" role="status" aria-live="polite" x-text="loading ? (loaded ? 'Refreshing traces…' : 'Loading traces…') : ''"></p>
+        <p x-cloak x-show="loadError" role="alert" class="trace-load-error">Could not load traces. Existing results may be out of date. <button class="btn btn-sm btn-secondary" @click="loadTraces()">Retry</button></p>
+        <div class="trace-list" x-show="traces.length > 0">
+            <template x-for="t in traces" :key="t.trace_id">
+                <article class="trace-row" :data-fresh="t._fresh || false">
+                    <div class="trace-request">
+                        <a class="trace-request-link" :href="dashUrl('/dashboard/traces/' + t.trace_id)" :title="t.user_input || 'Open trace details'" x-text="t.user_input || 'Request without text'"></a>
+                        <div class="trace-row-meta"><time x-text="dashFormatTimestamp(t.created_at)"></time><span x-text="(t.agents || []).join(', ') || 'No agent recorded'"></span></div>
+                        <div class="trace-row-meta"><span x-text="'Source: ' + (t.source || '—')"></span><span :title="t.device_id || ''" x-text="'Device: ' + (t.device_name || t.device_id || '—')"></span><span x-text="'Confidence: ' + (t.routing_confidence != null ? Number(t.routing_confidence).toFixed(2) : '—')"></span><span x-show="t.label" x-text="'Label: ' + t.label"></span><span x-show="t.voice_followup" title="AgentHub kept the microphone open for a follow-up">Follow-up</span></div>
+                    </div>
+                    <div class="trace-row-duration"><span class="text-mono" x-text="t.total_duration_ms != null ? Math.round(t.total_duration_ms) + ' ms' : '—'"></span><a :href="dashUrl('/dashboard/traces/' + t.trace_id)" :aria-label="'Details for ' + (t.user_input || t.trace_id)">Details</a></div>
+                </article>
+            </template>
         </div>
-
-        <template x-if="loading">
-            <p class="text-muted">Loading traces...</p>
-        </template>
-
-        <div class="table-container-flush" x-show="!loading && traces.length > 0">
-            <table class="data-table traces-table">
-                <thead>
-                    <tr>
-                        <th>Timestamp</th>
-                        <th>User Input</th>
-                        <th>Agents</th>
-                        <th>Duration</th>
-                        <th>Source</th>
-                        <th>Confidence</th>
-                        <th>Device</th>
-                        <th>Label</th>
-                        <th></th>
-                    </tr>
-                </thead>
-                <tbody>
-                    <template x-for="t in traces" :key="t.trace_id">
-                        <tr class="row-clickable" :data-fresh="t._fresh || false">
-                            <td class="text-mono text-xs text-nowrap"
-                                x-text="dashFormatTimestamp(t.created_at)"></td>
-                            <td class="truncate"
-                                x-text="t.user_input || '-'"></td>
-                            <td>
-                                <div class="flex flex-wrap gap-xs">
-                                    <template x-for="agent in (t.agents || [])" :key="agent">
-                                        <span class="badge agent-badge" :class="'agent-' + dashAgentClass(agent)"
-                                              x-text="agent"></span>
-                                    </template>
-                                </div>
-                            </td>
-                            <td class="text-mono" x-text="t.total_duration_ms ? Math.round(t.total_duration_ms) + 'ms' : '-'"></td>
-                            <td class="text-mono text-xs" x-text="t.source || '-'"></td>
-                            <td class="text-mono text-xs" x-text="t.routing_confidence != null ? (Math.round(t.routing_confidence * 100) / 100).toFixed(2) : '-'"></td>
-                            <td class="text-xs truncate max-w-128" x-text="t.device_name || t.device_id || '-'"></td>
-                            <td>
-                                <div class="flex flex-wrap gap-xs">
-                                    <span x-show="t.label" class="badge badge-blue text-2xs"
-                                          x-text="t.label"></span>
-                                    <span x-show="t.voice_followup"
-                                          class="badge badge-teal text-2xs"
-                                          title="AgentHub kept the microphone open for a follow-up">
-                                        FOLLOW-UP
-                                    </span>
-                                </div>
-                            </td>
-                            <td>
-                                <a class="btn btn-sm btn-primary" :href="dashUrl('/dashboard/traces/' + t.trace_id)">View</a>
-                            </td>
-                        </tr>
-                    </template>
-                </tbody>
-            </table>
-        </div>
-
-        <template x-if="!loading && traces.length === 0">
-            <div class="empty-state">
-                <p>No traces found.</p>
-            </div>
-        </template>
-    </div>
+        <div class="empty-state" x-cloak x-show="!loading && !loadError && traces.length === 0"><p x-text="hasFilters ? 'No traces match these filters.' : 'No requests recorded yet.'"></p><button x-show="hasFilters" class="btn btn-sm btn-secondary" @click="resetFilters()">Reset filters</button></div>
+        <div class="trace-bottom-pager" x-show="traces.length > 0"><nav class="trace-pagination" aria-label="Trace pages">
+    <button class="btn btn-sm btn-secondary" :disabled="loading || page <= 1" @click="page--; loadTraces()">Previous</button>
+    <span class="text-mono text-sm" x-text="page + ' / ' + pages"></span>
+    <button class="btn btn-sm btn-secondary" :disabled="loading || page >= pages" @click="page++; loadTraces()">Next</button>
+</nav></div>
+    </section>
 </div>
 
 <script>
@@ -143,6 +50,9 @@ function tracesListPage() {
     return {
         traces: [],
         loading: false,
+        loaded: false,
+        loadError: false,
+        requestSequence: 0,
         page: 1,
         pages: 1,
         total: 0,
@@ -155,29 +65,46 @@ function tracesListPage() {
         allAgents: [],
 
         async init() {
+            this.search = new URLSearchParams(window.location.search).get('search') || '';
             await this.loadTraces();
         },
 
 
 
+        get hasFilters() {
+            return !!(this.search || this.agentFilter || this.labelFilter || this.dateFrom || this.dateTo);
+        },
+        resetFilters() {
+            this.search = this.agentFilter = this.labelFilter = this.dateFrom = this.dateTo = '';
+            this.page = 1;
+            return this.loadTraces();
+        },
         async loadTraces() {
+            const sequence = ++this.requestSequence;
             this.loading = true;
+            this.loadError = false;
             var params = new URLSearchParams({ page: this.page, per_page: 50 });
             if (this.search) params.set('search', this.search);
             if (this.agentFilter) params.set('agent', this.agentFilter);
             if (this.labelFilter) params.set('label', this.labelFilter);
             if (this.dateFrom) params.set('from', this.dateFrom);
             if (this.dateTo) params.set('to', this.dateTo);
-
-            var data = await window.dashboardApi.safeJson('/api/admin/traces?' + params.toString());
-            if (data) {
-                this.traces = data.traces || [];
-                this.total = data.total || 0;
-                this.pages = data.pages || 1;
-                this.allLabels = data.labels || [];
-                this.allAgents = data.agents || [];
+            try {
+                var data = await window.dashboardApi.safeJson('/api/admin/traces?' + params.toString());
+                if (sequence !== this.requestSequence) return;
+                if (data) {
+                    this.traces = data.traces || [];
+                    this.total = data.total || 0;
+                    this.pages = data.pages || 1;
+                    this.allLabels = data.labels || [];
+                    this.allAgents = data.agents || [];
+                    this.loaded = true;
+                } else this.loadError = true;
+            } catch (e) {
+                if (sequence === this.requestSequence) this.loadError = true;
+            } finally {
+                if (sequence === this.requestSequence) this.loading = false;
             }
-            this.loading = false;
         },
 
         exportCSV() {

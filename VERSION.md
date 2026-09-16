@@ -6,6 +6,11 @@
 
 (tracking changes since 2.3.6)
 
+- Dashboard: coherent responsive spacing, readable controls, dedicated settings navigation, request/latency/cache metric hierarchy, and horizontal/stacked overview comparisons.
+- Agents and Chat: local agent filtering and editable sample prompts that fill the composer without sending or replacing a draft.
+- Traces: request-led rows, grouped filters/reset, retained-result refresh states, bottom paging, and responsive layouts. Trace detail now pairs an elapsed-time hierarchy timeline with a grouped inspector while retaining diagnostic payloads and metadata.
+- Dashboard correctness: guarded overview loading expressions and corrected the trace session link; executable UI behavior tests and isolated browser checks cover the changed workflows.
+
 ## Version History
 
 ### 2.3.6 (PATCH) -- dependency updates

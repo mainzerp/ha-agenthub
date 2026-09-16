@@ -1,4 +1,4 @@
-﻿/* === Dashboard Typography & Layout === */
+/* === Dashboard Typography & Layout === */
 
 body {
     font-family: var(--font-body);
@@ -16,4 +16,10 @@ body {
 .section-title,
 h1, h2, h3 {
     font-family: var(--font-display);
+}
+
+/* Keyboard navigation must be visible for links and native disclosures too. */
+a:focus-visible, button:focus-visible, summary:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 3px;
 }
