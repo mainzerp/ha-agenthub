@@ -329,6 +329,7 @@
     border: none;
     border-radius: 0.75rem;
     cursor: pointer;
+    font-family: inherit;
     font-size: 0.875rem;
     font-weight: 600;
     text-decoration: none;
@@ -341,7 +342,8 @@
 .btn-secondary:hover { background: var(--bg-charcoal); color: var(--color-cloud); border-color: var(--teal); }
 .btn-danger { background: rgba(184, 92, 82, 0.8); color: var(--color-light); }
 .btn-danger:hover { background: var(--ember); }
-.btn-sm { padding: 0.25rem 0.625rem; font-size: 0.75rem; }
+.btn-sm { padding: 0.25rem 0.625rem; font-size: 0.8125rem; min-height: 32px; }
+@media (pointer: coarse) { .btn { min-height: 44px; } }
 
 /* --- Toggle switch --- */
 
@@ -875,6 +877,11 @@ input[type="range"]::-moz-range-thumb {
 .grid-2 > .card {
     display: flex;
     flex-direction: column;
+}
+
+/* Grid gaps own spacing; stacked-card margins would offset sibling panels. */
+.grid-2 > .card, .grid-3 > .card, .grid-4 > .card, .card-grid > .card {
+    margin-top: 0;
 }
 
 .grid-2 > .card > :last-child {
@@ -1458,4 +1465,22 @@ details.card > .details-content {
 
 .badge {
     transition: opacity 0.15s ease;
+}
+
+/* These overrides follow component definitions because layout.css loads first. */
+.main-content, .page-content, .page-header-text,
+.grid-2 > *, .grid-3 > *, .grid-4 > *, .form-grid > *, .form-grid-2 > * {
+    min-width: 0;
+}
+.page-header-text, .card, .chart-card { overflow-wrap: anywhere; }
+.form-input, .form-select, .form-textarea { max-width: 100%; min-width: 0; }
+.grid-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.grid-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.grid-4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.alert-banner { border-left: 3px solid var(--warning); }
+@media (min-width: 769px) and (max-width: 1024px) {
+    .grid-3, .grid-4 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 768px) {
+    .grid-2, .grid-3, .grid-4, .form-grid, .form-grid-2 { grid-template-columns: minmax(0, 1fr); }
 }

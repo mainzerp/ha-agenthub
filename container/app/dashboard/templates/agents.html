@@ -14,6 +14,14 @@
         </div>
     </div>
 
+    <div class="agent-filter">
+        <label for="agent-search" class="form-label">Find an agent</label>
+        <div class="agent-filter-controls">
+            <input id="agent-search" type="search" class="form-input" x-model="search" placeholder="Filter by name or description">
+            <button type="button" class="btn btn-secondary btn-sm" x-show="search" @click="search = ''; document.getElementById('agent-search').focus()">Reset</button>
+        </div>
+        <p class="text-muted text-sm" role="status" x-text="filteredAgents.length + ' of ' + agents.length + ' agents'"></p>
+    </div>
     <div id="agents-list">
         <template x-if="loading">
             <p class="text-muted">Loading agents...</p>
@@ -23,17 +31,21 @@
                 <p>No agents configured.</p>
             </div>
         </template>
-        <template x-for="agent in agents" :key="agent.agent_id">
+        <div class="empty-state" x-show="!loading && agents.length > 0 && filteredAgents.length === 0" x-cloak>
+            <p>No agents match your search.</p>
+            <button type="button" class="btn btn-secondary btn-sm" @click="search = ''">Show all agents</button>
+        </div>
+        <template x-for="agent in filteredAgents" :key="agent.agent_id">
             <div class="card" :class="agent.agent_id === 'orchestrator' ? 'card-orchestrator' : ''">
-                <div class="flex-between flex-wrap">
-                    <div class="flex-center">
+                <div class="agent-heading">
+                    <div class="agent-identity">
                         <span class="badge badge-dot" :class="agent.enabled == 1 ? 'badge-green' : 'badge-muted'" x-text="agent.enabled == 1 ? 'Enabled' : 'Disabled'"></span>
                         <strong x-text="agent.agent_id" class="mono"></strong>
                         <span x-show="agent.description" class="text-muted text-sm" x-text="agent.description"></span>
                     </div>
-                    <div class="btn-group">
+                    <div class="btn-group agent-actions">
                         <label class="toggle">
-                            <input type="checkbox" :checked="agent.enabled == 1" @change="toggleAgent(agent)">
+                            <input type="checkbox" :aria-label="'Enable ' + agent.agent_id" :checked="agent.enabled == 1" @change="toggleAgent(agent)">
                             <span class="toggle-slider"></span>
                         </label>
                         <button class="btn btn-sm btn-secondary" @click="agent._editing = !agent._editing; if(agent._editing) { loadAgentMcpTools(agent.agent_id); }">Edit</button>
@@ -44,7 +56,7 @@
                 <div x-show="agent._actionError" class="alert alert-error mt-sm" x-text="agent._actionError"></div>
 
                 <!-- Entity visibility badges -->
-                <div class="form-row gap-sm mt-sm flex-wrap gap-xs">
+                <div class="agent-capabilities">
                     <template x-if="visibilitySummary[agent.agent_id] && visibilitySummary[agent.agent_id].has_rules && visibilitySummary[agent.agent_id].domains.length > 0">
                         <template x-for="domain in visibilitySummary[agent.agent_id].domains.filter(d => !(visibilitySummary[agent.agent_id].device_classes || []).length || !['sensor','binary_sensor'].includes(d))" :key="domain">
                                      <a :href="window.dashUrl('/dashboard/entity-index') + '?agent=' + encodeURIComponent(agent.agent_id)"
@@ -193,6 +205,13 @@
 function agentsPage() {
     return {
         agents: [],
+        search: '',
+        get filteredAgents() {
+            const query = this.search.trim().toLocaleLowerCase();
+            return this.agents.filter(agent =>
+                [agent.agent_id, agent.description || ''].some(value =>
+                    value.toLocaleLowerCase().includes(query)));
+        },
         loading: true,
         error: null,
         allProviders: [],

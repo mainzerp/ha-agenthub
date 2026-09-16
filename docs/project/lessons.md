@@ -22,6 +22,7 @@
 
 - **Tests:** pytest-xdist is NOT installed in the local venvs — run the container suite sequentially: `python -m pytest tests/ -q` from `container/` (~300s). From repo root: `.venv/Scripts/python -m pytest container/tests -q`.
 - **Windows pytest hang:** the pytest process hangs on interpreter shutdown AFTER printing the full summary. Take verdicts from the printed summary lines; run long suites as a background task.
+- **Dashboard CSS:** components.css loads after layout.css; shared responsive overrides must respect that cascade. Read/write assets explicitly as UTF-8: a mojibake BOM before the first selector can silently discard it. Confirm computed fonts/colors in a rendered page after shared-style changes.
 - **Lint:** `ruff check` and `ruff format` must both pass before every push.
 - **Docker:** local development uses `container/docker-compose_local.yml` (not the root compose file). NEVER delete Docker volumes (`down -v`, `volume rm`) unless the user explicitly requests it.
 - **Secrets:** `secrets/.env.local` is shell-sourceable KEY=VALUE — `source secrets/.env.local`. It defines `AA_LIVE_*` (live instance), `AA_LOCAL_*` (local test instance), and the active `AA_BASE_URL`/`AA_USERNAME`/`AA_PASSWORD` selection used by the skills.

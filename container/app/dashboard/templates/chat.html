@@ -3,7 +3,7 @@
 {% block page_css %}<link rel="stylesheet" href="{{ static_url(request, '/dashboard/static/css/pages/chat.css') }}">{% endblock %}
 {% block header_title %}Chat Test Interface{% endblock %}
 {% block page_content %}
-<div x-data="chatPage()" x-init="init()">
+<div class="chat-page" x-data="chatPage()" x-init="init()">
 
     <div class="page-header">
         <div class="page-header-text">
@@ -49,11 +49,21 @@
             </template>
         </div>
 
+        <div class="chat-suggestions" x-show="messages.length === 0">
+            <p class="text-sm text-muted" id="suggestion-help">Sample prompts: choose one to edit, then press Send. Clear your draft to choose another.</p>
+            <div class="chat-suggestion-buttons" aria-describedby="suggestion-help">
+                <template x-for="suggestion in suggestions" :key="suggestion">
+                    <button type="button" class="btn btn-secondary btn-sm" @click="useSuggestion(suggestion)" :disabled="streaming || input.length > 0" x-text="suggestion"></button>
+                </template>
+            </div>
+        </div>
         <!-- Input bar -->
         <div class="chat-input-bar">
             <input type="text"
                    class="form-input"
                    placeholder="Type a message..."
+                   x-ref="composer"
+                   aria-label="Message"
                    x-model="input"
                    @keydown.enter="sendMessage()"
                    :disabled="streaming">
@@ -68,6 +78,12 @@
 function chatPage() {
     return {
         messages: [],
+        suggestions: ['Which lights are on?', 'What is the living room temperature?'],
+        useSuggestion(suggestion) {
+            if (this.streaming || this.input.length > 0) return;
+            this.input = suggestion;
+            this.$nextTick(() => this.$refs.composer.focus());
+        },
         input: '',
         conversationId: null,
         streaming: false,

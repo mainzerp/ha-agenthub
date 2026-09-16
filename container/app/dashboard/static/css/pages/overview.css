@@ -1,1 +1,18 @@
-﻿/* Page-specific styles for overview */
+/* Overview hierarchy: operational metrics before inventory. */
+.overview-metrics { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1rem; margin-bottom: 1rem; }
+.overview-metrics .stat-card-value, .overview-inventory .stat-card-value, .cache-breakdown-value { color: var(--text-primary); }
+.overview-metrics .stat-card-icon, .overview-inventory .stat-card-icon { color: var(--text-secondary); }
+.overview-inventory { display: flex; flex-wrap: wrap; gap: 1rem 2rem; padding: 0.5rem 0 1.5rem; }
+.overview-inventory .stat-card { display: flex; align-items: baseline; flex-wrap: wrap; gap: 0.75rem; background: transparent; border: 0; padding: 0; }
+.overview-inventory .stat-card-icon { display: none; }
+.overview-inventory .stat-card-value { font-size: 1.125rem; }
+.overview-inventory .stat-card-header { margin: 0; }
+.overview-health { gap: 0.5rem; margin-bottom: 1.5rem; flex-direction: row; flex-wrap: wrap; }
+.overview-health .health-badge { font-size: 0.75rem; background: transparent; }
+.overview-metrics .stat-card-detail { display: flex; flex-wrap: wrap; gap: 0.25rem 0.75rem; }
+.overview-metrics .stat-card-detail .ml-md { margin-left: 0; }
+@media (max-width: 640px) { .overview-metrics { grid-template-columns: 1fr; } }
+
+.overview-activity { min-width: 480px; }
+.overview-activity th, .overview-activity td:first-child, .overview-activity td:nth-child(4), .overview-activity .badge { white-space: nowrap; overflow-wrap: normal; }
+.overview-activity td:nth-child(2) { min-width: 160px; }

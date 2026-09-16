@@ -7,6 +7,8 @@ template rendering.
 from __future__ import annotations
 
 import re
+import shutil
+import subprocess
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -801,3 +803,106 @@ class TestSendDevicesAPI:
         resp = await dashboard_client.get("/dashboard/send-devices")
         assert resp.status_code == 200
         assert "text/html" in resp.headers.get("content-type", "")
+
+
+def _run_dashboard_script(template: str, assertions: str) -> None:
+    """Execute page state transitions without an API or a browser dependency."""
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("Node.js is required for dashboard JavaScript behavior checks")
+    path = Path(__file__).parents[1] / "app/dashboard/templates" / template
+    script = re.search(r"<script>(.*?)</script>", path.read_text(encoding="utf-8"), re.S)
+    assert script is not None
+    result = subprocess.run(
+        [node, "-e", script.group(1) + "\n" + assertions],
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_chat_suggestion_only_fills_empty_composer():
+    _run_dashboard_script(
+        "chat.html",
+        """
+        const assert = require('node:assert/strict');
+        const page = chatPage();
+        let focused = 0;
+        page.$nextTick = fn => fn();
+        page.$refs = {composer: {focus: () => focused++}};
+        page.sendMessage = () => { throw new Error('Suggestions must never submit'); };
+        page.useSuggestion(page.suggestions[0]);
+        assert.equal(page.input, page.suggestions[0]);
+        assert.equal(focused, 1);
+        assert.equal(page.messages.length, 0);
+        page.input = 'My existing draft';
+        page.useSuggestion(page.suggestions[1]);
+        assert.equal(page.input, 'My existing draft');
+        page.input = ' ';
+        page.useSuggestion(page.suggestions[1]);
+        assert.equal(page.input, ' ');
+        page.input = '';
+        page.streaming = true;
+        page.useSuggestion(page.suggestions[1]);
+        assert.equal(page.input, '');
+        """,
+    )
+
+
+def test_agent_filter_matches_identity_description_and_resets():
+    _run_dashboard_script(
+        "agents.html",
+        """
+        const assert = require('node:assert/strict');
+        const page = agentsPage();
+        page.agents = [
+            {agent_id: 'light-agent', description: 'Controls room lights'},
+            {agent_id: 'weather-agent', description: 'Forecast and temperature'},
+            {agent_id: 'custom-agent', description: null}
+        ];
+        page.search = ' LIGHT ';
+        assert.deepEqual(page.filteredAgents.map(a => a.agent_id), ['light-agent']);
+        page.search = 'TEMPERATURE';
+        assert.equal(page.filteredAgents[0].agent_id, 'weather-agent');
+        page.search = 'not-present';
+        assert.equal(page.filteredAgents.length, 0);
+        page.search = '';
+        assert.equal(page.filteredAgents.length, 3);
+        assert.equal(page.agents.length, 3);
+        """,
+    )
+
+
+def test_overview_charts_preserve_counts_on_refresh():
+    _run_dashboard_script(
+        "overview.html",
+        """
+        const assert = require('node:assert/strict');
+        global.document = {getElementById: id => id};
+        global.chartRgba = name => name;
+        global.chartColors = () => ({text: '#fff'});
+        global.dashChartOptions = () => ({});
+        global.Chart = function(ctx, config) {
+            Object.assign(this, config);
+            this.update = () => {};
+        };
+        const page = overviewPage();
+        page.data = {request_trend: {labels: [], data: []}, agent_distribution: [],
+            cache_tier: {routing_hits: 4, action_hits: 2, misses: 3}};
+        page.initCharts();
+        assert.equal(page.agentDistChart.type, 'bar');
+        assert.equal(page.agentDistChart.options.indexAxis, 'y');
+        assert.deepEqual(page.cacheTierChart.data.datasets.map(d => d.data[0]), [4,2,3]);
+        page.data.agent_distribution = [{agent_id: 'light-agent', request_count: 7}];
+        page.data.cache_tier = {routing_hits: 5, action_hits: 3, misses: 1};
+        page.updateCharts();
+        assert.deepEqual(page.agentDistChart.data.labels, ['light-agent']);
+        assert.deepEqual(page.agentDistChart.data.datasets[0].data, [7]);
+        assert.deepEqual(page.cacheTierChart.data.datasets.map(d => d.data[0]), [5,3,1]);
+        page.data.agent_distribution = [];
+        page.updateCharts();
+        assert.deepEqual(page.agentDistChart.data.datasets[0].data, []);
+        """,
+    )

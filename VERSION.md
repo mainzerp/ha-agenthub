@@ -1,12 +1,24 @@
 # Version
 
-**Current Version:** 2.3.6
+**Current Version:** 2.4.0
 
 ## Recent Changes
 
-(tracking changes since 2.3.6)
+(tracking changes since 2.4.0)
 
 ## Version History
+
+### 2.4.0 (MINOR) -- dashboard and trace inspection rework
+
+(commit d0bca35)
+
+- Dashboard: coherent responsive spacing, readable controls, dedicated settings navigation, request/latency/cache metric hierarchy, and horizontal/stacked overview comparisons.
+- Agents and Chat: local agent filtering and editable sample prompts that fill the composer without sending or replacing a draft.
+- Traces: request-led rows, grouped filters/reset, retained-result refresh states, bottom paging, and responsive layouts. Trace detail now pairs an elapsed-time hierarchy timeline with a grouped inspector while retaining diagnostic payloads and metadata.
+- Dashboard correctness: guarded overview loading expressions and corrected the trace session link; executable UI behavior tests and isolated browser checks cover the changed workflows.
+- Layout: timeline and inspector share the same desktop height; shared grid cards align without extra sibling margins.
+- Removed the old trace-detail timeline presentation and duplicate latency display; raw trace/span records remain available.
+
 
 ### 2.3.6 (PATCH) -- dependency updates
 

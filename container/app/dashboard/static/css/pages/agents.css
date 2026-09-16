@@ -1,1 +1,18 @@
-﻿/* Page-specific styles for agents */
+/* Identity, controls, and capabilities remain separate at every width. */
+.agent-filter { max-width: 40rem; margin-bottom: 1.5rem; }
+.agent-filter-controls { display: flex; gap: 0.5rem; align-items: center; }
+.agent-filter-controls input { min-width: 0; }
+.agent-heading { display: flex; justify-content: space-between; align-items: flex-start; gap: 1rem; }
+.agent-identity { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 0.375rem 0.75rem; align-items: center; }
+.agent-identity strong { grid-column: 1; grid-row: 1; overflow-wrap: anywhere; }
+.agent-identity > .badge { grid-column: 2; grid-row: 1; }
+.agent-identity > .text-muted { grid-column: 1 / -1; line-height: 1.6; overflow-wrap: anywhere; }
+.agent-actions { flex-shrink: 0; align-items: center; }
+.agent-capabilities { display: flex; flex-wrap: wrap; gap: 0.375rem 0.75rem; margin-top: 1rem; }
+.agent-capabilities .badge { background: transparent; color: var(--text-secondary); border: 1px solid var(--border); white-space: normal; overflow-wrap: anywhere; }
+.agent-capabilities a:hover { color: var(--accent); border-color: var(--accent); }
+@media (max-width: 640px) {
+    .agent-heading { flex-direction: column; }
+    .agent-actions { flex-direction: row; flex-wrap: wrap; }
+    .agent-identity { width: 100%; }
+}

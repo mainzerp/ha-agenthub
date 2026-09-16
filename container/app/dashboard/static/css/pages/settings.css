@@ -66,7 +66,7 @@
 
 .provider-row {
     display: grid;
-    grid-template-columns: 120px 100px 1fr auto;
+    grid-template-columns: 110px 85px minmax(0, 1fr) auto;
     align-items: center;
     gap: 0.75rem;
     padding: 0.75rem;
@@ -132,7 +132,7 @@
 }
 
 @media (max-width: 480px) {
-  .settings-rail { flex-direction: row; overflow-x: auto; gap: 0.25rem; padding-bottom: 0.5rem; }
+  .settings-rail nav { display: flex; overflow-x: auto; gap: 0.25rem; padding-bottom: 0.5rem; }
   .settings-rail-item { white-space: nowrap; padding: 0.4rem 0.75rem; font-size: 0.8rem; }
   .custom-provider-header-row { grid-template-columns: 1fr; }
 }
@@ -145,3 +145,20 @@
         grid-template-columns: 1fr;
     }
 }
+
+.settings-layout { display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 2rem; align-items: start; }
+.settings-rail, .settings-pane, .provider-row > *, .custom-provider-header-row > * { min-width: 0; }
+.settings-rail { position: sticky; top: 1rem; }
+.settings-rail-item { color: var(--text-secondary); gap: 0.5rem; }
+.settings-pane .provider-grid { max-width: none; }
+@media (max-width: 1100px) {
+    .provider-row { grid-template-columns: minmax(0, 1fr) auto; }
+    .provider-row > input { grid-column: 1; }
+}
+@media (max-width: 768px) {
+    .settings-layout { grid-template-columns: minmax(0, 1fr); gap: 1.25rem; }
+    .settings-rail { position: static; }
+    .settings-rail nav { display: flex; overflow-x: auto; padding-bottom: 0.5rem; }
+    .settings-rail-item { flex-shrink: 0; white-space: nowrap; }
+}
+@media (max-width: 480px) { .provider-row { grid-template-columns: minmax(0, 1fr); } }
