@@ -1,12 +1,22 @@
 # Version
 
-**Current Version:** 2.4.0
+**Current Version:** 2.4.1
 
 ## Recent Changes
 
-(tracking changes since 2.4.0)
+(tracking changes since 2.4.1)
 
 ## Version History
+
+### 2.4.1 (PATCH) -- provider preservation and trace filter fixes
+
+(commit 6bb3bb3)
+
+- Custom providers: preserve API keys on omitted or empty input and preserve headers unless replacement is explicitly selected. An explicit empty header map clears stored headers; nonempty maps replace them without exposing existing secrets.
+- Traces: search both user input and conversation ID consistently across list, count, and CSV export using shared filter predicates.
+- Date filters: include the entire selected UTC end date using an exclusive next-day boundary; invalid exact calendar dates return HTTP 422. Existing timestamp-style filter comparisons remain unchanged.
+- Added regression coverage for provider editing, UI payloads, conversation search, pagination, CSV parity, and calendar boundaries; updated API and user documentation.
+- No features or APIs removed; no new dependencies or data migrations.
 
 ### 2.4.0 (MINOR) -- dashboard and trace inspection rework
 
