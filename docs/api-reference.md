@@ -576,12 +576,22 @@ Auth: admin session.
 
 | Method | Path | Purpose |
 |--------|------|---------|
-| GET | `/api/admin/llm-providers/{id}` | Read provider config (key redacted). |
-| PUT | `/api/admin/llm-providers/{id}` | Update provider config. |
-| DELETE | `/api/admin/llm-providers/{id}` | Remove a provider. |
-| POST | `/api/admin/llm-providers/test` | Validate a candidate provider config without persisting. |
+| GET | `/api/admin/llm-providers` | Read provider status (keys and headers are never returned; only configured flags, custom provider name/URL). |
 | GET | `/api/admin/llm-providers/configured` | List provider ids that have stored credentials. |
+| PUT | `/api/admin/llm-providers` | Set a standard provider's API key. |
+| PUT | `/api/admin/llm-providers/custom-openai` | Create or update the custom provider: `name`, `base_url` required; `api_key` and `extra_headers` optional. |
 | PUT | `/api/admin/llm-providers/ollama` | Update Ollama provider config (special endpoint for local inference). |
+| POST | `/api/admin/llm-providers/test` | Validate a candidate provider config without persisting. |
+| DELETE | `/api/admin/llm-providers/custom_openai` | Remove the custom provider (clears settings). |
+
+**Custom provider semantics (PUT `/api/admin/llm-providers/custom-openai`):**
+
+| Field | Omitted/empty | Nonempty | Null/invalid |
+|------|---------------|----------|--------------|
+| `api_key` | Stored key is kept; no secret write | Replaces the stored key | `null` rejected with 422 |
+| `extra_headers` | Stored headers are kept | `null` rejected with 422 | `{}` clears; any other map replaces the complete stored map (no merge) |
+
+`name` and `base_url` are always written on success. GET never returns the stored key or headers; a provider is `configured` only when both a stored key and base URL exist.
 
 Auth: admin session.
 
@@ -860,10 +870,31 @@ rewritten for variety).
 
 ### GET /api/admin/traces
 
-List recent traces with pagination.
+List recent traces with pagination and filters.
 
 **Query parameters:**
 - `page`, `per_page` -- Pagination
+- `search` -- Substring match against `user_input` OR `conversation_id` (LIKE, case-insensitive for ASCII; `%`/`_` act as wildcards)
+- `agent` -- Exact `routing_agent` match
+- `label` -- Exact label match
+- `from`, `to` -- Optional bounds on `created_at` (UTC calendar days for date-only values)
+
+**Date bound semantics:** `created_at` is written as SQLite UTC `YYYY-MM-DD HH:MM:SS`
+text. An exact `YYYY-MM-DD` value for `from`/`to` selects whole UTC calendar days
+(`to` is inclusive of that entire day). Non-date-only bounds (for example
+`2026-01-31 23:59:59` or an ISO timestamp) are compared verbatim as text. Recognized
+date-only values that are impossible dates (for example `2026-02-30`) or an upper
+`9999-12-31` overflow return HTTP 422; unrecognized strings are compared verbatim and
+return whatever text ordering yields. Date-only filters therefore mean UTC calendar
+days and may differ from the browser-local timestamps shown in the UI. The trace
+detail page's conversation links use this same `search` parameter.
+
+### GET /api/admin/traces/export
+
+Export the filtered traces as CSV. Shares the identical `search`, `agent`, `label`,
+`from`, and `to` filter contract and validation with `GET /api/admin/traces`
+(see above), including HTTP 422 for invalid date-only bounds. Export is capped at
+10,000 rows (newest first); list pagination applies before that cap.
 
 ### GET /api/admin/traces/{trace_id}
 

@@ -45,7 +45,7 @@ class ProviderTestRequest(BaseModel):
 class CustomProviderConfig(BaseModel):
     name: str
     base_url: str
-    api_key: str
+    api_key: str = ""
     extra_headers: dict[str, str] | None = None
 
     @field_validator("base_url")
@@ -115,7 +115,8 @@ async def update_llm_provider_key(payload: ProviderKeyUpdate):
 @router.put("/llm-providers/custom-openai")
 async def update_custom_openai_config(payload: CustomProviderConfig):
     """Save custom OpenAI-compatible provider configuration."""
-    await store_secret("custom_openai_api_key", payload.api_key)
+    if payload.api_key:
+        await store_secret("custom_openai_api_key", payload.api_key)
     await SettingsRepository.set(
         "custom_openai_provider.name",
         payload.name,
@@ -130,13 +131,14 @@ async def update_custom_openai_config(payload: CustomProviderConfig):
         "llm",
         "Custom OpenAI provider base URL",
     )
-    await SettingsRepository.set(
-        "custom_openai_provider.headers",
-        json.dumps(payload.extra_headers or {}),
-        "json",
-        "llm",
-        "Custom OpenAI provider extra headers",
-    )
+    if payload.extra_headers is not None:
+        await SettingsRepository.set(
+            "custom_openai_provider.headers",
+            json.dumps(payload.extra_headers),
+            "json",
+            "llm",
+            "Custom OpenAI provider extra headers",
+        )
     return {"status": "ok", "provider": "custom_openai"}
 
 

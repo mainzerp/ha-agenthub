@@ -47,7 +47,11 @@ def test_trace_filter_reset_export_and_latest_request():
             await page.loadTraces();
             const query = new URLSearchParams(calls.at(-1).split('?')[1]);
             assert.equal(query.get('page'), '2'); assert.equal(query.get('agent'), 'light');
-            page.exportCSV(); assert.ok(calls.at(-1).startsWith('/prefix/api/admin/traces/export?'));
+            assert.equal(query.get('from'), '2026-01-01'); assert.equal(query.get('to'), '2026-02-01');
+            page.exportCSV();
+            const exportQuery = new URLSearchParams(calls.at(-1).split('?')[1]);
+            assert.equal(exportQuery.get('from'), '2026-01-01'); assert.equal(exportQuery.get('to'), '2026-02-01');
+            assert.equal(exportQuery.get('search'), 'session 1'); assert.ok(calls.at(-1).startsWith('/prefix/api/admin/traces/export?'));
             await page.resetFilters(); assert.equal(page.page, 1); assert.equal(page.hasFilters, false);
             const pending = [];
             window.dashboardApi.safeJson = () => new Promise(resolve => pending.push(resolve));

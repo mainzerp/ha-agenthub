@@ -823,6 +823,67 @@ def _run_dashboard_script(template: str, assertions: str) -> None:
     assert result.returncode == 0, result.stderr
 
 
+def test_custom_provider_header_replacement_markup():
+    template = (Path(__file__).parents[1] / "app/dashboard/templates/settings.html").read_text(encoding="utf-8")
+    assert '<input type="checkbox" x-model="cp.replace_headers"> Replace stored headers on save' in template
+    assert '<div class="custom-provider-headers" x-show="cp.replace_headers">' in template
+
+
+def test_custom_provider_save_preserves_or_explicitly_replaces():
+    _run_dashboard_script(
+        "settings.html",
+        r"""
+        const assert = require('node:assert/strict');
+        (async () => {
+            const calls = [];
+            let fail = false;
+            global.window = { dashboardApi: {
+                json: async () => ({providers: {custom_openai: {configured: true, name: 'Synthetic', url: 'https://example.invalid/v1'}}}),
+                request: async (url, options) => {
+                    calls.push(JSON.parse(options.body));
+                    if (fail) throw {detail: 'synthetic failure'};
+                }
+            }};
+            const page = settingsPage();
+            page.showProviderMessage = () => {};
+            page.addCustomProvider();
+            assert.equal(page.customProviders[0].replace_headers, false);
+            await page.loadCustomProviders();
+            const cp = page.customProviders[0];
+            assert.equal(cp.replace_headers, false);
+            assert.equal(cp.api_key, '');
+            assert.deepEqual(cp.headers, []);
+            await page.saveCustomProvider(cp);
+            assert.deepEqual(calls.at(-1), {name: 'Synthetic', base_url: 'https://example.invalid/v1'});
+            cp.api_key = 'synthetic-key'; cp.replace_headers = true;
+            cp.headers = [{key:'X-New',value:'new'}, {key:'incomplete',value:''}, {key:'',value:'ignored'}];
+            await page.saveCustomProvider(cp);
+            assert.equal(calls.at(-1).api_key, 'synthetic-key');
+            assert.deepEqual(calls.at(-1).extra_headers, {'X-New':'new'});
+            assert.equal(cp.api_key, ''); assert.equal(cp.replace_headers, false); assert.deepEqual(cp.headers, []);
+            await page.saveCustomProvider(cp);
+            assert.ok(!('api_key' in calls.at(-1))); assert.ok(!('extra_headers' in calls.at(-1)));
+            cp.replace_headers = true; cp.headers = [{key:'incomplete',value:''}];
+            await page.saveCustomProvider(cp);
+            assert.deepEqual(calls.at(-1).extra_headers, {});
+            cp.replace_headers = true; cp.headers = [{key:'draft',value:'retained'}];
+            cp.replace_headers = false;
+            await page.saveCustomProvider(cp);
+            assert.ok(!('extra_headers' in calls.at(-1)));
+            cp.api_key = 'retry-key'; cp.replace_headers = true; cp.headers = [{key:'retry',value:'value'}];
+            fail = true;
+            await page.saveCustomProvider(cp);
+            assert.equal(cp.api_key, 'retry-key'); assert.equal(cp.replace_headers, true);
+            assert.deepEqual(cp.headers, [{key:'retry',value:'value'}]);
+            fail = false;
+            await page.saveCustomProvider(cp);
+            assert.deepEqual(calls.at(-1).extra_headers, {retry:'value'});
+            assert.equal(cp.replace_headers, false);
+        })().catch(e => { console.error(e); process.exitCode = 1; });
+        """,
+    )
+
+
 def test_chat_suggestion_only_fills_empty_composer():
     _run_dashboard_script(
         "chat.html",

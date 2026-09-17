@@ -79,8 +79,11 @@
                                     <input type="password" class="form-input m-0" x-model="cp.api_key" placeholder="Leave blank to keep existing key">
                                 </div>
                                 <div class="form-group m-0">
-                                    <label class="form-label text-xs">Optional Headers</label>
-                                    <div class="custom-provider-headers">
+                                    <label class="form-label text-xs">
+                                        <input type="checkbox" x-model="cp.replace_headers"> Replace stored headers on save
+                                    </label>
+                                    <p class="text-xs">Unchecked preserves stored headers. Replacement overwrites all headers; no complete rows clears them.</p>
+                                    <div class="custom-provider-headers" x-show="cp.replace_headers">
                                         <template x-for="(h, hIndex) in cp.headers" :key="hIndex">
                                             <div class="custom-provider-header-row">
                                                 <input type="text" class="form-input" x-model="h.key" placeholder="Header name">
@@ -815,6 +818,7 @@ function settingsPage() {
                         base_url: cp.url || '',
                         api_key: '',
                         headers: [],
+                        replace_headers: false,
                         configured: true
                     });
                 }
@@ -828,14 +832,16 @@ function settingsPage() {
             try {
                 var payload = {
                     name: cp.name,
-                    base_url: cp.base_url,
-                    api_key: cp.api_key,
-                    extra_headers: {}
+                    base_url: cp.base_url
                 };
-                for (var i = 0; i < (cp.headers || []).length; i++) {
-                    var h = cp.headers[i];
-                    if (h.key && h.value) {
-                        payload.extra_headers[h.key] = h.value;
+                if (cp.api_key) payload.api_key = cp.api_key;
+                if (cp.replace_headers) {
+                    payload.extra_headers = {};
+                    for (var i = 0; i < (cp.headers || []).length; i++) {
+                        var h = cp.headers[i];
+                        if (h.key && h.value) {
+                            payload.extra_headers[h.key] = h.value;
+                        }
                     }
                 }
                 await window.dashboardApi.request('/api/admin/llm-providers/custom-openai', {
@@ -844,6 +850,9 @@ function settingsPage() {
                     body: JSON.stringify(payload),
                 });
                 cp.configured = true;
+                cp.api_key = '';
+                cp.headers = [];
+                cp.replace_headers = false;
                 this.showProviderMessage('Custom provider saved.', 'success');
             } catch (e) {
                 if (e.code === 'auth_expired') return;
@@ -888,7 +897,7 @@ function settingsPage() {
         },
 
         addCustomProvider() {
-            this.customProviders.push({ name: '', base_url: '', api_key: '', headers: [], configured: false });
+            this.customProviders.push({ name: '', base_url: '', api_key: '', headers: [], replace_headers: false, configured: false });
         },
 
         async saveProviderKey(provider) {

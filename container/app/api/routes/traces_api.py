@@ -8,11 +8,12 @@ import io
 import json
 import logging
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from starlette.responses import Response
 
+from app.db.repositories.trace import TraceDateValidationError, parse_trace_date_bounds
 from app.db.repository import TraceSpanRepository, TraceSummaryRepository
 from app.security.auth import require_admin_session
 
@@ -152,6 +153,14 @@ class LabelUpdate(BaseModel):
     label: str | None = None
 
 
+def _validate_trace_dates(date_from: str | None, date_to: str | None) -> None:
+    """Translate only recognized calendar-bound errors, before database access."""
+    try:
+        parse_trace_date_bounds(date_from, date_to)
+    except TraceDateValidationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
 # --- Static routes MUST come before /{trace_id} ---
 
 
@@ -164,6 +173,7 @@ async def export_traces(
     date_to: str | None = Query(None, alias="to"),
 ):
     """Export filtered traces as CSV."""
+    _validate_trace_dates(date_from, date_to)
     rows = await TraceSummaryRepository.export_filtered(
         search=search,
         agent=agent,
@@ -254,6 +264,7 @@ async def list_traces(
     date_to: str | None = Query(None, alias="to"),
 ):
     """List recent traces with search, filters, and pagination."""
+    _validate_trace_dates(date_from, date_to)
     traces = await TraceSummaryRepository.list_filtered(
         search=search,
         agent=agent,

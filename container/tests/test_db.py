@@ -546,6 +546,179 @@ class TestSecretsRepository:
 
 
 class TestTraceSummaryRepository:
+    async def test_shared_search_predicates_and_pagination(self, db_repository):
+        rows = [
+            ("input", "needle input", "other", "light", "review", "2026-09-17 01:00:00"),
+            ("conversation", "other", "needle-session", "light", "review", "2026-09-17 02:00:00"),
+            ("both", "needle", "needle-session", "light", "review", "2026-09-17 03:00:00"),
+            ("turn", None, "needle-session", "light", "review", "2026-09-17 04:00:00"),
+            ("null", None, None, "light", "review", "2026-09-17 05:00:00"),
+            ("unrelated", "other", "other", "light", "review", "2026-09-17 06:00:00"),
+        ]
+        for branch in ("input", "conversation"):
+            for excluded, agent, label, stamp in [
+                ("agent", "media", "review", "2026-09-17 12:00:00"),
+                ("label", "light", "other", "2026-09-17 12:00:00"),
+                ("date", "light", "review", "2026-09-18 00:00:00"),
+            ]:
+                rows.append(
+                    (
+                        f"{branch}-{excluded}",
+                        "needle" if branch == "input" else "other",
+                        "needle" if branch == "conversation" else "other",
+                        agent,
+                        label,
+                        stamp,
+                    )
+                )
+        for trace_id, text, conversation, agent, label, _stamp in rows:
+            await TraceSummaryRepository.create(
+                {
+                    "trace_id": trace_id,
+                    "user_input": text,
+                    "conversation_id": conversation,
+                    "routing_agent": agent,
+                    "label": label,
+                }
+            )
+        async with aiosqlite.connect(str(db_repository)) as db:
+            await db.executemany(
+                "UPDATE trace_summary SET created_at = ? WHERE trace_id = ?", [(row[5], row[0]) for row in rows]
+            )
+            await db.commit()
+        filters = {
+            "search": "needle",
+            "agent": "light",
+            "label": "review",
+            "date_from": "2026-09-17",
+            "date_to": "2026-09-17",
+        }
+        expected = ["turn", "both", "conversation", "input"]
+        assert [r["trace_id"] for r in await TraceSummaryRepository.list_filtered(**filters, per_page=200)] == expected
+        assert [r["trace_id"] for r in await TraceSummaryRepository.export_filtered(**filters)] == expected
+        assert await TraceSummaryRepository.count_filtered(**filters) == 4
+        assert [
+            r["trace_id"] for r in await TraceSummaryRepository.list_filtered(**filters, per_page=2, page=2)
+        ] == expected[2:]
+        assert len(await TraceSummaryRepository.list_filtered(**filters, per_page=2)) == 2
+        for search, count in [(None, 12), ("", 12), ("%", 11), ("NEED_E", 10), ("needle-session", 3)]:
+            listed = await TraceSummaryRepository.list_filtered(search=search, per_page=200)
+            exported = await TraceSummaryRepository.export_filtered(search=search)
+            assert {r["trace_id"] for r in listed} == {r["trace_id"] for r in exported}
+            assert len(listed) == await TraceSummaryRepository.count_filtered(search=search) == count
+
+    @pytest.mark.parametrize(
+        "day,next_day",
+        [
+            ("2026-09-17", "2026-09-18"),
+            ("2026-01-31", "2026-02-01"),
+            ("2026-12-31", "2027-01-01"),
+            ("2024-02-29", "2024-03-01"),
+        ],
+    )
+    async def test_utc_day_boundaries_and_legacy_timestamps(self, db_repository, day, next_day):
+        from datetime import date, timedelta
+
+        previous = (date.fromisoformat(day) - timedelta(days=1)).isoformat()
+        stamps = [
+            f"{previous} 23:59:59",
+            f"{day} 00:00:00",
+            f"{day} 12:00:00",
+            f"{day} 23:59:59",
+            f"{day} 23:59:59.999999",
+            f"{day}T23:59:59.999999",
+            f"{next_day} 00:00:00",
+            f"{next_day}T00:00:00",
+        ]
+        for i in range(len(stamps)):
+            await TraceSummaryRepository.create({"trace_id": str(i)})
+        async with aiosqlite.connect(str(db_repository)) as db:
+            await db.executemany(
+                "UPDATE trace_summary SET created_at = ? WHERE trace_id = ?",
+                [(stamp, str(i)) for i, stamp in enumerate(stamps)],
+            )
+            await db.commit()
+        for filters, expected in [
+            ({"date_from": day, "date_to": day}, {"1", "2", "3", "4", "5"}),
+            ({"date_from": next_day, "date_to": day}, set()),
+            ({"date_from": day, "date_to": f"{day} 23:59:59"}, {"1", "2", "3"}),
+            ({}, {str(i) for i in range(8)}),
+            ({"date_from": "", "date_to": ""}, {str(i) for i in range(8)}),
+        ]:
+            assert {r["trace_id"] for r in await TraceSummaryRepository.list_filtered(**filters)} == expected
+            assert {r["trace_id"] for r in await TraceSummaryRepository.export_filtered(**filters)} == expected
+            assert await TraceSummaryRepository.count_filtered(**filters) == len(expected)
+
+    @pytest.mark.parametrize(
+        "filters",
+        [
+            {"date_from": "2026-02-30"},
+            {"date_to": "2026-02-30"},
+            {"date_to": "9999-12-31"},
+            {"date_from": "0000-01-01"},
+        ],
+    )
+    async def test_invalid_recognized_dates(self, db_repository, filters):
+        from app.db.repositories.trace import TraceDateValidationError
+
+        for operation in (
+            TraceSummaryRepository.list_filtered,
+            TraceSummaryRepository.count_filtered,
+            TraceSummaryRepository.export_filtered,
+        ):
+            with pytest.raises(TraceDateValidationError):
+                await operation(**filters)
+
+    def test_predicate_operands_and_fresh_parameters(self):
+        from app.db.repositories.trace import _build_trace_predicates
+
+        for value in [
+            "2026-09-17T12:00:00+02:00",
+            "2026-09-17 12:00:00",
+            "2026-2-30",
+            " 2026-09-17",
+            "\uff12\uff10\uff12\uff16-09-17",
+            "arbitrary",
+        ]:
+            sql, params = _build_trace_predicates(date_from=value, date_to=value)
+            assert sql == "WHERE created_at >= ? AND created_at <= ?"
+            assert params == [value, value]
+        sql, params = _build_trace_predicates(search="needle", date_to="2026-09-17")
+        assert sql == "WHERE (user_input LIKE ? OR conversation_id LIKE ?) AND created_at < ?"
+        assert params == ["%needle%", "%needle%", "2026-09-18"]
+        params.append(10000)
+        assert _build_trace_predicates(search="needle", date_to="2026-09-17")[1] == params[:-1]
+        assert _build_trace_predicates() == ("", [])
+
+    async def test_export_cap_and_list_limit(self, db_repository):
+        from app.db.schema import get_db_write
+
+        async with get_db_write() as db:
+            await db.executemany(
+                "INSERT INTO trace_summary (trace_id, user_input, created_at) VALUES (?, 'cap', ?)",
+                [(f"cap-{i:05}", f"2026-09-17 00:00:00.{i:06}") for i in range(10001)],
+            )
+        assert await TraceSummaryRepository.count_filtered(search="cap") == 10001
+        exported = await TraceSummaryRepository.export_filtered(search="cap")
+        assert len(exported) == 10000
+        assert exported[0]["trace_id"] == "cap-10000"
+        assert exported[-1]["trace_id"] == "cap-00001"
+        assert len(await TraceSummaryRepository.list_filtered(search="cap")) == 50
+        assert (await TraceSummaryRepository.list_filtered(search="cap", page=2, per_page=10000))[0][
+            "trace_id"
+        ] == "cap-00000"
+
+    async def test_equal_day_includes_timestamped_conversation(self, db_repository):
+        await TraceSummaryRepository.create({"trace_id": "day", "conversation_id": "session-one"})
+        async with aiosqlite.connect(str(db_repository)) as db:
+            await db.execute("UPDATE trace_summary SET created_at = '2026-09-17 14:00:00'")
+            await db.commit()
+        filters = {"date_from": "2026-09-17", "date_to": "2026-09-17"}
+        assert [r["trace_id"] for r in await TraceSummaryRepository.list_filtered(**filters)] == ["day"]
+        filters["search"] = "session-one"
+        assert await TraceSummaryRepository.count_filtered(**filters) == 1
+        assert [r["trace_id"] for r in await TraceSummaryRepository.export_filtered(**filters)] == ["day"]
+
     async def test_create_and_get(self, db_repository):
         await TraceSummaryRepository.create(
             {

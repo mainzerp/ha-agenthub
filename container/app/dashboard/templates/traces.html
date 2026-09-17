@@ -15,6 +15,7 @@
             <div><label class="form-label" for="trace-to">To</label><input id="trace-to" type="date" class="form-input" x-model="dateTo" @change="page=1; loadTraces()"></div>
         </div>
         <div x-show="hasFilters" class="trace-active-filters"><span class="text-sm">Filters active</span><button class="btn btn-sm btn-secondary" @click="resetFilters()">Reset filters</button></div>
+        <p class="text-xs trace-date-help">From/To select whole UTC calendar days (To includes that entire day); shown timestamps are browser-local.</p>
     </section>
     <section class="card trace-results" :aria-busy="loading" aria-label="Trace results">
         <div class="trace-results-toolbar"><div><strong x-text="total + ' traces'"></strong><button class="btn btn-sm btn-secondary" @click="exportCSV()">Export CSV</button></div><nav class="trace-pagination" aria-label="Trace pages">

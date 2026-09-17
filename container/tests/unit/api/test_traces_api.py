@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import csv
+import io
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, patch
 
+import aiosqlite
 import httpx
 import pytest
 from tests.conftest import build_integration_test_app
@@ -30,6 +33,78 @@ async def _client_for(app):
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
             yield client
+
+
+@pytest.mark.asyncio
+class TestTraceFilterParity:
+    """List/export parity and validation through the real routes and database."""
+
+    async def test_list_export_parity_and_422_parity(self, db_repository):
+        from app.db.repository import TraceSummaryRepository
+
+        rows = [
+            ("same-day", "open kitchen", "conv-day", "light-agent", "review", "2026-09-17 08:00:00"),
+            ("conv-only", "other request", "conv-day", "media-agent", "other", "2026-09-17 09:00:00"),
+            ("next-day", "open kitchen", "conv-other", "light-agent", "review", "2026-09-18 08:00:00"),
+        ]
+        for trace_id, user_input, conversation, agent, label, _stamp in rows:
+            await TraceSummaryRepository.create(
+                {
+                    "trace_id": trace_id,
+                    "user_input": user_input,
+                    "conversation_id": conversation,
+                    "routing_agent": agent,
+                    "label": label,
+                }
+            )
+        async with aiosqlite.connect(str(db_repository)) as db:
+            await db.executemany(
+                "UPDATE trace_summary SET created_at = ? WHERE trace_id = ?",
+                [(row[5], row[0]) for row in rows],
+            )
+            await db.commit()
+
+        async for client in _client_for(_build_app()):
+            filters = {
+                "search": "conv-day",
+                "agent": "light-agent",
+                "label": "review",
+                "from": "2026-09-17",
+                "to": "2026-09-17",
+            }
+            resp = await client.get("/api/admin/traces", params=filters)
+            assert resp.status_code == 200
+            body = resp.json()
+            assert [t["trace_id"] for t in body["traces"]] == ["same-day"]
+            assert body["total"] == 1 and body["pages"] == 1
+            exported = await client.get("/api/admin/traces/export", params=filters)
+            assert exported.status_code == 200
+            trace_ids = [row["Trace ID"] for row in csv.DictReader(io.StringIO(exported.text))]
+            assert trace_ids == ["same-day"]
+            for endpoint in ("/api/admin/traces", "/api/admin/traces/export"):
+                for value in ("2026-02-30", "9999-12-31"):
+                    resp = await client.get(endpoint, params={"to": value})
+                    assert resp.status_code == 422, (endpoint, value, resp.text)
+                for value in ("2026-09-17 12:00:00", "2026-09-17T12:00:00+02:00", "2026-2-30", "arbitrary"):
+                    resp = await client.get(endpoint, params={"from": value, "to": value})
+                    assert resp.status_code == 200, (endpoint, value, resp.text)
+            assert (await client.get("/api/admin/traces")).status_code == 200
+            assert (
+                await client.get("/api/admin/traces", params={"from": "2026-09-18", "to": "2026-09-17"})
+            ).status_code == 200
+
+    async def test_list_timestamp_client_boundary_semantics(self, db_repository):
+        from app.db.repository import TraceSummaryRepository
+
+        await TraceSummaryRepository.create({"trace_id": "boundary", "user_input": "boundary"})
+        async with aiosqlite.connect(str(db_repository)) as db:
+            await db.execute("UPDATE trace_summary SET created_at = '2026-09-17 12:00:00'")
+            await db.commit()
+        async for client in _client_for(_build_app()):
+            assert (await client.get("/api/admin/traces", params={"to": "2026-09-17 12:00:00"})).json()["total"] == 1
+            assert (await client.get("/api/admin/traces", params={"to": "2026-09-17 12:00:01"})).json()["total"] == 1
+            assert (await client.get("/api/admin/traces", params={"to": "2026-09-18"})).json()["total"] == 1
+            assert (await client.get("/api/admin/traces", params={"to": "2026-09-17"})).json()["total"] == 1
 
 
 @pytest.mark.asyncio

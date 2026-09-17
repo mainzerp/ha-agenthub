@@ -4,9 +4,60 @@ from __future__ import annotations
 
 import contextlib
 import json
+import re
+from datetime import date, timedelta
 from typing import Any
 
 from app.db.schema import get_db_read, get_db_write
+
+
+class TraceDateValidationError(ValueError):
+    """An exact date-only trace bound is invalid or cannot be advanced."""
+
+
+def parse_trace_date_bounds(date_from: str | None, date_to: str | None) -> tuple[str, str | None]:
+    """Validate UTC calendar dates; retain legacy text comparison otherwise."""
+    upper_operator = "<="
+    upper_operand = date_to
+    for name, value in (("from", date_from), ("to", date_to)):
+        if value and re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", value):
+            try:
+                parsed = date.fromisoformat(value)
+                if name == "to":
+                    upper_operand = (parsed + timedelta(days=1)).isoformat()
+                    upper_operator = "<"
+            except (ValueError, OverflowError) as exc:
+                raise TraceDateValidationError(f"Invalid date-only {name} bound: {value}") from exc
+    return upper_operator, upper_operand
+
+
+def _build_trace_predicates(
+    search: str | None = None,
+    agent: str | None = None,
+    label: str | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
+) -> tuple[str, list[Any]]:
+    """Build identical bound predicates for list, count, and export."""
+    upper_operator, upper_operand = parse_trace_date_bounds(date_from, date_to)
+    conditions: list[str] = []
+    params: list[Any] = []
+    if search:
+        conditions.append("(user_input LIKE ? OR conversation_id LIKE ?)")
+        params.extend([f"%{search}%", f"%{search}%"])
+    if agent:
+        conditions.append("routing_agent = ?")
+        params.append(agent)
+    if label:
+        conditions.append("label = ?")
+        params.append(label)
+    if date_from:
+        conditions.append("created_at >= ?")
+        params.append(date_from)
+    if date_to:
+        conditions.append(f"created_at {upper_operator} ?")
+        params.append(upper_operand)
+    return (f"WHERE {' AND '.join(conditions)}" if conditions else ""), params
 
 
 class TraceSpanRepository:
@@ -170,25 +221,7 @@ class TraceSummaryRepository:
         page: int = 1,
         per_page: int = 50,
     ) -> list[dict[str, Any]]:
-        conditions: list[str] = []
-        params: list[Any] = []
-        if search:
-            conditions.append("user_input LIKE ?")
-            params.append(f"%{search}%")
-        if agent:
-            conditions.append("routing_agent = ?")
-            params.append(agent)
-        if label:
-            conditions.append("label = ?")
-            params.append(label)
-        if date_from:
-            conditions.append("created_at >= ?")
-            params.append(date_from)
-        if date_to:
-            conditions.append("created_at <= ?")
-            params.append(date_to)
-
-        where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+        where, params = _build_trace_predicates(search, agent, label, date_from, date_to)
         offset = (page - 1) * per_page
         params.extend([per_page, offset])
 
@@ -221,25 +254,7 @@ class TraceSummaryRepository:
         date_from: str | None = None,
         date_to: str | None = None,
     ) -> int:
-        conditions: list[str] = []
-        params: list[Any] = []
-        if search:
-            conditions.append("user_input LIKE ?")
-            params.append(f"%{search}%")
-        if agent:
-            conditions.append("routing_agent = ?")
-            params.append(agent)
-        if label:
-            conditions.append("label = ?")
-            params.append(label)
-        if date_from:
-            conditions.append("created_at >= ?")
-            params.append(date_from)
-        if date_to:
-            conditions.append("created_at <= ?")
-            params.append(date_to)
-
-        where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+        where, params = _build_trace_predicates(search, agent, label, date_from, date_to)
         async with get_db_read() as db:
             cursor = await db.execute(
                 f"SELECT COUNT(*) FROM trace_summary {where}",
@@ -308,25 +323,7 @@ class TraceSummaryRepository:
         date_from: str | None = None,
         date_to: str | None = None,
     ) -> list[dict[str, Any]]:
-        conditions: list[str] = []
-        params: list[Any] = []
-        if search:
-            conditions.append("user_input LIKE ?")
-            params.append(f"%{search}%")
-        if agent:
-            conditions.append("routing_agent = ?")
-            params.append(agent)
-        if label:
-            conditions.append("label = ?")
-            params.append(label)
-        if date_from:
-            conditions.append("created_at >= ?")
-            params.append(date_from)
-        if date_to:
-            conditions.append("created_at <= ?")
-            params.append(date_to)
-
-        where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+        where, params = _build_trace_predicates(search, agent, label, date_from, date_to)
         params.append(10000)
 
         async with get_db_read() as db:

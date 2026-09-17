@@ -1540,6 +1540,103 @@ class TestConversationsAPI:
 
 @pytest.mark.integration
 class TestLLMProviderAPI:
+    @pytest.mark.parametrize("key_fields", [{}, {"api_key": ""}, {"api_key": "replacement"}, {"api_key": "   "}])
+    @pytest.mark.parametrize(
+        "header_fields", [{}, {"extra_headers": None}, {"extra_headers": {}}, {"extra_headers": {"X-New": "synthetic"}}]
+    )
+    async def test_custom_provider_preservation_matrix(self, authed_client, key_fields, header_fields):
+        from app.api.routes.admin import _llm_providers as routes
+
+        original_headers = {"X-Old": "synthetic-old"}
+        base = {"name": "Synthetic", "base_url": "https://example.invalid/v1"}
+        response = await authed_client.put(
+            "/api/admin/llm-providers/custom-openai",
+            json={**base, "api_key": "synthetic-original", "extra_headers": original_headers},
+        )
+        assert response.status_code == 200
+        with (
+            patch.object(routes, "store_secret", AsyncMock()) as store,
+            patch.object(routes.SettingsRepository, "set", wraps=routes.SettingsRepository.set) as settings,
+        ):
+            response = await authed_client.put(
+                "/api/admin/llm-providers/custom-openai",
+                json={**base, "name": "Renamed", **key_fields, **header_fields},
+            )
+            assert response.status_code == 200
+            if key_fields.get("api_key"):
+                store.assert_awaited_once_with("custom_openai_api_key", key_fields["api_key"])
+            else:
+                store.assert_not_awaited()
+            writes = {call.args[0]: call.args[1] for call in settings.call_args_list}
+            assert writes["custom_openai_provider.name"] == "Renamed"
+            assert writes["custom_openai_provider.base_url"] == base["base_url"]
+            if header_fields.get("extra_headers") is not None:
+                assert json.loads(writes["custom_openai_provider.headers"]) == header_fields["extra_headers"]
+            else:
+                assert "custom_openai_provider.headers" not in writes
+        expected = header_fields.get("extra_headers")
+        if expected is None:
+            expected = original_headers
+        assert json.loads(await routes.SettingsRepository.get_value("custom_openai_provider.headers")) == expected
+        status = await authed_client.get("/api/admin/llm-providers")
+        assert status.json()["providers"]["custom_openai"] == {
+            "configured": True,
+            "name": "Renamed",
+            "url": base["base_url"],
+        }
+        assert "synthetic-original" not in status.text
+        assert "X-Old" not in status.text and "X-New" not in status.text
+
+    @pytest.mark.parametrize(
+        "fields",
+        [
+            {"api_key": None},
+            {"name": ""},
+            {"name": " "},
+            {"name": "x" * 65},
+            {"base_url": ""},
+            {"base_url": "ftp://example.invalid"},
+        ],
+    )
+    async def test_custom_provider_validation_does_not_write(self, authed_client, fields):
+        from app.api.routes.admin import _llm_providers as routes
+
+        with (
+            patch.object(routes, "store_secret", AsyncMock()) as store,
+            patch.object(routes.SettingsRepository, "set", AsyncMock()) as settings,
+        ):
+            response = await authed_client.put(
+                "/api/admin/llm-providers/custom-openai",
+                json={"name": "Synthetic", "base_url": "https://example.invalid/v1", **fields},
+            )
+            assert response.status_code == 422
+            store.assert_not_awaited()
+            settings.assert_not_awaited()
+
+    async def test_custom_provider_initial_creation_without_optional_fields(self, authed_client):
+        from app.api.routes.admin import _llm_providers as routes
+
+        with (
+            patch.object(routes, "store_secret", AsyncMock()) as store,
+            patch.object(routes.SettingsRepository, "set", wraps=routes.SettingsRepository.set) as settings,
+        ):
+            response = await authed_client.put(
+                "/api/admin/llm-providers/custom-openai",
+                json={"name": " Synthetic ", "base_url": " https://example.invalid/v1 "},
+            )
+            assert response.status_code == 200
+            store.assert_not_awaited()
+            assert {call.args[0] for call in settings.call_args_list} == {
+                "custom_openai_provider.name",
+                "custom_openai_provider.base_url",
+            }
+        status = (await authed_client.get("/api/admin/llm-providers")).json()
+        assert status["providers"]["custom_openai"] == {
+            "configured": False,
+            "name": "Synthetic",
+            "url": "https://example.invalid/v1",
+        }
+
     async def test_get_llm_providers_returns_200(self, authed_client: httpx.AsyncClient):
         resp = await authed_client.get("/api/admin/llm-providers")
         assert resp.status_code == 200

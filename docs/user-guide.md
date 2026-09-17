@@ -18,7 +18,7 @@ On first launch, every route redirects to the setup wizard at `/setup/`. The wiz
 1. **Admin account** -- create the username and bcrypt-hashed password used to log in to the dashboard.
 2. **Home Assistant connection** -- enter the HA URL and a Long-Lived Access Token. Use the **Test Connection** button to verify connectivity.
 3. **Container API key** -- an API key is generated automatically. Copy it immediately; it is shown only once. This key is needed when you configure the HA integration.
-4. **LLM providers** -- enter API keys for OpenRouter, Groq, Cerebras, Anthropic, or a custom OpenAI-compatible endpoint, or configure an Ollama URL. Use the **Test** button for each provider.
+4. **LLM providers** -- enter API keys for OpenRouter, Groq, Cerebras, Anthropic, or a custom OpenAI-compatible endpoint, or configure an Ollama URL. Use the **Test** button for each provider. For a custom provider, leave the API key blank to keep the stored key, and tick **Replace stored headers on save** only to overwrite the complete stored header set (an empty replacement clears them; leaving it unticked preserves stored headers). See the field matrix in [api-reference.md](api-reference.md#admin----llm-providers).
 5. **Review** -- confirm the settings and complete setup. The container initializes the entity index, cache, and agents, then redirects to the dashboard.
 
 ![Login page for admin session access](screenshots/01_login_page.png)
@@ -106,7 +106,7 @@ Use this page to identify trends, measure the impact of a settings change, or de
 The **Request Traces** page at `/dashboard/traces` lists every processed request:
 
 - **Request links** -- the utterance opens trace detail; timestamp, agents, duration, source, confidence, device, and label remain visible beside or below it. Phone layouts stack this information.
-- **Search and filters** -- search user input or trace IDs, then narrow by agent, label, or date. **Reset filters** clears the active selection.
+- **Search and filters** -- search user input or conversation IDs, then narrow by agent, label, or date. **Reset filters** clears the active selection. Dates are UTC calendar days (`To` includes that whole day); displayed timestamps are browser-local.
 - **Paging and export** -- page controls appear above and below results; **Export CSV** exports the filtered list.
 - **Refresh states** -- existing results remain visible during refresh. Errors offer Retry; an empty dataset is distinguished from no filter matches.
 
@@ -298,7 +298,7 @@ These short procedures link the dashboard pages described above.
 
 3. **Inspect a slow or failed request**
    - Open **Request Traces** (`/dashboard/traces`).
-   - Search the request text or trace ID, or filter by agent, label, or date.
+   - Search the request text or conversation ID, or filter by agent, label, or date.
    - Open the request link, select a span in the timeline, and inspect its timing and diagnostic payloads.
 
 4. **Add an alias for a device**
