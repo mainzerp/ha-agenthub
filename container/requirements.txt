@@ -14,7 +14,7 @@ sentence-transformers==6.0.0
 sqlite-vec==0.1.9
 
 # Entity matching
-rapidfuzz==3.14.5
+rapidfuzz==3.14.6
 pyphonetics==0.5.3
 
 # HTTP clients (async)
