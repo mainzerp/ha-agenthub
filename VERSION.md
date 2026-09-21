@@ -1,16 +1,26 @@
 # Version
 
-**Current Version:** 2.4.1
+**Current Version:** 2.4.2
 
 ## Recent Changes
 
-(tracking changes since 2.4.1)
+(tracking changes since 2.4.2)
+
+## Version History
+
+### 2.4.2 (PATCH) -- cache replay, bridge lifecycle and timeout fixes
+
+(commit eeada60)
 
 - Cache replay: bind origin-dependent action rows to their ingress area/device, force a fully live turn after provenance rejection, preserve executor-confirmed climate commands and payloads, and individually relearn malformed or legacy action rows.
 - HA integration: migrate available legacy connection values safely, keep coalesced bridge requests alive for remaining waiters, cancel unobserved work on last-waiter cancellation or unload, and enforce finite positive bridge timeouts.
 - Custom agents: persist optional per-agent timeouts at creation and validate create/update values consistently; create omission or `null` uses the loader default, while update omission preserves an override and `null` clears it.
 
-## Version History
+- Climate cache replay retains the actual executed service for fan aliases and normalized humidity, temperature-range, and single-bound payloads.
+- Legacy HA connection options take precedence over stale data; unrelated options survive migration and duplicate identities are rejected before mutation.
+- Legacy action rows without valid provenance are relearned on access; incompatible imported rows are skipped. No user action is required.
+- Regression verification: 3287 container tests and 145 integration tests passed; coverage 82.28%; Ruff lint and format passed. Report-only mypy diagnostics are unchanged from the baseline.
+- No features or public APIs removed; no new dependencies.
 
 ### 2.4.1 (PATCH) -- provider preservation and trace filter fixes
 
