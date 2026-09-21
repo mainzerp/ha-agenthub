@@ -246,7 +246,7 @@ class TestActionCacheEntry:
         assert entry.agent_id == "light-agent"
         assert "light.kitchen_ceiling" in entry.entity_ids
         assert entry.language == "en"
-        assert entry.schema_version == 4
+        assert entry.schema_version == 5
 
     def test_with_cached_action(self):
         action = make_cached_action()

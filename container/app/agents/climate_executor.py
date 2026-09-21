@@ -269,6 +269,15 @@ async def execute_climate_action(
             verified=verify["verified"],
             action_phrases=_ACTION_PHRASES,
         ),
+        # This is the command that was actually sent to HA.  Cache replay
+        # consumes it directly rather than reconstructing it from the logical
+        # action name or parsing parameters a second time.
+        "executed_command": {
+            "domain": domain,
+            "service": service,
+            "entity_id": entity_id,
+            "service_data": service_data,
+        },
     }
 
 

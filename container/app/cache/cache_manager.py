@@ -11,7 +11,7 @@ from typing import Any
 
 from app.analytics.collector import track_cache_event_background, track_rewrite
 from app.analytics.tracer import _optional_span
-from app.cache.action_cache import ActionCache
+from app.cache.action_cache import _ACTION_CACHE_SCHEMA_VERSION, ActionCache
 from app.cache.embedding import get_embedding_engine
 from app.cache.routing_cache import RoutingCache
 from app.cache.sqlite_cache_store import COLLECTION_ACTION_CACHE, COLLECTION_ROUTING_CACHE, SqliteCacheStore
@@ -51,6 +51,14 @@ class ActionReplayOutcome:
     rewrite_applied: bool = False
     rewrite_latency_ms: float | None = None
     original_response_text: str | None = None
+
+
+@dataclass
+class ActionReplayRejected:
+    """A candidate that must force the caller through live classification."""
+
+    entry_id: str | None
+    reason: str
 
 
 @dataclass
@@ -153,10 +161,12 @@ class CacheManager:
         query_text: str,
         language: str = "en",
         requesting_agent_id: str = "orchestrator",
+        origin_area_id: str | None = None,
+        origin_device_id: str | None = None,
         check_visibility,
         execute_cached_action,
         span_collector=None,
-    ) -> ActionReplayOutcome | None:
+    ) -> ActionReplayOutcome | ActionReplayRejected | None:
         """Attempt to replay a cached action after current-turn validation."""
         if not self._action_cache._enabled:
             return None
@@ -170,11 +180,36 @@ class CacheManager:
             logger.warning("Action cache lookup failed", exc_info=True)
             return None
         if entry is None or entry.cached_action is None:
+            # A row that cannot deserialize is distinct from an absent key.
+            # It may be a legacy command payload and must force a live turn,
+            # never hand the utterance to routing-cache skip.
+            if entry_id is not None:
+                await self._invalidate_action_entry(entry_id)
+                return ActionReplayRejected(entry_id=entry_id, reason="invalid_command")
             return None
 
         # Defensive: never replay context-dependent (conditional) entries.
         if getattr(entry, "context_dependent", False):
             return None
+
+        # The current version introduced executor-audited commands and
+        # explicit origin provenance.  Old action rows cannot prove either,
+        # so delete only that action-cache row and force a live turn.  This
+        # must not degrade to a routing-cache skip for the same utterance.
+        if entry.schema_version != _ACTION_CACHE_SCHEMA_VERSION or not entry.origin_provenance:
+            await self._invalidate_action_entry(entry_id)
+            return ActionReplayRejected(entry_id=entry_id, reason="legacy_schema")
+
+        if entry.origin_required and (
+            (entry.origin_area_id and entry.origin_area_id != origin_area_id)
+            or (entry.origin_device_id and entry.origin_device_id != origin_device_id)
+            or (entry.origin_area_id is None and entry.origin_device_id is None)
+        ):
+            return ActionReplayRejected(entry_id=entry_id, reason="origin_mismatch")
+
+        if not self._cached_command_is_structurally_valid(entry.cached_action):
+            await self._invalidate_action_entry(entry_id)
+            return ActionReplayRejected(entry_id=entry_id, reason="invalid_command")
 
         # Re-validation: check visibility for every entity referenced by the
         # cached entry, not just the primary action target.
@@ -231,6 +266,27 @@ class CacheManager:
             rewrite_applied=entry.rewrite_applied,
             original_response_text=entry.original_response_text,
         )
+
+    async def _invalidate_action_entry(self, entry_id: str | None) -> None:
+        if entry_id is None:
+            return
+        with contextlib.suppress(Exception):
+            await asyncio.to_thread(self._action_cache.invalidate_by_entry_id, entry_id)
+
+    @staticmethod
+    def _cached_command_is_structurally_valid(cached_action: CachedAction) -> bool:
+        """Reject structurally malformed cached commands before any HA call."""
+        service = str(cached_action.service or "")
+        if "/" not in service or not cached_action.entity_id or not isinstance(cached_action.service_data, dict):
+            return False
+        domain, action = service.split("/", 1)
+        if not domain or not action:
+            return False
+        # The executor owns the authoritative alias map.  This only verifies
+        # that a persisted canonical service targets the same HA domain as its
+        # entity, without recreating that mapping in the cache layer.
+        entity_domain = cached_action.entity_id.split(".", 1)[0]
+        return domain == entity_domain
 
     async def try_routing_skip(
         self,

@@ -2540,6 +2540,24 @@ class TestDynamicAgent:
 
 
 class TestCustomAgentLoader:
+    @pytest.mark.integration
+    async def test_load_preserves_custom_agent_timeout_in_agent_card(self, db_repository):
+        from app.a2a.registry import AgentRegistry
+        from app.db.repository import CustomAgentRepository
+
+        await CustomAgentRepository.create_with_runtime(
+            "timeout-loader-bot",
+            system_prompt="s",
+            timeout_sec=90,
+        )
+        registry = AgentRegistry()
+        loader = CustomAgentLoader(registry=registry)
+
+        assert await loader.load_all() == 1
+        card = await registry.discover("custom-timeout-loader-bot")
+        assert card is not None
+        assert card.timeout_sec == 90
+
     @patch("app.agents.custom_loader.CustomAgentRepository")
     async def test_load_all_registers_agents(self, mock_repo):
         mock_repo.list_enabled = AsyncMock(

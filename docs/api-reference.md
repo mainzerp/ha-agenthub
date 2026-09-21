@@ -316,6 +316,7 @@ rules into `entity_visibility_rules`.
   "description": "Weather information",
   "system_prompt": "You are a weather assistant...",
   "model_override": "openrouter/openai/gpt-4o-mini",
+  "timeout_sec": 90,
   "mcp_tools": [{"server_name": "duckduckgo-search", "tool_name": "web_search"}],
   "entity_visibility": [{"rule_type": "domain_include", "rule_value": "weather"}],
   "intent_patterns": ["weather", "forecast", "temperature outside"]
@@ -325,6 +326,12 @@ rules into `entity_visibility_rules`.
 If `model_override` is omitted, the custom agent copies practical LLM
 defaults from `general-agent` so dispatch can use the normal config
 lookup path without manual database edits.
+
+`timeout_sec` is optional. When supplied on create or update it must be a
+finite positive number; booleans, zero, negative, nonnumeric, and nonfinite
+values return HTTP 422. On create, omission or `null` uses the loader's normal
+default. On update, omission preserves the existing value and `null` removes
+the override so the loader default applies.
 
 ### GET /api/admin/custom-agents/{name}
 

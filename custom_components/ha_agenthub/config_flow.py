@@ -39,6 +39,8 @@ from .const import (
     HEALTH_PATH,
     INTEGRATION_TITLE,
     SHIP_LOGS_LEVELS,
+    parse_positive_timeout,
+    resolve_ws_receive_timeout,
 )
 
 logger = logging.getLogger(__name__)
@@ -95,7 +97,7 @@ def _build_options_schema(current: dict[str, Any]) -> vol.Schema:
             vol.Optional(
                 CONF_WS_RECEIVE_TIMEOUT,
                 default=_timeout_default_str(
-                    current.get(CONF_WS_RECEIVE_TIMEOUT, DEFAULT_WS_RECEIVE_TIMEOUT)
+                    resolve_ws_receive_timeout(current.get(CONF_WS_RECEIVE_TIMEOUT))
                 ),
             ): TextSelector(),
             vol.Optional(
@@ -257,17 +259,15 @@ class HaAgentHubOptionsFlow(OptionsFlow):
             except ValueError:
                 errors["base"] = "invalid_url"
             else:
-                try:
-                    ws_receive_timeout = float(
-                        user_input.get(
-                            CONF_WS_RECEIVE_TIMEOUT,
-                            current.get(
-                                CONF_WS_RECEIVE_TIMEOUT,
-                                DEFAULT_WS_RECEIVE_TIMEOUT,
-                            ),
-                        )
-                    )
-                except (TypeError, ValueError):
+                timeout_provided = CONF_WS_RECEIVE_TIMEOUT in user_input
+                raw_timeout = user_input.get(
+                    CONF_WS_RECEIVE_TIMEOUT,
+                    current.get(CONF_WS_RECEIVE_TIMEOUT),
+                )
+                ws_receive_timeout = parse_positive_timeout(raw_timeout)
+                if ws_receive_timeout is None and not timeout_provided:
+                    ws_receive_timeout = float(DEFAULT_WS_RECEIVE_TIMEOUT)
+                if ws_receive_timeout is None:
                     errors[CONF_WS_RECEIVE_TIMEOUT] = "invalid_timeout"
                 else:
                     ship_logs = bool(

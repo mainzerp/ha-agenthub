@@ -162,6 +162,23 @@ def test_iter_export_chunks_paginates_until_short_page():
     assert [entry["query_text"] for entry in payload["tiers"]["action"]] == [entry.query_text for entry in entries]
 
 
+def test_action_export_preserves_current_origin_provenance():
+    bootstrap_manager = _make_manager()
+    action_entry = make_action_cache_entry(query_text="turn on the light")
+    action_entry.origin_required = True
+    action_entry.origin_area_id = "kitchen"
+    store = _vector_store_with_pages(
+        {COLLECTION_ACTION_CACHE: [_page_from_action_entries(bootstrap_manager, [action_entry])]}
+    )
+
+    payload = json.loads(b"".join(iter_export_chunks(_make_manager(store), ["action"], app_version="1.4.0")))
+
+    exported = payload["tiers"]["action"][0]
+    assert exported["schema_version"] == 5
+    assert exported["origin_required"] is True
+    assert exported["origin_provenance"] is True
+
+
 def test_parse_envelope_accepts_valid_v4_envelope():
     envelope = _make_envelope(
         action_entries=[make_action_cache_entry()],
@@ -296,6 +313,24 @@ async def test_import_envelope_skips_invalid_entries_and_records_warning():
     assert summary.tiers["action"].skipped == 1
     assert len(summary.tiers["action"].warnings) == 1
     store.upsert.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_import_skips_legacy_action_without_provenance():
+    store = MagicMock()
+    store.count.return_value = 0
+    store.delete_oldest.return_value = 0
+    manager = _make_manager(store)
+    manager.action_cache._enforce_lru = MagicMock()
+    legacy = make_action_cache_entry().model_dump()
+    legacy["schema_version"] = 4
+    legacy.pop("origin_provenance")
+
+    summary = await import_envelope(manager, _make_envelope(action_entries=[legacy]), mode="merge", tiers=["action"])
+
+    assert summary.tiers["action"].imported == 0
+    assert summary.tiers["action"].skipped == 1
+    store.upsert.assert_not_called()
 
 
 @pytest.mark.asyncio

@@ -8,6 +8,7 @@ import logging
 import re
 import time
 from collections.abc import AsyncIterator
+from dataclasses import dataclass
 from typing import Any, Literal
 from urllib.parse import urlparse
 
@@ -24,13 +25,13 @@ from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from .const import (
     CONF_WS_RECEIVE_TIMEOUT,
-    DEFAULT_WS_RECEIVE_TIMEOUT,
     DOMAIN,
     RECONNECT_BASE_DELAY,
     RECONNECT_MAX_DELAY,
     WS_HEARTBEAT_INTERVAL,
     WS_IDLE_THRESHOLD,
     WS_PATH,
+    resolve_ws_receive_timeout,
 )
 from .log_shipper import current_conversation_id, current_trace_id
 
@@ -39,6 +40,15 @@ logger = logging.getLogger(__name__)
 
 class _WsDroppedAfterSendError(Exception):
     """Request was written to the WebSocket; REST fallback would duplicate server work."""
+
+
+@dataclass(slots=True)
+class _BridgeState:
+    """One backend request and the callers currently observing it."""
+
+    started: float
+    task: asyncio.Task[Any]
+    waiters: int = 0
 
 
 def _rest_fallback_error_message(status_code: int | None) -> str:
@@ -165,12 +175,17 @@ class HaAgentHubConversationEntity(
         # Coalesce parallel HA calls with the same conversation_id + text (duplicate
         # pipeline invocations or WS+REST overlap) into a single bridge request.
         self._coalesce_lock = asyncio.Lock()
-        # FLOW-COALESCE-1 (P2-3): value is (started_monotonic, task). The
+        self._bridge_shutdown = False
+        # FLOW-COALESCE-1 (P2-3): each value records start time, task, and
+        # waiter ownership. The
         # started-timestamp guards a legitimate repeat of the same utterance
         # that arrives after the original response was already rendered --
         # without it we would short-circuit the second request onto the
         # first completed task forever.
-        self._inflight_bridge: dict[tuple[str, str], tuple[float, asyncio.Task]] = {}
+        self._inflight_bridge: dict[tuple[str, str], _BridgeState] = {}
+        # Keep every request alive here, including an older request replaced
+        # under the same coalescing key after the time window expires.
+        self._bridge_tasks: set[asyncio.Task[Any]] = set()
         self._coalesce_window_sec: float = 0.25
         # Debounced reconnect request flag for the background reconnect loop.
         self._reconnect_requested = asyncio.Event()
@@ -207,13 +222,24 @@ class HaAgentHubConversationEntity(
 
     async def async_will_remove_from_hass(self) -> None:
         """When entity will be removed from Home Assistant."""
-        if hasattr(self, "_reconnect_task") and self._reconnect_task:
-            self._reconnect_task.cancel()
+        self._bridge_shutdown = True
+        reconnect_task = getattr(self, "_reconnect_task", None)
+        if reconnect_task:
+            reconnect_task.cancel()
+            if isinstance(reconnect_task, asyncio.Future):
+                await asyncio.gather(reconnect_task, return_exceptions=True)
             self._reconnect_task = None
-        for key, (_, task) in list(self._inflight_bridge.items()):
+        async with self._coalesce_lock:
+            bridge_tasks = set(getattr(self, "_bridge_tasks", set()))
+            bridge_tasks.update(state.task for state in self._inflight_bridge.values())
+            self._inflight_bridge.clear()
+        for task in bridge_tasks:
             if not task.done():
                 task.cancel()
-        self._inflight_bridge.clear()
+        if bridge_tasks:
+            await asyncio.gather(*bridge_tasks, return_exceptions=True)
+        async with self._coalesce_lock:
+            self._bridge_tasks.difference_update(bridge_tasks)
         await self._disconnect_ws()
         # P3: the shared session survives disconnects; close it exactly
         # once when the entity is removed.
@@ -395,28 +421,75 @@ class HaAgentHubConversationEntity(
             )
             key = (cid, text)
 
-            coalesced = False
             async with self._coalesce_lock:
+                if getattr(self, "_bridge_shutdown", False):
+                    raise asyncio.CancelledError
+                if not hasattr(self, "_bridge_tasks"):
+                    self._bridge_tasks = set()
                 existing = self._inflight_bridge.get(key)
                 now = time.monotonic()
                 if (
                     existing is not None
-                    and (now - existing[0]) < self._coalesce_window_sec
+                    and not existing.task.done()
+                    and (now - existing.started) < self._coalesce_window_sec
                 ):
-                    bridge_task = existing[1]
-                    coalesced = True
+                    state = existing
                 else:
                     bridge_task = self.hass.async_create_task(
                         self._async_bridge_with_cleanup(user_input, key, chat_log)
                     )
-                    self._inflight_bridge[key] = (now, bridge_task)
-            if coalesced:
+                    state = _BridgeState(now, bridge_task)
+                    self._inflight_bridge[key] = state
+                    self._bridge_tasks.add(bridge_task)
+                    bridge_task.add_done_callback(self._consume_bridge_task)
+                state.waiters += 1
+            if state is existing:
                 logger.info(
                     "HA-AgentHub: coalescing duplicate request (same conversation + text) onto in-flight bridge"
                 )
-            return await bridge_task
+            try:
+                # A pipeline cancellation only removes this waiter. The
+                # backend request remains available to other coalesced callers.
+                return await asyncio.shield(state.task)
+            finally:
+                await self._release_bridge_waiter(key, state)
         finally:
             current_conversation_id.reset(cid_token)
+
+    def _consume_bridge_task(self, task: asyncio.Task[Any]) -> None:
+        """Release ownership and consume an unobserved backend exception."""
+        bridge_tasks = getattr(self, "_bridge_tasks", None)
+        if bridge_tasks is not None:
+            bridge_tasks.discard(task)
+        for key, state in list(self._inflight_bridge.items()):
+            if state.task is task:
+                self._inflight_bridge.pop(key, None)
+                break
+        if task.cancelled():
+            return
+        try:
+            task.exception()
+        except asyncio.CancelledError:
+            return
+
+    async def _release_bridge_waiter(
+        self, key: tuple[str, str], state: _BridgeState
+    ) -> None:
+        """Drop one observer and cancel an unobserved request if it is last."""
+        cancel_task = False
+        async with self._coalesce_lock:
+            if state.waiters:
+                state.waiters -= 1
+            if state.waiters == 0:
+                current = self._inflight_bridge.get(key)
+                if current is state:
+                    self._inflight_bridge.pop(key, None)
+                cancel_task = not state.task.done()
+        # Cancellation happens after releasing the lock. The bridge's own
+        # finally block also takes this lock to remove its identity safely.
+        if cancel_task:
+            state.task.cancel()
+            await asyncio.gather(state.task, return_exceptions=True)
 
     async def _async_bridge_with_cleanup(
         self,
@@ -430,7 +503,11 @@ class HaAgentHubConversationEntity(
         finally:
             async with self._coalesce_lock:
                 existing = self._inflight_bridge.get(key)
-                if task is not None and existing is not None and existing[1] is task:
+                if task is not None:
+                    bridge_tasks = getattr(self, "_bridge_tasks", None)
+                    if bridge_tasks is not None:
+                        bridge_tasks.discard(task)
+                if task is not None and existing is not None and existing.task is task:
                     self._inflight_bridge.pop(key, None)
 
     async def _async_bridge_to_container(
@@ -612,14 +689,9 @@ class HaAgentHubConversationEntity(
             message_open = False
 
             def _receive_timeout() -> float:
-                try:
-                    return float(
-                        self._entry.options.get(
-                            CONF_WS_RECEIVE_TIMEOUT, DEFAULT_WS_RECEIVE_TIMEOUT
-                        )
-                    )
-                except (TypeError, ValueError):
-                    return float(DEFAULT_WS_RECEIVE_TIMEOUT)
+                return resolve_ws_receive_timeout(
+                    self._entry.options.get(CONF_WS_RECEIVE_TIMEOUT)
+                )
 
             while True:
                 msg = await asyncio.wait_for(

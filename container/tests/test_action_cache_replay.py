@@ -27,8 +27,9 @@ _litellm_mock.exceptions.APIError = _APIError
 _litellm_mock.RateLimitError = _RateLimitError
 sys.modules.setdefault("litellm", _litellm_mock)
 
+from app.agents.cache_orchestrator import CacheOrchestrator
 from app.agents.orchestrator import OrchestratorAgent
-from app.cache.cache_manager import ActionReplayOutcome, CacheManager
+from app.cache.cache_manager import ActionReplayOutcome, ActionReplayRejected, CacheManager
 from app.cache.vector_store import VectorStore
 from app.models.agent import AgentCard, IngressTask, TaskContext
 from tests.helpers import make_action_cache_entry
@@ -140,6 +141,125 @@ async def test_transient_replay_miss_does_not_invalidate():
 
     assert result is None
     manager._action_cache.invalidate_by_entry_id.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_origin_mismatch_forces_live_without_calling_cached_action():
+    manager = _make_manager()
+    entry = make_action_cache_entry(query_text="turn on the light")
+    entry.origin_required = True
+    entry.origin_area_id = "kitchen"
+    manager._action_cache.lookup_with_id = MagicMock(return_value=("entry-1", entry, 1.0))
+    replay = AsyncMock(return_value={"success": True})
+
+    result = await manager.try_replay_action(
+        query_text=entry.query_text,
+        language=entry.language,
+        origin_area_id="bedroom",
+        check_visibility=AsyncMock(return_value=True),
+        execute_cached_action=replay,
+    )
+
+    assert isinstance(result, ActionReplayRejected)
+    assert result.reason == "origin_mismatch"
+    replay.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_same_origin_replays_after_visibility_recheck():
+    manager = _make_manager()
+    entry = make_action_cache_entry(query_text="turn on the light")
+    entry.origin_required = True
+    entry.origin_area_id = "kitchen"
+    manager._action_cache.lookup_with_id = MagicMock(return_value=("entry-1", entry, 1.0))
+    replay = AsyncMock(return_value={"success": True})
+
+    result = await manager.try_replay_action(
+        query_text=entry.query_text,
+        language=entry.language,
+        origin_area_id="kitchen",
+        check_visibility=AsyncMock(return_value=True),
+        execute_cached_action=replay,
+    )
+
+    assert isinstance(result, ActionReplayOutcome)
+    replay.assert_awaited_once_with(entry.cached_action)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("stored_area", "stored_device", "current_area", "current_device"),
+    [
+        (None, "satellite.kitchen", None, None),
+        (None, None, "kitchen", None),
+    ],
+)
+async def test_required_origin_with_missing_current_or_stored_provenance_forces_live(
+    stored_area, stored_device, current_area, current_device
+):
+    manager = _make_manager()
+    entry = make_action_cache_entry(query_text="turn on the light")
+    entry.origin_required = True
+    entry.origin_area_id = stored_area
+    entry.origin_device_id = stored_device
+    manager._action_cache.lookup_with_id = MagicMock(return_value=("entry-1", entry, 1.0))
+    replay = AsyncMock(return_value={"success": True})
+
+    result = await manager.try_replay_action(
+        query_text=entry.query_text,
+        language=entry.language,
+        origin_area_id=current_area,
+        origin_device_id=current_device,
+        check_visibility=AsyncMock(return_value=True),
+        execute_cached_action=replay,
+    )
+
+    assert isinstance(result, ActionReplayRejected)
+    assert result.reason == "origin_mismatch"
+    replay.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_legacy_action_entry_is_removed_and_forces_live():
+    manager = _make_manager()
+    entry = make_action_cache_entry(query_text="set fan to 60")
+    entry.schema_version = 4
+    entry.cached_action.service = "fan/set_percentage"
+    entry.cached_action.service_data = {}
+    manager._action_cache.lookup_with_id = MagicMock(return_value=("entry-1", entry, 1.0))
+    manager._action_cache.invalidate_by_entry_id = MagicMock()
+    replay = AsyncMock(return_value={"success": True})
+
+    result = await manager.try_replay_action(
+        query_text=entry.query_text,
+        language=entry.language,
+        check_visibility=AsyncMock(return_value=True),
+        execute_cached_action=replay,
+    )
+
+    assert isinstance(result, ActionReplayRejected)
+    assert result.reason == "legacy_schema"
+    replay.assert_not_awaited()
+    manager._action_cache.invalidate_by_entry_id.assert_called_once_with("entry-1")
+
+
+@pytest.mark.asyncio
+async def test_provenance_rejection_does_not_use_routing_skip():
+    cache_manager = MagicMock()
+    cache_manager.try_replay_action = AsyncMock(
+        return_value=ActionReplayRejected(entry_id="entry-1", reason="origin_mismatch")
+    )
+    orchestrator = CacheOrchestrator(cache_manager=cache_manager)
+    orchestrator._get_bool_setting_impl = AsyncMock(return_value=True)
+
+    action_hit, routing_hit = await orchestrator.try_cache_replay(
+        task=_make_task("turn on the light"),
+        user_text="turn on the light",
+    )
+
+    assert action_hit is None
+    assert routing_hit is None
+    cache_manager.try_routing_skip.assert_not_called()
 
 
 @pytest.mark.asyncio

@@ -17,7 +17,7 @@ from typing import Any
 
 from app.analytics.collector import track_cache_event_background, track_request_background
 from app.analytics.tracer import _optional_span
-from app.cache.cache_manager import ActionReplayOutcome, CacheManager, RoutingSkipOutcome
+from app.cache.cache_manager import ActionReplayOutcome, ActionReplayRejected, CacheManager, RoutingSkipOutcome
 from app.db.repository import SettingsRepository
 from app.entity.visibility import entity_is_visible
 from app.models.agent import (
@@ -212,11 +212,20 @@ class CacheOrchestrator:
                 query_text=user_text,
                 language=language,
                 requesting_agent_id=requesting_agent_id,
+                origin_area_id=(task.context.area_id if task and task.context else None),
+                origin_device_id=(task.context.device_id if task and task.context else None),
                 check_visibility=_check_vis,
                 execute_cached_action=_exec_action,
                 span_collector=span_collector,
             )
             if action_hit is not None:
+                if isinstance(action_hit, ActionReplayRejected):
+                    cache_span["metadata"]["hit_type"] = action_hit.reason
+                    cache_span["metadata"]["cache_tier"] = 0
+                    # Origin/provenance rejection is not an ordinary cache
+                    # miss: routing skip would bypass the live resolution
+                    # required to select the current area/device target.
+                    return None, None
                 cache_span["metadata"]["hit_type"] = "action_hit"
                 cache_span["metadata"]["similarity"] = action_hit.similarity
                 cache_span["metadata"]["cached_agent_id"] = action_hit.agent_id
@@ -467,15 +476,30 @@ class CacheOrchestrator:
             if isinstance(raw_service_data, dict) and "condition" in raw_service_data:
                 return False, False
 
-            entity_id = str(action_executed.get("entity_id") or "").strip()
-            action_name = str(action_executed.get("action") or "").strip().lower()
-            if entity_id and action_name:
-                cached_service_data: dict[str, Any] = {}
+            executed_command = action_executed.get("executed_command")
+            if target_agent == "climate-agent" and not isinstance(executed_command, dict):
+                # Climate write actions must carry the executor-audited HA
+                # command.  Do not replace it with a second mapper or store a
+                # routing row that could skip the required live execution.
+                return False, False
+            if isinstance(executed_command, dict):
+                domain = str(executed_command.get("domain") or "").strip().lower()
+                action_name = str(executed_command.get("service") or "").strip().lower()
+                entity_id = str(executed_command.get("entity_id") or "").strip()
+                canonical_data = executed_command.get("service_data")
+                if not domain or not action_name or not entity_id or not isinstance(canonical_data, dict):
+                    return False, False
+                cached_service_data = dict(canonical_data)
+            else:
+                entity_id = str(action_executed.get("entity_id") or "").strip()
+                action_name = str(action_executed.get("action") or "").strip().lower()
+                domain = entity_id.split(".", 1)[0] if "." in entity_id else ""
+                cached_service_data = {}
                 if isinstance(raw_service_data, dict):
                     for key in _CACHED_SERVICE_DATA_KEYS:
                         if key in raw_service_data:
                             cached_service_data[key] = raw_service_data[key]
-                domain = entity_id.split(".", 1)[0] if "." in entity_id else ""
+            if entity_id and action_name:
                 cached_action = CachedAction(
                     service=f"{domain}/{action_name}" if domain else action_name,
                     entity_id=entity_id,
@@ -495,6 +519,7 @@ class CacheOrchestrator:
                     origin_device_id=(
                         task.context.device_id if used_origin_context and task and task.context else None
                     ),
+                    origin_required=used_origin_context,
                     executed_at=datetime.now(UTC).isoformat(),
                 )
                 try:

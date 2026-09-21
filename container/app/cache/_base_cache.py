@@ -333,7 +333,9 @@ class _BaseCache[TEntry](ABC):
         and queries the vector store by ID. This is an O(1) key-value lookup --
         no semantic similarity or vector distance comparison is performed.
 
-        Returns ``(entry_id, entry, 1.0)`` on cache hit, or ``(None, None, None)`` on miss.
+        Returns ``(entry_id, entry, 1.0)`` on a hydrated cache hit and
+        ``(entry_id, None, None)`` when a stored row is malformed.  A true
+        miss returns ``(None, None, None)``.
         """
         if not self._enabled:
             return None, None, None
@@ -355,7 +357,10 @@ class _BaseCache[TEntry](ABC):
             if entry is not None:
                 return exact_id, entry, 1.0
 
-        return None, None, None
+        # Preserve the exact id when a stored row cannot be hydrated.  Callers
+        # can then distinguish an absent key from malformed persisted data and
+        # remove only the bad row without issuing a second database lookup.
+        return (exact_id, None, None) if exact_ids else (None, None, None)
 
     def _hydrate_hit(
         self,

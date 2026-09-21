@@ -180,6 +180,15 @@ def parse_envelope(raw: bytes) -> dict:
 
 def _validate_entry(entry: dict, *, tier: str):
     if tier == "action":
+        # Do not fill in missing current provenance with model defaults: old
+        # commands need a live execution before they may be replayed again.
+        if (
+            entry.get("schema_version") != 5
+            or "origin_required" not in entry
+            or "origin_provenance" not in entry
+            or entry.get("origin_provenance") is not True
+        ):
+            raise ImportValidationError("action entry lacks current command/origin provenance")
         return ActionCacheEntry.model_validate(entry)
     return RoutingCacheEntry.model_validate(entry)
 

@@ -1853,6 +1853,79 @@ class TestCustomAgentsAPI:
             {"rule_type": "domain_include", "rule_value": "weather"}
         ]
 
+    async def test_custom_agent_timeout_roundtrip_and_update_reset(self, authed_client: httpx.AsyncClient):
+        from app.a2a.registry import AgentRegistry
+        from app.agents.custom_loader import CustomAgentLoader
+        from app.db.repository import CustomAgentRepository
+
+        create = await authed_client.post(
+            "/api/admin/custom-agents",
+            json={"name": "timeout-api-bot", "system_prompt": "s", "timeout_sec": 90},
+        )
+
+        assert create.status_code == 201
+        assert create.json()["timeout_sec"] == 90
+        assert (await CustomAgentRepository.get("timeout-api-bot"))["timeout_sec"] == 90
+
+        registry = AgentRegistry()
+        loader = CustomAgentLoader(registry=registry)
+        await loader.load_all()
+        card = await registry.discover("custom-timeout-api-bot")
+        assert card is not None
+        assert card.timeout_sec == 90
+
+        omitted = await authed_client.put("/api/admin/custom-agents/timeout-api-bot", json={})
+        assert omitted.status_code == 200
+        assert omitted.json()["timeout_sec"] == 90
+
+        reset = await authed_client.put("/api/admin/custom-agents/timeout-api-bot", json={"timeout_sec": None})
+        assert reset.status_code == 200
+        assert reset.json()["timeout_sec"] is None
+        assert (await CustomAgentRepository.get("timeout-api-bot"))["timeout_sec"] is None
+        await loader.reload()
+        card = await registry.discover("custom-timeout-api-bot")
+        assert card is not None
+        assert card.timeout_sec == 30
+
+        default = await authed_client.post(
+            "/api/admin/custom-agents",
+            json={"name": "default-timeout-api-bot", "system_prompt": "s"},
+        )
+        assert default.status_code == 201
+        assert default.json()["timeout_sec"] is None
+
+    @pytest.mark.parametrize("timeout_sec", [True, False, 0, -1, "NaN", "Infinity", "-Infinity", "invalid"])
+    async def test_custom_agent_timeout_rejects_invalid_values(
+        self, authed_client: httpx.AsyncClient, timeout_sec: object
+    ):
+        create = await authed_client.post(
+            "/api/admin/custom-agents",
+            json={
+                "name": f"invalid-timeout-{str(timeout_sec).lower()}",
+                "system_prompt": "s",
+                "timeout_sec": timeout_sec,
+            },
+        )
+        assert create.status_code == 422
+
+        await authed_client.post(
+            "/api/admin/custom-agents",
+            json={"name": "update-timeout-validation-bot", "system_prompt": "s"},
+        )
+        update = await authed_client.put(
+            "/api/admin/custom-agents/update-timeout-validation-bot",
+            json={"timeout_sec": timeout_sec},
+        )
+        assert update.status_code == 422
+
+    def test_custom_agent_timeout_rejects_float_overflow(self):
+        from pydantic import ValidationError
+
+        from app.api.routes.custom_agents_api import CustomAgentCreate
+
+        with pytest.raises(ValidationError):
+            CustomAgentCreate(name="overflow-timeout-bot", system_prompt="s", timeout_sec=10**1000)
+
     async def test_update_custom_agent_replaces_runtime_assignments(self, authed_client: httpx.AsyncClient):
         from app.db.repository import AgentConfigRepository, AgentMcpToolsRepository, EntityVisibilityRepository
 

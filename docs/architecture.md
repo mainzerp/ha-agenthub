@@ -235,13 +235,15 @@ exact-hash miss); the action cache is exact-hash only:
 
 - **Routing Cache** -- Caches the mapping from user intent to target agent. A hit (exact SHA-256 hash match, or semantic match above `cache.routing.semantic_threshold` with fail-closed validation) skips LLM-based intent classification entirely. Max entries: 50,000 with LRU eviction. Entity resolution is NOT cached: the routed agent recalls its own entities via keyword matching (see Entity Matching).
   - **Hygiene**: turns that resolved no entity (failed action or a clarifying-question ending) are never stored, and a served entry is invalidated when the cached agent's turn fails, so a poisoned phrasing re-classifies via LLM on the next turn. Entries below the current schema version are treated as a miss on read.
-- **Action Cache** -- Caches full agent responses including executed actions.
-  - **Hit** (exact hash match): Returns the cached response directly (optionally rewritten by the rewrite agent for variety).
-  - **Miss**: No cache involvement; the request proceeds through the full agent pipeline.
+- **Action Cache** -- Caches full agent responses including executor-confirmed HA actions.
+  - **Hit** (exact hash match): Rechecks every referenced entity's current visibility before replaying the stored HA command, then returns the cached response (optionally rewritten by the rewrite agent for variety).
+  - **Miss**: Continues to routing-cache lookup or the live pipeline; a provenance rejection always forces the full live path.
   - Max entries: 50,000 with LRU eviction.
   - No-op executions (entity already in the target state) are never stored: their response text is state-dependent and would be wrong on replay.
 
-Cache entries are reactively invalidated when an executed action fails. Entries are also invalidated when relevant entity fields change (name, `area_id`, `device_id`, hidden, disabled, aliases, labels) and visibility is rechecked on action-cache replay.
+Action rows that depended on an ingress area or device record that provenance and replay only for the matching origin. A provenance rejection forces the full live path, including classification and entity resolution. Climate rows retain the actual domain, service, entity, and validated service payload issued by the executor; conditional, read-only, no-op, malformed, and legacy rows are not replayed. Legacy rows without current command or origin provenance are discarded individually and relearned from a live turn.
+
+Routing entries are invalidated when the served agent turn fails. Action rows are invalidated when their stored command or provenance is malformed, and entries are also invalidated when relevant entity fields change (name, `area_id`, `device_id`, hidden, disabled, aliases, labels). Visibility is rechecked on every action-cache replay.
 
 ## Session Memory
 

@@ -83,6 +83,7 @@ Navigate to `http://<host>:8080/setup/` and use the "Test" button for each provi
 - sqlite-vec entity index not initialized: The action cache relies on the entity index; check the Entity Index dashboard page and startup logs for embedding or vec0 errors.
 - Threshold settings: the routing cache consults its semantic sqlite-vec tier after an exact-hash miss; raise `cache.routing.semantic_threshold` (default 0.92) if semantically similar but wrong requests get routed to the wrong agent, lower it to increase semantic hit rate. `cache.action.semantic_threshold` is a legacy value retained for backward compatibility -- the action cache uses exact SHA-256 hash matching only.
 - Cold cache after upgrade: the routing-cache schema version 5 purges all pre-existing routing entries at the first boot after the upgrade (a cold cache start is expected; entries rebuild organically from new requests).
+- Action replay relearning after upgrade: action rows without the current command and origin provenance are discarded one row at a time when read, and old action rows in a cache import are skipped with a warning. Repeat the command from its intended area or device to create a verified replacement; do not flush unrelated cache tiers or settings.
 
 **Verify cache tables and entity index:**
 
@@ -299,6 +300,17 @@ have been re-saved but conversations still authenticate.
 **Cause:** This is intentional behaviour since version 1.0.0. Leaving
 the API key field blank in the options dialog keeps the previously
 stored key. Only enter a value when you want to replace it.
+
+## Integration Migration Cannot Restore Credentials
+
+**Symptoms:** An older integration entry no longer connects after migration.
+The legacy URL or API key may already be absent, or entry data may retain an
+obsolete value after newer credentials were previously discarded.
+
+**Cause and remediation:** Migration preserves available legacy values and
+prefers the current option values where they exist. It cannot reconstruct
+credentials that were already discarded. Reconfigure the integration with the
+container URL and API key; migration does not create replacement credentials.
 
 ## REST Error Messages: 401/403 vs 5xx vs Unreachable
 

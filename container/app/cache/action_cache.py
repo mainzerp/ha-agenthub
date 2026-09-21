@@ -13,7 +13,7 @@ from app.models.cache import ActionCacheEntry, CachedAction
 
 logger = logging.getLogger(__name__)
 
-_ACTION_CACHE_SCHEMA_VERSION = 4
+_ACTION_CACHE_SCHEMA_VERSION = 5
 
 
 def make_action_entry_id(query_text: str, *, language: str = "en") -> str:
@@ -210,11 +210,13 @@ class ActionCache(_BaseCache[ActionCacheEntry]):
             "entity_ids": json.dumps(entity_ids),
             "origin_area_id": entry.origin_area_id or "",
             "origin_device_id": entry.origin_device_id or "",
+            "origin_required": str(entry.origin_required).lower(),
+            "origin_provenance": str(entry.origin_provenance).lower(),
             "created_at": created_at,
             "last_accessed": last_accessed,
             "executed_at": entry.executed_at or created_at,
             "hit_count": str(entry.hit_count),
-            "schema_version": str(_ACTION_CACHE_SCHEMA_VERSION),
+            "schema_version": str(entry.schema_version),
             "original_response_text": entry.original_response_text or "",
             "rewrite_applied": str(entry.rewrite_applied).lower(),
             "rewrite_latency_ms": str(entry.rewrite_latency_ms or ""),
@@ -236,11 +238,20 @@ class ActionCache(_BaseCache[ActionCacheEntry]):
             entity_ids=_parse_entity_ids(metadata.get("entity_ids")),
             origin_area_id=metadata.get("origin_area_id") or None,
             origin_device_id=metadata.get("origin_device_id") or None,
+            origin_required=self._coerce_bool(metadata.get("origin_required"), False),
+            origin_provenance=(
+                "origin_required" in metadata
+                and "origin_provenance" in metadata
+                and self._coerce_bool(metadata.get("origin_provenance"), False)
+            ),
             created_at=metadata.get("created_at") or None,
             last_accessed=metadata.get("last_accessed") or None,
             executed_at=metadata.get("executed_at") or None,
             hit_count=self._coerce_int(metadata.get("hit_count"), 0),
-            schema_version=self._coerce_int(metadata.get("schema_version"), _ACTION_CACHE_SCHEMA_VERSION),
+            # Missing versions are legacy rows.  They must be relearned rather
+            # than inferred because their origin and command provenance is not
+            # reconstructable from the stored logical action.
+            schema_version=self._coerce_int(metadata.get("schema_version"), 0),
             original_response_text=metadata.get("original_response_text") or None,
             rewrite_applied=self._coerce_bool(metadata.get("rewrite_applied"), False),
             rewrite_latency_ms=self._coerce_float(metadata.get("rewrite_latency_ms"), 0.0),

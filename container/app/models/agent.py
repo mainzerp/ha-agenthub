@@ -172,6 +172,15 @@ class TaskContext(BaseModel):
     is_followup: bool = False
 
 
+class ExecutedCommand(BaseModel):
+    """Canonical Home Assistant command confirmed by an executor."""
+
+    domain: str = Field(..., min_length=1)
+    service: str = Field(..., min_length=1)
+    entity_id: str = Field(..., min_length=1)
+    service_data: dict = Field(default_factory=dict)
+
+
 class ActionExecuted(BaseModel):
     """Result of a Home Assistant action execution."""
 
@@ -193,6 +202,9 @@ class ActionExecuted(BaseModel):
         default_factory=dict,
         description="Structured service_data parameters passed to the HA call",
     )
+    # Optional executor-audited command.  Unlike ``action`` this identifies
+    # the actual HA domain/service and payload used for the live call.
+    executed_command: ExecutedCommand | None = None
 
 
 class AgentErrorCode(StrEnum):

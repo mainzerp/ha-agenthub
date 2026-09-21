@@ -352,6 +352,7 @@ These options live in the HA integration's options dialog (Settings -> Devices &
 |--------|---------|-------------|
 | `ship_logs` | `false` | Ship the integration's own log records (`custom_components.ha_agenthub` package logger) to the container's log buffer via `POST /api/logs/ingest`, batched every 5 seconds. |
 | `ship_logs_level` | `DEBUG` | Minimum level for shipped records: `DEBUG`, `INFO`, `WARNING`, or `ERROR`. Gated by a handler-level filter only; the HA logger's own level still applies, so records below the effective HA log level never reach the shipper. |
+| `ws_receive_timeout` | `120` | Timeout in seconds for each bridge WebSocket receive wait. The options flow accepts finite positive numbers, including decimals. `0`, negative values, booleans, nonnumeric values, `NaN`, and infinities are rejected. Invalid legacy stored values use the default at runtime. |
 
 Notes:
 

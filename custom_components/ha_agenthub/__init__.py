@@ -44,47 +44,80 @@ async def async_migrate_entry(hass: HomeAssistant, config_entry: ConfigEntry) ->
             config_entry.version,
         )
         return False
-    if config_entry.version == 1:
-        try:
-            url = _normalize_url(config_entry.data.get(CONF_URL, ""))
-        except ValueError:
-            url = ""
-        new_unique_id = url if url else config_entry.entry_id
+    if config_entry.version == 3 and not any(
+        key in (config_entry.options or {})
+        for key in (CONF_URL, CONF_API_KEY, CONF_NAME)
+    ):
+        return True
+    old_version = config_entry.version
+    data = dict(config_entry.data or {})
+    original_data = dict(data)
+    options = dict(config_entry.options or {})
+    original_options = dict(options)
 
-        hass.config_entries.async_update_entry(
-            config_entry,
-            unique_id=new_unique_id,
-            version=2,
+    # Older options flows stored connection fields in entry.options.  Those
+    # values are the most recent user input, so they must replace stale data.
+    # Keep unrelated options (for example log-shipping settings) intact.
+    for key in (CONF_URL, CONF_API_KEY, CONF_NAME):
+        if key in options:
+            data[key] = options.pop(key)
+
+    try:
+        url = _normalize_url(data.get(CONF_URL, ""))
+    except (AttributeError, TypeError, ValueError):
+        url = ""
+    if url:
+        data[CONF_URL] = url
+
+    name = data.get(CONF_NAME)
+    if isinstance(name, str):
+        name = name.strip()
+    else:
+        name = ""
+    if not name:
+        name = (
+            config_entry.title
+            if config_entry.title not in _LEGACY_ENTRY_TITLES
+            else INTEGRATION_TITLE
         )
-        old_unique_id = config_entry.unique_id
+    if not name:
+        name = INTEGRATION_TITLE
+    if CONF_NAME in original_data or CONF_NAME in original_options:
+        data[CONF_NAME] = name
+
+    new_unique_id = url or (config_entry.entry_id if old_version == 1 else None)
+    if new_unique_id and new_unique_id != config_entry.unique_id:
+        for existing in hass.config_entries.async_entries(DOMAIN):
+            if (
+                existing.entry_id != config_entry.entry_id
+                and existing.unique_id == new_unique_id
+            ):
+                logger.error(
+                    "Cannot migrate HA-AgentHub config entry %s: URL %s is already configured",
+                    config_entry.entry_id,
+                    new_unique_id,
+                )
+                return False
+
+    update_kwargs: dict[str, object] = {}
+    if data != original_data:
+        update_kwargs["data"] = data
+    if options != original_options:
+        update_kwargs["options"] = options
+    if new_unique_id and new_unique_id != config_entry.unique_id:
+        update_kwargs["unique_id"] = new_unique_id
+    if config_entry.title != name:
+        update_kwargs["title"] = name
+    if old_version < 3:
+        update_kwargs["version"] = 3
+
+    if update_kwargs:
+        hass.config_entries.async_update_entry(config_entry, **update_kwargs)
+
+    if old_version < 3:
         logger.info(
-            "Migrated HA-AgentHub config entry from version 1 to 2 (unique_id: %s -> %s)",
-            old_unique_id,
-            new_unique_id,
-        )
-    if config_entry.version == 2:
-        # P3-6: URL/API key are the source of truth in entry.data. Move any
-        # values that were previously written to entry.options by older options
-        # flows back into entry.data and clear them from options.
-        options = dict(config_entry.options or {})
-        data = dict(config_entry.data or {})
-        migrated = False
-        for key in (CONF_URL, CONF_API_KEY, CONF_NAME):
-            if key in options:
-                data.setdefault(key, options.pop(key))
-                migrated = True
-        if migrated:
-            hass.config_entries.async_update_entry(
-                config_entry,
-                data=data,
-                options=options,
-            )
-        hass.config_entries.async_update_entry(
-            config_entry,
-            version=3,
-        )
-        logger.info(
-            "Migrated HA-AgentHub config entry from version 2 to 3 (URL/API key moved to entry.data)"
+            "Migrated HA-AgentHub config entry from version %d to 3",
+            old_version,
         )
     return True
 

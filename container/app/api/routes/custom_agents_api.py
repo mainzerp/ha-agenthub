@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import logging
+import math
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 from app.db.repository import CustomAgentRepository
 from app.security.auth import require_admin_session
@@ -20,6 +21,22 @@ router = APIRouter(
 )
 
 
+def _validate_timeout_sec(value: object) -> float | None:
+    """Validate an optional custom-agent timeout before Pydantic coercion."""
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        raise ValueError("timeout_sec must be a finite positive number")
+    raw_value: Any = value
+    try:
+        timeout_sec = float(raw_value)
+    except (OverflowError, TypeError, ValueError) as exc:
+        raise ValueError("timeout_sec must be a finite positive number") from exc
+    if not math.isfinite(timeout_sec) or timeout_sec <= 0:
+        raise ValueError("timeout_sec must be a finite positive number")
+    return timeout_sec
+
+
 class CustomAgentCreate(BaseModel):
     name: str
     description: str = ""
@@ -29,6 +46,11 @@ class CustomAgentCreate(BaseModel):
     mcp_tools: list[dict[str, str]] | None = None
     entity_visibility: list[dict[str, str]] | None = None
     intent_patterns: list[str] | None = None
+
+    @field_validator("timeout_sec", mode="before")
+    @classmethod
+    def validate_timeout_sec(cls, value: object) -> float | None:
+        return _validate_timeout_sec(value)
 
 
 class CustomAgentUpdate(BaseModel):
@@ -40,6 +62,11 @@ class CustomAgentUpdate(BaseModel):
     entity_visibility: list[dict[str, str]] | None = None
     intent_patterns: list[str] | None = None
     enabled: bool | None = None
+
+    @field_validator("timeout_sec", mode="before")
+    @classmethod
+    def validate_timeout_sec(cls, value: object) -> float | None:
+        return _validate_timeout_sec(value)
 
 
 async def _reload_custom_loader(request: Request) -> None:
@@ -76,6 +103,7 @@ async def create_custom_agent(request: Request, body: CustomAgentCreate) -> dict
             system_prompt=body.system_prompt,
             description=body.description,
             model_override=body.model_override,
+            timeout_sec=body.timeout_sec,
             mcp_tools=body.mcp_tools,
             entity_visibility=body.entity_visibility,
             intent_patterns=body.intent_patterns,

@@ -31,11 +31,16 @@ class ActionCacheEntry(BaseModel):
     entity_ids: list[str] = Field(default_factory=list)
     origin_area_id: str | None = None
     origin_device_id: str | None = None
+    origin_required: bool = False
+    # True only when the serialized row explicitly carried origin provenance.
+    # This is separate from ``origin_required`` so absent legacy metadata
+    # cannot be mistaken for an origin-independent command.
+    origin_provenance: bool = True
     created_at: str | None = None
     last_accessed: str | None = None
     executed_at: str | None = None
     hit_count: int = 0
-    schema_version: int = 4
+    schema_version: int = 5
     # 1.12.4: preserve original agent response so rewrite agent can re-variate
     # from the raw text on every cache hit instead of rewriting an already
     # rewritten phrase.

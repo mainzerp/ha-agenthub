@@ -32,6 +32,7 @@ from app.models.agent import (
     AgentError,
     AgentErrorCode,
     DispatchTask,
+    ExecutedCommand,
     TaskContext,
     TaskResult,
 )
@@ -677,6 +678,11 @@ class ActionableAgent(BaseAgent):
                             result.get("service_data")
                             if isinstance(result.get("service_data"), dict)
                             else (action.get("parameters") or {})
+                        ),
+                        executed_command=(
+                            ExecutedCommand.model_validate(result["executed_command"])
+                            if isinstance(result.get("executed_command"), dict)
+                            else None
                         ),
                     ),
                 )

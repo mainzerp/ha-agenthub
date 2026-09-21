@@ -20,7 +20,9 @@
 
 ## Critical Fallback Facts
 
-- **Tests:** pytest-xdist is NOT installed in the local venvs — run the container suite sequentially: `python -m pytest tests/ -q` from `container/` (~300s). From repo root: `.venv/Scripts/python -m pytest container/tests -q`.
+- **Review regression coverage:** Test action-cache storage and replay together with distinct origin rooms and the executor's actual service/parameters; manually constructed cache entries miss serialization defects. Test config-entry migrations with conflicting `data` and legacy `options`, not only missing keys.
+
+- **Tests:** pytest-xdist is installed in the local venv. Run the container suite sequentially when the approved verification command requires it: `python -m pytest tests/ -q` from `container/` (~300s). From repo root: `.venv/Scripts/python -m pytest container/tests -q`.
 - **Windows pytest hang:** the pytest process hangs on interpreter shutdown AFTER printing the full summary. Take verdicts from the printed summary lines; run long suites as a background task.
 - **Dashboard CSS:** components.css loads after layout.css; shared responsive overrides must respect that cascade. Read/write assets explicitly as UTF-8: a mojibake BOM before the first selector can silently discard it. Confirm computed fonts/colors in a rendered page after shared-style changes.
 - **Lint:** `ruff check` and `ruff format` must both pass before every push.

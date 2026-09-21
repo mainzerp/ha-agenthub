@@ -6,6 +6,10 @@
 
 (tracking changes since 2.4.1)
 
+- Cache replay: bind origin-dependent action rows to their ingress area/device, force a fully live turn after provenance rejection, preserve executor-confirmed climate commands and payloads, and individually relearn malformed or legacy action rows.
+- HA integration: migrate available legacy connection values safely, keep coalesced bridge requests alive for remaining waiters, cancel unobserved work on last-waiter cancellation or unload, and enforce finite positive bridge timeouts.
+- Custom agents: persist optional per-agent timeouts at creation and validate create/update values consistently; create omission or `null` uses the loader default, while update omission preserves an override and `null` clears it.
+
 ## Version History
 
 ### 2.4.1 (PATCH) -- provider preservation and trace filter fixes

@@ -350,6 +350,60 @@ class TestCoverExecutorVerification:
 
 class TestClimateExecutorVerification:
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("action", "entity_id", "observed_state", "expected_command"),
+        [
+            (
+                {"action": "set_fan_percentage", "entity": "office fan", "parameters": {"percentage": 75}},
+                "fan.office",
+                "on",
+                {"domain": "fan", "service": "set_percentage", "service_data": {"percentage": 75}},
+            ),
+            (
+                {"action": "set_humidity", "entity": "living room", "parameters": {"humidity": 45}},
+                "climate.living_room",
+                "cool",
+                {"domain": "climate", "service": "set_humidity", "service_data": {"humidity": 45}},
+            ),
+            (
+                {
+                    "action": "set_temperature",
+                    "entity": "living room",
+                    "parameters": {"target_temp_low": 19, "target_temp_high": 23},
+                },
+                "climate.living_room",
+                "cool",
+                {
+                    "domain": "climate",
+                    "service": "set_temperature",
+                    "service_data": {"target_temp_low": 19.0, "target_temp_high": 23.0},
+                },
+            ),
+        ],
+    )
+    async def test_successful_write_returns_actual_canonical_command(
+        self, action, entity_id, observed_state, expected_command
+    ):
+        from app.agents.climate_executor import execute_climate_action
+
+        client = _make_ha_client(call_result=[], observed_state=observed_state)
+        result = await execute_climate_action(
+            action,
+            client,
+            MagicMock(),
+            _make_matcher(entity_id, "Target"),
+        )
+
+        assert result["success"] is True
+        assert result["executed_command"] == {**expected_command, "entity_id": entity_id}
+        client.call_service.assert_awaited_once_with(
+            expected_command["domain"],
+            expected_command["service"],
+            entity_id,
+            expected_command["service_data"],
+        )
+
+    @pytest.mark.asyncio
     async def test_turn_off_empty_rest_ws_confirms(self):
         from app.agents.climate_executor import execute_climate_action
 

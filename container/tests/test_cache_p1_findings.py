@@ -11,8 +11,11 @@ import pytest
 from app.agents.cache_orchestrator import CacheOrchestrator
 from app.cache._state import _CacheState
 from app.cache.action_cache import ActionCache
+from app.cache.cache_manager import ActionReplayOutcome, CacheManager
 from app.cache.routing_cache import RoutingCache
+from app.cache.sqlite_cache_store import SqliteCacheStore
 from app.cache.vector_store import VectorStore
+from app.models.agent import ActionExecuted, ExecutedCommand, IngressTask, TaskContext
 from app.models.cache import ActionCacheEntry, CachedAction
 
 
@@ -314,3 +317,166 @@ class TestStoreAfterDispatchWhitelist:
             "brightness_pct": 50,
             "transition": 2,
         }
+
+
+class TestClimateCanonicalCommandRoundTrip:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("logical_action", "command", "query"),
+        [
+            (
+                "set_fan_percentage",
+                {
+                    "domain": "fan",
+                    "service": "set_percentage",
+                    "entity_id": "fan.office",
+                    "service_data": {"percentage": 75},
+                },
+                "set office fan to 75 percent",
+            ),
+            (
+                "set_humidity",
+                {
+                    "domain": "climate",
+                    "service": "set_humidity",
+                    "entity_id": "climate.living",
+                    "service_data": {"humidity": 45},
+                },
+                "set living room humidity to 45",
+            ),
+            (
+                "set_humidifier_humidity",
+                {
+                    "domain": "humidifier",
+                    "service": "set_humidity",
+                    "entity_id": "humidifier.bedroom",
+                    "service_data": {"humidity": 50},
+                },
+                "set bedroom humidifier to 50",
+            ),
+            (
+                "set_temperature",
+                {
+                    "domain": "climate",
+                    "service": "set_temperature",
+                    "entity_id": "climate.living",
+                    "service_data": {"target_temp_low": 19.0, "target_temp_high": 23.0},
+                },
+                "set living room range to 19 through 23",
+            ),
+            (
+                "set_temperature",
+                {
+                    "domain": "climate",
+                    "service": "set_temperature",
+                    "entity_id": "climate.living",
+                    "service_data": {"target_temp_low": 19.0},
+                },
+                "set living room minimum to 19",
+            ),
+        ],
+    )
+    async def test_executor_command_survives_model_store_and_replay(self, tmp_path, logical_action, command, query):
+        """The audited live command is replayed verbatim after serialization."""
+        store = SqliteCacheStore(str(tmp_path / "cache.db"))
+        manager = CacheManager(store)
+        cache = CacheOrchestrator(cache_manager=manager)
+        cache._get_bool_setting_impl = AsyncMock(return_value=True)
+        ha_client = MagicMock()
+        ha_client.call_service = AsyncMock(return_value=[])
+        cache._ha_client = ha_client
+        action_executed = ActionExecuted(
+            action=logical_action,
+            entity_id=command["entity_id"],
+            success=True,
+            executed_command=ExecutedCommand.model_validate(command),
+        )
+        task = IngressTask(description=query, context=TaskContext(area_id="living"))
+
+        stored_action, stored_routing = await cache.store_after_dispatch(
+            user_text=query,
+            language="en",
+            target_agent="climate-agent",
+            condensed_task=query,
+            confidence=1.0,
+            speech="Done.",
+            action_executed=action_executed,
+            has_error=False,
+            task=task,
+            used_origin_context=True,
+        )
+
+        outcome = await manager.try_replay_action(
+            query_text=query,
+            language="en",
+            origin_area_id="living",
+            check_visibility=AsyncMock(return_value=True),
+            execute_cached_action=cache.execute_cached_action,
+        )
+
+        assert (stored_action, stored_routing) == (True, False)
+        assert isinstance(outcome, ActionReplayOutcome)
+        cached = outcome.cached_action
+        assert cached is not None
+        assert cached.service == f"{command['domain']}/{command['service']}"
+        assert cached.entity_id == command["entity_id"]
+        assert cached.service_data == command["service_data"]
+        ha_client.call_service.assert_awaited_once_with(
+            command["domain"], command["service"], command["entity_id"], command["service_data"]
+        )
+        store.close()
+
+    @pytest.mark.asyncio
+    async def test_persisted_origin_entry_reopens_and_deletes_by_entry_id(self, tmp_path):
+        database = str(tmp_path / "cache.db")
+        first_store = SqliteCacheStore(database)
+        first_manager = CacheManager(first_store)
+        first_cache = CacheOrchestrator(cache_manager=first_manager)
+        first_cache._get_bool_setting_impl = AsyncMock(return_value=True)
+        command = {
+            "domain": "fan",
+            "service": "set_percentage",
+            "entity_id": "fan.office",
+            "service_data": {"percentage": 60},
+        }
+        query = "set office fan to 60 percent"
+        await first_cache.store_after_dispatch(
+            user_text=query,
+            language="en",
+            target_agent="climate-agent",
+            condensed_task=query,
+            confidence=1.0,
+            speech="Done.",
+            action_executed=ActionExecuted(
+                action="set_fan_percentage",
+                entity_id="fan.office",
+                executed_command=ExecutedCommand.model_validate(command),
+            ),
+            has_error=False,
+            task=IngressTask(description=query, context=TaskContext(device_id="satellite.kitchen")),
+            used_origin_context=True,
+        )
+        entry_id = first_manager.action_cache.make_entry_id(query, language="en")
+        first_store.close()
+
+        reopened_store = SqliteCacheStore(database)
+        reopened_manager = CacheManager(reopened_store)
+        replay = AsyncMock(return_value={"success": True})
+        outcome = await reopened_manager.try_replay_action(
+            query_text=query,
+            language="en",
+            origin_device_id="satellite.kitchen",
+            check_visibility=AsyncMock(return_value=True),
+            execute_cached_action=replay,
+        )
+        assert isinstance(outcome, ActionReplayOutcome)
+        reopened_manager.invalidate_action(entry_id)
+        absent = await reopened_manager.try_replay_action(
+            query_text=query,
+            language="en",
+            origin_device_id="satellite.kitchen",
+            check_visibility=AsyncMock(return_value=True),
+            execute_cached_action=AsyncMock(return_value={"success": True}),
+        )
+        assert absent is None
+        reopened_store.close()

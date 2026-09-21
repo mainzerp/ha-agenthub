@@ -1,5 +1,21 @@
 """Constants for HA-AgentHub Home Assistant integration."""
 
+import math
+
+
+def parse_positive_timeout(value: object) -> float | None:
+    """Return a finite positive timeout, or ``None`` for invalid input."""
+    if isinstance(value, bool):
+        return None
+    try:
+        timeout = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if not math.isfinite(timeout) or timeout <= 0:
+        return None
+    return timeout
+
+
 DOMAIN = "ha_agenthub"
 # Shown in HA integration picker, config entry title, and device registry.
 INTEGRATION_TITLE = "HA-AgentHub"
@@ -12,6 +28,13 @@ WS_PATH = "/ws/conversation"
 HEALTH_PATH = "/api/health"
 CONF_WS_RECEIVE_TIMEOUT = "ws_receive_timeout"
 DEFAULT_WS_RECEIVE_TIMEOUT = 120
+
+
+def resolve_ws_receive_timeout(value: object) -> float:
+    """Resolve a stored bridge timeout, falling back for old invalid values."""
+    return parse_positive_timeout(value) or float(DEFAULT_WS_RECEIVE_TIMEOUT)
+
+
 RECONNECT_BASE_DELAY = 1.0
 RECONNECT_MAX_DELAY = 30.0
 WS_HEARTBEAT_INTERVAL = 15

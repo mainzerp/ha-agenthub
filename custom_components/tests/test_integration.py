@@ -449,13 +449,16 @@ class TestWsReceiveTimeout:
         assert timeout == 200.0
 
     @pytest.mark.asyncio
-    async def test_invalid_timeout_option_falls_back_to_default(self):
+    @pytest.mark.parametrize(
+        "invalid_timeout", ["not-a-number", 0, -1, True, float("nan"), float("inf")]
+    )
+    async def test_invalid_timeout_option_falls_back_to_default(self, invalid_timeout):
         from custom_components.ha_agenthub.const import (
             CONF_WS_RECEIVE_TIMEOUT,
             DEFAULT_WS_RECEIVE_TIMEOUT,
         )
 
-        entity = self._make_entity({CONF_WS_RECEIVE_TIMEOUT: "not-a-number"})
+        entity = self._make_entity({CONF_WS_RECEIVE_TIMEOUT: invalid_timeout})
         entity._ws = MagicMock()
         entity._ws.send_json = AsyncMock()
         entity._ws.receive = AsyncMock(
@@ -769,6 +772,129 @@ class TestConfigEntrySourceOfTruth:
         assert entry.data[CONF_URL] == "http://options.local"
         assert entry.data[CONF_API_KEY] == "options-key"
         assert entry.options == {}
+
+    @pytest.mark.asyncio
+    async def test_migrate_entry_options_override_data_and_update_identity(self, hass):
+        from homeassistant.const import CONF_API_KEY, CONF_URL
+
+        from custom_components.ha_agenthub import async_migrate_entry, async_setup_entry
+        from custom_components.ha_agenthub.const import CONF_NAME, DOMAIN
+
+        entry = MagicMock()
+        entry.entry_id = "e1"
+        entry.version = 2
+        entry.title = "Old name"
+        entry.unique_id = "http://old.local"
+        entry.data = {
+            CONF_NAME: "Old name",
+            CONF_URL: "http://old.local",
+            CONF_API_KEY: "old-key",
+        }
+        entry.options = {
+            CONF_NAME: "New name",
+            CONF_URL: " https://new.local/// ",
+            CONF_API_KEY: "new-key",
+            "ship_logs": False,
+        }
+        entry.async_on_unload = MagicMock()
+        hass.config_entries.async_forward_entry_setups = AsyncMock(return_value=True)
+
+        def update_entry(entry, **kwargs):
+            for key, value in kwargs.items():
+                setattr(entry, key, value)
+
+        hass.config_entries.async_update_entry = MagicMock(side_effect=update_entry)
+
+        assert await async_migrate_entry(hass, entry) is True
+        assert entry.version == 3
+        assert entry.data == {
+            CONF_NAME: "New name",
+            CONF_URL: "https://new.local",
+            CONF_API_KEY: "new-key",
+        }
+        assert entry.options == {"ship_logs": False}
+        assert entry.unique_id == "https://new.local"
+        assert entry.title == "New name"
+
+        assert await async_setup_entry(hass, entry) is True
+        assert hass.data[DOMAIN][entry.entry_id]["url"] == "https://new.local"
+        assert hass.data[DOMAIN][entry.entry_id]["api_key"] == "new-key"
+
+    @pytest.mark.asyncio
+    async def test_migrate_entry_rejects_url_identity_conflict(self, hass):
+        from homeassistant.const import CONF_API_KEY, CONF_URL
+
+        from custom_components.ha_agenthub import async_migrate_entry
+
+        entry = MagicMock()
+        entry.entry_id = "e1"
+        entry.version = 2
+        entry.title = "HA-AgentHub"
+        entry.unique_id = "http://old.local"
+        entry.data = {CONF_URL: "http://old.local", CONF_API_KEY: "old-key"}
+        entry.options = {CONF_URL: "http://taken.local/", CONF_API_KEY: "new-key"}
+        other = MagicMock(entry_id="e2", unique_id="http://taken.local")
+        hass.config_entries.async_entries.return_value = [other]
+        hass.config_entries.async_update_entry = MagicMock()
+
+        assert await async_migrate_entry(hass, entry) is False
+        hass.config_entries.async_update_entry.assert_not_called()
+        assert entry.data[CONF_URL] == "http://old.local"
+        assert entry.options[CONF_URL] == "http://taken.local/"
+
+    @pytest.mark.asyncio
+    async def test_migrate_entry_v1_options_reaches_v3_and_legacy_title(self, hass):
+        from homeassistant.const import CONF_API_KEY, CONF_URL
+
+        from custom_components.ha_agenthub import async_migrate_entry
+        from custom_components.ha_agenthub.const import CONF_NAME
+
+        entry = MagicMock()
+        entry.entry_id = "e1"
+        entry.version = 1
+        entry.title = "Agent Assist"
+        entry.unique_id = "legacy-id"
+        entry.data = {CONF_URL: "http://old.local", CONF_API_KEY: "old-key"}
+        entry.options = {
+            CONF_URL: "http://new.local/",
+            CONF_API_KEY: "new-key",
+            CONF_NAME: "Migrated",
+        }
+
+        def update_entry(entry, **kwargs):
+            for key, value in kwargs.items():
+                setattr(entry, key, value)
+
+        hass.config_entries.async_update_entry = MagicMock(side_effect=update_entry)
+
+        assert await async_migrate_entry(hass, entry) is True
+        assert entry.version == 3
+        assert entry.data == {
+            CONF_URL: "http://new.local",
+            CONF_API_KEY: "new-key",
+            CONF_NAME: "Migrated",
+        }
+        assert entry.options == {}
+        assert entry.unique_id == "http://new.local"
+        assert entry.title == "Migrated"
+
+    @pytest.mark.asyncio
+    async def test_migrate_entry_v3_without_legacy_values_is_unchanged(self, hass):
+        from homeassistant.const import CONF_API_KEY, CONF_URL
+
+        from custom_components.ha_agenthub import async_migrate_entry
+
+        entry = MagicMock()
+        entry.entry_id = "e1"
+        entry.version = 3
+        entry.title = "HA-AgentHub"
+        entry.unique_id = "http://current.local"
+        entry.data = {CONF_URL: "http://current.local", CONF_API_KEY: "current-key"}
+        entry.options = {"ship_logs": True}
+        hass.config_entries.async_update_entry = MagicMock()
+
+        assert await async_migrate_entry(hass, entry) is True
+        hass.config_entries.async_update_entry.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -1802,3 +1928,263 @@ class TestDeltaStreaming(_WsStreamTestBase):
         result = await entity._process_via_rest(self._make_user_input(), _FakeChatLog())
 
         assert result.conversation_id == "c1"
+
+
+# ---------------------------------------------------------------------------
+# Bridge waiter ownership and timeout contract
+# ---------------------------------------------------------------------------
+
+
+class TestBridgeWaiterOwnership:
+    """Coalesced callers observe one request without owning its cancellation."""
+
+    @staticmethod
+    def _make_entity():
+        from custom_components.ha_agenthub.conversation import (
+            HaAgentHubConversationEntity,
+        )
+
+        entry = MagicMock()
+        entry.entry_id = "bridge-entry"
+        entry.title = "HA-AgentHub"
+        entry.options = {}
+        entity = HaAgentHubConversationEntity(entry, "http://example.com", "key")
+
+        class _FakeHass:
+            @staticmethod
+            def async_create_task(coro):
+                return asyncio.create_task(coro)
+
+        entity.hass = _FakeHass()
+        return entity
+
+    @staticmethod
+    def _user_input():
+        user_input = MagicMock()
+        user_input.conversation_id = "c1"
+        user_input.text = "turn on the light"
+        user_input.language = "en"
+        user_input.device_id = None
+        return user_input
+
+    @pytest.mark.asyncio
+    async def test_cancelled_waiter_does_not_cancel_shared_request(self):
+        entity = self._make_entity()
+        started = asyncio.Event()
+        release = asyncio.Event()
+        calls = 0
+
+        async def _bridge(_user_input, _chat_log):
+            nonlocal calls
+            calls += 1
+            started.set()
+            await release.wait()
+            return "shared-result"
+
+        entity._async_bridge_to_container = _bridge
+        user_input = self._user_input()
+        first = asyncio.create_task(
+            entity._async_handle_message(user_input, MagicMock())
+        )
+        await started.wait()
+        second = asyncio.create_task(
+            entity._async_handle_message(user_input, MagicMock())
+        )
+        await asyncio.sleep(0)
+
+        first.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await first
+        release.set()
+        assert await second == "shared-result"
+        assert calls == 1
+
+    @pytest.mark.asyncio
+    async def test_last_cancelled_waiter_cancels_backend_and_cleans_ownership(self):
+        entity = self._make_entity()
+        started = asyncio.Event()
+        cancelled = asyncio.Event()
+
+        async def _bridge(_user_input, _chat_log):
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                cancelled.set()
+                raise
+
+        entity._async_bridge_to_container = _bridge
+        waiter = asyncio.create_task(
+            entity._async_handle_message(self._user_input(), MagicMock())
+        )
+        await started.wait()
+        waiter.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await waiter
+        await asyncio.wait_for(cancelled.wait(), timeout=0.5)
+        assert not entity._bridge_tasks
+        assert not entity._inflight_bridge
+
+    @pytest.mark.asyncio
+    async def test_shared_backend_exception_reaches_all_waiters(self):
+        entity = self._make_entity()
+        started = asyncio.Event()
+        release = asyncio.Event()
+        error = RuntimeError("backend failed")
+        calls = 0
+
+        async def _bridge(_user_input, _chat_log):
+            nonlocal calls
+            calls += 1
+            started.set()
+            await release.wait()
+            raise error
+
+        entity._async_bridge_to_container = _bridge
+        user_input = self._user_input()
+        first = asyncio.create_task(
+            entity._async_handle_message(user_input, MagicMock())
+        )
+        await started.wait()
+        second = asyncio.create_task(
+            entity._async_handle_message(user_input, MagicMock())
+        )
+        await asyncio.sleep(0)
+        release.set()
+        results = await asyncio.gather(first, second, return_exceptions=True)
+
+        assert results == [error, error]
+        assert calls == 1
+        assert not entity._bridge_tasks
+        assert not entity._inflight_bridge
+
+    @pytest.mark.asyncio
+    async def test_old_task_is_drained_when_same_key_gets_new_task(self):
+        entity = self._make_entity()
+        entity._coalesce_window_sec = 0.01
+        started = asyncio.Event()
+        release = asyncio.Event()
+        calls = 0
+
+        async def _bridge(_user_input, _chat_log):
+            nonlocal calls
+            calls += 1
+            started.set()
+            await release.wait()
+            return calls
+
+        entity._async_bridge_to_container = _bridge
+        user_input = self._user_input()
+        first = asyncio.create_task(
+            entity._async_handle_message(user_input, MagicMock())
+        )
+        await started.wait()
+        await asyncio.sleep(entity._coalesce_window_sec + 0.01)
+        second = asyncio.create_task(
+            entity._async_handle_message(user_input, MagicMock())
+        )
+        for _ in range(10):
+            await asyncio.sleep(0)
+            if calls == 2:
+                break
+        assert calls == 2
+        assert len(entity._bridge_tasks) == 2
+        release.set()
+        assert await first == 2
+        assert await second == 2
+        assert not entity._bridge_tasks
+        assert not entity._inflight_bridge
+
+    @pytest.mark.asyncio
+    async def test_unload_cancels_and_drains_all_bridge_tasks(self, monkeypatch):
+        import custom_components.ha_agenthub.conversation as conversation_module
+
+        entity = self._make_entity()
+        started = asyncio.Event()
+        cancelled = asyncio.Event()
+
+        async def _bridge(_user_input, _chat_log):
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                cancelled.set()
+                raise
+
+        entity._async_bridge_to_container = _bridge
+        monkeypatch.setattr(
+            conversation_module.conversation.ConversationEntity,
+            "async_will_remove_from_hass",
+            AsyncMock(),
+            raising=False,
+        )
+        entity._disconnect_ws = AsyncMock()
+        entity._close_session = AsyncMock()
+        waiter = asyncio.create_task(
+            entity._async_handle_message(self._user_input(), MagicMock())
+        )
+        await started.wait()
+
+        await entity.async_will_remove_from_hass()
+        await asyncio.wait_for(cancelled.wait(), timeout=0.5)
+        with pytest.raises(asyncio.CancelledError):
+            await waiter
+        assert entity._bridge_shutdown is True
+        assert not entity._bridge_tasks
+        assert not entity._inflight_bridge
+
+        with pytest.raises(asyncio.CancelledError):
+            await entity._async_handle_message(self._user_input(), MagicMock())
+
+
+class TestBridgeTimeoutContract:
+    @pytest.mark.parametrize(
+        "value",
+        [
+            None,
+            True,
+            False,
+            0,
+            -1,
+            "",
+            "abc",
+            float("nan"),
+            float("inf"),
+            -float("inf"),
+        ],
+    )
+    def test_invalid_timeout_values_are_rejected(self, value):
+        from custom_components.ha_agenthub.const import parse_positive_timeout
+
+        assert parse_positive_timeout(value) is None
+
+    @pytest.mark.parametrize(
+        "value, expected", [(0.001, 0.001), (2.5, 2.5), ("45", 45.0)]
+    )
+    def test_positive_finite_timeout_values_are_preserved(self, value, expected):
+        from custom_components.ha_agenthub.const import parse_positive_timeout
+
+        assert parse_positive_timeout(value) == expected
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "value", [None, True, "0", "-1", "nan", "inf", "-inf", "abc"]
+    )
+    async def test_options_form_rejects_invalid_timeout(self, value):
+        flow, _entry = TestOptionsFlow()._make_flow()
+        with patch(
+            "custom_components.ha_agenthub.config_flow._validate_connection",
+            new=AsyncMock(return_value=None),
+        ) as mock_validate:
+            result = await flow.async_step_init(
+                {
+                    "url": "http://old.local",
+                    "api_key": "",
+                    "name": "",
+                    "ws_receive_timeout": value,
+                }
+            )
+
+        assert result["type"] == "form"
+        assert result["errors"] == {"ws_receive_timeout": "invalid_timeout"}
+        mock_validate.assert_not_awaited()
