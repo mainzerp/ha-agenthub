@@ -5,54 +5,40 @@ description: Create a new domain agent for HA-AgentHub. Use when adding a new Ho
 
 # Creating a New Domain Agent
 
-This project uses a two-file pattern per domain: an **agent file** (routing + AgentCard) and an **executor file** (HA REST API calls).
+This project uses a declarative pattern per domain: an **`@agent`-decorated class** (routing + AgentCard metadata) and an **executor file** (HA REST API calls).
 
 ## File locations
 
 | File | Purpose |
 |------|---------|
-| `container/app/agents/<domain>.py` | Agent class, `agent_card`, `_prompt_name` |
+| `container/app/agents/actionable.py` | Standard domain agents: `@agent`-decorated subclasses of `_ConfigurableDomainAgent` live here. A separate `container/app/agents/<domain>.py` is only for agents with unique logic (timer, lists, calendar) |
 | `container/app/agents/<domain>_executor.py` | `execute_<domain>_action()` function |
-| `container/app/agents/prompts/<domain>.txt` | LLM system prompt with few-shot examples |
+| `container/app/prompts/<domain>.txt` | LLM system prompt with few-shot examples |
 
-## Step 1: Agent file
+## Step 1: Agent declaration
 
-Extend `ActionableAgent` for domains that parse LLM output into HA actions:
+For standard domains, add an `@agent`-decorated subclass of `_ConfigurableDomainAgent` in `container/app/agents/actionable.py`:
 
 ```python
-from app.agents.actionable import ActionableAgent
-from app.agents.<domain>_executor import execute_<domain>_action
-from app.models.agent import AgentCard
-
-
-class <Domain>Agent(ActionableAgent):
-    _prompt_name = "<domain>"
-
-    async def _do_execute(self, action, ha_client, entity_index, entity_matcher, *, agent_id, span_collector=None):
-        current_task = getattr(self, "_current_task", None)
-        verbatim_terms = list(getattr(current_task, "verbatim_terms", []) or []) if current_task else []
-        return await execute_<domain>_action(
-            action,
-            ha_client,
-            entity_index,
-            entity_matcher,
-            agent_id=agent_id,
-            span_collector=span_collector,
-            verbatim_terms=verbatim_terms,
-        )
-
-    @property
-    def agent_card(self) -> AgentCard:
-        return AgentCard(
-            agent_id="<domain>-agent",
-            name="<Domain> Agent",
-            description="<One sentence: what HA domains it controls and what it can query.>",
-            skills=["<skill_1>", "<skill_2>"],
-            endpoint="local://<domain>-agent",
-        )
+# in container/app/agents/actionable.py (standard domains)
+@agent(
+    agent_id="<domain>-agent",
+    name="<Domain> Agent",
+    description="<one sentence: what it controls/queries>",
+    skills=["<skill_1>", "<skill_2>"],
+    prompt_name="<domain>",
+    allowed_domains=frozenset({"<ha_domain>"}),
+    executor_module="app.agents.<domain>_executor",
+    executor_name="execute_<domain>_action",
+    db_gated=True,  # optional: toggleable in admin UI
+)
+class <Domain>Agent(_ConfigurableDomainAgent):
+    pass
 ```
 
-Use `BaseAgent` directly (not `ActionableAgent`) when there is no HA action to parse — e.g. pure-query or conversational agents. See `container/app/agents/general.py` for that pattern.
+`agent_card` and prompt loading are generated from the decorator metadata — no manual `agent_card` property or `_do_execute` override is needed for standard agents. Agents that need task context can use `self._get_current_task()` / `self._get_current_task_context()` (ContextVar accessors).
+
+Use `BaseAgent` directly (not `ActionableAgent`/`_ConfigurableDomainAgent`) when there is no HA action to parse — e.g. pure-query or conversational agents (see `container/app/agents/general.py`). Agents with unique logic (timer, lists, calendar) subclass `ActionableAgent` in their own `container/app/agents/<domain>.py` and override `_do_execute`.
 
 ## Step 2: Executor file
 
@@ -62,16 +48,19 @@ async def execute_<domain>_action(
     ha_client,
     entity_index,
     entity_matcher,
-    *,
-    agent_id: str,
+    agent_id: str | None = None,
     span_collector=None,
-    verbatim_terms: list[str] | None = None,
+    *,
+    preferred_area_id: str | None = None,
+    task_context=None,
 ) -> dict:
     """Returns a dict with at minimum: speech (str), success (bool).
     Optional keys: entity_id, new_state, cacheable, directive, error.
     """
     ...
 ```
+
+`_ConfigurableDomainAgent._do_execute` injects `preferred_area_id` and `task_context` into the executor call, filtered against the executor's signature — declare them only when the executor needs them.
 
 Return shape contract:
 - `success: bool` — whether the HA call succeeded
@@ -82,33 +71,29 @@ Return shape contract:
 
 ## Step 3: Prompt file
 
-Create `container/app/agents/prompts/<domain>.txt`.
+Create `container/app/prompts/<domain>.txt`.
 
 Include:
 1. Role description and domain scope
 2. JSON action schema the LLM must output
-3. At least 3 few-shot examples (German + English) showing input → JSON output
+3. At least 3 few-shot examples (English only — prime-directives.md directive 13) showing input → JSON output
 4. Edge cases (entity not found, ambiguous request)
 
 ## Step 4: Register the agent
 
-In `container/app/setup/__init__.py` (or wherever agents are wired up), instantiate and register:
+Registration is declarative:
 
-```python
-from app.agents.<domain> import <Domain>Agent
-from app.a2a.registry import registry
+1. The `@agent` decorator collects the class into `_AGENT_CLASSES` at import time.
+2. `install_all_agents` in `container/app/agents/decorator.py` instantiates and registers the ids listed in `ordered_agent_ids` — add `<domain>-agent` there.
+3. If the agent lives in a new module (`container/app/agents/<domain>.py`), the module must be imported in `container/app/agents/__init__.py` — the decorator runs at import time and the agent is silently skipped otherwise. (Classes added directly to `actionable.py` need no import change.)
+4. Add the id to `BUILT_IN_AGENT_IDS` in `container/app/bootstrap/_agents.py` so it appears in the admin listing.
 
-agent = <Domain>Agent(ha_client=ha_client, entity_index=entity_index, entity_matcher=entity_matcher)
-await registry.register(agent)
-```
+## Step 5: Orchestrator routing
 
-## Step 5: Add to orchestrator routing
-
-The orchestrator uses an LLM to classify intent → agent_id. Add a description of the new agent's capabilities to the orchestrator's routing prompt so it knows when to route to `<domain>-agent`.
+The orchestrator's agent list is auto-injected from registered AgentCards via `{agent_descriptions}` in `container/app/prompts/orchestrator.txt`. Write a precise `description=` in the decorator — that is what the orchestrator sees. Edit the prompt file only for routing RULES (e.g. disambiguation between agents), not to list the agent.
 
 ## Key conventions
 
-- `_current_task_context` (set by `ActionableAgent.handle_task`) gives access to `area_id`, `language`, `device_id` inside `_do_execute` — use it for area-aware resolution.
-- `_current_task` gives access to `verbatim_terms` for exact-match entity resolution.
-- Do not call `ha_client` directly in the agent file — that belongs in the executor.
-- `agent_id` in `AgentCard` must be unique across all registered agents and match the orchestrator routing prompt.
+- `self._get_current_task_context()` / `self._get_current_task()` (ContextVar accessors set by `ActionableAgent.handle_task`) expose `area_id`, `language`, `device_id` and the current `DispatchTask` — use them for area-aware resolution.
+- Do not call `ha_client` directly in the agent class — that belongs in the executor.
+- `agent_id` must be unique across all registered agents.

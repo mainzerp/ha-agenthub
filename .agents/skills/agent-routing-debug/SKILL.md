@@ -27,7 +27,7 @@ curl -s "$BASE/api/admin/cache/entries?tier=routing&per_page=100" \
   -b /tmp/aa_cookies.txt --max-time 10 | python3 -m json.tool
 ```
 
-Find the entry by looking at `condensed_task` or `query_text`. Key fields:
+Find the entry by looking at the `document` field (the raw query text). Routing entries return `document` plus metadata: `agent_id`, `language`, `confidence`, `entity_ids`, `created_at`, `last_accessed`, `hit_count`, `schema_version`. (`condensed_task` exists only on action-cache entries.) Key fields:
 - `agent_id` — what the cache says to route to
 - `confidence` — similarity score when the entry was created
 - `hit_count` — how many times this entry has been served
@@ -38,7 +38,7 @@ If `agent_id` is wrong → the cache has a stale entry. Invalidate it (see Step 
 
 ## Step 2: Is the LLM routing correctly?
 
-Enable debug logging and watch the orchestrator. In logs, look for lines from `app.a2a.orchestrator_gateway` or `app.agents.orchestrator`:
+Enable debug logging and watch the orchestrator. In logs, look for lines from `app.agents.classification_engine` or `app.cache.cache_manager`:
 
 ```bash
 curl -s "$BASE/api/admin/logs?level=debug&search=routing&limit=100" \
@@ -46,11 +46,13 @@ curl -s "$BASE/api/admin/logs?level=debug&search=routing&limit=100" \
 ```
 
 The log should show:
-- `Routing cache miss` — LLM was invoked
-- `Routing cache hit: agent_id=<x>, similarity=<y>` — cache served the decision
-- `Dispatching to agent: <agent_id>` — dispatcher sent the task
+- `Routing cache hit: <agent_id> for '<text>'` — cache served the decision (DEBUG level)
+- `Rejecting stale routing cache hit` / `Ignoring invalid routing cache hit` — cached decision failed validation
+- `Routing cache check failed, proceeding with LLM` — cache lookup error
 
-If the LLM picks the wrong agent, the orchestrator's routing prompt needs updating. Check `container/app/agents/prompts/orchestrator.txt` (or equivalent) and verify the new/correct agent is described there.
+There is no explicit cache-miss log line; absence of a hit line means the LLM ran.
+
+If the LLM picks the wrong agent, the orchestrator's routing prompt needs updating. Check `container/app/prompts/orchestrator.txt`. The agent list is injected at runtime from registered AgentCards via `{agent_descriptions}` — check the agent's `description` in its `@agent` decorator and the routing rules in the prompt file.
 
 ---
 
@@ -60,8 +62,10 @@ Via the admin UI (Dashboard → Cache → Routing) or API:
 
 ```bash
 # Clear the entire routing cache (nuclear option)
-curl -X DELETE "$BASE/api/admin/cache?tier=routing" \
-  -b /tmp/aa_cookies.txt --max-time 10
+curl -X POST "$BASE/api/admin/cache/flush" \
+  -H "Content-Type: application/json" \
+  -b /tmp/aa_cookies.txt --max-time 10 \
+  -d '{"tier": "routing"}'
 ```
 
 To delete a single entry, use the entry's ID from the listing in Step 1:
@@ -89,7 +93,7 @@ for a in agents:
     print(a.agent_id, a.skills)
 ```
 
-If the target agent is missing from the registry, it was never registered at startup — check `container/app/setup/__init__.py` and logs for registration errors.
+If the target agent is missing from the registry, it was never registered at startup — check `container/app/agents/decorator.py` (`@agent` registration and `ordered_agent_ids` in `install_all_agents`) and logs for registration errors.
 
 ---
 
@@ -113,22 +117,17 @@ The routing cache rejects entries with similarity below **0.92** (configurable v
 
 To lower the threshold (accept more cache hits at the cost of false matches):
 ```bash
-curl -X PATCH "$BASE/api/admin/settings" \
+curl -X PUT "$BASE/api/admin/settings/cache.routing.semantic_threshold" \
   -H "Content-Type: application/json" \
   -b /tmp/aa_cookies.txt \
-  -d '{"key": "cache.routing.semantic_threshold", "value": "0.88"}'
+  -d '{"value": "0.88"}'
 ```
 
 ---
 
-## Corrupted condensed_task entries
+## Corrupted condensed-task output
 
-The routing cache rejects entries where `condensed_task` matches the pattern `word (N%): ` — a corruption artifact from an old orchestrator version. These entries appear in logs as:
-```
-Routing cache entry rejected due to corrupted condensed_task
-```
-
-Fix: clear the routing cache to flush corrupted entries. They will be rebuilt correctly on next use.
+The classifier strips embedded `<agent-id> (NN%):` fragments via `_sanitize_condensed` (`container/app/agents/classification_engine.py`) and logs `Sanitized embedded classification fragments from condensed task`. Old routing entries are invalidated by `schema_version` on read — flush the routing cache only if stale `agent_id` values persist.
 
 ---
 

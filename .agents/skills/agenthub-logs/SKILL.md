@@ -42,9 +42,11 @@ curl -s "$BASE/api/admin/logs?limit=$LIMIT&offset=$OFFSET" \
 
 ### All logs (use with caution on large instances)
 
+The API caps `limit` at 1000 — paginate with `offset` for more.
+
 ```bash
 # Stream to file instead of terminal
-curl -s "$BASE/api/admin/logs?limit=5000&offset=0" \
+curl -s "$BASE/api/admin/logs?limit=1000&offset=0" \
   -b /tmp/aa_cookies.txt --max-time 60 > /tmp/agenthub-logs-$(date +%Y%m%d_%H%M%S).json
 ```
 
@@ -68,7 +70,7 @@ curl -s "$BASE/api/admin/logs?level=debug&limit=50" \
   -b /tmp/aa_cookies.txt --max-time 20 | python3 -m json.tool
 ```
 
-Valid levels: `debug`, `info`, `warning`, `error`.
+Valid levels: `debug`, `info`, `warning`, `error`, `critical`.
 
 ### By keyword search
 
@@ -96,9 +98,9 @@ curl -s "$BASE/api/admin/logs?level=debug&search=routing&limit=200" \
 ```
 
 Look for:
-- `Routing cache miss` — LLM was invoked for routing
 - `Routing cache hit` — cache served the decision
-- `Dispatching to agent` — task forwarded to agent
+- `Rejecting stale routing cache hit` / `Ignoring invalid routing cache hit` — cached decision failed validation
+- `Routing cache check failed, proceeding with LLM` — cache lookup error
 
 ### MCP server issues
 
@@ -128,7 +130,7 @@ curl -s "$BASE/api/admin/logs?level=warning&search=entity-index&limit=50" \
 ```bash
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 
-curl -s "$BASE/api/admin/logs?limit=5000&offset=0" \
+curl -s "$BASE/api/admin/logs?limit=1000&offset=0" \
   -b /tmp/aa_cookies.txt --max-time 60 > /tmp/agenthub-logs-$TIMESTAMP.json
 
 echo "Saved to /tmp/agenthub-logs-$TIMESTAMP.json"
@@ -143,10 +145,12 @@ A typical log entry contains:
 | Field | Meaning |
 |-------|---------|
 | `timestamp` | ISO 8601 timestamp |
-| `level` | `debug`, `info`, `warning`, `error` |
-| `logger` | Python logger name (e.g. `app.agents.orchestrator`) |
+| `level` | `debug`, `info`, `warning`, `error`, `critical` |
+| `name` | Python logger name (e.g. `app.agents.orchestrator`) |
 | `message` | Log message text |
-| `trace_id` | Optional trace ID for multi-step flows |
+| `module` | Python module name |
+| `funcName` | Function name that emitted the record |
+| `lineno` | Source line number |
 
 ---
 

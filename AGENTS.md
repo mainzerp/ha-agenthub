@@ -1,181 +1,377 @@
-# **PROJECT-NAME** - Agent Instructions (Orchestrator)
+# AGENTS.md
 
-> Instructions for the coding agent (Kimi Code/Orchestrator) — **not part of the application**. No app behavior, runtime logic, or user-facing functionality is defined here.
->
-> **CRITICAL:** `docs/project/prime-directives.md` (if present) defines non-negotiable architectural and correctness rules that override all other guidance. `docs/project/project-definition.md` holds project information.
->
-> **LEARNINGS** live in the Athenaeum library (see "Knowledge Library"); `docs/project/lessons.md` is the local fallback when the MCP is unavailable. Query both at session start.
+Operating standard for AI agents working in this repository (`HA-AgentHub` —
+multi-agent Home Assistant assistant: a Docker container execution engine plus a
+thin HACS-installed Home Assistant bridge).
 
-## General Rules
+Naming: product `HA-AgentHub`; repo/image/package slug `ha-agenthub`; HA
+integration domain `ha_agenthub`. Legacy `agent-assist`/`agent_assist`
+identifiers (DB path, compose volume, cookie names, cache export tags) are
+intentional backward compatibility — do not "fix" them ad hoc.
 
-- **Fact-based:** Base every analysis, decision, and statement on verifiable facts from the codebase, logs, or docs. Never speculate or invent explanations; state uncertainty explicitly. Discard assumptions contradicted by evidence. Prefer simple, direct solutions.
-- **Dependencies:** Before using any library or dependency, verify the current stable version online (PyPI, npm, Docker Hub) and check for breaking changes, security advisories, and compatibility.
-- **No emojis** anywhere (messages, docs, comments, commits, source code, UI text) unless explicitly requested.
-- **Progress:** Report status after each major step; summarize changes before asking for confirmation; give clear next steps when blocked.
+## Initial setup (first contact)
 
-## Identity
+Setup ran on 2026-09-22; this section stays as the contract for any future
+repository adopting this file.
 
-**You are the Orchestrator** — the Kimi Code instance the user is chatting with and the single point of contact. You receive requests, do quick context lookups yourself, delegate analysis/planning/implementation to subagents via the `Agent` tool, present plans for approval, and supervise implementation. Simple, well-defined tasks may be implemented directly.
+Run exactly once per repository: on the first session that finds `brain/BRAIN.md`
+missing. If `brain/BRAIN.md` exists and this file is fully adapted, setup already
+happened — read the brain first and work normally. Never re-run setup over an existing
+brain; if the brain exists but this file still contains placeholders, finish the
+interrupted adaptation instead of recreating the brain.
 
-## Knowledge Library (Athenaeum MCP)
+Setup exists so that every later session starts with accurate context instead of
+guesses: it researches the repo, asks the user for mission and goals, creates the
+brain, and adapts this file.
 
-This project runs an Athenaeum instance as MCP server (`athenaeum` in the Kimi Code MCP config, `mcp.json`) — the durable knowledge store.
+### Procedure
 
-| Tool | Use it to |
-| ---- | --------- |
-| `mcp__athenaeum__request_knowledge` | Recall knowledge at session start and before non-trivial decisions; also orientation ("what is in the library?") — there is no browse tool. |
-| `mcp__athenaeum__store_knowledge` | Persist NEW durable knowledge: decisions, lessons, patterns, project context (`kind_hint: "lessons"`, `relates_to: ["athenaeum"]`). |
-| `mcp__athenaeum__update_knowledge` | Correct or modify EXISTING knowledge (free-text instruction; the librarian locates the target). |
-| `mcp__athenaeum__library_status` | Check library health — deterministic, no LLM. `mcp__athenaeum__library_curate` / `mcp__athenaeum__library_maintain` repair taxonomy and graph health. |
+1. **Confirm first contact** as described above.
+2. **Research the repo — through a subagent.** Delegate one exploration prompt per the
+   core rule below. Require a structured report, not a file dump:
+   - languages, frameworks, key dependencies;
+   - build, run, test and verification commands that actually work;
+   - entry points and directory layout: what lives in which root;
+   - existing docs and what each one owns; obvious docs that are missing;
+   - git remote (needed for the jcodemunch repo id), branching and commit conventions
+     visible in recent history;
+   - the version carrier (`VERSION.md`, `package.json`, tag-only, …);
+   - intake channels for bug reports or feedback, if any;
+   - naming pitfalls worth protecting.
+3. **Ask the user for mission and goals.** These are human decisions. Present the
+   research summary and ask why the project exists, what winning looks like, and the
+   current top goals. Propose drafts from repo evidence where it is solid; mark
+   everything else as an open question. Do not invent a mission.
+4. **Create the brain** per the file contracts in the Docs Discipline table:
+   `BRAIN.md` (front door: mission summary, reading order, links), `Mission.md`,
+   `Goals.md`, `Decisions.md`, `How We Work.md`, and `roadmap.md` as an empty board
+   (columns: `Backlog`, `In Progress`, `Testing`, `Done`, `Idea Bank`; cards as
+   `- title · priority: … · area: …` lines). Seed `Decisions.md` with the setup
+   decisions themselves: tooling, doc map, conventions, verification commands.
+5. **Adapt this file.** Replace every placeholder and setup comment:
+   - Header: real project name, one-line purpose, naming pitfalls.
+   - Project layout: the real roots and their owning docs.
+   - Conventions: the repo's reading and authoring rules.
+   - Docs Discipline: the owning-docs table mapped to real files; delete rows for docs
+     that neither exist nor are planned.
+   - Release & Git: version carrier, verification checklist, commit types and scopes
+     taken from actual history.
+   - Intake: keep, rename, or delete the external-reports section to match reality.
+   - Code exploration: adjust the ignored-directories note to this repo.
+   - Knowledge library: fill in the project's library topic; delete the section if no
+     Athenaeum server is configured for this repo.
+   The generic operating rules — delegation, jcodemunch and Athenaeum usage, language,
+   vision, docs closeout, the no-commit rule — are never weakened or removed. Setup
+   adapts facts, not the operating model.
+6. **Verify and hand over.** Re-read this file end to end: no placeholder left, no
+   contradictions between sections, brain files render and their links resolve.
+   Report to the user what was created, what was assumed, and which open questions
+   remain.
 
-Rules:
+### Setup rules
 
-- **Session start:** `mcp__athenaeum__request_knowledge` for task-relevant learnings AND read `docs/project/lessons.md` (local fallback notes).
-- **Session end:** persist learnings via `mcp__athenaeum__store_knowledge` (new) / `mcp__athenaeum__update_knowledge` (corrections); if the MCP is unavailable, append them to `docs/project/lessons.md` instead.
+- Setup obeys the core rule like any other task: research and verification go to
+  subagents; the main session decides, writes the brain, and edits this file.
+- A half-configured brain is worse than none: if setup is interrupted, either finish
+  it in the same session or leave a note in `brain/BRAIN.md` stating exactly what is
+  missing.
+- Never present drafted assumptions as user-confirmed facts.
 
-## Code Exploration (jCodeMunch MCP)
+## Project brain (session context)
 
-The `jcodemunch` MCP server provides symbol-level retrieval via tree-sitter indexing and drastically reduces token usage. The Orchestrator and ALL subagents MUST prefer it over native Read/Grep/Glob for code exploration whenever the repo is indexed.
+`brain/BRAIN.md` is the front door to the project's shared context: mission, current goals,
+decisions with rationale, and the live pipeline. Read it first for real work in this repo
+and follow links only as far as the task needs. If it does not exist, run the initial
+setup above before doing anything else. `brain/roadmap.md` is consumed by a Kanban
+view — keep its board format (headings as columns, `- title · priority: … · area: …` lines
+as cards).
 
-**Access:** discover catalog actions via `mcp__jcodemunch__menu`, then dispatch via `mcp__jcodemunch__order(action, args)` — or use `mcp__jcodemunch__route` to map a task to the right action. State-changing actions (indexing) require `allow_state_change=true`.
+Keep the brain current as you work — it is only useful while it is accurate:
 
-**Bootstrap:** call `order(action="resolve_repo", args={"path": "."})` on the working directory first; if unindexed, run `index_folder` on the project root once; if a single file is stale, `index_file`; broader staleness → re-run `index_folder`.
+- Starting or finishing roadmap work → move the card in `brain/roadmap.md`. Cards stay in
+  `Testing` until the user has verified the result; only the user moves them to `Done`.
+- Making or changing a decision → record it with its rationale in `brain/Decisions.md`.
+- Shifting priorities → update `brain/Goals.md`; shipping a release also updates the
+  version carrier (see Release & Git).
+- Learning something durable → file it in the right brain note and link it there;
+  lessons that outlive this repo belong in the knowledge library (see below).
 
-| Goal | jCodeMunch action (via `order`) | Native fallback |
-| ---- | ------------------------------- | --------------- |
-| Find function/class/method | `search_symbols` | `Grep` |
-| Read one symbol implementation | `get_symbol_source` | `Read` |
-| File structure / repo structure | `get_file_outline`, `get_repo_outline`, `get_file_tree` | `Read`, `Glob` |
-| Importers / references | `find_importers`, `find_references` | `Grep` |
-| Full-text search (non-structural) | `search_text` | `Grep` |
-| Impact/blast-radius before a change | `get_blast_radius` | manual analysis |
+Keep task tracking light:
 
-Native tools remain correct for: non-code files (Markdown, JSON/YAML/TOML, Dockerfiles, `docs/`), exact line-number context before `Edit`, verifying contents after a Write/Edit.
+- Backlog, In Progress and Testing cards state the intended outcome, next step or blocker,
+  and how to verify it. Short indented text under the card is enough.
+- Testing cards give the user a concrete review target (a link or command to run) and
+  say what still needs their verification. Do not present planned checks as passed.
+- Detail notes are optional; link one when scope, dependencies or evidence no longer fit
+  clearly on the card. Idea Bank cards need no additional template.
+- Goals explain the current outcome and the next few priorities; the roadmap owns task
+  status and next steps. Decisions record choices and rationale, not copies of rules.
 
-**Fallback:** MCP unavailable or erroring → use native tools, note the fallback in output, never block the task on MCP availability.
+The brain indexes and summarizes; the operating rules themselves stay in this file — do not
+move them out, because only `AGENTS.md` is injected into every agent session.
 
-## Mandatory Workflow
+## Core rule: delegate to subagents
 
-**CRITICAL: NEVER skip, merge, or reorder these phases. NEVER start implementation without explicit in-chat plan approval.**
+**Do not do exploration, research, or bulk implementation work in the main session.**
+The main session's context is a scarce resource — spend it on planning, decisions,
+and reviewing results. Push everything else into subagents.
 
-For very small or obvious tasks (typos, single-line fixes), Research and Planning may be abbreviated, but non-trivial changes still require plan approval.
+### Delegate by default
 
-1. **Initial Clarification** (Orchestrator, `AskUserQuestion` tool): ask as many targeted questions as needed to turn a rough idea into a precise, actionable request. Focus on WHAT, not HOW. Skip if the request is already clear.
-2. **Research** (1–3 `coder` subagents; parallel only for clearly separated domains): each agent investigates ONE topic and writes `docs/SubAgent/[NAME]/[TOPIC]_ANALYSIS.md`. If parallel: a **Synthesis** agent merges all `*_ANALYSIS.md` into `ANALYSIS.md` (dedupe, resolve contradictions, cross-reference; no new research).
-3. **Post-Research Clarification** (`AskUserQuestion` tool): after reading the analysis, ask specific, context-aware HOW questions (trade-offs, preferences, concrete behavior). Skip if the path forward is clear.
-4. **Planning** (single `coder` subagent, always sequential): reads `ANALYSIS.md`, writes a concise step-by-step plan with checklist to `PLAN.md`.
-5. **Plan Approval** (Orchestrator, in chat — do NOT use the `AskUserQuestion` tool): post the absolute plan path + a brief (≤ 15 lines) summary, ask exactly `Approve plan? Reply: yes / request changes / cancel`, wait. "request changes" → re-spawn Planner with the feedback; "cancel" → stop and report.
-6. **Implementation** (1–3 `coder` subagents with fresh context; direct implementation allowed for simple single-file changes): each implements ONLY its assigned plan and appends to `CHANGES.md`. If parallel: a **Merge & Verify** agent (full toolset) runs the full test suite + lint and fixes integration issues.
-7. **Final Confirmation**: post a summary of changes and ask the user in chat to confirm completion. The task is incomplete until the user confirms.
+Spawn a subagent when a task is any of the following:
 
-### Parallel Execution
+- **Search / exploration** — "where is X defined", "how does the scene loader work",
+  "which models exist", reading several files to answer one question.
+- **Research** — looking up references, libraries, APIs, or external documentation.
+- **Bulk or repetitive edits** — the same change across many files, mechanical
+  refactors, renames, formatting passes.
+- **Self-contained implementation** — a module, component, or effect that can be
+  described in a standalone prompt.
+- **Verification** — running builds, checks, or reviewing a diff against a spec.
 
-Research and Implementation only — Planning stays single/sequential. **MAX 3 parallel agents per phase.**
+### Keep it in the main session
 
-- Launch parallel agents via `AgentSwarm` (one prompt template, multiple items) or multiple `Agent` calls in a single turn. Each runs with its own context.
-- **Research:** each agent gets a distinct `[TOPIC]` and the line `You are analyzing ONLY the [TOPIC] aspect. Do NOT investigate other topics.` The Synthesis agent then produces the combined `ANALYSIS.md` that Planning reads.
-- **Implementation:** only for 2+ work streams with disjoint file sets. The Orchestrator splits the plan into `PART{N}_PLAN.md` files and creates an empty shared `CHANGES.md` first. Each agent's prompt includes `You are implementing ONLY Part N. Do NOT touch files assigned to other parts.`
-- **`CHANGES.md` protocol:** every parallel agent appends its identifier (`Part N`), each modified file path, and a brief reason. Before correcting any change it did not make, an agent MUST consult `CHANGES.md` to check whether a parallel agent was responsible.
-- **Merge & Verify fallback:** unresolvable conflicts → abort parallel execution, discard all parallel changes, re-run Implementation sequentially with a single agent.
+Handle these directly, because they need the accumulated conversation context:
 
-### Subagent Error Handling
+- Clarifying the user's intent and negotiating scope.
+- Architecture and design decisions, tradeoffs, API contracts.
+- Reviewing and integrating subagent output.
+- Final answers, summaries, and anything the user is waiting on.
 
-- Allow generous time budgets — Implementation and Merge & Verify agents can legitimately run long. Never wait indefinitely: no progress over an extended period = hung → cancel.
-- Subagents have a fixed 30-minute timeout. A timeout is not automatically a failure: **resume** the timed-out agent (`resume` with its agent id) to continue it with its prior context, and reuse any partial artifacts under `docs/SubAgent/[NAME]/` before retrying.
-- Empty result, crash, hang, or clearly incomplete output → **retry once** with an identical prompt → still failing → report the failure to the user (phase name + expected artifact path); do not proceed to the next phase.
-- Never silently skip a phase or substitute a failed subagent result with your own output.
+### How to delegate well
 
-## Subagents
+1. **Write a complete, standalone prompt.** A subagent does not see this conversation.
+   Include: the goal, the relevant file paths, the constraints, the expected output
+   format, and how to verify success.
+2. **Give it one job.** Narrow scope beats a vague "improve the codebase".
+3. **Run independent subagents in parallel** in a single message, so they work while you
+   keep going.
+4. **Ask for compressed results.** Request a summary, a diff, or a short structured
+   report — never a dump of everything it read.
+5. **Demand evidence.** Require exact file paths and line references so you can spot-check
+   without re-reading the whole tree.
+6. **Do not duplicate a running subagent's work.** While it runs, do something
+   independent; do not redo its search yourself.
 
-- Always invoke via `Agent(subagent_type="coder")` with BOTH `description` (3–5 words) and `prompt` (detailed instructions). Read-only behavior is enforced exclusively through prompt restrictions, not the subagent type — the `explore` and `plan` subagent types are hard read-only and cannot write `docs/SubAgent/` artifacts, so do NOT use them for phase work.
-- Subagents run in a fresh context window — pass all state via `docs/SubAgent/` artifacts, never via implicit context.
-- Subagents never ask the user questions and never request plan approval.
-- Every subagent prompt MUST include the jCodeMunch usage line from the prompt blocks below.
+### Anti-patterns
 
-| Phase | Purpose | Tool restrictions (prompt-enforced) |
-| ----- | ------- | ----------------------------------- |
-| Research | Fast codebase analysis | Read, Grep, Glob, jcodemunch (preferred), Write (`docs/SubAgent/` only). NO Bash, NO Edit, NO source edits. |
-| Synthesis | Combine parallel research | Read, Write (`docs/SubAgent/` only). NO new research. |
-| Planning | Implementation planning | Same restrictions as Research. |
-| Implementation | Execute approved plan | Full toolset |
-| Merge & Verify | Tests, lint, integration fixes | Full toolset |
+- Reading dozens of files into the main session to answer one narrow question.
+- Doing a mechanical multi-file edit by hand in the main session.
+- Handing a subagent a prompt that depends on unstated context, then guessing at its result.
+- Letting a subagent report "done" without verification steps you can check.
 
-**Naming:** `docs/SubAgent/[NAME]/[SUFFIX].md` — `[NAME]` is a short task identifier in `UPPER_SNAKE_CASE` chosen at task start (e.g. `ADD_UPS_PROTOCOL`), reused across all phases; `[SUFFIX]` is `ANALYSIS`, `[TOPIC]_ANALYSIS`, `PLAN`, `PART1_PLAN`, `CHANGES`, etc.
+## Code exploration (jcodemunch)
 
-**Artifacts:** `docs/SubAgent/` belongs in `.gitignore` (ephemeral working files). To preserve one (e.g. an approved plan promoted to a ticket): `git add -f docs/SubAgent/[NAME]/PLAN.md` or a targeted `.gitignore` exception.
+Use the jcodemunch MCP server for code navigation instead of `grep`/`glob`/`read` sweeps.
 
-### Required Prompt Blocks
+- **Repo id:** derived from the git remote, e.g. `owner/repo-name`
+  (without a remote: `local/<folder-name>`). Confirm per machine with
+  `resolve_repo { path: "<absolute repo path>" }`; do not assume the folder name.
+- **Per-machine setup:** run `index_folder` once with this machine's absolute repo path;
+  the index lives server-side, so every environment indexes its own checkout.
+- **Always pass absolute paths.** Relative paths resolve against the jcodemunch server's
+  working directory, not this workspace, and silently resolve to the wrong repo.
+- **Entry points:** `menu(query)` to discover actions, `order(action, args)` to run one,
+  `route(task)` to pick the action for a goal, `jcodemunch_guide` for the full catalogue.
+- **Read-only navigation:** `search_symbols`, `get_file_outline`, `get_symbol_source`,
+  `get_context_bundle`, `find_references`, `search_text`, `get_repo_outline`.
+- **Use `Read` only immediately before editing a file** — the harness requires a read before
+  `Write`/`Edit`. Explore with jcodemunch, then read exactly the file being changed.
+- **Gitignored paths are not indexed** — `.venv*/`, `*_cache/`, `container/data/`,
+  `secrets/`, `docs/SubAgent/`, `node_modules/`; vendored dashboard assets under
+  `container/app/dashboard/static/vendor/` may be partial. Read them directly if
+  genuinely needed; never edit generated/runtime artifacts.
+- **After edits:** `register_edit` with the changed paths, batched for bulk changes. Re-run
+  `index_folder` (state change) after structural changes: new modules, renames, moves.
+- **Interpret results literally:** `no_implementation_found` is evidence of absence — report
+  the gap, do not re-search with different wording. `degraded` means absence is not proven.
 
-Mandatory verbatim in every subagent prompt; the Orchestrator adds task-specific context (topic, scope, file names) around them.
+Subagent prompts must state the repo id, the absolute source root, and this tooling rule —
+children do not inherit it.
 
-**Shared header (prepend to every phase block):**
+## Knowledge library (Athenaeum MCP)
 
-```text
-You are a <PHASE> agent using subagent_type="coder".
-Base every analysis, decision, and statement on verifiable facts. Do not speculate, assume, or invent explanations when information is missing.
-Do NOT ask the user questions. Do NOT request plan approval.
-```
+This project runs an Athenaeum instance as MCP server — a shared, durable knowledge
+library across sessions, agents, and repos. A librarian agent curates it; agents ask
+for knowledge by intent instead of browsing files.
 
-**Research** — append:
+- **Recall:** `request_knowledge(query)` at session start and before non-trivial
+  decisions. There is no browse tool — orientation questions ("what exists on X?")
+  go through the same call; `context` narrows the answer.
+- **Store:** `store_knowledge(content, topic_hint, kind_hint, relates_to)` persists NEW
+  durable knowledge — lessons, patterns, decisions worth keeping. The librarian decides
+  placement, frontmatter, and linking. `topic_hint` names the target topic area and is
+  required by default; use `ha-agenthub` for this project.
+- **Correct:** `update_knowledge(instruction)` changes or corrects EXISTING knowledge;
+  the librarian locates the target concepts. `relates_to` back-links related concepts.
+- **Health:** `library_status` is a deterministic health report (no LLM).
+  `library_maintain` repairs graph health and `library_curate` fixes taxonomy and
+  consolidates duplicates; both are no-ops when the library is healthy.
+- **Trust and staleness:** concepts carry trust tiers (unverified / machine-confirmed /
+  human-reviewed) and staleness flags. Weigh them before relying on a concept; when the
+  library and the repo disagree, the repo is the source of truth.
+- **Brain vs. library:** `brain/` owns this project's live context (mission, goals,
+  decisions, pipeline); the library owns durable knowledge that outlives one repo or
+  session. File a lesson once — in the library — and link it from the brain note when
+  it matters here.
+- **Delegation boundary:** subagents report lessons and findings back; the main session
+  decides what is durable enough to store or correct — children do not write to the
+  library.
+- **Unavailable:** if the server is unreachable, file learnings in the brain as usual
+  and continue; sync them into the library when it is back.
 
-```text
-Investigate ONLY: [TOPIC].
-Write your findings to: docs/SubAgent/[NAME]/[TOPIC]_ANALYSIS.md
-Allowed tools: Read, Grep, Glob, jcodemunch MCP tools, Write (docs/SubAgent/ only).
-Use jcodemunch MCP tools FIRST for code exploration (order(action="resolve_repo"); index_folder on the project root if unindexed). Fall back to native tools only if the MCP is unavailable.
-FORBIDDEN: Bash, Edit, any source code modification.
-Return a short summary and the artifact path when done.
-```
+## Language and formatting
 
-**Synthesis** — append:
+### No emojis
 
-```text
-Do NOT conduct new research.
-Read all files matching: docs/SubAgent/[NAME]/*_ANALYSIS.md
-Write a single detailed combined analysis to: docs/SubAgent/[NAME]/ANALYSIS.md
-Remove duplicates, resolve contradictions, add cross-references between topics.
-Allowed tools: Read, Write (docs/SubAgent/ only).
-FORBIDDEN: Bash, Edit, any source code modification, any new research.
-Return a short summary when done.
-```
+**Do not use emojis anywhere.** Not in code, comments, docstrings, log or error messages,
+commit messages, documentation, reports, or chat replies. No decorative pictographs, no
+status glyphs like checkmarks or warning signs, no emoji in place of words.
 
-**Planning** — append:
+- Write "done", "failed", "warning", "note" instead of a symbol.
+- Use plain ASCII markers where a marker is genuinely useful: `OK`, `FAIL`, `TODO`,
+  `FIXME`, `NOTE`.
+- If a human's message contains emojis, do not mirror them in your reply.
 
-```text
-Do NOT implement anything.
-Read the analysis from: docs/SubAgent/[NAME]/ANALYSIS.md
-Write a concise detailed step-by-step implementation plan with a checklist to: docs/SubAgent/[NAME]/PLAN.md
-Allowed tools: Read, Grep, Glob, jcodemunch MCP tools, Write (docs/SubAgent/ only).
-Use jcodemunch MCP tools FIRST for code exploration; fall back to native tools only if the MCP is unavailable.
-FORBIDDEN: Bash, Edit, any source code modification.
-Return a short summary and the artifact path when done.
-```
+### Code and comments in English
 
-**Implementation** — append:
+**All code is written in English, always** — regardless of the language used in the
+conversation, the ticket, or the request.
 
-```text
-Full toolset available.
-Read your assigned plan from: docs/SubAgent/[NAME]/PLAN.md (parallel: PART{N}_PLAN.md — implement ONLY Part N, do NOT touch files assigned to other parts).
-Implement ONLY the work described in that plan.
-Run tests and lint after completing your changes, then append your changes (identifier, files, reasons) to docs/SubAgent/[NAME]/CHANGES.md.
-Return a completion summary listing every file modified and every command run.
-```
+This covers:
 
-**Merge & Verify** — append:
+- identifiers: variable, function, class, file and directory names,
+- comments and docstrings,
+- log, warning and error messages,
+- commit messages, branch names, and PR descriptions,
+- test names and fixture data labels,
+- in-repo documentation and code-adjacent notes.
 
-```text
-Full toolset available. Parallel implementation has just completed.
-1. Read docs/SubAgent/[NAME]/CHANGES.md to understand all modifications.
-2. Run the full test suite (pytest or equivalent) and report results.
-3. Run lint checks (ruff check, ruff format) and fix any issues.
-4. Resolve any merge conflicts, broken imports, or integration issues caused by parallel edits.
-Return a final verification summary: tests passed/failed, lint status, conflicts resolved.
-Unresolvable conflicts → report them explicitly; do NOT guess at a resolution.
-```
+Rules of thumb:
 
-## Docs Discipline (`docs/`)
+- Conversational replies may follow the human's language, but **code and comments stay
+  English** even when the request was in another language.
+- Never mix languages inside a single file: no German identifiers or comment lines in a
+  file that is otherwise English.
+- Do not transliterate existing German identifiers ad hoc; if a rename is warranted,
+  propose it as one consistent, verified change.
+- When delegating, state this requirement explicitly in the subagent prompt — children do
+  not inherit it automatically.
 
-**Closeout rule:** Every meaningful change requires a docs pass before the task is done. Update the closest owning doc when a change affects contracts, workflows, structure, ownership, or operating rules — and remove stale or contradictory text immediately. Small edits that change no behavior or contract may leave docs unchanged, but the pass still happens.
+## Vision and multimodal tasks
+
+Image input is **not guaranteed** by the active model. When a task requires looking at an
+image — a screenshot, a reference photo, a rendered frame, a sprite sheet, a design mockup —
+and the active model does not accept image input, **do not skip the task and do not guess
+from filenames**.
+
+Instead:
+
+1. **Detect the limitation early.** If an image read is rejected because the model does not
+   support image input, treat that as a signal to delegate, not as a failure to report.
+2. **Hand over everything as text.** The child cannot see this conversation. Include:
+   - absolute or workspace-relative **paths** to every image it must inspect,
+   - the exact question to answer about each image,
+   - the desired output shape (short structured report, checklist, JSON, diff proposal).
+3. **Ask for text back.** The child returns a written description, findings, or a proposed
+   change — never the image itself. Consume that text in the main session.
+4. **Route bulk visual work the same way.** Comparing many rendered frames, auditing a set of
+   assets for style-guide compliance, or extracting palettes from reference art are all
+   fan-out jobs: delegate them, one image or one asset per child.
+
+Rules of thumb:
+
+- Vision-capable subagent for **seeing**; main session for **deciding**.
+- State in the child's prompt that it must report uncertainty explicitly — never let it
+  invent detail it cannot actually see in the image.
+- If no vision-capable model is available, say so plainly and ask the human how to proceed
+  rather than producing speculative output.
+
+## Project layout
+
+- `container/` — FastAPI execution engine (`app/`, `tests/`, `plugins/`,
+  Dockerfile, compose files); owning docs: `docs/architecture.md`,
+  `docs/project/project-definition.md`
+- `custom_components/ha_agenthub/` — HA bridge integration (mocked tests in
+  `custom_components/tests/`); owning docs: `docs/deployment.md`, `README.md`
+- `docs/` — user and developer documentation; owning doc: `docs/README.md`
+- `scripts/` — CI/build tooling (`ci.py`, `local-ci.ps1`, `build-and-push.ps1`)
+- `.agents/skills/` — workflow skills (new-agent, plugin-dev, mcp-server-dev,
+  agent-routing-debug, agenthub-logs, agenthub-csrf, ha-debug)
+- `secrets/` — local-only credentials (`secrets/.env.local` provides
+  `AA_LIVE_*` / `AA_LOCAL_*` / `AA_BASE_URL` for the admin-API skills);
+  gitignored, never commit
+- `brain/` — session-spanning project context
+- `.github/` — CI workflows, dependabot, CODEOWNERS
+
+Module layout and contracts live in the repo's owning docs (see the Docs
+Discipline table); project mission and naming context live in
+`brain/Mission.md`. `brain/` holds session-spanning context.
+
+## Conventions
+
+- `docs/project/prime-directives.md` is binding — verify every change against it
+  before implementing (execution-engine split, entity visibility on every path,
+  action-cache visibility recheck, A2A boundary, async-only, English-only
+  few-shot prompt examples, no hardcoded keyword routing).
+- Read `docs/style-guide.md` before dashboard work; keep CSS variable names
+  stable, update hard-coded hex/RGBA literals in lockstep, and increment
+  `_STATIC_BUILD`.
+- Entity resolution routes through the shared deterministic-first resolver
+  (`container/app/entity/deterministic_resolver.py`) — no raw index shortcuts.
+- Agents return executed results, not tool-call plans. New domain agents follow
+  the `new-agent` skill and must be imported in
+  `container/app/agents/__init__.py` (the `@agent` decorator runs at import
+  time).
+- Prompt assets live in `container/app/prompts/` (the `new-agent` skill shows a
+  stale path — trust the repo).
+- `container/data/` is runtime-only; `container/plugins/` is the user drop-in
+  dir (files starting with `_` are ignored). Never edit generated or runtime
+  artifacts.
+- The dashboard frontend is server-rendered Jinja2 + HTMX with vendored JS —
+  there is no npm/node toolchain.
+- Keep the version in sync across `VERSION.md`, `container/app/__init__.py`, and
+  `custom_components/ha_agenthub/manifest.json`.
+- Python 3.12, ruff line-length 120; async all the way down — no blocking I/O on
+  the event loop.
+
+## Docs Discipline
+
+**Closeout rule:** Every meaningful change requires a docs pass before the task is done.
+Update the closest owning doc when a change affects contracts, workflows, structure,
+ownership, or operating rules — and remove stale or contradictory text immediately. Small
+edits that change no behavior or contract may leave docs unchanged, but the pass still
+happens.
+
+**Owning docs** — each rule lives in exactly one of them:
+
+| Doc | Owns |
+|---|---|
+| `AGENTS.md` | Agent operating rules: setup, delegation, code exploration and knowledge library tooling, language, vision, docs, report triage, release process |
+| `README.md` | Product overview, agent inventory, quick start, repo structure |
+| `VERSION.md` | Version carrier and changelog |
+| `TODO.md` | Long-term idea backlog and unscheduled candidates |
+| `SECURITY.md` | Vulnerability reporting |
+| `docs/README.md` | Doc map, doc naming, reading order |
+| `docs/project/project-definition.md` | Authoritative description of the system as it exists today |
+| `docs/project/prime-directives.md` | Binding architecture constraints |
+| `docs/project/lessons.md` | Athenaeum pointer + offline fallback facts |
+| `docs/architecture.md` | Components, A2A protocol, request/data flow |
+| `docs/api-reference.md` | HTTP/WebSocket API surface |
+| `docs/configuration.md` | Settings and configuration reference |
+| `docs/deployment.md` | Install and deployment (compose, HACS) |
+| `docs/user-guide.md` | End-user operation |
+| `docs/plugin-development.md` | Plugin authoring contract |
+| `docs/backup-restore.md` | Backup/restore procedures |
+| `docs/troubleshooting.md` | Operational troubleshooting |
+| `docs/style-guide.md` | Dashboard design tokens and visual conventions |
+| `docs/CHANGELOG_ARCHIVE.md` | Pre-1.14 changelog history |
+| `.agents/skills/*/SKILL.md` | Workflow-specific skills (new-agent, plugin-dev, debugging) |
+| `brain/Mission.md` | Why the project exists, what winning looks like |
+| `brain/Goals.md` | The few outcomes that matter this stretch |
+| `brain/How We Work.md` | Build rhythm; points at the doc map for standards |
+| `brain/Decisions.md` | Decision rationale, so decisions stay made |
+| `brain/roadmap.md` | The live pipeline, in board format |
 
 **Style rules for all project docs:**
 
@@ -183,17 +379,66 @@ Unresolvable conflicts → report them explicitly; do NOT guess at a resolution.
 - Prefer direct bullets with explicit names over prose.
 - Do not duplicate rules across files; each rule lives in exactly one owning doc.
 - Delete stale notes instead of explaining history.
-- Trim obvious statements, repeated rules, misplaced detail, and warnings for risks that no longer exist.
+- Trim obvious statements, repeated rules, misplaced detail, and warnings for risks that no
+  longer exist.
+
+## External reports
+
+External reports arrive as GitHub issues on `mainzerp/ha-agenthub` (no issue
+templates exist yet). Security vulnerabilities arrive privately through GitHub
+Security Advisories per `SECURITY.md` — never file those as public issues.
+Operational evidence additionally comes from the live Admin API (remote-log
+ingest, traces) — see the `agenthub-logs`, `ha-debug`, and
+`agent-routing-debug` skills.
+
+- The issue owns the findings detail; label `bug` or `enhancement`.
+- The roadmap stays a pipeline: a card appears only when an issue is scheduled,
+  and the card and the fixing commit reference the issue number.
+- Close the issue with a reference to the fixing commit once resolved.
 
 ## Release & Git
 
-**Semantic Versioning:** `MAJOR.MINOR.PATCH` — MAJOR = breaking changes requiring user action (incompatible APIs, rollback-breaking migrations, UI workflow changes); MINOR = backward-compatible features (new services, pages, integrations); PATCH = bug fixes and small improvements (performance, docs, translations).
+Do not commit unless the user asks. A roadmap release card is tracking, not authorization
+to commit or publish.
+
+**Semantic Versioning:** `MAJOR.MINOR.PATCH`.
+
+- MAJOR = breaking changes requiring user action: changed conversation WS/REST
+  contracts, renamed or removed settings keys or API fields, A2A envelope or
+  plugin-API breakage, DB migrations needing manual intervention.
+- MINOR = backward-compatible additions: a new feature, agent, module, or option.
+- PATCH = bug fixes and small improvements: corrections, tweaks, performance, docs.
+
+`VERSION.md` is the single source of truth for the version. It is mirrored in
+`container/app/__init__.py` (`__version__`) and
+`custom_components/ha_agenthub/manifest.json` — bump all three together. Git
+tags `vX.Y.Z` trigger the release pipeline (docker build, Trivy scan, GitHub
+Release). No pre-release tag convention is in use.
 
 Release checklist (all required):
 
-- [ ] Bump `VERSION.md`, `container/app/__init__.py` (`__version__`), `custom_components/ha_agenthub/manifest.json` (`version`) — all three must match. (`container/pyproject.toml` carries no version field.)
-- [ ] Add an entry under "Version History" in `VERSION.md` with key features/fixes and commit hashes. New features are tracked in `VERSION.md` as they are implemented.
-- [ ] Git tag matches the version in all three files.
-- [ ] GitHub release has an explicit title and notes listing every new feature, changed behavior, and removal. Auto-generated notes are a starting point, not a substitute.
+- [ ] `VERSION.md` created or bumped, with a history entry listing key
+      features/fixes and commit references; `container/app/__init__.py` and
+      `custom_components/ha_agenthub/manifest.json` bumped to match. New
+      features are tracked there as they are implemented.
+- [ ] Git tag matches the version (`vX.Y.Z`) and points at the release commit.
+- [ ] Release has an explicit title and notes listing every new feature, changed
+      behavior, and removal. Auto-generated notes are a starting point, not a substitute.
+- [ ] Verification passes: `ruff check` + `ruff format --check` on `container/`
+      and `custom_components/`; `cd container && python -m pytest tests/ -q`
+      (background on Windows; verdict from the printed summary);
+      `python -m pytest custom_components/tests/ -n auto`;
+      `python scripts/ci.py` for the full gate. `mypy` is report-only.
+- [ ] Docs closeout done for the change (see Docs Discipline above).
 
-**Conventional Commits:** `<type>(<scope>): <short summary>` — `feat` (MINOR bump), `fix` (PATCH bump), `chore` (maintenance/deps), `docs`, `refactor`, `test`, `release` (version bump). Summary under 72 characters, imperative mood ("add X"), reference issues where applicable (`fix(auth): correct token expiry (#42)`).
+**Conventional Commits:** `<type>(<scope>): <short summary>`.
+
+- Types: `feat` (MINOR bump), `fix` (PATCH bump), `chore` (maintenance/deps), `docs`,
+  `refactor`, `test`, `release` (version bump).
+- Scopes seen in history (prefer these over inventing new ones): `core`,
+  `orchestrator`, `agents`, `entity`, `entity-resolution`, `cache`, `routing`,
+  `memory`, `embedding`, `llm`, `conversation`, `integration`, `config-flow`,
+  `dashboard`, `trace`, `logs`, `skills`, `deps`, `deps-dev`, `docs`.
+- Release commits use the canonical form `release: bump version to X.Y.Z`.
+- Summary under 72 characters, imperative mood ("add X"), reference issues where
+  applicable (`fix(core): correct edge case (#42)`).

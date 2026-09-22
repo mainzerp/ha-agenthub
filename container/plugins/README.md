@@ -47,18 +47,20 @@ class HelloPlugin(BasePlugin):
 
 Through the `PluginContext` object passed to lifecycle hooks:
 
-- `ctx.agent_catalog` -- Inspect currently registered agents (read-only)
-- `ctx.orchestrator_gateway` -- Send text or background work through the orchestrator
+- `ctx.agent_registry` -- Inspect registered agents (`list_agents()`) or
+  register one (`await ctx.agent_registry.register(...)`)
+- `ctx.dispatcher` -- Send plugin-originated work through the A2A
+  dispatcher / orchestrator flow
 - `ctx.mcp_registry` -- Access MCP server connections
 - `ctx.settings` -- Read/write settings via `SettingsRepository`
 - `ctx.event_bus` -- Subscribe to / publish plugin events
 - `ctx.add_api_route(path, endpoint, **kwargs)` and
   `ctx.include_router(router, **kwargs)` -- register HTTP routes
 
-Direct access to the FastAPI application instance via `ctx.app` and the
-old direct registry surface are removed. Use `ctx.add_api_route`,
-`ctx.include_router`, `ctx.agent_catalog`, and
-`ctx.orchestrator_gateway` instead.
+Direct access to the FastAPI application instance via `ctx.app` is
+removed (raises `AttributeError`). There is no `ctx.agent_catalog` or
+`ctx.orchestrator_gateway` -- use `ctx.agent_registry` for agents and
+`ctx.dispatcher` for orchestrator-bound dispatch.
 
 ## Notes
 

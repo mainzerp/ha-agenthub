@@ -98,15 +98,24 @@ Key points of the mcp 2.x server API:
 
 ### 2. Register in MCPServerRegistry
 
-The registry is backed by the DB (`MCPServerRepository`). Add the server either:
+The registry is backed by the DB (`McpServerRepository`). Add the server either:
 
-**Via plugin** (recommended for built-in servers):
+**Built-in** — registered in `container/app/bootstrap/_mcp.py` `setup_mcp()` (which also auto-assigns tools to `general-agent` via `AgentMcpToolsRepository.assign_tool`):
+```python
+connected = await mcp_registry.add_server(
+    name="<name>-server",
+    transport="stdio",
+    command_or_url="python -m app.mcp.servers.<name>_server",
+)
+```
+
+**Via plugin** — `ctx.mcp_registry.add_server(...)` is the path for plugin-shipped servers:
 ```python
 async def startup(self, ctx: PluginContext) -> None:
     await ctx.mcp_registry.add_server(
         name="<name>-server",
         transport="stdio",
-        command_or_url="python3 -m app.mcp.servers.<name>_server",
+        command_or_url="python -m app.mcp.servers.<name>_server",
         env_vars={"API_KEY": "..."},  # optional
         timeout=30,
     )
@@ -116,10 +125,10 @@ async def startup(self, ctx: PluginContext) -> None:
 ```bash
 BASE="${AA_BASE_URL:-http://localhost:8080}"
 
-curl -X POST "$BASE/api/admin/mcp/servers" \
+curl -X POST "$BASE/api/admin/mcp-servers" \
   -H "Content-Type: application/json" \
   -b /tmp/aa_cookies.txt \
-  -d '{"name": "<name>", "transport": "stdio", "command_or_url": "python3 /path/to/server.py"}'
+  -d '{"name": "<name>", "transport": "stdio", "command_or_url": "python /path/to/server.py"}'
 ```
 
 ### 3. Assign tool to an agent
@@ -146,7 +155,7 @@ await ctx.mcp_registry.add_server(
 ## MCPClient internals
 
 `container/app/mcp/client.py` handles connection lifecycle. Key points:
-- `connect()` returns `True` on success; the server stays registered even if connection fails (will retry on next tool call)
+- `connect()` returns `True` on success; the server stays registered even if connection fails — there is no lazy reconnect: tool calls raise `ConnectionError` until the server is re-added or restarted
 - `connected` property reflects live status
 - Tools are fetched via `list_tools()` on connect and cached
 

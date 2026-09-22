@@ -5,7 +5,7 @@ description: Create a plugin for HA-AgentHub following the BasePlugin pattern. U
 
 # Creating an HA-AgentHub Plugin
 
-Plugins are single `.py` files placed in the plugin directory (configured at runtime). The `PluginLoader` discovers them automatically and runs them through a 4-phase lifecycle.
+Plugins are single `.py` files placed in `container/plugins/` — the drop-in directory next to `app/`. The `PluginLoader` discovers them automatically and runs them through a 4-phase lifecycle.
 
 ## Minimal plugin skeleton
 
@@ -37,7 +37,7 @@ class MyPlugin(BasePlugin):
         pass
 
     async def ready(self, ctx: PluginContext) -> None:
-        """Phase 3: All agents are registered. Safe to call ctx.agent_catalog."""
+        """Phase 3: All agents are registered. Safe to call ctx.agent_registry."""
         pass
 
     async def shutdown(self) -> None:
@@ -51,7 +51,7 @@ class MyPlugin(BasePlugin):
 
 ```python
 # Register an agent programmatically
-ctx.agent_catalog.register_agent(my_agent)
+await ctx.agent_registry.register(my_agent)
 
 # Add an API route
 ctx.add_api_route("/my-plugin/status", status_handler, methods=["GET"])
@@ -68,8 +68,8 @@ await ctx.mcp_registry.add_server(
     command_or_url="python3 /path/to/server.py",
 )
 
-# Read a persisted setting
-value = await ctx.settings.get("my-plugin.some-key", default="fallback")
+# Read a persisted setting (returns str | None)
+value = await ctx.settings.get_value("my-plugin.some-key", default="fallback")
 
 # Subscribe to inter-plugin events (available after PluginLoader sets event_bus)
 ctx.event_bus.subscribe("some.event", my_async_handler)
@@ -78,15 +78,15 @@ ctx.event_bus.subscribe("some.event", my_async_handler)
 await ctx.event_bus.publish("my-plugin.ready", data={"status": "ok"})
 ```
 
-**Never** access `ctx.app` directly (removed) or `ctx.agent_registry` (removed — use `ctx.agent_catalog`).
+**Never** access `ctx.app` directly (removed — raises `AttributeError`). `ctx.agent_registry` is the correct attribute; there is no `ctx.agent_catalog`.
 
 ## Lifecycle phase rules
 
 | Phase | What to do | What NOT to do |
 |-------|-----------|----------------|
 | `configure` | Read DB settings, set instance variables | Start background tasks, call HA |
-| `startup` | Connect to external services, start background tasks | Call `ctx.agent_catalog` (agents not yet registered) |
-| `ready` | Wire up agent catalog references, publish "ready" events | Register new agents (too late) |
+| `startup` | Connect to external services, start background tasks | Call `ctx.agent_registry` (agents not yet registered) |
+| `ready` | Wire up agent registry references, publish "ready" events | Register new agents (too late) |
 | `shutdown` | Cancel tasks, close connections | Access `ctx` (not passed) |
 
 Each hook has a **30-second timeout**. If a hook exceeds it, the loader logs a warning and continues — it does not crash the system.
