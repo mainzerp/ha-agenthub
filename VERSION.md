@@ -1,12 +1,24 @@
 # Version
 
-**Current Version:** 2.4.2
+**Current Version:** 2.5.0
 
 ## Recent Changes
 
-(tracking changes since 2.4.2)
+(tracking changes since 2.5.0)
 
 ## Version History
+
+### 2.5.0 (MINOR) -- noise route for silent false-trigger suppression
+
+(commit f4c7b91)
+
+- Orchestrator: new `noise` pipeline directive -- the classifier routes contextless fragments and background chatter (TV/radio bleed-through from accidental wake-word activations) to a silent route that exits before dispatch: no agent call, no TTS, no conversation turn, no cache writes. The turn is still traced with `routing_agent=noise` so suppression stays measurable.
+- Pending clarifying questions are re-armed when a noise turn consumed them; a legitimately answered question can no longer be resurrected by a later noise turn.
+- `cancel-interaction` keeps its dismiss-the-turn semantics; the classification prompt gained RULE 4b plus noise examples in all five languages (de/en/fr/it/es).
+- Defensive exclusions keep `noise` out of routing/action caches, mediation, dispatch, and the admin domain-agent map.
+- 8 new regression tests cover silent REST/streaming responses, no-dispatch guarantees, pending-question restore, and sanitize behavior. Container suite: all tests pass except 6 pre-existing MCP server tests failing on an unrelated local `mcp` package version mismatch (`ServerRequestContext` import).
+- Docs/process: adopted the AGENTS.md operating standard (brain/, skills, knowledge library); no runtime behavior change (commit 1ec6d13).
+- No features or public APIs removed; no new dependencies.
 
 ### 2.4.2 (PATCH) -- cache replay, bridge lifecycle and timeout fixes
 
