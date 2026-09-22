@@ -823,6 +823,80 @@ def _run_dashboard_script(template: str, assertions: str) -> None:
     assert result.returncode == 0, result.stderr
 
 
+def _run_dashboard_asset(asset: str, setup: str, assertions: str) -> None:
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("Node.js is required for dashboard JavaScript behavior checks")
+    path = Path(__file__).parents[1] / "app/dashboard/static" / asset
+    script = setup + "\n" + path.read_text(encoding="utf-8") + "\n" + assertions
+    result = subprocess.run(
+        [node, "-e", script],
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_dashboard_toast_dispatches_event_and_chart_color_token():
+    _run_dashboard_asset(
+        "utils.js",
+        r"""
+        const events = [];
+        global.window = { dispatchEvent: event => events.push(event) };
+        global.document = { documentElement: {} };
+        global.getComputedStyle = () => ({ getPropertyValue: name => ({ '--teal': '#e2a84b' }[name] || '') });
+        global.CustomEvent = class { constructor(type, options) { this.type = type; this.detail = options.detail; } };
+        """,
+        r"""
+        const assert = require('node:assert/strict');
+        window.toast('Saved', 'success');
+        assert.equal(events.length, 1);
+        assert.equal(events[0].type, 'dashboard-toast');
+        assert.deepEqual(events[0].detail, { message: 'Saved', kind: 'success' });
+        assert.equal(window.chartRgba('teal', 0.5), 'rgba(226, 168, 75, 0.5)');
+        """,
+    )
+
+
+def test_command_palette_keyboard_navigation_and_search_reset():
+    _run_dashboard_asset(
+        "components.js",
+        r"""
+        const navigations = [];
+        global.window = { location: { assign: url => navigations.push(url) } };
+        global.document = { getElementById: () => null, addEventListener: () => {} };
+        """,
+        r"""
+        const assert = require('node:assert/strict');
+        const page = window.dashCommandPalette();
+        let queryWatcher;
+        page.$watch = (name, callback) => { assert.equal(name, 'query'); queryWatcher = callback; };
+        page.init();
+        page.allCommands = [
+            { label: 'First', keywords: '', group: 'Page', action: 'navigate', href: '/first' },
+            { label: 'Second', keywords: '', group: 'Page', action: 'navigate', href: '/second' }
+        ];
+        page.selectedIndex = 1;
+        queryWatcher();
+        assert.equal(page.selectedIndex, 0);
+        page.open = true;
+        page.onKeydown({ key: 'ArrowDown', preventDefault() {} });
+        assert.equal(page.selectedIndex, 1);
+        page.onKeydown({ key: 'Enter', preventDefault() {} });
+        assert.deepEqual(navigations, ['/second']);
+        assert.equal(page.open, false);
+        """,
+    )
+
+
+def test_dashboard_base_wires_toast_and_palette_events():
+    template = (Path(__file__).parents[1] / "app/dashboard/templates/dashboard_base.html").read_text(encoding="utf-8")
+    assert '@dashboard-toast.window="push($event.detail.message, $event.detail.kind)"' in template
+    assert '@keydown="onKeydown($event)"' in template
+
+
 def test_custom_provider_header_replacement_markup():
     template = (Path(__file__).parents[1] / "app/dashboard/templates/settings.html").read_text(encoding="utf-8")
     assert '<input type="checkbox" x-model="cp.replace_headers"> Replace stored headers on save' in template

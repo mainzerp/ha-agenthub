@@ -150,14 +150,14 @@
     </div>
 
     <!-- Toast container -->
-    <div id="toast-root" class="toast-container" x-data="dashToasts()" aria-live="polite" aria-atomic="true"></div>
+    <div id="toast-root" class="toast-container" x-data="dashToasts()" @dashboard-toast.window="push($event.detail.message, $event.detail.kind)" aria-live="polite" aria-atomic="true"></div>
 
     <!-- Command palette (Phase 5) -->
     <div x-data="dashCommandPalette()" x-init="init()">
         <template x-if="open">
             <div class="cmdk-overlay" @click="open = false">
                 <div class="cmdk-panel" role="dialog" aria-modal="true" aria-label="Command palette" @click.stop>
-                    <input type="text" class="cmdk-input" x-ref="cmdkInput" x-model="query" placeholder="Search commands..." aria-autocomplete="list">
+                    <input type="text" class="cmdk-input" x-ref="cmdkInput" x-model="query" placeholder="Search commands..." aria-autocomplete="list" @keydown="onKeydown($event)">
                     <div class="cmdk-results" role="listbox">
                         <template x-for="(item, idx) in results" :key="idx">
                             <div class="cmdk-result-item"

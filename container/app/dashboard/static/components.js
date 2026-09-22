@@ -197,6 +197,9 @@
             init() {
                 var self = this;
                 this.buildCommands();
+                this.$watch('query', function () {
+                    this.selectedIndex = 0;
+                }.bind(this));
                 document.addEventListener('keydown', function (e) {
                     if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
                         e.preventDefault();
@@ -256,6 +259,12 @@
             },
             onKeydown(e) {
                 if (!this.open) return;
+                if (e.key === 'Escape') {
+                    e.preventDefault();
+                    this.open = false;
+                    return;
+                }
+                if (!this.results.length) return;
                 if (e.key === 'ArrowDown') {
                     e.preventDefault();
                     this.selectedIndex = Math.min(this.selectedIndex + 1, this.results.length - 1);
@@ -266,9 +275,6 @@
                     e.preventDefault();
                     var cmd = this.results[this.selectedIndex];
                     if (cmd) this.execute(cmd);
-                } else if (e.key === 'Escape') {
-                    e.preventDefault();
-                    this.open = false;
                 }
             },
             execute(cmd) {

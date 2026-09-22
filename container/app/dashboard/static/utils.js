@@ -193,10 +193,9 @@
     /* === Toast === */
 
     var toast = function (msg, kind) {
-        var root = document.getElementById('toast-root');
-        if (root && root.__x) {
-            root.__x.$data.push(msg, kind);
-        }
+        window.dispatchEvent(new CustomEvent('dashboard-toast', {
+            detail: { message: msg, kind: kind }
+        }));
     };
 
     /* === Register on window === */

@@ -40,56 +40,59 @@ Tokens are defined in `tokens.css`.
 
 | Token | Value | Usage |
 |-------|-------|-------|
-| `--bg-void` | `#0c1017` | Deepest background (body) |
-| `--bg-obsidian` | `#111722` | Input backgrounds, sidebar |
-| `--bg-basalt` | `#171e2c` | Card surfaces |
-| `--bg-charcoal` | `#1e2738` | Elevated panels |
-| `--bg-stone` | `#283348` | Borders, dividers |
+| `--bg-abyss` | `#0d0c0a` | Deep surface and input background |
+| `--bg-void` | `#12110f` | Page background |
+| `--bg-obsidian` | `#151512` | Sidebar and secondary surfaces |
+| `--bg-basalt` | `#1a1816` | Card surfaces |
+| `--bg-charcoal` | `#2e2b28` | Elevated panels |
+| `--bg-stone` | `#2e2b28` | Borders and dividers |
 
 ### Text
 
 | Token | Value | Usage |
 |-------|-------|-------|
-| `--color-ash` | `#354563` | Muted borders |
-| `--color-dust` | `#4d5f7e` | Labels, hints |
-| `--color-fog` | `#7e8da6` | Secondary text |
-| `--color-mist` | `#a8b4c8` | Tertiary text |
-| `--color-cloud` | `#ccd4e2` | Body text on dark panels |
-| `--color-light` | `#e4e9f1` | Primary text |
-| `--color-bright` | `#f2f4f8` | Headings |
+| `--color-ash` | `#4a4642` | Muted borders |
+| `--color-dust` | `#6b6660` | Labels and hints |
+| `--color-fog` | `#8a8580` | Secondary text |
+| `--color-mist` | `#a8a29c` | Tertiary text |
+| `--color-cloud` | `#d5d0ca` | Body text on dark panels |
+| `--color-light` | `#f5f2ee` | Primary text |
+| `--color-bright` | `#f5f2ee` | Headings |
 
 ### Accent
 
+The `--teal` token name is retained for compatibility; its current value is warm amber.
+
 | Token | Value | Usage |
 |-------|-------|-------|
-| `--teal` | `#2dd4bf` | Primary accent |
-| `--teal-dim` | `#14b8a6` | Hover states |
-| `--teal-glow` | `#0d9488` | Active/focus |
-| `--teal-pale` | `#99f6e4` | Glows |
+| `--teal` | `#e2a84b` | Primary accent |
+| `--teal-dim` | `#c98f38` | Hover states |
+| `--teal-glow` | `#f5c26b` | Active and focus states |
+| `--teal-pale` | `#f8dcae` | Highlights and glows |
 
 ### Semantic
 
 | Token | Value | Usage |
 |-------|-------|-------|
-| `--success` / `--sage` | `#6dba88` | Success states |
-| `--warning` / `--soft-amber` | `#f59e0b` | Warnings |
-| `--danger` / `--coral` | `#e87777` | Errors, destructive actions |
-| `--danger-strong` / `--ember` | `#d44545` | Strong error emphasis |
-| `--info` / `--blue` | `#60a5fa` | Information |
+| `--success` / `--sage` | `#7dab8c` | Success states |
+| `--warning` / `--soft-amber` | `#e2a84b` | Warnings |
+| `--danger` / `--coral` | `#d4756b` | Errors and destructive actions |
+| `--danger-strong` / `--ember` | `#b85c52` | Strong error emphasis |
+| `--info` / `--blue` | `#8fb4cc` | Information |
 
 ### Borders
 
 | Token | Value | Usage |
 |-------|-------|-------|
 | `--border` | `var(--bg-stone)` | Default borders |
-| `--border-subtle` | `rgba(255,255,255,0.06)` | Subtle dividers |
+| `--border-subtle` | `rgba(226, 168, 75, 0.10)` | Subtle dividers |
 | `--border-strong` | `var(--color-ash)` | Emphasised dividers |
 
 ### Inputs
 
 | Token | Value | Usage |
 |-------|-------|-------|
-| `--input-bg` | `var(--bg-obsidian)` | Input backgrounds |
+| `--input-bg` | `var(--bg-abyss)` | Input backgrounds |
 
 ### Spacing
 
@@ -107,7 +110,7 @@ Tokens are defined in `tokens.css`.
 | Token | Value |
 |-------|-------|
 | `--radius-sm` | `0.375rem` |
-| `--radius-md` | `0.5rem` |
+| `--radius-md` | `0.625rem` |
 | `--radius-lg` | `0.75rem` |
 | `--radius-pill` | `999px` |
 
@@ -115,9 +118,9 @@ Tokens are defined in `tokens.css`.
 
 | Token | Stack |
 |-------|-------|
-| `--font-body` | `'DM Sans', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif` |
-| `--font-display` | `'Outfit', -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif` |
-| `--font-mono` | `"SF Mono", "Fira Code", "Fira Mono", Menlo, Consolas, monospace` |
+| `--font-body` | `'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif` |
+| `--font-display` | `'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif` |
+| `--font-mono` | `'JetBrains Mono', "SF Mono", Menlo, Consolas, monospace` |
 
 ## Component Classes
 
@@ -378,11 +381,11 @@ One-off spacing, typography, and layout adjustments should use utilities rather 
 | `.opacity-70` | `opacity: 0.7` |
 | `.opacity-100` | `opacity: 1` |
 | `.bg-obsidian` | `background: var(--bg-obsidian)` |
-| `.bg-teal-10` | `background: rgba(94,234,212,0.10)` |
-| `.bg-amber-10` | `background: rgba(251,191,36,0.10)` |
-| `.bg-green-10` | `background: rgba(134,239,172,0.10)` |
-| `.bg-blue-10` | `background: rgba(96,165,250,0.10)` |
-| `.border-right-subtle` | `border-right: 1px solid rgba(255,255,255,0.06)` |
+| `.bg-teal-10` | `background: rgba(226,168,75,0.10)` |
+| `.bg-amber-10` | `background: rgba(240,178,92,0.10)` |
+| `.bg-green-10` | `background: rgba(125,171,140,0.10)` |
+| `.bg-blue-10` | `background: rgba(143,180,204,0.10)` |
+| `.border-right-subtle` | `border-right: 1px solid var(--border-subtle)` |
 | `.rounded-md` | `border-radius: 0.5rem` |
 | `.rounded-full` | `border-radius: 9999px` |
 | `.hidden` | `display: none` |
@@ -429,33 +432,33 @@ All shared Alpine.js factories live in `components.js` and are registered on `wi
 | `dashPage(opts)` | Page lifecycle, polling, mount/unmount hooks | `x-data="dashPage({...})"` |
 | `dashDataTable(opts)` | Sort, paginate, filter | `x-data="dashDataTable({...})"` |
 | `dashSidebarGroups()` | Sidebar group expand/collapse with localStorage | `x-data="dashSidebarGroups()"` |
-| `dashCommandPalette()` | Cmd+K/Ctrl+K global palette with focus trap | Mounted once in `dashboard_base.html` |
+| `dashCommandPalette()` | Cmd+K/Ctrl+K global palette with keyboard navigation | Mounted once in `dashboard_base.html` |
 | `dashLiveStream(url, opts)` | SSE with exponential backoff and polling fallback | `x-init="stream = dashLiveStream('/api/admin/overview/stream', {...})"` |
-| `dashModal()` | Alpine modal factory with focus trap | `x-data="dashModal()"` |
+| `dashModal()` | Modal open/close with initial focus and focus restoration | `x-data="dashModal()"` |
 | `dashToasts()` | Alpine toast queue factory | Used by `#toast-root` |
 | `window.toast(msg, kind)` | Push a toast notification | `window.toast('Saved', 'success')` |
 | `window.dashboardApi` | Authenticated fetch wrapper | `await dashboardApi.json('/api/admin/settings')` |
 | `window.dashUrl()` | `root_path`-aware URL builder | `dashUrl('/dashboard/agents')` |
-| `window.chartColors()` | Read design tokens from CSS | `chartColors().teal` |
-| `window.chartRgba(token, alpha)` | Convert CSS token to rgba | `chartRgba('--teal', 0.5)` |
+| `window.chartColors()` | Read named design colors from CSS | `chartColors().teal` |
+| `window.chartRgba(token, alpha)` | Convert a named chart color to rgba | `chartRgba('teal', 0.5)` |
 | `window.dashFormatRelativeTime(ts)` | Human-readable relative time | `dashFormatRelativeTime(Date.now())` |
 | `window.dashFormatBytes(n)` | Human-readable bytes | `dashFormatBytes(1024)` |
 | `window.dashTruncate(s, n)` | Truncate with ellipsis | `dashTruncate('hello world', 8)` |
 
 ## Anti-patterns
 
-1. **Do not introduce inline styles for padding, margin, or colour.** Use the utility classes or add a reusable class to the appropriate CSS file.
+1. **Do not introduce fixed inline styles for padding, margin, or colour.** Use utility classes or reusable CSS rules for static presentation.
 2. **Do not introduce CSS variables with fallback values** (e.g. `var(--token, #fallback)`). All tokens are defined in `tokens.css`.
 3. **Do not introduce raw hex colours in templates.** Always use `var(--token)`.
 4. **Do not introduce a CSS framework or bundler** in this project.
 5. **Do not add light-mode styling** without a roadmap entry in `TODO.md`.
-6. **Do not use `:style="..."` in Alpine.js templates.** Compute classes with `:class="..."` instead, or move the style to a reusable CSS class.
+6. **Limit Alpine `:style` to calculated numeric geometry** that cannot be represented by reusable classes, such as data-driven chart heights and timeline positions. Use `:class` for states and variants; keep static presentation in CSS and never interpolate user-supplied CSS or colours.
 
 ## Adding a New Token
 
 1. Add to `:root` in `tokens.css` under the appropriate comment group.
 2. Document in this guide.
-3. Bump `static_version` in `app/dashboard/static_assets.py`.
+3. Increment `_STATIC_BUILD` in `app/dashboard/static_assets.py`.
 
 ## Adding a New Component
 
