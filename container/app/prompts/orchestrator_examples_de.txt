@@ -62,6 +62,12 @@
   YES "Vergiss es" → cancel-interaction: aktuelle Interaktion abbrechen
   NO  "Stopp die Musik" → music-agent, NOT cancel-interaction
 
+- noise (background chatter, fragments without request):
+  YES "Und ich, eine Mann..." → noise
+  YES "Ich bin eine Betrügerin." → noise
+  NO  "Vergiss es" → cancel-interaction, NOT noise
+  NO  "Küche." answering a pending question → the pending agent, NOT noise
+
 SEQUENTIAL DELIVERY EXAMPLE:
 - send-agent (delivery only, always the second line):
   YES "Schreib Anna dass ich mich verspäte und schick es ihr"

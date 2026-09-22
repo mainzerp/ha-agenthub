@@ -65,6 +65,12 @@ they appear verbatim in the user's own language.
   YES "Nevermind" → cancel-interaction: dismiss current interaction
   NO  "Stop the music" → music-agent, NOT cancel-interaction
 
+- noise (background chatter, fragments without request):
+  YES "So then he says to her..." → noise
+  YES "I can't believe it either" (no context) → noise
+  NO  "Nevermind" → cancel-interaction, NOT noise
+  NO  "Kitchen." answering a pending question → the pending agent, NOT noise
+
 SEQUENTIAL DELIVERY EXAMPLE:
 - send-agent (delivery only, always the second line):
   YES "Write Anna that I will be late and send it to her"

@@ -21,6 +21,11 @@ FALLBACK_AGENT = "general-agent"
 # cancel-interaction is a pipeline-level directive, not a real agent.
 # It signals that the user wants to abort the current voice/chat turn.
 CANCEL_INTERACTION_AGENT = "cancel-interaction"
+# noise is a pipeline-level directive, not a real agent. It marks utterances
+# that carry no request for this assistant at all (background chatter,
+# TV/radio bleed-through, contextless fragments) and produces a silent,
+# action-free response.
+NOISE_AGENT = "noise"
 # Agents that are internal to the orchestrator pipeline and should not be
 # exposed as routable targets or stored in routing/action caches.
 INTERNAL_ONLY_AGENTS: frozenset[str] = frozenset({"orchestrator", "rewrite-agent", "filler-agent"})

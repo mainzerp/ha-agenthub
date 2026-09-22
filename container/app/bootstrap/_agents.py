@@ -38,6 +38,7 @@ BUILT_IN_AGENT_IDS: frozenset[str] = frozenset(
         "cover-agent",
         "vacuum-agent",
         "cancel-interaction",
+        "noise",
     }
 )
 

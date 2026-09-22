@@ -37,6 +37,7 @@ from app.memory import get_memory_service
 from app.models.agent import (
     CANCEL_INTERACTION_AGENT,
     FALLBACK_AGENT,
+    NOISE_AGENT,
     AgentCard,
     BackgroundTask,
     DispatchTask,
@@ -1369,7 +1370,11 @@ class OrchestratorAgent(BaseAgent):
                 )
                 if ret_span is not None:
                     ret_span["metadata"]["routing_cache_invalidated"] = True
-        if not skip_response_cache and target_agent != CANCEL_INTERACTION_AGENT and not served_entry_poisoned:
+        if (
+            not skip_response_cache
+            and target_agent not in (CANCEL_INTERACTION_AGENT, NOISE_AGENT)
+            and not served_entry_poisoned
+        ):
             cache_stored_action, cache_stored_routing = await self._store_after_dispatch(
                 user_text=user_text,
                 language=language,
@@ -1492,7 +1497,7 @@ class OrchestratorAgent(BaseAgent):
             # included).
             personality = await self._get_personality_cached()
             should_mediate = (
-                target_agent != CANCEL_INTERACTION_AGENT
+                target_agent not in (CANCEL_INTERACTION_AGENT, NOISE_AGENT)
                 and (not has_error or not skip_mediation_on_error)
                 and (bool(personality.strip()) or bool(reminder_text))
             )
@@ -1634,6 +1639,57 @@ class OrchestratorAgent(BaseAgent):
             return self._handle_task_stream_impl(task)
         return self._run_pipeline(task, streaming=True)
 
+    async def _finalize_noise_turn(
+        self,
+        task: IngressTask,
+        *,
+        conversation_id: str,
+        user_text: str,
+        span_collector,
+        classifications: list[tuple[str, str, float | None]],
+        turns: list[dict[str, Any]],
+        confidence: float | None,
+        condensed_task: str,
+        t0_request: float | None = None,
+    ) -> dict[str, Any]:
+        """Silent drop for noise turns: no dispatch, no speech, no turn
+        record. Re-arms the pending clarifying question the prelude may
+        have popped, then emits a trace so noise stays measurable."""
+        latency_ms = (time.perf_counter() - t0_request) * 1000 if t0_request else 0.0
+        async with _optional_span(span_collector, "dispatch", agent_id=NOISE_AGENT) as span:
+            span["metadata"]["latency_ms"] = latency_ms
+            await track_request(NOISE_AGENT, cache_hit=False, latency_ms=latency_ms)
+        async with _optional_span(span_collector, "return", agent_id="orchestrator") as ret_span:
+            ret_span["metadata"]["from_agent"] = NOISE_AGENT
+            ret_span["metadata"]["agent_response"] = ""
+            ret_span["metadata"]["final_response"] = ""
+            ret_span["metadata"]["mediated"] = False
+            ret_span["metadata"]["voice_followup"] = False
+            ret_span["metadata"]["cache_stored_response"] = False
+            ret_span["metadata"]["cache_stored_routing"] = False
+            self._conversation_manager.restore_pending_question(conversation_id)
+            if span_collector:
+                await self._create_trace(
+                    span_collector,
+                    conversation_id,
+                    user_text,
+                    "",
+                    NOISE_AGENT,
+                    confidence,
+                    condensed_task,
+                    classifications,
+                    turns,
+                    task_context=task.context,
+                    voice_followup=False,
+                )
+        return {
+            "speech": "",
+            "conversation_id": conversation_id,
+            "routed_to": NOISE_AGENT,
+            "action_executed": None,
+            "voice_followup": False,
+        }
+
     async def _handle_task_impl(
         self,
         task: IngressTask | BackgroundTask,
@@ -1643,6 +1699,7 @@ class OrchestratorAgent(BaseAgent):
         _allow_classify_cache_lookup: bool | None = None,
     ) -> dict[str, Any]:
         """Thin wrapper around the shared TaskPipeline phases."""
+        t0_request = time.perf_counter()
         prelude = await self._run_pipeline_prelude(
             task,
             pre_classified=_pre_classified,
@@ -1676,6 +1733,18 @@ class OrchestratorAgent(BaseAgent):
         # P3: reuse the prelude's turn snapshot instead of a second fetch --
         # nothing stores a turn between the prelude and dispatch.
         turns = list(prelude.lang_turns)
+        if len(classifications) == 1 and target_agent == NOISE_AGENT:
+            return await self._finalize_noise_turn(
+                task,
+                conversation_id=conversation_id,
+                user_text=user_text,
+                span_collector=span_collector,
+                classifications=classifications,
+                turns=turns,
+                confidence=confidence,
+                condensed_task=condensed_task,
+                t0_request=t0_request,
+            )
         if self._event_bus is not None:
             await self._event_bus.publish(
                 "pipeline.pre_dispatch",
@@ -1870,6 +1939,28 @@ class OrchestratorAgent(BaseAgent):
             if vf_eff:
                 final_chunk["voice_followup"] = True
             yield final_chunk
+            return
+
+        if len(classifications) == 1 and target_agent == NOISE_AGENT:
+            await self._finalize_noise_turn(
+                task,
+                conversation_id=conversation_id,
+                user_text=user_text,
+                span_collector=span_collector,
+                classifications=classifications,
+                turns=lang_turns,
+                confidence=confidence,
+                condensed_task=condensed_task,
+                t0_request=t0_request,
+            )
+            yield {
+                "token": "",
+                "done": True,
+                "conversation_id": conversation_id,
+                "mediated_speech": "",
+                "routed_to": NOISE_AGENT,
+                "sanitized": True,
+            }
             return
 
         # Multi-agent: yield progress marker, then fall back to non-streaming handle_task
@@ -2453,7 +2544,9 @@ class OrchestratorAgent(BaseAgent):
         # must be woven in -- personality applies to every system response
         # again (deterministic executor confirmations included). Only a
         # mediation-inactive turn relays agent tokens straight through.
-        should_mediate = target_agent != CANCEL_INTERACTION_AGENT and (bool(personality.strip()) or bool(reminder_text))
+        should_mediate = target_agent not in (CANCEL_INTERACTION_AGENT, NOISE_AGENT) and (
+            bool(personality.strip()) or bool(reminder_text)
+        )
 
         tokens_were_streamed = sc.relayed_tokens
         # M-9: the streaming mediation branch requires a non-empty

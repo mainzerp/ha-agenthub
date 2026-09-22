@@ -100,12 +100,13 @@ class TestCachedAgentRegistryTTL:
 
     @pytest.mark.asyncio
     async def test_get_known_agents_fallback_on_list_agents_exception(self):
-        """G24: When list_agents raises, get_known_agents should return empty set (plus cancel-interaction)."""
+        """G24: When list_agents raises, get_known_agents returns only the pipeline directives."""
         reg, underlying = self._make_registry()
         underlying.list_agents = AsyncMock(side_effect=RuntimeError("registry down"))
         agents = await reg.get_known_agents()
         assert "cancel-interaction" in agents
-        assert len(agents) == 1  # only cancel-interaction
+        assert "noise" in agents
+        assert len(agents) == 2  # only the pipeline directives
 
     # ------------------------------------------------------------------
     # G26: Per-agent timeout cache invalidation

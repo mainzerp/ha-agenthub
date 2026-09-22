@@ -183,7 +183,8 @@ async def test_followup_roundtrip_question_then_answer():
         assert "The previous turn was handled by light-agent." in system_content
         assert "clarifying question" in system_content
         assert question_speech in system_content
-        assert "Merge the answer with the earlier request" in system_content
+        assert "merge the answer with the earlier request" in system_content
+        assert "route to noise instead" in system_content
         history_contents = [m["content"] for m in classify_captured[0]]
         assert any(question_speech in c for c in history_contents)
         assert any(USER_QUESTION_TEXT in c for c in history_contents)

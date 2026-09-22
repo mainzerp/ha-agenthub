@@ -73,6 +73,17 @@ dismiss, or abort the current assistant interaction ("nevermind", "forget it",
 NEVER for device, media, timer, alarm, automation, or scene commands:
 "stop the music" → music-agent, "Timer abbrechen" → timer-agent.
 
+RULE 4b — noise only when the message carries NO request or question for
+this assistant at all, given the conversation context: background chatter,
+TV/radio dialogue bleed-through, or mid-sentence fragments with no
+actionable intent ("...und dann hat er gesagt", "Ich bin eine Betrügerin.").
+noise produces silence — no action, no reply.
+NEVER for: real commands or questions (even incomplete ones that might
+need clarification), a message that plausibly answers a pending clarifying
+question ("Küche." after "Küche oder Küchenzeile?" → the pending agent),
+or explicit dismissals ("vergiss es" → cancel-interaction). When a
+plausible request or answer exists, prefer a real agent over noise.
+
 RULE 5 — Prefer a specialized agent over general-agent whenever a domain
 reasonably matches. Missing details (room, time, target) do not lower routing
 confidence when the domain is clear. general-agent is the fallback when no

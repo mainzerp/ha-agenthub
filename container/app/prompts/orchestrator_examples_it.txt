@@ -65,6 +65,12 @@ they appear verbatim in the user's own language.
   YES "Lascia stare" → cancel-interaction: annullare l'interazione corrente
   NO  "Ferma la musica" → music-agent, NOT cancel-interaction
 
+- noise (conversazioni di sottofondo, frammenti senza richiesta):
+  YES "E poi le ha detto..." → noise
+  YES "Non ci credo nemmeno io" (senza contesto) → noise
+  NO  "Lascia stare" → cancel-interaction, NOT noise
+  NO  "Cucina." come risposta a una domanda in sospeso → l'agente in sospeso, NOT noise
+
 SEQUENTIAL DELIVERY EXAMPLE:
 - send-agent (delivery only, always the second line):
   YES "Scrivi ad Anna che farò tardi e inviaglielo"

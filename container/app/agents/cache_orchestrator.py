@@ -24,6 +24,7 @@ from app.models.agent import (
     CANCEL_INTERACTION_AGENT,
     FALLBACK_AGENT,
     INTERNAL_ONLY_AGENTS,
+    NOISE_AGENT,
     IngressTask,
 )
 from app.models.cache import ActionCacheEntry, CachedAction
@@ -167,7 +168,7 @@ class CacheOrchestrator:
     @staticmethod
     def is_actionable_routing_agent(target_agent: str) -> bool:
         return (
-            target_agent not in (FALLBACK_AGENT, CANCEL_INTERACTION_AGENT, "send-agent")
+            target_agent not in (FALLBACK_AGENT, CANCEL_INTERACTION_AGENT, NOISE_AGENT, "send-agent")
             and target_agent not in INTERNAL_ONLY_AGENTS
         )
 
@@ -434,7 +435,10 @@ class CacheOrchestrator:
             return False, False
         if not await self._get_bool_setting_impl("cache.enabled", True):
             return False, False
-        if target_agent in (CANCEL_INTERACTION_AGENT, "send-agent") or target_agent in INTERNAL_ONLY_AGENTS:
+        if (
+            target_agent in (CANCEL_INTERACTION_AGENT, NOISE_AGENT, "send-agent")
+            or target_agent in INTERNAL_ONLY_AGENTS
+        ):
             return False, False
 
         entity_ids: list[str] = []

@@ -29,7 +29,7 @@ router = APIRouter(
 BUILT_IN_AGENTS = sorted(
     aid
     for aid in BUILT_IN_AGENT_IDS
-    if aid not in {"orchestrator", "cancel-interaction", "rewrite-agent", "filler-agent"}
+    if aid not in {"orchestrator", "cancel-interaction", "noise", "rewrite-agent", "filler-agent"}
 )
 
 

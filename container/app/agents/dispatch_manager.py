@@ -21,7 +21,13 @@ from app.analytics.collector import track_agent_timeout, track_request, track_re
 from app.analytics.tracer import _optional_span
 from app.db.repository import SettingsRepository
 from app.ha_client.home_context import populate_task_context_home_context
-from app.models.agent import CANCEL_INTERACTION_AGENT, FALLBACK_AGENT, DispatchTask, TaskContext
+from app.models.agent import (
+    CANCEL_INTERACTION_AGENT,
+    FALLBACK_AGENT,
+    NOISE_AGENT,
+    DispatchTask,
+    TaskContext,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -181,6 +187,14 @@ class DispatchManager:
                     latency_ms=latency_ms,
                 )
                 return CANCEL_INTERACTION_AGENT, speech, {"speech": speech, "action_executed": None}
+
+        if target_agent == NOISE_AGENT:
+            # Defensive guard: the orchestrator short-circuits sole-noise
+            # turns before dispatch, but a noise entry that slips through
+            # any other path must stay silent and action-free.
+            async with _optional_span(span_collector, "dispatch", agent_id=NOISE_AGENT) as span:
+                span["metadata"]["latency_ms"] = 0.0
+                return NOISE_AGENT, "", {"speech": "", "action_executed": None}
 
         if self._ha_client:
             await populate_task_context_home_context(context, self._ha_client)

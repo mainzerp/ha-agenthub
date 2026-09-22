@@ -86,6 +86,9 @@ class ConversationManager:
         # finalization when voice_followup is effective; consumed
         # single-shot by the orchestrator prelude on the answering turn.
         self._pending_questions: OrderedDict[str, tuple[float, dict[str, Any]]] = OrderedDict()
+        # Payloads consumed by the prelude this turn, kept so a noise
+        # classification can re-arm the question it should never have eaten.
+        self._last_popped_pending: OrderedDict[str, dict[str, Any]] = OrderedDict()
 
     async def _get_conversation_context_turn_limit(self) -> int:
         fallback = _DEFAULT_CONVERSATION_CONTEXT_TURNS
@@ -350,6 +353,7 @@ class ConversationManager:
             {"question": question, "agent_id": agent_id},
         )
         self._pending_questions.move_to_end(conversation_id)
+        self._last_popped_pending.pop(conversation_id, None)
         self._evict_stale_conversations()
 
     def has_pending_question(self, conversation_id: str | None) -> bool:
@@ -374,13 +378,32 @@ class ConversationManager:
         """
         if not conversation_id:
             return None
+        # Any pop attempt invalidates an older stashed payload -- only the
+        # payload consumed by THIS turn may ever be restored.
+        self._last_popped_pending.pop(conversation_id, None)
         entry = self._pending_questions.pop(conversation_id, None)
         if entry is None:
             return None
         ts, payload = entry
         if time.monotonic() - ts > _PENDING_QUESTION_TTL_SECONDS:
             return None
+        self._last_popped_pending[conversation_id] = payload
+        self._last_popped_pending.move_to_end(conversation_id)
+        while len(self._last_popped_pending) > _MAX_CONVERSATIONS:
+            self._last_popped_pending.popitem(last=False)
         return payload
+
+    def restore_pending_question(self, conversation_id: str | None) -> None:
+        """Re-arm the pending question popped earlier in the same turn.
+
+        Used by the noise route: an unrelated background fragment must not
+        consume an open clarifying question. No-op when nothing was popped.
+        """
+        if not conversation_id:
+            return
+        payload = self._last_popped_pending.pop(conversation_id, None)
+        if payload:
+            self.set_pending_question(conversation_id, payload["question"], payload["agent_id"])
 
     def _evict_stale_conversations(self) -> None:
         """Remove conversations older than TTL and enforce max count."""

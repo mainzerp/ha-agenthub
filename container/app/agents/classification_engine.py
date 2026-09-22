@@ -20,7 +20,7 @@ from app.agents.cache_orchestrator import routing_hit_is_still_valid
 from app.analytics.tracer import _optional_span
 from app.cache.cache_manager import CacheManager
 from app.llm.client import LLMError
-from app.models.agent import FALLBACK_AGENT, INTERNAL_ONLY_AGENTS
+from app.models.agent import FALLBACK_AGENT, INTERNAL_ONLY_AGENTS, NOISE_AGENT
 
 logger = logging.getLogger(__name__)
 
@@ -127,15 +127,32 @@ class ClassificationEngine:
             "music-agent, etc."
         )
 
+    @staticmethod
+    def noise_description_line() -> str:
+        return (
+            "- noise: utterance carries NO request or question for this assistant "
+            "(background chatter, TV/radio bleed-through, mid-sentence fragments "
+            "with no actionable intent). Only when the text forms no plausible "
+            "request or question GIVEN the conversation context. Never for real "
+            "commands or questions, answers to a pending follow-up, or "
+            "explicit dismissals (those go to cancel-interaction)."
+        )
+
     async def build_agent_descriptions(self) -> str:
         """Build agent list for classification prompt from registered AgentCards."""
         cancel_line = self.cancel_interaction_description_line()
+        noise_line = self.noise_description_line()
         if self._agent_registry is not None:
             cards = await self._agent_registry.list_agents()
         else:
             cards = []
         if not cards:
-            return "- general-agent: fallback for general questions and unroutable requests\n" + cancel_line
+            return (
+                "- general-agent: fallback for general questions and unroutable requests\n"
+                + cancel_line
+                + "\n"
+                + noise_line
+            )
 
         lines = []
         for card in cards:
@@ -148,7 +165,7 @@ class ClassificationEngine:
                 lines.append(f"- {card.agent_id}: {card.description}")
         if not lines:
             lines.append("- general-agent: fallback for general questions and unroutable requests")
-        return "\n".join(lines) + "\n" + cancel_line
+        return "\n".join(lines) + "\n" + cancel_line + "\n" + noise_line
 
     @staticmethod
     def strip_seq_rule(prompt: str) -> str:
@@ -238,7 +255,10 @@ class ClassificationEngine:
                 logger.debug("Bypassing routing cache for pending clarifying question: '%s'", user_text[:80])
             elif cache_result is not None:
                 if cache_result.hit_type == "routing_hit" and cache_result.agent_id:
-                    if cache_result.agent_id == "send-agent" or cache_result.agent_id in INTERNAL_ONLY_AGENTS:
+                    if (
+                        cache_result.agent_id in ("send-agent", NOISE_AGENT)
+                        or cache_result.agent_id in INTERNAL_ONLY_AGENTS
+                    ):
                         logger.debug(
                             "Ignoring invalid routing cache hit: %s for '%s'", cache_result.agent_id, user_text[:80]
                         )
@@ -261,7 +281,10 @@ class ClassificationEngine:
                         language=language,
                     )
                     if cache_result.hit_type == "routing_hit" and cache_result.agent_id:
-                        if cache_result.agent_id == "send-agent" or cache_result.agent_id in INTERNAL_ONLY_AGENTS:
+                        if (
+                            cache_result.agent_id in ("send-agent", NOISE_AGENT)
+                            or cache_result.agent_id in INTERNAL_ONLY_AGENTS
+                        ):
                             logger.debug(
                                 "Ignoring invalid routing cache hit: %s for '%s'",
                                 cache_result.agent_id,
@@ -338,8 +361,9 @@ class ClassificationEngine:
             if pending_question:
                 followup_hint = (
                     f"The assistant's previous message was a clarifying question: '{pending_question}'. "
-                    "The user is answering it. Merge the answer with the earlier request into ONE "
-                    "condensed task for the same agent."
+                    "If the user's message plausibly answers it, merge the answer with the earlier "
+                    "request into ONE condensed task for the same agent. If the message is unrelated "
+                    "background chatter that does not answer the question, route to noise instead."
                 )
             messages[0]["content"] = messages[0]["content"].replace("{followup_hint}", followup_hint)
             if turns:
@@ -568,6 +592,11 @@ class ClassificationEngine:
         filtered = [c for c in classifications if c[0] not in INTERNAL_ONLY_AGENTS]
         if not filtered:
             raise _RecoverableClassificationError("I couldn't determine the right agent for that request.")
+        if len(filtered) > 1:
+            # noise is only meaningful as the sole classification -- a real
+            # intent alongside it wins, so drop noise from mixed lists.
+            non_noise = [c for c in filtered if c[0] != NOISE_AGENT]
+            filtered = non_noise or filtered[:1]
 
         send_entries = [c for c in filtered if c[0] == "send-agent"]
         content_entries = [c for c in filtered if c[0] != "send-agent"]

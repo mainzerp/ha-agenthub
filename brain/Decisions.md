@@ -45,3 +45,18 @@ prompts live in `container/app/prompts/`, `ctx.agent_registry` not
 `agent_catalog`, `PUT /api/admin/settings/{key}`, `POST /api/admin/cache/flush`,
 `/api/admin/mcp-servers`, logs `limit` cap 1000, match-preview returns
 `deterministic`/`hybrid`/`visibility`/`diagnostics`).
+
+## 2026-09-22 — noise route for false-trigger silence
+
+- **`noise` pipeline directive added** (alongside `cancel-interaction`, never a
+  real agent): the orchestrator may classify contextless fragments / background
+  chatter (TV bleed-through) as `noise`. A sole-noise turn early-exits before
+  dispatch with empty speech — no action, no TTS, no conversation turn — and
+  restores any pending clarifying question the prelude consumed. Rationale:
+  accidental wake-word activations from TV audio produced disruptive spoken
+  replies; routing them to a silent route beats TTS-suppression heuristics
+  because the classify LLM sees conversation context (a bare "Küche." stays a
+  valid answer when a question is pending). Evaluated and rejected
+  cactus-needle as an external noise gate first (67% false negatives on real
+  German commands, confident false positives on noise; see library entry
+  `ha-agenthub/cactus-needle-3.0.4-false-trigger-gate-lessons`).

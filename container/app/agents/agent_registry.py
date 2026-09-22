@@ -10,7 +10,7 @@ import logging
 import time
 from typing import Any
 
-from app.models.agent import AgentCard
+from app.models.agent import NOISE_AGENT, AgentCard
 
 logger = logging.getLogger(__name__)
 
@@ -234,7 +234,9 @@ class CachedAgentRegistry:
             logger.debug("Registry list_agents failed for known-agents", exc_info=True)
             agents = set()
 
-        # cancel-interaction is a pipeline-level directive, not a real agent.
+        # cancel-interaction and noise are pipeline-level directives,
+        # not real agents.
         agents.add("cancel-interaction")
+        agents.add(NOISE_AGENT)
         self._known_agents_cache = (now, set(agents))
         return agents
