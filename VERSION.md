@@ -1,11 +1,18 @@
 # Version
 
-**Current Version:** 2.5.0
+**Current Version:** 2.5.1
 
 ## Recent Changes
 
-(tracking changes since 2.5.0)
+(tracking changes since 2.5.1)
 
+## Version History
+
+### 2.5.1 (PATCH) -- code review fixes: HA service responses, WebSocket deadlocks, streaming
+
+(commits 1a6ba8f, fe331ce, fbf3962, d8afbb7)
+
+- Dashboard: restored toast notifications and command-palette keyboard selection (commit 1a6ba8f).
 - HA client: REST `call_service(return_response=True)` now unwraps HA's `service_response` envelope like the WebSocket path; calendar events (calendar agent, wake briefing, reminders, admin calendar) and todo list reads returned nothing or wrong items over REST before. The executor-local unwrap in the climate forecast path was removed.
 - HA WebSocket: handshake/auth failures no longer self-deadlock on the connection lock (reconnect loop stayed stuck forever after an invalid token or half-open socket); closing the session now fails pending command futures immediately.
 - Entity index: registry-update handlers run as serialized background tasks instead of blocking the WS receive loop (previously a 10 s stall per event that also wiped hidden-entity filtering); a failed hidden-entity fetch keeps the last known set and is never cached.
@@ -16,8 +23,8 @@
 - Visibility rules cache: a fetch racing an invalidation can no longer write stale rules back.
 - Admin API: `GET /api/admin/logs?since=<invalid>` returns 400 instead of 500; allowed WebSocket origins are recomputed after an HA connection change.
 - Docs: API reference corrected (`/api/health` requires the API key and has no `version` field, `/healthz`/`/readyz` probes documented, WS `?token=` documented as removed, MCP agent-tool routes use the `/api/admin/mcp-servers` prefix); deployment, backup and troubleshooting guides point healthchecks at `/healthz`.
-
-## Version History
+- Verification: 3330 container tests passed (1 skipped, 9 xfailed, 3 xpassed); Ruff lint and format passed.
+- No features or public APIs removed; no new dependencies; no user action required.
 
 ### 2.5.0 (MINOR) -- noise route for silent false-trigger suppression
 
