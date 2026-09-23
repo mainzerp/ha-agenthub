@@ -52,7 +52,7 @@ Store this key in a secure location (password manager, vault).
 
 1. Stop the container.
 2. Extract the backup into the Docker volume.
-3. Start the container and verify via `/api/health`.
+3. Start the container and verify via `/healthz`.
 
 ## Cache Backup via Export and Import
 

@@ -15,6 +15,7 @@
 - A2A: invalid task payloads return a JSON-RPC invalid-params error instead of raising; calendar and lists agents run in the internal HA-call scope (no false direct-write warnings).
 - Visibility rules cache: a fetch racing an invalidation can no longer write stale rules back.
 - Admin API: `GET /api/admin/logs?since=<invalid>` returns 400 instead of 500; allowed WebSocket origins are recomputed after an HA connection change.
+- Docs: API reference corrected (`/api/health` requires the API key and has no `version` field, `/healthz`/`/readyz` probes documented, WS `?token=` documented as removed, MCP agent-tool routes use the `/api/admin/mcp-servers` prefix); deployment, backup and troubleshooting guides point healthchecks at `/healthz`.
 
 ## Version History
 

@@ -2,7 +2,7 @@
 
 ## Authentication
 
-All API endpoints (except `/api/health` and `/setup/*`) require authentication.
+All API endpoints (except the `/healthz` and `/readyz` probes and `/setup/*`) require authentication.
 
 ### Conversation Endpoints
 
@@ -26,7 +26,7 @@ Pass the API key in the `Authorization` header (recommended):
 Authorization: Bearer <api_key>
 ```
 
-**Deprecated:** The `token` query parameter is still accepted but will be removed in a future release. Query-string credentials can leak through proxy logs and browser history. Migrate to header-based auth.
+The header is the only accepted credential; the `token` query parameter was removed in 0.17.0 because query-string credentials leak through proxy logs and browser history.
 
 ---
 
@@ -34,20 +34,22 @@ Authorization: Bearer <api_key>
 
 ### GET /api/health
 
-Returns container health status. No authentication required.
+Returns container health status and the effective log level.
+
+**Auth:** Bearer token
 
 **Response:**
 
 ```json
 {
   "status": "ok",
-  "version": "1.44.2",
-  "log_level": "INFO"
+  "log_level": "info"
 }
 ```
 
-The `version` value is read from `container/app/__init__.py`
-`__version__` at runtime; older containers will report their own value.
+### GET /healthz
+
+Unauthenticated liveness probe used by the Docker/compose healthchecks. Returns `{"status": "ok", "probe": "liveness"}` once startup has completed, otherwise HTTP 503 with `"reason": "startup not complete"`. A readiness probe is available at `GET /readyz`.
 
 ---
 
@@ -133,7 +135,7 @@ data: {"token": "", "done": true, "conversation_id": "abc123"}
 
 WebSocket endpoint for streaming conversation.
 
-**Auth:** Bearer token via `Authorization` header (preferred). Query-string `token` parameter is deprecated.
+**Auth:** Bearer token via `Authorization` header (the only accepted method).
 
 **Send:**
 
@@ -388,10 +390,10 @@ List discovered tools for a specific MCP server.
 
 | Method | Path | Purpose |
 |--------|------|---------|
-| GET | `/api/admin/mcp/agent-tools-summary` | Summary of MCP tool assignments across all agents. |
-| GET | `/api/admin/mcp/agent-tools/{agent_id}` | List MCP tools assigned to a specific agent. |
-| POST | `/api/admin/mcp/agent-tools/{agent_id}` | Assign an MCP tool to an agent. |
-| DELETE | `/api/admin/mcp/agent-tools/{agent_id}/{server_name}/{tool_name}` | Remove an MCP tool assignment from an agent. |
+| GET | `/api/admin/mcp-servers/agent-tools-summary` | Summary of MCP tool assignments across all agents. |
+| GET | `/api/admin/mcp-servers/agent-tools/{agent_id}` | List MCP tools assigned to a specific agent. |
+| POST | `/api/admin/mcp-servers/agent-tools/{agent_id}` | Assign an MCP tool to an agent. |
+| DELETE | `/api/admin/mcp-servers/agent-tools/{agent_id}/{server_name}/{tool_name}` | Remove an MCP tool assignment from an agent. |
 
 Auth: admin session.
 
@@ -920,7 +922,7 @@ Entries shipped by the HA integration via `POST /api/logs/ingest` carry a `sourc
 **Query parameters:**
 - `level` -- Minimum level: `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`
 - `logger` -- Substring match on logger name
-- `since` -- ISO 8601 timestamp; only entries after this time are returned
+- `since` -- ISO 8601 timestamp; only entries after this time are returned (invalid values return HTTP 400)
 - `search` -- Substring search in the log message
 - `limit` -- Max entries to return (default: 100, max: 1000)
 - `offset` -- Pagination offset (default: 0)

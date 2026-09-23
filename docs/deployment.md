@@ -54,7 +54,7 @@ services:
       test:
         [
           "CMD-SHELL",
-          "python -c \"import os,urllib.request; urllib.request.urlopen('http://127.0.0.1:'+os.environ.get('CONTAINER_PORT','8080')+'/api/health')\"",
+          "python -c \"import os,urllib.request; urllib.request.urlopen('http://127.0.0.1:'+os.environ.get('CONTAINER_PORT','8080')+'/healthz')\"",
         ]
       interval: 30s
       timeout: 10s
@@ -143,7 +143,7 @@ Verify the container is running:
 docker compose logs -f ha-agenthub
 ```
 
-The health check endpoint is available at `http://<host>:8080/api/health`.
+The unauthenticated liveness probe is available at `http://<host>:8080/healthz` (`/api/health` also exists but requires the API key).
 
 > Note: `docker-compose_local.yml` uses a simpler `CMD` healthcheck style, and the `Dockerfile` defines its own `HEALTHCHECK` with `start-period: 15s` (vs 120s in compose). These differences are normal and do not affect operation.
 

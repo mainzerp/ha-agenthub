@@ -320,5 +320,5 @@ failure modes (since version 1.0.0):
 | Symptom | Likely cause | Remediation |
 |---------|--------------|-------------|
 | `Authentication rejected` | Container API key is wrong or was rotated. | Re-enter the API key via the integration options dialog. |
-| `Backend error` | Container returned 5xx (LLM outage, internal error). | Check container logs and the `/api/health` endpoint. |
+| `Backend error` | Container returned 5xx (LLM outage, internal error). | Check container logs and the `/healthz` probe. |
 | `Container unreachable` | TCP/DNS failure between HA and the container. | Verify networking, `CONTAINER_PORT`, reverse proxy, and that the container is running. |
