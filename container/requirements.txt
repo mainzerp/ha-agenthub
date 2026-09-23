@@ -2,7 +2,7 @@
 
 # Web framework
 fastapi==0.141.1
-uvicorn[standard]==0.52.4
+uvicorn[standard]==0.53.0
 
 # LLM integration
 litellm>=1.100.0,<2.0.0
