@@ -2,10 +2,10 @@
 
 # Web framework
 fastapi==0.141.1
-uvicorn[standard]==0.52.4
+uvicorn[standard]==0.53.0
 
 # LLM integration
-litellm>=1.100.0,<2.0.0
+litellm>=1.101.0,<2.0.0
 
 # Embeddings (local)
 sentence-transformers==6.0.0
@@ -14,7 +14,7 @@ sentence-transformers==6.0.0
 sqlite-vec==0.1.9
 
 # Entity matching
-rapidfuzz==3.14.5
+rapidfuzz==3.14.6
 pyphonetics==0.5.3
 
 # HTTP clients (async)
