@@ -698,17 +698,14 @@ class TestClimateExecutorQueries:
             "weather", "get_forecasts", "weather.home", {"type": "hourly"}, return_response=True
         )
 
-    async def test_query_weather_forecast_success_with_rest_envelope_shape(self):
+    async def test_query_weather_forecast_success_with_normalized_response(self):
         ha = AsyncMock()
         ha.call_service = AsyncMock(
             return_value={
-                "changed_states": [],
-                "service_response": {
-                    "weather.home": {
-                        "forecast": [
-                            {"datetime": "2025-01-16T00:00:00", "condition": "rainy", "temperature": 14, "templow": 5},
-                        ],
-                    },
+                "weather.home": {
+                    "forecast": [
+                        {"datetime": "2025-01-16T00:00:00", "condition": "rainy", "temperature": 14, "templow": 5},
+                    ],
                 },
             }
         )
@@ -736,9 +733,7 @@ class TestClimateExecutorQueries:
         ha = AsyncMock()
         ha.call_service = AsyncMock(
             return_value={
-                "service_response": {
-                    "weather.home": {"forecast": []},
-                },
+                "weather.home": {"forecast": []},
             }
         )
         ha.get_states = AsyncMock(

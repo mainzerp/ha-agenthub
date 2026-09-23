@@ -1248,6 +1248,44 @@ class TestEntityIndexAPI:
         assert data["count"] == 0
         assert data.get("status") == "not_initialized"
 
+    async def test_refresh_uses_snapshot_and_offloads_refresh(self, db_repository):
+        """The refresh endpoint must use the enriched snapshot path and the
+        executor-backed refresh_async, and exclude hidden entities."""
+        ha_client = AsyncMock()
+        ha_client.get_states = AsyncMock(
+            return_value=[
+                {"entity_id": "light.visible", "state": "on", "attributes": {"friendly_name": "Visible"}},
+                {"entity_id": "light.hidden", "state": "on", "attributes": {"friendly_name": "Hidden"}},
+            ]
+        )
+        ha_client.get_hidden_entity_ids = AsyncMock(return_value={"light.hidden"})
+
+        entity_index = MagicMock()
+        entity_index.refresh_async = AsyncMock()
+        entity_index.refresh = MagicMock()
+
+        app = _build_test_app(mock_ha_rest_client=ha_client)
+        app.state.entity_index = entity_index
+
+        with (
+            patch("app.db.repository.SetupStateRepository.is_complete", new_callable=AsyncMock, return_value=True),
+            patch(
+                "app.bootstrap._entity._gather_ha_lookups",
+                new=AsyncMock(return_value=({}, {}, {}, {})),
+            ),
+        ):
+            transport = httpx.ASGITransport(app=app)
+            async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+                resp = await client.post("/api/admin/entity-index/refresh")
+
+        assert resp.status_code == 200
+        assert resp.json() == {"status": "ok", "count": 1}
+        entity_index.refresh_async.assert_awaited_once()
+        entity_index.refresh.assert_not_called()
+        entries = entity_index.refresh_async.await_args.args[0]
+        assert [e.entity_id for e in entries] == ["light.visible"]
+        assert app.state.hidden_entity_ids == {"light.hidden"}
+
 
 # ===================================================================
 # Cache API

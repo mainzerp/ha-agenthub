@@ -86,6 +86,33 @@ def _patch_settings(values: dict[str, str]):
 
 
 @pytest.mark.asyncio
+async def test_build_entity_snapshot_filters_hidden_and_stores_lookups():
+    """build_entity_snapshot applies hidden-entity filtering and publishes
+    the fresh registry lookups + hidden ids on app.state."""
+    from app.bootstrap import _entity as entity_bootstrap
+
+    app = _make_app_state()
+    ha = _make_ha_client()
+    ha.get_states = AsyncMock(
+        return_value=[
+            {"entity_id": "light.visible", "state": "on", "attributes": {"friendly_name": "Visible"}},
+            {"entity_id": "light.hidden", "state": "on", "attributes": {"friendly_name": "Hidden"}},
+        ]
+    )
+    ha.get_hidden_entity_ids = AsyncMock(return_value={"light.hidden"})
+
+    with patch(
+        "app.bootstrap._entity._gather_ha_lookups",
+        new=AsyncMock(return_value=({"kitchen": "Kitchen"}, {}, {}, {})),
+    ):
+        entries = await entity_bootstrap.build_entity_snapshot(app, ha)
+
+    assert [e.entity_id for e in entries] == ["light.visible"]
+    assert app.state.hidden_entity_ids == {"light.hidden"}
+    assert app.state.entity_lookups["area"] == {"kitchen": "Kitchen"}
+
+
+@pytest.mark.asyncio
 async def test_resolve_active_embedding_model_uses_multilingual_default_when_setting_missing():
     from app.bootstrap import _entity as runtime_setup
 

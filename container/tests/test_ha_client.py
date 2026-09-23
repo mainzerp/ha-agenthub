@@ -18,7 +18,7 @@ from app.ha_client.auth import (
     get_ha_token,
     set_ha_token,
 )
-from app.ha_client.rest import HARestClient
+from app.ha_client.rest import HARestClient, allow_internal_ha_service_calls
 from app.ha_client.rest import test_ha_connection as _test_ha_connection
 from app.ha_client.websocket import HAWebSocketClient
 
@@ -118,6 +118,100 @@ class TestHARestClient:
             },
             return_response=True,
         )
+
+    @respx.mock
+    async def test_get_calendar_events_unwraps_rest_envelope(self):
+        """HA REST answers ?return_response with {changed_states, service_response};
+        get_calendar_events must see the inner service_response payload."""
+        respx.post("http://ha.local/api/services/calendar/get_events").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "changed_states": [],
+                    "service_response": {
+                        "calendar.home": {
+                            "events": [{"summary": "Standup", "start": "2026-04-27T09:00:00+00:00"}],
+                        }
+                    },
+                },
+            )
+        )
+
+        client = HARestClient()
+        client._base_url = "http://ha.local"
+        client._client = httpx.AsyncClient(base_url="http://ha.local", headers={})
+
+        events = await client.get_calendar_events(
+            "calendar.home",
+            "2026-04-27T00:00:00+00:00",
+            "2026-04-28T00:00:00+00:00",
+        )
+
+        assert events == [{"summary": "Standup", "start": "2026-04-27T09:00:00+00:00"}]
+        await client.close()
+
+    @respx.mock
+    async def test_call_service_return_response_unwraps_service_response(self):
+        """call_service(return_response=True) returns the inner service_response dict."""
+        respx.post("http://ha.local/api/services/light/turn_on").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "changed_states": [{"entity_id": "light.kitchen", "state": "on"}],
+                    "service_response": {"light.kitchen": {"result": "ok"}},
+                },
+            )
+        )
+
+        client = HARestClient()
+        client._base_url = "http://ha.local"
+        client._client = httpx.AsyncClient(base_url="http://ha.local", headers={})
+
+        with allow_internal_ha_service_calls("test"):
+            result = await client.call_service("light", "turn_on", "light.kitchen", return_response=True)
+        assert result == {"light.kitchen": {"result": "ok"}}
+        await client.close()
+
+    @respx.mock
+    async def test_call_service_without_return_response_returns_raw_list(self):
+        """Plain service calls keep returning HA's changed-states list unchanged."""
+        states = [{"entity_id": "light.kitchen", "state": "on"}]
+        respx.post("http://ha.local/api/services/light/turn_on").mock(return_value=httpx.Response(200, json=states))
+
+        client = HARestClient()
+        client._base_url = "http://ha.local"
+        client._client = httpx.AsyncClient(base_url="http://ha.local", headers={})
+
+        with allow_internal_ha_service_calls("test"):
+            result = await client.call_service("light", "turn_on", "light.kitchen")
+        assert result == states
+        await client.close()
+
+    async def test_get_hidden_entity_ids_returns_last_known_on_ws_failure(self):
+        """A failed WS registry fetch must not overwrite the last known set."""
+        client = HARestClient()
+        ws_mock = MagicMock()
+        ws_mock.is_connected.return_value = True
+        ws_mock.get_hidden_entity_ids = AsyncMock(return_value={"light.hidden"})
+        client._state_observer = ws_mock
+
+        assert await client.get_hidden_entity_ids() == {"light.hidden"}
+
+        client.clear_area_registry_cache()
+        ws_mock.get_hidden_entity_ids = AsyncMock(return_value=None)
+
+        assert await client.get_hidden_entity_ids() == {"light.hidden"}
+        assert "hidden_entity_ids" not in client._registry_cache
+
+    async def test_get_hidden_entity_ids_empty_when_ws_unavailable_and_no_prior(self):
+        """No WS and no prior fetch -> empty set, and the failure is not cached."""
+        client = HARestClient()
+        ws_mock = MagicMock()
+        ws_mock.is_connected.return_value = False
+        client._state_observer = ws_mock
+
+        assert await client.get_hidden_entity_ids() == set()
+        assert "hidden_entity_ids" not in client._registry_cache
 
     @respx.mock
     async def test_fire_event_posts_correct_endpoint(self):

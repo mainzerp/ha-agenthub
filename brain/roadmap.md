@@ -24,6 +24,11 @@ Live pipeline in board format — headings are columns, cards are
 
 ## Testing
 
+- Review hotfix: REST service-response envelope, WS lock deadlocks, hidden-entity leak, blocking index refresh · priority: P1 · area: core
+  Outcome: calendar/todo reads work over REST, WS client never self-deadlocks, registry events keep hidden entities filtered, admin index refresh runs off the loop.
+  Passed: regression tests + full container suite (3310 passed). Needs user verification on the live instance: ask a calendar question ("what's on my calendar today"), read a todo list, hide an entity in HA and confirm hidden entities stay unmatchable, click "Refresh entity index" and confirm voice stays responsive.
+  Follow-ups (Phase 2/3 from review): streaming usage-trailer handling, [FOLLOWUP]/aside holdback, Lists/Calendar internal-scope allow-list, small API fixes, api-reference/deployment doc drift.
+
 ## Done
 
 ## Idea Bank

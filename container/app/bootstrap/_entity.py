@@ -14,11 +14,13 @@ from app.db.repository import SettingsRepository
 from app.defaults import DEFAULT_LOCAL_EMBEDDING_MODEL
 from app.entity.index import EntityIndex
 from app.entity.ingest import parse_ha_states, state_to_entity_index_entry
+from app.util.tasks import spawn
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
 
     from app.ha_client.rest import HARestClient
+    from app.models.entity_index import EntityIndexEntry
 
 logger = logging.getLogger(__name__)
 
@@ -321,6 +323,29 @@ async def schedule_entity_index_prime(
     return True
 
 
+async def build_entity_snapshot(app: FastAPI, ha_client: HARestClient) -> list[EntityIndexEntry]:
+    """Fetch HA states + registry lookups and return enriched index entries.
+
+    Shared between the periodic sync and the admin refresh endpoint so both
+    apply the same enrichment (areas/aliases/devices) and hidden-entity
+    filtering. Publishes the fresh lookups and ``hidden_entity_ids`` on
+    ``app.state`` as a side effect.
+    """
+    states = await ha_client.get_states()
+    area_lookup, alias_lookup, device_lookup, area_id_lookup = await _gather_ha_lookups(ha_client)
+    _store_entity_lookups(app, area_lookup, alias_lookup, device_lookup, area_id_lookup)
+    hidden_ids = await ha_client.get_hidden_entity_ids()
+    app.state.hidden_entity_ids = hidden_ids
+    return parse_ha_states(
+        states,
+        area_lookup=area_lookup,
+        alias_lookup=alias_lookup,
+        device_lookup=device_lookup,
+        area_id_lookup=area_id_lookup,
+        hidden_ids=hidden_ids,
+    )
+
+
 async def _periodic_entity_sync(app: FastAPI) -> None:
     """Periodically sync entity index with Home Assistant state."""
     while True:
@@ -344,19 +369,7 @@ async def _periodic_entity_sync(app: FastAPI) -> None:
             if not ha_client or not entity_index:
                 continue
 
-            states = await ha_client.get_states()
-            area_lookup, alias_lookup, device_lookup, area_id_lookup = await _gather_ha_lookups(ha_client)
-            _store_entity_lookups(app, area_lookup, alias_lookup, device_lookup, area_id_lookup)
-            hidden_ids = await ha_client.get_hidden_entity_ids()
-            app.state.hidden_entity_ids = hidden_ids
-            entities = parse_ha_states(
-                states,
-                area_lookup=area_lookup,
-                alias_lookup=alias_lookup,
-                device_lookup=device_lookup,
-                area_id_lookup=area_id_lookup,
-                hidden_ids=hidden_ids,
-            )
+            entities = await build_entity_snapshot(app, ha_client)
             result = await entity_index.sync_async(entities)
             logger.info(
                 "Periodic entity sync: +%d ~%d -%d =%d",
@@ -586,10 +599,26 @@ async def setup_entity_observers(
             resolved_entity_ids = await _invalidate_registry_event(event)
             await _refresh_registry_entities(app, ha_client, entity_index, resolved_entity_ids)
 
+        # Registry refresh work issues send_command round-trips whose
+        # replies only the WS receive loop can deliver, so listeners must
+        # offload it to a background task instead of awaiting it inline.
+        # One lock serializes refreshes across overlapping registry events.
+        registry_refresh_lock = asyncio.Lock()
+
+        def _schedule_registry_refresh(handler):
+            async def _run(event: dict) -> None:
+                async with registry_refresh_lock:
+                    await handler(event)
+
+            def _listener(event: dict) -> asyncio.Task:
+                return spawn(_run(event), name="ha-registry-refresh")
+
+            return _listener
+
         ws_client.on_event("state_changed", on_state_changed)
-        ws_client.on_event("entity_registry_updated", on_entity_registry_updated)
-        ws_client.on_event("device_registry_updated", on_device_registry_updated)
-        ws_client.on_event("area_registry_updated", on_area_registry_updated)
+        ws_client.on_event("entity_registry_updated", _schedule_registry_refresh(on_entity_registry_updated))
+        ws_client.on_event("device_registry_updated", _schedule_registry_refresh(on_device_registry_updated))
+        ws_client.on_event("area_registry_updated", _schedule_registry_refresh(on_area_registry_updated))
 
         app.state.ws_client = ws_client
         spawn_background(app, ws_client.run(), "ws_task")
@@ -614,6 +643,9 @@ async def setup_entity_observers(
                 # Call the WebSocket client directly to bypass the REST
                 # client's empty-set cache from the pre-WS startup sync.
                 hidden_ids = await ws_client.get_hidden_entity_ids()
+                if hidden_ids is None:
+                    logger.info("Deferred hidden-entity sync: registry fetch failed, keeping existing index")
+                    return
                 logger.info("Deferred hidden-entity sync: hidden_ids=%d", len(hidden_ids))
                 if hidden_ids:
                     app.state.hidden_entity_ids = hidden_ids

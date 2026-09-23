@@ -6,6 +6,11 @@
 
 (tracking changes since 2.5.0)
 
+- HA client: REST `call_service(return_response=True)` now unwraps HA's `service_response` envelope like the WebSocket path; calendar events (calendar agent, wake briefing, reminders, admin calendar) and todo list reads returned nothing or wrong items over REST before. The executor-local unwrap in the climate forecast path was removed.
+- HA WebSocket: handshake/auth failures no longer self-deadlock on the connection lock (reconnect loop stayed stuck forever after an invalid token or half-open socket); closing the session now fails pending command futures immediately.
+- Entity index: registry-update handlers run as serialized background tasks instead of blocking the WS receive loop (previously a 10 s stall per event that also wiped hidden-entity filtering); a failed hidden-entity fetch keeps the last known set and is never cached.
+- Admin `POST /api/admin/entity-index/refresh` runs the rebuild off the event loop and applies the same lookups and hidden-entity filtering as the periodic sync.
+
 ## Version History
 
 ### 2.5.0 (MINOR) -- noise route for silent false-trigger suppression

@@ -608,6 +608,11 @@ class EntityIndex:
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, self.populate, entities)
 
+    async def refresh_async(self, entities: list[EntityIndexEntry]) -> None:
+        """Async wrapper -- offloads refresh() to thread pool."""
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, self.refresh, entities)
+
     async def sync_async(self, entities: list[EntityIndexEntry]) -> dict:
         """Async wrapper -- offloads sync() to thread pool."""
         loop = asyncio.get_running_loop()

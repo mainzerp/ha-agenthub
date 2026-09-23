@@ -74,6 +74,9 @@ class HARestClient:
         # /api/template on every single sync.
         self._registry_cache: dict[str, tuple[float, Any]] = {}
         self._registry_cache_ttl_sec: float = 300.0
+        # Last successfully fetched hidden/disabled entity ids; used as a
+        # fallback so a transient WS outage cannot wipe hidden filtering.
+        self._last_hidden_entity_ids: set[str] | None = None
 
     async def initialize(self) -> None:
         """Load HA URL from settings and create httpx client."""
@@ -267,7 +270,13 @@ class HARestClient:
         try:
             resp = await self._client.post(url, json=payload)
             resp.raise_for_status()
-            return resp.json()
+            data = resp.json()
+            # With ?return_response HA wraps the payload in
+            # {"changed_states": [...], "service_response": {...}};
+            # callers want the inner response, matching the WS path.
+            if return_response and isinstance(data, dict) and "service_response" in data:
+                return data["service_response"]
+            return data
         except httpx.HTTPStatusError as exc:
             should_fallback = exc.response.status_code == 500 or return_response
             if not should_fallback:
@@ -537,7 +546,7 @@ class HARestClient:
         cached = self._registry_cache_get("hidden_entity_ids")
         if cached is not None:
             return cached
-        result: set[str] = set()
+        result: set[str] | None = None
         # PREFER-WS: entity registry is a WebSocket-only API in HA.
         ws = self._state_observer
         if ws is not None and ws.is_connected():
@@ -547,13 +556,19 @@ class HARestClient:
                 raise
             except Exception:
                 logger.debug("WebSocket get_hidden_entity_ids failed", exc_info=True)
+                result = None
         else:
             logger.debug(
                 "WebSocket not available for entity_registry query "
-                "(ws=%s connected=%s); hidden entity filtering disabled for this sync.",
+                "(ws=%s connected=%s); keeping last known hidden ids for this sync.",
                 ws is not None,
                 ws.is_connected() if ws else False,
             )
+        if result is None:
+            # A failed fetch must never look like "no hidden entities":
+            # do not cache it, and fall back to the last known set.
+            return set(self._last_hidden_entity_ids) if self._last_hidden_entity_ids is not None else set()
+        self._last_hidden_entity_ids = result
         self._registry_cache_put("hidden_entity_ids", result)
         logger.info("Fetched %d hidden/disabled entities from HA registry", len(result))
         return result

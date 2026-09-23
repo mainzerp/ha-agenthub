@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -214,3 +215,123 @@ class TestReceiveLoop:
 
         assert result is True
         mock_connector_cls.assert_called_once_with(limit=10, limit_per_host=5, enable_cleanup_closed=True)
+
+
+def _scripted_session(ws_messages):
+    """Build a fake aiohttp session whose ws_connect returns a scripted fake ws."""
+    mock_ws = MagicMock()
+    mock_ws.closed = False
+    mock_ws.receive_json = AsyncMock(side_effect=ws_messages)
+    mock_ws.send_json = AsyncMock()
+    mock_ws.close = AsyncMock()
+
+    mock_session = MagicMock()
+    mock_session.closed = False
+    mock_session.ws_connect = AsyncMock(return_value=mock_ws)
+    mock_session.close = AsyncMock()
+    return mock_session, mock_ws
+
+
+class TestConnectHandshakeCleanup:
+    """connect() failure branches must tear down without deadlocking on _ws_lock."""
+
+    def _connect_patches(self, mock_session):
+        return (
+            patch(
+                "app.ha_client.websocket.SettingsRepository.get_value",
+                new_callable=AsyncMock,
+                return_value="http://ha.local",
+            ),
+            patch("app.ha_client.websocket.get_ha_token", new_callable=AsyncMock, return_value="tok"),
+            patch("aiohttp.ClientSession", return_value=mock_session),
+            patch("aiohttp.TCPConnector"),
+        )
+
+    @pytest.mark.asyncio
+    async def test_connect_unexpected_first_message_releases_lock(self):
+        client = HAWebSocketClient()
+        mock_session, mock_ws = _scripted_session([{"type": "auth_ok"}])
+
+        p1, p2, p3, p4 = self._connect_patches(mock_session)
+        with p1, p2, p3, p4:
+            result = await asyncio.wait_for(client.connect(), timeout=2.0)
+
+        assert result is False
+        assert client._ws_lock.locked() is False
+        assert client._ws is None
+        assert client._session is None
+        mock_ws.close.assert_awaited_once()
+        mock_session.close.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_connect_auth_invalid_releases_lock(self):
+        client = HAWebSocketClient()
+        mock_session, mock_ws = _scripted_session([{"type": "auth_required"}, {"type": "auth_invalid"}])
+
+        p1, p2, p3, p4 = self._connect_patches(mock_session)
+        with p1, p2, p3, p4:
+            result = await asyncio.wait_for(client.connect(), timeout=2.0)
+
+        assert result is False
+        assert client._ws_lock.locked() is False
+        assert client._ws is None
+        assert client._session is None
+        mock_ws.close.assert_awaited_once()
+        mock_session.close.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_connect_handshake_timeout_releases_lock(self):
+        client = HAWebSocketClient()
+
+        async def _never_reply(*_args, **_kwargs):
+            await asyncio.sleep(60)
+
+        mock_session, mock_ws = _scripted_session([])
+        mock_ws.receive_json = AsyncMock(side_effect=_never_reply)
+
+        p1, p2, p3, p4 = self._connect_patches(mock_session)
+        with (
+            p1,
+            p2,
+            p3,
+            p4,
+            patch("app.ha_client.websocket.AUTH_HANDSHAKE_TIMEOUT", 0.05),
+        ):
+            result = await asyncio.wait_for(client.connect(), timeout=2.0)
+
+        assert result is False
+        assert client._ws_lock.locked() is False
+        assert client._ws is None
+        assert client._session is None
+        mock_ws.close.assert_awaited_once()
+        mock_session.close.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_close_session_fails_pending_command_futures(self):
+        """A pending send_command must return None promptly when the session closes."""
+        client = HAWebSocketClient()
+        client._running = True
+
+        mock_ws = MagicMock()
+        mock_ws.closed = False
+        mock_ws.send_json = AsyncMock()
+        mock_ws.close = AsyncMock()
+        client._ws = mock_ws
+
+        mock_session = MagicMock()
+        mock_session.closed = False
+        mock_session.close = AsyncMock()
+        client._session = mock_session
+
+        send_task = asyncio.create_task(client.send_command("config/entity_registry/list"))
+        for _ in range(20):
+            await asyncio.sleep(0)
+            if client._pending_responses:
+                break
+        assert client._pending_responses, "send_command never registered its response future"
+
+        await client._close_session()
+
+        result = await asyncio.wait_for(send_task, timeout=1.0)
+        assert result is None
+        assert client._pending_responses == {}

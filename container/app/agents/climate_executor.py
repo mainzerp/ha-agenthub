@@ -793,10 +793,6 @@ async def _query_weather_forecast(
         resp = await ha_client.call_service(
             "weather", "get_forecasts", entity_id, {"type": forecast_type}, return_response=True
         )
-        # REST API wraps return_response bodies in a "service_response" envelope;
-        # WebSocket responses are already unwrapped. Normalize both shapes.
-        if isinstance(resp, dict) and isinstance(resp.get("service_response"), dict):
-            resp = resp["service_response"]
         forecasts = []
         if isinstance(resp, dict):
             # HA returns {entity_id: {"forecast": [...]}}

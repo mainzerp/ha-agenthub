@@ -7,11 +7,11 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
+from app.bootstrap._entity import build_entity_snapshot
 from app.cache.embedding import get_embedding_info
 from app.cache.vector_store import COLLECTION_ENTITY_INDEX
 from app.db.repository import EntityVisibilityRepository, SettingsRepository
 from app.entity import deterministic_resolver
-from app.entity.ingest import parse_ha_states
 from app.runtime_setup import ensure_setup_runtime_initialized
 from app.security.auth import require_admin_session
 
@@ -418,9 +418,8 @@ async def refresh_entity_index(request: Request):
         return {"status": "error", "detail": "Entity index or HA client not initialized"}
 
     try:
-        states = await ha_client.get_states()
-        entities = parse_ha_states(states)
-        entity_index.refresh(entities)
+        entities = await build_entity_snapshot(request.app, ha_client)
+        await entity_index.refresh_async(entities)
         return {
             "status": "ok",
             "count": len(entities),

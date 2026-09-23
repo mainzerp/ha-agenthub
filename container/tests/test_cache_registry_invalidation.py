@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -283,6 +284,39 @@ async def test_invalidation_runs_before_index_sync():
     )
 
     assert order == ["invalidate", "refresh"]
+
+
+@pytest.mark.asyncio
+async def test_registry_listener_schedules_refresh_off_receive_loop():
+    """Registry listeners must return immediately instead of awaiting the
+    refresh inline -- the refresh issues send_command calls whose replies
+    only the WS receive loop can deliver."""
+    handlers, cache_manager, ha_client, _entity_index = await _initialize_registry_runtime()
+
+    gate = asyncio.Event()
+
+    async def _blocked_hidden_ids():
+        await gate.wait()
+        return set()
+
+    ha_client.get_hidden_entity_ids = AsyncMock(side_effect=_blocked_hidden_ids)
+
+    task = handlers["entity_registry_updated"](
+        {"data": {"entity_id": "light.kitchen", "changes": {"name": "Kitchen Overhead"}}}
+    )
+
+    assert isinstance(task, asyncio.Task)
+    for _ in range(20):
+        await asyncio.sleep(0)
+        if ha_client.get_hidden_entity_ids.await_count:
+            break
+    assert not task.done()
+
+    gate.set()
+    await asyncio.wait_for(task, timeout=2)
+
+    cache_manager.invalidate_by_entity_id.assert_awaited_once_with(["light.kitchen"])
+    ha_client.get_state.assert_awaited_once_with("light.kitchen")
 
 
 @pytest.mark.asyncio

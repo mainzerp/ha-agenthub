@@ -99,11 +99,13 @@ class HAWebSocketClient:
                     msg = await asyncio.wait_for(self._ws.receive_json(), timeout=AUTH_HANDSHAKE_TIMEOUT)
                 except TimeoutError:
                     self._logger.error("HA WebSocket handshake timed out waiting for auth_required")
-                    await self._close_session()
+                    self._cancel_all_state_waiters("websocket_closed")
+                    await self._close_session_locked()
                     return False
                 if msg.get("type") != "auth_required":
                     self._logger.error("Unexpected initial message from HA WebSocket")
-                    await self._close_session()
+                    self._cancel_all_state_waiters("websocket_closed")
+                    await self._close_session_locked()
                     return False
 
                 await self._ws.send_json({"type": "auth", "access_token": token})
@@ -111,12 +113,14 @@ class HAWebSocketClient:
                     auth_response = await asyncio.wait_for(self._ws.receive_json(), timeout=AUTH_HANDSHAKE_TIMEOUT)
                 except TimeoutError:
                     self._logger.error("HA WebSocket handshake timed out waiting for auth_ok")
-                    await self._close_session()
+                    self._cancel_all_state_waiters("websocket_closed")
+                    await self._close_session_locked()
                     return False
 
                 if auth_response.get("type") != "auth_ok":
                     self._logger.error("HA WebSocket auth failed")
-                    await self._close_session()
+                    self._cancel_all_state_waiters("websocket_closed")
+                    await self._close_session_locked()
                     return False
 
                 self._running = True
@@ -139,12 +143,28 @@ class HAWebSocketClient:
         # next reconnect.
         self._cancel_all_state_waiters("websocket_closed")
         async with self._ws_lock:
-            if self._ws and not self._ws.closed:
-                await self._ws.close()
-            self._ws = None
-            if self._session and not self._session.closed:
-                await self._session.close()
-            self._session = None
+            await self._close_session_locked()
+
+    async def _close_session_locked(self) -> None:
+        """Tear down ws + session; ``self._ws_lock`` must already be held.
+
+        Also fails every pending ``send_command`` response future so
+        callers return immediately instead of waiting out the timeout.
+        """
+        if self._pending_responses:
+            pending = self._pending_responses
+            self._pending_responses = {}
+            for future in pending.values():
+                if future.done():
+                    continue
+                with contextlib.suppress(asyncio.InvalidStateError):
+                    future.set_exception(WebSocketResetError("websocket_closed"))
+        if self._ws and not self._ws.closed:
+            await self._ws.close()
+        self._ws = None
+        if self._session and not self._session.closed:
+            await self._session.close()
+        self._session = None
 
     def _cancel_all_state_waiters(self, reason: str) -> None:
         """Resolve every pending state waiter with ``WebSocketResetError``.
@@ -341,11 +361,15 @@ class HAWebSocketClient:
         )
         return None
 
-    async def get_hidden_entity_ids(self) -> set[str]:
-        """Query HA's entity registry via WebSocket for hidden/disabled entities."""
+    async def get_hidden_entity_ids(self) -> set[str] | None:
+        """Query HA's entity registry via WebSocket for hidden/disabled entities.
+
+        Returns ``None`` when the registry query fails or times out so
+        callers can distinguish "fetch failed" from "no hidden entities".
+        """
         result = await self.send_command("config/entity_registry/list")
         if not isinstance(result, list):
-            return set()
+            return None
         hidden: set[str] = set()
         for row in result:
             if not isinstance(row, dict):

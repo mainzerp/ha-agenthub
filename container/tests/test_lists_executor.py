@@ -4,13 +4,17 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
+import respx
 
 from app.agents.lists_executor import (
     _find_items_by_query,
     _format_item,
+    _get_todo_items,
     execute_lists_action,
 )
+from app.ha_client.rest import HARestClient, allow_internal_ha_service_calls
 from tests.helpers import make_entity_index_entry
 
 
@@ -550,6 +554,37 @@ class TestUnknownAction:
         )
         assert result["success"] is False
         assert "Unknown lists action" in result["speech"]
+
+
+class TestGetTodoItemsRestEnvelope:
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_todo_get_items_with_real_rest_client_unwraps_envelope(self):
+        """A real HARestClient must unwrap HA's {changed_states, service_response}
+        envelope so _get_todo_items sees the per-entity items dict."""
+        respx.post("http://ha.local/api/services/todo/get_items").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "changed_states": [],
+                    "service_response": {
+                        "todo.shopping_list": {
+                            "items": [{"summary": "Milk", "status": "needs_action"}],
+                        }
+                    },
+                },
+            )
+        )
+
+        client = HARestClient()
+        client._base_url = "http://ha.local"
+        client._client = httpx.AsyncClient(base_url="http://ha.local", headers={})
+
+        with allow_internal_ha_service_calls("test"):
+            items = await _get_todo_items(client, "todo.shopping_list")
+
+        assert items == [{"summary": "Milk", "status": "needs_action"}]
+        await client.close()
 
 
 class TestGetTodoItemsResponseFormats:
