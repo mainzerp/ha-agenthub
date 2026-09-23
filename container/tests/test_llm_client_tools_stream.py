@@ -190,6 +190,48 @@ async def test_tool_round_executes_then_streams_final_answer(mock_repo, mock_par
 @patch("litellm.acompletion", new_callable=AsyncMock)
 @patch("app.llm.client.resolve_provider_params", new_callable=AsyncMock, return_value={})
 @patch("app.llm.client.AgentConfigRepository")
+async def test_usage_only_trailer_chunk_feeds_token_tracking(mock_repo, mock_params, mock_acompletion, mock_track):
+    """A terminal choices=[] usage chunk (include_usage trailer) contributes
+    its usage to token tracking instead of ending the round."""
+    _patch_config(mock_repo)
+    usage = MagicMock()
+    usage.prompt_tokens = 9
+    usage.completion_tokens = 3
+
+    trailer = MagicMock()
+    trailer.choices = []
+    trailer.usage = usage
+
+    mock_acompletion.return_value = _async_iter(
+        [
+            _content_chunk("Hello "),
+            _content_chunk("there.", finish_reason="stop"),
+            trailer,
+        ]
+    )
+    executor = AsyncMock(return_value="tool result")
+
+    tokens = [
+        t
+        async for t in complete_with_tools_stream(
+            "general-agent",
+            [{"role": "user", "content": "hi"}],
+            tools=_TOOLS,
+            tool_executor=executor,
+        )
+    ]
+
+    assert tokens == ["Hello ", "there."]
+    mock_track.assert_awaited_once()
+    assert mock_track.await_args.kwargs["tokens_in"] == 9
+    assert mock_track.await_args.kwargs["tokens_out"] == 3
+
+
+@pytest.mark.asyncio
+@patch("app.llm.client.track_token_usage", new_callable=AsyncMock)
+@patch("litellm.acompletion", new_callable=AsyncMock)
+@patch("app.llm.client.resolve_provider_params", new_callable=AsyncMock, return_value={})
+@patch("app.llm.client.AgentConfigRepository")
 async def test_max_tool_rounds_forces_streamed_final_without_tools(
     mock_repo, mock_params, mock_acompletion, mock_track
 ):

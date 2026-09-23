@@ -10,6 +10,11 @@
 - HA WebSocket: handshake/auth failures no longer self-deadlock on the connection lock (reconnect loop stayed stuck forever after an invalid token or half-open socket); closing the session now fails pending command futures immediately.
 - Entity index: registry-update handlers run as serialized background tasks instead of blocking the WS receive loop (previously a 10 s stall per event that also wiped hidden-entity filtering); a failed hidden-entity fetch keeps the last known set and is never cached.
 - Admin `POST /api/admin/entity-index/refresh` runs the rebuild off the event loop and applies the same lookups and hidden-entity filtering as the periodic sync.
+- LLM streaming: `complete_stream` no longer aborts on the usage-only trailer chunk it requests; token usage is now read from the trailer in both streaming paths (previously never recorded).
+- Streamed mediation: a shared `StreamedSpeechFilter` keeps parenthetical asides and `[FOLLOWUP]` fragments (including a tag followed by whitespace/newline) out of the spoken token stream, matching the stored text.
+- A2A: invalid task payloads return a JSON-RPC invalid-params error instead of raising; calendar and lists agents run in the internal HA-call scope (no false direct-write warnings).
+- Visibility rules cache: a fetch racing an invalidation can no longer write stale rules back.
+- Admin API: `GET /api/admin/logs?since=<invalid>` returns 400 instead of 500; allowed WebSocket origins are recomputed after an HA connection change.
 
 ## Version History
 

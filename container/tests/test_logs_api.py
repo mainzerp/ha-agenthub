@@ -243,6 +243,12 @@ async def test_invalid_level_post_body(authed_client: httpx.AsyncClient) -> None
 
 
 @pytest.mark.asyncio
+async def test_invalid_since_query_param(authed_client: httpx.AsyncClient) -> None:
+    resp = await authed_client.get("/api/admin/logs?since=not-a-date")
+    assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
 async def test_since_filter(authed_client: httpx.AsyncClient) -> None:
     since = "2026-01-01T12:00:03%2B00:00"
     resp = await authed_client.get(f"/api/admin/logs?since={since}")

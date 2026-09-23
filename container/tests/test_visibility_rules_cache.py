@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from app.entity.visibility import (
+    _get_cached_rules,
     _rules_cache,
     entity_is_visible,
     filter_visible_results,
@@ -54,6 +56,34 @@ class TestVisibilityRulesCache:
         await filter_visible_results("agent-2", results, None, repository=mock_repo)
 
         assert mock_repo.get_rules.await_count == 4
+
+    async def test_invalidate_during_fetch_drops_stale_cache_write(self):
+        """A fetch invalidated while still in flight must not repopulate the
+        cache with pre-invalidation rules; the next call refetches."""
+        fetch_started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def _get_rules(_agent_id):
+            fetch_started.set()
+            await release.wait()
+            return [{"rule_type": "domain_include", "rule_value": "light"}]
+
+        mock_repo = AsyncMock()
+        mock_repo.get_rules = AsyncMock(side_effect=_get_rules)
+
+        fetch = asyncio.create_task(_get_cached_rules("agent-stale", repository=mock_repo))
+        await fetch_started.wait()
+        invalidate_visibility_rules_cache("agent-stale")
+        release.set()
+        rules = await fetch
+
+        # The fetched rules are still returned, but the stale write is dropped.
+        assert rules is not None
+        assert "agent-stale" not in _rules_cache
+
+        await _get_cached_rules("agent-stale", repository=mock_repo)
+        assert mock_repo.get_rules.await_count == 2
+        assert "agent-stale" in _rules_cache
 
     async def test_entity_is_visible_uses_cache(self):
         mock_repo = AsyncMock()

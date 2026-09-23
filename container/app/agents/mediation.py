@@ -31,10 +31,12 @@ from collections.abc import AsyncGenerator
 from typing import Any
 
 from app.agents.base import language_code_to_name
-from app.agents.sanitize import strip_parenthetical_asides
+from app.agents.sanitize import _remove_asides, strip_parenthetical_asides
 from app.analytics.tracer import _optional_span
 
 logger = logging.getLogger(__name__)
+
+_FOLLOWUP_TAG = "[FOLLOWUP]"
 
 
 class MediationStreamError(Exception):
@@ -51,13 +53,56 @@ def _strip_followup_tag(text: str | None) -> tuple[str | None, bool]:
 
     Non-string input is returned unchanged with followup=False, matching the
     previous inline ``isinstance(mediated, str)`` guard used at the streaming
-    post-process site.
+    post-process site. Trailing whitespace after the tag is tolerated.
     """
     if not isinstance(text, str):
         return text, False
-    if text.endswith("[FOLLOWUP]"):
-        return text[: -len("[FOLLOWUP]")].rstrip(), True
+    stripped = text.rstrip()
+    if stripped.endswith(_FOLLOWUP_TAG):
+        return stripped[: -len(_FOLLOWUP_TAG)].rstrip(), True
     return text, False
+
+
+class StreamedSpeechFilter:
+    """Incrementally emit mediated tokens with the same aside/[FOLLOWUP]
+    cleanup as the collected text."""
+
+    def __init__(self) -> None:
+        self._raw = ""
+        self._emitted_len = 0
+
+    def feed(self, token: str) -> str:
+        """Buffer ``token``; return the text now safe to emit ("" if none).
+
+        Text past the first ``(`` that no ``)`` closes yet is held back: it
+        may still turn out to be an aside. The trailing ``len([FOLLOWUP])``
+        chars of cleaned text are held back as well so a tag fragment never
+        leaks into a token frame.
+        """
+        self._raw += token
+        last_close = self._raw.rfind(")")
+        open_idx = self._raw.find("(", last_close + 1)
+        stable = self._raw if open_idx == -1 else self._raw[:open_idx]
+        cleaned = _remove_asides(stable)
+        safe_end = len(cleaned.rstrip()) - len(_FOLLOWUP_TAG)
+        if safe_end > self._emitted_len:
+            emit = cleaned[self._emitted_len : safe_end]
+            self._emitted_len = safe_end
+            return emit
+        return ""
+
+    def finish(self) -> tuple[str, bool]:
+        """Flush the remaining emit-able tail; report [FOLLOWUP] presence.
+
+        An unclosed ``(`` is not an aside (the cleanup needs a closing
+        ``)``), so its text is emitted here, matching the collected-text
+        path.
+        """
+        stripped, followup = _strip_followup_tag(_remove_asides(self._raw))
+        tail = stripped[self._emitted_len :] if len(stripped) > self._emitted_len else ""
+        if self._emitted_len == 0:
+            tail = tail.lstrip()
+        return tail, followup
 
 
 class MediationService:

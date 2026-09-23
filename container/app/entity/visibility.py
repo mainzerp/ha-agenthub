@@ -79,6 +79,9 @@ def _parse_rules(rules: Sequence[Mapping[str, Any]]) -> _VisibilityRules:
 _RULES_CACHE_TTL_SECONDS = 300.0
 _rules_cache: dict[str, tuple[float, _VisibilityRules | None]] = {}
 _rules_cache_lock = asyncio.Lock()
+# Bumped on every invalidation: a fetch that started before an invalidation
+# must not write its (possibly stale) result into the cache afterwards.
+_rules_cache_generation = 0
 
 
 def _read_fresh_rules(agent_id: str) -> tuple[bool, _VisibilityRules | None]:
@@ -106,15 +109,18 @@ async def _get_cached_rules(
         if hit:
             return rules
 
+        generation = _rules_cache_generation
         raw_rules = await repository.get_rules(agent_id)
         rules = _parse_rules(raw_rules) if raw_rules else None
-        _rules_cache[agent_id] = (time.monotonic(), rules)
+        if generation == _rules_cache_generation:
+            _rules_cache[agent_id] = (time.monotonic(), rules)
         return rules
 
 
 def invalidate_visibility_rules_cache(agent_id: str | None = None) -> None:
     """Invalidate the visibility rules cache."""
-    global _rules_cache
+    global _rules_cache_generation
+    _rules_cache_generation += 1
     if agent_id is None:
         _rules_cache.clear()
     else:

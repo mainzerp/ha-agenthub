@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -112,6 +113,12 @@ async def list_logs(
 
     if level is not None and level.upper() not in _VALID_LEVELS:
         raise HTTPException(status_code=400, detail=f"Invalid level: {level}")
+
+    if since is not None:
+        try:
+            datetime.fromisoformat(since)
+        except ValueError:
+            raise HTTPException(status_code=400, detail=f"Invalid since: {since}") from None
 
     result = buf.get_entries(
         level=level.upper() if level else None,

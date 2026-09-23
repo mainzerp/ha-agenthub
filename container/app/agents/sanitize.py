@@ -5,6 +5,16 @@ from __future__ import annotations
 import re
 
 
+def _remove_asides(text: str) -> str:
+    """Remove parenthetical asides and collapse doubled spaces.
+
+    Unlike :func:`strip_parenthetical_asides` the result is not stripped --
+    callers that emit text incrementally need original whitespace preserved.
+    """
+    text = re.sub(r"\s*\([^)]*\)", "", text)
+    return re.sub(r" {2,}", " ", text)
+
+
 def strip_parenthetical_asides(text: str) -> str:
     """Remove parenthetical asides and meta-commentary from TTS output.
 
@@ -13,9 +23,7 @@ def strip_parenthetical_asides(text: str) -> str:
     """
     if not text:
         return text
-    text = re.sub(r"\s*\([^)]*\)", "", text)
-    text = re.sub(r" {2,}", " ", text)
-    return text.strip()
+    return _remove_asides(text).strip()
 
 
 def strip_markdown(text: str) -> str:

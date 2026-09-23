@@ -7,7 +7,34 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from app.a2a.transport import InProcessTransport
+from app.a2a.transport import InProcessTransport, _internal_ha_service_call_scope
+
+
+class TestInternalHaServiceCallScope:
+    """The internal HA service-call scope must cover every real agent class
+    that issues HA service calls (including todo writes from ListsAgent)."""
+
+    def test_calendar_and_lists_agents_get_internal_scope(self):
+        from app.ha_client.rest import _ha_service_call_context
+
+        class CalendarAgent:
+            pass
+
+        class ListsAgent:
+            pass
+
+        for cls in (CalendarAgent, ListsAgent):
+            with _internal_ha_service_call_scope(cls()):
+                assert _ha_service_call_context.get() == f"internal:{cls.__name__}"
+
+    def test_unlisted_agent_gets_no_scope(self):
+        from app.ha_client.rest import _ha_service_call_context
+
+        class UnknownAgent:
+            pass
+
+        with _internal_ha_service_call_scope(UnknownAgent()):
+            assert _ha_service_call_context.get() is None
 
 
 class TestInProcessTransport:

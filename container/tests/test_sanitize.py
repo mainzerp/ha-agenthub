@@ -17,6 +17,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from app.agents.mediation import StreamedSpeechFilter, _strip_followup_tag
 from app.agents.sanitize import strip_markdown, strip_parenthetical_asides
 
 CORPUS_PATH = Path(__file__).parent / "data" / "sanitize_corpus.txt"
@@ -295,3 +296,82 @@ class TestStripParentheticalAsides:
     def test_no_parens_unchanged(self):
         text = "No parentheses here at all."
         assert strip_parenthetical_asides(text) == text
+
+
+class TestStripFollowupTag:
+    """Tests for _strip_followup_tag trailing-whitespace tolerance."""
+
+    def test_tag_with_trailing_newline(self):
+        assert _strip_followup_tag("Hi? [FOLLOWUP]\n") == ("Hi?", True)
+
+    def test_tag_without_trailing_whitespace(self):
+        assert _strip_followup_tag("Hi? [FOLLOWUP]") == ("Hi?", True)
+
+    def test_no_tag_returns_text_unchanged(self):
+        assert _strip_followup_tag("Hi?") == ("Hi?", False)
+
+    def test_non_string_passthrough(self):
+        assert _strip_followup_tag(None) == (None, False)
+
+
+class TestStreamedSpeechFilter:
+    """StreamedSpeechFilter applies the collected-text cleanup (asides +
+    [FOLLOWUP]) incrementally to mediated token streams."""
+
+    def test_aside_and_tag_in_one_token(self):
+        f = StreamedSpeechFilter()
+        spoken = f.feed("Sure (smiles) the light is on. [FOLLOWUP]")
+        tail, followup = f.finish()
+        spoken += tail
+        assert "(" not in spoken
+        assert "smiles" not in spoken
+        assert "FOLLOWUP" not in spoken
+        assert spoken.strip() == "Sure the light is on."
+        assert followup is True
+
+    def test_tag_split_across_tokens(self):
+        f = StreamedSpeechFilter()
+        spoken = "".join(f.feed(t) for t in ("Want more?", " [FOLL", "OWUP]"))
+        tail, followup = f.finish()
+        spoken += tail
+        assert "FOLLOWUP" not in spoken
+        assert "[" not in spoken
+        assert spoken.strip() == "Want more?"
+        assert followup is True
+
+    def test_tag_followed_by_newline(self):
+        f = StreamedSpeechFilter()
+        spoken = "".join(f.feed(t) for t in ("Light is on.", " [FOLLOWUP]\n"))
+        tail, followup = f.finish()
+        spoken += tail
+        assert "FOLLOWUP" not in spoken
+        assert "[" not in spoken
+        assert spoken.strip() == "Light is on."
+        assert followup is True
+
+    def test_aside_split_across_tokens(self):
+        f = StreamedSpeechFilter()
+        emitted = []
+        for t in ("Sure", " (smi", "les) the light is on."):
+            emit = f.feed(t)
+            assert "(" not in emit
+            assert "smiles" not in emit
+            emitted.append(emit)
+        tail, followup = f.finish()
+        assert "".join(emitted) + tail == "Sure the light is on."
+        assert followup is False
+
+    def test_unclosed_paren_emitted_at_finish(self):
+        f = StreamedSpeechFilter()
+        emit = f.feed("Wait (checking")
+        assert emit == ""
+        tail, followup = f.finish()
+        assert tail == "Wait (checking"
+        assert followup is False
+
+    def test_plain_text_full_output(self):
+        f = StreamedSpeechFilter()
+        spoken = "".join(f.feed(t) for t in ("Light ", "is on."))
+        tail, followup = f.finish()
+        assert spoken + tail == "Light is on."
+        assert followup is False

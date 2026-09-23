@@ -66,7 +66,7 @@ from ._settings import (
 from ._settings import (
     router as _settings_router,
 )
-from ._shared import _reload_ha_clients_after_settings_change, set_registry
+from ._shared import _reload_ha_clients_after_settings_change, _update_allowed_ws_origins, set_registry
 from ._timers import (
     AlarmRecurrencePayload,
     TimerCreatePayload,
@@ -113,6 +113,7 @@ __all__ = [
     "WakeBriefingSettingsPayload",
     "WakeBriefingSourcesPayload",
     "_reload_ha_clients_after_settings_change",
+    "_update_allowed_ws_origins",
     "_validate_setting_value",
     "delete_secret",
     "get_ha_token",

@@ -112,6 +112,7 @@ class Dispatcher:
             raw_params = request.params or {}
             span_collector = raw_params.get("_span_collector")
             params = _MessageStreamParams(**{k: v for k, v in raw_params.items() if k != "_span_collector"})
+            task = _validate_task(params.agent_id, params.task)
         except Exception as exc:
             yield {
                 "token": "",
@@ -120,7 +121,6 @@ class Dispatcher:
             }
             return
 
-        task = _validate_task(params.agent_id, params.task)
         task.span_collector = span_collector
         async for chunk in self._transport.stream(params.agent_id, task, request.id):
             yield chunk
@@ -130,10 +130,10 @@ class Dispatcher:
             raw_params = request.params or {}
             span_collector = raw_params.get("_span_collector")
             params = _MessageSendParams(**{k: v for k, v in raw_params.items() if k != "_span_collector"})
+            task = _validate_task(params.agent_id, params.task)
         except Exception as exc:
             return _error_response(request.id, _INVALID_PARAMS, f"Invalid params: {exc}")
 
-        task = _validate_task(params.agent_id, params.task)
         task.span_collector = span_collector
         return await self._transport.send(params.agent_id, task, request.id)
 

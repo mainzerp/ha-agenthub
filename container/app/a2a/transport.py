@@ -21,11 +21,13 @@ logger = logging.getLogger(__name__)
 _ALLOWED_INTERNAL_HA_SCOPE: frozenset[str] = frozenset(
     {
         "AutomationAgent",
+        "CalendarAgent",
         "ClimateAgent",
         "CoverAgent",
         "FillerAgent",
         "GeneralAgent",
         "LightAgent",
+        "ListsAgent",
         "MediaAgent",
         "MusicAgent",
         "OrchestratorAgent",

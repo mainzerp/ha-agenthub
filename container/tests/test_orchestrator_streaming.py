@@ -391,10 +391,10 @@ class TestStreamingMediation:
         chunks = [c async for c in orch.handle_task_stream(task)]
 
         # The partial mediated token was already spoken to the client; the
-        # trailing 10-char holdback (" mediated ") is dropped on mid-stream
-        # failure so a partial tag can never leak.
+        # trailing holdback is dropped on mid-stream failure so a partial
+        # tag can never leak.
         token_chunks = [c for c in chunks if not c.get("done") and c.get("token")]
-        assert "".join(c["token"] for c in token_chunks) == "Partial"
+        assert "".join(c["token"] for c in token_chunks) == "Partia"
         done_chunks = [c for c in chunks if c.get("done")]
         assert len(done_chunks) == 1
         # mediated_speech suppressed (tokens were streamed) and the stored
@@ -1055,3 +1055,47 @@ class TestFollowupTagNotStreamed:
         assert spoken == "Partial "
         done_chunks = [c for c in chunks if c.get("done")]
         assert len(done_chunks) == 1
+
+    @pytest.mark.asyncio
+    @patch("app.agents.orchestrator.SettingsRepository")
+    @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
+    @patch("app.llm.client.complete", new_callable=AsyncMock)
+    async def test_aside_and_tag_with_trailing_newline_never_streamed(self, mock_complete, mock_track, mock_settings):
+        """A mediated stream carrying a parenthetical aside and a trailing
+        "[FOLLOWUP]\n" emits neither the aside nor any tag characters, and the
+        done frame still signals the follow-up."""
+        mock_complete.return_value = "light-agent (95%): Turn on light"
+        mock_settings.get_value = AsyncMock(
+            side_effect=lambda k, d=None: {
+                "personality.prompt": "You are friendly.",
+                "orchestrator.organic_followup_enabled": "false",
+            }.get(k, d)
+        )
+        orch, dispatcher = _make_orchestrator()
+        orch._should_send_filler = AsyncMock(return_value=False)
+
+        async def _stream(_request):
+            yield {"token": "Light is on.", "done": True}
+
+        dispatcher.dispatch_stream = _stream
+
+        async def _fake_mediation_stream(**kwargs):
+            yield "Light is on"
+            yield " (quietly"
+            yield ") now. Want more?"
+            yield "[FOLLOWUP]\n"
+
+        orch._mediate_response_stream = _fake_mediation_stream
+
+        task = _make_task("turn on light", conversation_id="conv-i3-aside-tag")
+        chunks = [c async for c in orch.handle_task_stream(task)]
+
+        token_chunks = [c for c in chunks if not c.get("done") and c.get("token")]
+        spoken = "".join(c["token"] for c in token_chunks)
+        assert "(" not in spoken
+        assert "quietly" not in spoken
+        assert "FOLLOWUP" not in spoken
+        assert spoken.strip() == "Light is on now. Want more?"
+        done_chunks = [c for c in chunks if c.get("done")]
+        assert len(done_chunks) == 1
+        assert done_chunks[0].get("voice_followup") is True

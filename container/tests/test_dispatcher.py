@@ -32,6 +32,36 @@ class TestDispatcherErrorPaths:
         assert "Invalid params" in response.error.message
 
     @pytest.mark.asyncio
+    async def test_dispatch_invalid_task_payload_returns_invalid_params(self):
+        """message/send with a task dict failing DispatchTask validation must
+        return an invalid_params error instead of raising."""
+        dispatcher, _registry, _transport = self._make_dispatcher()
+        request = JsonRpcRequest(
+            method="message/send",
+            params={"agent_id": "light-agent", "task": {}},
+            id="req-invalid-task",
+        )
+        response = await dispatcher.dispatch(request)
+        assert response.error is not None
+        assert response.error.code == -32602  # _INVALID_PARAMS
+        assert "Invalid params" in response.error.message
+
+    @pytest.mark.asyncio
+    async def test_dispatch_stream_invalid_task_payload_yields_error_chunk(self):
+        """message/stream with a task dict failing DispatchTask validation must
+        yield an error chunk instead of raising."""
+        dispatcher, _registry, _transport = self._make_dispatcher()
+        request = JsonRpcRequest(
+            method="message/stream",
+            params={"agent_id": "light-agent", "task": {}},
+            id="req-invalid-task-stream",
+        )
+        chunks = [c async for c in dispatcher.dispatch_stream(request)]
+        assert len(chunks) == 1
+        assert chunks[0]["done"] is True
+        assert "Invalid params" in chunks[0].get("error", "")
+
+    @pytest.mark.asyncio
     async def test_dispatch_method_not_found(self):
         """G17: Unknown method must return method_not_found error."""
         dispatcher, _registry, _transport = self._make_dispatcher()

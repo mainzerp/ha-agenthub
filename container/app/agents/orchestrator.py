@@ -25,7 +25,12 @@ from app.agents.decorator import agent
 from app.agents.dispatch_manager import DispatchManager
 from app.agents.filler_coordinator import FillerCoordinator
 from app.agents.language_detect import detect_user_language
-from app.agents.mediation import MediationService, MediationStreamError, _strip_followup_tag
+from app.agents.mediation import (
+    MediationService,
+    MediationStreamError,
+    StreamedSpeechFilter,
+    _strip_followup_tag,
+)
 from app.agents.sanitize import strip_markdown, strip_parenthetical_asides
 from app.agents.task_pipeline import PipelineDirector
 from app.analytics.collector import track_request, track_request_background
@@ -50,12 +55,6 @@ logger = logging.getLogger(__name__)
 
 _CANNED_TIMEOUT_SPEECH = "I couldn't process that request in time."
 _CANNED_GENERAL_ERROR_SPEECH = "I couldn't process that request right now."
-
-# Trailing mediation marker (prompt contract, prompts/mediate.txt): the LLM
-# appends it to signal a voice follow-up. While relaying streamed mediation
-# tokens, a len(_FOLLOWUP_TAG)-char holdback guarantees no part of a trailing
-# marker is ever emitted to the client/TTS, even when split across tokens.
-_FOLLOWUP_TAG = "[FOLLOWUP]"
 
 _PERSONALITY_CACHE_TTL_SEC: float = 300.0
 
@@ -2558,14 +2557,12 @@ class OrchestratorAgent(BaseAgent):
             mediation_streaming_enabled and should_mediate and personality.strip() and full_speech.strip()
         )
         if use_streamed_mediation:
-            # Stream mediated tokens to the client
+            # Stream mediated tokens to the client. The filter applies the
+            # same aside/[FOLLOWUP] cleanup as the collected-text path so no
+            # parenthetical or tag fragment reaches the token frames.
             mediated_tokens: list[str] = []
             mediation_failed_partial = False
-            # Hold back the trailing len(_FOLLOWUP_TAG) chars so a trailing
-            # "[FOLLOWUP]" marker never leaks into the token frames (the tag
-            # only ever appears as a suffix of the complete text); the
-            # stripped remainder is flushed after the loop.
-            pending = ""
+            speech_filter = StreamedSpeechFilter()
             try:
                 async for token in self._mediate_response_stream(
                     agent_speech=full_speech,
@@ -2578,10 +2575,8 @@ class OrchestratorAgent(BaseAgent):
                 ):
                     if token:
                         mediated_tokens.append(token)
-                        pending += token
-                        if len(pending) > len(_FOLLOWUP_TAG):
-                            emit = pending[: -len(_FOLLOWUP_TAG)]
-                            pending = pending[-len(_FOLLOWUP_TAG) :]
+                        emit = speech_filter.feed(token)
+                        if emit:
                             yield {
                                 "token": emit,
                                 "done": False,
@@ -2597,16 +2592,15 @@ class OrchestratorAgent(BaseAgent):
                     # retracted; post-mediation finalization below persists
                     # the ORIGINAL full speech so the turn store / response
                     # cache never record the truncation. The unflushed
-                    # holdback is dropped: the spoken stream is already
-                    # truncated and flushing could leak a partial tag.
+                    # filter remainder is dropped: the spoken stream is
+                    # already truncated and flushing could leak a partial tag.
                     mediation_failed_partial = True
 
         if use_streamed_mediation:
-            # Flush the holdback remainder (never a tag fragment, thanks to
-            # the window above) as one final non-done token frame so no
-            # mediated text is lost.
+            # Flush the filter remainder (never a tag fragment) as one final
+            # non-done token frame so no mediated text is lost.
             if not mediation_failed_partial:
-                tail, _ = _strip_followup_tag(pending)
+                tail, _ = speech_filter.finish()
                 if tail:
                     yield {
                         "token": tail,

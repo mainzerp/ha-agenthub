@@ -1,5 +1,4 @@
 import asyncio
-import contextlib
 import difflib
 import json
 import logging
@@ -308,9 +307,8 @@ async def complete_stream(
         call_kwargs["reasoning_effort"] = reasoning_effort
         call_kwargs["drop_params"] = True
 
-    # Attempt usage tracking via stream_options; skip if unsupported.
-    with contextlib.suppress(TypeError, ValueError):
-        call_kwargs["stream_options"] = {"include_usage": True}
+    # Request a final usage-only trailer chunk where supported.
+    call_kwargs["stream_options"] = {"include_usage": True}
 
     try:
         async with _optional_span(span_collector, "llm_provider_call", agent_id=agent_id) as pspan:
@@ -323,9 +321,16 @@ async def complete_stream(
 
             first_chunk_time = None
             last_chunk_time = None
+            saw_choice = False
+            usage = None
             async for chunk in response:
+                chunk_usage = getattr(chunk, "usage", None)
+                if chunk_usage is not None:
+                    usage = chunk_usage
                 if not chunk.choices:
-                    raise LLMError("Empty choices from provider during stream")
+                    # Usage-only trailer chunk (stream_options include_usage).
+                    continue
+                saw_choice = True
                 delta = chunk.choices[0].delta
                 content = getattr(delta, "content", None)
                 if content:
@@ -341,18 +346,22 @@ async def complete_stream(
                         max_tokens,
                     )
 
+            if not saw_choice:
+                raise LLMError("Empty choices from provider during stream")
+
             ttft_ms = (first_chunk_time - t_call) * 1000 if first_chunk_time else None
             stream_ms = (last_chunk_time - first_chunk_time) * 1000 if first_chunk_time and last_chunk_time else None
             latency_ms = (time.perf_counter() - t_call) * 1000
 
-            # Token usage may be delivered in a final chunk with empty choices.
-            if hasattr(response, "usage") and response.usage:
-                tokens_out = response.usage.completion_tokens or 0
+            if usage is None:
+                usage = getattr(response, "usage", None)
+            if usage:
+                tokens_out = usage.completion_tokens or 0
                 tps = tokens_out / (stream_ms / 1000.0) if stream_ms and stream_ms > 0 else None
                 await track_token_usage(
                     agent_id=agent_id,
                     provider=model.split("/")[0] if "/" in model else "unknown",
-                    tokens_in=response.usage.prompt_tokens or 0,
+                    tokens_in=usage.prompt_tokens or 0,
                     tokens_out=tokens_out,
                     ttft_ms=round(ttft_ms, 2) if ttft_ms else None,
                     tps=round(tps, 2) if tps else None,
@@ -694,9 +703,8 @@ async def complete_with_tools_stream(
         if reasoning_effort:
             call_kwargs["reasoning_effort"] = reasoning_effort
             call_kwargs["drop_params"] = True
-        # Attempt usage tracking via stream_options; skip if unsupported.
-        with contextlib.suppress(TypeError, ValueError):
-            call_kwargs["stream_options"] = {"include_usage": True}
+        # Request a final usage-only trailer chunk where supported.
+        call_kwargs["stream_options"] = {"include_usage": True}
 
         content_parts: list[str] = []
         tool_calls_acc: dict[int, dict[str, str]] = {}
@@ -710,7 +718,11 @@ async def complete_with_tools_stream(
             response = await litellm.acompletion(**call_kwargs)
             first_chunk_time = None
             last_chunk_time = None
+            usage = None
             async for chunk in response:
+                chunk_usage = getattr(chunk, "usage", None)
+                if chunk_usage is not None:
+                    usage = chunk_usage
                 if not chunk.choices:
                     # Usage-only trailer chunk (stream_options include_usage).
                     continue
@@ -739,13 +751,15 @@ async def complete_with_tools_stream(
             ttft_ms = (first_chunk_time - t_call) * 1000 if first_chunk_time else None
             stream_ms = (last_chunk_time - first_chunk_time) * 1000 if first_chunk_time and last_chunk_time else None
             latency_ms = (time.perf_counter() - t_call) * 1000
-            if hasattr(response, "usage") and response.usage:
-                tokens_out = response.usage.completion_tokens or 0
+            if usage is None:
+                usage = getattr(response, "usage", None)
+            if usage:
+                tokens_out = usage.completion_tokens or 0
                 tps = tokens_out / (stream_ms / 1000.0) if stream_ms and stream_ms > 0 else None
                 await track_token_usage(
                     agent_id=agent_id,
                     provider=model.split("/")[0] if "/" in model else "unknown",
-                    tokens_in=response.usage.prompt_tokens or 0,
+                    tokens_in=usage.prompt_tokens or 0,
                     tokens_out=tokens_out,
                     ttft_ms=round(ttft_ms, 2) if ttft_ms else None,
                     tps=round(tps, 2) if tps else None,

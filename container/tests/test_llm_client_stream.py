@@ -47,6 +47,14 @@ class _FakeChunk:
         self.choices = [_FakeChoice(content, finish_reason)]
 
 
+class _UsageTrailerChunk:
+    """Terminal chunk emitted when stream_options.include_usage=True."""
+
+    def __init__(self, usage):
+        self.choices = []
+        self.usage = usage
+
+
 async def _async_iter(items):
     for item in items:
         yield item
@@ -103,10 +111,49 @@ class TestCompleteStream:
         call_kwargs = mock_acompletion.call_args.kwargs
         assert call_kwargs.get("stream") is True
 
+    @patch("app.llm.client.track_token_usage", new_callable=AsyncMock)
     @patch("litellm.acompletion", new_callable=AsyncMock)
     @patch("app.llm.client.resolve_provider_params", new_callable=AsyncMock, return_value={})
     @patch("app.llm.client.AgentConfigRepository")
-    async def test_complete_stream_empty_choices_raises(self, mock_repo, mock_params, mock_acompletion):
+    async def test_complete_stream_usage_trailer_chunk_is_skipped(
+        self, mock_repo, mock_params, mock_acompletion, mock_track
+    ):
+        mock_repo.get = AsyncMock(
+            return_value={
+                "agent_id": "light-agent",
+                "enabled": True,
+                "model": "openrouter/openai/gpt-4o-mini",
+                "timeout": 5,
+                "max_iterations": 3,
+                "temperature": 0.7,
+                "max_tokens": 256,
+                "description": "Light agent",
+            }
+        )
+        usage = MagicMock()
+        usage.prompt_tokens = 12
+        usage.completion_tokens = 7
+        mock_acompletion.return_value = _async_iter(
+            [
+                _FakeChunk("Hello "),
+                _FakeChunk("world"),
+                _UsageTrailerChunk(usage),
+            ]
+        )
+
+        tokens = []
+        async for token in complete_stream("light-agent", [{"role": "user", "content": "hi"}]):
+            tokens.append(token)
+
+        assert tokens == ["Hello ", "world"]
+        mock_track.assert_awaited_once()
+        assert mock_track.await_args.kwargs["tokens_in"] == 12
+        assert mock_track.await_args.kwargs["tokens_out"] == 7
+
+    @patch("litellm.acompletion", new_callable=AsyncMock)
+    @patch("app.llm.client.resolve_provider_params", new_callable=AsyncMock, return_value={})
+    @patch("app.llm.client.AgentConfigRepository")
+    async def test_complete_stream_only_empty_choices_raises(self, mock_repo, mock_params, mock_acompletion):
         mock_repo.get = AsyncMock(
             return_value={
                 "agent_id": "light-agent",
@@ -123,7 +170,7 @@ class TestCompleteStream:
         class _EmptyChunk:
             choices = ()
 
-        mock_acompletion.return_value = _async_iter([_EmptyChunk()])
+        mock_acompletion.return_value = _async_iter([_EmptyChunk(), _EmptyChunk()])
 
         with pytest.raises(LLMError, match="Empty choices"):
             async for _token in complete_stream("light-agent", [{"role": "user", "content": "hi"}]):

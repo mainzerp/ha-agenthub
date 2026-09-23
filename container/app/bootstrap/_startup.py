@@ -105,18 +105,7 @@ async def setup_application(app: FastAPI) -> None:
         await custom_loader.load_all()
 
     # Populate allowed WebSocket origins from HA URL
-    ha_client = getattr(app.state, "ha_client", None)
-    if ha_client is not None and getattr(ha_client, "_base_url", None):
-        from urllib.parse import urlparse
-
-        parsed = urlparse(ha_client._base_url)
-        app.state.allowed_ws_origins = {f"{parsed.scheme}://{parsed.netloc}"}
-        logger.info("Allowed WebSocket origins: %s", sorted(app.state.allowed_ws_origins))
-    else:
-        app.state.allowed_ws_origins = set()
-        logger.warning(
-            "No allowed WebSocket origins configured; WebSocket connections will be rejected until setup is complete"
-        )
+    admin_routes._update_allowed_ws_origins(app)
 
     # Register default notification profile if not set
     existing_notif = await SettingsRepository.get_value("notification.profile")

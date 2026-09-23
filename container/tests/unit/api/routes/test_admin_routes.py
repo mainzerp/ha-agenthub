@@ -6,7 +6,7 @@ not already exercised by the integration suite.
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
@@ -604,3 +604,40 @@ class TestGetAgentsVisibilitySummary:
         assert "outlet" in summary["device_classes"]
         assert "plug" in summary["excluded_device_classes"]
         assert summary["has_rules"] is True
+
+
+# =====================================================================
+# 14. PUT /api/admin/ha-connection -> allowed_ws_origins recompute
+# =====================================================================
+
+
+@pytest.mark.asyncio
+class TestUpdateHaConnectionWsOrigins:
+    async def test_ws_origins_recomputed_after_ha_url_change(self, db_repository):
+        """After an HA connection update the WS origin allow-list must reflect
+        the new base URL, not the stale startup value."""
+        app = _build_app()
+        ha_client = MagicMock()
+        ha_client._base_url = "http://ha-old.local:8123"
+
+        async def _reload():
+            ha_client._base_url = "https://ha-new.local:8123"
+
+        ha_client.reload = AsyncMock(side_effect=_reload)
+        app.state.ha_client = ha_client
+        app.state.ws_client = None
+        app.state.allowed_ws_origins = {"http://ha-old.local:8123"}
+
+        with patch(
+            "app.api.routes.admin.SettingsRepository.set",
+            new_callable=AsyncMock,
+        ):
+            async for client in _client_for(app):
+                resp = await client.put(
+                    "/api/admin/ha-connection",
+                    json={"ha_url": "https://ha-new.local:8123"},
+                )
+
+        assert resp.status_code == 200
+        assert "https://ha-new.local:8123" in app.state.allowed_ws_origins
+        assert "http://ha-old.local:8123" not in app.state.allowed_ws_origins
