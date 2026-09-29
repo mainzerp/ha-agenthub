@@ -1,12 +1,23 @@
 # Version
 
-**Current Version:** 2.5.1
+**Current Version:** 2.5.2
 
 ## Recent Changes
 
-(tracking changes since 2.5.1)
+(tracking changes since 2.5.2)
 
 ## Version History
+
+### 2.5.2 (PATCH) -- multi-action commands execute every emitted action
+
+- Agents: domain agents now execute every fenced JSON action block the LLM emits, in utterance order -- previously `parse_action` returned after the first valid block, so "Ambiente Wohnen und Innenhofueberdachung ausschalten" silently dropped the second action (live trace `1f01c7feff2e411e`). Each action gets its own `ha_action` span; a raised action degrades to a per-action error without aborting the remaining actions, and only an all-failed multi turn attaches a turn-level error (matching single-action `ACTION_FAILED` semantics).
+- Parser: new `parse_actions()` collects, deduplicates and validates all fenced/raw JSON actions (cap 8); `parse_action()` remains as a first-element wrapper.
+- Models: `ActionExecuted` gains `entity_ids` (all acted-on ids; `entity_id` keeps the primary target) and `TaskResult` gains `actions_executed` (full per-action results, set only on multi-action turns); the public `ActionResult` shape is unchanged.
+- Cache: turns that executed more than one entity store a routing entry only and never an action-cache row -- a single `CachedAction` cannot replay N service calls; routing-cache storage still requires verified execution.
+- Conversation memory: every successfully executed entity becomes a recency hint for anaphora, not just the first.
+- Prompts: all nine domain prompts now state the contract explicitly -- one fenced JSON code block per action.
+- Verification: full container suite passed including new multi-action regressions (two-block parsing, ordering, per-action results, partial/all failures, executor exceptions, cache skip, recency extraction); Ruff lint and format passed.
+- No features or public APIs removed; no new dependencies; no user action required.
 
 ### 2.5.1 (PATCH) -- code review fixes: HA service responses, WebSocket deadlocks, streaming
 
