@@ -4,6 +4,29 @@ Decision rationale, so decisions stay made. Newest first. Binding architecture
 rules live in `docs/project/prime-directives.md` — this file records choices,
 not copies of rules.
 
+## 2026-09-29 — Multi-action execution contract
+
+Domain-agent LLMs may emit one fenced JSON block per requested action
+("A und B ausschalten"). `parse_actions()` collects all valid blocks
+(dedupe, cap 8); `ActionableAgent` executes them sequentially in
+utterance order, each with its own `ha_action` span. Rationale:
+
+- **Sequential, not parallel:** execution order must match the user's
+  utterance and keep trace spans ordered; per-action exceptions degrade
+  to a per-action error result without aborting the rest.
+- **First-action headline:** `TaskResult.action_executed` still reports
+  the first action (public `ActionResult` contract unchanged);
+  `TaskResult.actions_executed` + `ActionExecuted.entity_ids` carry the
+  full set for consumers that care.
+- **Multi-action turns are never action-cached** — a single
+  `CachedAction` cannot replay N service calls. They store a routing
+  entry only (all entity_ids forwarded, visibility rechecked per entity
+  on hits — Directive 2 intact). Partial failures are not turn errors;
+  only an all-failed turn attaches an `AgentError`.
+- Evidence: trace `1f01c7feff2e411e` (2026-09-28) — the model emitted
+  two correct blocks and only the first executed; Athenaeum lesson
+  `live-debugging/multi-action-dropped-by-single-action-contract-trace-2026-09-28`.
+
 ## 2026-09-22 — Agent operating setup (initial brain creation)
 
 Decisions taken while adapting `AGENTS.md` and creating `brain/`:
