@@ -456,7 +456,11 @@ class CacheOrchestrator:
         confidence_value = confidence if confidence is not None else 0.0
         readonly_action = self._is_readonly_action_result(action_executed)
         if isinstance(action_executed, dict) and action_executed.get("success"):
-            if readonly_action:
+            # Multi-action turns (entity_ids > 1) executed N service
+            # calls; a single CachedAction cannot replay them, so they
+            # are never action-cached -- like read-only turns they store
+            # a routing entry only.
+            if readonly_action or len(entity_ids) > 1:
                 try:
                     await self._cache_manager.store_routing_async(
                         user_text,

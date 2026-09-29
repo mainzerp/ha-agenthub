@@ -14,8 +14,10 @@ import re
 import time
 from typing import Any
 
+from pydantic import ValidationError
+
 from app.agents.action_executor import (
-    parse_action,
+    parse_actions,
     reset_request_candidate_ids,
     reset_request_visible_entries,
     set_request_candidate_ids,
@@ -369,6 +371,223 @@ class ActionableAgent(BaseAgent):
             logger.warning("Not-found clarification LLM call failed", exc_info=True)
             return _not_found_speech(entity_query, language)
 
+    async def _execute_parsed_action(
+        self,
+        action: dict,
+        task: DispatchTask,
+        agent_id: str,
+        span_collector=None,
+    ) -> dict:
+        """Execute one parsed action dict inside its own ``ha_action`` span.
+
+        Wraps :meth:`_do_execute` with the same span metadata as the
+        former inline path and applies the not-found clarification
+        substitution to the executor result. Exceptions propagate -- the
+        caller decides whether to abort the turn (single action) or
+        degrade to a per-action error result (multi-action turn).
+        """
+        if span_collector:
+            async with span_collector.start_span("ha_action", agent_id=agent_id) as span:
+                result = await self._do_execute(
+                    action,
+                    self._ha_client,
+                    self._entity_index,
+                    self._entity_matcher,
+                    agent_id=agent_id,
+                    span_collector=span_collector,
+                )
+                span["metadata"]["action"] = action.get("action")
+                span["metadata"]["entity"] = action.get("entity")
+                span["metadata"]["success"] = result.get("success")
+                span["metadata"]["action_params"] = {k: v for k, v in action.items() if k not in ("action", "entity")}
+                span["metadata"]["result_speech"] = (result.get("speech") or "")[:500]
+        else:
+            result = await self._do_execute(
+                action,
+                self._ha_client,
+                self._entity_index,
+                self._entity_matcher,
+                agent_id=agent_id,
+                span_collector=span_collector,
+            )
+
+        # Entity not found: replace the executor's generic English
+        # speech with an LLM-generated clarifying question (with a
+        # deterministic localized fallback when the LLM call fails).
+        # LOW-15: skip the generic clarification when the resolver already produced a
+        # targeted disambiguation speech ("Multiple entities match ..."), signalled by a
+        # resolution_path ending in "_ambiguous". Otherwise the deterministic message would
+        # be overwritten by a vague "which device did you mean?" question.
+        resolution_path = (result.get("metadata") or {}).get("resolution_path") or ""
+        if (
+            self._clarify_on_not_found
+            and not result.get("success")
+            and result.get("entity_id") is None
+            and not result.get("error")
+            and not resolution_path.endswith("_ambiguous")
+        ):
+            entity_query = action.get("entity", "")
+            result = {
+                **result,
+                "speech": await self._generate_not_found_speech(entity_query, task, span_collector),
+            }
+        return result
+
+    @staticmethod
+    def _action_executed_from_result(action: dict, result: dict, entity_ids: list[str] | None = None) -> ActionExecuted:
+        """Build the :class:`ActionExecuted` model for one executor result.
+
+        P1-5: forwards the action's structured parameters (brightness,
+        color_temp, transition, ...) as ``service_data`` so the
+        orchestrator can persist them on the response cache entry and
+        replay the exact same call on the next hit. Executors may
+        optionally override this by returning ``service_data`` on the
+        result dict.
+        """
+        return ActionExecuted(
+            action=action.get("action", ""),
+            entity_id=result.get("entity_id") or "",
+            success=result.get("success", False),
+            new_state=result.get("new_state"),
+            cacheable=result.get("cacheable", True),
+            noop=result.get("noop", False),
+            service_data=(
+                result.get("service_data")
+                if isinstance(result.get("service_data"), dict)
+                else (action.get("parameters") or {})
+            ),
+            executed_command=(
+                ExecutedCommand.model_validate(result["executed_command"])
+                if isinstance(result.get("executed_command"), dict)
+                else None
+            ),
+            entity_ids=entity_ids or [],
+        )
+
+    @staticmethod
+    def _result_requests_voice_followup(result: dict) -> bool:
+        """FOLLOW_UP_QUESTION heuristic for a single executor result.
+
+        True when the result requests a voice follow-up: either the
+        executor set the flag itself, or the result is a not-found
+        clarifying question -- the LLM/deterministic localized
+        clarification (speech ends with "?") or the targeted
+        deterministic disambiguation (``_ambiguous``, no "?").
+        """
+        resolution_path = (result.get("metadata") or {}).get("resolution_path") or ""
+        is_ambiguous = resolution_path.endswith("_ambiguous")
+        is_not_found = not result.get("success") and result.get("entity_id") is None and not result.get("error")
+        return bool(result.get("voice_followup")) or (
+            is_not_found and (is_ambiguous or (result.get("speech") or "").rstrip().endswith("?"))
+        )
+
+    async def _handle_multi_action(
+        self,
+        actions: list[dict],
+        task: DispatchTask,
+        agent_id: str,
+        span_collector,
+        timing_marks: tuple[float, float, float, float],
+    ) -> TaskResult:
+        """Execute several parsed action blocks sequentially and merge the results.
+
+        Multi-action turns (the LLM emitted one fenced JSON block per
+        requested action) run in utterance order -- never parallelized --
+        so per-action ``ha_action`` spans stay ordered. A raising action
+        degrades to a per-action error result and the loop continues with
+        the next action. ``timing_marks`` carries the ``_handle_task_inner``
+        marks ``(t0, t1, t2, t3)`` for the dispatch-timing log line.
+        """
+        _t0, _t1, _t2, _t3 = timing_marks
+        logger.info("multi_action agent=%s actions=%d", agent_id, len(actions))
+        results: list[dict] = []
+        for action in actions:
+            try:
+                results.append(await self._execute_parsed_action(action, task, agent_id, span_collector))
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("Action execution failed for %s action=%s", agent_id, action)
+                entity = action.get("entity", "the device")
+                results.append(
+                    {
+                        "success": False,
+                        "entity_id": None,
+                        "new_state": None,
+                        "speech": f"Sorry, I could not execute the action on {entity}.",
+                        # Carries an error so a turn where EVERY action
+                        # raised still surfaces ACTION_FAILED like the
+                        # single-action path does.
+                        "error": {
+                            "code": AgentErrorCode.ACTION_FAILED,
+                            "message": f"Could not execute the action on {entity}.",
+                            "recoverable": True,
+                        },
+                    }
+                )
+        _t4 = time.perf_counter()
+
+        # Rare edge: a directive result (e.g. a timer-native delegation)
+        # cannot be merged into a combined action result -- surface it alone.
+        for result in results:
+            if result.get("directive"):
+                logger.warning("multi_action: directive result in multi-action turn for %s", agent_id)
+                return TaskResult(
+                    speech=result.get("speech", ""),
+                    directive=result.get("directive"),
+                    reason=result.get("reason"),
+                    metadata=result.get("metadata") or {},
+                    voice_followup=bool(result.get("voice_followup")),
+                )
+
+        # Turn-level error only when EVERY action failed with an executor
+        # error that validates as AgentError. Partial failures are not
+        # turn errors (same philosophy as multi-agent dispatch).
+        executor_errors: list[AgentError] = []
+        for result in results:
+            raw_error = result.get("error")
+            if raw_error is None:
+                continue
+            try:
+                executor_errors.append(
+                    raw_error if isinstance(raw_error, AgentError) else AgentError.model_validate(raw_error)
+                )
+            except ValidationError:
+                logger.debug("multi_action: result error failed AgentError validation", exc_info=True)
+        turn_error = executor_errors[0] if len(executor_errors) == len(results) else None
+
+        # Anaphora/cache surface: the ids every action resolved to
+        # (successful results only, deduped in execution order).
+        entity_ids = list(
+            dict.fromkeys(
+                str(result["entity_id"]) for result in results if result.get("success") and result.get("entity_id")
+            )
+        )
+
+        metadata = results[0].get("metadata") or {}
+        _t5 = time.perf_counter()
+        logger.info(
+            "dispatch_timing agent=%s pre_entities=%.1fms entities=%.1fms llm_parse=%.1fms ha_action=%.1fms post_action=%.1fms total=%.1fms",
+            agent_id,
+            (_t1 - _t0) * 1000,
+            (_t2 - _t1) * 1000,
+            (_t3 - _t2) * 1000,
+            (_t4 - _t3) * 1000,
+            (_t5 - _t4) * 1000,
+            (_t5 - _t0) * 1000,
+        )
+        return TaskResult(
+            # Merge per-action confirmations into one utterance.
+            speech=" ".join(s for result in results if (s := (result.get("speech") or "").strip())),
+            metadata=metadata,
+            voice_followup=any(self._result_requests_voice_followup(result) for result in results),
+            error=turn_error,
+            # Headline action result mirrors the single-action path: the
+            # FIRST result's fields, plus the full acted-on id list.
+            action_executed=self._action_executed_from_result(actions[0], results[0], entity_ids=entity_ids),
+            actions_executed=[self._action_executed_from_result(a, r) for a, r in zip(actions, results, strict=True)],
+        )
+
     def _handle_parse_miss(self, task: DispatchTask, response: str) -> TaskResult:
         """Return the fallback result when the LLM response has no valid action.
 
@@ -558,61 +777,20 @@ class ActionableAgent(BaseAgent):
                 "The language model did not return a response. Please try again.",
             )
 
-        action = parse_action(response)
+        actions = parse_actions(response)
 
-        # Path A: Action + HA client -> execute
-        if action and self._ha_client:
+        # Path A: Action(s) + HA client -> execute
+        if actions and self._ha_client:
+            # Multi-action turn: the LLM emitted several fenced action
+            # blocks. They run sequentially in utterance order, each with
+            # its own ha_action span, and their results are merged.
+            if len(actions) > 1:
+                return await self._handle_multi_action(actions, task, agent_id, span_collector, (_t0, _t1, _t2, _t3))
+            action = actions[0]
             try:
-                if span_collector:
-                    async with span_collector.start_span("ha_action", agent_id=agent_id) as span:
-                        result = await self._do_execute(
-                            action,
-                            self._ha_client,
-                            self._entity_index,
-                            self._entity_matcher,
-                            agent_id=agent_id,
-                            span_collector=span_collector,
-                        )
-                        span["metadata"]["action"] = action.get("action")
-                        span["metadata"]["entity"] = action.get("entity")
-                        span["metadata"]["success"] = result.get("success")
-                        span["metadata"]["action_params"] = {
-                            k: v for k, v in action.items() if k not in ("action", "entity")
-                        }
-                        span["metadata"]["result_speech"] = (result.get("speech") or "")[:500]
-                else:
-                    result = await self._do_execute(
-                        action,
-                        self._ha_client,
-                        self._entity_index,
-                        self._entity_matcher,
-                        agent_id=agent_id,
-                        span_collector=span_collector,
-                    )
+                result = await self._execute_parsed_action(action, task, agent_id, span_collector)
 
                 _t4 = time.perf_counter()
-
-                # Entity not found: replace the executor's generic English
-                # speech with an LLM-generated clarifying question (with a
-                # deterministic localized fallback when the LLM call fails).
-                # LOW-15: skip the generic clarification when the resolver already produced a
-                # targeted disambiguation speech ("Multiple entities match ..."), signalled by a
-                # resolution_path ending in "_ambiguous". Otherwise the deterministic message would
-                # be overwritten by a vague "which device did you mean?" question.
-                resolution_path = (result.get("metadata") or {}).get("resolution_path") or ""
-                is_ambiguous = resolution_path.endswith("_ambiguous")
-                if (
-                    self._clarify_on_not_found
-                    and not result.get("success")
-                    and result.get("entity_id") is None
-                    and not result.get("error")
-                    and not is_ambiguous
-                ):
-                    entity_query = action.get("entity", "")
-                    result = {
-                        **result,
-                        "speech": await self._generate_not_found_speech(entity_query, task, span_collector),
-                    }
 
                 # FOLLOW_UP_QUESTION: every clarifying question produced on a
                 # not-found result -- the LLM/deterministic localized
@@ -621,6 +799,8 @@ class ActionableAgent(BaseAgent):
                 # requests a voice follow-up. When _clarify_on_not_found is
                 # False the plain English statement has no trailing "?" and
                 # is_ambiguous is False, so the flag stays False.
+                resolution_path = (result.get("metadata") or {}).get("resolution_path") or ""
+                is_ambiguous = resolution_path.endswith("_ambiguous")
                 final_speech = result.get("speech") or ""
                 is_not_found = not result.get("success") and result.get("entity_id") is None and not result.get("error")
                 followup_question = is_not_found and (is_ambiguous or final_speech.rstrip().endswith("?"))
@@ -660,31 +840,7 @@ class ActionableAgent(BaseAgent):
                     speech=result["speech"],
                     metadata=metadata,
                     voice_followup=bool(result.get("voice_followup")) or followup_question,
-                    action_executed=ActionExecuted(
-                        action=action.get("action", ""),
-                        entity_id=result.get("entity_id") or "",
-                        success=result.get("success", False),
-                        new_state=result.get("new_state"),
-                        cacheable=result.get("cacheable", True),
-                        noop=result.get("noop", False),
-                        # P1-5: forward the action's structured parameters
-                        # (brightness, color_temp, transition, ...) so the
-                        # orchestrator can persist them on the response
-                        # cache entry and replay the exact same call on
-                        # the next hit. Executors may optionally override
-                        # this by returning ``service_data`` on the result
-                        # dict.
-                        service_data=(
-                            result.get("service_data")
-                            if isinstance(result.get("service_data"), dict)
-                            else (action.get("parameters") or {})
-                        ),
-                        executed_command=(
-                            ExecutedCommand.model_validate(result["executed_command"])
-                            if isinstance(result.get("executed_command"), dict)
-                            else None
-                        ),
-                    ),
+                    action_executed=self._action_executed_from_result(action, result),
                 )
             except asyncio.CancelledError:
                 raise
@@ -697,9 +853,10 @@ class ActionableAgent(BaseAgent):
                 )
 
         # Path B: Action but no HA client
-        if action and not self._ha_client:
-            logger.warning("Action parsed but ha_client is None for %s: %s", agent_id, action)
-            entity = action.get("entity", "the device")
+        if actions and not self._ha_client:
+            first_action = actions[0]
+            logger.warning("Action parsed but ha_client is None for %s: %s", agent_id, first_action)
+            entity = first_action.get("entity", "the device")
             return self._error_result(
                 AgentErrorCode.HA_UNAVAILABLE,
                 f"I understood the request for {entity}, but the smart home connection is currently unavailable.",

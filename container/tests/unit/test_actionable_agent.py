@@ -1276,6 +1276,332 @@ class TestHandleTaskExecution:
         assert result.error is None
 
 
+class TestHandleTaskMultiAction:
+    """Multi-action turns: several fenced JSON blocks execute in order."""
+
+    _TWO_BLOCK_RESPONSE = (
+        '```json\n{"action": "turn_off", "entity": "ambiente wohnen"}\n```\n'
+        '```json\n{"action": "turn_off", "entity": "innenhof ueberdachung"}\n```\n'
+        "Both are off."
+    )
+
+    @pytest.mark.asyncio
+    async def test_two_action_blocks_execute_both_in_order(self):
+        """Regression (live trace 1f01c7feff2e411e): the agent LLM emitted
+        two action blocks but only the first used to execute. Both must
+        now run, in utterance order, with merged speech."""
+        agent = LightAgent()
+        task = make_dispatch_task(description="Ambiente Wohnen und Innenhofueberdachung ausschalten")
+
+        execute_results = [
+            {
+                "speech": "Ambiente Wohnen is off.",
+                "entity_id": "light.ambiente_wohnen",
+                "success": True,
+                "new_state": "off",
+            },
+            {
+                "speech": "Innenhofueberdachung is off.",
+                "entity_id": "light.innenhof_uberdachung",
+                "success": True,
+                "new_state": "off",
+            },
+        ]
+        with (
+            patch.object(agent, "_load_prompt_async", new_callable=AsyncMock, return_value="You are a light agent."),
+            patch.object(agent, "_call_llm", new_callable=AsyncMock, return_value=self._TWO_BLOCK_RESPONSE),
+            patch.object(agent, "_do_execute", new_callable=AsyncMock, side_effect=execute_results) as mock_exec,
+        ):
+            agent._ha_client = AsyncMock()
+            agent._entity_index = None
+            agent._entity_matcher = None
+
+            result = await agent.handle_task(task)
+
+        assert mock_exec.await_count == 2
+        first_action = mock_exec.await_args_list[0].args[0]
+        second_action = mock_exec.await_args_list[1].args[0]
+        assert first_action["entity"] == "ambiente wohnen"
+        assert second_action["entity"] == "innenhof ueberdachung"
+        assert "Ambiente Wohnen is off." in result.speech
+        assert "Innenhofueberdachung is off." in result.speech
+        assert result.error is None
+
+        # Headline result is the FIRST action with all acted-on ids.
+        assert result.action_executed is not None
+        assert result.action_executed.action == "turn_off"
+        assert result.action_executed.entity_id == "light.ambiente_wohnen"
+        assert result.action_executed.success is True
+        assert result.action_executed.entity_ids == ["light.ambiente_wohnen", "light.innenhof_uberdachung"]
+
+        # Full per-action results, in execution order.
+        assert result.actions_executed is not None
+        assert len(result.actions_executed) == 2
+        assert [a.entity_id for a in result.actions_executed] == [
+            "light.ambiente_wohnen",
+            "light.innenhof_uberdachung",
+        ]
+        assert all(a.success for a in result.actions_executed)
+
+    @pytest.mark.asyncio
+    async def test_single_action_keeps_single_result_shape(self):
+        """One action block: identical TaskResult shape as before --
+        ``actions_executed`` stays None and ``entity_ids`` stays empty."""
+        agent = LightAgent()
+        task = make_dispatch_task(description="turn on the kitchen light")
+
+        with (
+            patch.object(agent, "_load_prompt_async", new_callable=AsyncMock, return_value="You are a light agent."),
+            patch.object(
+                agent,
+                "_call_llm",
+                new_callable=AsyncMock,
+                return_value='```json\n{"action": "turn_on", "entity": "kitchen light"}\n```\nDone.',
+            ),
+            patch.object(
+                agent,
+                "_do_execute",
+                new_callable=AsyncMock,
+                return_value={"speech": "Kitchen is on.", "entity_id": "light.kitchen", "success": True},
+            ),
+        ):
+            agent._ha_client = AsyncMock()
+            agent._entity_index = None
+            agent._entity_matcher = None
+
+            result = await agent.handle_task(task)
+
+        assert result.action_executed is not None
+        assert result.action_executed.entity_id == "light.kitchen"
+        assert result.action_executed.entity_ids == []
+        assert result.actions_executed is None
+        assert result.error is None
+
+    @pytest.mark.asyncio
+    async def test_failing_action_does_not_block_other_actions(self):
+        """A not-found first action still lets the second action run;
+        the turn reports the first result but keeps the success ids."""
+        agent = LightAgent()
+        task = make_dispatch_task(description="turn off foo and bar")
+
+        execute_results = [
+            {"speech": "not found", "entity_id": None, "success": False},
+            {"speech": "Bar is off.", "entity_id": "light.bar", "success": True},
+        ]
+        with (
+            patch.object(agent, "_load_prompt_async", new_callable=AsyncMock, return_value="You are a light agent."),
+            patch.object(
+                agent,
+                "_call_llm",
+                new_callable=AsyncMock,
+                return_value=(
+                    '```json\n{"action": "turn_off", "entity": "foo"}\n```\n'
+                    '```json\n{"action": "turn_off", "entity": "bar"}\n```\n'
+                ),
+            ),
+            patch.object(agent, "_do_execute", new_callable=AsyncMock, side_effect=execute_results) as mock_exec,
+            patch.object(
+                agent,
+                "_generate_not_found_speech",
+                new_callable=AsyncMock,
+                return_value="Which device did you mean?",
+            ),
+        ):
+            agent._ha_client = AsyncMock()
+            agent._entity_index = None
+            agent._entity_matcher = None
+
+            result = await agent.handle_task(task)
+
+        assert mock_exec.await_count == 2
+        assert "Bar is off." in result.speech
+        assert "Which device did you mean?" in result.speech
+        assert result.error is None
+        assert result.action_executed is not None
+        assert result.action_executed.success is False
+        assert result.action_executed.entity_ids == ["light.bar"]
+        assert len(result.actions_executed) == 2
+        assert result.actions_executed[0].success is False
+        assert result.actions_executed[1].success is True
+        # The not-found clarifying question requests a voice follow-up.
+        assert result.voice_followup is True
+
+    @pytest.mark.asyncio
+    async def test_executor_exception_degrades_to_per_action_error(self):
+        """A raising executor produces a per-action error result and the
+        remaining actions still execute."""
+        agent = LightAgent()
+        task = make_dispatch_task(description="turn off foo and bar")
+
+        execute_results = [
+            RuntimeError("HA timeout"),
+            {"speech": "Bar is off.", "entity_id": "light.bar", "success": True},
+        ]
+        with (
+            patch.object(agent, "_load_prompt_async", new_callable=AsyncMock, return_value="You are a light agent."),
+            patch.object(
+                agent,
+                "_call_llm",
+                new_callable=AsyncMock,
+                return_value=(
+                    '```json\n{"action": "turn_off", "entity": "foo"}\n```\n'
+                    '```json\n{"action": "turn_off", "entity": "bar"}\n```\n'
+                ),
+            ),
+            patch.object(agent, "_do_execute", new_callable=AsyncMock, side_effect=execute_results) as mock_exec,
+        ):
+            agent._ha_client = AsyncMock()
+            agent._entity_index = None
+            agent._entity_matcher = None
+
+            result = await agent.handle_task(task)
+
+        assert mock_exec.await_count == 2
+        assert "Sorry, I could not execute the action on foo." in result.speech
+        assert "Bar is off." in result.speech
+        assert result.error is None
+        assert result.action_executed is not None
+        assert result.action_executed.success is False
+        assert result.action_executed.entity_ids == ["light.bar"]
+
+    @pytest.mark.asyncio
+    async def test_all_executor_errors_attach_first_error(self):
+        """Only when EVERY action returned an executor error does the
+        turn carry an error -- the first one."""
+        agent = LightAgent()
+        task = make_dispatch_task(description="turn off foo and bar")
+
+        execute_results = [
+            {"speech": "fail a", "success": False, "error": {"code": "entity_not_found", "message": "no"}},
+            {"speech": "fail b", "success": False, "error": {"code": "entity_not_found", "message": "no"}},
+        ]
+        with (
+            patch.object(agent, "_load_prompt_async", new_callable=AsyncMock, return_value="You are a light agent."),
+            patch.object(
+                agent,
+                "_call_llm",
+                new_callable=AsyncMock,
+                return_value=(
+                    '```json\n{"action": "turn_off", "entity": "foo"}\n```\n'
+                    '```json\n{"action": "turn_off", "entity": "bar"}\n```\n'
+                ),
+            ),
+            patch.object(agent, "_do_execute", new_callable=AsyncMock, side_effect=execute_results),
+        ):
+            agent._ha_client = AsyncMock()
+            agent._entity_index = None
+            agent._entity_matcher = None
+
+            result = await agent.handle_task(task)
+
+        assert result.error is not None
+        assert result.error.code == AgentErrorCode.ENTITY_NOT_FOUND
+        assert result.action_executed is not None
+        assert result.action_executed.entity_ids == []
+
+    @pytest.mark.asyncio
+    async def test_all_actions_raising_attach_action_failed(self):
+        """When EVERY action raised, the turn surfaces ACTION_FAILED --
+        matching the single-action path's error semantics."""
+        agent = LightAgent()
+        task = make_dispatch_task(description="turn off foo and bar")
+
+        with (
+            patch.object(agent, "_load_prompt_async", new_callable=AsyncMock, return_value="You are a light agent."),
+            patch.object(
+                agent,
+                "_call_llm",
+                new_callable=AsyncMock,
+                return_value=(
+                    '```json\n{"action": "turn_off", "entity": "foo"}\n```\n'
+                    '```json\n{"action": "turn_off", "entity": "bar"}\n```\n'
+                ),
+            ),
+            patch.object(
+                agent,
+                "_do_execute",
+                new_callable=AsyncMock,
+                side_effect=RuntimeError("HA timeout"),
+            ),
+        ):
+            agent._ha_client = AsyncMock()
+            agent._entity_index = None
+            agent._entity_matcher = None
+
+            result = await agent.handle_task(task)
+
+        assert result.error is not None
+        assert result.error.code == AgentErrorCode.ACTION_FAILED
+        assert result.action_executed is not None
+        assert result.action_executed.success is False
+        assert result.action_executed.entity_ids == []
+
+    @pytest.mark.asyncio
+    async def test_partial_executor_error_is_not_turn_error(self):
+        """One executor error among several results is a partial failure
+        -- no turn-level error."""
+        agent = LightAgent()
+        task = make_dispatch_task(description="turn off foo and bar")
+
+        execute_results = [
+            {"speech": "Foo is off.", "entity_id": "light.foo", "success": True},
+            {"speech": "fail b", "success": False, "error": {"code": "entity_not_found", "message": "no"}},
+        ]
+        with (
+            patch.object(agent, "_load_prompt_async", new_callable=AsyncMock, return_value="You are a light agent."),
+            patch.object(
+                agent,
+                "_call_llm",
+                new_callable=AsyncMock,
+                return_value=(
+                    '```json\n{"action": "turn_off", "entity": "foo"}\n```\n'
+                    '```json\n{"action": "turn_off", "entity": "bar"}\n```\n'
+                ),
+            ),
+            patch.object(agent, "_do_execute", new_callable=AsyncMock, side_effect=execute_results),
+        ):
+            agent._ha_client = AsyncMock()
+            agent._entity_index = None
+            agent._entity_matcher = None
+
+            result = await agent.handle_task(task)
+
+        assert result.error is None
+        assert result.action_executed is not None
+        assert result.action_executed.entity_ids == ["light.foo"]
+
+    @pytest.mark.asyncio
+    async def test_multi_action_no_ha_client_uses_first_entity(self):
+        """Path B: parsed actions without ha_client keep single-error
+        semantics on the first action's entity."""
+        agent = LightAgent()
+        task = make_dispatch_task(description="turn off foo and bar")
+
+        with (
+            patch.object(agent, "_load_prompt_async", new_callable=AsyncMock, return_value="You are a light agent."),
+            patch.object(
+                agent,
+                "_call_llm",
+                new_callable=AsyncMock,
+                return_value=(
+                    '```json\n{"action": "turn_off", "entity": "foo"}\n```\n'
+                    '```json\n{"action": "turn_off", "entity": "bar"}\n```\n'
+                ),
+            ),
+            patch.object(agent, "_do_execute", new_callable=AsyncMock) as mock_exec,
+        ):
+            agent._ha_client = None
+            agent._entity_index = None
+            agent._entity_matcher = None
+
+            result = await agent.handle_task(task)
+
+        assert result.error is not None
+        assert result.error.code == AgentErrorCode.HA_UNAVAILABLE
+        assert "foo" in result.speech
+        mock_exec.assert_not_awaited()
+
+
 class TestNotFoundSpeechHelper:
     """Direct unit tests for the deterministic not-found fallback helper."""
 

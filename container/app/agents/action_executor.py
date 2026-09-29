@@ -528,36 +528,105 @@ def _try_parse_json_with_action(text: str) -> dict | None:
         idx = end
 
 
-def parse_action(llm_response: str) -> dict | None:
-    """Extract a structured action dict from an LLM response.
+def _collect_actions_from_text(text: str) -> list[dict]:
+    """Collect every valid action dict decodable from ``text``.
 
-    Looks for JSON in ```json``` fences first, then falls back to raw JSON
-    objects containing an "action" key.
+    Multi-action companion to :func:`_try_parse_json_with_action`: the
+    same ``json.JSONDecoder().raw_decode`` scan from each ``{`` position,
+    but gathers EVERY dict that contains ``"action"`` and passes
+    :func:`_validate_action_dict` instead of returning the first.
+    """
+    decoder = json.JSONDecoder()
+    actions: list[dict] = []
+    idx = 0
+    while True:
+        start = text.find("{", idx)
+        if start == -1:
+            return actions
+        try:
+            obj, end = decoder.raw_decode(text, start)
+        except json.JSONDecodeError:
+            idx = start + 1
+            continue
+        if isinstance(obj, dict) and "action" in obj:
+            validated = _validate_action_dict(obj)
+            if validated is not None:
+                actions.append(validated)
+        idx = end
+
+
+# Multi-action turns (one fenced JSON block per requested action, per the
+# domain prompts) are capped so a runaway LLM response cannot flood the
+# home with service calls.
+_MAX_ACTIONS_PER_TURN = 8
+
+
+def _action_dedupe_key(action: dict) -> tuple:
+    """Order-preserving dedupe key covering the full action payload."""
+    return (
+        str(action.get("action") or ""),
+        str(action.get("entity") or ""),
+        str(action.get("entity_id") or ""),
+        json.dumps(action.get("parameters") or {}, sort_keys=True, default=str),
+        json.dumps(action.get("condition"), sort_keys=True, default=str),
+    )
+
+
+def parse_actions(llm_response: str) -> list[dict]:
+    """Extract all structured action dicts from an LLM response, in order.
+
+    Multi-action turns: the domain prompts instruct the LLM to emit one
+    fenced JSON block per action, so every block that decodes and
+    validates is collected. Exact duplicates (same action, entity,
+    entity_id, parameters and condition) are removed order-preserving
+    and the result is capped at ``_MAX_ACTIONS_PER_TURN``.
+
+    Stage precedence is identical to the former single-action parser:
+    labelled ```json fences win over unlabelled ``` fences, and a
+    raw-text scan only runs when neither fence stage yields an action.
+    """
+    # FLOW-LOW-1 / P2-6: same precedence and per-candidate validation as
+    # the single-action path -- a malformed fence never poisons a
+    # well-formed block in a later fence.
+    actions: list[dict] = []
+    for regex in (_JSON_FENCE_RE, _PLAIN_FENCE_RE):
+        for match in regex.finditer(llm_response):
+            actions.extend(_collect_actions_from_text(match.group(1)))
+        if actions:
+            break
+    else:
+        actions = _collect_actions_from_text(llm_response)
+
+    seen: set[tuple] = set()
+    deduped: list[dict] = []
+    for action in actions:
+        key = _action_dedupe_key(action)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(action)
+
+    if len(deduped) > _MAX_ACTIONS_PER_TURN:
+        logger.warning(
+            "parse_actions: truncating %d action blocks to _MAX_ACTIONS_PER_TURN=%d",
+            len(deduped),
+            _MAX_ACTIONS_PER_TURN,
+        )
+        deduped = deduped[:_MAX_ACTIONS_PER_TURN]
+    return deduped
+
+
+def parse_action(llm_response: str) -> dict | None:
+    """Extract the first structured action dict from an LLM response.
+
+    Thin wrapper over :func:`parse_actions` for callers that only act on
+    a single action block. Returns ``None`` when no valid action is found.
 
     Expected format:
         {"action": "turn_on", "entity": "kitchen light", "parameters": {}}
-
-    Returns None if no valid action block is found.
     """
-    # FLOW-LOW-1: try labelled ```json fences first (preferred, most
-    # specific), then fall back to unlabelled ``` fences before the raw
-    # scanner. Ordering matters: a labelled fence MUST win over a plain
-    # fence when both are present so we do not silently parse a prose
-    # example block.
-    #
-    # P2-6 (FLOW-PARSE-1): each path runs the candidate JSON through
-    # ``_validate_action_dict`` (via ``_try_parse_json_with_action``).
-    # If a fence's contents fail validation we fall through to the
-    # next regex instead of returning a malformed action -- a labelled
-    # ```json fence containing a stub example no longer overrides a
-    # well-formed plain-fence or inline action below it.
-    for regex in (_JSON_FENCE_RE, _PLAIN_FENCE_RE):
-        for match in regex.finditer(llm_response):
-            result = _try_parse_json_with_action(match.group(1))
-            if result:
-                return result
-
-    return _try_parse_json_with_action(llm_response)
+    actions = parse_actions(llm_response)
+    return actions[0] if actions else None
 
 
 async def call_service_with_verification(

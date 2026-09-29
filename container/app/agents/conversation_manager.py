@@ -48,6 +48,9 @@ async def extract_resolved_entities(
     friendly name is looked up in the entity index when available and
     falls back to the entity_id. Failure-contained: an index error drops
     only the name, never the record.
+
+    Multi-action turns carry every acted-on id in ``entity_ids``; each
+    id gets its own record. Single-action turns resolve ``entity_id``.
     """
     if not action_executed:
         return None
@@ -55,22 +58,39 @@ async def extract_resolved_entities(
         action_executed = action_executed.model_dump()
     if not isinstance(action_executed, dict):
         return None
-    if not action_executed.get("success", True):
-        return None
-    entity_id = str(action_executed.get("entity_id") or "").strip()
-    if not entity_id:
-        return None
-    friendly_name = ""
-    if entity_index is not None:
+
+    async def _friendly_name(entity_id: str) -> str:
+        """Look up the friendly name; failures fall back to the id."""
+        if entity_index is None:
+            return ""
         try:
             if hasattr(entity_index, "get_by_id_async"):
                 entry = await entity_index.get_by_id_async(entity_id)
             else:
                 entry = entity_index.get_by_id(entity_id)
             if entry is not None:
-                friendly_name = getattr(entry, "friendly_name", None) or ""
+                return getattr(entry, "friendly_name", None) or ""
         except Exception:
             logger.debug("Friendly-name lookup failed for %s", entity_id, exc_info=True)
+        return ""
+
+    # Multi-action turns: ``entity_ids`` carries every entity acted on
+    # this turn (successful results only), so a non-empty list is itself
+    # proof of success -- resolve one record per id even when the first
+    # action's headline ``success`` flag is False.
+    raw_ids = action_executed.get("entity_ids")
+    if isinstance(raw_ids, list) and raw_ids:
+        entity_ids = [eid for item in raw_ids if (eid := str(item or "").strip())]
+        if not entity_ids:
+            return None
+        return [{"entity_id": eid, "friendly_name": (await _friendly_name(eid)) or eid} for eid in entity_ids]
+
+    if not action_executed.get("success", True):
+        return None
+    entity_id = str(action_executed.get("entity_id") or "").strip()
+    if not entity_id:
+        return None
+    friendly_name = await _friendly_name(entity_id)
     return [{"entity_id": entity_id, "friendly_name": friendly_name or entity_id}]
 
 

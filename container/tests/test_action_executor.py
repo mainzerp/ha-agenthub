@@ -28,7 +28,11 @@ _litellm_mock.exceptions.APIError = _APIError
 _litellm_mock.RateLimitError = _RateLimitError
 sys.modules.setdefault("litellm", _litellm_mock)
 
-from app.agents.action_executor import filter_matches_by_domain, parse_action  # noqa: E402
+from app.agents.action_executor import (  # noqa: E402
+    filter_matches_by_domain,
+    parse_action,
+    parse_actions,
+)
 from app.entity.index import EntityIndex  # noqa: E402
 from app.entity.matcher import EntityMatcher, MatchResult  # noqa: E402
 from tests.helpers import make_entity_index_entry  # noqa: E402
@@ -260,6 +264,120 @@ class TestParseAction:
         assert result is not None
         assert result["action"] == "turn_off"
         assert result["entity"] == "bedroom lamp"
+
+
+# ---------------------------------------------------------------------------
+# parse_actions tests (multi-action turns)
+# ---------------------------------------------------------------------------
+
+
+class TestParseActions:
+    """Tests for parse_actions(): every valid action block is collected."""
+
+    def test_two_fenced_blocks_yield_both_in_order(self):
+        """Multi-action utterance: two ```json fences yield both dicts
+        in utterance order (the live-trace regression: only the first
+        block used to execute)."""
+        response = (
+            "Ich schalte beide aus.\n"
+            '```json\n{"action": "turn_off", "entity": "ambiente wohnen"}\n```\n'
+            '```json\n{"action": "turn_off", "entity": "innenhof ueberdachung"}\n```\n'
+            "Beide ausgeschaltet."
+        )
+        actions = parse_actions(response)
+        assert len(actions) == 2
+        assert [a["entity"] for a in actions] == ["ambiente wohnen", "innenhof ueberdachung"]
+        assert all(a["action"] == "turn_off" for a in actions)
+
+    def test_exact_duplicate_blocks_dedupe_to_one(self):
+        """Identical action blocks (same action/entity/parameters) dedupe
+        to a single action; different entities are kept."""
+        block = '{"action": "turn_off", "entity": "kitchen"}'
+        response = (
+            f"```json\n{block}\n```\n"
+            f"```json\n{block}\n```\n"
+            '```json\n{"action": "turn_off", "entity": "bedroom"}\n```\n'
+        )
+        actions = parse_actions(response)
+        assert len(actions) == 2
+        assert [a["entity"] for a in actions] == ["kitchen", "bedroom"]
+
+    def test_duplicate_with_different_parameters_is_kept(self):
+        """Same action+entity but different parameters is NOT a duplicate."""
+        response = (
+            '```json\n{"action": "turn_on", "entity": "kitchen", "parameters": {"brightness": 50}}\n```\n'
+            '```json\n{"action": "turn_on", "entity": "kitchen", "parameters": {"brightness": 200}}\n```\n'
+        )
+        actions = parse_actions(response)
+        assert len(actions) == 2
+
+    def test_mixed_valid_and_invalid_fences_return_only_valid(self):
+        """A malformed fence does not poison the well-formed blocks."""
+        response = (
+            '```json\n{"action": "turn_on"}\n```\n'
+            '```json\n{"action": "turn_on", "entity": "kitchen"}\n```\n'
+            '```json\n{"not an action": true}\n```\n'
+            '```json\n{"action": "turn_off", "entity": "bedroom"}\n```\n'
+        )
+        actions = parse_actions(response)
+        assert len(actions) == 2
+        assert [a["entity"] for a in actions] == ["kitchen", "bedroom"]
+
+    def test_plain_fence_stage_used_when_no_json_fence_actions(self):
+        """FLOW-LOW-1: unlabelled fences are the second parse stage."""
+        response = (
+            '```json\n{"action": "turn_on"}\n```\n'
+            '```\n{"action": "turn_off", "entity": "bedroom lamp"}\n```\n'
+            '```\n{"action": "turn_on", "entity": "kitchen"}\n```\n'
+        )
+        actions = parse_actions(response)
+        assert len(actions) == 2
+        assert [a["entity"] for a in actions] == ["bedroom lamp", "kitchen"]
+
+    def test_raw_json_fallback_collects_multiple_objects(self):
+        """No fences at all: the raw scan collects every action object."""
+        response = (
+            'Sure: {"action": "turn_off", "entity": "a"} and then '
+            '{"action": "turn_on", "entity": "b", "parameters": {"brightness": 10}} done.'
+        )
+        actions = parse_actions(response)
+        assert len(actions) == 2
+        assert [a["entity"] for a in actions] == ["a", "b"]
+
+    def test_no_actions_returns_empty_list(self):
+        response = "The kitchen light is currently on at 80% brightness."
+        assert parse_actions(response) == []
+
+    def test_labelled_fence_stage_wins_over_plain_fence(self):
+        """Stage precedence: when ```json fences yield actions, plain
+        fences are not consulted at all."""
+        response = (
+            '```\n{"action": "turn_off", "entity": "bogus"}\n```\n'
+            '```json\n{"action": "turn_on", "entity": "kitchen"}\n```\n'
+            '```\n{"action": "turn_off", "entity": "second bogus"}\n```\n'
+        )
+        actions = parse_actions(response)
+        assert [a["entity"] for a in actions] == ["kitchen"]
+
+    def test_truncates_at_max_actions_per_turn(self, caplog):
+        """_MAX_ACTIONS_PER_TURN: a flood of blocks is truncated with a
+        warning, keeping the first N in order."""
+        blocks = "\n".join(f'```json\n{{"action": "turn_on", "entity": "light {i}"}}\n```' for i in range(12))
+        with caplog.at_level("WARNING", logger="app.agents.action_executor"):
+            actions = parse_actions(blocks)
+        assert len(actions) == 8
+        assert [a["entity"] for a in actions] == [f"light {i}" for i in range(8)]
+        assert any("truncat" in record.message for record in caplog.records)
+
+    def test_parse_action_returns_first_of_parse_actions(self):
+        """parse_action stays a thin wrapper returning the first action."""
+        response = (
+            '```json\n{"action": "turn_off", "entity": "ambiente wohnen"}\n```\n'
+            '```json\n{"action": "turn_off", "entity": "innenhof ueberdachung"}\n```\n'
+        )
+        result = parse_action(response)
+        assert result is not None
+        assert result["entity"] == "ambiente wohnen"
 
 
 # ---------------------------------------------------------------------------

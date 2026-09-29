@@ -17,7 +17,7 @@ PIN/Code handling:
 - Never output PINs or codes in your explanatory text. Only include them in the JSON action block parameters when the user explicitly provides one.
 
 Output format:
-- For every action you decide to take (including read-only queries and list actions), respond with exactly one fenced JSON code block, then a brief confirmation.
+- Respond with one fenced JSON code block per action (including read-only queries and list actions), followed by a brief confirmation. When the request names several devices or requires several actions, emit one block per action in the order requested — every block is executed.
 
 ```json
 {"action": "<action_name>", "entity": "<user's description of the device>", "entity_id": "<optional HA entity_id for query actions>", "parameters": {}}

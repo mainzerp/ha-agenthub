@@ -135,8 +135,8 @@ class TestLightAgent:
         return_value='Here is some info about lights. {"action": "turn_on", "entity": "x", "parameters": {}} All done.',
     )
     async def test_handle_task_strips_json_from_fallback(self, mock_complete):
-        """When no action is parsed (parse_action returns None), JSON should be stripped from speech."""
-        with patch("app.agents.actionable.parse_action", return_value=None):
+        """When no action is parsed (parse_actions returns []), JSON should be stripped from speech."""
+        with patch("app.agents.actionable.parse_actions", return_value=[]):
             agent = LightAgent()
             result = await agent.handle_task(_make_task("tell me about lights"))
             assert "{" not in result.speech
@@ -245,7 +245,7 @@ class TestMusicAgent:
         return_value='Currently playing "Bohemian Rhapsody" on the kitchen speaker. {"action": "media_play", "entity": "x", "parameters": {}} Enjoy!',
     )
     async def test_handle_task_strips_json_from_informational(self, mock_complete):
-        with patch("app.agents.actionable.parse_action", return_value=None):
+        with patch("app.agents.actionable.parse_actions", return_value=[]):
             agent = MusicAgent()
             result = await agent.handle_task(_make_task("what's playing?"))
             assert "{" not in result.speech
@@ -359,7 +359,7 @@ class TestClimateAgent:
         return_value='Here is some info. {"action": "turn_on", "entity": "x", "parameters": {}} All done.',
     )
     async def test_handle_task_strips_json_from_fallback(self, mock_complete):
-        with patch("app.agents.actionable.parse_action", return_value=None):
+        with patch("app.agents.actionable.parse_actions", return_value=[]):
             agent = ClimateAgent()
             result = await agent.handle_task(_make_task("tell me about the AC"))
             assert "{" not in result.speech
@@ -494,7 +494,7 @@ class TestCoverAgent:
         return_value='Here is some info. {"action": "open_cover", "entity": "x", "parameters": {}} All done.',
     )
     async def test_handle_task_strips_json_from_fallback(self, mock_complete):
-        with patch("app.agents.actionable.parse_action", return_value=None):
+        with patch("app.agents.actionable.parse_actions", return_value=[]):
             agent = CoverAgent()
             result = await agent.handle_task(_make_task("tell me about the blinds"))
             assert "{" not in result.speech
@@ -587,7 +587,7 @@ class TestMediaAgent:
         return_value='TV is playing. {"action": "play", "entity": "x", "parameters": {}} All set.',
     )
     async def test_handle_task_strips_json_from_fallback(self, mock_complete):
-        with patch("app.agents.actionable.parse_action", return_value=None):
+        with patch("app.agents.actionable.parse_actions", return_value=[]):
             agent = MediaAgent()
             result = await agent.handle_task(_make_task("what's playing on the TV?"))
             assert "{" not in result.speech
@@ -706,7 +706,7 @@ class TestVacuumAgent:
         return_value='Vacuum is idle. {"action": "start", "entity": "x", "parameters": {}} All set.',
     )
     async def test_handle_task_strips_json_from_fallback(self, mock_complete):
-        with patch("app.agents.actionable.parse_action", return_value=None):
+        with patch("app.agents.actionable.parse_actions", return_value=[]):
             agent = VacuumAgent()
             result = await agent.handle_task(_make_task("what's the vacuum status?"))
             assert "{" not in result.speech
@@ -1868,7 +1868,7 @@ class TestSceneAgent:
         return_value='Available scenes listed. {"action": "activate_scene", "entity": "x", "parameters": {}} Enjoy!',
     )
     async def test_handle_task_strips_json_from_fallback(self, mock_complete):
-        with patch("app.agents.actionable.parse_action", return_value=None):
+        with patch("app.agents.actionable.parse_actions", return_value=[]):
             agent = SceneAgent()
             result = await agent.handle_task(_make_task("list scenes"))
             assert "{" not in result.speech
@@ -1965,7 +1965,7 @@ class TestAutomationAgent:
         return_value='The automation is active. {"action": "enable_automation", "entity": "x", "parameters": {}} All good.',
     )
     async def test_handle_task_strips_json_from_fallback(self, mock_complete):
-        with patch("app.agents.actionable.parse_action", return_value=None):
+        with patch("app.agents.actionable.parse_actions", return_value=[]):
             agent = AutomationAgent()
             result = await agent.handle_task(_make_task("is the automation active?"))
             assert "{" not in result.speech
@@ -2146,7 +2146,7 @@ class TestSecurityAgentHandler:
         return_value='Motion detected in hallway. {"action": "lock", "entity": "x", "parameters": {}} Stay safe.',
     )
     async def test_handle_task_strips_json_from_fallback(self, mock_complete):
-        with patch("app.agents.actionable.parse_action", return_value=None):
+        with patch("app.agents.actionable.parse_actions", return_value=[]):
             agent = SecurityAgent()
             result = await agent.handle_task(_make_task("any motion detected?"))
             assert "{" not in result.speech

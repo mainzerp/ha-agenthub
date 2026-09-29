@@ -210,6 +210,14 @@ class ActionExecuted(BaseModel):
     # Optional executor-audited command.  Unlike ``action`` this identifies
     # the actual HA domain/service and payload used for the live call.
     executed_command: ExecutedCommand | None = None
+    # Multi-action turns: every entity acted on this turn (deduped, in
+    # execution order). ``entity_id`` still carries the first action's
+    # target; this list is only populated when a turn executed several
+    # action blocks.
+    entity_ids: list[str] = Field(
+        default_factory=list,
+        description="All entity IDs acted on this turn; populated when a turn executed multiple actions",
+    )
 
 
 class AgentErrorCode(StrEnum):
@@ -243,6 +251,13 @@ class TaskResult(BaseModel):
 
     speech: str = Field(..., description="Natural language response text")
     action_executed: ActionExecuted | None = Field(None, description="HA action result if an action was performed")
+    # Multi-action turns: per-action results in execution order. Set only
+    # when a single agent turn executed several action blocks;
+    # single-action turns report via ``action_executed`` only.
+    actions_executed: list[ActionExecuted] | None = Field(
+        None,
+        description="Full per-action results; set only when a single agent turn executed multiple actions",
+    )
     metadata: dict = Field(default_factory=dict, description="Agent-specific metadata")
     error: AgentError | None = Field(None, description="Structured error if the agent encountered a problem")
     # When True and the request came from HA voice (``source == \"ha\"``), the

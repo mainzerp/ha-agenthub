@@ -243,6 +243,46 @@ class TestCacheOrchestratorEdgeCases:
         cm.store_routing_async.assert_awaited_once()
         cm.store_action_async.assert_not_called()
 
+    # ------------------------------------------------------------------
+    # Multi-action turns: never action-cached, routing only
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_multi_action_turn_stores_routing_not_action(self):
+        """entity_ids > 1 means the turn executed several service calls;
+        a single CachedAction cannot replay them, so only a routing
+        entry is stored (all acted-on ids attached)."""
+        co, cm = _make_cache_orchestrator()
+        with (
+            patch.object(co, "_get_bool_setting_impl", new=AsyncMock(return_value=True)),
+            patch.object(co, "legacy_pipeline_enabled", return_value=False),
+        ):
+            result = await co.store_after_dispatch(
+                user_text="Ambiente Wohnen und Innenhofueberdachung ausschalten",
+                language="de",
+                target_agent="light-agent",
+                condensed_task="Ambiente Wohnen und Innenhofueberdachung ausschalten",
+                confidence=0.95,
+                speech="Beide ausgeschaltet.",
+                original_response_text="Beide ausgeschaltet.",
+                action_executed={
+                    "success": True,
+                    "action": "turn_off",
+                    "entity_id": "light.ambiente_wohnen",
+                    "entity_ids": ["light.ambiente_wohnen", "light.innenhof_uberdachung"],
+                    "service_data": {},
+                },
+                has_error=False,
+                task=IngressTask(description="Ambiente Wohnen und Innenhofueberdachung ausschalten"),
+            )
+        assert result == (False, True)
+        cm.store_action_async.assert_not_called()
+        cm.store_routing_async.assert_awaited_once()
+        assert cm.store_routing_async.await_args.kwargs["entity_ids"] == [
+            "light.ambiente_wohnen",
+            "light.innenhof_uberdachung",
+        ]
+
 
 class TestVerifiedStoreGate:
     """R-A (ENTITY_RESOLUTION_REWORK): the fallback routing-store branch

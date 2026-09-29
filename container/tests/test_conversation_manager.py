@@ -264,3 +264,66 @@ class TestExtractResolvedEntities:
         index.get_by_id_async = AsyncMock(side_effect=RuntimeError("index down"))
         result = await extract_resolved_entities({"entity_id": "light.couch", "success": True}, entity_index=index)
         assert result == [{"entity_id": "light.couch", "friendly_name": "light.couch"}]
+
+    async def test_entity_ids_list_returns_one_record_per_id(self):
+        """Multi-action turn: every acted-on id gets its own record."""
+        result = await extract_resolved_entities(
+            {
+                "action": "turn_off",
+                "entity_id": "light.ambiente_wohnen",
+                "entity_ids": ["light.ambiente_wohnen", "light.innenhof_uberdachung"],
+                "success": True,
+            }
+        )
+        assert result == [
+            {"entity_id": "light.ambiente_wohnen", "friendly_name": "light.ambiente_wohnen"},
+            {"entity_id": "light.innenhof_uberdachung", "friendly_name": "light.innenhof_uberdachung"},
+        ]
+
+    async def test_entity_ids_list_resolves_friendly_names(self):
+        entry = MagicMock()
+        entry.friendly_name = "Ambiente Wohnen"
+        index = AsyncMock()
+        index.get_by_id_async = AsyncMock(return_value=entry)
+        result = await extract_resolved_entities(
+            {
+                "entity_id": "light.ambiente_wohnen",
+                "entity_ids": ["light.ambiente_wohnen", "light.innenhof_uberdachung"],
+                "success": True,
+            },
+            entity_index=index,
+        )
+        assert result == [
+            {"entity_id": "light.ambiente_wohnen", "friendly_name": "Ambiente Wohnen"},
+            {"entity_id": "light.innenhof_uberdachung", "friendly_name": "Ambiente Wohnen"},
+        ]
+
+    async def test_entity_ids_skips_empty_entries(self):
+        result = await extract_resolved_entities(
+            {
+                "entity_id": "",
+                "entity_ids": ["light.a", "", None, "light.b"],
+                "success": True,
+            }
+        )
+        assert result == [
+            {"entity_id": "light.a", "friendly_name": "light.a"},
+            {"entity_id": "light.b", "friendly_name": "light.b"},
+        ]
+
+    async def test_empty_entity_ids_falls_back_to_entity_id(self):
+        result = await extract_resolved_entities({"entity_id": "light.couch", "entity_ids": [], "success": True})
+        assert result == [{"entity_id": "light.couch", "friendly_name": "light.couch"}]
+
+    async def test_entity_ids_model_input(self):
+        action = ActionExecuted(
+            action="turn_off",
+            entity_id="light.ambiente_wohnen",
+            success=True,
+            entity_ids=["light.ambiente_wohnen", "light.innenhof_uberdachung"],
+        )
+        result = await extract_resolved_entities(action)
+        assert result == [
+            {"entity_id": "light.ambiente_wohnen", "friendly_name": "light.ambiente_wohnen"},
+            {"entity_id": "light.innenhof_uberdachung", "friendly_name": "light.innenhof_uberdachung"},
+        ]
