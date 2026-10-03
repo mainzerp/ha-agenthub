@@ -15,6 +15,7 @@
 - Runtime: `uvicorn[standard]` 0.53.0 -> 0.54.0 (#116), `litellm` floor raised to `>=1.103.1,<2.0.0` (#114), `sentence-transformers` 6.0.0 -> 6.1.0 (#110; the multimodal input-ordering change does not affect text-only embeddings).
 - Dev tooling: `ruff` 0.16.7 -> 0.16.9 (#117), `pytest-mock` floor raised to `>=3.16.0` (#115).
 - CI: `github/codeql-action` 4.38.0 -> 4.38.2 (#118).
+- Verification: 3354 container tests passed (1 skipped, 9 xfailed, 3 xpassed), 145 integration tests passed; Ruff lint and format passed.
 - No code changes, no features or public APIs removed; no user action required.
 
 ### 2.5.2 (PATCH) -- multi-action commands execute every emitted action
