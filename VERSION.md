@@ -1,12 +1,21 @@
 # Version
 
-**Current Version:** 2.5.2
+**Current Version:** 2.5.3
 
 ## Recent Changes
 
-(tracking changes since 2.5.2)
+(tracking changes since 2.5.3)
 
 ## Version History
+
+### 2.5.3 (PATCH) -- dependency updates
+
+(commits eca3959, 9687b48, e2267ea, cca9156, d6bbccd, c072e08)
+
+- Runtime: `uvicorn[standard]` 0.53.0 -> 0.54.0 (#116), `litellm` floor raised to `>=1.103.1,<2.0.0` (#114), `sentence-transformers` 6.0.0 -> 6.1.0 (#110; the multimodal input-ordering change does not affect text-only embeddings).
+- Dev tooling: `ruff` 0.16.7 -> 0.16.9 (#117), `pytest-mock` floor raised to `>=3.16.0` (#115).
+- CI: `github/codeql-action` 4.38.0 -> 4.38.2 (#118).
+- No code changes, no features or public APIs removed; no user action required.
 
 ### 2.5.2 (PATCH) -- multi-action commands execute every emitted action
 
