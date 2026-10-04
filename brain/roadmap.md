@@ -23,17 +23,24 @@ Live pipeline in board format — headings are columns, cards are
 
 ## In Progress
 
+## Testing
+
 - Review 2026-10-04 package 1: high-severity correctness fixes · priority: P1 · area: core
   Outcome: rescheduled timers stay cancellable; cache import writes every
   entry; HA WS reconnect opens one session and survives handshake errors;
   same-entity multi-action turns are never action-cached; AlarmMonitor
-  compares in HA local time. Next step: implement with regression tests.
-  Verify: new regression tests + full container suite.
+  fires in HA local time and never early. Commits e5e1986, 5f5e87d,
+  925ecdf, 09d5fff, 01b124e on branch claude/lucid-maxwell-m0bpwu.
+  Passed: new regression tests; container suite 3377 passed, bridge 145
+  passed; ruff lint + format clean.
+  Needs user verification on live: (1) set an alarm, change its time,
+  then cancel it -- it must not ring; (2) an input_datetime alarm rings
+  at local time, not 1-2 h off; (3) dashboard cache export, then import
+  in replace mode -- entry count matches; (4) restart HA -- container log
+  shows one "Connected to HA WebSocket" per reconnect; (5) "Thermostat
+  auf Heizen und 22 Grad" twice -- second turn must run both actions.
   Follow-ups: packages 2 (visibility/security), 3 (robustness), 4 (tech
   debt/CI) from the same review.
-
-## Testing
-
 - Multi-action commands: execute every LLM action block · priority: P1 · area: agents
   Outcome: "X und Y ausschalten" executes both actions in one turn.
   Implemented 2026-09-29: parse_actions() collects all fenced blocks

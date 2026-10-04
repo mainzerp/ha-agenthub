@@ -6,6 +6,11 @@
 
 (tracking changes since 2.5.3)
 
+- Timers: a rescheduled timer whose old task was cancelled no longer drops tracking of its replacement, so a rescheduled-then-cancelled alarm no longer fires; a failed recovery fire is marked fired instead of repeating at every restart; a dispatch failure no longer ends a recurring alarm series (5f5e87d).
+- Alarms: `AlarmMonitor` evaluates `input_datetime` alarms in the HA timezone instead of the container clock (UTC) and fires only within 60 s after the alarm time, never early (925ecdf).
+- Cache: `SqliteCacheStore.upsert` writes every entry of a batch; cache import previously stored one row per 500-entry batch (e5e1986). Multi-action turns are never action-cached, also when all blocks target one entity or the turn partially failed, via the new internal `ActionExecuted.multi_action` flag (09d5fff).
+- HA client: WebSocket reconnect no longer opens a second session per reconnect, and handshake errors (CLOSE frame, invalid JSON) no longer kill the WebSocket task (01b124e).
+
 ## Version History
 
 ### 2.5.3 (PATCH) -- dependency updates
