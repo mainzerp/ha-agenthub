@@ -23,6 +23,15 @@ Live pipeline in board format — headings are columns, cards are
 
 ## In Progress
 
+- Review 2026-10-04 package 1: high-severity correctness fixes · priority: P1 · area: core
+  Outcome: rescheduled timers stay cancellable; cache import writes every
+  entry; HA WS reconnect opens one session and survives handshake errors;
+  same-entity multi-action turns are never action-cached; AlarmMonitor
+  compares in HA local time. Next step: implement with regression tests.
+  Verify: new regression tests + full container suite.
+  Follow-ups: packages 2 (visibility/security), 3 (robustness), 4 (tech
+  debt/CI) from the same review.
+
 ## Testing
 
 - Multi-action commands: execute every LLM action block · priority: P1 · area: agents
