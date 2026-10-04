@@ -123,7 +123,8 @@ class HAWebSocketClient:
                     await self._close_session_locked()
                     return False
 
-                self._running = True
+                # ``_running`` is owned by ``run()`` / ``disconnect()``; setting
+                # it here could revive the client after a concurrent disconnect.
                 self._logger.info("Connected to HA WebSocket")
 
                 # Auto-subscribe to all registered event types
@@ -131,7 +132,12 @@ class HAWebSocketClient:
                     await self.subscribe_events(event_type)
 
             return True
-        except (aiohttp.ClientError, TimeoutError, ConnectionError):
+        except Exception:
+            # Broad on purpose: besides transport errors the handshake can
+            # raise TypeError (aiohttp WSMessageTypeError when HA sends CLOSE
+            # instead of TEXT), ValueError (invalid JSON) or AttributeError /
+            # KeyError (non-dict JSON). CancelledError / KeyboardInterrupt are
+            # BaseException and still propagate.
             self._logger.error("Failed to connect to HA WebSocket", exc_info=True)
             await self._close_session()
             return False
@@ -201,24 +207,51 @@ class HAWebSocketClient:
         await self._close_session()
         self._logger.info("HA WebSocket connection dropped for reconnect")
 
+    async def _safe_connect(self) -> bool:
+        """Call ``connect()`` and turn any unexpected error into ``False``."""
+        try:
+            return await self.connect()
+        except Exception:
+            self._logger.error("HA WebSocket connect attempt failed", exc_info=True)
+            await self._close_session()
+            return False
+
     async def run(self) -> None:
         self._running = True
-        while self._running:
-            connected = await self.connect()
-            if not connected:
-                if not self._running:
-                    return
-                await self._reconnect_loop()
-                continue
-            try:
-                await self._receive_loop()
-            except Exception:
-                self._logger.error("WebSocket receive loop error", exc_info=True)
-            if self._running:
+        connected = False
+        try:
+            while self._running:
+                if not connected:
+                    connected = await self._safe_connect()
+                    if not connected:
+                        if not self._running:
+                            return
+                        # ``_reconnect_loop`` returns True only after its own
+                        # successful ``connect()``; go straight to the receive
+                        # loop instead of connecting a second time (which would
+                        # leak the first session and HA connection).
+                        connected = await self._reconnect_loop()
+                        continue
+                try:
+                    await self._receive_loop()
+                except Exception:
+                    self._logger.error("WebSocket receive loop error", exc_info=True)
+                connected = False
+                if self._running:
+                    await self._close_session()
+                    connected = await self._reconnect_loop()
+        finally:
+            # A connect() that completed after a concurrent disconnect() may
+            # leave a live socket behind; tear it down on exit.
+            if not self._running and (self._ws is not None or self._session is not None):
                 await self._close_session()
-                await self._reconnect_loop()
 
-    async def _reconnect_loop(self) -> None:
+    async def _reconnect_loop(self) -> bool:
+        """Retry ``connect()`` with backoff.
+
+        Returns True once a connection is established (the caller must use
+        it, not connect again) and False when ``run()`` was stopped.
+        """
         attempt = 0
         max_delay = MAX_DELAY
         try:
@@ -234,7 +267,7 @@ class HAWebSocketClient:
             try:
                 if await self.connect():
                     self._use_rest_fallback = False
-                    return
+                    return True
             except Exception:
                 self._logger.error("Reconnect attempt failed", exc_info=True)
             attempt += 1
@@ -260,9 +293,10 @@ class HAWebSocketClient:
                 except asyncio.CancelledError:
                     raise
                 if not self._running:
-                    return
+                    return False
                 self._logger.info("Resuming WebSocket reconnect attempts after pause")
                 attempt = 0
+        return False
 
     async def _receive_loop(self) -> None:
         while self._running and self._ws and not self._ws.closed:
@@ -298,7 +332,7 @@ class HAWebSocketClient:
                     elif event_type == "result":
                         msg_id = data.get("id")
                         self._logger.debug(
-                            "_receive_loop: got result id=%d pending=%s", msg_id, msg_id in self._pending_responses
+                            "_receive_loop: got result id=%s pending=%s", msg_id, msg_id in self._pending_responses
                         )
                         if isinstance(msg_id, int) and msg_id in self._pending_responses:
                             future = self._pending_responses.pop(msg_id)
