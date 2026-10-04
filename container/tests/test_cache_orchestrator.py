@@ -283,6 +283,75 @@ class TestCacheOrchestratorEdgeCases:
             "light.innenhof_uberdachung",
         ]
 
+    @pytest.mark.asyncio
+    async def test_multi_action_same_entity_stores_routing_not_action(self):
+        """Regression: two action blocks on the SAME entity ("set thermostat
+        to heat and 22 degrees") leave one id in ``entity_ids``. The explicit
+        ``multi_action`` flag must still keep the turn out of the action
+        cache -- a CachedAction would replay only the first block."""
+        co, cm = _make_cache_orchestrator()
+        with (
+            patch.object(co, "_get_bool_setting_impl", new=AsyncMock(return_value=True)),
+            patch.object(co, "legacy_pipeline_enabled", return_value=False),
+        ):
+            result = await co.store_after_dispatch(
+                user_text="turn on the kitchen light and set it to 30 percent",
+                language="en",
+                target_agent="light-agent",
+                condensed_task="turn on the kitchen light and set it to 30 percent",
+                confidence=0.95,
+                speech="Kitchen light is on. Kitchen light set to 30 percent.",
+                original_response_text="Kitchen light is on. Kitchen light set to 30 percent.",
+                action_executed={
+                    "success": True,
+                    "action": "turn_on",
+                    "entity_id": "light.kitchen",
+                    "entity_ids": ["light.kitchen"],
+                    "service_data": {},
+                    "multi_action": True,
+                },
+                has_error=False,
+                task=IngressTask(description="turn on the kitchen light and set it to 30 percent"),
+            )
+        assert result == (False, True)
+        cm.store_action_async.assert_not_called()
+        cm.store_routing_async.assert_awaited_once()
+        assert cm.store_routing_async.await_args.kwargs["entity_ids"] == ["light.kitchen"]
+
+    @pytest.mark.asyncio
+    async def test_multi_action_partial_failure_stores_routing_not_action(self):
+        """Regression: block 1 succeeded, block 2 failed / asked a follow-up.
+        Only one successful id remains, but the turn executed two blocks, so
+        no action-cache row may be stored; the routing entry still is."""
+        co, cm = _make_cache_orchestrator()
+        with (
+            patch.object(co, "_get_bool_setting_impl", new=AsyncMock(return_value=True)),
+            patch.object(co, "legacy_pipeline_enabled", return_value=False),
+        ):
+            result = await co.store_after_dispatch(
+                user_text="turn off the kitchen light and the foo lamp",
+                language="en",
+                target_agent="light-agent",
+                condensed_task="turn off the kitchen light and the foo lamp",
+                confidence=0.95,
+                speech="Kitchen light is off. Which foo lamp did you mean?",
+                original_response_text="Kitchen light is off. Which foo lamp did you mean?",
+                action_executed={
+                    "success": True,
+                    "action": "turn_off",
+                    "entity_id": "light.kitchen",
+                    "entity_ids": ["light.kitchen"],
+                    "service_data": {},
+                    "multi_action": True,
+                },
+                has_error=False,
+                task=IngressTask(description="turn off the kitchen light and the foo lamp"),
+            )
+        assert result == (False, True)
+        cm.store_action_async.assert_not_called()
+        cm.store_routing_async.assert_awaited_once()
+        assert cm.store_routing_async.await_args.kwargs["entity_ids"] == ["light.kitchen"]
+
 
 class TestVerifiedStoreGate:
     """R-A (ENTITY_RESOLUTION_REWORK): the fallback routing-store branch

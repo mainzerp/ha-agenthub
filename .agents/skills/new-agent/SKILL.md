@@ -76,7 +76,7 @@ Create `container/app/prompts/<domain>.txt`.
 Include:
 1. Role description and domain scope
 2. JSON action schema the LLM must output
-3. At least 3 few-shot examples (English only — prime-directives.md directive 13) showing input → JSON output
+3. At least 3 few-shot examples (English by default; per-language variants only as `<name>_<lang>.txt` assets — prime-directives.md directive 13) showing input → JSON output
 4. Edge cases (entity not found, ambiguous request)
 
 ## Step 4: Register the agent

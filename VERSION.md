@@ -1,12 +1,26 @@
 # Version
 
-**Current Version:** 2.5.3
+**Current Version:** 2.5.4
 
 ## Recent Changes
 
-(tracking changes since 2.5.3)
+(tracking changes since 2.5.4)
 
 ## Version History
+
+### 2.5.4 (PATCH) -- review fixes for timers, alarms, cache and HA WebSocket
+
+(commits 5f5e87d, 925ecdf, e5e1986, 09d5fff, 01b124e; docs 7520247)
+
+- Timers: a rescheduled timer whose old task was cancelled no longer drops tracking of its replacement, so a rescheduled-then-cancelled alarm no longer fires; a failed recovery fire is marked fired instead of repeating at every restart; a dispatch failure no longer ends a recurring alarm series (5f5e87d).
+- Alarms: `AlarmMonitor` evaluates `input_datetime` alarms in the HA timezone instead of the container clock (UTC) and fires only within 60 s after the alarm time, never early (925ecdf).
+- Cache: `SqliteCacheStore.upsert` writes every entry of a batch; cache import previously stored one row per 500-entry batch (e5e1986). Multi-action turns are never action-cached, also when all blocks target one entity or the turn partially failed, via the new internal `ActionExecuted.multi_action` flag (09d5fff).
+- HA client: WebSocket reconnect no longer opens a second session per reconnect, and handshake errors (CLOSE frame, invalid JSON) no longer kill the WebSocket task (01b124e).
+- Docs: Prime Directive 13 now allows per-language few-shot assets with English as default and fallback, matching the language-aware routing catalogs introduced in f201778 (7520247).
+- Release: the GitHub Release body is now taken from the matching `VERSION.md` section, followed by auto-generated notes.
+- Includes the 2.5.3 dependency updates, which were bumped but never tagged.
+- Verification: 3377 container tests passed (1 skipped, 9 xfailed, 3 xpassed), 145 integration tests passed; Ruff lint and format passed.
+- No features or public APIs removed; no user action required.
 
 ### 2.5.3 (PATCH) -- dependency updates
 

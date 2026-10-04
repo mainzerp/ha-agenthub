@@ -312,7 +312,7 @@ Discipline table); project mission and naming context live in
 
 - `docs/project/prime-directives.md` is binding — verify every change against it
   before implementing (execution-engine split, entity visibility on every path,
-  action-cache visibility recheck, A2A boundary, async-only, English-only
+  action-cache visibility recheck, A2A boundary, async-only, English-default
   few-shot prompt examples, no hardcoded keyword routing).
 - Read `docs/style-guide.md` before dashboard work; keep CSS variable names
   stable, update hard-coded hex/RGBA literals in lockstep, and increment

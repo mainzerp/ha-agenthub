@@ -352,3 +352,54 @@ async def test_import_envelope_warns_when_requested_tier_is_missing():
     assert summary.tiers["routing"].imported == 0
     assert summary.warnings == ["tier 'routing' not present in envelope"]
     store.upsert.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Real SqliteCacheStore: multi-entry upsert and bulk import round-trip
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def real_store(tmp_path):
+    from app.cache.sqlite_cache_store import SqliteCacheStore
+
+    store = SqliteCacheStore(str(tmp_path / "cache.db"))
+    yield store
+    store.close()
+
+
+def test_sqlite_upsert_writes_every_entry_in_one_call(real_store):
+    real_store.upsert(
+        COLLECTION_ROUTING_CACHE,
+        ids=["a", "b", "c"],
+        documents=["doc a", "doc b", "doc c"],
+        metadatas=[{"n": 1}, {"n": 2}, {"n": 3}],
+    )
+
+    assert real_store.count(COLLECTION_ROUTING_CACHE) == 3
+    page = real_store.get(COLLECTION_ROUTING_CACHE, ids=["a", "b", "c"], include=["documents", "metadatas"])
+    by_id = dict(zip(page["ids"], zip(page["documents"], page["metadatas"], strict=True), strict=True))
+    assert by_id == {"a": ("doc a", {"n": 1}), "b": ("doc b", {"n": 2}), "c": ("doc c", {"n": 3})}
+
+
+def test_sqlite_upsert_rejects_length_mismatch(real_store):
+    with pytest.raises(ValueError):
+        real_store.upsert(COLLECTION_ROUTING_CACHE, ids=["a", "b"], documents=["only one"], metadatas=[{}, {}])
+    assert real_store.count(COLLECTION_ROUTING_CACHE) == 0
+
+
+@pytest.mark.asyncio
+async def test_import_envelope_real_store_persists_all_entries_across_batches(real_store):
+    manager = CacheManager(real_store)
+    entries = [make_action_cache_entry(query_text=f"turn on light number {i}") for i in range(600)]
+
+    summary = await import_envelope(
+        manager,
+        _make_envelope(action_entries=entries),
+        mode="replace",
+        tiers=["action"],
+    )
+
+    assert summary.tiers["action"].imported == 600
+    assert summary.tiers["action"].skipped == 0
+    assert real_store.count(COLLECTION_ACTION_CACHE) == 600

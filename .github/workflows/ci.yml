@@ -244,7 +244,27 @@ jobs:
         with:
           sarif_file: trivy-results.sarif
 
+      - name: Build release notes from VERSION.md
+        id: notes
+        env:
+          VERSION: ${{ steps.version.outputs.VERSION }}
+        run: |
+          section=$(awk -v ver="$VERSION" '
+            $0 ~ "^### " ver " " { found=1; print; next }
+            found && /^### / { exit }
+            found { print }
+          ' VERSION.md)
+          if [ -z "$section" ]; then
+            echo "::error::No '### $VERSION' section in VERSION.md"
+            exit 1
+          fi
+          title=$(printf '%s\n' "$section" | head -n1 | sed -E 's/^### [^ ]+ \([A-Z]+\) -- //')
+          printf '%s\n' "$section" | tail -n +2 > release-notes.md
+          echo "name=v$VERSION -- $title" >> "$GITHUB_OUTPUT"
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v3
         with:
+          name: ${{ steps.notes.outputs.name }}
+          body_path: release-notes.md
           generate_release_notes: true

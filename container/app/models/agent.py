@@ -218,6 +218,15 @@ class ActionExecuted(BaseModel):
         default_factory=list,
         description="All entity IDs acted on this turn; populated when a turn executed multiple actions",
     )
+    # Explicit multi-action signal for the cache store path: True on the
+    # headline result whenever the turn executed more than one action
+    # block, regardless of how many distinct (or successful) entities
+    # remain in ``entity_ids``. A single CachedAction cannot replay N
+    # service calls, so such turns are never action-cached.
+    multi_action: bool = Field(
+        False,
+        description="True when the turn executed more than one action block; such turns are never action-cached",
+    )
 
 
 class AgentErrorCode(StrEnum):

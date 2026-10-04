@@ -6,8 +6,9 @@ import asyncio
 import contextlib
 import logging
 import uuid
-from datetime import datetime
+from datetime import UTC, datetime, tzinfo
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from app.a2a._request import build_send_request
 from app.models.agent import BackgroundEvent, BackgroundTask, TaskContext
@@ -15,15 +16,16 @@ from app.models.agent import BackgroundEvent, BackgroundTask, TaskContext
 logger = logging.getLogger(__name__)
 
 _CHECK_INTERVAL = 30.0  # seconds
-_MATCH_WINDOW = 60  # seconds -- alarm matches if within this window
+_MATCH_WINDOW = 60  # seconds -- alarm fires if now is within this window AFTER the alarm time
 
 
 class AlarmMonitor:
     """Polls input_datetime entities and dispatches notifications when alarm time is reached."""
 
-    def __init__(self, entity_index: Any, dispatcher: Any) -> None:
+    def __init__(self, entity_index: Any, dispatcher: Any, ha_client: Any = None) -> None:
         self._entity_index = entity_index
         self._dispatcher = dispatcher
+        self._ha_client = ha_client
         self._fired: set[str] = set()
         self._last_reset_date: str = ""
         self._task: asyncio.Task | None = None
@@ -57,8 +59,35 @@ class AlarmMonitor:
                 logger.error("AlarmMonitor check failed", exc_info=True)
             await asyncio.sleep(_CHECK_INTERVAL)
 
+    async def _resolve_home_timezone(self) -> tzinfo:
+        """Return the HA configured timezone (input_datetime states are HA-local).
+
+        Uses the shared cached HomeContext provider; falls back to UTC when the
+        HA client is unavailable or the configured zone is invalid.
+        """
+        timezone_name = "UTC"
+        try:
+            from app.ha_client.home_context import home_context_provider
+
+            if self._ha_client is not None:
+                home_ctx = await home_context_provider.get(self._ha_client)
+                timezone_name = getattr(home_ctx, "timezone", "UTC") or "UTC"
+            elif home_context_provider._context is not None:
+                timezone_name = home_context_provider._context.timezone or "UTC"
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.debug("AlarmMonitor failed to resolve HA timezone; using UTC", exc_info=True)
+        try:
+            return ZoneInfo(str(timezone_name))
+        except Exception:
+            logger.debug("AlarmMonitor got invalid HA timezone %r; using UTC", timezone_name, exc_info=True)
+            return UTC
+
     async def _check_alarms(self) -> None:
-        now = datetime.now()
+        home_tz = await self._resolve_home_timezone()
+        # Naive wall-clock "now" in HA local time; input_datetime states are naive HA-local values.
+        now = datetime.now(home_tz).replace(tzinfo=None)
         today_str = now.strftime("%Y-%m-%d")
 
         # Reset fired set at midnight
@@ -92,8 +121,9 @@ class AlarmMonitor:
                 continue
 
             fire_key = f"{entity_id}:{today_str}"
-            delta = abs((now - alarm_time).total_seconds())
-            if delta <= _MATCH_WINDOW and fire_key not in self._fired:
+            # Fire only at or after the alarm time, never early.
+            delta = (now - alarm_time).total_seconds()
+            if 0 <= delta <= _MATCH_WINDOW and fire_key not in self._fired:
                 self._fired.add(fire_key)
                 friendly_name = entry.friendly_name or entity_id
                 logger.info("Alarm triggered: %s (%s)", entity_id, friendly_name)

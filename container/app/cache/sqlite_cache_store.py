@@ -402,31 +402,45 @@ class SqliteCacheStore:
         embeddings: list[list[float]] | None = None,
         metadatas: list[dict] | None = None,
     ) -> None:
-        """INSERT OR REPLACE a single entry.
+        """INSERT OR REPLACE every entry in ``ids`` within one transaction.
 
-        ``embeddings`` is honoured only for the routing collection (semantic
-        tier, P4): when a vector is supplied, the vec0 sidecar row is written
-        in the same transaction. For the action collection it is ignored.
+        ``documents``, ``metadatas`` and ``embeddings`` are index-aligned with
+        ``ids`` when supplied; a length mismatch raises ``ValueError`` before
+        anything is written. ``embeddings`` is honoured only for the routing
+        collection (semantic tier, P4): when a vector is supplied for an
+        entry, its vec0 sidecar row is written in the same transaction. For
+        the action collection it is ignored.
         """
-        entry_id = ids[0]
-        document = (documents or [""])[0]
-        meta = (metadatas or [{}])[0]
+        if not ids:
+            return
+        count = len(ids)
+        for name, values in (("documents", documents), ("metadatas", metadatas), ("embeddings", embeddings)):
+            if values is not None and len(values) != count:
+                raise ValueError(f"upsert: {name} has {len(values)} items but ids has {count}")
         now = datetime.now(UTC).isoformat()
-        metadata_json = json.dumps(meta)
-        last_accessed = now
-        created_at = meta.get("created_at") or now
-        embedding = embeddings[0] if embeddings else None
+        rows: list[tuple[str, str, dict, list[float] | None]] = []
+        for index, entry_id in enumerate(ids):
+            document = documents[index] if documents is not None else ""
+            meta = metadatas[index] if metadatas is not None else {}
+            embedding = embeddings[index] if embeddings is not None else None
+            rows.append((entry_id, document, meta or {}, embedding))
         conn = self._ensure_conn()
         with self._lock:
-            conn.execute(
-                f"INSERT OR REPLACE INTO {collection} (entry_id, document, metadata_json, last_accessed, created_at) VALUES (?, ?, ?, ?, ?)",
-                (entry_id, document, metadata_json, last_accessed, created_at),
-            )
-            if collection == COLLECTION_ACTION_CACHE:
-                self._write_sidecar_rows(conn, entry_id, meta)
-            if collection == COLLECTION_ROUTING_CACHE and embedding:
-                self._write_routing_embedding(conn, entry_id, embedding)
-            conn.commit()
+            try:
+                for entry_id, document, meta, embedding in rows:
+                    conn.execute(
+                        f"INSERT OR REPLACE INTO {collection} "
+                        "(entry_id, document, metadata_json, last_accessed, created_at) VALUES (?, ?, ?, ?, ?)",
+                        (entry_id, document, json.dumps(meta), now, meta.get("created_at") or now),
+                    )
+                    if collection == COLLECTION_ACTION_CACHE:
+                        self._write_sidecar_rows(conn, entry_id, meta)
+                    if collection == COLLECTION_ROUTING_CACHE and embedding:
+                        self._write_routing_embedding(conn, entry_id, embedding)
+                conn.commit()
+            except BaseException:
+                conn.rollback()
+                raise
 
     def get(
         self,

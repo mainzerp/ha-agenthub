@@ -65,6 +65,6 @@ Primary intent detection, target-agent routing, and top-level intent classificat
 
 When no valid routing-cache decision exists for a turn, the orchestrator must perform live LLM-based intent classification. Valid routing-cache hits may be reused and may skip reclassification, but this exception does not permit bypassing visibility enforcement, action-cache replay validation, or other runtime safety checks.
 
-## 13. Few-Shot Examples in Prompt Assets Must Be English-Only
+## 13. Few-Shot Examples Are English by Default; Language Variants Live in Per-Language Assets
 
-Few-shot examples used in prompts, classifier templates, and instruction assets must be written in English. This policy does not authorize translating user-provided entity, room, area, device, or location names; user identifiers must remain verbatim where runtime behavior requires preservation.
+Few-shot examples used in prompts, classifier templates, and instruction assets are written in English by default. A prompt may inject few-shot examples in the configured language only through dedicated per-language asset files (`<name>_<lang>.txt`) that are selected at runtime by language normalization, with the English file as the mandatory default and fallback. Per-language files must cover the same cases as the English file; non-English example phrases must not be hardcoded in Python code or in shared, language-neutral templates. This policy does not authorize translating user-provided entity, room, area, device, or location names; user identifiers must remain verbatim where runtime behavior requires preservation.

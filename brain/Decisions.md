@@ -4,6 +4,28 @@ Decision rationale, so decisions stay made. Newest first. Binding architecture
 rules live in `docs/project/prime-directives.md` — this file records choices,
 not copies of rules.
 
+## 2026-10-04 — Few-shot examples in the configured language (Directive 13 amended)
+
+Directive 13 now allows per-language few-shot assets with English as the
+default and fallback. It records a choice already made in `f201778`
+(2026-09-05), which split the orchestrator agent catalog into
+`orchestrator_examples_<lang>.txt` (de, en, es, fr, it). Rationale:
+
+- **English-only examples did not always route correctly.** Smaller local
+  models misrouted non-English utterances; the 'Ambiente Wohnen'
+  misrouting class is the evidence. Examples in the configured language
+  passed the 17 of 17 routing battery against qwen-3.8-27b on the live
+  deployment.
+- **The guard rails stay.** Language variants live only in per-language
+  asset files, and the English file is the default and fallback. No
+  non-English phrases are hardcoded in Python or in shared templates, so
+  Directive 11 (no language-specific phrase tables for routing) is still
+  met.
+- **Follow-up:** `classification_engine.py`
+  `cancel_interaction_description_line()` hardcodes German examples
+  (abbrechen/egal/schon gut) in Python. Move them into the per-language
+  catalogs.
+
 ## 2026-09-29 — Multi-action execution contract
 
 Domain-agent LLMs may emit one fenced JSON block per requested action
