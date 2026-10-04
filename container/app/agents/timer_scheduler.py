@@ -506,6 +506,11 @@ class TimerScheduler:
                         row.get("id"),
                         exc_info=True,
                     )
+                    # Match _run: a failed fire is still terminal, so it does not re-fire on every restart.
+                    try:
+                        await self._repo.mark_fired(timer_id, now)
+                    except Exception:
+                        logger.error("Timer %s mark_fired failed on recovery", timer_id, exc_info=True)
             else:
                 self._spawn_task(row)
                 rehydrated += 1
@@ -536,10 +541,33 @@ class TimerScheduler:
             except Exception:
                 logger.error("Timer %s mark_fired failed", timer_id, exc_info=True)
         finally:
-            self._tasks.pop(timer_id, None)
-            for ids in list(self._by_logical.values()):
-                if timer_id in ids:
-                    ids.remove(timer_id)
+            # reschedule() replaces the task under the same id; only drop tracking that still belongs to us.
+            if self._tasks.get(timer_id) is asyncio.current_task():
+                self._tasks.pop(timer_id, None)
+                for ids in list(self._by_logical.values()):
+                    if timer_id in ids:
+                        ids.remove(timer_id)
+
+    async def _schedule_next_recurrence(self, row: dict, payload: dict) -> None:
+        recurrence = _load_recurrence(payload)
+        if recurrence is None:
+            return
+
+        next_fire_epoch = _compute_next_recurring_fire_epoch(row, recurrence, int(time.time()))
+        if next_fire_epoch is None:
+            logger.warning("Recurring alarm %s has invalid/unschedulable recurrence payload", row["id"])
+            return
+
+        next_payload = dict(payload)
+        next_payload["scheduled_for_epoch"] = int(next_fire_epoch)
+        await self.schedule(
+            logical_name=row.get("logical_name") or "",
+            kind="alarm",
+            duration_seconds=max(0, int(next_fire_epoch) - int(time.time())),
+            origin_device_id=row.get("origin_device_id"),
+            origin_area=row.get("origin_area"),
+            payload=next_payload,
+        )
 
     async def _fire(self, row: dict) -> None:
         """Dispatch the kind-specific fire action.
@@ -591,42 +619,30 @@ class TimerScheduler:
             alarm_name = (payload.get("alarm_label") or logical_name or "alarm").strip() or "alarm"
             synthetic_entity_id = f"agenthub_alarm:{row['id']}"
             briefing = _coerce_bool(payload.get("briefing", False))
-            await self._dispatch_background_event(
-                "alarm_notification",
-                {
-                    "alarm_name": alarm_name,
-                    "alarm_label": payload.get("alarm_label") or alarm_name,
-                    "briefing": briefing,
-                    "entity_id": synthetic_entity_id,
-                    "media_player": payload.get("media_player"),
-                    "origin_device_id": origin_device_id,
-                    "origin_area": origin_area,
-                    "language": language,
-                    "scheduled_for_epoch": int(payload.get("scheduled_for_epoch") or row.get("fires_at") or 0),
-                    "timezone": payload.get("timezone"),
-                },
-            )
-
-            recurrence = _load_recurrence(payload)
-            if recurrence is None:
-                return
-
-            next_fire_epoch = _compute_next_recurring_fire_epoch(row, recurrence, int(time.time()))
-            if next_fire_epoch is None:
-                logger.warning("Recurring alarm %s has invalid/unschedulable recurrence payload", row["id"])
-                return
-
-            next_payload = dict(payload)
-            next_payload["scheduled_for_epoch"] = int(next_fire_epoch)
-            duration_seconds = max(0, int(next_fire_epoch) - int(time.time()))
-            await self.schedule(
-                logical_name=logical_name,
-                kind="alarm",
-                duration_seconds=duration_seconds,
-                origin_device_id=origin_device_id,
-                origin_area=origin_area,
-                payload=next_payload,
-            )
+            try:
+                await self._dispatch_background_event(
+                    "alarm_notification",
+                    {
+                        "alarm_name": alarm_name,
+                        "alarm_label": payload.get("alarm_label") or alarm_name,
+                        "briefing": briefing,
+                        "entity_id": synthetic_entity_id,
+                        "media_player": payload.get("media_player"),
+                        "origin_device_id": origin_device_id,
+                        "origin_area": origin_area,
+                        "language": language,
+                        "scheduled_for_epoch": int(payload.get("scheduled_for_epoch") or row.get("fires_at") or 0),
+                        "timezone": payload.get("timezone"),
+                    },
+                )
+            except asyncio.CancelledError:
+                # Cancellation (user cancel, shutdown) must not spawn a new occurrence.
+                raise
+            except Exception:
+                # A failed dispatch must not end a recurring series.
+                await self._schedule_next_recurrence(row, payload)
+                raise
+            await self._schedule_next_recurrence(row, payload)
             return
 
         if kind == "delayed_action":

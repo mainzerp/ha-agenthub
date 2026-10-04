@@ -738,3 +738,96 @@ class TestTimerNameDisplay:
             assert payload["timer_name"] == "egg timer: Eggs done!"
         finally:
             await sched.stop()
+
+
+class TestSchedulerRegressions:
+    async def test_reschedule_then_cancel_removes_task_and_does_not_fire(self, db_repository):
+        sched, gateway = _make_scheduler()
+        try:
+            timer_id = await sched.schedule(
+                logical_name="resched-cancel",
+                kind="notification",
+                duration_seconds=3600,
+                payload={"notification_message": "x"},
+            )
+            updated = await sched.reschedule(timer_id, new_fires_at=int(time.time()) + 3600)
+            assert updated is True
+            new_task = sched._tasks[timer_id]
+
+            # Let the old task's cancellation (and its finally block) run.
+            for _ in range(10):
+                await asyncio.sleep(0)
+
+            assert sched._tasks.get(timer_id) is new_task
+            assert timer_id in sched._by_logical.get("resched-cancel", [])
+
+            count = await sched.cancel(id_=timer_id)
+            assert count == 1
+            await asyncio.gather(new_task, return_exceptions=True)
+
+            assert new_task.cancelled()
+            assert timer_id not in sched._tasks
+            assert timer_id not in sched._by_logical.get("resched-cancel", [])
+            gateway.dispatch.assert_not_awaited()
+        finally:
+            await sched.stop()
+
+    async def test_recovery_fire_failure_marks_row_fired(self, db_repository):
+        now = int(time.time())
+        await ScheduledTimersRepository.insert(
+            id="overdue-fail-id",
+            logical_name="overdue-fail",
+            kind="notification",
+            created_at=now - 100,
+            fires_at=now - 10,
+            duration_seconds=10,
+            origin_device_id=None,
+            origin_area=None,
+            payload_json=json.dumps({"notification_message": "late"}),
+        )
+        sched, gateway = _make_scheduler()
+        gateway.dispatch.side_effect = ValueError("dispatch exploded")
+        try:
+            await sched.start()
+            row = await ScheduledTimersRepository.get("overdue-fail-id")
+            assert row["state"] == "fired"
+        finally:
+            await sched.stop()
+
+    async def test_recurring_alarm_schedules_next_occurrence_when_dispatch_raises(self, db_repository):
+        sched, gateway = _make_scheduler()
+        gateway.dispatch.side_effect = ValueError("dispatch exploded")
+        try:
+            next_fire = int(time.time()) + 600
+            with pytest.MonkeyPatch.context() as mp:
+                mp.setattr(
+                    "app.agents.timer_scheduler._compute_next_recurring_fire_epoch", lambda *_args, **_kwargs: next_fire
+                )
+                tid = await sched.schedule(
+                    logical_name="Failing Alarm",
+                    kind="alarm",
+                    duration_seconds=0,
+                    payload={
+                        "alarm_label": "Failing Alarm",
+                        "recurrence": {
+                            "freq": "daily",
+                            "interval": 1,
+                            "anchor_time": "07:00:00",
+                            "timezone": "UTC",
+                        },
+                    },
+                )
+                for _ in range(30):
+                    await asyncio.sleep(0)
+                    row = await ScheduledTimersRepository.get(tid)
+                    if row and row["state"] == "fired":
+                        break
+
+            row = await ScheduledTimersRepository.get(tid)
+            assert row and row["state"] == "fired"
+            gateway.dispatch.assert_awaited_once()
+            pending = await ScheduledTimersRepository.list_pending_for(logical_name="Failing Alarm", kinds={"alarm"})
+            assert len(pending) == 1
+            assert int(json.loads(pending[0]["payload_json"])["scheduled_for_epoch"]) == next_fire
+        finally:
+            await sched.stop()
