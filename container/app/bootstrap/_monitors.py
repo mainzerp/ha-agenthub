@@ -27,7 +27,7 @@ async def setup_monitors(
     if alarm_monitor is None:
         from app.agents.alarm_monitor import AlarmMonitor
 
-        alarm_monitor = AlarmMonitor(entity_index, dispatcher)
+        alarm_monitor = AlarmMonitor(entity_index, dispatcher, ha_client=getattr(app.state, "ha_client", None))
         await alarm_monitor.start()
         app.state.alarm_monitor = alarm_monitor
 
