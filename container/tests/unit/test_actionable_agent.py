@@ -1333,6 +1333,7 @@ class TestHandleTaskMultiAction:
         assert result.action_executed.entity_id == "light.ambiente_wohnen"
         assert result.action_executed.success is True
         assert result.action_executed.entity_ids == ["light.ambiente_wohnen", "light.innenhof_uberdachung"]
+        assert result.action_executed.multi_action is True
 
         # Full per-action results, in execution order.
         assert result.actions_executed is not None
@@ -1374,8 +1375,84 @@ class TestHandleTaskMultiAction:
         assert result.action_executed is not None
         assert result.action_executed.entity_id == "light.kitchen"
         assert result.action_executed.entity_ids == []
+        assert result.action_executed.multi_action is False
         assert result.actions_executed is None
         assert result.error is None
+
+    @pytest.mark.asyncio
+    async def test_two_blocks_on_same_entity_flag_multi_action(self):
+        """Regression: two action blocks on the SAME entity dedupe to one
+        id in ``entity_ids``; the headline result must still carry
+        ``multi_action`` so the cache path refuses to action-cache it."""
+        agent = LightAgent()
+        task = make_dispatch_task(description="turn on the kitchen light and set it to 30 percent")
+
+        execute_results = [
+            {"speech": "Kitchen is on.", "entity_id": "light.kitchen", "success": True, "new_state": "on"},
+            {"speech": "Kitchen set to 30 percent.", "entity_id": "light.kitchen", "success": True, "new_state": "on"},
+        ]
+        with (
+            patch.object(agent, "_load_prompt_async", new_callable=AsyncMock, return_value="You are a light agent."),
+            patch.object(
+                agent,
+                "_call_llm",
+                new_callable=AsyncMock,
+                return_value=(
+                    '```json\n{"action": "turn_on", "entity": "kitchen light"}\n```\n'
+                    '```json\n{"action": "turn_on", "entity": "kitchen light", "parameters": {"brightness": 30}}\n```\n'
+                ),
+            ),
+            patch.object(agent, "_do_execute", new_callable=AsyncMock, side_effect=execute_results) as mock_exec,
+        ):
+            agent._ha_client = AsyncMock()
+            agent._entity_index = None
+            agent._entity_matcher = None
+
+            result = await agent.handle_task(task)
+
+        assert mock_exec.await_count == 2
+        assert result.action_executed is not None
+        assert result.action_executed.entity_ids == ["light.kitchen"]
+        assert result.action_executed.multi_action is True
+        assert len(result.actions_executed) == 2
+
+    @pytest.mark.asyncio
+    async def test_partial_failure_single_success_flags_multi_action(self):
+        """Regression: block 1 succeeds, block 2 fails -- one successful id
+        remains, but the headline (successful) result is flagged
+        ``multi_action`` so it is never action-cached."""
+        agent = LightAgent()
+        task = make_dispatch_task(description="turn off bar and foo")
+
+        execute_results = [
+            {"speech": "Bar is off.", "entity_id": "light.bar", "success": True, "new_state": "off"},
+            {"speech": "Foo failed.", "entity_id": None, "success": False},
+        ]
+        with (
+            patch.object(agent, "_load_prompt_async", new_callable=AsyncMock, return_value="You are a light agent."),
+            patch.object(
+                agent,
+                "_call_llm",
+                new_callable=AsyncMock,
+                return_value=(
+                    '```json\n{"action": "turn_off", "entity": "bar"}\n```\n'
+                    '```json\n{"action": "turn_off", "entity": "foo"}\n```\n'
+                ),
+            ),
+            patch.object(agent, "_do_execute", new_callable=AsyncMock, side_effect=execute_results),
+        ):
+            agent._ha_client = AsyncMock()
+            agent._entity_index = None
+            agent._entity_matcher = None
+
+            result = await agent.handle_task(task)
+
+        assert result.action_executed is not None
+        assert result.action_executed.success is True
+        assert result.action_executed.entity_ids == ["light.bar"]
+        assert result.action_executed.multi_action is True
+        # Per-action entries are not individually flagged.
+        assert all(a.multi_action is False for a in result.actions_executed)
 
     @pytest.mark.asyncio
     async def test_failing_action_does_not_block_other_actions(self):

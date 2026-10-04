@@ -434,7 +434,12 @@ class ActionableAgent(BaseAgent):
         return result
 
     @staticmethod
-    def _action_executed_from_result(action: dict, result: dict, entity_ids: list[str] | None = None) -> ActionExecuted:
+    def _action_executed_from_result(
+        action: dict,
+        result: dict,
+        entity_ids: list[str] | None = None,
+        multi_action: bool = False,
+    ) -> ActionExecuted:
         """Build the :class:`ActionExecuted` model for one executor result.
 
         P1-5: forwards the action's structured parameters (brightness,
@@ -462,6 +467,7 @@ class ActionableAgent(BaseAgent):
                 else None
             ),
             entity_ids=entity_ids or [],
+            multi_action=multi_action,
         )
 
     @staticmethod
@@ -583,8 +589,13 @@ class ActionableAgent(BaseAgent):
             voice_followup=any(self._result_requests_voice_followup(result) for result in results),
             error=turn_error,
             # Headline action result mirrors the single-action path: the
-            # FIRST result's fields, plus the full acted-on id list.
-            action_executed=self._action_executed_from_result(actions[0], results[0], entity_ids=entity_ids),
+            # FIRST result's fields, plus the full acted-on id list. The
+            # explicit ``multi_action`` flag keeps the turn out of the
+            # action cache even when every block hit the same entity or
+            # only one block succeeded (``entity_ids`` would hold one id).
+            action_executed=self._action_executed_from_result(
+                actions[0], results[0], entity_ids=entity_ids, multi_action=len(actions) > 1
+            ),
             actions_executed=[self._action_executed_from_result(a, r) for a, r in zip(actions, results, strict=True)],
         )
 
