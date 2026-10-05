@@ -425,6 +425,37 @@ class TestLLMReasoningEffort:
         assert "reasoning_effort" not in all_kwargs
         assert "drop_params" not in all_kwargs
 
+    @patch("litellm.acompletion", new_callable=AsyncMock)
+    @patch("app.llm.client.resolve_provider_params", new_callable=AsyncMock, return_value={})
+    @patch("app.llm.client.AgentConfigRepository")
+    async def test_complete_passes_reasoning_effort_none_string(self, mock_repo, mock_params, mock_acompletion):
+        # "none" is an explicit value (disable reasoning), distinct from Default (NULL = not sent).
+        mock_repo.get = AsyncMock(
+            return_value={
+                "agent_id": "rewrite-agent",
+                "enabled": True,
+                "model": "groq/llama-3.1-8b-instant",
+                "timeout": 2,
+                "max_iterations": 1,
+                "temperature": 0.8,
+                "max_tokens": 1024,
+                "description": "Test",
+                "reasoning_effort": "none",
+            }
+        )
+        choice = MagicMock()
+        choice.message.content = "Done!"
+        choice.finish_reason = "stop"
+        mock_acompletion.return_value = MagicMock(choices=[choice], usage=None)
+
+        from app.llm.client import complete
+
+        await complete("rewrite-agent", [{"role": "user", "content": "test"}])
+
+        all_kwargs = mock_acompletion.call_args.kwargs
+        assert all_kwargs.get("reasoning_effort") == "none"
+        assert all_kwargs.get("drop_params") is True
+
 
 class TestAdaptiveMaxTokensRetry:
     """finish_reason=length with empty content -> retry with doubled max_tokens."""

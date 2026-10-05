@@ -2,6 +2,7 @@
 
 import aiosqlite
 
+from app.db.schema import _column_exists
 from app.defaults import CACHE_DEFAULTS, DEFAULT_LOCAL_EMBEDDING_MODEL, MEMORY_DEFAULTS
 
 
@@ -555,12 +556,26 @@ async def _seed_defaults(db: aiosqlite.Connection) -> None:
         ("filler-agent", 1, None, 3, 1, 0.7, 1024, "Interim filler TTS phrase generation"),
     ]
 
-    await db.executemany(
-        "INSERT OR IGNORE INTO agent_configs "
-        "(agent_id, enabled, model, timeout, max_iterations, temperature, max_tokens, description) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        default_agents,
-    )
+    # Per-agent reasoning effort defaults (absent = Default, parameter not sent).
+    # "none" keeps the rewrite agent's short timeout from being spent on thinking.
+    default_reasoning_effort = {"rewrite-agent": "none"}
+
+    if await _column_exists(db, "agent_configs", "reasoning_effort"):
+        await db.executemany(
+            "INSERT OR IGNORE INTO agent_configs "
+            "(agent_id, enabled, model, timeout, max_iterations, temperature, max_tokens, description, "
+            "reasoning_effort) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            [(*row, default_reasoning_effort.get(row[0])) for row in default_agents],
+        )
+    else:
+        # Pre-migration-11 databases lack the column; migration 44 applies the default.
+        await db.executemany(
+            "INSERT OR IGNORE INTO agent_configs "
+            "(agent_id, enabled, model, timeout, max_iterations, temperature, max_tokens, description) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            default_agents,
+        )
 
     # Default entity matching weights (the embedding signal was removed in
     # ENTITY_RESOLUTION_REWORK; existing databases get the stale

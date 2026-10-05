@@ -34,7 +34,8 @@ async def _create_tables(db: aiosqlite.Connection) -> None:
             temperature REAL NOT NULL DEFAULT 0.2,
             max_tokens INTEGER NOT NULL DEFAULT 1024,
             description TEXT,
-            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            reasoning_effort TEXT
         )
     """)
 

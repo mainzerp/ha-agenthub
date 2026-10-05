@@ -632,6 +632,23 @@ class TestAgentEditorFailures:
         assert resp.status_code == 400
         assert resp.json()["detail"] == "Invalid agent ID"
 
+    async def test_update_agent_config_accepts_reasoning_effort_none(self, dashboard_client: httpx.AsyncClient):
+        resp = await dashboard_client.put("/api/admin/agents/light-agent", json={"reasoning_effort": "none"})
+        assert resp.status_code == 200
+
+        resp2 = await dashboard_client.get("/api/admin/agents/light-agent")
+        assert resp2.json()["reasoning_effort"] == "none"
+
+    async def test_update_agent_config_empty_reasoning_effort_restores_default(
+        self, dashboard_client: httpx.AsyncClient
+    ):
+        await dashboard_client.put("/api/admin/agents/light-agent", json={"reasoning_effort": "none"})
+        resp = await dashboard_client.put("/api/admin/agents/light-agent", json={"reasoning_effort": ""})
+        assert resp.status_code == 200
+
+        resp2 = await dashboard_client.get("/api/admin/agents/light-agent")
+        assert resp2.json()["reasoning_effort"] is None
+
 
 # ===================================================================
 # Overview extended endpoint

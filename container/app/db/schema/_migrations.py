@@ -919,6 +919,22 @@ async def _migrate_to_43(db: aiosqlite.Connection) -> None:
     await db.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (43)")
 
 
+async def _migrate_to_44(db: aiosqlite.Connection) -> None:
+    # Migration 44: run the rewrite agent with reasoning effort "none" by
+    # default so a reasoning-capable model does not spend its short timeout
+    # on thinking. Only rows still on Default (NULL or empty) are changed;
+    # an explicit admin choice is preserved.
+    await db.execute(
+        """
+        UPDATE agent_configs
+        SET reasoning_effort = 'none'
+        WHERE agent_id = 'rewrite-agent'
+          AND (reasoning_effort IS NULL OR reasoning_effort = '')
+        """
+    )
+    await db.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (44)")
+
+
 # Ordered registry of (version, migration_callable). Each migration records
 # its own version marker. Applied in ascending order for versions greater
 # than the current schema version.
@@ -965,6 +981,7 @@ MIGRATIONS: list[tuple[int, Callable[[aiosqlite.Connection], Awaitable[None]]]] 
     (41, _migrate_to_41),
     (42, _migrate_to_42),
     (43, _migrate_to_43),
+    (44, _migrate_to_44),
 ]
 
 
