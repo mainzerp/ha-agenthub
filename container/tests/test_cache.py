@@ -273,7 +273,7 @@ class TestCacheManager:
         manager._routing_cache.invalidate_by_entity_id.assert_called_once_with(["light.kitchen", "switch.garage"])
 
     @pytest.mark.asyncio
-    async def test_apply_rewrite_returns_original_when_disabled(self):
+    async def test_apply_rewrite_returns_cached_mediated_text_when_disabled(self):
         manager, _store = self._make_manager()
         manager._rewrite_agent = AsyncMock()
         manager._rewrite_enabled = False
@@ -281,7 +281,8 @@ class TestCacheManager:
 
         output = await manager.apply_rewrite(result)
 
-        assert output == "Original."
+        assert output == "Cached text."
+        assert result.rewrite_failed is False
         manager._rewrite_agent.rewrite.assert_not_called()
 
     @pytest.mark.asyncio
@@ -1110,7 +1111,7 @@ class TestCacheManagerExtended:
         )
         with patch("app.cache.cache_manager.track_rewrite", new_callable=AsyncMock):
             output = await manager.apply_rewrite(result)
-        assert output == "Original raw text."
+        assert output == "Original cached text."
 
     @pytest.mark.asyncio
     async def test_action_hit_applies_rewrite(self):
@@ -1166,8 +1167,9 @@ class TestCacheManagerExtended:
         )
         with patch("app.cache.cache_manager.track_rewrite", new_callable=AsyncMock):
             output = await manager.apply_rewrite(result)
-        assert output == "Original raw."
+        assert output == "Original."
         assert result.rewrite_applied is False
+        assert result.rewrite_failed is True
         assert result.original_response_text == "Original raw."
         assert result.response_text == "Original."
 
@@ -1186,8 +1188,9 @@ class TestCacheManagerExtended:
         )
         with patch("app.cache.cache_manager.track_rewrite", new_callable=AsyncMock):
             output = await manager.apply_rewrite(result)
-        assert output == "Original raw."
+        assert output == "Original."
         assert result.rewrite_applied is False
+        assert result.rewrite_failed is True
         assert result.original_response_text == "Original raw."
         assert result.rewrite_latency_ms is not None
         assert result.response_text == "Original."
@@ -1212,6 +1215,59 @@ class TestCacheManagerExtended:
         rewrite_agent.rewrite.assert_awaited_once_with(
             "Original.", language="en", user_text="Keller einschalten", reminder_text=None
         )
+
+    async def _apply_real_rewrite(self, llm_kwargs):
+        """Run the real RewriteAgent (LLM patched) behind the real apply_rewrite."""
+        from app.agents.rewrite import RewriteAgent
+
+        manager, _store = self._make_manager()
+        manager._rewrite_agent = RewriteAgent()
+        manager._rewrite_enabled = True
+        result = ActionReplayOutcome(
+            kind="full_hit",
+            entry_id="id-1",
+            agent_id="light-agent",
+            response_text="Das Licht im Keller ist jetzt an.",
+            original_response_text="Done, the basement light is now on.",
+            language="de",
+        )
+        with (
+            patch("app.agents.rewrite.SettingsRepository.get_value", new_callable=AsyncMock, return_value=""),
+            patch.object(RewriteAgent, "_call_llm", new_callable=AsyncMock, **llm_kwargs),
+            patch("app.cache.cache_manager.track_rewrite", new_callable=AsyncMock) as mock_track,
+        ):
+            output = await manager.apply_rewrite(result, user_text="Keller einschalten")
+        return output, result, mock_track
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "llm_kwargs",
+        [
+            {"side_effect": RuntimeError("model_not_found")},
+            {"return_value": ""},
+        ],
+        ids=["llm_raises", "llm_returns_empty"],
+    )
+    async def test_real_rewrite_failure_returns_cached_mediated_text(self, llm_kwargs):
+        # Regression: a failing rewrite LLM used to be reported as a successful
+        # rewrite while the raw, unmediated agent text was spoken.
+        output, result, mock_track = await self._apply_real_rewrite(llm_kwargs)
+        assert output == "Das Licht im Keller ist jetzt an."
+        assert result.rewrite_applied is False
+        assert result.rewrite_failed is True
+        assert result.rewrite_latency_ms is not None
+        mock_track.assert_awaited_once()
+        assert mock_track.await_args.kwargs["success"] is False
+
+    @pytest.mark.asyncio
+    async def test_real_rewrite_success_applies_rewritten_text(self):
+        output, result, mock_track = await self._apply_real_rewrite({"return_value": "Erledigt, Keller ist an."})
+        assert output == "Erledigt, Keller ist an."
+        assert result.rewrite_applied is True
+        assert result.rewrite_failed is False
+        assert result.response_text == "Erledigt, Keller ist an."
+        mock_track.assert_awaited_once()
+        assert mock_track.await_args.kwargs["success"] is True
 
     # Removed: test_purge_legacy_schema_entries_runs_on_initialize was permanently
     # skipped because the SettingsRepository mock path was broken after v4 refactor.

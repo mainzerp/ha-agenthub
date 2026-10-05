@@ -36,6 +36,8 @@ _response_key_map = {
     "filler_send": "filler_text",
 }
 
+_REWRITE_FAILED_RESPONSE = "Rewrite failed; cached response returned"
+
 _included_span_names = {
     "dispatch",
     "dispatch_content",
@@ -59,6 +61,8 @@ _included_span_names = {
 
 def _build_response(span_name: str, metadata: dict) -> str:
     """Build a human-readable response string for the Agent Executions table."""
+    if span_name == "rewrite" and metadata.get("success") is False:
+        return _REWRITE_FAILED_RESPONSE
     key = _response_key_map.get(span_name)
     if key:
         return str(metadata.get(key, "") or "")
@@ -419,13 +423,15 @@ async def get_trace_detail(trace_id: str):
             )
         if rewrite_span:
             rw_meta = rewrite_span.get("metadata") or {}
+            rewrite_failed = rw_meta.get("success") is False
             agent_communication.append(
                 {
                     "from_agent": "rewrite-agent",
                     "to_agent": "orchestrator",
                     "task": rw_meta.get("original_text", ""),
-                    "response": rw_meta.get("rewritten_text", ""),
+                    "response": _REWRITE_FAILED_RESPONSE if rewrite_failed else rw_meta.get("rewritten_text", ""),
                     "is_rewrite": True,
+                    "rewrite_failed": rewrite_failed,
                 }
             )
         agent_communication.append(

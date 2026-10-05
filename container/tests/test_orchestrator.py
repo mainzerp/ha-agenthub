@@ -1153,6 +1153,77 @@ class TestOrchestratorAgent:
         assert "latency_ms" not in rw_span.get("metadata", {})
         assert "success" not in rw_span.get("metadata", {})
 
+    async def _run_action_hit_with_real_rewrite(self, mock_settings, llm_kwargs):
+        """Run an action hit through the real CacheManager.apply_rewrite and RewriteAgent."""
+        from app.agents.rewrite import RewriteAgent
+        from app.analytics.tracer import SpanCollector
+        from app.cache.cache_manager import ActionReplayOutcome, CacheManager
+
+        orch, *_ = self._make_orchestrator()
+        real_manager = CacheManager(MagicMock(), rewrite_agent=RewriteAgent())
+        real_manager._rewrite_enabled = True
+        orch._cache_manager.apply_rewrite = real_manager.apply_rewrite
+        orch._cache_manager.try_replay_action = AsyncMock(
+            return_value=ActionReplayOutcome(
+                kind="full_hit",
+                entry_id="action-1",
+                agent_id="light-agent",
+                response_text="Das Licht ist jetzt an.",
+                replay_result={"success": True},
+                similarity=0.99,
+                original_response_text="Done, the light is now on.",
+            )
+        )
+        mock_settings.get_value = AsyncMock(return_value="")
+        collector = SpanCollector("trace-real-rewrite")
+        task = _make_task("Licht an")
+        task.span_collector = collector
+        task.conversation_id = "conv-real-rewrite"
+        with (
+            patch("app.analytics.tracer.create_trace_summary", new_callable=AsyncMock),
+            patch("app.agents.rewrite.SettingsRepository.get_value", new_callable=AsyncMock, return_value=""),
+            patch.object(RewriteAgent, "_call_llm", new_callable=AsyncMock, **llm_kwargs),
+            patch("app.cache.cache_manager.track_rewrite", new_callable=AsyncMock) as mock_track_rewrite,
+        ):
+            result = await orch.handle_task(task)
+        rw_span = next(s for s in collector._spans if s["span_name"] == "rewrite")
+        ret_span = next(s for s in collector._spans if s["span_name"] == "return")
+        return result, rw_span, ret_span, mock_track_rewrite
+
+    @patch("app.agents.orchestrator.SettingsRepository")
+    @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
+    async def test_handle_task_action_hit_failed_rewrite_marks_span_and_serves_mediated_text(
+        self, mock_track, mock_settings
+    ):
+        """A failed rewrite serves the cached mediated text and is visible as failed in the trace."""
+        result, rw_span, ret_span, mock_track_rewrite = await self._run_action_hit_with_real_rewrite(
+            mock_settings, {"side_effect": RuntimeError("model_not_found")}
+        )
+        assert result["speech"] == "Das Licht ist jetzt an."
+        assert rw_span["status"] == "error"
+        assert rw_span["metadata"]["success"] is False
+        assert rw_span["metadata"]["fallback"] == "cached_response"
+        assert rw_span["metadata"]["original_text"] == "Done, the light is now on."
+        assert rw_span["metadata"]["latency_ms"] is not None
+        assert "rewritten_text" not in rw_span["metadata"]
+        assert ret_span["metadata"]["mediated"] is False
+        assert ret_span["metadata"]["final_response"] == "Das Licht ist jetzt an."
+        assert mock_track_rewrite.await_args.kwargs["success"] is False
+
+    @patch("app.agents.orchestrator.SettingsRepository")
+    @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
+    async def test_handle_task_action_hit_real_rewrite_success(self, mock_track, mock_settings):
+        """A successful rewrite is served and recorded as a successful, mediated rewrite."""
+        result, rw_span, ret_span, mock_track_rewrite = await self._run_action_hit_with_real_rewrite(
+            mock_settings, {"return_value": "Erledigt, das Licht leuchtet jetzt."}
+        )
+        assert result["speech"] == "Erledigt, das Licht leuchtet jetzt."
+        assert rw_span["status"] == "ok"
+        assert rw_span["metadata"]["success"] is True
+        assert rw_span["metadata"]["rewritten_text"] == "Erledigt, das Licht leuchtet jetzt."
+        assert ret_span["metadata"]["mediated"] is True
+        assert mock_track_rewrite.await_args.kwargs["success"] is True
+
     @patch("app.agents.orchestrator.SettingsRepository")
     @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
     @patch("app.llm.client.complete", new_callable=AsyncMock)

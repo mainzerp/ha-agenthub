@@ -1422,6 +1422,64 @@ class TestTracesAPI:
         )
         assert resp.status_code == 404
 
+    async def test_trace_detail_marks_failed_cache_hit_rewrite(self, authed_client: httpx.AsyncClient):
+        """A failed rewrite on an action-cache hit is shown as failed, not as an empty rewrite."""
+        summary = {
+            "trace_id": "t-rw-fail",
+            "conversation_id": "conv-1",
+            "created_at": "2024-01-01T00:00:00",
+            "total_duration_ms": 50,
+            "user_input": "Licht an",
+            "final_response": "Das Licht ist jetzt an.",
+            "routing_agent": "light-agent",
+            "label": None,
+            "source": "api",
+        }
+        spans = [
+            {
+                "span_name": "rewrite",
+                "agent_id": "rewrite-agent",
+                "start_time": "2024-01-01T00:00:00",
+                "duration_ms": 30,
+                "status": "error",
+                "metadata": {
+                    "original_text": "Done, the light is now on.",
+                    "latency_ms": 30,
+                    "success": False,
+                    "fallback": "cached_response",
+                },
+            },
+            {
+                "span_name": "return",
+                "agent_id": "orchestrator",
+                "start_time": "2024-01-01T00:00:01",
+                "duration_ms": 1,
+                "status": "ok",
+                "metadata": {
+                    "from_agent": "light-agent",
+                    "final_response": "Das Licht ist jetzt an.",
+                    "mediated": False,
+                    "action_cache_hit": True,
+                },
+            },
+        ]
+        with (
+            patch("app.api.routes.traces_api.TraceSummaryRepository") as mock_summary,
+            patch("app.api.routes.traces_api.TraceSpanRepository") as mock_spans,
+        ):
+            mock_summary.get = AsyncMock(return_value=summary)
+            mock_spans.get_trace_spans = AsyncMock(return_value=spans)
+            resp = await authed_client.get("/api/admin/traces/t-rw-fail")
+        assert resp.status_code == 200
+        data = resp.json()
+        rewrite_comm = next(c for c in data["agent_communication"] if c.get("is_rewrite"))
+        assert rewrite_comm["rewrite_failed"] is True
+        assert rewrite_comm["task"] == "Done, the light is now on."
+        assert rewrite_comm["response"] == "Rewrite failed; cached response returned"
+        rewrite_exec = next(e for e in data["agent_executions"] if e["span_name"] == "rewrite")
+        assert rewrite_exec["status"] == "error"
+        assert rewrite_exec["response"] == "Rewrite failed; cached response returned"
+
     async def test_trace_detail_returns_four_communication_entries(self, authed_client: httpx.AsyncClient):
         """Trace detail should build 4 agent_communication entries for the full round-trip."""
         summary = {

@@ -34,6 +34,7 @@ class CacheResult:
     similarity: float | None = None
     rewrite_applied: bool = False
     rewrite_latency_ms: float | None = None
+    rewrite_failed: bool = False
     original_response_text: str | None = None
     entity_ids: list[str] | None = None
 
@@ -50,6 +51,7 @@ class ActionReplayOutcome:
     cached_action: CachedAction | None = None
     rewrite_applied: bool = False
     rewrite_latency_ms: float | None = None
+    rewrite_failed: bool = False
     original_response_text: str | None = None
 
 
@@ -416,10 +418,14 @@ class CacheManager:
 
         Uses the original agent response (unmediated raw output) as input so
         the rewrite agent applies both personality and phrasing variation in
-        a single LLM call. The cached mediated response_text is no longer used
-        for replay.
+        a single LLM call.
+
+        When rewriting is disabled, or the rewrite fails or returns nothing,
+        the stored mediated ``response_text`` (the speech the user heard when
+        the entry was cached) is returned instead. A failed attempt leaves
+        ``rewrite_applied`` False and sets ``rewrite_failed``.
         """
-        fallback_text = result.original_response_text or result.response_text or ""
+        fallback_text = result.response_text or result.original_response_text or ""
         if not self._rewrite_agent or not self._rewrite_enabled:
             return fallback_text
         source_text = result.original_response_text or result.response_text
@@ -431,23 +437,22 @@ class CacheManager:
             rewritten = await self._rewrite_agent.rewrite(
                 source_text, language=language, user_text=user_text, reminder_text=reminder_text
             )
-            rewrite_ms = (time.perf_counter() - t0) * 1000
-            if rewritten:
-                result.response_text = rewritten
-                result.rewrite_applied = True
-                result.rewrite_latency_ms = rewrite_ms
-                result.original_response_text = source_text
-                await track_rewrite(latency_ms=rewrite_ms, success=True)
-                return rewritten
-            result.rewrite_latency_ms = rewrite_ms
-            await track_rewrite(latency_ms=rewrite_ms, success=False)
-            return fallback_text
         except Exception:
-            rewrite_ms = (time.perf_counter() - t0) * 1000
-            result.rewrite_latency_ms = rewrite_ms
-            await track_rewrite(latency_ms=rewrite_ms, success=False)
-            logger.warning("Rewrite failed, using original agent text", exc_info=True)
-            return fallback_text
+            logger.warning("Rewrite failed, using cached mediated response", exc_info=True)
+            rewritten = None
+        rewrite_ms = (time.perf_counter() - t0) * 1000
+        result.rewrite_latency_ms = rewrite_ms
+        if rewritten:
+            result.response_text = rewritten
+            result.rewrite_applied = True
+            result.rewrite_failed = False
+            result.original_response_text = source_text
+            await track_rewrite(latency_ms=rewrite_ms, success=True)
+            return rewritten
+        result.rewrite_applied = False
+        result.rewrite_failed = True
+        await track_rewrite(latency_ms=rewrite_ms, success=False)
+        return fallback_text
 
     def store_routing(
         self,

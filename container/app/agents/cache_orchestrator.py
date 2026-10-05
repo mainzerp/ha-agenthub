@@ -342,6 +342,14 @@ class CacheOrchestrator:
                     rw_span["metadata"]["rewritten_text"] = speech
                     rw_span["metadata"]["latency_ms"] = hit.rewrite_latency_ms
                     rw_span["metadata"]["success"] = True
+                elif hit.rewrite_failed:
+                    # The rewrite was attempted and failed: the cached mediated
+                    # response is served and the span is marked as errored.
+                    rw_span["status"] = "error"
+                    rw_span["metadata"]["original_text"] = raw_speech
+                    rw_span["metadata"]["latency_ms"] = hit.rewrite_latency_ms
+                    rw_span["metadata"]["success"] = False
+                    rw_span["metadata"]["fallback"] = "cached_response"
 
         if reminder_text and not hit.rewrite_applied:
             separator = " " if speech and speech[-1] in ".!?" else ". "
