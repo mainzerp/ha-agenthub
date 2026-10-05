@@ -214,7 +214,7 @@ The integration does not resolve entities, classify intent, or execute Home Assi
 | `cancel_speech` | Detect dismiss or cancel turns before live dispatch |
 | `language_detect` | Resolve per-turn reply language when auto mode is active |
 | `filler-agent` | Emit interim speech for slow turns |
-| `rewrite-agent` | Rephrase cache-hit speech when rewrite is enabled |
+| `rewrite-agent` | Rephrase action-cache-hit speech; on failure the stored mediated response is used |
 | personality mediation | Optional final response mediation layer driven by runtime settings |
 | `sanitize` | Markdown stripping and speech-safe output cleanup |
 | `notification_dispatcher` | Background notification delivery support |
@@ -341,7 +341,7 @@ The current deployment target is a standalone Docker container connecting back t
 2. The integration enriches the request with conversation and origin context and forwards it to the container over WebSocket when possible.
 3. The container creates a per-turn trace context and hands the turn to the orchestrator.
 4. The orchestrator can short-circuit cancel or dismiss requests and can resolve reply language before live routing.
-5. The action cache is checked first. Safe hits replay the cached action after a visibility recheck and then reuse or rewrite the cached speech.
+5. The action cache is checked first. Safe hits replay the cached action after a visibility recheck and then rewrite the cached speech; if the rewrite fails, the stored mediated speech is reused and the trace records the rewrite as failed.
 6. If the turn is not satisfied by the action cache, the routing cache may reuse a prior routing decision.
 7. Live dispatch sends the task to a content agent, custom agent, or fallback agent. Entity resolution uses deterministic lookup first, then hybrid matching, with visibility, area, and domain filters applied before final selection.
 8. If the turn also requires delivery, the orchestrator runs the content-producing step first and `send-agent` second.

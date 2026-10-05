@@ -1435,6 +1435,81 @@ class TestMigrationV41:
         assert values["embedding.dimension"] == "384"
 
 
+class TestRewriteAgentReasoningEffortDefault:
+    async def test_fresh_seed_sets_none_for_rewrite_agent_only(self, db_repository):
+        rewrite = await AgentConfigRepository.get("rewrite-agent")
+        light = await AgentConfigRepository.get("light-agent")
+        assert rewrite["reasoning_effort"] == "none"
+        assert light["reasoning_effort"] is None
+
+    @pytest.mark.parametrize("stored", [None, ""])
+    async def test_migration_v44_sets_none_when_default(self, db_repository, stored):
+        from app.db.schema import _run_migrations
+
+        async with aiosqlite.connect(str(db_repository)) as db:
+            await db.execute(
+                "UPDATE agent_configs SET reasoning_effort = ? WHERE agent_id IN ('rewrite-agent', 'light-agent')",
+                (stored,),
+            )
+            await db.execute("DELETE FROM schema_version WHERE version >= 44")
+            await db.commit()
+
+            await _run_migrations(db)
+            await _run_migrations(db)
+            await db.commit()
+
+            rows = await (
+                await db.execute(
+                    "SELECT agent_id, reasoning_effort FROM agent_configs "
+                    "WHERE agent_id IN ('rewrite-agent', 'light-agent')"
+                )
+            ).fetchall()
+            schema_versions = await (
+                await db.execute("SELECT version FROM schema_version WHERE version = 44")
+            ).fetchall()
+
+        values = {row[0]: row[1] for row in rows}
+        assert values["rewrite-agent"] == "none"
+        assert values["light-agent"] == stored
+        assert len(schema_versions) == 1
+
+    async def test_migration_v44_preserves_admin_choice(self, db_repository):
+        from app.db.schema import _run_migrations
+
+        async with aiosqlite.connect(str(db_repository)) as db:
+            await db.execute("UPDATE agent_configs SET reasoning_effort = 'low' WHERE agent_id = 'rewrite-agent'")
+            await db.execute("DELETE FROM schema_version WHERE version >= 44")
+            await db.commit()
+
+            await _run_migrations(db)
+            await db.commit()
+
+            row = await (
+                await db.execute("SELECT reasoning_effort FROM agent_configs WHERE agent_id = 'rewrite-agent'")
+            ).fetchone()
+
+        assert row[0] == "low"
+
+    async def test_seed_without_column_then_migrations_set_none(self, tmp_path):
+        # Databases older than migration 11 lack the column when the seed runs;
+        # the seed must not fail and the migrations must apply the default.
+        from app.db.schema import _create_indexes, _create_tables, _run_migrations, _seed_defaults
+
+        async with aiosqlite.connect(str(tmp_path / "legacy.db")) as db:
+            await _create_tables(db)
+            await db.execute("ALTER TABLE agent_configs DROP COLUMN reasoning_effort")
+            await _create_indexes(db)
+            await _seed_defaults(db)
+            await _run_migrations(db)
+            await db.commit()
+
+            row = await (
+                await db.execute("SELECT reasoning_effort FROM agent_configs WHERE agent_id = 'rewrite-agent'")
+            ).fetchone()
+
+        assert row[0] == "none"
+
+
 class TestSessionMemoryRepositories:
     async def test_conversation_insert_round_trips_user_id(self, db_repository):
         row_id = await ConversationRepository.insert(

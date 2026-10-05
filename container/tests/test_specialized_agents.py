@@ -2289,10 +2289,17 @@ class TestRewriteAgent:
 
     @patch("app.agents.rewrite.SettingsRepository.get_value", new_callable=AsyncMock, return_value="")
     @patch("app.llm.client.complete", new_callable=AsyncMock, side_effect=Exception("LLM failure"))
-    async def test_rewrite_fallback_on_failure(self, mock_complete, mock_settings):
+    async def test_rewrite_returns_none_on_failure(self, mock_complete, mock_settings):
         agent = RewriteAgent()
         result = await agent.rewrite("Done, kitchen light is on.")
-        assert result == "Done, kitchen light is on."
+        assert result is None
+
+    @patch("app.agents.rewrite.SettingsRepository.get_value", new_callable=AsyncMock, return_value="")
+    @patch("app.llm.client.complete", new_callable=AsyncMock, side_effect=Exception("LLM failure"))
+    async def test_handle_task_falls_back_to_description_on_failure(self, mock_complete, mock_settings):
+        agent = RewriteAgent()
+        result = await agent.handle_task(_make_task("Original cached text"))
+        assert result.speech == "Original cached text"
 
     @patch("app.agents.rewrite.SettingsRepository.get_value", new_callable=AsyncMock, return_value="")
     @patch("app.llm.client.complete", new_callable=AsyncMock, return_value="Rephrased text.")
@@ -2308,17 +2315,24 @@ class TestRewriteAgent:
 
     @patch("app.agents.rewrite.SettingsRepository.get_value", new_callable=AsyncMock, return_value="")
     @patch("app.llm.client.complete", new_callable=AsyncMock, return_value="")
-    async def test_rewrite_fallback_on_empty_response(self, mock_complete, mock_settings):
+    async def test_rewrite_returns_none_on_empty_response(self, mock_complete, mock_settings):
         agent = RewriteAgent()
         result = await agent.rewrite("Done, kitchen light is on.")
-        assert result == "Done, kitchen light is on."
+        assert result is None
 
     @patch("app.agents.rewrite.SettingsRepository.get_value", new_callable=AsyncMock, return_value="")
     @patch("app.llm.client.complete", new_callable=AsyncMock, return_value=None)
-    async def test_rewrite_fallback_on_none_response(self, mock_complete, mock_settings):
+    async def test_rewrite_returns_none_on_none_response(self, mock_complete, mock_settings):
         agent = RewriteAgent()
         result = await agent.rewrite("Done, kitchen light is on.")
-        assert result == "Done, kitchen light is on."
+        assert result is None
+
+    @patch("app.agents.rewrite.SettingsRepository.get_value", new_callable=AsyncMock, return_value="")
+    @patch("app.llm.client.complete", new_callable=AsyncMock, return_value="  (I kept the wording short.)  ")
+    async def test_rewrite_returns_none_when_sanitization_empties_output(self, mock_complete, mock_settings):
+        agent = RewriteAgent()
+        result = await agent.rewrite("Done, kitchen light is on.")
+        assert result is None
 
     @patch("app.agents.rewrite.SettingsRepository.get_value", new_callable=AsyncMock, return_value="")
     @patch("app.llm.client.complete", new_callable=AsyncMock, return_value="Rephrased text.")

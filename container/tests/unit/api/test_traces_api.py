@@ -114,6 +114,10 @@ class TestBuildResponse:
         # Mapped keys
         assert _build_response("return", {"final_response": "hello"}) == "hello"
         assert _build_response("rewrite", {"rewritten_text": "hi"}) == "hi"
+        assert (
+            _build_response("rewrite", {"success": False, "fallback": "cached_response"})
+            == "Rewrite failed; cached response returned"
+        )
         assert _build_response("ha_action", {"result_speech": "done"}) == "done"
         assert _build_response("filler_generate", {"filler_text": "hold on"}) == "hold on"
         assert _build_response("filler_send", {"filler_text": "hold on"}) == "hold on"

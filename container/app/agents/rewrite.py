@@ -44,10 +44,11 @@ class RewriteAgent(BaseAgent):
 
     async def rewrite(
         self, cached_text: str, language: str = "en", user_text: str | None = None, reminder_text: str | None = None
-    ) -> str:
+    ) -> str | None:
         """Rephrase a cached response and apply personality. Returns the rewritten text.
 
-        Falls back to returning cached_text verbatim on any failure.
+        Returns None when the LLM call raises, returns nothing, or yields only
+        text that sanitization strips away; the caller owns the fallback speech.
         Uses the unmediated (raw) agent response as input so personality
         and rewrite variation are applied in a single LLM call.
         If reminder_text is given the LLM weaves it naturally into the output.
@@ -74,18 +75,22 @@ class RewriteAgent(BaseAgent):
         try:
             result = await self._call_llm(messages)
         except Exception:
-            logger.warning("Rewrite failed, returning cached text verbatim", exc_info=True)
-            return cached_text
+            logger.warning("Rewrite LLM call failed, no rewrite produced", exc_info=True)
+            return None
         if not result:
-            logger.warning("Rewrite LLM returned empty, using cached text")
-            return cached_text
-        return strip_parenthetical_asides(result)
+            logger.warning("Rewrite LLM returned empty, no rewrite produced")
+            return None
+        rewritten = strip_parenthetical_asides(result)
+        if not rewritten or not rewritten.strip():
+            logger.warning("Rewrite output was empty after sanitization, no rewrite produced")
+            return None
+        return rewritten
 
     async def handle_task(self, task: DispatchTask) -> TaskResult:
-        """A2A-compatible interface. Rewrites task.description."""
+        """A2A-compatible interface. Rewrites task.description; falls back to it when the rewrite fails."""
         result = await self.rewrite(task.description)
         return TaskResult(
-            speech=result,
+            speech=result or task.description,
             action_executed=None,
             error=None,
             voice_followup=False,

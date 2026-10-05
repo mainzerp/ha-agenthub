@@ -105,3 +105,17 @@ prompts live in `container/app/prompts/`, `ctx.agent_registry` not
   cactus-needle as an external noise gate first (67% false negatives on real
   German commands, confident false positives on noise; see library entry
   `ha-agenthub/cactus-needle-3.0.4-false-trigger-gate-lessons`).
+
+## 2026-10-05 — rewrite failures are failures; fallback is mediated text
+
+- **A failed cache-hit rewrite is recorded as failed** (rewrite span status
+  error, `success: false`, analytics failure) instead of returning the input
+  text as a fake success. Rationale: a provider 404 went unnoticed for over a
+  week because traces and analytics showed 100% rewrite success.
+- **Fallback speech is the stored mediated `response_text`**, not the raw
+  agent text. Rationale: the raw text is the English executor template; the
+  mediated text is what the user already heard, in their language and tone.
+- **rewrite-agent defaults to `reasoning_effort: "none"`** via agent config
+  (seed + migration 44, only where unset), not hardcoded. Rationale: the 2 s
+  timeout leaves no room for thinking; the admin keeps control per model,
+  since some reasoning models (gpt-oss, gpt-5) reject "none".
