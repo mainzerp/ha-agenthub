@@ -1,12 +1,24 @@
 # Version
 
-**Current Version:** 2.5.4
+**Current Version:** 2.6.0
 
 ## Recent Changes
 
-(tracking changes since 2.5.4)
+(tracking changes since 2.6.0)
 
 ## Version History
+
+### 2.6.0 (MINOR) -- visible rewrite failures and reasoning effort "none"
+
+(commits 3262043, aaa0fe0)
+
+- Cache: a failed rewrite on an action-cache hit is now reported as failed -- the `rewrite` span gets status `error`, `success: false` and `fallback: "cached_response"`, analytics count a failure, and the trace view shows "Rewrite failed; cached response returned". Previously the rewrite agent returned its input on any LLM error and the failure was recorded as a success; on live, a provider 404 (`model_not_found`) went unnoticed from 2026-09-26 (trace `17804c2714e641ee`) (3262043).
+- Cache: when the rewrite fails or is disabled, the reply is the stored mediated response (the speech heard when the entry was cached) instead of the raw English agent template ("Done, X is now on.") (3262043).
+- Agents: per-agent and cache-validator reasoning effort accept `none` (sends `reasoning_effort="none"`), distinct from Default (parameter not sent). `rewrite-agent` defaults to `none`; migration 44 applies it to existing installs only where no value was chosen (aaa0fe0).
+- Docs: the rewrite runs on every action-cache hit (not only with a personality prompt); its model, timeout, temperature, max tokens and reasoning effort come from the `rewrite-agent` agent configuration. The settings `rewrite.model` / `rewrite.temperature` are stored only and have no runtime effect.
+- Note: some reasoning models reject `none` (likely Groq `gpt-oss`, OpenAI `gpt-5`); set Reasoning Effort to Low for those. A rejected call is now visible as a failed rewrite.
+- Verification: 3393 container tests passed (1 skipped, 9 xfailed, 3 xpassed); Ruff lint and format passed.
+- No features or public APIs removed; no user action required beyond choosing a working rewrite-agent model if the current one is unavailable.
 
 ### 2.5.4 (PATCH) -- review fixes for timers, alarms, cache and HA WebSocket
 
