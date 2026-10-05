@@ -278,6 +278,18 @@ List all registered agents with their configuration.
 }
 ```
 
+### GET / PUT /api/admin/agents/{agent_id}
+
+Read or partially update one `agent_configs` row. PUT accepts any of
+`enabled`, `model`, `timeout`, `temperature`, `max_tokens`,
+`max_iterations`, `description`, `reasoning_effort`; omitted fields are
+unchanged. `reasoning_effort` is forwarded to the provider as given (not
+validated); the dashboard offers `none`, `low`, `medium`, `high`, and
+`""` (stored as null = Default, parameter not sent). See
+[Agent Configuration](configuration.md#agent-configuration).
+
+Auth: admin session.
+
 ### GET /api/admin/persons
 
 List Home Assistant persons.
@@ -677,11 +689,14 @@ Auth: admin session.
 
 | Method | Path | Purpose |
 |--------|------|---------|
-| GET | `/api/admin/rewrite/config` | Read rewrite-agent model and temperature. |
-| PUT | `/api/admin/rewrite/config` | Update rewrite-agent configuration. |
+| GET | `/api/admin/rewrite/config` | Read the legacy `rewrite.model` / `rewrite.temperature` settings. |
+| PUT | `/api/admin/rewrite/config` | Update the legacy `rewrite.model` / `rewrite.temperature` settings. |
 
-Auth: admin session. The rewrite agent runs only when
-`personality.prompt` is non-empty.
+Auth: admin session. These keys are stored only; the rewrite call does
+not read them. The rewrite agent runs on every action-cache hit and takes
+model, timeout, temperature, `max_tokens`, and `reasoning_effort` from its
+`rewrite-agent` agent configuration (`PUT /api/admin/agents/rewrite-agent`);
+see [Configuration](configuration.md#rewrite-agent-settings).
 
 ## Admin -- Personality
 

@@ -25,6 +25,24 @@ Live pipeline in board format — headings are columns, cards are
 
 ## Testing
 
+- Rewrite agent: surface failures, mediated fallback, reasoning effort none · priority: P1 · area: cache
+  Outcome: a failing rewrite LLM call shows as failed in trace/analytics
+  (no more fake success); fallback is the stored mediated text instead of
+  the raw English agent template; rewrite-agent runs with
+  reasoning_effort "none" by default (new dropdown value, migration 44).
+  Cause found 2026-10-05: live rewrite-agent model groq/llama-3.1-8b-instant
+  returns 404 model_not_found since ~2026-09-26 (trace 17804c2714e641ee).
+  Passed: ruff lint + format clean; container suite 3393 passed, 1 skipped.
+  Commits 3262043, aaa0fe0; shipped in v2.6.0. Needs user verification on
+  live: (1) with the broken model,
+  a cached command ("Kueche ausschalten" twice) shows a red rewrite span with
+  success false and speaks the German mediated text; (2) after switching to
+  a working model the rewrite span shows success true with new wording;
+  (3) rewrite-agent shows Reasoning Effort "None" in the dashboard.
+  Caveat: gpt-oss (Groq) and gpt-5 (OpenAI) likely reject "none" with 400 --
+  use "low" for those models.
+  Follow-up: rewrite-agent `enabled` flag is ignored by the cache manager.
+
 - Review 2026-10-04 package 1: high-severity correctness fixes · priority: P1 · area: core
   Outcome: rescheduled timers stay cancellable; cache import writes every
   entry; HA WS reconnect opens one session and survives handshake errors;
@@ -41,6 +59,7 @@ Live pipeline in board format — headings are columns, cards are
   auf Heizen und 22 Grad" twice -- second turn must run both actions.
   Follow-ups: packages 2 (visibility/security), 3 (robustness), 4 (tech
   debt/CI) from the same review.
+  Shipped in v2.5.4 (https://github.com/mainzerp/ha-agenthub/releases/tag/v2.5.4).
 - Multi-action commands: execute every LLM action block · priority: P1 · area: agents
   Outcome: "X und Y ausschalten" executes both actions in one turn.
   Implemented 2026-09-29: parse_actions() collects all fenced blocks

@@ -166,7 +166,7 @@ After saving, enable or disable the agent from the **Agents** page if needed.
 The **Personality** page at `/dashboard/personality` configures the personality system prompt and the rewrite/mediation pipeline.
 
 - Set a **personality prompt** to give the assistant a consistent tone.
-- When the personality prompt is non-empty, the rewrite agent is enabled and final responses are run through the mediation pipeline.
+- When the personality prompt is non-empty, final responses are run through the mediation pipeline. Action-cache hits are always rephrased by the rewrite agent, which applies the personality prompt when one is set.
 - Tune mediation model and temperature settings.
 
 The personality prompt affects all final spoken responses.

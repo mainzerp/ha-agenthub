@@ -58,7 +58,7 @@ The export and import API surface uses the `action` tier name.
 | `cache.validator.interval_minutes` | `60` | int | Minutes between validation scans (`0` = disabled) |
 | `cache.validator.model` | (empty) | string | LLM model for cache validator response regeneration (empty = template only) |
 | `cache.validator.temperature` | `0.2` | float | Temperature for cache validator LLM regeneration |
-| `cache.validator.reasoning_effort` | `low` | string | Reasoning effort for cache validator LLM calls |
+| `cache.validator.reasoning_effort` | `low` | string | Reasoning effort for cache validator LLM calls (`none`, `low`, `medium`, `high`) |
 | `cache.validator.max_tokens` | `1024` | int | Max tokens for cache validator LLM regeneration |
 | `cache.validator.batch_size` | `10` | int | Number of cache entries to validate in a single LLM batch call |
 | `cache.validator.audit_retention_days` | `90` | int | Days to retain per-entry validator audit records (`0` = keep forever) |
@@ -105,17 +105,24 @@ embedding cost.
 
 ### Rewrite Agent Settings
 
-The rewrite agent runs only when `personality.prompt` (see
-[Personality](#personality-settings)) is non-empty; the keys below
-control model selection and sampling for the rewrite call itself.
+The rewrite agent runs on every action-cache hit. It rephrases the raw
+agent response in the turn language and applies `personality.prompt`
+(see [Personality](#personality-settings)) when one is set. Model,
+timeout, temperature, `max_tokens`, and reasoning effort come from the
+`rewrite-agent` row in [Agent Configuration](#agent-configuration)
+(dashboard **Agents** page). Seeded defaults: `groq/llama-3.1-8b-instant`,
+timeout `2` s, temperature `0.8`, reasoning effort `none`.
+
+If the rewrite call fails, times out, or returns no text, the stored
+mediated response of the cache entry (the speech originally spoken for
+that entry) is returned unchanged. The trace marks the `rewrite` span as
+failed (`success: false`, `fallback: cached_response`) and rewrite
+analytics count the call as a failure.
 
 | Key | Default | Type | Description |
 |-----|---------|------|-------------|
-| `rewrite.model` | `groq/llama-3.1-8b-instant` | string | LLM model used by the rewrite/mediation pass over cached or finalised speech. |
-| `rewrite.temperature` | `0.8` | float | Sampling temperature for the rewrite call. |
-
-Managed via `GET/PUT /api/admin/rewrite/config` and the dashboard
-"Rewrite" page.
+| `rewrite.model` | `groq/llama-3.1-8b-instant` | string | Legacy key. Read and written only by `GET/PUT /api/admin/rewrite/config`; not used by the rewrite call and not shown in the dashboard. |
+| `rewrite.temperature` | `0.8` | float | Legacy key. Same as `rewrite.model`: stored only, not used by the rewrite call. |
 
 > **Recommendation:** Use `llama-3.1-8b-instant` for fast, low-cost rewrite passes.
 
@@ -171,7 +178,7 @@ relevant route before tuning.
 
 | Key | Default | Type | Description |
 |-----|---------|------|-------------|
-| `personality.prompt` | (empty) | string | Personality system prompt for the response mediation/rewrite pass. When non-empty, the rewrite agent is enabled and finalised speech is run through the mediation pipeline. |
+| `personality.prompt` | (empty) | string | Personality system prompt for the response mediation/rewrite pass. When non-empty, finalised speech is run through the mediation pipeline and the rewrite agent applies it on action-cache hits. |
 
 Managed via `GET/PUT /api/admin/personality/config` and the dashboard
 "Personality" page.
@@ -210,7 +217,7 @@ Each agent has per-agent settings stored in the `agent_configs` table:
 | `max_iterations` | `3` | Maximum processing iterations |
 | `temperature` | `0.2` | LLM sampling temperature |
 | `max_tokens` | `1024` | Maximum tokens per LLM response |
-| `reasoning_effort` | (empty) | Optional reasoning-effort hint forwarded to providers that accept it (`Low`, `Medium`, `High`). |
+| `reasoning_effort` | (empty); `none` for `rewrite-agent` | Reasoning-effort hint: empty (dashboard "Default") sends no parameter; `none`, `low`, `medium`, or `high` is sent as `reasoning_effort` with `drop_params=True`, so litellm drops it for models it does not list as reasoning-capable. Reasoning models that do not accept the value (for example `none` on gpt-oss or gpt-5) can reject the call. |
 
 > **Model recommendation:** For **routable agents**, use `openai/gpt-oss-120b` and set `reasoning_effort` to `Low`. For **filler and rewrite agents**, use `llama-3.1-8b-instant`.
 
