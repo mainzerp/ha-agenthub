@@ -34,7 +34,7 @@ from app.agents.mediation import (
 from app.agents.sanitize import strip_markdown, strip_parenthetical_asides
 from app.agents.task_pipeline import PipelineDirector
 from app.analytics.collector import track_request, track_request_background
-from app.analytics.tracer import _optional_span
+from app.analytics.tracer import _optional_span, record_request_attribute
 from app.cache.cache_manager import ActionReplayOutcome, RoutingSkipOutcome
 from app.db.repository import SettingsRepository
 from app.ha_client.home_context import populate_task_context_home_context
@@ -49,6 +49,8 @@ from app.models.agent import (
     IngressTask,
     LastEntity,
     TaskContext,
+    source_allows_filler,
+    source_allows_voice_followup,
 )
 
 logger = logging.getLogger(__name__)
@@ -1024,6 +1026,10 @@ class OrchestratorAgent(BaseAgent):
         """
         conversation_id, context_language = self._pipeline_resolve_conversation_id(task)
         span_collector = task.span_collector
+        if span_collector is not None and task.context is not None:
+            # Request context on the root span: the (mapped) HA user id, or
+            # None, so user mapping is verifiable from any trace.
+            record_request_attribute(span_collector, "user_id", task.context.user_id)
 
         if self._is_background_turn(task):
             result = await self._handle_background_turn(task)
@@ -1333,7 +1339,7 @@ class OrchestratorAgent(BaseAgent):
         cache_stored_routing = False
         cache_stored_response = False
 
-        speech, voice_followup_effective = self._merge_voice_followup_and_organic(
+        speech, followup_question = self._merge_voice_followup_and_organic(
             mediated_speech,
             agent_requested=voice_followup_requested,
             mediated_followup=mediated_followup,
@@ -1341,9 +1347,13 @@ class OrchestratorAgent(BaseAgent):
         # Follow-up signal: the finalization funnel is the single point
         # reached by streaming, non-streaming, and sequential-send, so the
         # pending-question state is set exactly once here when the spoken
-        # answer was a clarifying question.
-        if voice_followup_effective:
+        # answer was a clarifying question. Text-only sources keep the
+        # pending question (the typed answer is still a follow-up) but never
+        # request a voice follow-up.
+        if followup_question:
             self._conversation_manager.set_pending_question(conversation_id, speech, routed_to)
+        source = task.context.source if task.context else None
+        voice_followup_effective = followup_question and source_allows_voice_followup(source)
         if ret_span is not None:
             ret_span["metadata"]["final_response"] = speech
             ret_span["metadata"]["mediated"] = speech != original_speech
@@ -1980,7 +1990,9 @@ class OrchestratorAgent(BaseAgent):
             content_agent_ids = [a for a, _, _ in classifications if a != "send-agent"]
             content_agent_for_filler = content_agent_ids[0] if content_agent_ids else None
             seq_use_filler = (
-                await self._should_send_filler(content_agent_for_filler) if content_agent_for_filler else False
+                content_agent_for_filler is not None
+                and source_allows_filler(task.context.source if task.context else None)
+                and await self._should_send_filler(content_agent_for_filler)
             )
             language = detected_language
 
@@ -2168,7 +2180,9 @@ class OrchestratorAgent(BaseAgent):
 
         t0_dispatch = time.perf_counter()
         sc = StreamingContext()
-        use_filler = await self._should_send_filler(target_agent)
+        # Text-only sources (FILLER_EXEMPT_SOURCES) never get a filler: no
+        # filler LLM call and no threshold race before the first token.
+        use_filler = source_allows_filler(context.source) and await self._should_send_filler(target_agent)
         filler_threshold_ms = await self._get_filler_threshold_ms() if use_filler else 1000
         # P3-10: per-request filler-decision log; debug.
         logger.debug("Filler decision for %s: use_filler=%s", target_agent, use_filler)

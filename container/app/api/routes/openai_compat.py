@@ -329,6 +329,8 @@ async def _stream_turn(request: Request, a2a_request, span_collector):
       streamed they are the answer, so a differing ``mediated_speech`` is
       not appended (that would duplicate or contradict visible text).
     - A terminal ``error`` is shown only when nothing else was emitted.
+    - Leading whitespace is dropped: content is emitted only from the first
+      non-whitespace character on (agents may open with blank lines).
     """
     root_span_id = getattr(request.state, "root_span_id", None)
     parent_token = None
@@ -341,6 +343,7 @@ async def _stream_turn(request: Request, a2a_request, span_collector):
     streamed = ""
     mediated = ""
     finished = False
+    content_started = False
     try:
         try:
             async for chunk in _dispatcher.dispatch_stream(a2a_request):
@@ -363,13 +366,16 @@ async def _stream_turn(request: Request, a2a_request, span_collector):
                 streamed += text
                 if frame.done:
                     finished = True
-                    if frame.mediated_speech and not streamed:
+                    if frame.mediated_speech and not streamed.strip():
                         mediated = frame.mediated_speech
                         text += mediated
                     if frame.error and not (mediated or streamed).strip():
                         logger.warning("Container reported error in OpenAI stream done chunk: %s", frame.error)
                         text += _canned_error(frame.error)
+                if not content_started:
+                    text = text.lstrip()
                 if text:
+                    content_started = True
                     yield writer.content(text)
         except asyncio.CancelledError:
             raise
@@ -457,7 +463,7 @@ async def chat_completions(
     except RuntimeError as exc:
         return _completion_body(f"Error: {exc}")
     result = response or {}
-    content = result.get("speech") or ""
-    if not content.strip() and result.get("error"):
+    content = (result.get("speech") or "").strip()
+    if not content and result.get("error"):
         content = _canned_error(result["error"])
     return _completion_body(content)

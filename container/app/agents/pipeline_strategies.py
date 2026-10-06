@@ -19,7 +19,7 @@ from app.agents.dispatch_manager import DispatchManager
 from app.agents.sanitize import strip_markdown
 from app.agents.task_pipeline import CacheReplayResult, DispatchResult
 from app.cache.cache_manager import CacheManager
-from app.models.agent import IngressTask
+from app.models.agent import IngressTask, source_allows_voice_followup
 
 __all__ = [
     "CacheReplayStrategy",
@@ -505,6 +505,8 @@ class DefaultFinalizationStrategy(FinalizationStrategy):
                     agent_requested=agent_voice_followup,
                     mediated_followup=mediated_followup,
                 )
+                source = task.context.source if task and task.context else None
+                voice_followup_effective = voice_followup_effective and source_allows_voice_followup(source)
                 ret_span["metadata"]["final_response"] = speech
                 ret_span["metadata"]["mediated"] = (speech != original_speech) or len(classifications) > 1
                 ret_span["metadata"]["voice_followup"] = voice_followup_effective

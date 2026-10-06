@@ -25,11 +25,24 @@ Live pipeline in board format — headings are columns, cards are
 
 ## Testing
 
+- Open WebUI chat polish (2.7.1) · priority: P1 · area: conversation
+  Outcome: source "openai" gets no filler (no wasted LLM call, no filler
+  wait), no voice follow-up flag, traces record user_id ("User" on trace
+  detail), leading whitespace trimmed. Found in live trace 80b7d88a95e14136.
+  Passed: ruff clean; container suite 3463 passed, 1 skipped; bridge 145
+  passed; independent diff review, findings fixed. Shipped in v2.7.1.
+  Needs user verification on live after updating the container: a new Open
+  WebUI turn shows no filler_generate span, voice_followup false, the
+  "User" field with the mapped HA user id, and no blank lines before the
+  answer. Note: with a personality, text still arrives in one piece after
+  mediation (open decision: skip personality for Open WebUI vs stream the
+  mediation).
 - Open WebUI connection: OpenAI-compatible endpoint + external user mapping · priority: P1 · area: conversation
   Outcome: AgentHub can be added in Open WebUI as an OpenAI API connection
   (`/v1`, container API key) and controls the house; Open WebUI users are
   mapped to HA users on the Persons page (table external_user_mappings,
-  migration 45). Decision 2026-10-06. Uncommitted in the working tree.
+  migration 45). Decision 2026-10-06. Shipped in v2.7.0 (PR #122,
+  https://github.com/mainzerp/ha-agenthub/releases/tag/v2.7.0).
   Passed: ruff lint + format clean; container suite 3447 passed, 1 skipped;
   independent diff review, findings fixed. Not yet run against a real Open
   WebUI; Persons page not opened in a browser.

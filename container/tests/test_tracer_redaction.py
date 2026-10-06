@@ -210,3 +210,20 @@ async def test_call_llm_with_mcp_tools_records_sanitized_arguments_and_result():
     assert result["entity_id"] == "light.kitchen"
     assert "apikey=[REDACTED]" in result["url"]
     assert metadata["result_chars"] > 0
+
+
+def test_sanitize_trace_value_keeps_ha_hex_user_id_verbatim():
+    ha_user_id = "0123456789abcdef0123456789abcdef"
+    assert sanitize_trace_value({"user_id": ha_user_id}) == {"user_id": ha_user_id}
+
+
+def test_sanitize_trace_value_redacts_api_key_under_user_id():
+    sanitized = sanitize_trace_value({"user_id": "sk-abcdefghijklmnopqrstuvwx"})
+    assert "sk-abcdefghijklmnopqrstuvwx" not in json.dumps(sanitized)
+    assert sanitized["user_id"] == "[REDACTED_TOKEN]"
+
+
+def test_sanitize_trace_value_redacts_api_key_under_nested_user_id():
+    sanitized = sanitize_trace_value({"nested": {"user_id": "sk-abcdefghijklmnopqrstuvwx"}})
+    assert "sk-abcdefghijklmnopqrstuvwx" not in json.dumps(sanitized)
+    assert sanitized["nested"]["user_id"] == "[REDACTED_TOKEN]"

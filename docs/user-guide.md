@@ -110,7 +110,7 @@ The **Request Traces** page at `/dashboard/traces` lists every processed request
 - **Paging and export** -- page controls appear above and below results; **Export CSV** exports the filtered list.
 - **Refresh states** -- existing results remain visible during refresh. Errors offer Retry; an empty dataset is distinguished from no filter matches.
 
-Trace detail starts with the request summary and input/response panels. The span timeline shows parent/child nesting and elapsed offsets, including parallel work. Select a span with pointer or keyboard to inspect **Overview**, **Input / Output**, and **Metadata**. Use **Fit**, zoom, and **Expand** to inspect dense traces; narrow screens scroll within the timeline.
+Trace detail starts with the request summary (including the Home Assistant user, when the request carried one) and input/response panels. The span timeline shows parent/child nesting and elapsed offsets, including parallel work. Select a span with pointer or keyboard to inspect **Overview**, **Input / Output**, and **Metadata**. Use **Fit**, zoom, and **Expand** to inspect dense traces; narrow screens scroll within the timeline.
 
 Expand routing/communication, agent executions, or the complete trace record for diagnostic payloads. Cache tier, hit type, skipped-span details, and unknown metadata remain reachable. Missing state or memory context is shown neutrally; recorded errors remain explicit.
 
