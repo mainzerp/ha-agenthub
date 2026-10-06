@@ -16,6 +16,25 @@ BackgroundEventType = Literal[
     "voice_followup",
 ]
 
+# Request sources whose clients render the answer as text only. Filler
+# phrases (spoken "one moment" preambles) are never generated for them, and
+# voice follow-up (re-opening a satellite microphone) is never requested.
+# The OpenAI-compatible ``/v1`` ingress (Open WebUI) drops filler frames and
+# has no microphone, so both would only cost latency and mislabel traces.
+FILLER_EXEMPT_SOURCES: frozenset[str] = frozenset({"openai"})
+VOICE_FOLLOWUP_EXEMPT_SOURCES: frozenset[str] = frozenset({"openai"})
+
+
+def source_allows_filler(source: str | None) -> bool:
+    """True when a request from ``source`` may receive a filler phrase."""
+    return source not in FILLER_EXEMPT_SOURCES
+
+
+def source_allows_voice_followup(source: str | None) -> bool:
+    """True when a request from ``source`` may request a voice follow-up."""
+    return source not in VOICE_FOLLOWUP_EXEMPT_SOURCES
+
+
 # Canonical agent identifiers used across the orchestration pipeline.
 FALLBACK_AGENT = "general-agent"
 # cancel-interaction is a pipeline-level directive, not a real agent.

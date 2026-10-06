@@ -319,6 +319,12 @@ class TestNonStreamingCompletion:
         assert resp.json()["error"]["type"] == "invalid_request_error"
         dispatcher.dispatch.assert_not_awaited()
 
+    async def test_surrounding_whitespace_is_stripped(self, db_repository):
+        dispatcher = _make_dispatcher({"speech": "\n\nHello there.\n"})
+        async with _Client(dispatcher=dispatcher) as client:
+            resp = await client.post("/v1/chat/completions", json=_chat_body("hi"))
+        assert resp.json()["choices"][0]["message"]["content"] == "Hello there."
+
     async def test_error_without_speech_is_reported(self, db_repository):
         dispatcher = _make_dispatcher({"speech": "", "error": "agent timeout"})
         async with _Client(dispatcher=dispatcher) as client:
@@ -391,6 +397,33 @@ class TestStreamingCompletion:
             resp = await client.post("/v1/chat/completions", json=_chat_body("q", stream=True))
         events = _parse_sse(resp.text)
         assert _streamed_content(events) == "Partial answer"
+
+    async def test_leading_whitespace_tokens_are_dropped(self, db_repository):
+        frames = [
+            {"token": "\n", "done": False},
+            {"token": "\n", "done": False},
+            {"token": "  Hello", "done": False},
+            {"token": " there.\n\nBye.", "done": False},
+            {"token": "", "done": True},
+        ]
+        async with _Client(dispatcher=_make_dispatcher(frames=frames)) as client:
+            resp = await client.post("/v1/chat/completions", json=_chat_body("hi", stream=True))
+        events = _parse_sse(resp.text)
+        _assert_valid_chunk_sequence(events)
+        content_chunks = [e["choices"][0]["delta"].get("content", "") for e in events[:-1]]
+        assert content_chunks[0] == "Hello"
+        assert _streamed_content(events) == "Hello there.\n\nBye."
+
+    async def test_leading_whitespace_of_mediated_speech_is_dropped(self, db_repository):
+        frames = [
+            {"token": "\n\n", "done": False},
+            {"token": "", "done": True, "mediated_speech": "\n\nTurned on the light."},
+        ]
+        async with _Client(dispatcher=_make_dispatcher(frames=frames)) as client:
+            resp = await client.post("/v1/chat/completions", json=_chat_body("light on", stream=True))
+        events = _parse_sse(resp.text)
+        _assert_valid_chunk_sequence(events)
+        assert _streamed_content(events) == "Turned on the light."
 
     async def test_empty_turn_still_emits_role_and_stop(self, db_repository):
         async with _Client(dispatcher=_make_dispatcher(frames=[{"token": "", "done": True}])) as client:
@@ -549,6 +582,46 @@ class TestTracingSource:
         for path, expected in (("/v1/chat/completions", "openai"), ("/api/conversation", "ha"), ("/v10", "api")):
             await middleware({"type": "http", "path": path, "method": "POST", "headers": []}, _receive, _send)
             assert captured["source"] == expected
+
+    async def test_request_user_id_lands_on_root_span(self, db_repository):
+        from app.analytics.tracer import record_request_attribute
+        from app.middleware.tracing import TracingMiddleware
+
+        ha_user_id = "0123456789abcdef0123456789abcdef"
+
+        async def _app(scope, receive, send):
+            record_request_attribute(scope["state"]["span_collector"], "user_id", ha_user_id)
+            await send({"type": "http.response.start", "status": 200, "headers": []})
+            await send({"type": "http.response.body", "body": b""})
+
+        async def _receive():
+            return {"type": "http.request", "body": b""}
+
+        async def _send(_message):
+            return None
+
+        spans: list = []
+
+        async def _capture(batch):
+            # flush() clears its span list afterwards; keep a copy.
+            spans.extend(batch)
+
+        with patch("app.analytics.tracer.TraceSpanRepository.insert_batch", side_effect=_capture):
+            await TracingMiddleware(_app)(
+                {"type": "http", "path": "/v1/chat/completions", "method": "POST", "headers": []}, _receive, _send
+            )
+        root = next(s for s in spans if s["parent_span"] is None)
+        assert root["metadata"]["user_id"] == ha_user_id
+
+    def test_trace_detail_reads_user_id_from_root_span(self):
+        from app.api.routes.traces_api import _root_span_user_id
+
+        spans = [
+            {"span_name": "classify", "parent_span": "root", "metadata": {"user_id": "child"}},
+            {"span_name": "POST /v1/chat/completions", "parent_span": None, "metadata": {"user_id": "ha-user-1"}},
+        ]
+        assert _root_span_user_id(spans) == "ha-user-1"
+        assert _root_span_user_id([{"parent_span": None, "metadata": {"user_id": None}}]) is None
 
 
 # ---------------------------------------------------------------------------

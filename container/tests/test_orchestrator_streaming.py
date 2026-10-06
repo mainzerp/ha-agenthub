@@ -1099,3 +1099,147 @@ class TestFollowupTagNotStreamed:
         done_chunks = [c for c in chunks if c.get("done")]
         assert len(done_chunks) == 1
         assert done_chunks[0].get("voice_followup") is True
+
+
+# ---------------------------------------------------------------------------
+# Text-only sources (OpenAI-compatible /v1 ingress): no filler, no voice
+# follow-up; every source records user_id as a root-span attribute.
+# ---------------------------------------------------------------------------
+
+
+def _make_source_task(source: str, conversation_id: str, user_id: str | None = None) -> IngressTask:
+    return IngressTask(
+        description="turn on light",
+        conversation_id=conversation_id,
+        context=TaskContext(language="en", source=source, user_id=user_id),
+    )
+
+
+class TestTextOnlySourceRules:
+    @pytest.mark.asyncio
+    @patch("app.agents.orchestrator.SettingsRepository")
+    @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
+    @patch("app.llm.client.complete", new_callable=AsyncMock)
+    async def test_openai_source_skips_filler_and_relays_tokens(self, mock_complete, mock_track, mock_settings):
+        mock_settings.get_value = AsyncMock(return_value="")
+        mock_complete.return_value = "light-agent (95%): Turn on light"
+        orch, dispatcher = _make_orchestrator()
+
+        async def _slow_stream(_request):
+            await asyncio.sleep(0.06)
+            yield {"token": "Light ", "done": False}
+            yield {"token": "is on.", "done": True}
+
+        dispatcher.dispatch_stream = _slow_stream
+        orch._should_send_filler = AsyncMock(return_value=True)
+        orch._get_filler_threshold_ms = AsyncMock(return_value=0)
+        orch._invoke_filler_agent = AsyncMock(return_value="One moment please.")
+
+        task = _make_source_task("openai", "conv-openai-filler")
+        chunks = [c async for c in orch.handle_task_stream(task)]
+
+        assert not [c for c in chunks if c.get("filler_push")]
+        orch._invoke_filler_agent.assert_not_awaited()
+        orch._should_send_filler.assert_not_awaited()
+        relayed = [c for c in chunks if not c.get("done") and c.get("token")]
+        assert [c["token"] for c in relayed] == ["Light ", "is on."]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("source", ["ha", "chat", "api"])
+    @patch("app.agents.orchestrator.SettingsRepository")
+    @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
+    @patch("app.llm.client.complete", new_callable=AsyncMock)
+    async def test_other_sources_still_get_filler(self, mock_complete, mock_track, mock_settings, source):
+        mock_settings.get_value = AsyncMock(return_value="")
+        mock_complete.return_value = "light-agent (95%): Turn on light"
+        orch, dispatcher = _make_orchestrator()
+
+        async def _slow_stream(_request):
+            await asyncio.sleep(0.06)
+            yield {"token": "Light is on.", "done": True}
+
+        dispatcher.dispatch_stream = _slow_stream
+        orch._should_send_filler = AsyncMock(return_value=True)
+        orch._get_filler_threshold_ms = AsyncMock(return_value=0)
+        orch._invoke_filler_agent = AsyncMock(return_value="One moment please.")
+
+        task = _make_source_task(source, f"conv-{source}-filler")
+        chunks = [c async for c in orch.handle_task_stream(task)]
+
+        assert [c["filler_push"] for c in chunks if c.get("filler_push")] == ["One moment please."]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("source", "expected"), [("openai", False), ("ha", True)])
+    @patch("app.agents.orchestrator.SettingsRepository")
+    @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
+    @patch("app.llm.client.complete", new_callable=AsyncMock)
+    async def test_voice_followup_by_source(self, mock_complete, mock_track, mock_settings, source, expected):
+        """A mediated [FOLLOWUP] question requests a voice follow-up for HA
+        but never for the text-only openai source (frame and trace); the
+        pending clarifying question is kept for both."""
+        mock_complete.return_value = "light-agent (95%): Turn on light"
+        mock_settings.get_value = AsyncMock(
+            side_effect=lambda k, d=None: {
+                "personality.prompt": "You are friendly.",
+                "orchestrator.organic_followup_enabled": "false",
+            }.get(k, d)
+        )
+        orch, dispatcher = _make_orchestrator()
+        orch._should_send_filler = AsyncMock(return_value=False)
+        orch._create_trace = AsyncMock()
+
+        async def _stream(_request):
+            yield {"token": "Light is on.", "done": True}
+
+        dispatcher.dispatch_stream = _stream
+
+        async def _fake_mediation_stream(**kwargs):
+            yield "Light is on. Want more?"
+            yield "[FOLLOWUP]"
+
+        orch._mediate_response_stream = _fake_mediation_stream
+
+        from app.analytics.tracer import SpanCollector
+
+        conversation_id = f"conv-{source}-followup"
+        task = _make_source_task(source, conversation_id)
+        task.span_collector = SpanCollector(f"trace-{source}", source=source)
+        chunks = [c async for c in orch.handle_task_stream(task)]
+
+        done_chunks = [c for c in chunks if c.get("done")]
+        assert len(done_chunks) == 1
+        assert bool(done_chunks[0].get("voice_followup")) is expected
+        orch._create_trace.assert_awaited_once()
+        assert orch._create_trace.await_args.kwargs["voice_followup"] is expected
+        assert orch._conversation_manager.pop_pending_question(conversation_id) is not None
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("user_id", ["0123456789abcdef0123456789abcdef", None])
+    @patch("app.agents.orchestrator.SettingsRepository")
+    @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
+    @patch("app.llm.client.complete", new_callable=AsyncMock)
+    async def test_user_id_recorded_on_root_span(self, mock_complete, mock_track, mock_settings, user_id):
+        from app.analytics.tracer import SpanCollector, sanitize_trace_metadata
+
+        mock_settings.get_value = AsyncMock(return_value="")
+        mock_complete.return_value = "light-agent (95%): Turn on light"
+        orch, dispatcher = _make_orchestrator()
+        orch._should_send_filler = AsyncMock(return_value=False)
+        orch._create_trace = AsyncMock()
+
+        async def _stream(_request):
+            yield {"token": "Light is on.", "done": True}
+
+        dispatcher.dispatch_stream = _stream
+        collector = SpanCollector("trace-user", source="openai")
+        task = _make_source_task("openai", "conv-user-id", user_id=user_id)
+        task.span_collector = collector
+        _ = [c async for c in orch.handle_task_stream(task)]
+
+        collector.record_root_span(
+            {"span_id": "root", "span_name": "POST /v1/chat/completions", "parent_span": None, "metadata": {}}
+        )
+        root = collector.get_spans()[-1]
+        assert "user_id" in root["metadata"]
+        # The 32-char hex HA user id must survive trace redaction verbatim.
+        assert sanitize_trace_metadata(root["metadata"])["user_id"] == user_id
