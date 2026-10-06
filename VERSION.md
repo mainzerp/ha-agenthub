@@ -1,12 +1,23 @@
 # Version
 
-**Current Version:** 2.6.0
+**Current Version:** 2.7.0
 
 ## Recent Changes
 
-(tracking changes since 2.6.0)
+(tracking changes since 2.7.0)
 
 ## Version History
+
+### 2.7.0 (MINOR) -- Open WebUI connection and external user mapping
+
+(commits a39bca9, b2fbc0c; docs 8052d4b)
+
+- API: OpenAI-compatible `GET /v1/models` and `POST /v1/chat/completions` (container API key, conversation rate limit) so Open WebUI can chat with and control the house. The last user message becomes one orchestrator turn (trace source `openai`); conversation ids come from `X-OpenWebUI-Chat-Id` (fallback: hash of user and first message); language follows the `language` setting like the dashboard chat; streaming maps internal frames to `chat.completion.chunk` events (b2fbc0c).
+- API: Open WebUI background tasks (`X-OpenWebUI-Task` header or `### Task:` prompt prefix) get title/tags/follow-up/query stubs, never reach the orchestrator (so they cannot execute Home Assistant actions) and do not consume the conversation rate limit (b2fbc0c).
+- Dashboard: the Persons page lists Open WebUI users and maps each to a Home Assistant user (`/api/admin/external-users`); mapped users run with that `user_id`, so calendar and memory match voice requests. New table `external_user_mappings` (migration 45, applied automatically) (a39bca9).
+- Docs: `docs/deployment.md` "Open WebUI" covers the connection, `ENABLE_FORWARD_USER_INFO_HEADERS=true`, a separate task model (recommended) and the `X-OpenWebUI-Task` header as safety net (8052d4b).
+- Verification: 3447 container tests passed (1 skipped, 9 xfailed, 3 xpassed), 145 integration tests passed; Ruff lint and format passed.
+- No features or public APIs removed; no user action required. Open WebUI setup is optional.
 
 ### 2.6.0 (MINOR) -- visible rewrite failures and reasoning effort "none"
 
