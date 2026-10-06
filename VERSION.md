@@ -1,12 +1,24 @@
 # Version
 
-**Current Version:** 2.7.0
+**Current Version:** 2.7.1
 
 ## Recent Changes
 
-(tracking changes since 2.7.0)
+(tracking changes since 2.7.1)
 
 ## Version History
+
+### 2.7.1 (PATCH) -- Open WebUI chat polish and trace user id
+
+(commits 6f80bc1, 4948a15; docs b847cf2)
+
+- Conversation: the OpenAI-compatible `/v1` ingress (source `openai`) no longer generates filler phrases, so no filler LLM call runs and the first agent token is not delayed by the filler threshold (6f80bc1).
+- Conversation: `openai` turns never request a voice follow-up (`voice_followup` false in the result and the trace); the pending clarifying question is still kept for the typed answer (6f80bc1).
+- Conversation: `/v1/chat/completions` drops leading whitespace in streamed content and strips non-stream content, so answers no longer start with blank lines in Open WebUI (6f80bc1).
+- Trace: every orchestrator turn records the request `user_id` on the root span (kept verbatim by redaction only for opaque ids); trace detail shows it as "User", so the Open WebUI to Home Assistant user mapping is verifiable from a trace (4948a15).
+- Note: with a personality prompt the reply still arrives in one piece after mediation (on every channel); only the filler wait is removed.
+- Verification: 3463 container tests passed (1 skipped, 9 xfailed, 3 xpassed); Ruff lint and format passed.
+- No features or public APIs removed; no user action required.
 
 ### 2.7.0 (MINOR) -- Open WebUI connection and external user mapping
 
