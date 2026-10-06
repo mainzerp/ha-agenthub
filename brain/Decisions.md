@@ -4,6 +4,21 @@ Decision rationale, so decisions stay made. Newest first. Binding architecture
 rules live in `docs/project/prime-directives.md` — this file records choices,
 not copies of rules.
 
+## 2026-10-06 — Streamed mediation fallback is decided by emitted text
+
+- **Fallback depends on text that reached the client**, not on raw tokens:
+  nothing emitted -> the reply goes out whole as `mediated_speech`; something
+  emitted -> the turn is committed to the stream, no fallback text is
+  appended. Rationale: the hold-back filter made "tokens received" differ from
+  "text shown", which produced empty answers.
+- **A stall never triggers a second mediation call**; the sanitized agent
+  speech plus reminder is sent instead. Rationale: a stalled provider would
+  stall again. Timeouts are settings (15 s first token, 10 s idle) because
+  reasoning models emit no content tokens while thinking.
+- **Streamed tokens are markdown-cleaned for all sources.** Rationale: the HA
+  bridge passes tokens straight to streaming TTS and trusts `sanitized=True`.
+  Numbered-list markers are kept ("3. Oktober" is a date).
+
 ## 2026-10-06 — OpenAI-compatible ingress for Open WebUI, external user mapping
 
 - **In-container adapter, not an Open WebUI Pipe function.** `GET /v1/models`

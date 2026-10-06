@@ -28,10 +28,11 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import AsyncGenerator
+from contextlib import aclosing
 from typing import Any
 
 from app.agents.base import language_code_to_name
-from app.agents.sanitize import _remove_asides, strip_parenthetical_asides
+from app.agents.sanitize import _remove_asides, strip_markdown_markers, strip_parenthetical_asides
 from app.analytics.tracer import _optional_span
 
 logger = logging.getLogger(__name__)
@@ -65,30 +66,45 @@ def _strip_followup_tag(text: str | None) -> tuple[str | None, bool]:
 
 class StreamedSpeechFilter:
     """Incrementally emit mediated tokens with the same aside/[FOLLOWUP]
-    cleanup as the collected text."""
+    cleanup as the collected text, plus TTS-safe Markdown marker removal
+    (the terminal ``mediated_speech`` is Markdown-stripped as well)."""
 
     def __init__(self) -> None:
         self._raw = ""
         self._emitted_len = 0
+        self._emitted_chars = 0
+
+    @property
+    def emitted_chars(self) -> int:
+        """Number of characters actually returned for emission so far."""
+        return self._emitted_chars
+
+    def _take(self, text: str) -> str:
+        # Leading whitespace is never the first thing emitted: a
+        # whitespace-only token frame would count as streamed output.
+        if not self._emitted_chars:
+            text = text.lstrip()
+        self._emitted_chars += len(text)
+        return text
 
     def feed(self, token: str) -> str:
         """Buffer ``token``; return the text now safe to emit ("" if none).
 
         Text past the first ``(`` that no ``)`` closes yet is held back: it
         may still turn out to be an aside. The trailing ``len([FOLLOWUP])``
-        chars of cleaned text are held back as well so a tag fragment never
-        leaks into a token frame.
+        chars of cleaned text are held back as well so a tag fragment or an
+        undecided Markdown marker never leaks into a token frame.
         """
         self._raw += token
         last_close = self._raw.rfind(")")
         open_idx = self._raw.find("(", last_close + 1)
         stable = self._raw if open_idx == -1 else self._raw[:open_idx]
-        cleaned = _remove_asides(stable)
+        cleaned = strip_markdown_markers(_remove_asides(stable))
         safe_end = len(cleaned.rstrip()) - len(_FOLLOWUP_TAG)
         if safe_end > self._emitted_len:
             emit = cleaned[self._emitted_len : safe_end]
             self._emitted_len = safe_end
-            return emit
+            return self._take(emit)
         return ""
 
     def finish(self) -> tuple[str, bool]:
@@ -98,11 +114,11 @@ class StreamedSpeechFilter:
         ``)``), so its text is emitted here, matching the collected-text
         path.
         """
-        stripped, followup = _strip_followup_tag(_remove_asides(self._raw))
+        # Markers first, so a wrapped tag ("**[FOLLOWUP]**") is detected.
+        stripped, followup = _strip_followup_tag(strip_markdown_markers(_remove_asides(self._raw)))
         tail = stripped[self._emitted_len :] if len(stripped) > self._emitted_len else ""
-        if self._emitted_len == 0:
-            tail = tail.lstrip()
-        return tail, followup
+        self._emitted_len = max(self._emitted_len, len(stripped))
+        return self._take(tail), followup
 
 
 class MediationService:
@@ -355,9 +371,14 @@ class MediationService:
                 span["metadata"]["language"] = language or "en"
                 span["metadata"]["original_length"] = len(agent_speech)
                 span["metadata"]["streamed"] = True
-                async for token in self._orch._call_llm_stream(messages, span_collector=span_collector, **overrides):
-                    if token:
-                        yield token
+                # aclosing: an aborted consumer (stall timeout, client gone)
+                # closes the provider stream deterministically.
+                async with aclosing(
+                    self._orch._call_llm_stream(messages, span_collector=span_collector, **overrides)
+                ) as llm_stream:
+                    async for token in llm_stream:
+                        if token:
+                            yield token
         except asyncio.CancelledError:
             raise
         except Exception as exc:

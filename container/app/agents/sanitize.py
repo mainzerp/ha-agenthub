@@ -26,6 +26,36 @@ def strip_parenthetical_asides(text: str) -> str:
     return _remove_asides(text).strip()
 
 
+_STREAM_HEADING_RE = re.compile(r"^([ \t]*)#{1,6}[ \t]+", re.MULTILINE)
+_STREAM_BULLET_RE = re.compile(r"^([ \t]*)[-*+][ \t]+", re.MULTILINE)
+# An emphasis marker is a ``*`` run touching a non-space character on at
+# least one side; a lone ``*`` between spaces ("5 * 3") is kept.
+_STREAM_EMPHASIS_RE = re.compile(r"(?<=\S)\*+|\*+(?=\S)")
+
+
+def strip_markdown_markers(text: str) -> str:
+    """Remove Markdown markers TTS would read aloud, safe for incremental use.
+
+    Streaming counterpart of :func:`strip_markdown` for mediated token
+    frames: removes ``#`` heading markers and ``-``/``*``/``+`` bullet markers
+    at line start, ``*`` emphasis runs (bold/italic: a run adjacent to a
+    non-space character) and every backtick. A ``*`` surrounded by spaces,
+    as in ``5 * 3 = 15``, is kept. Each rule only deletes marker characters
+    and is decided by the next character, so cleaning a longer text never
+    changes the cleaned form of an earlier prefix beyond the hold-back
+    window of :class:`~app.agents.mediation.StreamedSpeechFilter`.
+    Indentation and whitespace are preserved (no per-line stripping) for
+    the same reason. Numbered-list markers are deliberately kept: a line
+    such as ``3. Oktober`` is a date, not a list item.
+    """
+    if not text:
+        return text
+    text = _STREAM_HEADING_RE.sub(r"\1", text)
+    text = _STREAM_BULLET_RE.sub(r"\1", text)
+    text = _STREAM_EMPHASIS_RE.sub("", text).replace("`", "")
+    return re.sub(r" {2,}", " ", text)
+
+
 def strip_markdown(text: str) -> str:
     """Remove common Markdown formatting artifacts for TTS clarity.
 

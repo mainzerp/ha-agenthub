@@ -10,6 +10,7 @@ side; HA parity is verified manually from the PR description.
 
 from __future__ import annotations
 
+import itertools
 import sys
 import types
 from pathlib import Path
@@ -375,3 +376,74 @@ class TestStreamedSpeechFilter:
         tail, followup = f.finish()
         assert spoken + tail == "Light is on."
         assert followup is False
+
+    def test_markdown_markers_removed_char_by_char(self):
+        text = "  # Status\n**Kitchen** light is `on`.\n* Hall: *off*\n- Porch -5 degrees. #home [FOLLOWUP]"
+        f = StreamedSpeechFilter()
+        spoken = "".join(f.feed(ch) for ch in text)
+        tail, followup = f.finish()
+        # The space before the tag is emitted before the tag is recognised.
+        assert spoken + tail == "Status\nKitchen light is on.\nHall: off\nPorch -5 degrees. #home "
+        assert followup is True
+        assert f.emitted_chars == len(spoken + tail)
+
+    def test_bold_wrapped_followup_tag(self):
+        f = StreamedSpeechFilter()
+        spoken = "".join(f.feed(t) for t in ("Frage? **[FOLL", "OWUP]**"))
+        tail, followup = f.finish()
+        assert (spoken + tail).strip() == "Frage?"
+        assert followup is True
+
+    def test_lone_asterisk_between_spaces_kept(self):
+        f = StreamedSpeechFilter()
+        spoken = f.feed("Five times three: 5 * 3 = 15, so **fifteen** it is.")
+        tail, _ = f.finish()
+        assert spoken + tail == "Five times three: 5 * 3 = 15, so fifteen it is."
+
+    @pytest.mark.parametrize(
+        "splits",
+        [
+            (1,),
+            (3, 7, 11),
+            (2, 5, 9, 14, 20, 27),
+            (6, 13, 21, 34, 55),
+            (4, 8, 16, 32, 64),
+        ],
+    )
+    def test_incremental_output_matches_whole_text(self, splits):
+        text = (
+            "## Plan\n**Kitchen** is `on`, 5 * 3 = 15.\n* Hall: *off* (dimmed)\n- Porch -5 degrees. Ok?**[FOLLOWUP]**"
+        )
+        whole = StreamedSpeechFilter()
+        expected = whole.feed(text)
+        expected_tail, expected_followup = whole.finish()
+        expected += expected_tail
+
+        f = StreamedSpeechFilter()
+        bounds = [0, *[s for s in splits if s < len(text)], len(text)]
+        spoken = "".join(f.feed(text[a:b]) for a, b in itertools.pairwise(bounds))
+        char_f = StreamedSpeechFilter()
+        char_spoken = "".join(char_f.feed(ch) for ch in text)
+        tail, followup = f.finish()
+        char_tail, _ = char_f.finish()
+
+        assert spoken + tail == expected
+        assert char_spoken + char_tail == expected
+        assert followup is expected_followup is True
+        assert "*" not in expected.replace("5 * 3", "")
+        assert "FOLLOWUP" not in expected
+
+    def test_short_output_counts_emitted_chars(self):
+        f = StreamedSpeechFilter()
+        assert f.feed("  Hi") == ""
+        assert f.emitted_chars == 0
+        tail, _ = f.finish()
+        assert tail == "Hi"
+        assert f.emitted_chars == 2
+
+    def test_all_aside_output_emits_nothing(self):
+        f = StreamedSpeechFilter()
+        assert f.feed("(smiles warmly at the user)") == ""
+        tail, _ = f.finish()
+        assert tail == ""
+        assert f.emitted_chars == 0

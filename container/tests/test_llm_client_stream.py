@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -297,3 +298,57 @@ class TestCompleteStream:
         assert prov_spans[0]["metadata"]["tps"] > 0
         # P2: streaming calls also record whole-call latency_ms.
         assert prov_spans[0]["metadata"]["latency_ms"] >= 0
+
+
+class _HangingStream:
+    """Provider stream that yields one chunk, then stalls until cancelled."""
+
+    def __init__(self, *, with_aclose: bool = True):
+        self._sent = False
+        if with_aclose:
+            self.aclose = AsyncMock()
+        else:
+            self.close = MagicMock()
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        if not self._sent:
+            self._sent = True
+            return _FakeChunk("Hello")
+        await asyncio.sleep(10)
+        raise StopAsyncIteration
+
+
+class TestCompleteStreamClosesProviderStream:
+    @pytest.mark.parametrize("with_aclose", [True, False])
+    @patch("litellm.acompletion", new_callable=AsyncMock)
+    @patch("app.llm.client.resolve_provider_params", new_callable=AsyncMock, return_value={})
+    @patch("app.llm.client.AgentConfigRepository")
+    async def test_cancelled_consumer_closes_response(self, mock_repo, mock_params, mock_acompletion, with_aclose):
+        mock_repo.get = AsyncMock(
+            return_value={
+                "agent_id": "light-agent",
+                "enabled": True,
+                "model": "openrouter/openai/gpt-4o-mini",
+                "timeout": 5,
+                "max_iterations": 3,
+                "temperature": 0.7,
+                "max_tokens": 256,
+                "description": "Light agent",
+            }
+        )
+        response = _HangingStream(with_aclose=with_aclose)
+        mock_acompletion.return_value = response
+
+        stream = complete_stream("light-agent", [{"role": "user", "content": "hi"}])
+        assert await anext(stream) == "Hello"
+        with pytest.raises(TimeoutError):
+            async with asyncio.timeout(0.05):
+                await anext(stream)
+
+        if with_aclose:
+            response.aclose.assert_awaited_once()
+        else:
+            response.close.assert_called_once()
