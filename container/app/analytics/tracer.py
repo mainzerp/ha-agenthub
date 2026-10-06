@@ -249,7 +249,7 @@ _current_parent: contextvars.ContextVar[str | None] = contextvars.ContextVar(
 )
 
 
-SpanSource = Literal["ha", "chat", "api"]
+SpanSource = Literal["ha", "chat", "api", "openai"]
 
 
 class SpanCollector:

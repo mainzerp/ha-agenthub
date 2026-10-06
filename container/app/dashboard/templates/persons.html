@@ -3,15 +3,15 @@
 {% block page_css %}<link rel="stylesheet" href="{{ static_url(request, '/dashboard/static/css/pages/persons.css') }}">{% endblock %}
 {% block header_title %}Persons{% endblock %}
 {% block page_content %}
-<div x-data="personsPage()" x-init="loadPersons()">
+<div x-data="personsPage()" x-init="loadAll()">
     <div x-show="error" class="alert alert-error mb-md cursor-pointer" x-text="error" @click="error = null"></div>
 
     <div class="page-header">
         <div class="page-header-text">
-            <p class="page-subtitle">Home Assistant person entities for user mapping.</p>
+            <p class="page-subtitle">Home Assistant person entities and the Open WebUI users mapped to them.</p>
         </div>
         <div class="page-actions btn-group">
-            <button class="btn btn-sm btn-secondary" @click="loadPersons()" :disabled="loading">
+            <button class="btn btn-sm btn-secondary" @click="loadAll()" :disabled="loading">
                 <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
                 Refresh
             </button>
@@ -40,6 +40,7 @@
                         <th>User ID</th>
                         <th>Device Trackers</th>
                         <th>Location</th>
+                        <th>Open WebUI Users</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -63,6 +64,12 @@
                                 <span x-show="p.latitude && p.longitude" x-text="p.latitude?.toFixed(4) + ', ' + p.longitude?.toFixed(4)"></span>
                                 <span x-show="!p.latitude || !p.longitude">-</span>
                             </td>
+                            <td>
+                                <template x-for="u in externalUsersFor(p)" :key="userKey(u)">
+                                    <span class="badge badge-blue mr-xs" :title="u.email || u.external_user_id" x-text="u.display_name || shortId(u.external_user_id)"></span>
+                                </template>
+                                <span x-show="!externalUsersFor(p).length" class="text-muted text-xs">-</span>
+                            </td>
                         </tr>
                     </template>
                 </tbody>
@@ -76,12 +83,65 @@
             </div>
         </template>
     </div>
+
+    <div class="card mt-lg">
+        <h3 class="card-title mb-sm">Open WebUI Users</h3>
+        <p class="text-muted text-sm mb-md">Users seen through the OpenAI-compatible API. Map a user to a person so their chats run as that Home Assistant user. Only persons linked to a Home Assistant user can be selected.</p>
+
+        <div class="table-container-flush" x-show="!loading && externalUsers.length > 0">
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>Name</th>
+                        <th>Email</th>
+                        <th>External ID</th>
+                        <th>Last Seen</th>
+                        <th>Mapped Person</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <template x-for="u in externalUsers" :key="userKey(u)">
+                        <tr>
+                            <td class="fw-600" x-text="u.display_name || '-'"></td>
+                            <td class="text-xs" x-text="u.email || '-'"></td>
+                            <td><code class="mono text-xs" :title="u.external_user_id" x-text="shortId(u.external_user_id)"></code></td>
+                            <td class="text-xs text-muted" :title="u.last_seen_at" x-text="dashFormatRelativeTime(u.last_seen_at)"></td>
+                            <td>
+                                <select class="form-input min-w-180" :disabled="savingKey === userKey(u)" @change="saveMapping(u, $event.target.value)">
+                                    <option value="" :selected="!u.ha_user_id">Not mapped</option>
+                                    <template x-if="u.ha_user_id && !isKnownUserId(u.ha_user_id)">
+                                        <option :value="u.ha_user_id" selected x-text="'Unknown user (' + shortId(u.ha_user_id) + ')'"></option>
+                                    </template>
+                                    <template x-for="p in mappablePersons" :key="p.entity_id">
+                                        <option :value="p.user_id" :selected="u.ha_user_id === p.user_id" x-text="p.friendly_name || p.entity_id"></option>
+                                    </template>
+                                </select>
+                            </td>
+                            <td>
+                                <button class="btn btn-sm btn-danger" @click="deleteExternalUser(u)">Delete</button>
+                            </td>
+                        </tr>
+                    </template>
+                </tbody>
+            </table>
+        </div>
+
+        <template x-if="!loading && externalUsers.length === 0">
+            <div class="empty-state">
+                <p>No Open WebUI users seen yet.</p>
+                <p class="text-muted text-sm">Users appear here after their first chat once Open WebUI forwards user info headers.</p>
+            </div>
+        </template>
+    </div>
 </div>
 
 <script>
 function personsPage() {
     return {
         persons: [],
+        externalUsers: [],
+        savingKey: null,
         loading: false,
         error: null,
         search: '',
@@ -96,10 +156,76 @@ function personsPage() {
             );
         },
 
-        async loadPersons() {
+        get mappablePersons() {
+            return this.persons.filter(p => p.user_id);
+        },
+
+        isKnownUserId(userId) {
+            return this.mappablePersons.some(p => p.user_id === userId);
+        },
+
+        externalUsersFor(p) {
+            if (!p.user_id) return [];
+            return this.externalUsers.filter(u => u.ha_user_id === p.user_id);
+        },
+
+        userKey(u) {
+            return u.source + ':' + u.external_user_id;
+        },
+
+        userUrl(u) {
+            return '/api/admin/external-users/' + encodeURIComponent(u.source) + '/' + encodeURIComponent(u.external_user_id);
+        },
+
+        shortId(id) {
+            if (!id) return '-';
+            return id.length > 12 ? id.slice(0, 8) + '...' : id;
+        },
+
+        async loadAll() {
             this.loading = true;
-            this.persons = await window.dashboardApi.safeJson('/api/admin/persons') || [];
+            const [persons, externalUsers] = await Promise.all([
+                window.dashboardApi.safeJson('/api/admin/persons'),
+                window.dashboardApi.safeJson('/api/admin/external-users'),
+            ]);
+            this.persons = persons || [];
+            this.externalUsers = externalUsers || [];
             this.loading = false;
+        },
+
+        async loadExternalUsers() {
+            this.externalUsers = await window.dashboardApi.safeJson('/api/admin/external-users') || [];
+        },
+
+        async saveMapping(u, value) {
+            this.savingKey = this.userKey(u);
+            try {
+                const data = await window.dashboardApi.json(this.userUrl(u), {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ ha_user_id: value || null }),
+                });
+                u.ha_user_id = data.ha_user_id || null;
+                window.toast(u.ha_user_id ? 'Mapping saved' : 'Mapping cleared', 'success');
+            } catch (e) {
+                if (e.code === 'auth_expired') return;
+                window.toast(e.detail || 'Failed to save mapping', 'error');
+                await this.loadExternalUsers();
+            } finally {
+                this.savingKey = null;
+            }
+        },
+
+        async deleteExternalUser(u) {
+            if (!confirm('Delete this Open WebUI user and its mapping?')) return;
+            try {
+                await window.dashboardApi.request(this.userUrl(u), { method: 'DELETE' });
+                window.toast('User deleted', 'success');
+                await this.loadExternalUsers();
+            } catch (e) {
+                if (e.code === 'auth_expired') return;
+                window.toast(e.detail || 'Failed to delete user', 'error');
+            }
         }
     };
 }

@@ -26,6 +26,7 @@ from app.db.repository import (
     AgentConfigRepository,
     AnalyticsRepository,
     ConversationRepository,
+    ExternalUserMappingRepository,
     SendDeviceMappingRepository,
     SettingsRepository,
     TraceSummaryRepository,
@@ -689,6 +690,16 @@ async def update_personality_config(payload: PersonalityConfigUpdate) -> dict[st
 # --- Chat bridge ---
 
 
+async def resolve_chat_language(requested: str | None = None) -> str:
+    """Chat-turn language: the requested code, else the ``language`` setting, else ``"en"``.
+
+    Shared by the dashboard chat and the OpenAI-compatible ``/v1`` API.
+    """
+    if requested:
+        return requested
+    return await SettingsRepository.get_value("language") or "en"
+
+
 class ChatRequest(BaseModel):
     text: str
     conversation_id: str | None = None
@@ -704,9 +715,7 @@ async def admin_chat(request: Request, payload: ChatRequest) -> dict[str, Any]:
     # FLOW-MED-9: source is now set by TracingMiddleware from the
     # route path (``/api/admin/chat`` -> ``"chat"``).
     span_collector = getattr(request.state, "span_collector", None)
-    language = payload.language
-    if not language:
-        language = await SettingsRepository.get_value("language") or "en"
+    language = await resolve_chat_language(payload.language)
     prepared_text = prepare_user_text(payload.text)
     task = IngressTask(
         description=prepared_text.text,
@@ -749,9 +758,7 @@ async def admin_chat_stream(request: Request, payload: ChatRequest):
     # FLOW-MED-9: source is set by TracingMiddleware from the route
     # path.
     span_collector = getattr(request.state, "span_collector", None)
-    language = payload.language
-    if not language:
-        language = await SettingsRepository.get_value("language") or "en"
+    language = await resolve_chat_language(payload.language)
     prepared_text = prepare_user_text(payload.text)
     task = IngressTask(
         description=prepared_text.text,
@@ -899,19 +906,12 @@ async def list_available_send_targets(request: Request, type: str = "notify"):
 # --- Persons (HA person entities) ---
 
 
-@router.get("/persons")
-async def list_persons(request: Request):
-    """Fetch person.* entities from Home Assistant."""
-    ha_client = request.app.state.ha_client
-    if not ha_client:
-        return []
+async def _fetch_persons(ha_client) -> list[dict[str, Any]]:
+    """Return person.* entities from Home Assistant, sorted by friendly name.
 
-    try:
-        states = await ha_client.get_states()
-    except Exception:
-        logger.warning("Failed to fetch states from HA", exc_info=True)
-        return []
-
+    Raises when the HA state fetch fails; callers decide how to degrade.
+    """
+    states = await ha_client.get_states()
     persons = []
     for state in states:
         eid = state.get("entity_id", "")
@@ -935,3 +935,70 @@ async def list_persons(request: Request):
     # Sort by friendly name
     persons.sort(key=lambda p: p["friendly_name"] or p["entity_id"])
     return persons
+
+
+@router.get("/persons")
+async def list_persons(request: Request):
+    """Fetch person.* entities from Home Assistant."""
+    ha_client = request.app.state.ha_client
+    if not ha_client:
+        return []
+
+    try:
+        return await _fetch_persons(ha_client)
+    except Exception:
+        logger.warning("Failed to fetch states from HA", exc_info=True)
+        return []
+
+
+# --- External chat-client users (Open WebUI) -> HA user mapping ---
+
+
+class ExternalUserMappingUpdate(BaseModel):
+    ha_user_id: str | None = None
+
+
+@router.get("/external-users")
+async def list_external_users(source: str | None = None):
+    """List users seen on external chat clients with their HA user mapping."""
+    return await ExternalUserMappingRepository.list_all(source)
+
+
+@router.put("/external-users/{source}/{external_user_id:path}")
+async def set_external_user_mapping(
+    request: Request, source: str, external_user_id: str, body: ExternalUserMappingUpdate
+):
+    """Map an external user to a Home Assistant user id (``null`` clears it)."""
+    existing = await ExternalUserMappingRepository.get(source, external_user_id)
+    if existing is None:
+        return JSONResponse({"detail": "External user not found"}, status_code=404)
+
+    ha_user_id = (body.ha_user_id or "").strip() or None
+    if ha_user_id is not None:
+        ha_client = getattr(request.app.state, "ha_client", None)
+        if not ha_client:
+            return JSONResponse({"detail": "Home Assistant is not connected"}, status_code=503)
+        try:
+            persons = await _fetch_persons(ha_client)
+        except Exception:
+            logger.warning("Failed to fetch persons from HA for user mapping", exc_info=True)
+            return JSONResponse({"detail": "Failed to fetch persons from Home Assistant"}, status_code=502)
+        if not any(p.get("user_id") == ha_user_id for p in persons):
+            return JSONResponse({"detail": "ha_user_id does not belong to any person entity"}, status_code=400)
+
+    try:
+        ok = await ExternalUserMappingRepository.set_mapping(source, external_user_id, ha_user_id)
+    except ValueError as exc:
+        return JSONResponse({"detail": str(exc)}, status_code=400)
+    if not ok:
+        return JSONResponse({"detail": "External user not found"}, status_code=404)
+    return {"ok": True, "ha_user_id": ha_user_id}
+
+
+@router.delete("/external-users/{source}/{external_user_id:path}")
+async def delete_external_user(source: str, external_user_id: str):
+    """Forget an external user and its mapping."""
+    ok = await ExternalUserMappingRepository.delete(source, external_user_id)
+    if not ok:
+        return JSONResponse({"detail": "External user not found"}, status_code=404)
+    return {"ok": True}

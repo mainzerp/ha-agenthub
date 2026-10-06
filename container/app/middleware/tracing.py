@@ -10,9 +10,9 @@ import logging
 import time
 import uuid
 from datetime import UTC, datetime
-from typing import Literal, cast
+from typing import cast
 
-from app.analytics.tracer import SpanCollector
+from app.analytics.tracer import SpanCollector, SpanSource
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +35,8 @@ class TracingMiddleware:
         # FLOW-MED-9: derive the span source from the route prefix so
         # it is set at construction, not patched post-hoc. HA-facing
         # routes under /api/conversation* and /ws/conversation use
-        # ``"ha"``; dashboard chat is ``"chat"``; everything else
+        # ``"ha"``; dashboard chat is ``"chat"``; the OpenAI-compatible
+        # ``/v1/*`` API (Open WebUI) is ``"openai"``; everything else
         # falls back to ``"api"``. Route handlers that hit this
         # middleware before the final classification can still
         # override by rebuilding the collector.
@@ -44,9 +45,11 @@ class TracingMiddleware:
             source: str = "chat"
         elif path.startswith("/api/conversation") or path.startswith("/ws/conversation"):
             source = "ha"
+        elif path.startswith("/v1/"):
+            source = "openai"
         else:
             source = "api"
-        span_collector = SpanCollector(trace_id, source=cast(Literal["ha", "chat", "api"], source))
+        span_collector = SpanCollector(trace_id, source=cast(SpanSource, source))
 
         # Make trace_id and span_collector available via request.state.
         # Starlette's Request reads state from scope["state"].
@@ -168,7 +171,7 @@ class TracingMiddleware:
 
         # Legacy per-connection behaviour for any other WS route.
         trace_id = uuid.uuid4().hex[:16]
-        span_collector = SpanCollector(trace_id, source=cast(Literal["ha", "chat", "api"], source))
+        span_collector = SpanCollector(trace_id, source=cast(SpanSource, source))
         state["trace_id"] = trace_id
         state["span_collector"] = span_collector
 

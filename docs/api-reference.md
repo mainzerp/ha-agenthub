@@ -6,7 +6,7 @@ All API endpoints (except the `/healthz` and `/readyz` probes and `/setup/*`) re
 
 ### Conversation Endpoints
 
-Use a Bearer token in the `Authorization` header:
+Conversation and OpenAI-compatible (`/v1/*`) endpoints use a Bearer token in the `Authorization` header:
 
 ```
 Authorization: Bearer <api_key>
@@ -147,6 +147,58 @@ WebSocket endpoint for streaming conversation.
 ```
 
 **Receive:** Stream of token objects, same format as SSE events.
+
+---
+
+## OpenAI-compatible API
+
+OpenAI chat-completions surface for clients such as Open WebUI
+(`container/app/api/routes/openai_compat.py`). Each real turn is dispatched
+to the orchestrator exactly like `POST /api/conversation`; the trace source
+is `openai`. See [Deployment -- Open WebUI](deployment.md#open-webui).
+
+### GET /v1/models
+
+**Auth:** Bearer token (container API key)
+
+Returns one model:
+
+```json
+{"object": "list", "data": [{"id": "ha-agenthub", "object": "model", "created": 1767225600, "owned_by": "ha-agenthub"}]}
+```
+
+### POST /v1/chat/completions
+
+**Auth:** Bearer token (container API key). Real chat turns share the conversation rate limit (30 requests/minute per IP, `429` when exceeded); background-task requests are answered first and do not count against it.
+
+**Request body:** OpenAI shape; only `messages` and `stream` are used, other fields are ignored.
+
+- The text of the **last `user` message** is the turn (list content concatenates its `text` parts). System messages and earlier history are ignored; the server-side history keyed by the conversation id is authoritative.
+- Empty text: `400`. Text longer than the `POST /api/conversation` `text` limit (500 characters): `400` with `{"error": {"message": "...", "type": "invalid_request_error", "code": "text_too_long"}}`.
+- Language: the `language` setting, same as the dashboard chat (`auto` = detect from the user input; `en` when unset).
+
+**Headers read (Open WebUI):**
+
+| Header | Use |
+|--------|-----|
+| `X-OpenWebUI-Chat-Id` | Conversation id `owui-<chat id>` (truncated to 64 characters). Without it: `owui-` + first 32 hex chars of `sha256(<user id or "anon"> + "\n" + <first user message>)`. |
+| `X-OpenWebUI-User-Id` | Records the user in `external_user_mappings` (source `openwebui`) and passes the mapped Home Assistant user id as `user_id`; unmapped users run without `user_id`. Mapping errors never fail the request. |
+| `X-OpenWebUI-User-Name`, `X-OpenWebUI-User-Email` | Stored as display metadata for the Persons page. |
+| `X-OpenWebUI-Task` | Marks an Open WebUI background task (see below). Empty values, unrendered `{{...}}` placeholders and `none`/`null`/`false`/`undefined` (case-insensitive) mean "no task". |
+
+**Background tasks** are answered with a stub and never reach the orchestrator. A request is a task when `X-OpenWebUI-Task` names a task or the last user message starts with `### Task:` (then the type is inferred from the task text: title, tags, follow-up, search queries).
+
+| Task | Stub content |
+|------|--------------|
+| `title_generation` | `{"title": "<first 6 words of the chat request>"}` (`"Chat"` when not derivable or detected by prefix only) |
+| `tags_generation` | `{"tags": []}` |
+| `follow_up_generation` | `{"follow_ups": []}` |
+| `query_generation` | `{"queries": []}` |
+| other | empty string |
+
+**Response (`stream: false`):** `chat.completion` object with `choices[0].message = {"role": "assistant", "content": <speech>}`, `finish_reason: "stop"` and zeroed `usage`.
+
+**Response (`stream: true`):** `text/event-stream` of `chat.completion.chunk` events, ended by `data: [DONE]`. Errors detected before streaming starts (`400`, `401`, `429`, `503`) are returned as normal JSON error responses; once streaming has started the status is `200` and later failures are streamed as content. The first chunk carries `delta.role = "assistant"`; the last chunk has an empty delta and `finish_reason: "stop"`. Mapping from the internal stream: filler and status frames are skipped; `mediated_speech` is emitted only when no tokens were streamed; a terminal error is streamed as content only when nothing else was sent.
 
 ---
 
@@ -293,6 +345,30 @@ Auth: admin session.
 ### GET /api/admin/persons
 
 List Home Assistant persons.
+
+Auth: admin session.
+
+### GET /api/admin/external-users
+
+List users seen through the OpenAI-compatible API, most recently seen first.
+Optional query `source` (e.g. `openwebui`). Each row: `source`,
+`external_user_id`, `display_name`, `email`, `ha_user_id`, `first_seen_at`,
+`last_seen_at`, `updated_at`.
+
+Auth: admin session.
+
+### PUT /api/admin/external-users/{source}/{external_user_id}
+
+Body `{"ha_user_id": "<id>" | null}`. A non-null id must equal the `user_id`
+attribute of a Home Assistant `person.*` entity (`400` otherwise); `null`
+clears the mapping. Unknown user: `404`. Returns `{"ok": true, "ha_user_id": ...}`.
+
+Auth: admin session.
+
+### DELETE /api/admin/external-users/{source}/{external_user_id}
+
+Forget the user and its mapping (`404` when unknown). The row is recreated on
+the user's next request.
 
 Auth: admin session.
 

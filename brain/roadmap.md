@@ -25,6 +25,22 @@ Live pipeline in board format — headings are columns, cards are
 
 ## Testing
 
+- Open WebUI connection: OpenAI-compatible endpoint + external user mapping · priority: P1 · area: conversation
+  Outcome: AgentHub can be added in Open WebUI as an OpenAI API connection
+  (`/v1`, container API key) and controls the house; Open WebUI users are
+  mapped to HA users on the Persons page (table external_user_mappings,
+  migration 45). Decision 2026-10-06. Uncommitted in the working tree.
+  Passed: ruff lint + format clean; container suite 3447 passed, 1 skipped;
+  independent diff review, findings fixed. Not yet run against a real Open
+  WebUI; Persons page not opened in a browser.
+  Needs user verification on live (setup per docs/deployment.md "Open
+  WebUI"): (1) model ha-agenthub appears in Open WebUI; (2) "Kueche Licht an"
+  switches once -- trace shows one orchestrator turn, source "openai", no
+  second turn from title generation (task model set in Open WebUI
+  2026-10-06; chat should get a real title); (3) a follow-up in the same chat keeps
+  context; (4) the Open WebUI user appears on the Persons page, map it,
+  next trace carries the HA user id; (5) answer streams in the chat.
+
 - Rewrite agent: surface failures, mediated fallback, reasoning effort none · priority: P1 · area: cache
   Outcome: a failing rewrite LLM call shows as failed in trace/analytics
   (no more fake success); fallback is the stored mediated text instead of

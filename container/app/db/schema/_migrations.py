@@ -935,6 +935,28 @@ async def _migrate_to_44(db: aiosqlite.Connection) -> None:
     await db.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (44)")
 
 
+async def _migrate_to_45(db: aiosqlite.Connection) -> None:
+    # Migration 45: users seen on external chat clients (Open WebUI via the
+    # OpenAI-compatible API) and their optional Home Assistant user mapping.
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS external_user_mappings (
+            source TEXT NOT NULL,
+            external_user_id TEXT NOT NULL,
+            display_name TEXT,
+            email TEXT,
+            ha_user_id TEXT,
+            first_seen_at TEXT NOT NULL,
+            last_seen_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (source, external_user_id)
+        )
+    """)
+    await db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_external_user_mappings_ha_user ON external_user_mappings(ha_user_id)"
+    )
+    await db.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (45)")
+
+
 # Ordered registry of (version, migration_callable). Each migration records
 # its own version marker. Applied in ascending order for versions greater
 # than the current schema version.
@@ -982,6 +1004,7 @@ MIGRATIONS: list[tuple[int, Callable[[aiosqlite.Connection], Awaitable[None]]]] 
     (42, _migrate_to_42),
     (43, _migrate_to_43),
     (44, _migrate_to_44),
+    (45, _migrate_to_45),
 ]
 
 

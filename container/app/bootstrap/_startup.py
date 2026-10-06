@@ -26,6 +26,7 @@ from app.agents.decorator import install_all_agents
 from app.api.routes import admin as admin_routes
 from app.api.routes import conversation as conversation_routes
 from app.api.routes import dashboard_api as dashboard_api_routes
+from app.api.routes import openai_compat as openai_compat_routes
 from app.api.routes.conversation import reset_active_ws_connections
 from app.bootstrap._logging import _configure_logging, start_log_buffer_guard
 from app.config import settings
@@ -69,6 +70,7 @@ async def setup_application(app: FastAPI) -> None:
     transport = InProcessTransport(registry)
     dispatcher = Dispatcher(registry, transport)
     conversation_routes.set_dispatcher(dispatcher)
+    openai_compat_routes.set_dispatcher(dispatcher)
     dashboard_api_routes.set_chat_dispatcher(dispatcher)
     admin_routes.set_registry(registry)
 

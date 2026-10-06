@@ -242,6 +242,8 @@ The **Calendar** page at `/dashboard/calendar` shows calendar events and configu
 
 The **Persons** page at `/dashboard/persons` maps Home Assistant person entities. This mapping helps agents resolve references to people ("tell John", "when Sarah gets home") by linking the person name to the corresponding HA `person.*` entity.
 
+The **Open WebUI Users** section lists users seen through the OpenAI-compatible API (name, email, shortened external id, last seen). Pick a person in **Mapped Person** to run that user's chats as the person's Home Assistant user; the change is saved immediately. Only persons linked to a Home Assistant user appear in the list; **Not mapped** clears the mapping. **Delete** forgets the user until their next request. The persons table shows the Open WebUI users mapped to each person. Setup: [Deployment -- Open WebUI](deployment.md#open-webui).
+
 ## Performance
 
 ### Cache

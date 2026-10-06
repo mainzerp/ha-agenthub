@@ -36,3 +36,6 @@ async def _create_indexes(db: aiosqlite.Connection) -> None:
     await db.execute("CREATE INDEX IF NOT EXISTS idx_memory_turns_session ON memory_turns(session_id)")
     await db.execute("CREATE INDEX IF NOT EXISTS idx_memory_turns_user ON memory_turns(user_id)")
     await db.execute("CREATE INDEX IF NOT EXISTS idx_memory_turns_convrow ON memory_turns(conversation_row_id)")
+    await db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_external_user_mappings_ha_user ON external_user_mappings(ha_user_id)"
+    )
