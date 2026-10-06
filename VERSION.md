@@ -1,12 +1,25 @@
 # Version
 
-**Current Version:** 2.7.1
+**Current Version:** 2.7.2
 
 ## Recent Changes
 
-(tracking changes since 2.7.1)
+(tracking changes since 2.7.2)
 
 ## Version History
+
+### 2.7.2 (PATCH) -- streamed mediation fallback, timeouts and speech cleanup
+
+(commits ed7df84, af6eb4f, c331134, c649487; docs 615393a)
+
+- Conversation: a streamed personality reply no longer ends empty when the mediation stream fails or ends before any text was emitted (the speech filter holds back the last characters); the blocking mediation result is then sent as `mediated_speech`. Once text was emitted the turn stays committed to the stream (c331134).
+- Conversation: the streamed mediation call is aborted when no first token arrives within `mediation.stream_first_token_timeout_sec` (new setting, default 15) or the stream is silent longer than `mediation.stream_idle_timeout_sec` (new setting, default 10); with nothing emitted, the agent speech plus any reminder is sent without a second mediation LLM call (c331134).
+- LLM: `complete_stream` and `complete_with_tools_stream` close the provider response stream when the consumer stops or is cancelled (af6eb4f).
+- Conversation: streamed mediated tokens drop Markdown markers (headings, bullets, `*` emphasis, backticks; a lone `*` as in `5 * 3` is kept) before reaching TTS, matching the stripped `mediated_speech`; markers are removed before `[FOLLOWUP]` detection so `**[FOLLOWUP]**` is recognised (ed7df84, c331134).
+- Trace: the dispatch span records `mediation_streamed`, `mediation_first_token_ms`, `mediation_fallback` and `mediation_truncated` instead of the misleading `non_filler_tokens_buffered_until_terminal`; redaction keeps boolean and numeric values under `token` keys (flags, counts, timings) while string secrets stay redacted (c331134, c649487).
+- Docs: corrected the 2.7.1 note that claimed personality replies arrive in one piece (mediation output already streams); configuration and architecture docs describe the streaming default and fallback rule (615393a).
+- Verification: 3488 container tests passed (1 skipped, 9 xfailed, 3 xpassed), 145 integration tests passed; Ruff lint and format passed.
+- No features or public APIs removed; no user action required (the two new settings are seeded on startup).
 
 ### 2.7.1 (PATCH) -- Open WebUI chat polish and trace user id
 
@@ -16,7 +29,6 @@
 - Conversation: `openai` turns never request a voice follow-up (`voice_followup` false in the result and the trace); the pending clarifying question is still kept for the typed answer (6f80bc1).
 - Conversation: `/v1/chat/completions` drops leading whitespace in streamed content and strips non-stream content, so answers no longer start with blank lines in Open WebUI (6f80bc1).
 - Trace: every orchestrator turn records the request `user_id` on the root span (kept verbatim by redaction only for opaque ids); trace detail shows it as "User", so the Open WebUI to Home Assistant user mapping is verifiable from a trace (4948a15).
-- Note: with a personality prompt the reply still arrives in one piece after mediation (on every channel); only the filler wait is removed.
 - Verification: 3463 container tests passed (1 skipped, 9 xfailed, 3 xpassed); Ruff lint and format passed.
 - No features or public APIs removed; no user action required.
 
