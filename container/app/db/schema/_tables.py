@@ -367,3 +367,20 @@ async def _create_tables(db: aiosqlite.Connection) -> None:
             created_at TEXT NOT NULL DEFAULT (datetime('now'))
         )
     """)
+
+    # Users seen on external chat clients (Open WebUI) and their optional
+    # Home Assistant user mapping. Also created by migration v45; both
+    # paths use IF NOT EXISTS and are safe to re-run.
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS external_user_mappings (
+            source TEXT NOT NULL,
+            external_user_id TEXT NOT NULL,
+            display_name TEXT,
+            email TEXT,
+            ha_user_id TEXT,
+            first_seen_at TEXT NOT NULL,
+            last_seen_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (source, external_user_id)
+        )
+    """)

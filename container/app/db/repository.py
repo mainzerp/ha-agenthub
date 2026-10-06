@@ -19,6 +19,7 @@ from app.db.repositories import (  # noqa: F401
     CustomAgentRepository,
     EntityMatchingConfigRepository,
     EntityVisibilityRepository,
+    ExternalUserMappingRepository,
     McpServerRepository,
     MemoryRepository,
     PluginRepository,
