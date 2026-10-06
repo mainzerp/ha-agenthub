@@ -23,20 +23,20 @@ Live pipeline in board format — headings are columns, cards are
 
 ## In Progress
 
-- Open WebUI chat polish (2.7.1) · priority: P1 · area: conversation
-  Outcome: source "openai" gets no filler (no wasted LLM call, tokens stream
-  immediately), no voice follow-up flag, traces record user_id, leading
-  whitespace trimmed. Found in live trace 80b7d88a95e14136 (2026-10-06).
-  Implemented on branch fix/openwebui-chat-polish (uncommitted); review
-  fixes applied (user_id redaction exemption narrowed). Passed: ruff clean,
-  container suite 3463 passed, 1 skipped. Token buffering with a personality
-  is caused by mediation, not filler -- out of scope here.
-  Next step: commit/release 2.7.1 after user approval.
-  Verify: new Open WebUI turn shows no filler_generate span, dispatch without
-  filler_sent, voice_followup false, user_id on the trace.
-
 ## Testing
 
+- Open WebUI chat polish (2.7.1) · priority: P1 · area: conversation
+  Outcome: source "openai" gets no filler (no wasted LLM call, no filler
+  wait), no voice follow-up flag, traces record user_id ("User" on trace
+  detail), leading whitespace trimmed. Found in live trace 80b7d88a95e14136.
+  Passed: ruff clean; container suite 3463 passed, 1 skipped; bridge 145
+  passed; independent diff review, findings fixed. Shipped in v2.7.1.
+  Needs user verification on live after updating the container: a new Open
+  WebUI turn shows no filler_generate span, voice_followup false, the
+  "User" field with the mapped HA user id, and no blank lines before the
+  answer. Note: with a personality, text still arrives in one piece after
+  mediation (open decision: skip personality for Open WebUI vs stream the
+  mediation).
 - Open WebUI connection: OpenAI-compatible endpoint + external user mapping · priority: P1 · area: conversation
   Outcome: AgentHub can be added in Open WebUI as an OpenAI API connection
   (`/v1`, container API key) and controls the house; Open WebUI users are
