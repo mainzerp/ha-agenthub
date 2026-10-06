@@ -227,3 +227,39 @@ def test_sanitize_trace_value_redacts_api_key_under_nested_user_id():
     sanitized = sanitize_trace_value({"nested": {"user_id": "sk-abcdefghijklmnopqrstuvwx"}})
     assert "sk-abcdefghijklmnopqrstuvwx" not in json.dumps(sanitized)
     assert sanitized["nested"]["user_id"] == "[REDACTED_TOKEN]"
+
+
+def test_sanitize_trace_value_keeps_bool_and_numbers_under_token_keys():
+    value = {
+        "agent_tokens_relayed": True,
+        "mediation_first_token_ms": 412.5,
+        "tokens_in": 120,
+        "first_token_streamed": False,
+        "nested": {"max_tokens": 8192, "token_budget": None},
+    }
+    assert sanitize_trace_value(value) == value
+
+
+def test_sanitize_trace_value_still_redacts_string_and_non_token_secrets():
+    sanitized = sanitize_trace_value(
+        {
+            "access_token": "abcdef1234567890abcdef1234567890",
+            "token": "abc123",
+            "refresh_token": "short",
+            "api_key": "sk-abcdefghijklmnopqrstuvwx",
+            "password": 123456,
+            "secret": 42.0,
+            "code": 654321,
+            "key": True,
+            "authorization": "Bearer abcdefghijklmnop",
+        }
+    )
+    assert sanitized["access_token"] == "[REDACTED]"
+    assert sanitized["token"] == "[REDACTED]"
+    assert sanitized["refresh_token"] == "[REDACTED]"
+    assert sanitized["api_key"] == "[REDACTED]"
+    assert sanitized["password"] == "[REDACTED]"
+    assert sanitized["secret"] == "[REDACTED]"
+    assert sanitized["code"] == "[REDACTED_CODE]"
+    assert sanitized["key"] == "[REDACTED]"
+    assert sanitized["authorization"] == "[REDACTED]"

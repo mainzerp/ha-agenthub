@@ -235,9 +235,28 @@ def _is_verbatim_id(key: str, value: str) -> bool:
     )
 
 
+def _is_non_secret_scalar(key: str, value: Any) -> bool:
+    """True when ``value`` cannot carry a secret despite a sensitive-looking key.
+
+    Booleans and ``None`` never hold a secret (e.g. ``*_tokens_relayed``
+    flags). Numbers are kept only under
+    ``token`` keys (token counts, ``*_token_ms`` timings); a number under
+    ``password``/``secret``/``code`` keys may itself be the secret. The exact
+    sensitive keys (``code``, ``key``) are always redacted.
+    """
+    normalized = _normalize_key(key)
+    if normalized in _EXACT_SENSITIVE_KEYS:
+        return False
+    if value is None or isinstance(value, bool):
+        return True
+    return isinstance(value, (int, float)) and "token" in normalized
+
+
 def sanitize_trace_value(value: Any, *, key: str | None = None) -> Any:
     """Recursively redact sensitive trace payloads while preserving safe metadata."""
     if key is not None and _is_sensitive_key(key):
+        if _is_non_secret_scalar(key, value):
+            return value
         return _redacted_placeholder_for_key(key, value)
     if key is not None and isinstance(value, str) and _is_verbatim_id(key, value):
         return value
