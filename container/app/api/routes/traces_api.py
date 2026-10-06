@@ -7,6 +7,7 @@ import csv
 import io
 import json
 import logging
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import JSONResponse
@@ -296,6 +297,15 @@ async def list_traces(
         "labels": labels,
         "agents": agents,
     }
+
+
+def _root_span_user_id(spans: list[dict[str, Any]]) -> str | None:
+    """Request ``user_id`` recorded on the root span metadata (None if absent)."""
+    for span in spans:
+        meta = span.get("metadata")
+        if span.get("parent_span") is None and isinstance(meta, dict) and meta.get("user_id"):
+            return meta["user_id"]
+    return None
 
 
 @router.get("/{trace_id}")
@@ -752,6 +762,7 @@ async def get_trace_detail(trace_id: str):
         "device_name": summary.get("device_name"),
         "area_name": summary.get("area_name"),
         "voice_followup": summary.get("voice_followup"),
+        "user_id": _root_span_user_id(spans),
         "spans": spans,
         "agent_executions": agent_executions,
         "agent_communication": agent_communication,

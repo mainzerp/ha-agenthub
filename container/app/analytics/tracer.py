@@ -74,6 +74,12 @@ _SAFE_METADATA_KEYS = {
     "ttft_ms",
 }
 
+# Opaque identifier keys kept verbatim: a Home Assistant user id is a 32-char
+# hex string that ``_LONG_TOKEN_RE`` would otherwise redact as a token, which
+# would make the user mapping impossible to check from a trace.
+_VERBATIM_ID_KEYS = {"user-id"}
+_VERBATIM_ID_VALUE_RE = re.compile(r"^[A-Za-z0-9_.:@-]{1,128}$")
+
 _SENSITIVE_QUERY_MARKERS = (*_SENSITIVE_KEY_MARKERS, "code", "key", "auth")
 _NORMALIZED_SENSITIVE_QUERY_MARKERS = tuple(marker.replace("_", "-") for marker in _SENSITIVE_QUERY_MARKERS)
 
@@ -214,10 +220,27 @@ def _sanitize_string(value: str) -> str:
     return _sanitize_plain_string(sanitized)
 
 
+def _is_verbatim_id(key: str, value: str) -> bool:
+    """True when ``value`` under ``key`` is an opaque id that is kept verbatim.
+
+    Only ``_VERBATIM_ID_KEYS`` qualify, only values matching
+    ``_VERBATIM_ID_VALUE_RE``, and never values that match a known API-key
+    or bearer-token pattern (those fall through to normal redaction).
+    """
+    return (
+        _normalize_key(key) in _VERBATIM_ID_KEYS
+        and _VERBATIM_ID_VALUE_RE.match(value) is not None
+        and _COMMON_API_KEY_RE.search(value) is None
+        and _BEARER_TOKEN_RE.search(value) is None
+    )
+
+
 def sanitize_trace_value(value: Any, *, key: str | None = None) -> Any:
     """Recursively redact sensitive trace payloads while preserving safe metadata."""
     if key is not None and _is_sensitive_key(key):
         return _redacted_placeholder_for_key(key, value)
+    if key is not None and isinstance(value, str) and _is_verbatim_id(key, value):
+        return value
 
     if isinstance(value, dict):
         return {item_key: sanitize_trace_value(item_value, key=str(item_key)) for item_key, item_value in value.items()}
@@ -268,6 +291,8 @@ class SpanCollector:
         self.trace_id = trace_id
         self.source: SpanSource = source
         self._spans: list[dict[str, Any]] = []
+        # Request-level context (e.g. ``user_id``) stamped onto the root span.
+        self.request_attributes: dict[str, Any] = {}
 
     def push_parent(self, span_id: str) -> contextvars.Token:
         """Set ``span_id`` as the current parent for subsequent spans and
@@ -338,8 +363,21 @@ class SpanCollector:
         """Return a shallow copy of the collected spans."""
         return list(self._spans)
 
+    def set_request_attribute(self, key: str, value: Any) -> None:
+        """Record a request-level attribute that the root span will carry."""
+        self.request_attributes[key] = value
+
     def record_root_span(self, span_data: dict[str, Any]) -> None:
-        """Append a pre-built root span (e.g. from middleware timing)."""
+        """Append a pre-built root span (e.g. from middleware timing).
+
+        Request attributes recorded via :meth:`set_request_attribute` are
+        merged into the root span metadata; keys the caller already set win.
+        """
+        if self.request_attributes:
+            metadata = dict(span_data.get("metadata") or {})
+            for attr_key, attr_value in self.request_attributes.items():
+                metadata.setdefault(attr_key, attr_value)
+            span_data["metadata"] = metadata
         self._spans.append(span_data)
 
     def add_root_span(self, span_data: dict[str, Any]) -> None:
@@ -374,6 +412,13 @@ class SpanCollector:
             logger.warning("Failed to flush %d trace spans", len(self._spans), exc_info=True)
         finally:
             self._spans.clear()
+
+
+def record_request_attribute(span_collector: Any, key: str, value: Any) -> None:
+    """Record a request-level root-span attribute when the collector supports it."""
+    setter = getattr(span_collector, "set_request_attribute", None)
+    if callable(setter):
+        setter(key, value)
 
 
 async def record_span(

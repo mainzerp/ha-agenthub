@@ -65,6 +65,12 @@
                               :title="traceDetail.area_id || ''"
                               x-text="traceDetail.area_name || traceDetail.area_id || '-'"></span>
                     </div>
+                    <div x-show="traceDetail.user_id">
+                        <span class="text-muted text-xs">User</span><br>
+                        <span class="text-mono text-sm"
+                              :title="traceDetail.user_id || ''"
+                              x-text="shortId(traceDetail.user_id)"></span>
+                    </div>
                     <div x-show="traceDetail.voice_followup">
                         <span class="text-muted text-xs">Context</span><br>
                         <span class="badge badge-teal text-2xs"
