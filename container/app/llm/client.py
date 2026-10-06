@@ -1,5 +1,6 @@
 import asyncio
 import difflib
+import inspect
 import json
 import logging
 import re
@@ -38,6 +39,29 @@ _LLM_EMPTY_RESPONSE_RETRY_DELAY_SEC = 1.0
 # whose thinking tokens exhaust max_tokens), the retry runs with doubled
 # max_tokens, capped here.
 _LLM_ADAPTIVE_RETRY_MAX_TOKENS_CAP = 32768
+
+
+async def _close_stream_response(response: Any) -> None:
+    """Close a litellm streaming response so an aborted consumer stops the provider stream.
+
+    Prefers ``aclose()`` (litellm ``CustomStreamWrapper``), falls back to
+    ``close()``. Close failures are logged, never raised.
+    """
+    if response is None:
+        return
+    closer = getattr(response, "aclose", None)
+    if not callable(closer):
+        closer = getattr(response, "close", None)
+    if not callable(closer):
+        return
+    try:
+        result = closer()
+        if inspect.isawaitable(result):
+            await result
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        logger.debug("Closing the LLM stream response failed", exc_info=True)
 
 
 def _sanitize_tool_name(name: str, valid_names: set[str]) -> str | None:
@@ -310,6 +334,7 @@ async def complete_stream(
     # Request a final usage-only trailer chunk where supported.
     call_kwargs["stream_options"] = {"include_usage": True}
 
+    response = None
     try:
         async with _optional_span(span_collector, "llm_provider_call", agent_id=agent_id) as pspan:
             pspan["metadata"]["model"] = model
@@ -385,6 +410,9 @@ async def complete_stream(
             raise
         logger.error("LLM stream error agent=%s model=%s: %s", agent_id, model, str(e))
         raise
+    finally:
+        # A stalled / cancelled / closed consumer must stop the provider stream.
+        await _close_stream_response(response)
 
 
 async def complete_with_tools(
@@ -716,37 +744,41 @@ async def complete_with_tools_stream(
             pspan["metadata"]["round"] = round_no
             t_call = time.perf_counter()
             response = await litellm.acompletion(**call_kwargs)
-            first_chunk_time = None
-            last_chunk_time = None
-            usage = None
-            async for chunk in response:
-                chunk_usage = getattr(chunk, "usage", None)
-                if chunk_usage is not None:
-                    usage = chunk_usage
-                if not chunk.choices:
-                    # Usage-only trailer chunk (stream_options include_usage).
-                    continue
-                delta = chunk.choices[0].delta
-                content = getattr(delta, "content", None)
-                if content:
-                    content_parts.append(content)
-                    yield content
-                for tc_delta in getattr(delta, "tool_calls", None) or []:
-                    idx = getattr(tc_delta, "index", 0) or 0
-                    slot = tool_calls_acc.setdefault(idx, {"id": "", "name": "", "arguments": ""})
-                    if getattr(tc_delta, "id", None):
-                        slot["id"] = tc_delta.id
-                    fn = getattr(tc_delta, "function", None)
-                    if fn is not None:
-                        if getattr(fn, "name", None):
-                            slot["name"] += fn.name
-                        if getattr(fn, "arguments", None):
-                            slot["arguments"] += fn.arguments
-                if first_chunk_time is None:
-                    first_chunk_time = time.perf_counter()
-                last_chunk_time = time.perf_counter()
-                if chunk.choices[0].finish_reason:
-                    finish_reason = chunk.choices[0].finish_reason
+            try:
+                first_chunk_time = None
+                last_chunk_time = None
+                usage = None
+                async for chunk in response:
+                    chunk_usage = getattr(chunk, "usage", None)
+                    if chunk_usage is not None:
+                        usage = chunk_usage
+                    if not chunk.choices:
+                        # Usage-only trailer chunk (stream_options include_usage).
+                        continue
+                    delta = chunk.choices[0].delta
+                    content = getattr(delta, "content", None)
+                    if content:
+                        content_parts.append(content)
+                        yield content
+                    for tc_delta in getattr(delta, "tool_calls", None) or []:
+                        idx = getattr(tc_delta, "index", 0) or 0
+                        slot = tool_calls_acc.setdefault(idx, {"id": "", "name": "", "arguments": ""})
+                        if getattr(tc_delta, "id", None):
+                            slot["id"] = tc_delta.id
+                        fn = getattr(tc_delta, "function", None)
+                        if fn is not None:
+                            if getattr(fn, "name", None):
+                                slot["name"] += fn.name
+                            if getattr(fn, "arguments", None):
+                                slot["arguments"] += fn.arguments
+                    if first_chunk_time is None:
+                        first_chunk_time = time.perf_counter()
+                    last_chunk_time = time.perf_counter()
+                    if chunk.choices[0].finish_reason:
+                        finish_reason = chunk.choices[0].finish_reason
+            finally:
+                # A stalled / cancelled consumer must stop the provider stream.
+                await _close_stream_response(response)
 
             ttft_ms = (first_chunk_time - t_call) * 1000 if first_chunk_time else None
             stream_ms = (last_chunk_time - first_chunk_time) * 1000 if first_chunk_time and last_chunk_time else None
