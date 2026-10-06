@@ -224,6 +224,51 @@ name "Agent Assist" are renamed to "HA-AgentHub" automatically by
 upgrade. No manual action is required, and HACS users will not see
 duplicate entries.
 
+## Open WebUI
+
+[Open WebUI](https://openwebui.com/) can chat with HA-AgentHub (and control the
+house) through the OpenAI-compatible API (`/v1`, see
+[API Reference](api-reference.md#openai-compatible-api)).
+
+1. In Open WebUI go to **Admin > Settings > Connections > OpenAI API** and add a connection:
+   - URL: `http://<docker-host>:8080/v1`
+   - API key: the container API key from setup step 3
+   - Model: `ha-agenthub` (listed by `GET /v1/models`)
+2. Set `ENABLE_FORWARD_USER_INFO_HEADERS=true` on the Open WebUI container so it
+   sends the `X-OpenWebUI-User-*` headers and, from Open WebUI 0.6.17,
+   `X-OpenWebUI-Chat-Id` (server-side conversation history per chat).
+3. Send Open WebUI background tasks (title, tags, follow-up, search-query and
+   autocomplete generation) to a separate model. Open WebUI uses the chat model
+   for them unless a task model is set, and their prompts contain the user's
+   command.
+   - Recommended: add a second Open WebUI connection to a regular LLM provider
+     (or a local Ollama) and select a small, fast model under
+     **Admin > Settings > Interface > Task Model > External Models**
+     (`TASK_MODEL_EXTERNAL`). Titles, tags and follow-up suggestions then work
+     normally and HA-AgentHub only receives real chat turns. The task model
+     sees the chat history, including HA-AgentHub replies; use a local model
+     if that must stay on-premises.
+   - Safety net (Open WebUI 0.10.0 or newer): add the connection header JSON
+     `{"X-OpenWebUI-Task": "{{TASK}}"}` to the HA-AgentHub connection; if a
+     task request still arrives, HA-AgentHub answers it with a stub (placeholder
+     title, empty tags and follow-ups) and never dispatches it.
+
+   Without either, HA-AgentHub stubs only prompts that start with `### Task:`,
+   which covers Open WebUI's default title, tags, follow-up, search-query and
+   autocomplete templates. Other background requests (for example emoji
+   generation in voice-call mode, default-mode tool calling, or customized
+   task templates) are then treated as chat turns and can execute commands.
+   For full protection set the `X-OpenWebUI-Task` header or a separate task
+   model, and do not attach Open WebUI tools to the `ha-agenthub` model.
+4. Map Open WebUI users to Home Assistant users on the dashboard **Persons**
+   page (see [User Guide -- Persons](user-guide.md#persons)). Unmapped users can
+   chat but run without a Home Assistant user id.
+
+Limitation: without `X-OpenWebUI-Chat-Id` (Open WebUI older than 0.6.17, or
+user info forwarding disabled) the conversation id is derived from the user and
+the first message, so chats of the same user that start with the same first
+message share server-side history.
+
 ## Networking
 
 ### Container-to-HA Connectivity

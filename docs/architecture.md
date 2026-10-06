@@ -7,6 +7,8 @@ HA-AgentHub is a two-component system for natural language smart home control:
 1. **Docker Container** -- The AI backend running FastAPI with multi-agent orchestration, a two-tier cache, hybrid entity matching, MCP tool integration, and a plugin system.
 2. **HA Custom Integration** -- A Home Assistant bridge (`custom_components/ha_agenthub/`) that forwards most turns to the container and streams responses back to Home Assistant's conversation system.
 
+A second, optional ingress is the **OpenAI-compatible API** (`GET /v1/models`, `POST /v1/chat/completions`) for chat clients such as Open WebUI. It converts each chat turn into the same orchestrator A2A request as `POST /api/conversation` (trace source `openai`), answers Open WebUI background tasks with stubs without dispatching, and maps Open WebUI users to Home Assistant users via `external_user_mappings`.
+
 All configuration, secrets, and state are stored in SQLite. sqlite-vec provides vector storage for entity embeddings; the routing and action caches are stored in SQLite with SHA-256 exact hash matching. No configuration files are used at runtime -- everything is managed through the setup wizard and admin dashboard.
 
 ## Component Diagram
@@ -28,7 +30,7 @@ All configuration, secrets, and state are stored in SQLite. sqlite-vec provides 
 |  +----------------------------------------------+ |
 |  | Setup Wizard / Admin Dashboard               | |
 |  +----------------------------------------------+ |
-|  | API Layer (conversation, admin, health)       | |
+|  | API Layer (conversation, /v1 OpenAI, admin)  | |
 |  +----------------------------------------------+ |
 |  | Middleware (auth, tracing, setup redirect)    | |
 |  +---+------------------------------------------+ |

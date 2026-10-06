@@ -22,6 +22,7 @@ A multi-agent AI assistant for Home Assistant with container-based A2A orchestra
 - **Conditional actions** -- `ActionableAgent` skips redundant service calls when the current HA state already matches the requested end state
 - **Hybrid entity matching** -- Five-signal weighted matcher (Levenshtein, Jaro-Winkler, phonetic, embedding similarity, alias lookup) with LLM disambiguation fallback. Agents can explicitly declare extracted entities via `@entities:` lines in their replies, replacing legacy regex heuristics with structured LLM-driven entity extraction
 - **MCP tool integration** -- Connect external tool servers via Model Context Protocol (stdio and SSE transports) and assign tools to agents
+- **Open WebUI / OpenAI-compatible API** -- `/v1/models` and `/v1/chat/completions` let Open WebUI chat with and control the house; background tasks are stubbed, and Open WebUI users map to Home Assistant users on the Persons page
 - **Plugin system** -- Extend functionality with Python plugins that inspect registered agents, dispatch work back through the orchestrator, add routes, subscribe to events, and access settings/MCP integrations
 - **Admin dashboard** -- HTMX-powered admin dashboard for managing chat, persons, personality, system health, calendar, timers, send devices, logs, custom agents, agents, entities, cache, MCP servers, analytics, traces, and plugins
 - **Custom agents** -- Create LLM-powered agents via the dashboard with custom system prompts, model selection, MCP tools, and intent patterns
@@ -162,7 +163,7 @@ See [docs/configuration.md](docs/configuration.md) for the full reference.
 - [Deployment Guide](docs/deployment.md) -- Docker setup, setup wizard, HA integration, networking, backup
 - [Configuration Reference](docs/configuration.md) -- Environment variables, SQLite settings, agent config
 - [Architecture Overview](docs/architecture.md) -- Components, A2A protocol, request flow, cache, entity matching
-- [API Reference](docs/api-reference.md) -- All REST, SSE, and WebSocket endpoints covering conversation, admin settings, agents, custom agents, MCP servers, entity index/visibility, cache, calendar, timers, send devices, analytics, traces, logs, plugins, and setup wizard
+- [API Reference](docs/api-reference.md) -- All REST, SSE, and WebSocket endpoints covering conversation, the OpenAI-compatible API, admin settings, agents, custom agents, MCP servers, entity index/visibility, cache, calendar, timers, send devices, analytics, traces, logs, plugins, and setup wizard
 - [Backup and Restore](docs/backup-restore.md) -- Volume backup, Fernet key export, cache export/import
 - [Plugin Development](docs/plugin-development.md) -- Writing plugins, lifecycle hooks, event bus
 - [Troubleshooting](docs/troubleshooting.md) -- Common issues and solutions

@@ -4,6 +4,33 @@ Decision rationale, so decisions stay made. Newest first. Binding architecture
 rules live in `docs/project/prime-directives.md` — this file records choices,
 not copies of rules.
 
+## 2026-10-06 — OpenAI-compatible ingress for Open WebUI, external user mapping
+
+- **In-container adapter, not an Open WebUI Pipe function.** `GET /v1/models`
+  and `POST /v1/chat/completions` live in the container behind the existing
+  `container_api_key` and dispatch to `orchestrator` through the `Dispatcher`
+  like `/api/conversation/stream`. Rationale: product surface instead of
+  client-side glue; A2A boundary and visibility stay intact (Directives 1, 6).
+- **Server-side history stays authoritative.** Only the last user message is
+  used; Open WebUI's message list and system prompt are ignored. The
+  conversation id is `owui-<X-OpenWebUI-Chat-Id>` (Open WebUI >= 0.6.17),
+  falling back to a hash of user id + first user message.
+- **Background tasks never reach the orchestrator.** Open WebUI sends title,
+  tag and follow-up generation to the chat model unless a task model is set;
+  their prompts contain the user's command and could execute it twice.
+  Detection: custom connection header `X-OpenWebUI-Task: {{TASK}}` (reliable),
+  plus the `### Task:` prompt prefix (heuristic). Tasks get a stub reply.
+- **External users map to HA users on the Persons page.** New table
+  `external_user_mappings` (source, external id, display name, email, mapped
+  HA user id, last seen). Every seen Open WebUI user is recorded, so the admin
+  maps them from a list instead of typing ids. Mapped requests carry the HA
+  user id (calendar and memory consistent with voice); unmapped requests run
+  with no user id, like dashboard chat. Trust level equals the HA bridge: the
+  header is trusted because the caller holds the API key.
+- **No enable toggle; 500-character text limit kept** (HTTP 400 when
+  exceeded). Rationale: same key and limits as the bridge, no new attack
+  surface or settings to maintain.
+
 ## 2026-10-04 — Few-shot examples in the configured language (Directive 13 amended)
 
 Directive 13 now allows per-language few-shot assets with English as the

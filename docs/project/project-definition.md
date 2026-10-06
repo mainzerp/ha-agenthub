@@ -131,7 +131,8 @@ The runtime is async end to end. Conversation streaming, agent dispatch, Home As
 #### API and Admin Surface
 
 - Conversation entrypoints expose WebSocket, SSE, and REST conversation routes.
-- Admin APIs cover setup, cache inspection and flushing, traces, analytics, entity index operations, MCP management, plugins, send-device mappings, and settings.
+- An OpenAI-compatible chat-completions API (`GET /v1/models`, `POST /v1/chat/completions`, trace source `openai`) lets Open WebUI chat with the orchestrator; Open WebUI background tasks are stubbed without dispatch, and Open WebUI users are mapped to Home Assistant users on the Persons page (`external_user_mappings`).
+- Admin APIs cover setup, cache inspection and flushing, traces, analytics, entity index operations, MCP management, plugins, send-device mappings, external user mappings, and settings.
 - The dashboard currently routes to overview, login, agent configuration, system health, chat testing, personality, cache, entity index, analytics, traces, MCP servers, custom agents, timers, plugins, send devices, and unified settings pages.
 
 #### Orchestrator
