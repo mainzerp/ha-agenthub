@@ -501,6 +501,20 @@ async def _seed_defaults(db: aiosqlite.Connection) -> None:
             "mediation",
             "Max tokens for mediation/merge LLM calls (increase for reasoning models)",
         ),
+        (
+            "mediation.stream_first_token_timeout_sec",
+            "15",
+            "float",
+            "mediation",
+            "Seconds to wait for the first streamed mediation token before falling back (must be > 0)",
+        ),
+        (
+            "mediation.stream_idle_timeout_sec",
+            "10",
+            "float",
+            "mediation",
+            "Seconds of silence between streamed mediation tokens before the stream is aborted (must be > 0)",
+        ),
         # Language
         (
             "language",

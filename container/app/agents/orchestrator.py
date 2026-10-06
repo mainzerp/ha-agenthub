@@ -31,7 +31,7 @@ from app.agents.mediation import (
     StreamedSpeechFilter,
     _strip_followup_tag,
 )
-from app.agents.sanitize import strip_markdown, strip_parenthetical_asides
+from app.agents.sanitize import strip_markdown, strip_markdown_markers, strip_parenthetical_asides
 from app.agents.task_pipeline import PipelineDirector
 from app.analytics.collector import track_request, track_request_background
 from app.analytics.tracer import _optional_span, record_request_attribute
@@ -59,6 +59,15 @@ _CANNED_TIMEOUT_SPEECH = "I couldn't process that request in time."
 _CANNED_GENERAL_ERROR_SPEECH = "I couldn't process that request right now."
 
 _PERSONALITY_CACHE_TTL_SEC: float = 300.0
+
+
+async def _positive_float_setting(key: str, default: float) -> float:
+    """Read a float setting; fall back to ``default`` when missing, invalid or <= 0."""
+    try:
+        value = float(await SettingsRepository.get_value(key, str(default)))
+    except (TypeError, ValueError):
+        return default
+    return value if value > 0 else default
 
 
 def _stringify_error(err: Any) -> str | None:
@@ -1456,6 +1465,7 @@ class OrchestratorAgent(BaseAgent):
         used_origin_context: bool = False,
         routing_entry_id: str | None = None,
         mediation_inputs: tuple[str | None, bool] | None = None,
+        skip_mediation_llm: bool = False,
     ) -> tuple[str, bool]:
         """Run the shared single-agent / sequential-send finalization
         block: open the ``return`` span, mediate the agent speech,
@@ -1480,6 +1490,9 @@ class OrchestratorAgent(BaseAgent):
         confirmations). ``mediation_inputs`` lets the streaming caller
         pass its pre-dispatch probe result (has_error already applied)
         instead of re-querying the calendar injector.
+        ``skip_mediation_llm`` (streamed mediation stalled) uses the
+        deterministic fallback instead: the agent speech with the reminder
+        appended, no second mediation LLM call.
         """
         if routed_to is None:
             routed_to = target_agent
@@ -1506,7 +1519,8 @@ class OrchestratorAgent(BaseAgent):
             # included).
             personality = await self._get_personality_cached()
             should_mediate = (
-                target_agent not in (CANCEL_INTERACTION_AGENT, NOISE_AGENT)
+                not skip_mediation_llm
+                and target_agent not in (CANCEL_INTERACTION_AGENT, NOISE_AGENT)
                 and (not has_error or not skip_mediation_on_error)
                 and (bool(personality.strip()) or bool(reminder_text))
             )
@@ -2458,8 +2472,9 @@ class OrchestratorAgent(BaseAgent):
                 span["metadata"]["filler_sent"] = True
             if sc.relayed_tokens:
                 span["metadata"]["agent_tokens_relayed"] = True
-            else:
-                span["metadata"]["non_filler_tokens_buffered_until_terminal"] = True
+        # Kept to record the mediation outcome below; spans are sanitized
+        # and flushed only after the turn's stream has finished.
+        dispatch_span = span
 
         latency_ms = (time.perf_counter() - t0_dispatch) * 1000
         track_request_background(target_agent, cache_hit=False, latency_ms=latency_ms)
@@ -2570,50 +2585,73 @@ class OrchestratorAgent(BaseAgent):
         use_streamed_mediation = (
             mediation_streaming_enabled and should_mediate and personality.strip() and full_speech.strip()
         )
+        mediation_first_token_ms: float | None = None
+        # Why a streamed mediation fell back (nothing emitted): "stall_timeout",
+        # "stream_error" or "empty_output"; None when no fallback happened.
+        mediation_fallback: str | None = None
         if use_streamed_mediation:
             # Stream mediated tokens to the client. The filter applies the
-            # same aside/[FOLLOWUP] cleanup as the collected-text path so no
-            # parenthetical or tag fragment reaches the token frames.
+            # same aside/[FOLLOWUP] cleanup as the collected-text path (plus
+            # Markdown marker removal) so no parenthetical, tag fragment or
+            # marker reaches the token frames.
             mediated_tokens: list[str] = []
-            mediation_failed_partial = False
+            mediation_failed = False
             speech_filter = StreamedSpeechFilter()
+            # Stall guards: abort when the first mediated token takes too
+            # long (includes provider connection setup and any reasoning
+            # phase, which yields no content tokens) or the stream goes
+            # silent between tokens.
+            first_token_timeout = await _positive_float_setting("mediation.stream_first_token_timeout_sec", 15.0)
+            idle_timeout = await _positive_float_setting("mediation.stream_idle_timeout_sec", 10.0)
+            t_mediation_start = time.perf_counter()
+            mediation_stream = self._mediate_response_stream(
+                agent_speech=full_speech,
+                user_text=user_text,
+                agent_id=target_agent,
+                language=language,
+                span_collector=span_collector,
+                reminder_text=reminder_text,
+                allow_organic_followup=allow_organic_followup,
+            )
             try:
-                async for token in self._mediate_response_stream(
-                    agent_speech=full_speech,
-                    user_text=user_text,
-                    agent_id=target_agent,
-                    language=language,
-                    span_collector=span_collector,
-                    reminder_text=reminder_text,
-                    allow_organic_followup=allow_organic_followup,
-                ):
-                    if token:
-                        mediated_tokens.append(token)
-                        emit = speech_filter.feed(token)
-                        if emit:
-                            yield {
-                                "token": emit,
-                                "done": False,
-                                "conversation_id": conversation_id,
-                            }
+                while True:
+                    stall_timeout = idle_timeout if mediated_tokens else first_token_timeout
+                    try:
+                        async with asyncio.timeout(stall_timeout):
+                            token = await anext(mediation_stream)
+                    except StopAsyncIteration:
+                        break
+                    if not token:
+                        continue
+                    if mediation_first_token_ms is None:
+                        mediation_first_token_ms = round((time.perf_counter() - t_mediation_start) * 1000, 2)
+                    mediated_tokens.append(token)
+                    emit = speech_filter.feed(token)
+                    if emit:
+                        yield {
+                            "token": emit,
+                            "done": False,
+                            "conversation_id": conversation_id,
+                        }
+            except TimeoutError:
+                logger.warning(
+                    "Mediation stream stalled (%s) for %s; aborting stream",
+                    "no first token" if not mediated_tokens else "token gap",
+                    target_agent,
+                )
+                mediation_failed = True
+                mediation_fallback = "stall_timeout"
             except MediationStreamError:
-                if not mediated_tokens:
-                    # M-10: nothing was spoken -- fall back to the blocking
-                    # path so the full answer is delivered and stored.
-                    use_streamed_mediation = False
-                else:
-                    # M-10: partial output was already spoken and cannot be
-                    # retracted; post-mediation finalization below persists
-                    # the ORIGINAL full speech so the turn store / response
-                    # cache never record the truncation. The unflushed
-                    # filter remainder is dropped: the spoken stream is
-                    # already truncated and flushing could leak a partial tag.
-                    mediation_failed_partial = True
+                mediation_failed = True
+                mediation_fallback = "stream_error"
+            finally:
+                await mediation_stream.aclose()
 
-        if use_streamed_mediation:
-            # Flush the filter remainder (never a tag fragment) as one final
-            # non-done token frame so no mediated text is lost.
-            if not mediation_failed_partial:
+            if not mediation_failed:
+                # Flush the filter remainder (never a tag fragment) as one
+                # final non-done token frame so no mediated text is lost. On
+                # failure the remainder is dropped: the spoken stream is
+                # already truncated and flushing could leak a partial tag.
                 tail, _ = speech_filter.finish()
                 if tail:
                     yield {
@@ -2621,15 +2659,39 @@ class OrchestratorAgent(BaseAgent):
                         "done": False,
                         "conversation_id": conversation_id,
                     }
+            if speech_filter.emitted_chars == 0:
+                # M-10: nothing reached the client -- fall back; the result
+                # goes out as mediated_speech. A stream error or empty /
+                # all-aside output uses the blocking mediation path; a stall
+                # uses the deterministic fallback (no second mediation LLM
+                # call against a provider that just stalled).
+                use_streamed_mediation = False
+                mediation_fallback = mediation_fallback or "empty_output"
+            else:
+                mediation_fallback = None
+
+        # True only when mediated text actually went out as token frames.
+        dispatch_span["metadata"]["mediation_streamed"] = bool(use_streamed_mediation)
+        if mediation_first_token_ms is not None:
+            dispatch_span["metadata"]["mediation_first_token_ms"] = mediation_first_token_ms
+        if mediation_fallback is not None:
+            dispatch_span["metadata"]["mediation_fallback"] = mediation_fallback
+
+        if use_streamed_mediation:
+            # Text was emitted: the turn is committed to the stream. Never
+            # append fallback text and never send mediated_speech.
+            tokens_were_streamed = True
             # Post-process the collected mediated text
             collected_mediated = "".join(mediated_tokens)
             mediated = strip_parenthetical_asides(collected_mediated) if collected_mediated.strip() else full_speech
-            mediated, followup = _strip_followup_tag(mediated)
-
-            if mediated_tokens:
-                tokens_were_streamed = True
-            if mediation_failed_partial:
+            # Markers first, so a wrapped tag ("**[FOLLOWUP]**") is detected.
+            mediated, followup = _strip_followup_tag(strip_markdown_markers(mediated))
+            if mediation_failed:
+                # M-10: partial output was already spoken and cannot be
+                # retracted; persist the ORIGINAL full speech so the turn
+                # store / response cache never record the truncation.
                 mediated = full_speech
+                dispatch_span["metadata"]["mediation_truncated"] = True
 
             # Run post-mediation finalization
             full_speech, vf_eff = await self._finalize_post_mediation(
@@ -2679,6 +2741,7 @@ class OrchestratorAgent(BaseAgent):
                 used_origin_context=used_origin_context,
                 routing_entry_id=prelude.routing_entry_id,
                 mediation_inputs=(reminder_text, allow_organic_followup),
+                skip_mediation_llm=mediation_fallback == "stall_timeout",
             )
 
         # Yield final done chunk; mediated_speech is only included when tokens
@@ -2895,16 +2958,19 @@ class OrchestratorAgent(BaseAgent):
         (strip_parenthetical_asides, [FOLLOWUP] detection) on the complete text.
         This method does NOT return the followup flag.
         """
-        async for token in self._mediation.mediate_response_stream(
-            agent_speech,
-            user_text,
-            agent_id,
-            language=language,
-            span_collector=span_collector,
-            reminder_text=reminder_text,
-            allow_organic_followup=allow_organic_followup,
-        ):
-            yield token
+        async with contextlib.aclosing(
+            self._mediation.mediate_response_stream(
+                agent_speech,
+                user_text,
+                agent_id,
+                language=language,
+                span_collector=span_collector,
+                reminder_text=reminder_text,
+                allow_organic_followup=allow_organic_followup,
+            )
+        ) as mediation_stream:
+            async for token in mediation_stream:
+                yield token
 
     @staticmethod
     def _strip_seq_rule(prompt: str) -> str:

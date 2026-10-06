@@ -1243,3 +1243,273 @@ class TestTextOnlySourceRules:
         assert "user_id" in root["metadata"]
         # The 32-char hex HA user id must survive trace redaction verbatim.
         assert sanitize_trace_metadata(root["metadata"])["user_id"] == user_id
+
+
+# ---------------------------------------------------------------------------
+# Streamed mediation fallback rule: nothing emitted -> blocking mediation
+# fallback via mediated_speech; something emitted -> committed to the stream.
+# ---------------------------------------------------------------------------
+
+
+def _setup_mediated_turn(mock_settings, mediation_stream, first_token_timeout="15", idle_timeout="10"):
+    from app.analytics.tracer import SpanCollector
+
+    mock_settings.get_value = AsyncMock(
+        side_effect=lambda k, d=None: {
+            "personality.prompt": "You are friendly.",
+            "orchestrator.organic_followup_enabled": "false",
+            "mediation.stream_first_token_timeout_sec": first_token_timeout,
+            "mediation.stream_idle_timeout_sec": idle_timeout,
+        }.get(k, d)
+    )
+    orch, dispatcher = _make_orchestrator()
+    orch._should_send_filler = AsyncMock(return_value=False)
+    orch._create_trace = AsyncMock()
+    orch._store_turn = AsyncMock()
+    orch._mediate_response = AsyncMock(return_value=("Friendly full answer.", False))
+
+    async def _stream(_request):
+        yield {"token": "Full agent answer.", "done": True}
+
+    dispatcher.dispatch_stream = _stream
+    orch._mediate_response_stream = mediation_stream
+    collector = SpanCollector("trace-mediation", source="ha")
+    return orch, collector
+
+
+async def _run_turn(orch, collector, conversation_id):
+    task = _make_task("turn on light", conversation_id=conversation_id)
+    task.span_collector = collector
+    chunks = [c async for c in orch.handle_task_stream(task)]
+    spoken = "".join(c["token"] for c in chunks if not c.get("done") and c.get("token"))
+    done_chunks = [c for c in chunks if c.get("done")]
+    assert len(done_chunks) == 1
+    dispatch = [s for s in collector.get_spans() if s["span_name"] == "dispatch"]
+    assert len(dispatch) == 1
+    return spoken, done_chunks[0], dispatch[0]["metadata"]
+
+
+class TestStreamedMediationFallback:
+    @pytest.mark.asyncio
+    @patch("app.agents.orchestrator.SettingsRepository")
+    @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
+    @patch("app.llm.client.complete", new_callable=AsyncMock)
+    async def test_failure_within_holdback_falls_back_to_blocking(self, mock_complete, mock_track, mock_settings):
+        """Tokens arrived but stayed inside the hold-back: nothing was emitted,
+        so the terminal frame carries the blocking mediation result."""
+        from app.agents.mediation import MediationStreamError
+
+        mock_complete.return_value = "light-agent (95%): Turn on light"
+
+        async def _short_then_fail(**kwargs):
+            yield "Hi there"
+            raise MediationStreamError("LLM stream broke")
+
+        orch, collector = _setup_mediated_turn(mock_settings, _short_then_fail)
+        spoken, done, meta = await _run_turn(orch, collector, "conv-holdback-fail")
+
+        assert spoken == ""
+        assert done["mediated_speech"] == "Friendly full answer."
+        orch._mediate_response.assert_awaited_once()
+        assert orch._store_turn.await_args.args[2] == "Friendly full answer."
+        assert meta["mediation_streamed"] is False
+        assert meta["mediation_fallback"] == "stream_error"
+        assert "non_filler_tokens_buffered_until_terminal" not in meta
+
+    @pytest.mark.asyncio
+    @patch("app.agents.orchestrator.SettingsRepository")
+    @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
+    @patch("app.llm.client.complete", new_callable=AsyncMock)
+    async def test_short_successful_stream_is_flushed_and_committed(self, mock_complete, mock_track, mock_settings):
+        mock_complete.return_value = "light-agent (95%): Turn on light"
+
+        async def _short(**kwargs):
+            yield "Okay."
+
+        orch, collector = _setup_mediated_turn(mock_settings, _short)
+        spoken, done, meta = await _run_turn(orch, collector, "conv-short-ok")
+
+        assert spoken == "Okay."
+        assert "mediated_speech" not in done
+        orch._mediate_response.assert_not_awaited()
+        assert meta["mediation_streamed"] is True
+        assert isinstance(meta["mediation_first_token_ms"], float)
+        assert "mediation_fallback" not in meta
+        assert "mediation_truncated" not in meta
+
+    @pytest.mark.asyncio
+    @patch("app.agents.orchestrator.SettingsRepository")
+    @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
+    @patch("app.llm.client.complete", new_callable=AsyncMock)
+    async def test_all_aside_output_falls_back(self, mock_complete, mock_track, mock_settings):
+        mock_complete.return_value = "light-agent (95%): Turn on light"
+
+        async def _aside_only(**kwargs):
+            yield "(smiles warmly at the user)"
+
+        orch, collector = _setup_mediated_turn(mock_settings, _aside_only)
+        spoken, done, meta = await _run_turn(orch, collector, "conv-aside-only")
+
+        assert spoken == ""
+        assert done["mediated_speech"] == "Friendly full answer."
+        orch._mediate_response.assert_awaited_once()
+        assert meta["mediation_streamed"] is False
+        assert meta["mediation_fallback"] == "empty_output"
+
+    @pytest.mark.asyncio
+    @patch("app.agents.orchestrator.SettingsRepository")
+    @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
+    @patch("app.llm.client.complete", new_callable=AsyncMock)
+    async def test_first_token_stall_uses_deterministic_fallback(self, mock_complete, mock_track, mock_settings):
+        """A stall skips the second mediation LLM call: the agent speech plus
+        the reminder goes out as mediated_speech."""
+        mock_complete.return_value = "light-agent (95%): Turn on light"
+        state = {"closed": False}
+
+        async def _stalled(**kwargs):
+            try:
+                await asyncio.sleep(10)
+                yield "never"
+            finally:
+                state["closed"] = True
+
+        orch, collector = _setup_mediated_turn(mock_settings, _stalled, first_token_timeout="0.05")
+        orch._calendar_injector = MagicMock()
+        orch._calendar_injector.inject_reminders = AsyncMock(return_value="Meeting at 3pm.")
+        spoken, done, meta = await asyncio.wait_for(_run_turn(orch, collector, "conv-first-stall"), timeout=5)
+
+        assert spoken == ""
+        assert done["mediated_speech"] == "Full agent answer. Meeting at 3pm."
+        orch._mediate_response.assert_not_awaited()
+        assert orch._store_turn.await_args.args[2] == "Full agent answer. Meeting at 3pm."
+        assert state["closed"] is True
+        assert meta["mediation_streamed"] is False
+        assert meta["mediation_fallback"] == "stall_timeout"
+        assert "mediation_first_token_ms" not in meta
+
+    @pytest.mark.asyncio
+    @patch("app.agents.orchestrator.SettingsRepository")
+    @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
+    @patch("app.llm.client.complete", new_callable=AsyncMock)
+    async def test_gap_stall_before_emission_uses_deterministic_fallback(
+        self, mock_complete, mock_track, mock_settings
+    ):
+        mock_complete.return_value = "light-agent (95%): Turn on light"
+
+        async def _short_then_stall(**kwargs):
+            yield "Hi"
+            await asyncio.sleep(10)
+            yield " never"
+
+        orch, collector = _setup_mediated_turn(mock_settings, _short_then_stall, idle_timeout="0.05")
+        spoken, done, meta = await asyncio.wait_for(_run_turn(orch, collector, "conv-gap-early"), timeout=5)
+
+        assert spoken == ""
+        assert done["mediated_speech"] == "Full agent answer."
+        orch._mediate_response.assert_not_awaited()
+        assert meta["mediation_streamed"] is False
+        assert meta["mediation_fallback"] == "stall_timeout"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("failure", ["stall", "error"])
+    @patch("app.agents.orchestrator.SettingsRepository")
+    @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
+    @patch("app.llm.client.complete", new_callable=AsyncMock)
+    async def test_failure_after_emission_stays_committed(self, mock_complete, mock_track, mock_settings, failure):
+        """Once text was emitted: no fallback text, no mediated_speech, and the
+        original agent speech is stored."""
+        from app.agents.mediation import MediationStreamError
+
+        mock_complete.return_value = "light-agent (95%): Turn on light"
+        state = {"closed": False}
+
+        async def _emit_then_fail(**kwargs):
+            try:
+                yield "The kitchen light is now on"
+                if failure == "stall":
+                    await asyncio.sleep(10)
+                else:
+                    raise MediationStreamError("LLM stream broke mid-way")
+                yield " and bright."
+            finally:
+                state["closed"] = True
+
+        orch, collector = _setup_mediated_turn(mock_settings, _emit_then_fail, idle_timeout="0.05")
+        spoken, done, meta = await asyncio.wait_for(_run_turn(orch, collector, f"conv-commit-{failure}"), timeout=5)
+
+        # Only the text beyond the 10-char hold-back was spoken; nothing is
+        # appended after the failure.
+        assert spoken == "The kitchen light"
+        assert "mediated_speech" not in done
+        orch._mediate_response.assert_not_awaited()
+        assert orch._store_turn.await_args.args[2] == "Full agent answer."
+        assert state["closed"] is True
+        assert meta["mediation_streamed"] is True
+        assert meta["mediation_truncated"] is True
+        assert "mediation_fallback" not in meta
+
+    @pytest.mark.asyncio
+    @patch("app.agents.orchestrator.SettingsRepository")
+    @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
+    @patch("app.llm.client.complete", new_callable=AsyncMock)
+    async def test_streamed_tokens_drop_markdown_markers(self, mock_complete, mock_track, mock_settings):
+        mock_complete.return_value = "light-agent (95%): Turn on light"
+
+        async def _markdown(**kwargs):
+            for token in ("## Status\n", "**Kitchen** light", " is `on`.\n- ", "Hall is *off*."):
+                yield token
+
+        orch, collector = _setup_mediated_turn(mock_settings, _markdown)
+        spoken, done, _meta = await _run_turn(orch, collector, "conv-markdown")
+
+        assert spoken == "Status\nKitchen light is on.\nHall is off."
+        assert done["sanitized"] is True
+
+    @pytest.mark.asyncio
+    @patch("app.agents.orchestrator.SettingsRepository")
+    @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
+    @patch("app.llm.client.complete", new_callable=AsyncMock)
+    async def test_trace_flags_survive_redaction(self, mock_complete, mock_track, mock_settings):
+        from app.analytics.tracer import sanitize_trace_metadata
+
+        mock_complete.return_value = "light-agent (95%): Turn on light"
+
+        async def _ok(**kwargs):
+            yield "The kitchen light is now on."
+
+        orch, collector = _setup_mediated_turn(mock_settings, _ok)
+        _spoken, _done, meta = await _run_turn(orch, collector, "conv-trace-flags")
+
+        sanitized = sanitize_trace_metadata(meta)
+        assert sanitized["mediation_streamed"] is True
+        assert sanitized["mediation_first_token_ms"] == meta["mediation_first_token_ms"]
+
+    @pytest.mark.asyncio
+    @patch("app.agents.orchestrator.SettingsRepository")
+    @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
+    @patch("app.llm.client.complete", new_callable=AsyncMock)
+    async def test_bold_wrapped_followup_tag_streamed_and_collected(self, mock_complete, mock_track, mock_settings):
+        mock_complete.return_value = "light-agent (95%): Turn on light"
+
+        async def _bold_tag(**kwargs):
+            yield "Frage? **[FOLLOWUP]**"
+
+        orch, collector = _setup_mediated_turn(mock_settings, _bold_tag)
+        spoken, done, _meta = await _run_turn(orch, collector, "conv-bold-tag")
+
+        # A space before the tag may be emitted first (known, out of scope).
+        assert spoken.rstrip() == "Frage?"
+        assert done.get("voice_followup") is True
+        # Collected path: the stored turn carries the cleaned text.
+        assert orch._store_turn.await_args.args[2] == "Frage?"
+
+    @pytest.mark.asyncio
+    @patch("app.agents.orchestrator.SettingsRepository")
+    async def test_invalid_timeout_settings_fall_back_to_defaults(self, mock_settings):
+        from app.agents.orchestrator import _positive_float_setting
+
+        mock_settings.get_value = AsyncMock(side_effect=lambda k, d=None: {"a": "0", "b": "abc", "c": "2.5"}.get(k, d))
+        assert await _positive_float_setting("a", 15.0) == 15.0
+        assert await _positive_float_setting("b", 10.0) == 10.0
+        assert await _positive_float_setting("c", 10.0) == 2.5
+        assert await _positive_float_setting("missing", 7.0) == 7.0
