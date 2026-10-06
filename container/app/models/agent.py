@@ -7,7 +7,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-RequestSource = Literal["ha", "chat", "api", "background"]
+RequestSource = Literal["ha", "chat", "api", "openai", "background"]
 BackgroundEventType = Literal[
     "alarm_notification",
     "timer_notification",
@@ -154,7 +154,8 @@ class TaskContext(BaseModel):
     user_id: str | None = None
     # FLOW-CTX-1 (0.18.6): request origin. "ha" = voice satellite via
     # HA integration, "chat" = dashboard chat UI, "api" = raw REST/WS
-    # without the HA wrapper. Agents use this to disambiguate
+    # without the HA wrapper, "openai" = OpenAI-compatible ``/v1`` API
+    # (e.g. Open WebUI; text chat, no satellite). Agents use this to disambiguate
     # phrasings like "hier" (ambiguous in chat, resolvable for
     # a satellite in a known area).
     source: RequestSource = "api"

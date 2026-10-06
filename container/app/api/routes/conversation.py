@@ -8,14 +8,14 @@ import logging
 import time
 import uuid
 from datetime import UTC, datetime
-from typing import Literal, cast
+from typing import cast
 
 from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
 
 from app.a2a._request import build_send_request, build_stream_request
 from app.a2a.protocol import JsonRpcRequest
-from app.analytics.tracer import SpanCollector
+from app.analytics.tracer import SpanCollector, SpanSource
 from app.middleware.rate_limit import WsMessageRateLimiter, get_client_ip_from_headers, rate_limit_conversation
 from app.models.agent import IngressTask, TaskContext
 from app.models.conversation import ActionResult, ConversationRequest, ConversationResponse, StreamToken
@@ -375,7 +375,7 @@ async def ws_conversation(
 
             # Per-turn trace boundary.
             trace_id = uuid.uuid4().hex[:16]
-            span_collector = SpanCollector(trace_id, source=cast(Literal["ha", "chat", "api"], source))
+            span_collector = SpanCollector(trace_id, source=cast(SpanSource, source))
             root_span_id = uuid.uuid4().hex[:12]
             parent_token = span_collector.push_parent(root_span_id)
 

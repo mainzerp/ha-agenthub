@@ -14,6 +14,7 @@ from app.api.routes import admin as admin_routes
 from app.api.routes import conversation as conversation_routes
 from app.api.routes import dashboard_api as dashboard_api_routes
 from app.api.routes import health as health_routes
+from app.api.routes import openai_compat as openai_compat_routes
 from app.bootstrap._logging import _configure_logging, _ensure_log_buffer_handler
 from app.bootstrap._shutdown import teardown
 from app.bootstrap._startup import setup_application
@@ -81,6 +82,7 @@ def create_app() -> FastAPI:
     app.include_router(health_routes.router)
     app.include_router(setup_router)
     app.include_router(conversation_routes.router)
+    app.include_router(openai_compat_routes.router)
 
     # Log ingest router (HA integration log shipping; per-route rate limit)
     from app.api.routes import log_ingest_api as log_ingest_api_routes
