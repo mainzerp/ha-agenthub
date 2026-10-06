@@ -172,12 +172,32 @@ session continuity).
 
 ### Mediation Streaming
 
-When `orchestrator.mediation_streaming_enabled` is `true`, the
-mediation pass can stream rewritten response tokens to TTS as they
-are produced, rather than waiting for the full mediated reply to be
-finalized. The orchestrator still emits the final `mediated_speech`
-on the terminal event, but compatible integrations can start
-speaking mediated tokens earlier.
+When `orchestrator.mediation_streaming_enabled` is `true` (default) and
+a personality is configured, single-agent streaming turns buffer the
+agent tokens, then stream the mediation LLM output as token frames
+(asides, `[FOLLOWUP]` and Markdown markers filtered incrementally;
+a lone `*` between spaces is kept).
+Fallback rule:
+
+- Nothing emitted yet: the reply is sent as `mediated_speech` on the
+  terminal frame. A stall (no first token within
+  `mediation.stream_first_token_timeout_sec`, default 15 s, or a token gap
+  above `mediation.stream_idle_timeout_sec`, default 10 s) closes the
+  provider stream and uses the deterministic fallback, the agent speech plus any reminder,
+  with no second mediation LLM call. A stream error or empty/all-aside
+  output after cleanup runs the blocking mediation path.
+- Text already emitted: the turn is committed to the stream. No
+  fallback text is appended and `mediated_speech` is omitted; on a
+  mid-stream failure the original agent speech is stored and the
+  dispatch span records `mediation_truncated: true`.
+
+The terminal frame carries `mediated_speech` only when nothing was
+streamed. The dispatch span records `mediation_streamed` (true only
+when mediated text went out as tokens), `mediation_first_token_ms`, and
+`mediation_fallback` (`stall_timeout`, `stream_error` or `empty_output`)
+when nothing was streamed. Markdown markers are removed before
+`[FOLLOWUP]` detection, so a wrapped tag (`**[FOLLOWUP]**`) is still
+recognised.
 
 ### Language Detection and Per-Agent Directive
 

@@ -23,6 +23,21 @@ Live pipeline in board format — headings are columns, cards are
 
 ## In Progress
 
+- Mediation stream fallback and trace clarity (2.7.2) · priority: P1 · area: conversation
+  Outcome: a streamed mediation that fails or stalls before any text is
+  emitted falls back to the blocking path (no empty answers); stall
+  timeout; trace flag `mediation_streamed` replaces the misleading
+  buffered flag; redactor stops masking bool/number values under *token*
+  keys; markdown in streamed voice tokens checked; docs corrected (2.7.1
+  note was wrong). Branch fix/mediation-stream-fallback.
+  Implemented (uncommitted); independent review findings fixed (stall
+  timeouts now settings 15 s / 10 s, `**[FOLLOWUP]**`, lone `*`, provider
+  stream closed on abort, `mediation_truncated`). Passed: ruff clean;
+  container suite 3488 passed, 1 skipped.
+  Next step: commit/release 2.7.2 after user approval.
+  Verify: live trace of a personality turn shows mediation_streamed true
+  and readable flags; voice reply contains no read-out markdown.
+
 ## Testing
 
 - Open WebUI chat polish (2.7.1) · priority: P1 · area: conversation
@@ -34,9 +49,8 @@ Live pipeline in board format — headings are columns, cards are
   Needs user verification on live after updating the container: a new Open
   WebUI turn shows no filler_generate span, voice_followup false, the
   "User" field with the mapped HA user id, and no blank lines before the
-  answer. Note: with a personality, text still arrives in one piece after
-  mediation (open decision: skip personality for Open WebUI vs stream the
-  mediation).
+  answer. Mediation output already streams (live trace: mediation span
+  streamed true, ~1260 tok/s), so personality replies are not buffered.
 - Open WebUI connection: OpenAI-compatible endpoint + external user mapping · priority: P1 · area: conversation
   Outcome: AgentHub can be added in Open WebUI as an OpenAI API connection
   (`/v1`, container API key) and controls the house; Open WebUI users are

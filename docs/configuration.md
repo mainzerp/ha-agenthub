@@ -172,7 +172,9 @@ relevant route before tuning.
 | `mediation.model` | (empty) | string | LLM model used by the mediation pass. Empty disables mediation. |
 | `mediation.temperature` | `0.3` | float | Sampling temperature for the mediation call. |
 | `mediation.max_tokens` | `8192` | int | Maximum tokens for the mediation reply. |
-| `orchestrator.mediation_streaming_enabled` | `false` | bool | Stream mediated tokens incrementally to the client for earlier TTS start. |
+| `mediation.stream_first_token_timeout_sec` | `15` | float | Streamed mediation: seconds to wait for the first content token (includes connection setup and any reasoning phase). Must be > 0; invalid values use the default. |
+| `mediation.stream_idle_timeout_sec` | `10` | float | Streamed mediation: maximum silence between content tokens before the stream is aborted. Must be > 0; invalid values use the default. |
+| `orchestrator.mediation_streaming_enabled` | `true` | bool | With a personality configured, stream the mediated reply as token frames (asides, `[FOLLOWUP]` and Markdown markers removed) for earlier TTS start. If nothing was emitted yet, a stall (see `mediation.stream_first_token_timeout_sec` / `mediation.stream_idle_timeout_sec`) sends the agent speech plus any reminder without a second mediation call; a stream error or empty output falls back to blocking mediation. `false` always uses blocking mediation (reply in the terminal frame). |
 
 ### Personality Settings
 
