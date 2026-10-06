@@ -196,9 +196,11 @@ Returns one model:
 | `query_generation` | `{"queries": []}` |
 | other | empty string |
 
-**Response (`stream: false`):** `chat.completion` object with `choices[0].message = {"role": "assistant", "content": <speech>}`, `finish_reason: "stop"` and zeroed `usage`.
+**Text-chat behavior:** `openai` turns never get a filler (no filler LLM call, no wait for the filler threshold before the first token) and never request a voice follow-up (`voice_followup` is `false` in the turn result and the trace); a clarifying question is still remembered so the typed answer is handled as a follow-up.
 
-**Response (`stream: true`):** `text/event-stream` of `chat.completion.chunk` events, ended by `data: [DONE]`. Errors detected before streaming starts (`400`, `401`, `429`, `503`) are returned as normal JSON error responses; once streaming has started the status is `200` and later failures are streamed as content. The first chunk carries `delta.role = "assistant"`; the last chunk has an empty delta and `finish_reason: "stop"`. Mapping from the internal stream: filler and status frames are skipped; `mediated_speech` is emitted only when no tokens were streamed; a terminal error is streamed as content only when nothing else was sent.
+**Response (`stream: false`):** `chat.completion` object with `choices[0].message = {"role": "assistant", "content": <speech>}` (surrounding whitespace stripped), `finish_reason: "stop"` and zeroed `usage`.
+
+**Response (`stream: true`):** `text/event-stream` of `chat.completion.chunk` events, ended by `data: [DONE]`. Errors detected before streaming starts (`400`, `401`, `429`, `503`) are returned as normal JSON error responses; once streaming has started the status is `200` and later failures are streamed as content. The first chunk carries `delta.role = "assistant"`; the last chunk has an empty delta and `finish_reason: "stop"`. Mapping from the internal stream: filler and status frames are skipped; leading whitespace is dropped (content starts at the first non-whitespace character, including `mediated_speech` and error fallbacks); `mediated_speech` is emitted only when no non-whitespace tokens were streamed; a terminal error is streamed as content only when nothing else was sent.
 
 ---
 

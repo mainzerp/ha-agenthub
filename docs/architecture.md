@@ -133,7 +133,9 @@ cannot land on a same-named `lock` or `switch` entity.
 
 ### Filler / In-Stream Preamble
 
-When `filler.enabled` is `true` and the orchestrator's first useful
+When `filler.enabled` is `true`, the request source is not text-only
+(`FILLER_EXEMPT_SOURCES` in `app/models/agent.py`: `openai`), and the
+orchestrator's first useful
 token takes longer than `filler.threshold_ms`, the filler agent
 generates one short interim sentence, emitted as a `filler_push` frame
 on the SSE/WS streams. The HA integration prepends it to the assistant
@@ -146,7 +148,9 @@ prefix + answer, so chat-log content and spoken text agree.
 
 When a turn ends in a clarifying question (entity not found, ambiguous
 recall, deterministic disambiguation), the container sets
-`voice_followup=True` on the terminal response. The HA integration maps
+`voice_followup=True` on the terminal response (never for the text-only
+sources in `VOICE_FOLLOWUP_EXEMPT_SOURCES`: `openai`; the pending question
+below is still recorded for them). The HA integration maps
 that to `ConversationResult(continue_conversation=True)` **in the same
 turn** on every response path (WS token stream, mediated done,
 single-burst done, REST) -- HA core keeps the chat session (same
@@ -195,6 +199,15 @@ collector to the orchestrator dispatch, and flushes a synthesised
 `ws_turn` root span at the end of each turn. This avoids the
 legacy bug where every per-turn duration was overwritten
 with the entire connection lifetime.
+
+Every orchestrator turn records the request `user_id` (Home Assistant
+user id, `null` when unknown or unmapped) as a request attribute that is
+merged into the root span metadata (`SpanCollector.set_request_attribute`);
+trace redaction keeps a `user_id` value verbatim only when it is a string of
+at most 128 characters from `[A-Za-z0-9_.:@-]` that matches neither the
+API-key nor the bearer-token pattern; any other value is redacted like other
+metadata. The trace detail
+API returns it as `user_id`.
 
 ### WebSocket / Dispatch Hardening (v1.42.0)
 
