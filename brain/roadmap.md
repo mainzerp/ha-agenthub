@@ -23,23 +23,20 @@ Live pipeline in board format — headings are columns, cards are
 
 ## In Progress
 
-- Mediation stream fallback and trace clarity (2.7.2) · priority: P1 · area: conversation
-  Outcome: a streamed mediation that fails or stalls before any text is
-  emitted falls back to the blocking path (no empty answers); stall
-  timeout; trace flag `mediation_streamed` replaces the misleading
-  buffered flag; redactor stops masking bool/number values under *token*
-  keys; markdown in streamed voice tokens checked; docs corrected (2.7.1
-  note was wrong). Branch fix/mediation-stream-fallback.
-  Implemented (uncommitted); independent review findings fixed (stall
-  timeouts now settings 15 s / 10 s, `**[FOLLOWUP]**`, lone `*`, provider
-  stream closed on abort, `mediation_truncated`). Passed: ruff clean;
-  container suite 3488 passed, 1 skipped.
-  Next step: commit/release 2.7.2 after user approval.
-  Verify: live trace of a personality turn shows mediation_streamed true
-  and readable flags; voice reply contains no read-out markdown.
-
 ## Testing
 
+- Mediation stream fallback and trace clarity (2.7.2) · priority: P1 · area: conversation
+  Outcome: streamed mediation never returns an empty reply (fallback by
+  emitted text); stall timeouts as settings (15 s first token, 10 s idle,
+  no second LLM call); streamed tokens markdown-cleaned for TTS
+  (`**[FOLLOWUP]**` recognised); trace flags mediation_streamed /
+  _first_token_ms / _fallback / _truncated, bool/number flags no longer
+  redacted. Passed: ruff clean; container suite 3488 passed, 1 skipped;
+  bridge 145 passed; independent review findings fixed. Shipped in v2.7.2.
+  Needs user verification on live after updating: a personality turn shows
+  mediation_streamed true and readable flags in the trace; a voice reply
+  reads no markdown; the settings page lists the two new mediation
+  timeouts.
 - Open WebUI chat polish (2.7.1) · priority: P1 · area: conversation
   Outcome: source "openai" gets no filler (no wasted LLM call, no filler
   wait), no voice follow-up flag, traces record user_id ("User" on trace
