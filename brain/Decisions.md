@@ -161,3 +161,28 @@ prompts live in `container/app/prompts/`, `ctx.agent_registry` not
   (seed + migration 44, only where unset), not hardcoded. Rationale: the 2 s
   timeout leaves no room for thinking; the admin keeps control per model,
   since some reasoning models (gpt-oss, gpt-5) reject "none".
+
+## 2026-10-08 — sequential send: content contract and deterministic target lookup
+
+- **The send-agent resolves the target deterministically against configured
+  send devices:** exact name, then the existing verb regex, then a scan of
+  configured `display_name`s contained in the target text (Unicode-aware,
+  word boundaries). The longest name wins only when every other match lies
+  inside it; two separate names or an equal-length tie = not found, because
+  a private message to the wrong recipient is worse than "not found".
+  Rationale for the scan: the few-shot examples teach target phrases
+  like `Nachricht an Anna senden` that the verb regex never parsed, and
+  scanning a short, known name list is language-neutral and stays a
+  downstream executor safeguard (PD11), unlike more per-language regexes.
+- **The content leg has an explicit contract:** in sequential-send mode the
+  content agent is told its reply is the message body, that delivery happens
+  elsewhere, that dictated text is returned verbatim, and that it answers
+  with a sentinel token when it cannot produce content; the orchestrator
+  treats the sentinel as `content_unavailable`. Rationale: a plain-text
+  general-agent refusal ("I cannot send messages") passed as content and
+  would have been pushed to the recipient. A sentinel is language-neutral;
+  refusal-phrase detection would need per-language keyword tables.
+- **Two-line rule kept** (content agent first, send-agent second) instead of
+  a single send-agent line with inline content. Rationale: no classifier
+  output-contract change; the verbatim instruction fixes dictation at the
+  cost of one content LLM call.

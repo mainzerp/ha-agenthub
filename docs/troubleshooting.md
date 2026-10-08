@@ -203,6 +203,15 @@ docker compose restart ha-agenthub
 
 **Fix:** Since 1.19.0, the orchestrator dispatches LLM clarification turns when entity resolution fails. This is expected behavior. If you prefer the old silent failure mode, there is no toggle; ensure entity aliases and visibility rules are correct to minimize not-found cases. The matcher tolerates underscore-joined queries (e.g. `jalousie_mitte`) and close singular/plural name variants; adding an HA alias remains the reliable fix for names that differ more.
 
+## Message Not Delivered to a Send Device
+
+**Symptoms:** A "send ... to ..." request answers "No matching send device mapping is configured" or "I could not prepare the content to send" (or the German equivalent), and nothing arrives.
+
+**Steps to resolve:**
+
+1. No matching device: the speech does not name the parsed target. The container log does: `INFO [app.agents.send] No send-device mapping matched target text '...'`. Check that a Send Devices display name occurs in that text (aliases are not matched), that the text does not name a second device, and that no two devices tie for the longest match.
+2. Content not prepared: the content agent failed or replied with `[[NO_CONTENT]]`, so nothing was sent. The trace's `dispatch_content` span shows the content agent and its response.
+
 ## Log Inspection
 
 **View container logs:**

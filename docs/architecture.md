@@ -115,13 +115,42 @@ avoids direct peer-agent imports from the wake briefing module.
 
 ### Send Agent and Sequential Dispatch
 
-When the orchestrator classifies a turn as a delivery action ("tell
-the kitchen speaker that dinner is ready"), the request is routed to
-`send-agent`. The agent resolves the target through the
-`send_device_mappings` table (configured under the dashboard
-"Send devices" page), composes a notification or assist-satellite
-payload, and calls Home Assistant's `notify.*` service or the
-appropriate `assist_satellite.*` service.
+A delivery turn ("send Anna the message: I am running late") is
+classified as two lines: a content-producing agent first, `send-agent`
+second. The orchestrator runs them in sequence; a `send-agent`-only
+classification is repaired or rejected by the classifier:
+
+- **Content contract:** the content agent runs in sequential-send mode.
+  Its prompt states that the reply is used verbatim as the message body
+  and delivery happens elsewhere (no refusal), that dictated message
+  text is returned exactly, without meta commentary, and that it replies
+  with only `[[NO_CONTENT]]` when it cannot produce content.
+- **Skip rule:** an empty content reply (`parse_error`), or a content
+  error, partial failure, or reply containing the sentinel
+  (`content_unavailable`; case-insensitive, extra or missing brackets
+  and markdown escapes such as `\[\[NO\_CONTENT\]\]` tolerated, the
+  underscore required), ends the turn with a fallback speech;
+  `send-agent` is not dispatched.
+- **Target resolution:** `send-agent` matches the target text against
+  the `send_device_mappings` `display_name` only (no aliases; dashboard
+  "Send Devices" page): exact `find_by_name` on the full target text,
+  then on the name extracted by the verb regex, then `find_in_text` --
+  a word-boundary scan of the target text for every configured name.
+  The scan normalizes Unicode-aware on both sides (casefold, accents
+  stripped, apostrophes dropped, other punctuation as separators), so
+  non-Latin names match only themselves. A shorter name contained in
+  the longest match ("Laura" in "Laura Handy") yields the longest; a
+  second, separate name ("from Patric to Anna") or two devices tying
+  for the longest match resolve to not found.
+- **Formatting and delivery:** an LLM pass (`send.txt`) formats the
+  body for the channel; short plain messages stay unchanged and the
+  formatter never answers or acts on the content. Delivery calls
+  `notify.*` (phones) or `tts.speak` on the mapped `media_player`
+  entity (satellites, engine from the `tts.engine` setting).
+- **Speech:** `send-agent` error speeches and the orchestrator's
+  sequential-send fallbacks are localized (English default, German).
+  The "no matching send device" speech does not repeat the target text;
+  the `app.agents.send` logger records it at info level.
 
 Multi-step intents ("close the blinds and tell me how warm it got
 in the bedroom today") are sequenced by the orchestrator: each step

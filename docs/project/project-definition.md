@@ -345,7 +345,7 @@ The current deployment target is a standalone Docker container connecting back t
 5. The action cache is checked first. Safe hits replay the cached action after a visibility recheck and then rewrite the cached speech; if the rewrite fails, the stored mediated speech is reused and the trace records the rewrite as failed.
 6. If the turn is not satisfied by the action cache, the routing cache may reuse a prior routing decision.
 7. Live dispatch sends the task to a content agent, custom agent, or fallback agent. Entity resolution uses deterministic lookup first, then hybrid matching, with visibility, area, and domain filters applied before final selection.
-8. If the turn also requires delivery, the orchestrator runs the content-producing step first and `send-agent` second.
+8. If the turn also requires delivery, the orchestrator runs the content-producing step first and `send-agent` second. The content step returns the verbatim message body; when it fails or replies with the `[[NO_CONTENT]]` sentinel, `send-agent` is not dispatched.
 9. The container mediates final speech as configured, streams filler and final tokens back to Home Assistant, and records analytics and traces.
 10. Successful live turns can update the routing cache and, when replay is safe, the action cache.
 

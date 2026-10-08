@@ -217,7 +217,11 @@ The **Domain Data** group holds mappings and schedules used by the domain agents
 
 ![Send Devices page for mapping notification targets](screenshots/14_send_devices.png)
 
-The **Send Devices** page at `/dashboard/send-devices` maps notification targets and assist satellites for the send agent. For each mapping you define a friendly name and the underlying HA `notify.*` service or `assist_satellite.*` entity. The send agent uses these mappings when asked to deliver a message to a phone, speaker, or satellite.
+The **Send Devices** page at `/dashboard/send-devices` maps notification targets and satellites for the send agent. For each mapping you define a display name, a device type (Smartphone via a `notify.*` service, or Satellite via TTS on a `media_player` entity), and the HA service target. The send agent uses these mappings when asked to deliver a message to a phone, speaker, or satellite.
+
+- The display name is found inside your phrasing ("send Laura Handy the shopping list"), ignoring case, accents, and punctuation. Names in any script (for example Cyrillic or Greek) work. Only the display name is matched, not aliases.
+- If one device name is part of another ("Laura" and "Laura Handy"), the longer name wins. If the request names two different devices ("send a message from Patric to Anna"), nothing is sent; the same applies to two devices whose names match equally well, so give each device a distinct name.
+- A dictated message ("send Anna the message: I am running late") is delivered verbatim.
 
 ### Timers
 
