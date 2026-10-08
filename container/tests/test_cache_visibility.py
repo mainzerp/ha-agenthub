@@ -31,7 +31,9 @@ _litellm_mock.RateLimitError = _RateLimitError
 sys.modules.setdefault("litellm", _litellm_mock)
 
 from app.agents.orchestrator import OrchestratorAgent  # noqa: E402
+from app.agents.prompt_builder import NO_CONTENT_SENTINEL  # noqa: E402
 from app.cache.cache_manager import ActionReplayOutcome  # noqa: E402
+from app.models.agent import TaskContext  # noqa: E402
 from tests.helpers import make_cached_action, make_entity_index_entry  # noqa: E402
 
 pytestmark = pytest.mark.asyncio
@@ -373,6 +375,125 @@ class TestSequentialSendContentFailure:
         assert mock_ds.call_count == 1
         assert speech == "I could not prepare the content to send."
         assert result["error"]["code"] == "content_unavailable"
+
+    async def test_skips_send_when_content_returns_no_content_sentinel(self):
+        """Content agent replied with the no-content sentinel -- skip send."""
+        orch, _dispatcher = self._orchestrator_for_send()
+
+        async def fake_dispatch_single(*args, **kwargs):
+            return (
+                "general-agent",
+                f"  {NO_CONTENT_SENTINEL}\n",
+                {"speech": f"  {NO_CONTENT_SENTINEL}\n"},
+            )
+
+        with patch.object(orch, "_dispatch_single", side_effect=fake_dispatch_single) as mock_ds:
+            classifications = [
+                ("general-agent", "return the dictated message verbatim: hello", 0.9),
+                ("send-agent", "send message to Anna", 0.9),
+            ]
+            routed_to, speech, result = await orch._handle_sequential_send(
+                classifications,
+                user_text="send Anna the message: hello",
+                conversation_id="conv-1",
+                turns=[],
+                span_collector=None,
+                incoming_context=None,
+            )
+
+        assert mock_ds.call_count == 1
+        assert mock_ds.call_args_list[0][0][0] == "general-agent"
+        assert routed_to == "send-agent"
+        assert speech == "I could not prepare the content to send."
+        assert NO_CONTENT_SENTINEL not in speech
+        assert result["error"]["code"] == "content_unavailable"
+
+    @pytest.mark.parametrize(
+        ("content", "expect_send"),
+        [
+            (r"\[\[NO\_CONTENT\]\]", False),
+            ("[no_content]", False),
+            ("There is no content today, sorry.", True),
+        ],
+    )
+    async def test_sentinel_detection_tolerates_escapes_without_false_positives(self, content, expect_send):
+        orch, _dispatcher = self._orchestrator_for_send()
+        call_log: list[str] = []
+
+        async def fake_dispatch_single(target_agent, *args, **kwargs):
+            call_log.append(target_agent)
+            if target_agent == "send-agent":
+                return ("send-agent", "Sent.", {"speech": "Sent."})
+            return (target_agent, content, {"speech": content})
+
+        with patch.object(orch, "_dispatch_single", side_effect=fake_dispatch_single):
+            _routed, speech, result = await orch._handle_sequential_send(
+                [("general-agent", "draft", 0.9), ("send-agent", "send message to Anna", 0.9)],
+                user_text="x",
+                conversation_id="conv-1",
+                turns=[],
+                span_collector=None,
+                incoming_context=None,
+            )
+
+        if expect_send:
+            assert call_log == ["general-agent", "send-agent"]
+            assert speech == "Sent."
+        else:
+            assert call_log == ["general-agent"]
+            assert result["error"]["code"] == "content_unavailable"
+
+    async def test_content_unavailable_fallback_speech_is_localized(self):
+        """German turn: the content-failure fallback speech is German."""
+        orch, _dispatcher = self._orchestrator_for_send()
+
+        async def fake_dispatch_single(*args, **kwargs):
+            return ("general-agent", NO_CONTENT_SENTINEL, {"speech": NO_CONTENT_SENTINEL})
+
+        with patch.object(orch, "_dispatch_single", side_effect=fake_dispatch_single) as mock_ds:
+            classifications = [
+                ("general-agent", "diktierte Nachricht zurückgeben", 0.9),
+                ("send-agent", "Nachricht an Anna senden", 0.9),
+            ]
+            _routed, speech, result = await orch._handle_sequential_send(
+                classifications,
+                user_text="Schick Anna die Nachricht",
+                conversation_id="conv-1",
+                turns=[],
+                span_collector=None,
+                incoming_context=TaskContext(language="de"),
+            )
+
+        assert mock_ds.call_count == 1
+        assert speech == "Ich konnte den Inhalt zum Senden nicht vorbereiten."
+        assert result["speech"] == speech
+        assert result["error"]["code"] == "content_unavailable"
+
+    async def test_no_content_available_speech_is_localized(self):
+        """Empty content with a German resolved language -> German speech."""
+        orch, _dispatcher = self._orchestrator_for_send()
+
+        async def fake_dispatch_single(*args, **kwargs):
+            return ("general-agent", "", {"speech": ""})
+
+        with patch.object(orch, "_dispatch_single", side_effect=fake_dispatch_single) as mock_ds:
+            classifications = [
+                ("general-agent", "Rezept suchen", 0.9),
+                ("send-agent", "Nachricht an Anna senden", 0.9),
+            ]
+            _routed, speech, result = await orch._handle_sequential_send(
+                classifications,
+                user_text="x",
+                conversation_id="conv-1",
+                turns=[],
+                span_collector=None,
+                incoming_context=None,
+                resolved_language="de",
+            )
+
+        assert mock_ds.call_count == 1
+        assert speech == "Es ist kein Inhalt zum Senden vorhanden."
+        assert result["error"]["code"] == "parse_error"
 
     async def test_send_proceeds_on_successful_content(self):
         """Content succeeded -> send-agent dispatch happens normally."""
