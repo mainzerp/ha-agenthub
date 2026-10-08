@@ -23,17 +23,72 @@ logger = logging.getLogger(__name__)
 # Prefix used by orchestrator to pass content in the condensed task
 _CONTENT_SEPARATOR = "|||CONTENT|||"
 
+# Shared by the @agent registration and agent_card so both stay identical.
+_SEND_AGENT_DESCRIPTION = (
+    "Sends or delivers researched content, information, or messages "
+    "to a person or device, including messages the user dictates verbatim. "
+    "Use when the user asks to send, deliver, or forward something to a person name or device name. "
+    "Examples: 'send the recipe to Laura Handy', "
+    "'send Anna the message: I am running late'."
+)
+
+# User-facing send-flow speech keyed by message id, then language key.
+# English is the default; resolve via ``localized_send_speech``.
+_SEND_SPEECH: dict[str, dict[str, str]] = {
+    "sent": {
+        "en": "Content sent to {name}.",
+        "de": "Inhalt an {name} gesendet.",
+    },
+    "no_content": {
+        "en": "No content provided for delivery.",
+        "de": "Es wurde kein Inhalt zum Senden übergeben.",
+    },
+    "no_target": {
+        "en": "Could not determine target device from request.",
+        "de": "Ich konnte das Zielgerät nicht erkennen.",
+    },
+    "no_mapping": {
+        "en": "No matching send device mapping is configured. Please add it in the dashboard under Send Devices.",
+        "de": "Für dieses Ziel ist kein passendes Sendegerät eingerichtet. "
+        "Bitte lege es im Dashboard unter Send Devices an.",
+    },
+    "unknown_device_type": {
+        "en": "Cannot deliver to {name}: unknown device type '{device_type}'. "
+        "Please reconfigure it in the dashboard under Send Devices.",
+        "de": "Ich kann nicht an {name} senden: unbekannter Gerätetyp '{device_type}'. "
+        "Bitte richte es im Dashboard unter Send Devices neu ein.",
+    },
+    "ha_unavailable": {
+        "en": "I could not reach the smart home system to deliver to {name}.",
+        "de": "Ich konnte das Smart-Home-System nicht erreichen, um an {name} zu senden.",
+    },
+    "delivery_failed": {
+        "en": "Sorry, I could not deliver the content to {name}.",
+        "de": "Entschuldigung, ich konnte den Inhalt nicht an {name} senden.",
+    },
+    # Orchestrator sequential-send fallbacks (content leg failed or empty).
+    "no_content_available": {
+        "en": "No content available to send.",
+        "de": "Es ist kein Inhalt zum Senden vorhanden.",
+    },
+    "content_unavailable": {
+        "en": "I could not prepare the content to send.",
+        "de": "Ich konnte den Inhalt zum Senden nicht vorbereiten.",
+    },
+}
+
+
+def localized_send_speech(message_id: str, language: str | None, **values: str) -> str:
+    """Return the send-flow speech for ``message_id`` in ``language`` (English fallback)."""
+    lang_key = "de" if (language or "en").lower().startswith("de") else "en"
+    templates = _SEND_SPEECH[message_id]
+    return templates.get(lang_key, templates["en"]).format(**values)
+
 
 @agent(
     agent_id="send-agent",
     name="Send Agent",
-    description=(
-        "Sends or delivers researched content, information, or messages "
-        "to a person or device. Use when the user says 'send to', "
-        "'schicke an', 'sende an' followed by a person name or device name. "
-        "Examples: 'send the recipe to Laura Handy', "
-        "'sende das Rezept an Satellite Kueche'."
-    ),
+    description=_SEND_AGENT_DESCRIPTION,
     skills=["send_message", "deliver_content", "notify_device"],
     needs_entity_matcher=False,
     db_gated=True,
@@ -55,13 +110,7 @@ class SendAgent(BaseAgent):
         return AgentCard(
             agent_id="send-agent",
             name="Send Agent",
-            description=(
-                "Sends or delivers researched content, information, or messages "
-                "to a person or device. Use when the user says 'send to', "
-                "'schicke an', 'sende an' followed by a person name or device name. "
-                "Examples: 'send the recipe to Laura Handy', "
-                "'sende das Rezept an Satellite Kueche'."
-            ),
+            description=_SEND_AGENT_DESCRIPTION,
             skills=["send_message", "deliver_content", "notify_device"],
             endpoint="local://send-agent",
             expected_latency="low",
@@ -71,6 +120,7 @@ class SendAgent(BaseAgent):
         """Deliver content to the target device."""
         description = task.description or ""
         span_collector = task.span_collector
+        language = (task.context.language if task.context else "en") or "en"
 
         # Parse target and content from the orchestrator-assembled description
         if _CONTENT_SEPARATOR in description:
@@ -78,24 +128,24 @@ class SendAgent(BaseAgent):
         else:
             return self._error_result(
                 AgentErrorCode.PARSE_ERROR,
-                "No content provided for delivery.",
+                localized_send_speech("no_content", language),
             )
 
-        # Extract target name from target_part
-        target_name = self._extract_target_name(target_part)
-        if not target_name:
+        target_text = target_part.strip()
+        if not target_text:
             return self._error_result(
                 AgentErrorCode.PARSE_ERROR,
-                "Could not determine target device from request.",
+                localized_send_speech("no_target", language),
             )
 
-        # Look up device mapping
-        mapping = await SendDeviceMappingRepository.find_by_name(target_name)
+        # Look up device mapping. The speech never echoes the raw target
+        # text: it is condensed classifier output, not a device name.
+        mapping = await self._resolve_mapping(target_text)
         if not mapping:
+            logger.info("No send-device mapping matched target text %r", target_text)
             return self._error_result(
                 AgentErrorCode.ENTITY_NOT_FOUND,
-                f"No device mapping found for '{target_name}'. "
-                "Please configure it in the dashboard under Send Devices.",
+                localized_send_speech("no_mapping", language),
             )
 
         # Format content for channel (optional LLM call)
@@ -112,8 +162,9 @@ class SendAgent(BaseAgent):
             logger.error("Unknown device_type %r in send-device mapping for %r", device_type, mapping["display_name"])
             return self._error_result(
                 AgentErrorCode.ACTION_FAILED,
-                f"Cannot deliver to {mapping['display_name']}: unknown device type '{device_type}'. "
-                "Please reconfigure it in the dashboard under Send Devices.",
+                localized_send_speech(
+                    "unknown_device_type", language, name=mapping["display_name"], device_type=str(device_type)
+                ),
             )
         try:
             if device_type == "notify":
@@ -130,23 +181,34 @@ class SendAgent(BaseAgent):
             logger.warning("Delivery to %s failed: HA unreachable", mapping["display_name"], exc_info=True)
             return self._error_result(
                 AgentErrorCode.HA_UNAVAILABLE,
-                f"I could not reach the smart home system to deliver to {mapping['display_name']}.",
+                localized_send_speech("ha_unavailable", language, name=mapping["display_name"]),
                 recoverable=False,
             )
         except Exception:
             logger.exception("Delivery to %s failed", mapping["display_name"])
             return self._error_result(
                 AgentErrorCode.ACTION_FAILED,
-                f"Sorry, I could not deliver the content to {mapping['display_name']}.",
+                localized_send_speech("delivery_failed", language, name=mapping["display_name"]),
             )
 
-        language = (task.context.language if task.context else "en") or "en"
-        if language.startswith("de"):
-            speech = f"Inhalt an {mapping['display_name']} gesendet."
-        else:
-            speech = f"Content sent to {mapping['display_name']}."
+        return TaskResult(speech=localized_send_speech("sent", language, name=mapping["display_name"]))
 
-        return TaskResult(speech=speech)
+    async def _resolve_mapping(self, target_text: str) -> dict | None:
+        """Resolve the send-device mapping for the target text, deterministically.
+
+        Order: exact/normalized name on the full text, then on the
+        regex-extracted name, then a word-boundary scan of all configured
+        mappings inside the text (longest match wins, ties are ambiguous).
+        """
+        mapping = await SendDeviceMappingRepository.find_by_name(target_text)
+        if mapping:
+            return mapping
+        extracted = self._extract_target_name(target_text)
+        if extracted and extracted != target_text:
+            mapping = await SendDeviceMappingRepository.find_by_name(extracted)
+            if mapping:
+                return mapping
+        return await SendDeviceMappingRepository.find_in_text(target_text)
 
     def _extract_target_name(self, text: str) -> str | None:
         """Extract target device name from condensed task text."""

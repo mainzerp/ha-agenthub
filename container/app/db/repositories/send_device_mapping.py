@@ -2,10 +2,76 @@
 
 from __future__ import annotations
 
+import re
+import unicodedata
 from typing import Any
 
 from app.db.repositories._utils import _normalize_device_name, _now, _validate_column_name
 from app.db.schema import get_db_read, get_db_write
+
+# Apostrophes join tokens ("Patric's" == "Patrics"); every other non-word
+# character and the underscore separate tokens in the scan.
+_SCAN_APOSTROPHE_RE = re.compile("['`\u00b4\u2018\u2019\u02bc]")
+_SCAN_SEPARATOR_RE = re.compile(r"[\W_]+")
+
+
+def _normalize_scan_text(text: str) -> str:
+    """Unicode-aware normalization for the ``find_in_text`` containment scan.
+
+    Casefold, drop apostrophes, NFKD with combining marks removed
+    (``Küche`` -> ``kuche``), then every run of other non-word characters or
+    underscores becomes one space. Unlike ``_normalize_device_name`` it keeps
+    non-ASCII letters, so Cyrillic or Greek names neither vanish nor collapse
+    onto a shared ASCII remainder. Applied to both the target text and the
+    mapping names.
+    """
+    joined = _SCAN_APOSTROPHE_RE.sub("", (text or "").casefold())
+    decomposed = unicodedata.normalize("NFKD", joined)
+    stripped = "".join(ch for ch in decomposed if not unicodedata.combining(ch))
+    return _SCAN_SEPARATOR_RE.sub(" ", stripped).strip()
+
+
+def _name_spans(haystack: str, name: str) -> list[tuple[int, int]]:
+    """Return every word-boundary span of ``name`` in the space-padded ``haystack``."""
+    needle = f" {name} "
+    spans: list[tuple[int, int]] = []
+    pos = haystack.find(needle)
+    while pos != -1:
+        spans.append((pos + 1, pos + 1 + len(name)))
+        pos = haystack.find(needle, pos + 1)
+    return spans
+
+
+def _longest_name_match(text: str, mappings: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Return the single mapping whose display_name occurs in ``text`` at word boundaries.
+
+    Both sides use ``_normalize_scan_text``, which leaves single-space
+    separated word tokens, so a space-padded containment check is an exact
+    word-boundary match. The longest match wins only when every other
+    mapping's match lies inside one of its spans ("Laura" inside "Laura
+    Handy"). A different name outside that span (a second recipient) or an
+    equal-length match of another mapping is ambiguous and yields None.
+    """
+    haystack = f" {_normalize_scan_text(text)} "
+    if not haystack.strip():
+        return None
+    matches: list[tuple[int, int, int]] = []  # (start, end, mapping index)
+    for index, mapping in enumerate(mappings):
+        name = _normalize_scan_text(mapping.get("display_name") or "")
+        if name:
+            matches.extend((start, end, index) for start, end in _name_spans(haystack, name))
+    if not matches:
+        return None
+    best_len = max(end - start for start, end, _ in matches)
+    winners = {index for start, end, index in matches if end - start == best_len}
+    if len(winners) != 1:
+        return None
+    winner = winners.pop()
+    winner_spans = [(start, end) for start, end, index in matches if index == winner]
+    for start, end, index in matches:
+        if index != winner and not any(w_start <= start and end <= w_end for w_start, w_end in winner_spans):
+            return None
+    return mappings[winner]
 
 
 class SendDeviceMappingRepository:
@@ -55,6 +121,19 @@ class SendDeviceMappingRepository:
                 if _normalize_device_name(row["display_name"]) == normalized_input:
                     return dict(row)
             return None
+
+    @staticmethod
+    async def find_in_text(text: str) -> dict[str, Any] | None:
+        """Find the mapping whose display_name occurs inside free target text.
+
+        Deterministic fallback for target phrasings that wrap the device
+        name in other words (e.g. a condensed task naming the recipient).
+        Contained names prefer the longest; separate names or equal-length
+        ties are ambiguous and return None (see ``_longest_name_match``).
+        """
+        if not _normalize_scan_text(text):
+            return None
+        return _longest_name_match(text, await SendDeviceMappingRepository.list_all())
 
     @staticmethod
     async def create(

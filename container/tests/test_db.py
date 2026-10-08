@@ -1702,6 +1702,83 @@ class TestSendDeviceMappingRepository:
         assert result is not None
         assert result["display_name"] == "Patric's Handy"
 
+    async def test_find_in_text_matches_name_inside_text(self, db_repository):
+        await SendDeviceMappingRepository.create("Patric's Handy", "notify", "mobile_app_patrics_handy")
+        result = await SendDeviceMappingRepository.find_in_text("Nachricht an Patrics Handy senden")
+        assert result is not None
+        assert result["display_name"] == "Patric's Handy"
+        # Apostrophes join tokens in both the text and the name (typographic variant too).
+        result = await SendDeviceMappingRepository.find_in_text("Nachricht an Patric\u2019s Handy senden")
+        assert result is not None
+        assert result["display_name"] == "Patric's Handy"
+
+    async def test_find_in_text_prefers_longest_name(self, db_repository):
+        await SendDeviceMappingRepository.create("Laura", "tts", "media_player.laura")
+        await SendDeviceMappingRepository.create("Laura Handy", "notify", "mobile_app_laura")
+        result = await SendDeviceMappingRepository.find_in_text("send message to Laura Handy")
+        assert result is not None
+        assert result["display_name"] == "Laura Handy"
+
+    async def test_find_in_text_requires_word_boundaries(self, db_repository):
+        await SendDeviceMappingRepository.create("Laura", "notify", "mobile_app_laura")
+        assert await SendDeviceMappingRepository.find_in_text("Nachricht an Lauras Handy senden") is None
+
+    async def test_find_in_text_tie_is_ambiguous(self, db_repository):
+        await SendDeviceMappingRepository.create("Anna", "notify", "mobile_app_anna")
+        await SendDeviceMappingRepository.create("Ella", "notify", "mobile_app_ella")
+        assert await SendDeviceMappingRepository.find_in_text("send message to Anna and Ella") is None
+
+    async def test_find_in_text_separate_names_are_ambiguous(self, db_repository):
+        await SendDeviceMappingRepository.create("Patric", "notify", "mobile_app_patric")
+        await SendDeviceMappingRepository.create("Anna", "notify", "mobile_app_anna")
+        assert await SendDeviceMappingRepository.find_in_text("send message from Patric to Anna") is None
+        assert await SendDeviceMappingRepository.find_in_text("Nachricht von Patric an Anna senden") is None
+
+    async def test_find_in_text_contained_name_repeated_outside_is_ambiguous(self, db_repository):
+        await SendDeviceMappingRepository.create("Laura", "tts", "media_player.laura")
+        await SendDeviceMappingRepository.create("Laura Handy", "notify", "mobile_app_laura")
+        result = await SendDeviceMappingRepository.find_in_text("Nachricht an Laura Handy senden")
+        assert result is not None
+        assert result["display_name"] == "Laura Handy"
+        assert await SendDeviceMappingRepository.find_in_text("von Laura an Laura Handy") is None
+
+    async def test_find_in_text_same_mapping_named_twice_resolves(self, db_repository):
+        await SendDeviceMappingRepository.create("Anna", "notify", "mobile_app_anna")
+        result = await SendDeviceMappingRepository.find_in_text("Anna, send this to Anna")
+        assert result is not None
+        assert result["display_name"] == "Anna"
+
+    async def test_find_in_text_non_ascii_name_does_not_collapse(self, db_repository):
+        await SendDeviceMappingRepository.create("Мама Handy", "notify", "mobile_app_mama")
+        assert await SendDeviceMappingRepository.find_in_text("Nachricht an Papas Handy senden") is None
+        await SendDeviceMappingRepository.create("Papas Handy", "notify", "mobile_app_papa")
+        result = await SendDeviceMappingRepository.find_in_text("Nachricht an Papas Handy senden")
+        assert result is not None
+        assert result["display_name"] == "Papas Handy"
+
+    async def test_find_in_text_umlaut_name(self, db_repository):
+        await SendDeviceMappingRepository.create("Küche", "tts", "media_player.kueche")
+        result = await SendDeviceMappingRepository.find_in_text("an Küche senden")
+        assert result is not None
+        assert result["display_name"] == "Küche"
+
+    @pytest.mark.parametrize(
+        ("display_name", "text"),
+        [
+            ("Мама Handy", "Сообщение на Мама Handy отправить"),
+            ("Μαμάς Κινητό", "στείλε μήνυμα στο ΜΑΜΑΣ κινητό"),
+        ],
+    )
+    async def test_find_in_text_cyrillic_and_greek_names(self, db_repository, display_name, text):
+        await SendDeviceMappingRepository.create(display_name, "notify", "mobile_app_x")
+        result = await SendDeviceMappingRepository.find_in_text(text)
+        assert result is not None
+        assert result["display_name"] == display_name
+
+    async def test_find_in_text_empty_text(self, db_repository):
+        await SendDeviceMappingRepository.create("Anna", "notify", "mobile_app_anna")
+        assert await SendDeviceMappingRepository.find_in_text("  ?! ") is None
+
 
 # ---------------------------------------------------------------------------
 # Read/Write Split
