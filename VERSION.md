@@ -1,12 +1,24 @@
 # Version
 
-**Current Version:** 2.7.2
+**Current Version:** 2.7.3
 
 ## Recent Changes
 
-(tracking changes since 2.7.2)
+(tracking changes since 2.7.3)
 
 ## Version History
+
+### 2.7.3 (PATCH) -- dictated messages and send target lookup
+
+(commits 53e02fc, 8f240a6; docs 98b7a1a)
+
+- Agents: `send-agent` resolves the target deterministically: exact name on the full target text, then the verb-regex-extracted name, then a Unicode-aware word-boundary scan of the target text for the configured send-device `display_name`s: a name contained in the longest match yields the longest, while a second separate device name or an equal-length tie resolves to not found, so a message is never sent to the wrong recipient (aliases are not matched; non-Latin names match only themselves). Target phrasings from the few-shot examples ("Nachricht an Anna senden") now find the device (live trace e625b7f88bff4e69: a dictated German message to "Lauras Handy" was not delivered) (53e02fc).
+- Conversation: in sequential send the content agent is told its reply is the verbatim message body and delivery happens elsewhere, returns dictated text exactly without meta commentary, and replies with only `[[NO_CONTENT]]` when it cannot produce content; the orchestrator treats the sentinel (case-insensitive, bracket and markdown-escape variants included) as `content_unavailable` and does not dispatch `send-agent`, so a content-agent refusal is never delivered. Custom agents used as the content step receive the same contract (8f240a6).
+- Agents: `send-agent` error speeches and the two orchestrator sequential-send fallback speeches are localized (English default, German); the "no matching send device" speech no longer repeats the parsed target text, which is logged at info level instead (53e02fc, 8f240a6).
+- Prompts: the send formatter leaves short plain messages unchanged and never answers or acts on the content; the orchestrator few-shot files (all five languages) gained a dictated-message delivery example; the `send-agent` card description is English-only (53e02fc, 8f240a6).
+- Docs: architecture, user guide, project definition and troubleshooting describe the send target lookup, the content contract and the localized send errors; stale `assist_satellite.*` delivery wording corrected to `tts.speak` on the mapped `media_player` entity (98b7a1a).
+- Verification: 3542 container tests passed (1 skipped, 9 xfailed, 3 xpassed), 145 integration tests passed; Ruff lint and format, bandit, pip-audit, docker build and smoke test, Trivy passed.
+- No features or public APIs removed; no user action required.
 
 ### 2.7.2 (PATCH) -- streamed mediation fallback, timeouts and speech cleanup
 
