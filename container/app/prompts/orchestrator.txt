@@ -100,6 +100,7 @@ SEQUENTIAL DELIVERY RULE:
   TTS announcement), output exactly two lines: the content-producing agent
   FIRST, send-agent SECOND. send-agent is never valid as the only line.
   The system enforces this order — no special markers are needed.
+- Dictated message text goes verbatim into the content agent's task.
 END SEQUENTIAL DELIVERY RULE
 
 {agent_examples}

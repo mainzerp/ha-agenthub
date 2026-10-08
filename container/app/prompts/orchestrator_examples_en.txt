@@ -76,5 +76,8 @@ SEQUENTIAL DELIVERY EXAMPLE:
   YES "Write Anna that I will be late and send it to her"
       general-agent (90%): write message to Anna that I will be late
       send-agent (95%): send message to Anna
+  YES "Send Anna the message: I am running late"
+      general-agent (90%): return the dictated message verbatim: I am running late
+      send-agent (95%): send message to Anna
   NO  send-agent as the only line — delivery always needs a content agent first
 END SEQUENTIAL DELIVERY EXAMPLE

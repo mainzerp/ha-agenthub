@@ -69,6 +69,7 @@ class DynamicAgent(BaseAgent):
         prompt = PromptBuilder.build(
             self._system_prompt + "\nNEVER translate or normalize entity/room names.",
             time_location=self._build_time_location_context(task.context),
+            sequential_send=bool(task.context and task.context.sequential_send),
         )
 
         messages = [{"role": "system", "content": prompt}]

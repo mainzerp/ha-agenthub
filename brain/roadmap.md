@@ -25,6 +25,21 @@ Live pipeline in board format — headings are columns, cards are
 
 ## Testing
 
+- Sequential send: dictated messages and target parsing · priority: P1 · area: agents
+  Outcome: "send the message X to device Y" delivers X verbatim; the
+  send-agent finds the configured device inside any target phrasing
+  (Unicode-aware; two separate device names = not found); content-agent
+  refusals or the [[NO_CONTENT]] sentinel never reach the recipient; send
+  errors are localized (en/de) and do not echo the parsed text. Found in
+  live trace e625b7f88bff4e69. Uncommitted, not released.
+  Passed: ruff clean; container suite 3542 passed, 1 skipped; independent
+  review (findings fixed); scripts/ci.py full gate green on the first
+  round (bridge 145 passed); live device names resolve as expected.
+  Needs user verification on live after deploying: dictate "Sende die
+  Nachricht: Ich komme später auf Lauras Handy" -> push arrives with exactly
+  that text; trace shows dispatch_content returning the dictated text and an
+  ha_call span; a request for an unknown device answers in German without
+  echoing the phrase.
 - Mediation stream fallback and trace clarity (2.7.2) · priority: P1 · area: conversation
   Outcome: streamed mediation never returns an empty reply (fallback by
   emitted text); stall timeouts as settings (15 s first token, 10 s idle,

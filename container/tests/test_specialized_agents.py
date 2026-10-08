@@ -2217,6 +2217,65 @@ class TestGeneralAgent:
         # Also verify max_tokens=2048 is passed
         assert mock_complete.call_args[1].get("max_tokens") == 2048
 
+    @patch("app.llm.client.complete", new_callable=AsyncMock, return_value="I am running late")
+    async def test_sequential_send_prompt_carries_content_leg_contract(self, mock_complete):
+        from app.agents.prompt_builder import NO_CONTENT_SENTINEL
+
+        agent = GeneralAgent()
+        ctx = TaskContext(sequential_send=True, language="de")
+        await agent.handle_task(_make_task("return the dictated message verbatim: I am running late", context=ctx))
+        system_msg = mock_complete.call_args[0][1][0]["content"]
+        assert "used verbatim as the body of a message" in system_msg
+        assert "do not refuse" in system_msg
+        assert "return exactly that text" in system_msg
+        assert NO_CONTENT_SENTINEL in system_msg
+
+    @patch("app.llm.client.complete", new_callable=AsyncMock, return_value="answer")
+    async def test_non_sequential_send_prompt_has_no_content_leg_contract(self, mock_complete):
+        from app.agents.prompt_builder import NO_CONTENT_SENTINEL
+
+        agent = GeneralAgent()
+        await agent.handle_task(_make_task("what is the capital of France", context=TaskContext()))
+        system_msg = mock_complete.call_args[0][1][0]["content"]
+        assert NO_CONTENT_SENTINEL not in system_msg
+        assert "SEQUENTIAL DELIVERY MODE" not in system_msg
+
+    def test_prompt_builder_sequential_send_addendum_contains_sentinel(self):
+        from app.agents.prompt_builder import NO_CONTENT_SENTINEL, PromptBuilder
+
+        with_addendum = PromptBuilder.build("BASE", sequential_send=True)
+        without_addendum = PromptBuilder.build("BASE")
+        assert with_addendum.startswith("BASE")
+        assert "SEQUENTIAL DELIVERY MODE" in with_addendum
+        assert "do not say you cannot send messages or control devices" in with_addendum
+        assert with_addendum.rstrip().endswith(NO_CONTENT_SENTINEL)
+        assert without_addendum == "BASE"
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "[[NO_CONTENT]]",
+            "NO_CONTENT",
+            "[NO_CONTENT]",
+            "[[no_content]]",
+            r"\[\[NO\_CONTENT\]\]",
+            "  [[NO_CONTENT]]\n",
+        ],
+    )
+    def test_contains_no_content_sentinel_detects_variants(self, text):
+        from app.agents.prompt_builder import contains_no_content_sentinel
+
+        assert contains_no_content_sentinel(text) is True
+
+    @pytest.mark.parametrize(
+        "text",
+        ["There is no content today", "no-content", "piano_contents", "", None],
+    )
+    def test_contains_no_content_sentinel_ignores_natural_text(self, text):
+        from app.agents.prompt_builder import contains_no_content_sentinel
+
+        assert contains_no_content_sentinel(text) is False
+
     @patch("app.llm.client.complete", new_callable=AsyncMock, return_value="answer")
     async def test_general_agent_wraps_user_prompt_and_user_history(self, mock_complete):
         agent = GeneralAgent()
@@ -2460,6 +2519,20 @@ class TestDynamicAgent:
         await agent.handle_task(_make_task("test"))
         system_msg = mock_complete.call_args[0][1][0]["content"]
         assert "NEVER translate or normalize entity/room names" in system_msg
+
+    @patch("app.llm.client.complete", new_callable=AsyncMock, return_value="resp")
+    async def test_dynamic_agent_sequential_send_prompt_carries_content_leg_contract(self, mock_complete):
+        from app.agents.prompt_builder import NO_CONTENT_SENTINEL
+
+        agent = DynamicAgent(name="x", description="", system_prompt="base", skills=[])
+        await agent.handle_task(_make_task("write a reminder", context=TaskContext(sequential_send=True)))
+        system_msg = mock_complete.call_args[0][1][0]["content"]
+        assert system_msg.startswith("base")
+        assert "SEQUENTIAL DELIVERY MODE" in system_msg
+        assert NO_CONTENT_SENTINEL in system_msg
+
+        await agent.handle_task(_make_task("write a reminder", context=TaskContext()))
+        assert NO_CONTENT_SENTINEL not in mock_complete.call_args[0][1][0]["content"]
 
     @patch("app.llm.client.complete", new_callable=AsyncMock, return_value="resp")
     async def test_dynamic_agent_wraps_user_prompt_and_user_history(self, mock_complete):

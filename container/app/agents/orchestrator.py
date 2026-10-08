@@ -31,6 +31,7 @@ from app.agents.mediation import (
     StreamedSpeechFilter,
     _strip_followup_tag,
 )
+from app.agents.prompt_builder import contains_no_content_sentinel
 from app.agents.sanitize import strip_markdown, strip_markdown_markers, strip_parenthetical_asides
 from app.agents.task_pipeline import PipelineDirector
 from app.analytics.collector import track_request, track_request_background
@@ -651,12 +652,14 @@ class OrchestratorAgent(BaseAgent):
 
         _send_agent_id, send_task_text, _send_confidence = send_classification
 
+        from app.agents.send import _CONTENT_SEPARATOR, localized_send_speech
+
+        content_language = resolved_language or (incoming_context.language if incoming_context else None) or "en"
         _content_result: dict[str, Any] | None = None
         content_dispatched = False
         if content_agents:
             content_aid, content_task, _ = content_agents[0]
             content_dispatched = True
-            content_language = resolved_language or (incoming_context.language if incoming_context else None) or "en"
             content_context = TaskContext(
                 conversation_turns=turns,
                 device_id=incoming_context.device_id if incoming_context else None,
@@ -701,11 +704,12 @@ class OrchestratorAgent(BaseAgent):
             content_agent_id = "conversation-history"
 
         if not content_speech:
+            no_content_speech = localized_send_speech("no_content_available", content_language)
             return (
                 "send-agent",
-                "No content available to send.",
+                no_content_speech,
                 {
-                    "speech": "No content available to send.",
+                    "speech": no_content_speech,
                     "error": {
                         "code": "parse_error",
                         "recoverable": True,
@@ -713,26 +717,30 @@ class OrchestratorAgent(BaseAgent):
                 },
             )
 
+        # The content leg signals "cannot produce content" with the sentinel
+        # from the sequential-send prompt addendum; never deliver it.
+        content_failed = contains_no_content_sentinel(content_speech)
         if content_dispatched:
             result_dict = _content_result or {}
             content_failed = (
-                _content_result is None or bool(result_dict.get("error")) or bool(result_dict.get("partial_failure"))
+                content_failed
+                or _content_result is None
+                or bool(result_dict.get("error"))
+                or bool(result_dict.get("partial_failure"))
             )
-            if content_failed:
-                fallback_speech = "I could not prepare the content to send."
-                return (
-                    "send-agent",
-                    fallback_speech,
-                    {
-                        "speech": fallback_speech,
-                        "error": {
-                            "code": "content_unavailable",
-                            "recoverable": True,
-                        },
+        if content_failed:
+            fallback_speech = localized_send_speech("content_unavailable", content_language)
+            return (
+                "send-agent",
+                fallback_speech,
+                {
+                    "speech": fallback_speech,
+                    "error": {
+                        "code": "content_unavailable",
+                        "recoverable": True,
                     },
-                )
-
-        from app.agents.send import _CONTENT_SEPARATOR
+                },
+            )
 
         augmented_task = f"{send_task_text}{_CONTENT_SEPARATOR}{content_speech}"
 
