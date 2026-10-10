@@ -14,7 +14,7 @@ from app.agents.action_executor import (
     call_service_with_verification,
     resolve_and_validate_entity,
 )
-from app.agents.executor_state_check import failure_speech, is_redundant_action
+from app.agents.executor_state_check import failure_speech, is_redundant_action, verification_previous_state
 from app.analytics.tracer import _optional_span
 from app.entity.deterministic_resolver import resolve_entity_deterministic_first
 from app.entity.matcher import MatchResult
@@ -413,6 +413,7 @@ async def execute_climate_action(
         entity_id,
         service_data=service_data,
         expected_state=expected_state,
+        previous_state=verification_previous_state(state_resp),
     )
     if not verify["success"]:
         return {

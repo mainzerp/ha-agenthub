@@ -206,8 +206,12 @@ class ConversationManager:
         hints, and persisted as JSON in the ``conversations.action_executed``
         TEXT column so they survive restarts (no migration -- the column
         already exists and was previously unused).
+
+        Background turns (``source="background"``, e.g. wake briefings) are
+        system-initiated and never stored: no history, no DB row, no session
+        memory. Their traces are recorded by the caller as usual.
         """
-        if not conversation_id:
+        if not conversation_id or source == "background":
             return
         turn_limit = await self._get_conversation_context_turn_limit()
         self._evict_stale_conversations()

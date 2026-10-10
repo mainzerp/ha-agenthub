@@ -19,6 +19,7 @@ from app.db.repository import SettingsRepository
 from app.entity.visibility import entity_is_visible
 from app.models.agent import BackgroundEvent, TaskContext
 from app.security.sanitization import wrap_user_input
+from app.util.ha_template import neutralize_ha_template
 from app.util.tasks import spawn
 
 logger = logging.getLogger(__name__)
@@ -829,10 +830,12 @@ async def _notify_push(
                 target,
                 None,
                 # No actionable buttons: nothing handles mobile notification
-                # action events, so buttons would do nothing.
+                # action events, so buttons would do nothing. Legacy notify
+                # services render message/title as templates: neutralize the
+                # user-provided timer label and generated text.
                 {
-                    "message": message,
-                    "title": timer_name,
+                    "message": neutralize_ha_template(message),
+                    "title": neutralize_ha_template(timer_name),
                 },
             )
             logger.info("Push notification sent to %s", target)

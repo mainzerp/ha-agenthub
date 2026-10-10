@@ -12,6 +12,7 @@ from typing import Any
 import aiohttp
 
 from app.db.repository import SettingsRepository
+from app.ha_client.action_marker import note_ha_action_started
 from app.ha_client.auth import get_ha_token
 from app.util.tasks import spawn
 
@@ -451,6 +452,9 @@ class HAWebSocketClient:
         }
         if entity_id:
             payload["target"] = {"entity_id": entity_id}
+        # Double-execution guard (app.ha_client.action_marker); idempotent
+        # when the REST client already flagged this call before falling back.
+        note_ha_action_started(service)
         self._logger.debug("call_service: sending %s.%s for %s", domain, service, entity_id)
         result_data = await self.send_command("call_service", **payload)
         self._logger.debug("call_service: result for %s.%s = %s", domain, service, result_data)

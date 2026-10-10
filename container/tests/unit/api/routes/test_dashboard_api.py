@@ -343,3 +343,23 @@ class TestAdminChatBridge:
 
         assert resp.status_code == 200
         assert resp.json()["error"] == "classification failed"
+
+    async def test_admin_chat_dispatch_failure_uses_fixed_text(self, db_repository):
+        """#132: a dispatcher exception never leaks its message into the reply."""
+        from app.api.routes import dashboard_api
+
+        app = _build_app()
+        mock_d = MagicMock()
+        mock_d.dispatch = AsyncMock(side_effect=RuntimeError("http://10.0.0.5:8123 refused for light-agent"))
+        old_dispatcher = dashboard_api._dispatcher
+        dashboard_api._dispatcher = mock_d
+        try:
+            async for client in _client_for(app):
+                resp = await client.post("/api/admin/chat", json={"text": "hi"})
+        finally:
+            dashboard_api._dispatcher = old_dispatcher
+
+        assert resp.status_code == 200
+        speech = resp.json()["speech"]
+        assert speech == dashboard_api._CHAT_DISPATCH_FAILED_SPEECH
+        assert "10.0.0.5" not in speech

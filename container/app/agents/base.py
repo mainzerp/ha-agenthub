@@ -30,7 +30,9 @@ _prompt_cache: dict[str, str] = {}
 
 _KNOWN_PROMPT_NAMES = (
     "automation",
+    "automation_confirm",
     "calendar",
+    "calendar_reminder",
     "cancel_speech",
     "climate",
     "cover",
@@ -39,6 +41,7 @@ _KNOWN_PROMPT_NAMES = (
     "general",
     "light",
     "lists",
+    "localize",
     "media",
     "mediate",
     "merge",
@@ -56,6 +59,7 @@ _KNOWN_PROMPT_NAMES = (
     "security",
     "send",
     "timer",
+    "timer_announcement",
     "vacuum",
     "wake_briefing",
 )

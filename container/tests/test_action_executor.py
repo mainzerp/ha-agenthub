@@ -369,6 +369,19 @@ class TestParseActions:
         assert [a["entity"] for a in actions] == [f"light {i}" for i in range(8)]
         assert any("truncat" in record.message for record in caplog.records)
 
+    def test_capped_parse_reports_dropped_count(self):
+        """#132: the capped variant reports how many distinct blocks were dropped."""
+        from app.agents.action_executor import parse_actions_capped
+
+        blocks = "\n".join(f'```json\n{{"action": "turn_on", "entity": "light {i}"}}\n```' for i in range(12))
+        actions, dropped = parse_actions_capped(blocks)
+        assert len(actions) == 8
+        assert dropped == 4
+        assert parse_actions_capped('```json\n{"action": "turn_on", "entity": "a"}\n```') == (
+            [{"action": "turn_on", "entity": "a"}],
+            0,
+        )
+
     def test_parse_action_returns_first_of_parse_actions(self):
         """parse_action stays a thin wrapper returning the first action."""
         response = (

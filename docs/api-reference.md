@@ -522,7 +522,7 @@ Get entity index statistics with per-domain breakdown.
 
 ### POST /api/admin/entity-index/refresh
 
-Force a full entity index refresh from Home Assistant.
+Force a full entity index resync from a fresh Home Assistant snapshot. Like the periodic resync, it is a diff sync that keeps WebSocket updates applied while the snapshot was fetched. Response: `{"status": "ok", "count": <snapshot size>, "added", "updated", "removed", "unchanged"}`.
 
 ---
 
@@ -734,20 +734,19 @@ Auth: admin session.
 
 | Method | Path | Purpose |
 |--------|------|---------|
-| GET | `/api/admin/calendar/users` | List calendar users. |
-| POST | `/api/admin/calendar/users` | Create a calendar user. |
-| GET | `/api/admin/calendar/users/{user_id}` | Get a single calendar user. |
-| PUT | `/api/admin/calendar/users/{user_id}` | Update a calendar user. |
-| DELETE | `/api/admin/calendar/users/{user_id}` | Delete a calendar user. |
-| GET | `/api/admin/calendar/events` | List calendar events. |
-| POST | `/api/admin/calendar/events` | Create a calendar event. |
-| GET | `/api/admin/calendar/events/{event_id}` | Get a single event. |
-| PUT | `/api/admin/calendar/events/{event_id}` | Update an event. |
-| DELETE | `/api/admin/calendar/events/{event_id}` | Delete an event. |
-| GET | `/api/admin/calendar/calendars` | List available calendars. |
+| GET | `/api/admin/calendar/users` | List calendar user mappings. |
+| POST | `/api/admin/calendar/users` | Create a calendar user mapping. |
+| PATCH | `/api/admin/calendar/users/{mapping_id}` | Update a calendar user mapping. |
+| DELETE | `/api/admin/calendar/users/{mapping_id}` | Delete a calendar user mapping. |
+| GET | `/api/admin/calendar/events?calendar_id=&start=&end=` | List events (from `GET /api/calendars/<entity_id>`, with `uid` / `recurrence_id`; `start`/`end` flattened to strings). |
+| POST | `/api/admin/calendar/events` | Create an event (`calendar.create_event`). |
+| DELETE | `/api/admin/calendar/events` | Delete an event; JSON body `{calendar_id, uid, recurrence_id?}`. Uses the HA WebSocket `calendar/event/delete` command; `503` without a WebSocket connection. |
+| GET | `/api/admin/calendar/calendars` | List visible calendars with their enabled status. |
 | GET | `/api/admin/calendar/entity-settings` | Get calendar entity settings. |
+| PUT | `/api/admin/calendar/entity-settings/{entity_id}` | Enable/disable a calendar entity for reminders. |
+| POST | `/api/admin/calendar/entity-settings/sync` | Add missing visible calendars (enabled by default). |
 | GET | `/api/admin/calendar/settings` | Get calendar settings. |
-| PUT | `/api/admin/calendar/settings` | Update calendar settings. |
+| POST | `/api/admin/calendar/settings` | Update calendar settings. |
 | DELETE | `/api/admin/calendar/reminder-state` | Clear reminder state. |
 
 Auth: admin session.

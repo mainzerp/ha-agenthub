@@ -33,7 +33,6 @@ from app.agents.dispatch_manager import (
     DispatchManager,
 )
 from app.agents.filler_coordinator import FillerCoordinator
-from app.agents.ha_action_marker import HaActionMarker, track_ha_actions
 from app.agents.language_detect import detect_user_language, warm_up_language_detector
 from app.agents.mediation import (
     MediationService,
@@ -48,6 +47,7 @@ from app.analytics.collector import track_request, track_request_background
 from app.analytics.tracer import _optional_span, record_request_attribute
 from app.cache.cache_manager import ActionReplayOutcome, RoutingSkipOutcome
 from app.db.repository import SettingsRepository
+from app.ha_client.action_marker import HaActionMarker, track_ha_actions
 from app.ha_client.home_context import populate_task_context_home_context
 from app.memory import get_memory_service
 from app.models.agent import (
@@ -836,6 +836,7 @@ class OrchestratorAgent(BaseAgent):
         task: IngressTask | None = None,
         merged_multi_agent: bool = False,
         used_origin_context: bool = False,
+        speech_has_turn_additions: bool | None = None,
     ) -> tuple[bool, bool]:
         return await self._cache_orchestrator.store_after_dispatch(
             user_text=user_text,
@@ -850,6 +851,7 @@ class OrchestratorAgent(BaseAgent):
             task=task,
             merged_multi_agent=merged_multi_agent,
             used_origin_context=used_origin_context,
+            speech_has_turn_additions=speech_has_turn_additions,
         )
 
     async def _get_bool_setting(self, key: str, default: bool) -> bool:
@@ -1377,6 +1379,7 @@ class OrchestratorAgent(BaseAgent):
         routing_entry_id: str | None = None,
         ret_span: dict | None = None,
         canned_code: str | None = None,
+        reminder_applied: bool | None = None,
     ) -> tuple[str, bool]:
         """Run post-mediation finalization: merge voice followup, store cache/turn/trace.
 
@@ -1384,6 +1387,12 @@ class OrchestratorAgent(BaseAgent):
         ``dispatch_manager.canned_result``). For retryable codes (no agent
         consumed the turn) the clarifying question popped by the prelude is
         re-armed so the user can answer it again.
+
+        ``reminder_applied`` states whether a calendar reminder was woven
+        into ``mediated_speech`` (``None`` = unknown). Together with
+        ``mediated_followup`` it tells the cache whether the mediated speech
+        carries per-turn additions; only speech without additions may become
+        the localized replay fallback.
         """
         if routed_to is None:
             routed_to = target_agent
@@ -1419,6 +1428,10 @@ class OrchestratorAgent(BaseAgent):
         # re-poisons itself in the very turn that invalidated the served entry
         # (observed live: misrouted command -> refusal statement -> routing
         # re-stored -> same misroute on the next attempt).
+        # A clarifying question from the routed agent ("which light?") is not a
+        # routing failure: the served entry stays, but the turn still stores
+        # nothing (no verified action).
+        clarifying_question = bool(voice_followup_requested)
         served_entry_poisoned = False
         if routing_entry_id:
             ae = action_executed.model_dump() if hasattr(action_executed, "model_dump") else action_executed
@@ -1427,9 +1440,10 @@ class OrchestratorAgent(BaseAgent):
                 await self._cache_orchestrator.invalidate_served_routing(
                     routing_entry_id,
                     reason="cached_agent_turn_failed",
+                    clarifying_question=clarifying_question,
                 )
                 if ret_span is not None:
-                    ret_span["metadata"]["routing_cache_invalidated"] = True
+                    ret_span["metadata"]["routing_cache_invalidated"] = not clarifying_question
         if (
             not skip_response_cache
             and target_agent not in (CANCEL_INTERACTION_AGENT, NOISE_AGENT)
@@ -1448,6 +1462,9 @@ class OrchestratorAgent(BaseAgent):
                 task=task,
                 merged_multi_agent=False,
                 used_origin_context=used_origin_context,
+                speech_has_turn_additions=(
+                    None if reminder_applied is None else bool(reminder_applied or mediated_followup)
+                ),
             )
             cache_stored_response = cache_stored_action
         if ret_span is not None:
@@ -1455,7 +1472,8 @@ class OrchestratorAgent(BaseAgent):
             ret_span["metadata"]["cache_stored_response"] = cache_stored_response
             ret_span["metadata"]["cache_stored_routing"] = cache_stored_routing
         # ENTITY_RES_REDESIGN Phase 6: remember the acted-on entity (success
-        # path only) as an anaphora recency hint for later turns.
+        # path only) as an anaphora recency hint for later turns. Background
+        # turns are dropped inside ``ConversationManager.store_turn``.
         resolved_entities = await extract_resolved_entities(action_executed, getattr(self, "_entity_index", None))
         await self._store_turn(
             conversation_id,
@@ -1465,7 +1483,7 @@ class OrchestratorAgent(BaseAgent):
             resolved_entities=resolved_entities,
             user_id=task.context.user_id if task.context else None,
             language=language,
-            source=task.context.source if task.context else None,
+            source=source,
         )
         if span_collector:
             await self._create_trace(
@@ -1611,6 +1629,7 @@ class OrchestratorAgent(BaseAgent):
                 routing_entry_id=routing_entry_id,
                 ret_span=ret_span,
                 canned_code=canned_code,
+                reminder_applied=bool(reminder_text),
             )
 
     async def _run_pipeline(
@@ -2353,7 +2372,7 @@ class OrchestratorAgent(BaseAgent):
         loop = asyncio.get_running_loop()
         stream_deadline = loop.time() + stream_dispatch_timeout
         # Double-execution guard: flipped by the executor once the agent's HA
-        # service call starts (see app.agents.ha_action_marker).
+        # service call starts (see app.ha_client.action_marker).
         ha_marker = HaActionMarker()
 
         def _remaining_budget() -> float:
@@ -2826,6 +2845,7 @@ class OrchestratorAgent(BaseAgent):
                 skip_response_cache=False,
                 used_origin_context=used_origin_context,
                 routing_entry_id=prelude.routing_entry_id,
+                reminder_applied=bool(reminder_text),
             )
         else:
             # Existing blocking path. The mediation probe was already

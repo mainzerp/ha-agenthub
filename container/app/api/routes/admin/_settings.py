@@ -6,6 +6,7 @@ import contextlib
 import json
 import logging
 import re
+from collections.abc import Iterable
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
@@ -208,6 +209,20 @@ class _WakeBriefingPreviewSettingsRepository:
 
 router = APIRouter()
 
+_HOME_CONTEXT_KEYS: frozenset[str] = frozenset({"home.timezone", "home.location_name"})
+
+
+def _invalidate_home_context_if_changed(keys: Iterable[str]) -> None:
+    """Drop the cached home context when a timezone/location override was written.
+
+    The home context is cached for an hour; an override change must apply to
+    the next request.
+    """
+    if any(key in _HOME_CONTEXT_KEYS for key in keys):
+        from app.ha_client.home_context import home_context_provider
+
+        home_context_provider.invalidate()
+
 
 @router.get("/settings")
 async def get_settings() -> dict[str, Any]:
@@ -243,6 +258,7 @@ async def update_settings(payload: SettingsUpdatePayload) -> dict[str, str]:
             category=existing.get("category", "general"),
             description=existing.get("description"),
         )
+    _invalidate_home_context_if_changed(key for key, _, _ in resolved)
     return {"status": "ok"}
 
 
@@ -337,4 +353,5 @@ async def update_single_setting(key: str, payload: dict) -> dict[str, Any]:
         category=existing.get("category", "general"),
         description=existing.get("description"),
     )
+    _invalidate_home_context_if_changed((key,))
     return {"status": "ok", "key": key}

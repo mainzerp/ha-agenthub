@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
 from collections.abc import AsyncGenerator
 from typing import Any
@@ -148,8 +149,18 @@ class Dispatcher:
             return
 
         task.span_collector = span_collector
-        async for chunk in self._transport.stream(params.agent_id, task, request.id):
-            yield chunk
+        # Close the inner transport stream deterministically when the
+        # consumer stops early (client disconnect, cancellation): otherwise
+        # the agent generator is only finalized by the GC, outside the
+        # request context.
+        stream = self._transport.stream(params.agent_id, task, request.id)
+        if hasattr(stream, "aclose"):
+            async with contextlib.aclosing(stream):
+                async for chunk in stream:
+                    yield chunk
+        else:
+            async for chunk in stream:
+                yield chunk
 
     async def _handle_message_send(self, request: JsonRpcRequest) -> Any:
         try:

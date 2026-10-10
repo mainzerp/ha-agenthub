@@ -226,6 +226,19 @@ class TestNotifyChannelsExceptionPaths:
         ha_client.call_service = AsyncMock(side_effect=RuntimeError("HA error"))
         await ba._notify_push(ha_client, ["mobile_app_phone"], "Timer", "Hello")
 
+    async def test_notify_push_neutralizes_ha_templates(self):
+        """#132: user text sent to notify.* is never rendered as an HA template."""
+        ha_client = AsyncMock()
+        await ba._notify_push(
+            ha_client,
+            ["mobile_app_phone"],
+            "{{ states('lock.front') }}",
+            "Pasta {% if true %}done{% endif %} {# note #}",
+        )
+        data = ha_client.call_service.await_args.args[3]
+        assert data["title"] == "{ { states('lock.front') }}"
+        assert data["message"] == "Pasta { % if true %}done{ % endif %} { # note #}"
+
 
 class TestTriggerConversationContinuation:
     async def test_trigger_conversation_continuation_satellite_skip_and_exception(self):

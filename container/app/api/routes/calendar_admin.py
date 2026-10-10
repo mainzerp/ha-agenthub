@@ -48,6 +48,7 @@ class UserMappingUpdate(BaseModel):
 class EventDeletePayload(BaseModel):
     calendar_id: str
     uid: str
+    recurrence_id: str | None = None
 
 
 class EventCreatePayload(BaseModel):
@@ -137,14 +138,33 @@ async def delete_calendar_user(mapping_id: int):
 # --- Events (proxy to HA) ---
 
 
+def _event_time(value: Any) -> Any:
+    """Flatten ``{"dateTime": ...}`` / ``{"date": ...}`` from /api/calendars into a string."""
+    if isinstance(value, dict):
+        return value.get("dateTime") or value.get("date")
+    return value
+
+
 @router.get("/events")
 async def list_calendar_events(request: Request, calendar_id: str, start: str, end: str):
-    """List events from a HA calendar."""
+    """List events from a HA calendar.
+
+    Uses ``GET /api/calendars/<entity_id>`` (``get_calendar_event_details``)
+    so every event carries the ``uid`` / ``recurrence_id`` the delete route
+    needs; ``calendar.get_events`` omits them.
+    """
     ha_client = request.app.state.ha_client
     if not ha_client:
         raise HTTPException(status_code=503, detail="HA client not available")
     try:
-        events = await ha_client.get_calendar_events(calendar_id, start, end)
+        if hasattr(ha_client, "get_calendar_event_details"):
+            raw = await ha_client.get_calendar_event_details(calendar_id, start, end)
+            events = [
+                {**event, "start": _event_time(event.get("start")), "end": _event_time(event.get("end"))}
+                for event in raw or []
+            ]
+        else:
+            events = await ha_client.get_calendar_events(calendar_id, start, end)
         return {"events": events or []}
     except Exception as exc:
         logger.warning("Failed to list calendar events: %s", exc, exc_info=True)
@@ -178,13 +198,24 @@ async def create_calendar_event(request: Request, body: EventCreatePayload):
 
 @router.delete("/events")
 async def delete_calendar_event(request: Request, body: EventDeletePayload):
-    """Delete a calendar event via HA."""
+    """Delete a calendar event via the HA WebSocket ``calendar/event/delete`` command.
+
+    HA has no ``calendar.delete_event`` service; deletion is a WebSocket
+    command keyed by ``uid`` (plus ``recurrence_id`` for one occurrence of a
+    recurring event), the same path the calendar agent uses.
+    """
     ha_client = request.app.state.ha_client
     if not ha_client:
         raise HTTPException(status_code=503, detail="HA client not available")
+    payload: dict[str, Any] = {"entity_id": body.calendar_id, "uid": body.uid}
+    if body.recurrence_id:
+        payload["recurrence_id"] = body.recurrence_id
     try:
-        await ha_client.call_service("calendar", "delete_event", body.calendar_id, {"uid": body.uid})
+        await ha_client.send_ws_command("calendar/event/delete", **payload)
         return {"ok": True}
+    except RuntimeError as exc:
+        logger.warning("Calendar event delete unavailable: %s", exc)
+        raise HTTPException(status_code=503, detail="Home Assistant WebSocket connection is not available") from exc
     except Exception as exc:
         logger.warning("Failed to delete calendar event: %s", exc, exc_info=True)
         raise HTTPException(status_code=502, detail=str(exc)) from exc

@@ -38,7 +38,6 @@ class TestCacheOrchestratorEdgeCases:
         co, cm = _make_cache_orchestrator()
         with (
             patch.object(co, "_get_bool_setting_impl", new=AsyncMock(return_value=True)),
-            patch.object(co, "legacy_pipeline_enabled", return_value=False),
         ):
             result = await co.store_after_dispatch(
                 user_text="what lights are on",
@@ -68,7 +67,6 @@ class TestCacheOrchestratorEdgeCases:
         co, cm = _make_cache_orchestrator()
         with (
             patch.object(co, "_get_bool_setting_impl", new=AsyncMock(return_value=True)),
-            patch.object(co, "legacy_pipeline_enabled", return_value=False),
         ):
             result = await co.store_after_dispatch(
                 user_text="list climate entities",
@@ -99,7 +97,6 @@ class TestCacheOrchestratorEdgeCases:
         co, cm = _make_cache_orchestrator()
         with (
             patch.object(co, "_get_bool_setting_impl", new=AsyncMock(return_value=True)),
-            patch.object(co, "legacy_pipeline_enabled", return_value=False),
         ):
             result = await co.store_after_dispatch(
                 user_text="turn on light",
@@ -133,7 +130,6 @@ class TestCacheOrchestratorEdgeCases:
         co, cm = _make_cache_orchestrator()
         with (
             patch.object(co, "_get_bool_setting_impl", new=AsyncMock(return_value=True)),
-            patch.object(co, "legacy_pipeline_enabled", return_value=False),
         ):
             result = await co.store_after_dispatch(
                 user_text="turn off light",
@@ -168,7 +164,6 @@ class TestCacheOrchestratorEdgeCases:
         co, cm = _make_cache_orchestrator()
         with (
             patch.object(co, "_get_bool_setting_impl", new=AsyncMock(return_value=True)),
-            patch.object(co, "legacy_pipeline_enabled", return_value=False),
         ):
             result = await co.store_after_dispatch(
                 user_text="turn on light if dark",
@@ -196,7 +191,6 @@ class TestCacheOrchestratorEdgeCases:
         co, cm = _make_cache_orchestrator()
         with (
             patch.object(co, "_get_bool_setting_impl", new=AsyncMock(return_value=True)),
-            patch.object(co, "legacy_pipeline_enabled", return_value=False),
         ):
             result = await co.store_after_dispatch(
                 user_text="set a timer for 5 minutes",
@@ -222,7 +216,6 @@ class TestCacheOrchestratorEdgeCases:
         co, cm = _make_cache_orchestrator()
         with (
             patch.object(co, "_get_bool_setting_impl", new=AsyncMock(return_value=True)),
-            patch.object(co, "legacy_pipeline_enabled", return_value=False),
         ):
             result = await co.store_after_dispatch(
                 user_text="turn on the light",
@@ -255,7 +248,6 @@ class TestCacheOrchestratorEdgeCases:
         co, cm = _make_cache_orchestrator()
         with (
             patch.object(co, "_get_bool_setting_impl", new=AsyncMock(return_value=True)),
-            patch.object(co, "legacy_pipeline_enabled", return_value=False),
         ):
             result = await co.store_after_dispatch(
                 user_text="Ambiente Wohnen und Innenhofueberdachung ausschalten",
@@ -292,7 +284,6 @@ class TestCacheOrchestratorEdgeCases:
         co, cm = _make_cache_orchestrator()
         with (
             patch.object(co, "_get_bool_setting_impl", new=AsyncMock(return_value=True)),
-            patch.object(co, "legacy_pipeline_enabled", return_value=False),
         ):
             result = await co.store_after_dispatch(
                 user_text="turn on the kitchen light and set it to 30 percent",
@@ -326,7 +317,6 @@ class TestCacheOrchestratorEdgeCases:
         co, cm = _make_cache_orchestrator()
         with (
             patch.object(co, "_get_bool_setting_impl", new=AsyncMock(return_value=True)),
-            patch.object(co, "legacy_pipeline_enabled", return_value=False),
         ):
             result = await co.store_after_dispatch(
                 user_text="turn off the kitchen light and the foo lamp",
@@ -363,7 +353,6 @@ class TestVerifiedStoreGate:
         co, cm = _make_cache_orchestrator()
         with (
             patch.object(co, "_get_bool_setting_impl", new=AsyncMock(return_value=True)),
-            patch.object(co, "legacy_pipeline_enabled", return_value=False),
         ):
             result = await co.store_after_dispatch(
                 user_text="Innenhofueberdachung ausschalten",
@@ -386,7 +375,6 @@ class TestVerifiedStoreGate:
         co, cm = _make_cache_orchestrator()
         with (
             patch.object(co, "_get_bool_setting_impl", new=AsyncMock(return_value=True)),
-            patch.object(co, "legacy_pipeline_enabled", return_value=False),
         ):
             result = await co.store_after_dispatch(
                 user_text="turn on kitchen light",
@@ -411,7 +399,6 @@ class TestVerifiedStoreGate:
         co, cm = _make_cache_orchestrator()
         with (
             patch.object(co, "_get_bool_setting_impl", new=AsyncMock(return_value=True)),
-            patch.object(co, "legacy_pipeline_enabled", return_value=False),
         ):
             result = await co.store_after_dispatch(
                 user_text="hello there",

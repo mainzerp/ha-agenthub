@@ -60,6 +60,36 @@ item three
 first
 second
 ---
+Shopping list:
+1. milk
+2. eggs
+3. bread
+
+Shopping list:
+milk
+eggs
+bread
+---
+Dein Termin ist am
+3. Oktober 2026.
+
+Dein Termin ist am
+3. Oktober 2026.
+---
+3. Oktober 2026.
+
+3. Oktober 2026.
+---
+3. Oktober: Arzt
+4. Oktober: Zahnarzt
+
+3. Oktober: Arzt
+4. Oktober: Zahnarzt
+---
+1. Mai ist ein Feiertag.
+
+1. Mai ist ein Feiertag.
+---
 > quoted text
 
 quoted text

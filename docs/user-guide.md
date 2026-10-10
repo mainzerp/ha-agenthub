@@ -375,7 +375,7 @@ These short procedures link the dashboard pages described above.
 ## Device Command Behavior
 
 - **Relative requests** -- "a bit brighter", "two degrees warmer", and "turn it up" change the current value instead of guessing an absolute one.
-- **Several devices** -- "turn off all lights in the kitchen" runs one action per matching light (at most 8 per turn; name a room when more lights match).
+- **Several devices** -- "turn off all lights in the kitchen" runs one action per matching light (at most 8 per turn; name a room when more lights match). If an agent ever plans more than 8 actions, only the first 8 run and the answer says how many were not executed.
 - **Conditions** -- only lights support "do X if Y". Other agents say they cannot run the action conditionally and ask whether to do it now.
 - **Unsupported features** -- when Home Assistant reports that a device lacks a capability (tilt, position, volume, dimming, color), the agent says so instead of sending the command.
 - **Already in that state** -- a plain on/off/open/close request for a single device that is already in that state is answered without a service call; requests with values (brightness, color, position) and group entities always run.

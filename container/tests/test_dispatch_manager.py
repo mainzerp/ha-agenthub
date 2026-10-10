@@ -35,7 +35,7 @@ from app.agents.dispatch_manager import (  # noqa: E402
     DispatchManager,
     canned_error_code,
 )
-from app.agents.ha_action_marker import note_ha_action_started  # noqa: E402
+from app.ha_client.action_marker import note_ha_action_started  # noqa: E402
 
 
 class TestDispatchManagerFallback:

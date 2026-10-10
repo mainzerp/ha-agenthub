@@ -195,8 +195,8 @@ Managed via `GET/PUT /api/admin/personality/config` and the dashboard
 
 | Key | Default | Type | Description |
 |-----|---------|------|-------------|
-| `home.timezone` | (empty) | string | Override timezone for time/date references in agent prompts. Empty falls back to HA's configured timezone. |
-| `home.location_name` | (empty) | string | Friendly home name surfaced in prompts and the personality pipeline. Empty falls back to HA's configured location name. |
+| `home.timezone` | (empty) | string | Override timezone for time/date references in agent prompts. Empty falls back to HA's configured timezone. Changing it via the admin settings API applies on the next request (the cached home context is dropped). |
+| `home.location_name` | (empty) | string | Friendly home name surfaced in prompts and the personality pipeline. Empty falls back to HA's configured location name. Applies on the next request, like `home.timezone`. |
 
 Precedence per field: a non-empty override always wins over HA `/api/config`; without an override the HA value is used, then the last value fetched from HA, then `UTC` / empty. The resolved home context is cached for 1 hour after a successful HA fetch and retried after 60 seconds when HA was unreachable. Override changes apply on the next refresh.
 

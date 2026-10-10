@@ -143,7 +143,8 @@ async def get_overview(request: Request) -> dict[str, Any]:
 
     if cache_manager:
         with contextlib.suppress(Exception):
-            cache_manager.get_stats()
+            # Stats read SQLite: keep the blocking call off the event loop.
+            await cache_manager.get_stats_async()
 
     entity_count = 0
     if entity_index:
@@ -550,7 +551,7 @@ async def get_extended_health(request: Request) -> dict[str, Any]:
     # Cache
     try:
         if cache_manager:
-            stats = cache_manager.get_stats()
+            stats = await cache_manager.get_stats_async()
             components["cache"] = {"status": "healthy", "stats": stats}
         else:
             components["cache"] = {"status": "error", "detail": "Not initialized"}
@@ -700,6 +701,9 @@ async def resolve_chat_language(requested: str | None = None) -> str:
     return await SettingsRepository.get_value("language") or "en"
 
 
+_CHAT_DISPATCH_FAILED_SPEECH = "Sorry, something went wrong while handling that request."
+
+
 class ChatRequest(BaseModel):
     text: str
     conversation_id: str | None = None
@@ -734,8 +738,14 @@ async def admin_chat(request: Request, payload: ChatRequest) -> dict[str, Any]:
     )
     try:
         response = await _dispatcher.dispatch(a2a_request)
-    except RuntimeError as exc:
-        return {"speech": f"Error: {exc}", "conversation_id": payload.conversation_id}
+    except RuntimeError:
+        # Fixed text: exception details (internal URLs, agent ids) stay in the log.
+        logger.warning(
+            "Admin chat dispatch failed (trace_id=%s)",
+            getattr(request.state, "trace_id", None),
+            exc_info=True,
+        )
+        return {"speech": _CHAT_DISPATCH_FAILED_SPEECH, "conversation_id": payload.conversation_id}
 
     result = response or {}
     reply: dict[str, Any] = {

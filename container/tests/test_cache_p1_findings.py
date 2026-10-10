@@ -310,7 +310,6 @@ class TestStoreAfterDispatchWhitelist:
 
         orch._cache_manager = MagicMock()
         orch._cache_manager.store_action_async = AsyncMock(side_effect=fake_store)
-        orch._legacy_pipeline_enabled = MagicMock(return_value=False)
         orch._get_bool_setting = AsyncMock(return_value=True)
         orch._cache_orchestrator = CacheOrchestrator(cache_manager=orch._cache_manager)
         orch._cache_orchestrator._get_bool_setting_impl = AsyncMock(return_value=True)

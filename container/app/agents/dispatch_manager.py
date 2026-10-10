@@ -17,10 +17,10 @@ from app.a2a._request import build_send_request
 from app.a2a.protocol import JsonRpcRequest
 from app.agents.agent_registry import CachedAgentRegistry
 from app.agents.cancel_speech import generate_cancel_speech
-from app.agents.ha_action_marker import HaActionMarker, track_ha_actions
 from app.analytics.collector import track_agent_timeout, track_request, track_request_background
 from app.analytics.tracer import _optional_span
 from app.db.repository import SettingsRepository
+from app.ha_client.action_marker import HaActionMarker, track_ha_actions
 from app.ha_client.home_context import populate_task_context_home_context
 from app.models.agent import (
     CANCEL_INTERACTION_AGENT,

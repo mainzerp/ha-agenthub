@@ -1380,6 +1380,51 @@ class TestHandleTaskMultiAction:
         assert result.error is None
 
     @pytest.mark.asyncio
+    async def test_dropped_action_blocks_are_reported(self):
+        """#132: blocks beyond the per-turn cap are not executed, and the
+        speech and metadata say so instead of dropping them silently."""
+        from app.agents.action_executor import _MAX_ACTIONS_PER_TURN
+
+        agent = LightAgent()
+        task = make_dispatch_task(description="turn on all the lights")
+        total = _MAX_ACTIONS_PER_TURN + 3
+        response = "\n".join(f'```json\n{{"action": "turn_on", "entity": "light {i}"}}\n```' for i in range(total))
+        with (
+            patch.object(agent, "_load_prompt_async", new_callable=AsyncMock, return_value="You are a light agent."),
+            patch.object(agent, "_call_llm", new_callable=AsyncMock, return_value=response),
+            patch.object(
+                agent,
+                "_do_execute",
+                new_callable=AsyncMock,
+                side_effect=[
+                    {"speech": f"Light {i} is on.", "entity_id": f"light.l{i}", "success": True}
+                    for i in range(_MAX_ACTIONS_PER_TURN)
+                ],
+            ) as mock_exec,
+        ):
+            agent._ha_client = AsyncMock()
+            agent._entity_index = None
+            agent._entity_matcher = None
+
+            result = await agent.handle_task(task)
+
+        assert mock_exec.await_count == _MAX_ACTIONS_PER_TURN
+        assert result.metadata["actions_dropped"] == 3
+        assert result.speech.endswith(
+            f"I only carried out the first {_MAX_ACTIONS_PER_TURN} actions; 3 more were not executed."
+        )
+
+    def test_light_prompt_states_the_action_cap(self):
+        """The light prompt's "ask to narrow down" limit matches the parser cap."""
+        from pathlib import Path
+
+        from app.agents.action_executor import _MAX_ACTIONS_PER_TURN
+
+        prompt = (Path(__file__).resolve().parents[2] / "app" / "prompts" / "light.txt").read_text(encoding="utf-8")
+        assert f"At most {_MAX_ACTIONS_PER_TURN} actions run per turn" in prompt
+        assert f"more than {_MAX_ACTIONS_PER_TURN} lights match" in prompt
+
+    @pytest.mark.asyncio
     async def test_two_blocks_on_same_entity_flag_multi_action(self):
         """Regression: two action blocks on the SAME entity dedupe to one
         id in ``entity_ids``; the headline result must still carry

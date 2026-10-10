@@ -154,36 +154,6 @@ async def test_streaming_pipeline_terminates_with_done(mock_complete, mock_track
 
 
 # ---------------------------------------------------------------------------
-# The legacy rollback flag no longer bypasses the unified pipeline (#132)
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_legacy_pipeline_flag_no_longer_bypasses_run_pipeline(monkeypatch):
-    """ORCHESTRATOR_LEGACY_PIPELINE=1 has no orchestrator-side effect: both
-    public entry points always go through _run_pipeline."""
-    orch, _ = _make_orchestrator()
-    monkeypatch.setenv("ORCHESTRATOR_LEGACY_PIPELINE", "1")
-    calls = {"pipeline": 0}
-
-    async def _spy(task, *, streaming, **_kwargs):
-        calls["pipeline"] += 1
-        if streaming:
-            yield {"token": "", "done": True, "conversation_id": task.conversation_id}
-        else:
-            yield {"done": True, "payload": {"speech": "ok", "conversation_id": task.conversation_id}}
-
-    orch._run_pipeline = _spy
-
-    task = _make_task("hello", conversation_id="conv-legacy")
-    result = await orch.handle_task(task)
-    assert result["speech"] == "ok"
-    chunks = [c async for c in orch.handle_task_stream(task)]
-    assert chunks and chunks[-1]["done"] is True
-    assert calls["pipeline"] == 2
-
-
-# ---------------------------------------------------------------------------
 # Streaming mediation buffers tokens until the terminal frame
 # ---------------------------------------------------------------------------
 
@@ -242,8 +212,12 @@ async def test_stream_with_filler_cancels_reader_on_timeout(mock_complete, mock_
     mock_complete.return_value = "light-agent (95%): Turn on light"
     orch, dispatcher = _make_orchestrator()
 
+    # Deterministic slow agent: it answers only after the filler went out
+    # (no real sleep racing the 50ms threshold).
+    filler_seen = asyncio.Event()
+
     async def _slow_stream(_request):
-        await asyncio.sleep(0.06)
+        await asyncio.wait_for(filler_seen.wait(), timeout=5)
         yield {"token": "late", "done": True}
 
     dispatcher.dispatch_stream = _slow_stream
@@ -257,6 +231,8 @@ async def test_stream_with_filler_cancels_reader_on_timeout(mock_complete, mock_
     chunks = []
     async for chunk in orch.handle_task_stream(task):
         chunks.append(chunk)
+        if chunk.get("filler_push"):
+            filler_seen.set()
 
     # Should have received filler and then terminal chunk without hanging
     assert any(c.get("filler_push") for c in chunks)
@@ -348,7 +324,6 @@ class TestRunPipelineDefensiveFallback:
             yield {"done": True}  # missing payload
 
         orch._run_pipeline = _broken_run_pipeline
-        orch._legacy_pipeline_enabled = lambda: False
 
         task = _make_task("turn on light")
         # The fallback should call _handle_task_impl directly
@@ -367,7 +342,6 @@ class TestRunPipelineDefensiveFallback:
             yield  # make it an async generator
 
         orch._run_pipeline = _empty_run_pipeline
-        orch._legacy_pipeline_enabled = lambda: False
 
         task = _make_task("turn on light")
         orch._handle_task_impl = AsyncMock(return_value={"speech": "Fallback!", "routed_to": "light-agent"})

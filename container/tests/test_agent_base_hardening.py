@@ -113,8 +113,11 @@ class TestVerificationOutcome:
         assert classify_verification_outcome("armed_home", "disarmed") == VERIFY_UNVERIFIED
         assert classify_verification_outcome("on", None) == VERIFY_UNVERIFIED
         # Opt-in evidence: the state moved away from the pre-call state and settled elsewhere.
-        assert classify_verification_outcome("armed_home", "disarmed", previous_state="armed_away") == VERIFY_MISMATCH
+        assert classify_verification_outcome("armed_home", "triggered", previous_state="armed_away") == VERIFY_MISMATCH
         assert classify_verification_outcome("armed_home", "disarmed", previous_state="disarmed") == VERIFY_UNVERIFIED
+        # #132: a panel that disarms while switching arm modes passes through an
+        # intermediate state -- conservative: unverified, not a failure.
+        assert classify_verification_outcome("armed_home", "disarmed", previous_state="armed_away") == VERIFY_UNVERIFIED
         assert classify_verification_outcome("armed_home", "disarmed", strict=True) == VERIFY_MISMATCH
         # Equivalent terminal states are not contradictions.
         assert classify_verification_outcome("idle", "off") == VERIFY_REACHED
@@ -659,6 +662,14 @@ async def test_dynamic_agent_passes_language_to_prompt_builder():
 class TestEntityNotFoundPrompt:
     def test_prompt_is_preloaded(self):
         assert "entity_not_found" in _KNOWN_PROMPT_NAMES
+
+    def test_every_prompt_file_is_preloaded(self):
+        """#132: every shipped prompt (e.g. timer_announcement) is warmed at startup."""
+        from app.agents.base import _PROMPTS_DIR
+
+        shipped = {path.stem for path in _PROMPTS_DIR.glob("*.txt")}
+        assert "timer_announcement" in shipped
+        assert shipped <= set(_KNOWN_PROMPT_NAMES)
 
     async def test_prompt_load_failure_falls_back_to_template(self):
         agent = _light_agent()

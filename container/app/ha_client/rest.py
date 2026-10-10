@@ -16,6 +16,7 @@ from urllib.parse import quote
 import httpx
 
 from app.db.repository import SettingsRepository
+from app.ha_client.action_marker import note_ha_action_started
 from app.ha_client.auth import get_auth_headers
 from app.ha_client.websocket import WebSocketResetError
 
@@ -275,6 +276,9 @@ class HARestClient:
         ws = self._state_observer
         if ws is None or not ws.is_connected():
             raise RuntimeError("Home Assistant WebSocket connection is not available")
+        # Double-execution guard (app.ha_client.action_marker): a write
+        # command may run in HA even when the dispatch later times out.
+        note_ha_action_started(msg_type)
         return await ws.send_command(msg_type, **kwargs)
 
     async def call_service(
@@ -307,6 +311,10 @@ class HARestClient:
             url += "?return_response"
 
         assert self._client is not None
+        # Double-execution guard (app.ha_client.action_marker): flag the
+        # dispatch before the request leaves, so a timeout never re-dispatches
+        # a task whose HA write may already have run. Read-only services skip.
+        note_ha_action_started(service)
         original_exc: Exception | None = None
         try:
             resp = await self._client.post(url, json=payload)
@@ -393,6 +401,7 @@ class HARestClient:
     ) -> dict[str, Any]:
         """POST /api/events/<event_type>."""
         assert self._client is not None
+        note_ha_action_started()
         resp = await self._client.post(f"/api/events/{event_type}", json=event_data or {})
         resp.raise_for_status()
         return resp.json()
@@ -409,6 +418,7 @@ class HARestClient:
     async def save_automation_config(self, automation_id: str, config: dict[str, Any]) -> dict[str, Any]:
         """POST /api/config/automation/config/<automation_id>."""
         assert self._client is not None
+        note_ha_action_started()
         resp = await self._client.post(f"/api/config/automation/config/{automation_id}", json=config)
         resp.raise_for_status()
         return resp.json()
@@ -416,6 +426,7 @@ class HARestClient:
     async def delete_automation_config(self, automation_id: str) -> dict[str, Any]:
         """DELETE /api/config/automation/config/<automation_id>."""
         assert self._client is not None
+        note_ha_action_started()
         resp = await self._client.delete(f"/api/config/automation/config/{automation_id}")
         resp.raise_for_status()
         return resp.json()

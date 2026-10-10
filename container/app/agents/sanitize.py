@@ -56,6 +56,41 @@ def strip_markdown_markers(text: str) -> str:
     return re.sub(r" {2,}", " ", text)
 
 
+_NUMBERED_ITEM_RE = re.compile(r"^[ \t]*(\d+)\.[ \t]+(?=\S)")
+
+
+def _strip_numbered_list_markers(text: str) -> str:
+    """Remove ``N.`` markers only from real numbered lists.
+
+    A real list is a run of at least two consecutive lines numbered
+    ``1.``, ``2.``, ``3.`` ... in order. Anything else keeps its number, so a
+    date such as ``3. Oktober 2026.`` (alone or as a run of dates) is never
+    truncated. Mirrored by ``_strip_numbered_list_markers`` in the HA
+    integration (``custom_components/ha_agenthub/conversation.py``).
+    """
+    lines = text.split("\n")
+    matches = [_NUMBERED_ITEM_RE.match(line) for line in lines]
+    i = 0
+    while i < len(lines):
+        first = matches[i]
+        if first is None or int(first.group(1)) != 1:
+            i += 1
+            continue
+        j = i + 1
+        while j < len(lines):
+            nxt = matches[j]
+            if nxt is None or int(nxt.group(1)) != j - i + 1:
+                break
+            j += 1
+        if j - i >= 2:
+            for k in range(i, j):
+                match = matches[k]
+                if match is not None:
+                    lines[k] = lines[k][match.end() :]
+        i = j
+    return "\n".join(lines)
+
+
 def strip_markdown(text: str) -> str:
     """Remove common Markdown formatting artifacts for TTS clarity.
 
@@ -96,8 +131,9 @@ def strip_markdown(text: str) -> str:
     # Bullet list markers: - item or * item -> item
     text = re.sub(r"^[\s]*[-*+]\s+", "", text, flags=re.MULTILINE)
 
-    # Numbered list markers: 1. item -> item
-    text = re.sub(r"^[\s]*\d+\.\s+", "", text, flags=re.MULTILINE)
+    # Numbered list markers: "1. item" -> "item", only inside a real list
+    # (dates such as "3. Oktober" keep their number).
+    text = _strip_numbered_list_markers(text)
 
     # Blockquotes: > text -> text
     text = re.sub(r"^>\s?", "", text, flags=re.MULTILINE)

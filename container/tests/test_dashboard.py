@@ -729,13 +729,17 @@ class TestOverviewExtended:
         }
         app.state.entity_index = entity_index
         app.state.cache_manager = MagicMock()
-        app.state.cache_manager.get_stats.return_value = {"routing": {}, "action": {}}
+        app.state.cache_manager.get_stats_async = AsyncMock(return_value={"routing": {}, "action": {}})
 
         resp = await dashboard_client.get("/api/admin/health/extended")
         assert resp.status_code == 200
         data = resp.json()
         assert data["entity_index"]["status"] == "warning"
         assert data["entity_index"]["progress"] == 25
+        # #132: cache stats read SQLite and are fetched off the event loop.
+        assert data["cache"] == {"status": "healthy", "stats": {"routing": {}, "action": {}}}
+        app.state.cache_manager.get_stats_async.assert_awaited_once()
+        app.state.cache_manager.get_stats.assert_not_called()
 
 
 # ===================================================================

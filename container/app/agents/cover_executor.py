@@ -13,7 +13,12 @@ from app.agents.action_executor import (
     call_service_with_verification,
     resolve_and_validate_entity,
 )
-from app.agents.executor_state_check import failure_speech, is_redundant_action, lacks_feature
+from app.agents.executor_state_check import (
+    failure_speech,
+    is_redundant_action,
+    lacks_feature,
+    verification_previous_state,
+)
 from app.entity.visibility import entity_is_visible
 from app.ha_client.history_query import execute_recorder_history_query
 from app.models.agent import TaskContext
@@ -238,6 +243,7 @@ async def execute_cover_action(
         entity_id,
         service_data=service_data,
         expected_state=expected_state,
+        previous_state=verification_previous_state(state_resp),
     )
     if not verify["success"]:
         return {

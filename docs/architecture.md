@@ -113,10 +113,11 @@ route to them through the same dispatcher boundary as built-in agents.
 Domain-agent result rules (`app/agents/actionable.py`, `app/agents/action_executor.py`):
 
 - **Verification outcome:** within the verify window (`state_verify.ws_timeout_sec` + `state_verify.poll_max_sec`, about 2.5 s by default) the observed post-call state is classified as:
-  - `reached`: the target, or an equivalent terminal state such as `off` for an expected `idle`. Spoken as done.
+  - `reached`: the target, or an equivalent terminal state (`off`/`standby`/`docked`/`paused` for an expected `idle`, `standby` for `off`, `docked` for `returning`). Spoken as done.
   - `in_progress`: a transitional state (`opening`, `closing`, `locking`, `unlocking`, `arming`, `disarming`, `pending`, `buffering`, `starting`). `success=True`, spoken as in progress.
-  - `mismatch`: a known fault state (`jammed`, `problem`, `error`, `fault`). Also any non-target state that differs from a caller-supplied pre-call `previous_state`, or any non-target state with the opt-in `strict=True`. The result is `success=False` with a `StateVerificationError`, so executors report a failure; `failure_speech` names the observed state in plain words ("Sorry, lock failed: Front Door reports jammed.") and never includes exception text.
-  - `unverified`: nothing observed, or a non-target state that may still be the pre-call state of a device that reports late (Zigbee, cloud). `success=True`, but the agent speaks hedged wording ("I sent the command to X, but it has not confirmed the new state yet.") and marks the action `cacheable=False`. The agent collects the outcomes per executor call, so this works without executor changes; the hedge replaces the executor speech, and executors that hedge themselves use the same `unverified_speech`, so the user hears one hedge. Actions without an expected state (toggle, fan speed, volume) keep their intent wording.
+  - `mismatch`: a known fault state (`jammed`, `problem`, `error`, `fault`). Also any non-target state that differs from the pre-call `previous_state` (the light, climate, cover, security, media and vacuum executors pass the state they read for their no-op check, via `executor_state_check.verification_previous_state`; groups and `unknown`/`unavailable` pre-call states are not compared), e.g. an alarm that moves `disarmed` -> `triggered` after an arm call; or any non-target state with the opt-in `strict=True`. The result is `success=False` with a `StateVerificationError`, so executors report a failure; `failure_speech` names the observed state in plain words ("Sorry, lock failed: Front Door reports jammed.") and never includes exception text.
+  - `unverified`: nothing observed, a non-target state that may still be the pre-call state of a device that reports late (Zigbee, cloud), or a plausible intermediate state on the way to the target even when it differs from `previous_state` (`_INTERMEDIATE_STATES_BY_TARGET`: e.g. a vacuum reporting `idle`/`returning` after start, `idle` after return to base, a player reporting `on`/`idle`/`standby` before `playing`, a cover reporting `stopped`, a panel reporting `disarmed` while switching arm modes, or any other HVAC mode during a mode change). `success=True`, but the agent speaks hedged wording ("I sent the command to X, but it has not confirmed the new state yet.") and marks the action `cacheable=False`. The agent collects the outcomes per executor call, so this works without executor changes; the hedge replaces the executor speech, and executors that hedge themselves use the same `unverified_speech`, so the user hears one hedge. Actions without an expected state (toggle, fan speed, volume) keep their intent wording.
+- **Action cap:** `parse_actions` keeps at most `_MAX_ACTIONS_PER_TURN` (8) distinct action blocks per agent turn (the light prompt asks the user to narrow down above that). Blocks beyond the cap are not executed; the merged speech says how many were skipped and `metadata.actions_dropped` records the count.
 - **Invalid action objects:** when the agent LLM emits an action object that fails validation (e.g. `"entity": null`), the surrounding prose is never spoken (it may claim success). The agent returns a deterministic clarification with `voice_followup=True` and `metadata.parse_miss = "invalid_action"`.
 - **Satellite area:** keyword recall ranks entities in the satellite's area (`TaskContext.area_id`) first among equal scores, keeps them recallable in large domains, and does not flag a tie as ambiguous when exactly one tied candidate is in that area. Every agent prompt receives the satellite area name as context for "here" / "this room".
 - **Untrusted prompt data:** entity friendly names and states, last-entity names, the pending clarifying question and stored memory text are flattened, length-bounded and wrapped in `[UNTRUSTED_DATA_START]` / `[UNTRUSTED_DATA_END]` before they enter a system prompt.
@@ -170,7 +171,11 @@ their replies are joined in classification order into one message body:
   body for the channel; short plain messages stay unchanged and the
   formatter never answers or acts on the content. Delivery calls
   `notify.*` (phones) or `tts.speak` on the mapped `media_player`
-  entity (satellites, engine from the `tts.engine` setting).
+  entity (satellites, engine from the `tts.engine` setting). Text sent
+  to `notify.*` -- by the send agent and by timer/alarm push
+  notifications -- passes `app/util/ha_template.neutralize_ha_template`
+  first, so `{{ }}` / `{% %}` / `{# #}` in user or LLM text is never
+  rendered as a Home Assistant template.
 - **Speech:** `send-agent` error speeches and the orchestrator's
   sequential-send fallbacks are localized (English default, German).
   The "no matching send device" speech does not repeat the target text;
@@ -203,13 +208,16 @@ frame handed to the client.
   with an error frame before any text is re-sent once to `general-agent`
   as a non-streaming task; if that fails too, the turn speaks a canned
   line.
-- **Double-execution guard:** the shared executor primitive
-  (`call_service_with_verification`) flags a per-dispatch marker
-  (`app/agents/ha_action_marker.py`) right before the HA service call.
-  When the marker is set, a failed dispatch is NOT re-sent to the
-  fallback agent; the turn answers that the command was sent but could
-  not be confirmed. Executors that call `ha_client.call_service`
-  directly (calendar, lists, send, timer) do not set the marker.
+- **Double-execution guard:** every HA write entry point of the HA client
+  (`HARestClient.call_service` and its WebSocket fallback,
+  `HAWebSocketClient.call_service`, `send_ws_command`, `fire_event`,
+  automation config save/delete) flags a per-dispatch marker
+  (`app/ha_client/action_marker.py`, a ContextVar) right before the
+  request goes out, so every executor is covered. Read-only calls
+  (`get*`, `search*`, `browse*`, `list*` services or commands) do
+  not flag it. When the marker is set, a failed dispatch is NOT re-sent
+  to the fallback agent; the turn answers that the command was sent but
+  could not be confirmed.
 - **Streaming timeout:** a timed-out stream is finalized like any other
   turn (turn stored, trace written, served routing-cache entry
   invalidated). When agent tokens were already relayed, the partial
@@ -324,6 +332,13 @@ when nothing was streamed. Markdown markers are removed before
 `[FOLLOWUP]` detection, so a wrapped tag (`**[FOLLOWUP]**`) is still
 recognised.
 
+Final speech goes through `sanitize.strip_markdown` (the HA bridge's
+`_strip_markdown` is a lock-step twin, enforced by the corpus in
+`container/tests/data/sanitize_corpus.txt`). Numbered-list markers are
+removed only inside a real list -- two or more consecutive lines numbered
+`1.`, `2.`, ... in order -- so dates such as `3. Oktober 2026` keep their
+number; the streaming filter never removes them.
+
 ### Language Detection and Per-Agent Directive
 
 The `language` setting (default `auto`) controls reply language.
@@ -408,11 +423,11 @@ SQLite. The routing cache additionally has a semantic similarity tier
 exact-hash miss); the action cache is exact-hash only:
 
 - **Routing Cache** -- Caches the mapping from user intent to target agent. A hit (exact SHA-256 hash match, or semantic match above `cache.routing.semantic_threshold` with fail-closed validation) skips LLM-based intent classification entirely. Max entries: 50,000 with LRU eviction. Entity resolution is NOT cached: the routed agent recalls its own entities via keyword matching (see Entity Matching).
-  - **Hygiene**: turns that resolved no entity (failed action or a clarifying-question ending) are never stored, and a served entry is invalidated when the cached agent's turn fails, so a poisoned phrasing re-classifies via LLM on the next turn. A failed semantic hit never deletes the borrowed neighbour entry (it may route its own wording correctly); the neighbour is suppressed in memory for that exact query text instead. Entries below the current schema version are treated as a miss on read.
+  - **Hygiene**: turns that resolved no entity (failed action or a clarifying-question ending) are never stored, and a served entry is invalidated when the cached agent's turn fails, so a poisoned phrasing re-classifies via LLM on the next turn. A turn that ends in the routed agent's own clarifying question (`voice_followup`) is not a routing failure and keeps the served entry. A failed semantic hit never deletes the borrowed neighbour entry (it may route its own wording correctly); the neighbour is suppressed in memory for that exact query text instead. Entries below the current schema version are treated as a miss on read.
   - **Embedding model**: each routing entry records the `<provider>:<model>` that produced its vector. A semantic candidate whose vector came from a different model (even at the same dimension) is skipped and its vector dropped; the entry is re-embedded on its next exact hit.
 - **Action Cache** -- Caches full agent responses including executor-confirmed HA actions.
-  - **Hit** (exact hash match): Requires the owning agent to be registered and every referenced entity to exist in the entity index and be visible before replaying the stored HA command, then the rewrite agent rephrases the raw agent response in the turn language with the personality applied. If the rewrite fails or returns no text, the stored fallback response is returned; the `rewrite` span is marked failed (`success: false`, `fallback: cached_response`) and rewrite analytics count a failure. The stored fallback never carries per-turn additions: it is the base agent speech unless the caching turn asserted its mediated speech had no calendar reminder or closing question. The replayed entity is recorded as an anaphora hint, as on a live turn.
-  - **Not stored**: context-dependent turns -- a follow-up answer to a clarifying question, or a turn whose executed entity was offered as an anaphora hint (`last_entities`) -- store neither an action nor a routing row.
+  - **Hit** (exact hash match): Requires the owning agent to be registered and every referenced entity to exist in the entity index and be visible before replaying the stored HA command, then the rewrite agent rephrases the raw agent response in the turn language with the personality applied. If the rewrite fails or returns no text, the stored fallback response is returned; the `rewrite` span is marked failed (`success: false`, `fallback: cached_response`) and rewrite analytics count a failure. The stored fallback never carries per-turn additions: the orchestrator stores the mediated (localized) speech when the turn added no calendar reminder and no organic follow-up question, otherwise the base agent speech. The replayed entity is recorded as an anaphora hint, as on a live turn.
+  - **Not stored**: context-dependent turns -- a follow-up answer to a clarifying question, or a turn whose executed entity was offered as an anaphora hint (`last_entities`) -- store neither an action nor a routing row. Background-sourced turns (`source="background"`, e.g. wake briefings) store no cache row, no conversation turn and no session memory; their traces are still written.
   - **Miss**: Continues to routing-cache lookup or the live pipeline; a provenance rejection always forces the full live path.
   - Max entries: 50,000 with LRU eviction.
   - No-op executions (entity already in the target state) are never stored: their response text is state-dependent and would be wrong on replay.

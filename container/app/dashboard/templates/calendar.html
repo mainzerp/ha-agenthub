@@ -199,13 +199,13 @@
                         </tr>
                     </thead>
                     <tbody>
-                        <template x-for="ev in events" :key="ev.uid || ev.summary + ev.start">
+                        <template x-for="ev in events" :key="(ev.uid || ev.summary) + (ev.recurrence_id || ev.start)">
                             <tr>
                                 <td x-text="ev.summary"></td>
                                 <td x-text="ev.start"></td>
                                 <td x-text="ev.end"></td>
                                 <td>
-                                    <button class="btn btn-sm btn-danger" @click="deleteEvent(ev.uid)">Delete</button>
+                                    <button class="btn btn-sm btn-danger" @click="deleteEvent(ev.uid, ev.recurrence_id)">Delete</button>
                                 </td>
                             </tr>
                         </template>
@@ -437,13 +437,17 @@ function calendarPage() {
             }
         },
 
-        async deleteEvent(uid) {
+        async deleteEvent(uid, recurrenceId) {
             if (!uid || !confirm('Delete this event?')) return;
             try {
                 await window.dashboardApi.request('/api/admin/calendar/events', {
                     method: 'DELETE',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ calendar_id: this.eventQuery.calendar_id, uid: uid }),
+                    body: JSON.stringify({
+                        calendar_id: this.eventQuery.calendar_id,
+                        uid: uid,
+                        recurrence_id: recurrenceId || null,
+                    }),
                 });
                 this.message = 'Event deleted';
                 this.messageType = 'success';

@@ -11,7 +11,6 @@ from typing import Any
 
 from pydantic import BaseModel, Field, ValidationError
 
-from app.agents.ha_action_marker import note_ha_action_started
 from app.db.repositories.settings import _settings_float
 from app.entity.deterministic_resolver import (
     filter_matches_by_domain,  # noqa: F401  -- re-exported for test compat
@@ -558,7 +557,8 @@ def _collect_actions_from_text(text: str) -> list[dict]:
 
 # Multi-action turns (one fenced JSON block per requested action, per the
 # domain prompts) are capped so a runaway LLM response cannot flood the
-# home with service calls.
+# home with service calls. The light prompt (prompts/light.txt) states the
+# same limit and asks the user to narrow a larger request down.
 _MAX_ACTIONS_PER_TURN = 8
 
 
@@ -574,7 +574,17 @@ def _action_dedupe_key(action: dict) -> tuple:
 
 
 def parse_actions(llm_response: str) -> list[dict]:
+    """Extract all structured action dicts from an LLM response (see :func:`parse_actions_capped`)."""
+    actions, _dropped = parse_actions_capped(llm_response)
+    return actions
+
+
+def parse_actions_capped(llm_response: str) -> tuple[list[dict], int]:
     """Extract all structured action dicts from an LLM response, in order.
+
+    Returns ``(actions, dropped)``: ``dropped`` counts the distinct action
+    blocks beyond ``_MAX_ACTIONS_PER_TURN`` that will NOT be executed, so
+    the caller can tell the user that not everything was done.
 
     Multi-action turns: the domain prompts instruct the LLM to emit one
     fenced JSON block per action, so every block that decodes and
@@ -607,14 +617,15 @@ def parse_actions(llm_response: str) -> list[dict]:
         seen.add(key)
         deduped.append(action)
 
-    if len(deduped) > _MAX_ACTIONS_PER_TURN:
+    dropped = max(0, len(deduped) - _MAX_ACTIONS_PER_TURN)
+    if dropped:
         logger.warning(
             "parse_actions: truncating %d action blocks to _MAX_ACTIONS_PER_TURN=%d",
             len(deduped),
             _MAX_ACTIONS_PER_TURN,
         )
         deduped = deduped[:_MAX_ACTIONS_PER_TURN]
-    return deduped
+    return deduped, dropped
 
 
 def find_rejected_action_objects(llm_response: str) -> list[dict]:
@@ -679,12 +690,59 @@ TRANSITIONAL_STATES: frozenset[str] = frozenset(
 )
 
 # Terminal states that satisfy an expected target although they differ from
-# it literally (players that report "off"/"standby" after stop, a vacuum that
-# is already "docked" when asked to return).
+# it literally (players that report "off"/"standby"/"paused" after stop, a
+# TV that reports "standby" after turn_off, a vacuum that is already
+# "docked" when asked to return). Executors pass the pre-call state as
+# ``previous_state``, so a missing equivalent would turn into a failure.
 _EQUIVALENT_TARGET_STATES: dict[str, frozenset[str]] = {
-    "idle": frozenset({"off", "standby", "docked"}),
+    "idle": frozenset({"off", "standby", "docked", "paused"}),
+    "off": frozenset({"standby"}),
     "returning": frozenset({"docked"}),
 }
+
+
+# Climate HVAC modes: a thermostat may report another mode (often the old
+# one) for a moment while a mode change settles.
+_HVAC_MODES: frozenset[str] = frozenset({"off", "heat", "cool", "heat_cool", "auto", "dry", "fan_only"})
+
+# Plausible intermediate states per expected target. A device may pass
+# through these on its way to the target (a vacuum reports "idle" or
+# "returning" right after start, a player "on"/"idle" before "playing", a
+# panel "disarmed" while switching arm modes). They are never treated as a
+# contradiction of the pre-call ``previous_state``: the outcome stays
+# ``unverified`` (hedged speech, not cached), never a failure.
+_INTERMEDIATE_STATES_BY_TARGET: dict[str, frozenset[str]] = {
+    # vacuum start / clean_spot
+    "cleaning": frozenset({"idle", "returning", "paused"}),
+    # vacuum return_to_base (docked is an equivalent target state)
+    "returning": frozenset({"idle", "paused", "cleaning"}),
+    # media/music play
+    "playing": frozenset({"idle", "on", "standby", "paused"}),
+    # media/vacuum pause
+    "paused": frozenset({"idle", "on", "standby", "returning"}),
+    # media/vacuum stop (off/standby/docked/paused are equivalents)
+    "idle": frozenset({"on", "returning"}),
+    # turn_off of players/TVs that settle via idle/on
+    "off": frozenset({"idle", "on"}),
+    # covers that report a non-standard "stopped" mid-travel
+    "open": frozenset({"stopped"}),
+    "closed": frozenset({"stopped"}),
+    # locks that unlatch ("open") on unlock
+    "unlocked": frozenset({"open"}),
+    # alarm panels that disarm before switching arm modes
+    "armed_home": frozenset({"disarmed"}),
+    "armed_away": frozenset({"disarmed"}),
+    "armed_night": frozenset({"disarmed"}),
+}
+
+
+def _is_intermediate_state(expected_state: str, observed_state: str) -> bool:
+    """True when ``observed_state`` may be a step on the way to ``expected_state``."""
+    if observed_state in _INTERMEDIATE_STATES_BY_TARGET.get(expected_state, frozenset()):
+        return True
+    # Climate mode changes: any other HVAC mode may be the old mode still
+    # being reported (or the device's own interpretation, e.g. auto/heat_cool).
+    return expected_state in _HVAC_MODES and observed_state in _HVAC_MODES
 
 
 # Terminal fault states that contradict any commanded target. Only these
@@ -747,7 +805,10 @@ def classify_verification_outcome(
       elsewhere); or any non-target state when ``strict`` is set (opt-in).
     - ``unverified``: nothing observed, or a non-target state that may be
       the unchanged pre-call state of a device that reports later than
-      the verify window (Zigbee, cloud integrations). Not a failure.
+      the verify window (Zigbee, cloud integrations), or a plausible
+      intermediate state on the way to the target
+      (``_INTERMEDIATE_STATES_BY_TARGET``, HVAC mode changes) even when it
+      differs from ``previous_state``. Not a failure.
     """
     if observed_state is None:
         return VERIFY_UNVERIFIED
@@ -759,6 +820,8 @@ def classify_verification_outcome(
         return VERIFY_IN_PROGRESS
     if observed_state in FAULT_STATES or strict:
         return VERIFY_MISMATCH
+    if _is_intermediate_state(expected_state, observed_state):
+        return VERIFY_UNVERIFIED
     if previous_state is not None and observed_state != previous_state:
         return VERIFY_MISMATCH
     return VERIFY_UNVERIFIED
@@ -856,9 +919,8 @@ async def call_service_with_verification(
     expect_state_fn = getattr(ha_client, "expect_state", None)
 
     async def _call_service() -> Any:
-        # Double-execution guard: tell the dispatching orchestrator that an
-        # HA action went out, so a timeout does not re-dispatch the task.
-        note_ha_action_started()
+        # The double-execution guard (app.ha_client.action_marker) is flagged
+        # inside ha_client.call_service, so every HA write is covered.
         with mark_verified_ha_service_call("action-executor"):
             return await ha_client.call_service(
                 domain,
