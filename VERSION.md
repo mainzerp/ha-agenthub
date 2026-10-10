@@ -6,6 +6,9 @@
 
 (tracking changes since 3.0.0)
 
+- Agents: the empty-recall prompt block is scoped per action (`@agent(entity_actions=..., entity_free_actions=...)` from the executors' `ENTITY_ACTIONS` / `ENTITY_FREE_ACTIONS`). Device agents keep their list and weather reads when no device word matches, and only device actions ask. Automation keeps create/list. Timer, lists and calendar get no block.
+- Parser: an empty `entity` is accepted wherever the executor resolves it. This covers every timer action (unnamed `start_timer` / `cancel_timer` / `query_timer` and others), every lists action, every calendar action (the prompt omits `entity`), and `list_covers` / `list_vacuums`. A missing `delayed_action` / `sleep_timer` target and an LLM clarifying question now get a clarification instead of "I could not understand the timer command". An ambiguous unnamed timer reference re-opens the conversation.
+
 ## Version History
 
 ### 3.0.0 (MAJOR) -- pipeline review hardening

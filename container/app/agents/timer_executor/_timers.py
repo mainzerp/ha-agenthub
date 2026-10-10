@@ -143,7 +143,21 @@ def _ambiguous(rows: list[dict], verb: str) -> dict:
         "entity_id": None,
         "new_state": None,
         "speech": f"Multiple timers are running: {names}. Please specify which one to {verb}.",
+        # A clarifying question: the user's answer is re-dispatched.
+        "voice_followup": True,
         "metadata": {"status": "ambiguous", "candidates": [r.get("logical_name") for r in rows]},
+    }
+
+
+def _needs_target(speech: str) -> dict:
+    """Clarifying question for an action whose target device is missing."""
+    return {
+        "success": False,
+        "entity_id": None,
+        "new_state": None,
+        "speech": speech,
+        "voice_followup": True,
+        "metadata": {"status": "needs_target"},
     }
 
 
@@ -388,12 +402,7 @@ async def _delayed_action(
             "speech": "delay_duration is required for delayed_action.",
         }
     if not target_entity:
-        return {
-            "success": False,
-            "entity_id": None,
-            "new_state": None,
-            "speech": "target_entity is required for delayed_action.",
-        }
+        return _needs_target("Which device should I control when the delay ends?")
     if not target_action or "/" not in target_action:
         return {
             "success": False,
@@ -500,12 +509,7 @@ async def _sleep_timer(
             "speech": "Duration is required for sleep_timer.",
         }
     if not media_player_entity:
-        return {
-            "success": False,
-            "entity_id": None,
-            "new_state": None,
-            "speech": "media_player entity_id is required for sleep_timer.",
-        }
+        return _needs_target("Which media player should the sleep timer stop?")
     scheduler = _helpers._get_scheduler()
     if scheduler is None:
         return {
