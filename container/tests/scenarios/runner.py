@@ -9,7 +9,8 @@ The runner wires:
 - real ``EntityMatcher``,
 - ``RecordingHaClient`` in place of ``HARestClient``,
 - a deterministic LLM stub patched into ``app.llm.client.complete``,
-- a temp SQLite DB seeded with defaults,
+- a temp SQLite DB seeded with defaults (session memory disabled),
+- a deterministic embedding engine installed as the embedding singleton,
 - a fresh ``HomeContextProvider`` (singleton state reset each scenario).
 """
 
@@ -27,7 +28,7 @@ import aiosqlite
 from tests.helpers import shutdown_aiosqlite
 
 from .deterministic_llm import DeterministicLlmStub
-from .embedding_stub import deterministic_embedding
+from .embedding_stub import StubEmbeddingEngine, deterministic_embedding
 from .loader import load_snapshot
 from .recording_ha_client import RecordingHaClient
 from .types import Expected, Scenario
@@ -330,7 +331,7 @@ async def build_pipeline(scenario: Scenario, db_path) -> PipelineHandles:
 
 @asynccontextmanager
 async def _temp_db(db_path):
-    """Initialise a fresh SQLite DB and patch the repository getters."""
+    """Initialise a fresh SQLite DB, patch the repository getters and stub the embedding engine."""
     from app.db.schema import _create_indexes, _create_tables, _seed_defaults
 
     db = await aiosqlite.connect(str(db_path))
@@ -340,6 +341,11 @@ async def _temp_db(db_path):
     await _create_tables(db)
     await _create_indexes(db)
     await _seed_defaults(db)
+    # Session memory embeds every stored turn in a background task and keeps
+    # its vectors in a shared session_memory.db outside the temp DB; neither
+    # is part of a scenario's contract. Scenarios may re-enable it via
+    # preconditions.settings.
+    await db.execute("UPDATE settings SET value = 'false' WHERE key = 'memory.enabled'")
     await db.commit()
     await shutdown_aiosqlite(db)
 
@@ -373,6 +379,7 @@ async def _temp_db(db_path):
         "app.db.repositories.entity_matching_config",
         "app.db.repositories.entity_visibility",
         "app.db.repositories.mcp",
+        "app.db.repositories.memory",
         "app.db.repositories.plugin",
         "app.db.repositories.query_synonym_cache",
         "app.db.repositories.scheduled_timers",
@@ -385,6 +392,9 @@ async def _temp_db(db_path):
         for mod in _repo_modules:
             stack.enter_context(patch(f"{mod}.get_db_read", _get_db))
             stack.enter_context(patch(f"{mod}.get_db_write", _get_db))
+        # Every consumer resolves the engine via get_embedding_engine(), which
+        # returns this singleton: no scenario loads the real model.
+        stack.enter_context(patch("app.cache.embedding._engine", StubEmbeddingEngine()))
         yield
 
 

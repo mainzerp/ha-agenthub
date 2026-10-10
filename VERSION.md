@@ -6,6 +6,9 @@
 
 (tracking changes since 2.7.3)
 
+- Embedding: `get_embedding_engine` publishes the engine singleton only after `initialize()` succeeded, so an interrupted or failed initialization no longer leaves an engine without a model name behind (later embeds ran `SentenceTransformer(None)` and failed); the local model loads off the event loop via `asyncio.to_thread`, at most once per engine under a thread lock, and a missing model name raises a clear error.
+- Tests: the scenario harness disables session memory, installs a deterministic embedding engine stub and patches the memory repository onto the temp DB, so parallel (`-n auto`) scenario runs no longer load the real embedding model per worker and stop timing out into the general-agent fallback.
+
 ## Version History
 
 ### 2.7.3 (PATCH) -- dictated messages and send target lookup
