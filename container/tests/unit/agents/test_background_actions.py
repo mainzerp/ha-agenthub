@@ -192,14 +192,14 @@ class TestNotifyChannelsExceptionPaths:
         ha_client = AsyncMock()
 
         # _notify_satellite_announce success
-        await ba._notify_satellite_announce(ha_client, "assist_satellite.kitchen", "Hello")
+        assert await ba._notify_satellite_announce(ha_client, "assist_satellite.kitchen", "Hello") is True
         ha_client.call_service.assert_awaited_once_with(
             "assist_satellite", "announce", "assist_satellite.kitchen", {"message": "Hello"}
         )
 
         # _notify_satellite_announce exception
         ha_client.call_service = AsyncMock(side_effect=RuntimeError("HA error"))
-        await ba._notify_satellite_announce(ha_client, "assist_satellite.kitchen", "Hello")
+        assert await ba._notify_satellite_announce(ha_client, "assist_satellite.kitchen", "Hello") is False
 
         # _notify_persistent success
         ha_client.call_service = AsyncMock()
@@ -212,23 +212,14 @@ class TestNotifyChannelsExceptionPaths:
         ha_client.call_service = AsyncMock(side_effect=RuntimeError("HA error"))
         await ba._notify_persistent(ha_client, "Timer", "Hello")
 
-        # _notify_push success
+        # _notify_push success: no actionable buttons (no handler exists for them)
         ha_client.call_service = AsyncMock()
         await ba._notify_push(ha_client, ["mobile_app_phone"], "Timer", "Hello")
         ha_client.call_service.assert_awaited_once_with(
             "notify",
             "mobile_app_phone",
             None,
-            {
-                "message": "Hello",
-                "title": "Timer",
-                "data": {
-                    "actions": [
-                        {"action": "SNOOZE_5", "title": "Snooze 5 min"},
-                        {"action": "DISMISS", "title": "Dismiss"},
-                    ],
-                },
-            },
+            {"message": "Hello", "title": "Timer"},
         )
 
         # _notify_push exception

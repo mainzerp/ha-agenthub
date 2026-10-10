@@ -141,9 +141,45 @@ class TestHandleBackgroundEvent:
         )
         with patch("app.agents.background_actions.entity_is_visible", new=AsyncMock(return_value=True)):
             result = await ba.handle_background_event(event, ha_client=ha_client)
-        assert "not allowed" in result["error"]
+        assert "not supported" in result["error"]
         assert "action_executed" not in result
         ha_client.call_service.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("target_entity", "target_action"),
+        [
+            ("lock.front_door", "lock/unlock"),
+            ("alarm_control_panel.home", "alarm_control_panel/alarm_disarm"),
+            ("script.dangerous", "script/reload"),
+            ("switch.heater", "light/turn_on"),
+        ],
+    )
+    async def test_delayed_action_fire_enforces_service_allow_list_and_domain(self, target_entity, target_action):
+        """Rows persisted before the policy are rechecked at fire time."""
+        ha_client = AsyncMock()
+        event = BackgroundEvent(
+            event_type="delayed_action",
+            payload={"target_entity": target_entity, "target_action": target_action},
+        )
+        with patch("app.agents.background_actions.entity_is_visible", new=AsyncMock(return_value=True)):
+            result = await ba.handle_background_event(event, ha_client=ha_client)
+        assert result["error"].startswith("Delayed action rejected")
+        ha_client.call_service.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_delayed_action_fire_checks_visibility_for_owning_agent(self):
+        ha_client = AsyncMock()
+        event = BackgroundEvent(
+            event_type="delayed_action",
+            payload={"target_entity": "lock.front_door", "target_action": "lock/lock", "agent_id": "timer-agent"},
+        )
+        visible = AsyncMock(return_value=True)
+        with patch("app.agents.background_actions.entity_is_visible", new=visible):
+            result = await ba.handle_background_event(event, ha_client=ha_client)
+        assert result["action_executed"]["success"] is True
+        assert visible.await_args.args[0] == "security-agent"
+        ha_client.call_service.assert_awaited_once_with("lock", "lock", "lock.front_door")
 
     @pytest.mark.asyncio
     async def test_delayed_action_fire_call_service_failure_is_honest(self):
@@ -162,7 +198,7 @@ class TestHandleBackgroundEvent:
     @pytest.mark.asyncio
     async def test_delayed_action_failure_announced_to_origin(self):
         """H-2: fire-time rejection with origin info notifies via the
-        dispatch_timer_notification path."""
+        dispatch_text_notification path."""
         ha_client = AsyncMock()
         event = BackgroundEvent(
             event_type="delayed_action",
@@ -175,13 +211,13 @@ class TestHandleBackgroundEvent:
         )
         with (
             patch("app.agents.background_actions.entity_is_visible", new=AsyncMock(return_value=False)),
-            patch("app.agents.background_actions.dispatch_timer_notification", new=AsyncMock()) as mock_notify,
+            patch("app.agents.background_actions.dispatch_text_notification", new=AsyncMock()) as mock_notify,
         ):
             result = await ba.handle_background_event(event, ha_client=ha_client)
         assert "not visible" in result["error"]
         mock_notify.assert_awaited_once()
         notify_kwargs = mock_notify.await_args.kwargs
-        assert "not visible" in notify_kwargs["timer_name"]
+        assert "not visible" in notify_kwargs["text"]
         assert notify_kwargs["metadata"].origin_device_id == "device-1"
         assert notify_kwargs["metadata"].origin_area == "bedroom"
 
@@ -195,7 +231,7 @@ class TestHandleBackgroundEvent:
         )
         with (
             patch("app.agents.background_actions.entity_is_visible", new=AsyncMock(return_value=False)),
-            patch("app.agents.background_actions.dispatch_timer_notification", new=AsyncMock()) as mock_notify,
+            patch("app.agents.background_actions.dispatch_text_notification", new=AsyncMock()) as mock_notify,
         ):
             result = await ba.handle_background_event(event, ha_client=ha_client)
         assert "not visible" in result["error"]
