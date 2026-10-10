@@ -202,6 +202,32 @@ class TestRateLimitClientIp:
         request.headers = {"x-forwarded-for": "10.0.0.1"}
         assert _get_client_ip(request) == "10.0.0.1"
 
+    @patch("app.middleware.rate_limit._TRUSTED_PROXIES", {"172.18.0.0/16", "fd00::/8"})
+    def test_get_client_ip_matches_cidr_trusted_proxies(self):
+        from app.middleware.rate_limit import _get_client_ip
+
+        request = MagicMock()
+        request.client.host = "172.18.0.7"
+        request.headers = {"x-forwarded-for": "spoofed, 192.168.1.1, 172.18.3.4"}
+        assert _get_client_ip(request) == "192.168.1.1"
+
+    @patch("app.middleware.rate_limit._TRUSTED_PROXIES", {"172.18.0.0/16"})
+    def test_cidr_does_not_trust_outside_addresses(self):
+        from app.middleware.rate_limit import _get_client_ip
+
+        request = MagicMock()
+        request.client.host = "172.19.0.7"
+        request.headers = {"x-forwarded-for": "1.2.3.4"}
+        assert _get_client_ip(request) == "172.19.0.7"
+
+    @patch("app.middleware.rate_limit._TRUSTED_PROXIES", {"10.0.0.0/8", "not-an-ip"})
+    def test_ipv4_mapped_ipv6_peer_and_invalid_entries(self):
+        from app.middleware.rate_limit import _is_trusted_proxy
+
+        assert _is_trusted_proxy("::ffff:10.1.2.3") is True
+        assert _is_trusted_proxy("fd00::1") is False
+        assert _is_trusted_proxy("garbage") is False
+
 
 class TestRateLimitStoreEviction:
     async def test_store_growth_bounded_under_unique_ip_churn(self):

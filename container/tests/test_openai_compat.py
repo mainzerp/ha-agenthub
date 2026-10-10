@@ -233,27 +233,23 @@ class TestNonStreamingCompletion:
         assert conversation_id.startswith("owui-")
         assert len(conversation_id) == 64
 
-    async def test_conversation_id_fallback_hash(self, db_repository):
-        dispatcher = _make_dispatcher()
-        history = [
-            {"role": "user", "content": "first question"},
-            {"role": "assistant", "content": "answer"},
-        ]
-        async with _Client(dispatcher=dispatcher) as client:
-            await client.post(
-                "/v1/chat/completions",
-                json=_chat_body("second question", history=history),
-                headers={"X-OpenWebUI-User-Id": "owui-user-1"},
-            )
-        expected = "owui-" + hashlib.sha256(b"owui-user-1\nfirst question").hexdigest()[:32]
-        assert _sent_task(dispatcher).conversation_id == expected
-
-    async def test_conversation_id_fallback_hash_anonymous(self, db_repository):
+    async def test_without_chat_id_header_chats_never_share_history(self, db_repository):
+        """Without X-OpenWebUI-Chat-Id two chats that start alike must not
+        share server-side history: every turn gets a fresh conversation id."""
         dispatcher = _make_dispatcher()
         async with _Client(dispatcher=dispatcher) as client:
-            await client.post("/v1/chat/completions", json=_chat_body("only question"))
-        expected = "owui-" + hashlib.sha256(b"anon\nonly question").hexdigest()[:32]
-        assert _sent_task(dispatcher).conversation_id == expected
+            for _ in range(2):
+                await client.post(
+                    "/v1/chat/completions",
+                    json=_chat_body("hi"),
+                    headers={"X-OpenWebUI-User-Id": "owui-user-1"},
+                )
+        ids = [call.args[0].params["task"].conversation_id for call in dispatcher.dispatch.await_args_list]
+        assert len(ids) == 2
+        assert all(cid.startswith("owui-") and len(cid) <= 64 for cid in ids)
+        assert ids[0] != ids[1]
+        legacy = "owui-" + hashlib.sha256(b"owui-user-1\nhi").hexdigest()[:32]
+        assert legacy not in ids
 
     async def test_unmapped_user_is_recorded_and_user_id_none(self, db_repository):
         dispatcher = _make_dispatcher()
@@ -330,7 +326,8 @@ class TestNonStreamingCompletion:
         async with _Client(dispatcher=dispatcher) as client:
             resp = await client.post("/v1/chat/completions", json=_chat_body("hi"))
         content = resp.json()["choices"][0]["message"]["content"]
-        assert "agent timeout" in content
+        assert content == "The assistant could not complete that request."
+        assert "agent timeout" not in content
 
 
 # ---------------------------------------------------------------------------
@@ -386,7 +383,17 @@ class TestStreamingCompletion:
         assert resp.status_code == 200
         events = _parse_sse(resp.text)
         _assert_valid_chunk_sequence(events)
-        assert "agent unavailable" in _streamed_content(events)
+        assert _streamed_content(events) == "The assistant could not complete that request."
+        assert "agent unavailable" not in _streamed_content(events)
+
+    async def test_stream_without_done_frame_ends_with_canned_error(self, db_repository):
+        frames = [{"token": "", "done": False, "status": "routing"}]
+        async with _Client(dispatcher=_make_dispatcher(frames=frames)) as client:
+            resp = await client.post("/v1/chat/completions", json=_chat_body("q", stream=True))
+        assert resp.status_code == 200
+        events = _parse_sse(resp.text)
+        _assert_valid_chunk_sequence(events)
+        assert _streamed_content(events) == "The assistant could not complete that request."
 
     async def test_error_suppressed_after_streamed_tokens(self, db_repository):
         frames = [

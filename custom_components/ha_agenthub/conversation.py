@@ -26,6 +26,7 @@ from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from .const import (
     CONF_WS_RECEIVE_TIMEOUT,
     DOMAIN,
+    MAX_REQUEST_TEXT_LENGTH,
     RECONNECT_BASE_DELAY,
     RECONNECT_MAX_DELAY,
     WS_HEARTBEAT_INTERVAL,
@@ -37,9 +38,73 @@ from .log_shipper import current_conversation_id, current_trace_id
 
 logger = logging.getLogger(__name__)
 
+# User-facing texts. Raw container error strings are never spoken; details
+# go to the log together with the container trace id.
+_MSG_UNAVAILABLE = (
+    "Sorry, the assistant container is unavailable. "
+    "Check that the container is running and reachable from Home Assistant."
+)
+_MSG_TIMEOUT = (
+    "Sorry, the assistant did not answer in time. "
+    "If the action may have run, check your devices."
+)
+_MSG_DROPPED = (
+    "The connection dropped before the reply finished. "
+    "If the action may have run, check your devices."
+)
+_MSG_STREAM_ERROR = "The assistant could not complete that request."
+_MSG_TOO_LONG = (
+    "Sorry, that request is too long. "
+    f"Please keep it under {MAX_REQUEST_TEXT_LENGTH} characters."
+)
+_MSG_INVALID_REQUEST = (
+    "Sorry, the assistant could not accept that request. "
+    "It may be too long or contain unsupported values."
+)
+_MSG_RATE_LIMITED = (
+    "Sorry, the assistant is receiving too many requests right now. "
+    "Please try again in a moment."
+)
+
+# Ingress rejections the container sends as terminal WS error frames
+# (container/app/api/routes/conversation.py ``_ws_terminal_error``).
+_WS_INGRESS_ERROR_MESSAGES: dict[str, str] = {
+    "Rate limit exceeded": _MSG_RATE_LIMITED,
+    "Invalid request": _MSG_INVALID_REQUEST,
+    "Message too large": _MSG_INVALID_REQUEST,
+}
+
+# aiohttp message types that end a WebSocket. Looked up by name so test
+# doubles of ``aiohttp.WSMsgType`` that define only some members still work.
+_WS_CLOSE_TYPE_NAMES = ("CLOSE", "CLOSING", "CLOSED", "ERROR")
+
+
+def _is_ws_close_message(msg_type: Any) -> bool:
+    """Return True for a close/closing/closed/error WebSocket message type."""
+    return any(
+        hasattr(aiohttp.WSMsgType, name)
+        and msg_type == getattr(aiohttp.WSMsgType, name)
+        for name in _WS_CLOSE_TYPE_NAMES
+    )
+
 
 class _WsDroppedAfterSendError(Exception):
     """Request was written to the WebSocket; REST fallback would duplicate server work."""
+
+    def __init__(self, *, timed_out: bool = False) -> None:
+        super().__init__("receive timed out" if timed_out else "connection dropped")
+        self.timed_out = timed_out
+
+
+class _WsNotDeliveredError(Exception):
+    """The socket closed before the turn received its first frame.
+
+    The container answers every received request with frames on the same
+    socket, including a terminal error frame when dispatch fails, so a close
+    or error message before any frame is treated as "request not delivered"
+    (typically an idle socket the container had already closed). The bridge
+    retries such a turn over REST.
+    """
 
 
 @dataclass(slots=True)
@@ -51,6 +116,23 @@ class _BridgeState:
     waiters: int = 0
 
 
+def _turn_conversation_id(
+    user_input: conversation.ConversationInput,
+    chat_log: conversation.ChatLog,
+) -> str | None:
+    """Return the HA chat session id for this turn.
+
+    HA resolves the session before calling the entity: a missing id gets a
+    fresh ULID and an unknown non-ULID id is replaced, so
+    ``chat_log.conversation_id`` (HA >= 2025.4) is authoritative. The input
+    id is only a fallback for chat logs without the attribute.
+    """
+    chat_log_id = getattr(chat_log, "conversation_id", None)
+    if isinstance(chat_log_id, str) and chat_log_id:
+        return chat_log_id
+    return user_input.conversation_id
+
+
 def _rest_fallback_error_message(status_code: int | None) -> str:
     """Return an actionable fallback message for REST error responses."""
     if status_code in {401, 403}:
@@ -58,6 +140,10 @@ def _rest_fallback_error_message(status_code: int | None) -> str:
             "Sorry, the HA-AgentHub integration API key was rejected. "
             "Update the API key in the HA-AgentHub integration settings."
         )
+    if status_code == 422:
+        return _MSG_INVALID_REQUEST
+    if status_code == 429:
+        return _MSG_RATE_LIMITED
     if status_code is not None and status_code >= 500:
         return (
             "Sorry, the assistant container returned an error. "
@@ -172,6 +258,12 @@ class HaAgentHubConversationEntity(
         self._reconnect_delay = RECONNECT_BASE_DELAY
         self._ws_lock = asyncio.Lock()
         self._ws_last_active: float = 0.0
+        # Background reader on the idle shared socket: aiohttp answers the
+        # container's pings only inside ``receive()``. Enabled once the
+        # entity is attached to hass (background tasks need the entry).
+        self._ws_idle_reader_enabled = False
+        self._idle_reader_task: asyncio.Task[None] | None = None
+        self._idle_reader_ws: aiohttp.ClientWebSocketResponse | None = None
         # Coalesce parallel HA calls with the same conversation_id + text (duplicate
         # pipeline invocations or WS+REST overlap) into a single bridge request.
         self._coalesce_lock = asyncio.Lock()
@@ -214,6 +306,7 @@ class HaAgentHubConversationEntity(
             )
         except (AttributeError, ValueError, KeyError):
             logger.debug("Pipeline engine migration skipped (not critical)")
+        self._ws_idle_reader_enabled = True
         self._reconnect_task = self._entry.async_create_background_task(
             self.hass,
             self._reconnect_loop(),
@@ -256,6 +349,9 @@ class HaAgentHubConversationEntity(
         ``self._ws_lock``. See FLOW-HIGH-8."""
         if self._ws is not None and not self._ws.closed:
             return True
+        if self._ws is not None:
+            # A closed socket is still installed: drop it (and its reader).
+            await self._disconnect_ws_locked()
         try:
             if self._session is None or self._session.closed:
                 self._session = aiohttp.ClientSession()
@@ -263,14 +359,16 @@ class HaAgentHubConversationEntity(
             parsed = urlparse(self._url)
             ws_scheme = "wss" if parsed.scheme == "https" else "ws"
             ws_url = parsed._replace(scheme=ws_scheme).geturl()
-            self._ws = await self._session.ws_connect(
+            ws = await self._session.ws_connect(
                 f"{ws_url}{WS_PATH}",
                 headers={"Authorization": f"Bearer {self._api_key}"},
                 timeout=aiohttp.ClientTimeout(total=10),
                 heartbeat=WS_HEARTBEAT_INTERVAL,
             )
+            self._ws = ws
             self._reconnect_delay = RECONNECT_BASE_DELAY
             self._ws_last_active = time.monotonic()
+            self._start_idle_reader_locked(ws)
             logger.info("Connected to HA-AgentHub container at %s", self._url)
             return True
         except (aiohttp.ClientError, asyncio.TimeoutError, OSError):
@@ -298,9 +396,88 @@ class HaAgentHubConversationEntity(
         and is closed exactly once on entity removal via
         :meth:`_close_session`.
         """
-        if self._ws and not self._ws.closed:
-            await self._ws.close()
+        await self._stop_idle_reader()
+        ws = self._ws
         self._ws = None
+        if ws is not None and not ws.closed:
+            await ws.close()
+
+    def _start_idle_reader_locked(self, ws: aiohttp.ClientWebSocketResponse) -> None:
+        """Start the background reader for the idle shared socket ``ws``.
+
+        Caller MUST hold ``self._ws_lock`` and ``ws`` must be ``self._ws``.
+        No-op before the entity is attached to hass, after shutdown, or when
+        a reader for ``ws`` is already running.
+        """
+        if not self._ws_idle_reader_enabled or self._bridge_shutdown:
+            return
+        task = self._idle_reader_task
+        if task is not None and not task.done():
+            if self._idle_reader_ws is ws:
+                return
+            # Defensive: a reader still bound to an older socket.
+            task.cancel()
+        self._idle_reader_ws = ws
+        self._idle_reader_task = self._entry.async_create_background_task(
+            self.hass,
+            self._idle_read_loop(ws),
+            name="ha_agenthub_ws_idle_reader",
+        )
+
+    async def _stop_idle_reader(self) -> None:
+        """Stop the idle reader so a turn (or a close) can use the socket.
+
+        Cancelling a pending ``receive()`` loses no data: aiohttp only pops
+        a message from its queue after the wait completes.
+        """
+        task = self._idle_reader_task
+        self._idle_reader_task = None
+        self._idle_reader_ws = None
+        if task is None or task.done():
+            return
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    async def _idle_read_loop(self, ws: aiohttp.ClientWebSocketResponse) -> None:
+        """Read the idle shared socket until it closes.
+
+        ``receive()`` answers server pings internally and returns only real
+        messages. While no turn owns the socket, any returned message ends
+        it: a close/error means the container dropped the socket, and a
+        stray data frame means the socket no longer has a clean turn
+        boundary. Either way the socket is detached, closed, and a
+        reconnect is requested.
+        """
+        try:
+            msg = await ws.receive()
+            if msg.type == aiohttp.WSMsgType.TEXT:
+                logger.warning(
+                    "ha-agenthub: unexpected frame on the idle WebSocket; discarding the socket"
+                )
+            else:
+                logger.debug(
+                    "ha-agenthub: idle WebSocket closed by the container (type=%s)",
+                    msg.type,
+                )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.debug("ha-agenthub: idle WebSocket reader failed", exc_info=True)
+        if self._idle_reader_task is asyncio.current_task():
+            self._idle_reader_task = None
+            self._idle_reader_ws = None
+        if self._ws is ws:
+            self._ws = None
+        await self._close_local_ws(ws)
+        if not self._bridge_shutdown:
+            self._schedule_reconnect()
+
+    async def _ensure_idle_reader(self) -> None:
+        """Restart the idle reader if the shared socket has none."""
+        async with self._ws_lock:
+            ws = self._ws
+            if ws is not None and not ws.closed:
+                self._start_idle_reader_locked(ws)
 
     async def _close_session(self) -> None:
         """Close the shared aiohttp session (entity removal only)."""
@@ -325,8 +502,10 @@ class HaAgentHubConversationEntity(
                         logger.debug("Reconnect in %.1fs", delay)
                         await self._wait_for_reconnect(delay)
                         continue
-                # Connection is alive -- wait until a reconnect is explicitly
-                # requested or the keep-alive poll interval elapses.
+                # Connection is alive -- make sure its idle reader runs, then
+                # wait until a reconnect is explicitly requested or the
+                # keep-alive poll interval elapses.
+                await self._ensure_idle_reader()
                 await self._wait_for_reconnect(30)
             except asyncio.CancelledError:
                 raise
@@ -356,20 +535,29 @@ class HaAgentHubConversationEntity(
         hold the lock across both the connectivity check and the
         subsequent send -- closing the race where the WS flips to
         closed between the two calls.
+
+        On success the idle reader is stopped, so the caller may send and
+        then read the socket itself.
         """
-        if self._ws is not None and not self._ws.closed:
-            if time.monotonic() - self._ws_last_active > WS_IDLE_THRESHOLD:
+        ws = self._ws
+        if ws is not None:
+            # Take the socket out of idle reading first; the reader may
+            # just have detected that the container closed it.
+            await self._stop_idle_reader()
+            if self._ws is ws and not ws.closed:
+                if time.monotonic() - self._ws_last_active <= WS_IDLE_THRESHOLD:
+                    return True
                 try:
-                    pong = self._ws.ping()
-                    await asyncio.wait_for(pong, timeout=2.0)
+                    await asyncio.wait_for(ws.ping(), timeout=2.0)
                     self._ws_last_active = time.monotonic()
+                    return True
                 except (asyncio.TimeoutError, aiohttp.ClientError, OSError):
                     logger.warning("WebSocket idle ping failed, reconnecting")
-                    await self._disconnect_ws_locked()
-                    return await self._connect_ws_locked()
-            return True
+            await self._disconnect_ws_locked()
         connected = await self._connect_ws_locked()
-        if not connected:
+        if connected:
+            await self._stop_idle_reader()
+        else:
             self._reconnect_delay = min(self._reconnect_delay * 2, RECONNECT_MAX_DELAY)
         return connected
 
@@ -402,7 +590,10 @@ class HaAgentHubConversationEntity(
         this matches traces where the container saw two identical turns
         back-to-back from production HA setups. Coalesced duplicates share
         the first invocation's ``chat_log`` (same conversation_id by
-        construction), so streamed content lands in that chat log.
+        construction), so streamed content lands in that chat log. A
+        coalesced caller's own chat-log copy stays unchanged; HA core
+        discards unchanged copies on exit, and its speech arrives through
+        the shared ``ConversationResult``.
         """
         cid = user_input.conversation_id or ""
         text = (user_input.text or "").strip()
@@ -411,7 +602,9 @@ class HaAgentHubConversationEntity(
         # The bridge task created below copies the current task context, so
         # log records from the whole turn (including the delta-stream
         # generator) carry the id.
-        cid_token = current_conversation_id.set(cid or None)
+        cid_token = current_conversation_id.set(
+            _turn_conversation_id(user_input, chat_log) or None
+        )
         try:
             logger.debug(
                 "ha-agenthub: turn-entry cid=%s device_id=%s text_len=%d",
@@ -419,6 +612,8 @@ class HaAgentHubConversationEntity(
                 device_id,
                 len(text),
             )
+            # The coalescing key uses the caller-supplied id: duplicate
+            # invocations without an id get distinct HA session ids.
             key = (cid, text)
 
             async with self._coalesce_lock:
@@ -523,13 +718,28 @@ class HaAgentHubConversationEntity(
         time), so a concurrent satellite turn no longer queues behind a
         slow read -- it simply connects its own socket.
         """
+        conversation_id = _turn_conversation_id(user_input, chat_log)
+        if len(user_input.text or "") > MAX_REQUEST_TEXT_LENGTH:
+            # The container would reject it with a validation error; answer
+            # locally instead of truncating (a cut command could act on the
+            # wrong target).
+            logger.warning(
+                "ha-agenthub: request text exceeds %d characters (%d); not forwarded",
+                MAX_REQUEST_TEXT_LENGTH,
+                len(user_input.text or ""),
+            )
+            return await self._rest_result(
+                user_input, chat_log, _MSG_TOO_LONG, conversation_id
+            )
         try:
             turn_ws: aiohttp.ClientWebSocketResponse | None = None
             async with self._ws_lock:
                 if await self._ensure_connected_locked():
                     try:
-                        turn_ws = await self._ws_send_locked(user_input)
-                    except (aiohttp.ClientError, asyncio.TimeoutError):
+                        turn_ws = await self._ws_send_locked(
+                            user_input, conversation_id
+                        )
+                    except (aiohttp.ClientError, asyncio.TimeoutError, OSError):
                         logger.warning("WebSocket send failed, falling back to REST")
                         await self._disconnect_ws_locked()
             if turn_ws is not None:
@@ -537,29 +747,29 @@ class HaAgentHubConversationEntity(
                     return await self._process_via_ws_read(
                         user_input, chat_log, turn_ws
                     )
-                except _WsDroppedAfterSendError:
+                except _WsDroppedAfterSendError as err:
                     logger.warning(
                         "WebSocket failed after the request was sent; skipping REST "
-                        "(avoids duplicate container traces)",
+                        "(avoids duplicate container work)",
                         exc_info=True,
                     )
                     # On mid-stream failure the delta stream added nothing
                     # to the chat log; add the canned message so display
                     # and speech stay consistent.
-                    drop_speech = (
-                        "The connection dropped before the reply finished. "
-                        "If the action may have run, check your devices."
-                    )
+                    drop_speech = _MSG_TIMEOUT if err.timed_out else _MSG_DROPPED
                     await self._add_assistant_chat_log_content(
                         chat_log, user_input, drop_speech
                     )
                     return self._build_result(
                         drop_speech,
-                        user_input.conversation_id,
+                        conversation_id,
                         user_input.language,
                     )
-                except (aiohttp.ClientError, asyncio.TimeoutError):
-                    logger.warning("WebSocket error, falling back to REST")
+                except _WsNotDeliveredError:
+                    logger.warning(
+                        "WebSocket closed before the container answered; "
+                        "retrying the turn over REST"
+                    )
         except (aiohttp.ClientError, asyncio.TimeoutError, OSError):
             logger.warning(
                 "Unexpected WS dispatch failure, falling back to REST", exc_info=True
@@ -597,33 +807,43 @@ class HaAgentHubConversationEntity(
     async def _ws_send_locked(
         self,
         user_input: conversation.ConversationInput,
+        conversation_id: str | None = None,
     ) -> aiohttp.ClientWebSocketResponse:
         """Send the request payload and hand socket ownership to the turn.
 
         Caller MUST hold ``self._ws_lock`` (except single-threaded test
-        doubles). On success ``self._ws`` is cleared so no other turn can
-        send on -- or read from -- this socket while the streaming read
-        runs unlocked; the read phase offers the socket back via
-        :meth:`_reuse_shared_ws` after a clean done frame. On send failure
-        ``self._ws`` is left untouched so the caller can disconnect under
-        the lock (pre-P1 semantics).
+        doubles). ``self._ws`` is cleared *before* the write, so no other
+        turn can send on -- or read from -- this socket while the streaming
+        read runs unlocked; the read phase offers the socket back via
+        :meth:`_reuse_shared_ws` after a clean done frame. If the send
+        fails or the task is cancelled during it, the bytes may already be
+        on the wire, so the socket is closed instead of staying shared.
         """
+        cid = (
+            conversation_id
+            if conversation_id is not None
+            else user_input.conversation_id
+        )
         logger.debug(
             "ha-agenthub: ws-entry cid=%s ws_open=%s",
-            user_input.conversation_id,
+            cid,
             self._ws is not None and not self._ws.closed,
         )
         payload: dict[str, Any] = {
             "text": user_input.text,
-            "conversation_id": user_input.conversation_id,
+            "conversation_id": cid,
             "language": user_input.language or "en",
         }
         payload.update(self._resolve_origin_context(user_input))
         turn_ws = self._ws
         if turn_ws is None:
             raise aiohttp.ClientError("WebSocket not connected")
-        await turn_ws.send_json(payload)
         self._ws = None
+        try:
+            await turn_ws.send_json(payload)
+        except BaseException:
+            await self._close_local_ws(turn_ws)
+            raise
         return turn_ws
 
     async def _reuse_shared_ws(self, turn_ws: aiohttp.ClientWebSocketResponse) -> None:
@@ -631,12 +851,13 @@ class HaAgentHubConversationEntity(
 
         If another turn (or the reconnect loop) already installed a fresh
         socket, the extra one is closed instead -- only one shared
-        connection is kept.
+        connection is kept. A reused socket gets an idle reader again.
         """
         async with self._ws_lock:
             if self._ws is None and not turn_ws.closed:
                 self._ws = turn_ws
                 self._ws_last_active = time.monotonic()
+                self._start_idle_reader_locked(turn_ws)
                 return
         await self._close_local_ws(turn_ws)
 
@@ -671,16 +892,22 @@ class HaAgentHubConversationEntity(
         Every WS path returns in the same turn with
         ``continue_conversation=voice_followup`` from the done frame, so HA
         keeps the chat session and the satellite re-listens natively.
+
+        Failures: a close/error message before the first frame raises
+        :class:`_WsNotDeliveredError` (the caller retries over REST); any
+        later transport failure or a receive timeout raises
+        :class:`_WsDroppedAfterSendError` (no REST retry).
         """
         box: dict[str, Any] = {
             "filler": "",
             "tokens": "",
             "mediated": "",
             "canned_error": "",
-            "conversation_id": user_input.conversation_id,
+            "conversation_id": _turn_conversation_id(user_input, chat_log),
             "sanitized": False,
             "voice_followup": False,
             "trace_id": None,
+            "frames": 0,
         }
 
         async def _delta_stream(
@@ -698,11 +925,17 @@ class HaAgentHubConversationEntity(
                     turn_ws.receive(), timeout=_receive_timeout()
                 )
                 if msg.type == aiohttp.WSMsgType.TEXT:
+                    box["frames"] += 1
                     try:
                         data = json.loads(msg.data)
                     except json.JSONDecodeError:
                         logger.warning(
                             "ha-agenthub: ignoring malformed WS message in stream"
+                        )
+                        continue
+                    if not isinstance(data, dict):
+                        logger.warning(
+                            "ha-agenthub: ignoring non-object WS message in stream"
                         )
                         continue
 
@@ -736,7 +969,7 @@ class HaAgentHubConversationEntity(
                         # forwarded into the result: HA owns chat sessions and
                         # regenerates unknown-but-valid ULIDs, so adopting the
                         # container id would silently break session continuity
-                        # (box starts from user_input.conversation_id).
+                        # (box starts from the HA chat-log session id).
                         # P3-1: the backend signals sanitization on the done
                         # frame. Honour it for both ``mediated_speech`` and
                         # accumulated tokens (the orchestrator strips both
@@ -760,25 +993,33 @@ class HaAgentHubConversationEntity(
                         if stream_err:
                             # Application-level error from the container (done
                             # chunk), not a transport failure -- do not raise
-                            # (would become _WsDroppedAfterSendError).
+                            # (would become _WsDroppedAfterSendError). The raw
+                            # error is logged, never spoken.
                             logger.warning(
-                                "Container reported error in stream done chunk: %s",
+                                "Container reported error in stream done chunk "
+                                "(trace_id=%s): %s",
+                                box["trace_id"],
                                 stream_err,
                             )
                             if not (box["mediated"] or box["tokens"]).strip():
-                                box["canned_error"] = (
-                                    "The assistant could not complete that request. "
-                                    f"({stream_err})"
+                                box["canned_error"] = _WS_INGRESS_ERROR_MESSAGES.get(
+                                    str(stream_err), _MSG_STREAM_ERROR
                                 )
                                 if not message_open:
                                     yield {"role": "assistant"}
                                     message_open = True
                                 yield {"content": box["canned_error"]}
                         return
-                elif msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
-                    raise aiohttp.ClientError(
-                        f"WebSocket {'closed' if msg.type == aiohttp.WSMsgType.CLOSED else 'error'} mid-stream"
+                elif _is_ws_close_message(msg.type):
+                    is_error = hasattr(aiohttp.WSMsgType, "ERROR") and (
+                        msg.type == aiohttp.WSMsgType.ERROR
                     )
+                    kind = "error" if is_error else "closed"
+                    if not box["frames"]:
+                        raise _WsNotDeliveredError(
+                            f"WebSocket {kind} before the first frame"
+                        )
+                    raise aiohttp.ClientError(f"WebSocket {kind} mid-stream")
 
         done_ok = False
         try:
@@ -798,7 +1039,11 @@ class HaAgentHubConversationEntity(
                 sanitized=box["sanitized"],
                 continue_conversation=box["voice_followup"],
             )
-        except (aiohttp.ClientError, asyncio.TimeoutError) as err:
+        except _WsNotDeliveredError:
+            raise
+        except asyncio.TimeoutError as err:
+            raise _WsDroppedAfterSendError(timed_out=True) from err
+        except aiohttp.ClientError as err:
             raise _WsDroppedAfterSendError() from err
         finally:
             if done_ok:
@@ -825,15 +1070,21 @@ class HaAgentHubConversationEntity(
         """Fallback: send request via REST and get the full response.
 
         The response speech is added to the chat log so REST turns appear
-        in the chat history like WS turns (which stream via deltas).
+        in the chat history like WS turns (which stream via deltas). The
+        request is bounded by the same configured response timeout as the
+        WebSocket path.
         """
+        conversation_id = _turn_conversation_id(user_input, chat_log)
+        timeout = resolve_ws_receive_timeout(
+            self._entry.options.get(CONF_WS_RECEIVE_TIMEOUT)
+        )
         try:
             if self._session is None or self._session.closed:
                 self._session = aiohttp.ClientSession()
             headers = {"Authorization": f"Bearer {self._api_key}"}
             payload: dict[str, Any] = {
                 "text": user_input.text,
-                "conversation_id": user_input.conversation_id,
+                "conversation_id": conversation_id,
                 "language": user_input.language or "en",
             }
             payload.update(self._resolve_origin_context(user_input))
@@ -841,42 +1092,61 @@ class HaAgentHubConversationEntity(
                 f"{self._url}/api/conversation",
                 json=payload,
                 headers=headers,
-                timeout=aiohttp.ClientTimeout(total=30),
+                timeout=aiohttp.ClientTimeout(total=timeout),
             ) as resp:
                 if resp.status != 200:
                     if resp.status in {401, 403}:
                         self._start_reauth_once()
+                    logger.warning(
+                        "ha-agenthub: REST conversation request failed with HTTP %s",
+                        resp.status,
+                    )
                     return await self._rest_result(
                         user_input,
                         chat_log,
                         _rest_fallback_error_message(resp.status),
-                        user_input.conversation_id,
+                        conversation_id,
                     )
                 self._reauth_triggered = False
                 # The container's tracing middleware returns a per-request
                 # trace id on every response; expose it to the log shipper.
                 current_trace_id.set(resp.headers.get("X-Trace-Id"))
                 data = await resp.json()
+                if not isinstance(data, dict):
+                    logger.warning(
+                        "ha-agenthub: REST conversation response is not a JSON object"
+                    )
+                    return await self._rest_result(
+                        user_input,
+                        chat_log,
+                        _rest_fallback_error_message(None),
+                        conversation_id,
+                    )
+                speech = data.get("speech")
                 return await self._rest_result(
                     user_input,
                     chat_log,
-                    data.get("speech", ""),
+                    speech if isinstance(speech, str) else "",
                     # HA owns chat sessions; the container's conversation_id
                     # is only the container-internal correlation key and is
                     # deliberately not forwarded into the result.
-                    user_input.conversation_id,
+                    conversation_id,
                     sanitized=bool(data.get("sanitized", False)),
                     continue_conversation=bool(data.get("voice_followup", False)),
                 )
-        except (aiohttp.ClientError, asyncio.TimeoutError, json.JSONDecodeError):
+        except asyncio.TimeoutError:
+            logger.warning(
+                "ha-agenthub: REST conversation request timed out after %.1fs", timeout
+            )
             return await self._rest_result(
-                user_input,
-                chat_log,
-                (
-                    "Sorry, the assistant container is unavailable. "
-                    "Check that the container is running and reachable from Home Assistant."
-                ),
-                user_input.conversation_id,
+                user_input, chat_log, _MSG_TIMEOUT, conversation_id
+            )
+        except (aiohttp.ClientError, json.JSONDecodeError, OSError):
+            logger.warning(
+                "ha-agenthub: REST conversation request failed", exc_info=True
+            )
+            return await self._rest_result(
+                user_input, chat_log, _MSG_UNAVAILABLE, conversation_id
             )
 
     async def _rest_result(

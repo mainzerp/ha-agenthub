@@ -1843,32 +1843,44 @@ class TestDeltaStreaming(_WsStreamTestBase):
             self._make_user_input(), chat_log, ws
         )
 
-        canned = "The assistant could not complete that request. (boom)"
+        # The raw container error is logged, never spoken.
+        canned = "The assistant could not complete that request."
         assert chat_log.deltas == [
             {"role": "assistant"},
             {"content": canned},
         ]
         speech = result.response.async_set_speech.call_args.args[0]
         assert speech == canned
+        assert "boom" not in speech
 
     @pytest.mark.asyncio
     async def test_ws_closed_mid_stream_returns_canned_drop_message(self):
         import time
 
         entity = self._make_entity()
-        ws = self._make_ws(AsyncMock(return_value=MagicMock(type=2)))  # CLOSED
+        # A status frame proves the container received the turn; the close
+        # that follows is a mid-stream drop (no REST retry).
+        status = MagicMock(
+            type=1, data='{"token": "", "done": false, "status": "routing"}'
+        )
+        ws = self._make_ws(AsyncMock(side_effect=[status, MagicMock(type=2)]))  # CLOSED
         entity._ws = ws
         entity._ws_last_active = time.monotonic()
         chat_log = _FakeChatLog()
         ws_msg_types = type("WSMsgType", (), {"TEXT": 1, "CLOSED": 2, "ERROR": 3})
 
-        with patch(
-            "custom_components.ha_agenthub.conversation.aiohttp.WSMsgType",
-            ws_msg_types,
+        with (
+            patch(
+                "custom_components.ha_agenthub.conversation.aiohttp.WSMsgType",
+                ws_msg_types,
+            ),
+            patch.object(entity, "_process_via_rest", new_callable=AsyncMock) as rest,
         ):
             result = await entity._async_bridge_to_container(
                 self._make_user_input(), chat_log
             )
+
+        rest.assert_not_awaited()
 
         speech = result.response.async_set_speech.call_args.args[0]
         assert "connection dropped" in speech
@@ -2188,3 +2200,353 @@ class TestBridgeTimeoutContract:
         assert result["type"] == "form"
         assert result["errors"] == {"ws_receive_timeout": "invalid_timeout"}
         mock_validate.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# Issue #132 (T1): transport robustness, session ids, user-facing errors
+# ---------------------------------------------------------------------------
+
+_WS_MSG_TYPES = type(
+    "WSMsgType",
+    (),
+    {"TEXT": 1, "CLOSE": 8, "CLOSING": 256, "CLOSED": 257, "ERROR": 258},
+)
+
+
+class _SessionChatLog(_FakeChatLog):
+    """Chat log carrying the HA session id (HA >= 2025.4)."""
+
+    def __init__(self, conversation_id):
+        super().__init__()
+        self.conversation_id = conversation_id
+
+
+class TestWsNotDeliveredFallback(_WsStreamTestBase):
+    """A close before the turn's first frame means the container never
+    answered (typically an idle socket it already closed): retry via REST."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("msg_type", [8, 257, 258])
+    async def test_close_before_first_frame_falls_back_to_rest(self, msg_type):
+        import time
+
+        entity = self._make_entity()
+        ws = self._make_ws(AsyncMock(return_value=MagicMock(type=msg_type)))
+        entity._ws = ws
+        entity._ws_last_active = time.monotonic()
+        rest_result = MagicMock()
+
+        with (
+            patch(
+                "custom_components.ha_agenthub.conversation.aiohttp.WSMsgType",
+                _WS_MSG_TYPES,
+            ),
+            patch.object(
+                entity,
+                "_process_via_rest",
+                new_callable=AsyncMock,
+                return_value=rest_result,
+            ) as rest,
+        ):
+            result = await entity._async_bridge_to_container(
+                self._make_user_input(), _FakeChatLog()
+            )
+
+        rest.assert_awaited_once()
+        assert result is rest_result
+        ws.send_json.assert_awaited_once()
+        ws.close.assert_awaited_once()
+        assert entity._ws is None
+
+    @pytest.mark.asyncio
+    async def test_receive_timeout_does_not_retry_and_uses_timeout_wording(self):
+        import time
+
+        entity = self._make_entity()
+        entity._entry.options = {"ws_receive_timeout": 0.01}
+
+        async def _never():
+            await asyncio.Event().wait()
+
+        ws = self._make_ws(AsyncMock(side_effect=_never))
+        entity._ws = ws
+        entity._ws_last_active = time.monotonic()
+        chat_log = _FakeChatLog()
+
+        with patch.object(entity, "_process_via_rest", new_callable=AsyncMock) as rest:
+            result = await entity._async_bridge_to_container(
+                self._make_user_input(), chat_log
+            )
+
+        rest.assert_not_awaited()
+        speech = result.response.async_set_speech.call_args.args[0]
+        assert "did not answer in time" in speech
+        assert "connection dropped" not in speech
+        assert [c.content for c in chat_log.added_content] == [speech]
+
+
+class TestWsSendOwnership(_WsStreamTestBase):
+    """The socket leaves shared use before the write; a failed or cancelled
+    send closes it so no later turn reads this turn's frames."""
+
+    @pytest.mark.asyncio
+    async def test_cancel_during_send_detaches_and_closes_socket(self):
+        import time
+
+        entity = self._make_entity()
+        written = asyncio.Event()
+
+        async def _send_then_block(payload):
+            written.set()  # bytes are on the wire, drain still pending
+            await asyncio.Event().wait()
+
+        ws = self._make_ws(AsyncMock())
+        ws.send_json = AsyncMock(side_effect=_send_then_block)
+        entity._ws = ws
+        entity._ws_last_active = time.monotonic()
+
+        turn = asyncio.create_task(
+            entity._async_bridge_to_container(self._make_user_input(), _FakeChatLog())
+        )
+        await asyncio.wait_for(written.wait(), timeout=1.0)
+        turn.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await turn
+
+        assert entity._ws is None
+        ws.close.assert_awaited_once()
+        assert not entity._ws_lock.locked()
+
+
+class TestWsIdleReader(_WsStreamTestBase):
+    """The idle shared socket is read in the background so server pings are
+    answered and a container-side close is noticed before the next turn."""
+
+    def _enable_reader(self, entity):
+        entity._ws_idle_reader_enabled = True
+        entity._entry.async_create_background_task = MagicMock(
+            side_effect=lambda hass, coro, name=None: asyncio.create_task(coro)
+        )
+
+    @pytest.mark.asyncio
+    async def test_reader_detaches_socket_closed_by_container(self):
+        entity = self._make_entity()
+        self._enable_reader(entity)
+        ws = self._make_ws(AsyncMock(return_value=MagicMock(type=257)))
+        entity._reconnect_requested.clear()
+
+        async with entity._ws_lock:
+            entity._ws = ws
+            entity._start_idle_reader_locked(ws)
+        reader = entity._idle_reader_task
+        with patch(
+            "custom_components.ha_agenthub.conversation.aiohttp.WSMsgType",
+            _WS_MSG_TYPES,
+        ):
+            await asyncio.wait_for(reader, timeout=1.0)
+
+        assert entity._ws is None
+        ws.close.assert_awaited_once()
+        assert entity._reconnect_requested.is_set()
+        assert entity._idle_reader_task is None
+
+    @pytest.mark.asyncio
+    async def test_turn_stops_reader_before_send_and_restarts_after(self):
+        import json
+        import time
+
+        entity = self._make_entity()
+        self._enable_reader(entity)
+        calls = {"n": 0}
+        done = MagicMock(type=1, data=json.dumps({"done": True, "token": "ok"}))
+
+        async def _receive():
+            calls["n"] += 1
+            if calls["n"] == 2:  # the turn's own read
+                return done
+            await asyncio.Event().wait()  # idle reader: block until cancelled
+
+        ws = self._make_ws(AsyncMock(side_effect=_receive))
+        async with entity._ws_lock:
+            entity._ws = ws
+            entity._ws_last_active = time.monotonic()
+            entity._start_idle_reader_locked(ws)
+        first_reader = entity._idle_reader_task
+        await asyncio.sleep(0)  # reader is now blocked in receive()
+
+        result = await entity._async_bridge_to_container(
+            self._make_user_input(), _FakeChatLog()
+        )
+
+        assert result.response.async_set_speech.call_args.args[0] == "ok"
+        assert first_reader.cancelled()
+        ws.send_json.assert_awaited_once()
+        # Clean done: the socket is shared again with a fresh idle reader.
+        assert entity._ws is ws
+        second_reader = entity._idle_reader_task
+        assert second_reader is not None and second_reader is not first_reader
+        await entity._disconnect_ws()
+        assert second_reader.done()
+        assert entity._ws is None
+
+    @pytest.mark.asyncio
+    async def test_reader_not_started_before_entity_is_added(self):
+        entity = self._make_entity()
+        ws = self._make_ws(AsyncMock())
+        async with entity._ws_lock:
+            entity._ws = ws
+            entity._start_idle_reader_locked(ws)
+        assert entity._idle_reader_task is None
+        entity._entry.async_create_background_task.assert_not_called()
+
+
+class TestTurnConversationId(_WsStreamTestBase):
+    """HA's chat-log session id is sent to the container and returned."""
+
+    @pytest.mark.asyncio
+    async def test_ws_uses_chat_log_id_when_input_id_missing(self):
+        import time
+
+        entity = self._make_entity()
+        ws = self._make_ws(
+            AsyncMock(return_value=self._text_frame({"done": True, "token": "ok"}))
+        )
+        entity._ws = ws
+        entity._ws_last_active = time.monotonic()
+
+        result = await entity._async_bridge_to_container(
+            self._make_user_input(cid=None), _SessionChatLog("01JSESSIONULID")
+        )
+
+        assert ws.send_json.call_args.args[0]["conversation_id"] == "01JSESSIONULID"
+        assert result.conversation_id == "01JSESSIONULID"
+
+    @pytest.mark.asyncio
+    async def test_rest_uses_chat_log_id_over_stale_input_id(self):
+        entity = self._make_entity()
+        session = self._FakeSession(self._FakeResponse(200, {"speech": "ok"}))
+        entity._session = session
+
+        result = await entity._process_via_rest(
+            self._make_user_input(cid="stale-id"), _SessionChatLog("01JFRESHULID")
+        )
+
+        assert session.posted_payload["conversation_id"] == "01JFRESHULID"
+        assert result.conversation_id == "01JFRESHULID"
+
+
+class TestRestFallbackContract(_WsStreamTestBase):
+    """REST uses the configured response timeout and maps failures to
+    specific user-facing texts."""
+
+    @pytest.mark.asyncio
+    async def test_rest_uses_configured_response_timeout(self):
+        entity = self._make_entity()
+        entity._entry.options = {"ws_receive_timeout": 77}
+        entity._session = self._FakeSession(self._FakeResponse(200, {"speech": "ok"}))
+
+        with patch(
+            "custom_components.ha_agenthub.conversation.aiohttp.ClientTimeout"
+        ) as client_timeout:
+            await entity._process_via_rest(self._make_user_input(), _FakeChatLog())
+
+        client_timeout.assert_called_once_with(total=77.0)
+
+    @pytest.mark.asyncio
+    async def test_rest_timeout_has_own_wording(self):
+        entity = self._make_entity()
+
+        class _TimeoutSession:
+            closed = False
+
+            def post(self, *args, **kwargs):
+                raise asyncio.TimeoutError
+
+        entity._session = _TimeoutSession()
+
+        result = await entity._process_via_rest(self._make_user_input(), _FakeChatLog())
+
+        speech = result.response.async_set_speech.call_args.args[0]
+        assert "did not answer in time" in speech
+        assert "unavailable" not in speech
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "status, expected",
+        [(422, "could not accept that request"), (429, "too many requests")],
+    )
+    async def test_rest_422_and_429_have_specific_messages(self, status, expected):
+        entity = self._make_entity()
+        entity._session = self._FakeSession(self._FakeResponse(status, {}))
+
+        result = await entity._process_via_rest(self._make_user_input(), _FakeChatLog())
+
+        speech = result.response.async_set_speech.call_args.args[0]
+        assert expected in speech
+        assert "container URL" not in speech
+
+    @pytest.mark.asyncio
+    async def test_rest_non_object_json_gives_canned_message(self):
+        entity = self._make_entity()
+        entity._session = self._FakeSession(
+            self._FakeResponse(200, ["not", "a", "dict"])
+        )
+
+        result = await entity._process_via_rest(self._make_user_input(), _FakeChatLog())
+
+        speech = result.response.async_set_speech.call_args.args[0]
+        assert "unexpected response" in speech
+
+    @pytest.mark.asyncio
+    async def test_too_long_text_is_answered_locally(self):
+        entity = self._make_entity()
+        ws = self._make_ws(AsyncMock())
+        entity._ws = ws
+        user_input = self._make_user_input()
+        user_input.text = "x" * 501
+        chat_log = _FakeChatLog()
+
+        with patch.object(entity, "_process_via_rest", new_callable=AsyncMock) as rest:
+            result = await entity._async_bridge_to_container(user_input, chat_log)
+
+        rest.assert_not_awaited()
+        ws.send_json.assert_not_awaited()
+        speech = result.response.async_set_speech.call_args.args[0]
+        assert "too long" in speech
+        assert [c.content for c in chat_log.added_content] == [speech]
+
+
+class TestWsFrameHandling(_WsStreamTestBase):
+    @pytest.mark.asyncio
+    async def test_non_object_frame_is_ignored(self):
+        entity = self._make_entity()
+        frames = [
+            MagicMock(type=1, data="[1, 2]"),
+            self._text_frame({"done": True, "token": "ok"}),
+        ]
+        ws = self._make_ws(AsyncMock(side_effect=frames))
+
+        result = await entity._process_via_ws_read(
+            self._make_user_input(), _FakeChatLog(), ws
+        )
+
+        assert result.response.async_set_speech.call_args.args[0] == "ok"
+
+    @pytest.mark.asyncio
+    async def test_ingress_rate_limit_error_maps_to_specific_message(self):
+        entity = self._make_entity()
+        ws = self._make_ws(
+            AsyncMock(
+                return_value=self._text_frame(
+                    {"done": True, "token": "", "error": "Rate limit exceeded"}
+                )
+            )
+        )
+
+        result = await entity._process_via_ws_read(
+            self._make_user_input(), _FakeChatLog(), ws
+        )
+
+        speech = result.response.async_set_speech.call_args.args[0]
+        assert "too many requests" in speech
+        assert "Rate limit exceeded" not in speech

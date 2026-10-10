@@ -1203,14 +1203,14 @@ class TestHAConversationWSCloseError:
         assert entity._ws is None
 
     async def test_process_via_ws_close_before_any_tokens(self):
-        """WS CLOSED immediately (no tokens) should raise _WsDroppedAfterSendError."""
+        """WS CLOSED before the first frame raises _WsNotDeliveredError (REST retry)."""
         import sys
 
         import aiohttp
 
         sys.path.insert(0, str(Path(__file__).resolve().parents[1].parent))
         from custom_components.ha_agenthub.conversation import (
-            _WsDroppedAfterSendError,
+            _WsNotDeliveredError,
         )
 
         entity = MagicMock()
@@ -1229,14 +1229,12 @@ class TestHAConversationWSCloseError:
         user_input.language = "en"
         user_input.device_id = None
 
-        with pytest.raises(_WsDroppedAfterSendError) as exc_info:
+        with pytest.raises(_WsNotDeliveredError, match="closed before the first frame"):
             turn_ws = await entity._ws_send_locked(user_input)
             await entity._process_via_ws_read(user_input, self._FakeChatLog(), turn_ws)
-        assert isinstance(exc_info.value.__cause__, aiohttp.ClientError)
-        assert "closed mid-stream" in str(exc_info.value.__cause__)
 
     async def test_process_via_ws_error_token_triggers_raise(self):
-        """Error field in done token does NOT raise; it is logged and embedded in speech.
+        """Error field in done token does NOT raise; it is logged and spoken as a canned message.
 
         Application-level errors arrive as part of the done chunk and are explicitly
         treated as non-transport failures (would otherwise be wrapped as
@@ -1272,9 +1270,10 @@ class TestHAConversationWSCloseError:
         result_turn_ws = await entity._ws_send_locked(user_input)
         result = await entity._process_via_ws_read(user_input, self._FakeChatLog(), result_turn_ws)
         assert result is sentinel
-        # Speech must include the error description rather than be empty.
+        # Speech is the canned message, never the raw container error.
         speech_arg = entity._build_result.call_args.args[0]
-        assert "Agent error: test" in speech_arg
+        assert speech_arg == "The assistant could not complete that request."
+        assert "Agent error: test" not in speech_arg
 
 
 class TestHAConfigEntryLifecycle:
