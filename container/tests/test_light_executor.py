@@ -473,10 +473,9 @@ class TestExecuteLightAction:
         ha_client.get_state.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_unchanged_state_after_verify_window_is_reported_as_failure(
-        self, ha_client, entity_matcher, entity_index
-    ):
-        """#132: turn_off + still 'on' after the verify window must not claim success."""
+    async def test_intent_speech_when_verified_state_is_stale(self, ha_client, entity_matcher, entity_index):
+        """turn_off + observed 'on' must not speak 'is now on' (late-reporting
+        device: not a failure; ActionableAgent hedges the speech, #132)."""
         ha_client.call_service = AsyncMock(return_value=None)
         ha_client.get_state = AsyncMock(
             return_value={"state": "on", "attributes": {}},
@@ -485,10 +484,9 @@ class TestExecuteLightAction:
         action = {"action": "turn_off", "entity": "kitchen light"}
         result = await execute_light_action(action, ha_client, entity_index, entity_matcher)
 
-        assert result["success"] is False
+        assert result["success"] is True
         assert "is now on" not in result["speech"]
-        assert not result["speech"].startswith("Done")
-        assert "'on' instead of 'off'" in result["speech"]
+        assert "turned off Kitchen Ceiling" in result["speech"]
 
     @pytest.mark.asyncio
     async def test_toggle_uses_observed_state(self, ha_client, entity_matcher, entity_index):

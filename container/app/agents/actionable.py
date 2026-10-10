@@ -17,12 +17,16 @@ from typing import Any
 from pydantic import ValidationError
 
 from app.agents.action_executor import (
+    VERIFY_UNVERIFIED,
     find_rejected_action_objects,
     parse_actions,
     reset_request_candidate_ids,
     reset_request_visible_entries,
+    reset_verify_records,
     set_request_candidate_ids,
     set_request_visible_entries,
+    start_verify_records,
+    unverified_speech,
 )
 from app.agents.base import (
     UNTRUSTED_DATA_NOTE,
@@ -481,8 +485,29 @@ class ActionableAgent(BaseAgent):
         caller decides whether to abort the turn (single action) or
         degrade to a per-action error result (multi-action turn).
         """
-        if span_collector:
-            async with span_collector.start_span("ha_action", agent_id=agent_id) as span:
+        records_token, verify_records = start_verify_records()
+        try:
+            if span_collector:
+                async with span_collector.start_span("ha_action", agent_id=agent_id) as span:
+                    result = await self._do_execute(
+                        action,
+                        self._ha_client,
+                        self._entity_index,
+                        self._entity_matcher,
+                        agent_id=agent_id,
+                        span_collector=span_collector,
+                    )
+                    result = self._apply_verification_outcome(action, result, verify_records)
+                    span["metadata"]["action"] = action.get("action")
+                    span["metadata"]["entity"] = action.get("entity")
+                    span["metadata"]["success"] = result.get("success")
+                    span["metadata"]["action_params"] = redact_sensitive_values(
+                        {k: v for k, v in action.items() if k not in ("action", "entity")}
+                    )
+                    span["metadata"]["result_speech"] = (result.get("speech") or "")[:500]
+                    if verify_records:
+                        span["metadata"]["verify_outcome"] = verify_records[-1]["outcome"]
+            else:
                 result = await self._do_execute(
                     action,
                     self._ha_client,
@@ -491,22 +516,9 @@ class ActionableAgent(BaseAgent):
                     agent_id=agent_id,
                     span_collector=span_collector,
                 )
-                span["metadata"]["action"] = action.get("action")
-                span["metadata"]["entity"] = action.get("entity")
-                span["metadata"]["success"] = result.get("success")
-                span["metadata"]["action_params"] = redact_sensitive_values(
-                    {k: v for k, v in action.items() if k not in ("action", "entity")}
-                )
-                span["metadata"]["result_speech"] = (result.get("speech") or "")[:500]
-        else:
-            result = await self._do_execute(
-                action,
-                self._ha_client,
-                self._entity_index,
-                self._entity_matcher,
-                agent_id=agent_id,
-                span_collector=span_collector,
-            )
+                result = self._apply_verification_outcome(action, result, verify_records)
+        finally:
+            reset_verify_records(records_token)
 
         # Entity not found: replace the executor's generic English
         # speech with an LLM-generated clarifying question (with a
@@ -529,6 +541,37 @@ class ActionableAgent(BaseAgent):
                 "speech": await self._generate_not_found_speech(entity_query, task, span_collector),
             }
         return result
+
+    @staticmethod
+    def _apply_verification_outcome(action: dict, result: dict, verify_records: list[dict]) -> dict:
+        """Hedge a successful result whose new state was not confirmed.
+
+        ``call_service_with_verification`` records one outcome per service
+        call. An ``unverified`` outcome of an action with an expected target
+        state (nothing observed, or still the
+        pre-call state after the verify window -- common for Zigbee and
+        cloud devices that report late) is not a failure, but the plain
+        confirmation must not be spoken and the result must not enter the
+        action cache.
+        """
+        if not result.get("success") or not verify_records:
+            return result
+        entity_id = result.get("entity_id")
+        relevant = [rec for rec in verify_records if not entity_id or rec.get("entity_id") == entity_id]
+        last = relevant[-1] if relevant else None
+        # Only actions with a deterministic target are hedged: toggles and
+        # attribute-only actions (fan speed, volume) often change no state.
+        if last is None or last.get("outcome") != VERIFY_UNVERIFIED or not last.get("expected_state"):
+            return result
+        metadata = dict(result.get("metadata") or {})
+        friendly_name = metadata.get("top_friendly_name") or action.get("entity") or entity_id or "the device"
+        metadata["verify_outcome"] = VERIFY_UNVERIFIED
+        return {
+            **result,
+            "speech": unverified_speech(str(friendly_name)),
+            "cacheable": False,
+            "metadata": metadata,
+        }
 
     @staticmethod
     def _action_executed_from_result(

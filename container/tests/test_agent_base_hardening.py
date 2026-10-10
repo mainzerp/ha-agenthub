@@ -18,6 +18,7 @@ from app.agents.action_executor import (
     VERIFY_IN_PROGRESS,
     VERIFY_MISMATCH,
     VERIFY_REACHED,
+    VERIFY_UNVERIFIED,
     StateVerificationError,
     build_verified_speech,
     call_service_with_verification,
@@ -108,7 +109,13 @@ class TestVerificationOutcome:
         assert classify_verification_outcome("locked", "locking") == VERIFY_IN_PROGRESS
         assert classify_verification_outcome("armed_away", "arming") == VERIFY_IN_PROGRESS
         assert classify_verification_outcome("locked", "jammed") == VERIFY_MISMATCH
-        assert classify_verification_outcome("armed_home", "disarmed") == VERIFY_MISMATCH
+        # Possibly the unchanged pre-call state of a late-reporting device.
+        assert classify_verification_outcome("armed_home", "disarmed") == VERIFY_UNVERIFIED
+        assert classify_verification_outcome("on", None) == VERIFY_UNVERIFIED
+        # Opt-in evidence: the state moved away from the pre-call state and settled elsewhere.
+        assert classify_verification_outcome("armed_home", "disarmed", previous_state="armed_away") == VERIFY_MISMATCH
+        assert classify_verification_outcome("armed_home", "disarmed", previous_state="disarmed") == VERIFY_UNVERIFIED
+        assert classify_verification_outcome("armed_home", "disarmed", strict=True) == VERIFY_MISMATCH
         # Equivalent terminal states are not contradictions.
         assert classify_verification_outcome("idle", "off") == VERIFY_REACHED
         assert classify_verification_outcome("returning", "docked") == VERIFY_REACHED
@@ -133,7 +140,7 @@ class TestVerificationOutcome:
         assert isinstance(verify["error"], StateVerificationError)
         assert "jammed" in str(verify["error"])
 
-    async def test_alarm_unchanged_after_timeout_is_reported_as_failure(self):
+    async def test_alarm_unchanged_after_timeout_is_unverified_not_failed(self):
         @asynccontextmanager
         async def expect_state(entity_id, **_kwargs):
             observer = {"new_state": None}
@@ -151,8 +158,10 @@ class TestVerificationOutcome:
             poll_interval=0.01,
             poll_max=0.01,
         )
-        assert verify["success"] is False
-        assert verify["outcome"] == VERIFY_MISMATCH
+        assert verify["success"] is True
+        assert verify["outcome"] == VERIFY_UNVERIFIED
+        assert verify["verified"] is False
+        assert verify["cacheable"] is False
 
     async def test_transitional_state_stays_success_in_progress(self):
         ha_client = SimpleNamespace(
@@ -196,6 +205,60 @@ class TestVerificationOutcome:
         assert verify["success"] is True
         assert verify["verified"] is True
         assert verify["observed_state"] == "locked"
+
+    async def test_agent_hedges_unconfirmed_action_and_keeps_it_out_of_the_cache(self):
+        """Light executor speaks intent-first; the agent layer hedges unconfirmed results."""
+        ha_client = SimpleNamespace(
+            call_service=AsyncMock(return_value=[]),
+            get_state=AsyncMock(return_value={"state": "on"}),
+        )
+
+        async def fake_execute(action, ha_client, *_args, **_kwargs):
+            await call_service_with_verification(
+                ha_client,
+                "light",
+                "turn_off",
+                "light.kitchen",
+                expected_state="off",
+                ws_timeout=0.01,
+                poll_interval=0.01,
+                poll_max=0.01,
+            )
+            return {"success": True, "entity_id": "light.kitchen", "new_state": "on", "speech": "Done, turned off."}
+
+        agent = _light_agent(ha_client=ha_client)
+        agent._call_llm = AsyncMock(return_value='```json\n{"action": "turn_off", "entity": "Kitchen"}\n```')
+        agent._do_execute = fake_execute
+        result = await agent.handle_task(_task("turn off the kitchen"))
+        assert result.speech == "I sent the command to Kitchen, but it has not confirmed the new state yet."
+        assert result.error is None
+        assert result.action_executed.success is True
+        assert result.action_executed.cacheable is False
+
+    async def test_agent_keeps_confirmed_speech(self):
+        ha_client = SimpleNamespace(
+            call_service=AsyncMock(return_value=[{"entity_id": "light.kitchen", "state": "off"}])
+        )
+
+        async def fake_execute(action, ha_client, *_args, **_kwargs):
+            await call_service_with_verification(
+                ha_client,
+                "light",
+                "turn_off",
+                "light.kitchen",
+                expected_state="off",
+                ws_timeout=0.01,
+                poll_interval=0.01,
+                poll_max=0.01,
+            )
+            return {"success": True, "entity_id": "light.kitchen", "new_state": "off", "speech": "Done, turned off."}
+
+        agent = _light_agent(ha_client=ha_client)
+        agent._call_llm = AsyncMock(return_value='```json\n{"action": "turn_off", "entity": "Kitchen"}\n```')
+        agent._do_execute = fake_execute
+        result = await agent.handle_task(_task("turn off the kitchen"))
+        assert result.speech == "Done, turned off."
+        assert result.action_executed.cacheable is True
 
     def test_speech_never_claims_success_on_contradiction(self):
         phrases = {"lock": "locked"}
