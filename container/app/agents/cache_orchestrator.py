@@ -15,11 +15,12 @@ from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import Any
 
+from app.agents.conversation_manager import extract_resolved_entities
 from app.analytics.collector import track_cache_event_background, track_request_background
 from app.analytics.tracer import _optional_span
 from app.cache.cache_manager import ActionReplayOutcome, ActionReplayRejected, CacheManager, RoutingSkipOutcome
 from app.db.repository import SettingsRepository
-from app.entity.visibility import entity_is_visible
+from app.entity.visibility import _index_has_async_get_by_id, entity_is_visible
 from app.models.agent import (
     CANCEL_INTERACTION_AGENT,
     FALLBACK_AGENT,
@@ -30,6 +31,21 @@ from app.models.agent import (
 from app.models.cache import ActionCacheEntry, CachedAction
 
 logger = logging.getLogger(__name__)
+
+
+async def agent_is_known(agent_id: str, agent_registry=None) -> bool:
+    """True when ``agent_id`` is set and (with a registry) still registered/enabled.
+
+    Shared gate for routing-cache hits and action-cache replays: a cached
+    decision must never dispatch to, or replay on behalf of, an agent that is
+    no longer available.
+    """
+    if not agent_id:
+        return False
+    if agent_registry is None:
+        return True
+    known_agents = await agent_registry.get_known_agents()
+    return agent_id in known_agents
 
 
 async def routing_hit_is_still_valid(
@@ -45,12 +61,8 @@ async def routing_hit_is_still_valid(
     referenced by the cached routing decision must still be visible to
     that agent. Fail-closed on any error.
     """
-    if not agent_id:
+    if not await agent_is_known(agent_id, agent_registry):
         return False
-    if agent_registry is not None:
-        known_agents = await agent_registry.get_known_agents()
-        if agent_id not in known_agents:
-            return False
     if isinstance(entity_ids, list) and entity_ids:
         if entity_index is None:
             return False
@@ -218,6 +230,7 @@ class CacheOrchestrator:
                 check_visibility=_check_vis,
                 execute_cached_action=_exec_action,
                 span_collector=span_collector,
+                check_agent=self._cached_agent_is_known,
             )
             if action_hit is not None:
                 if isinstance(action_hit, ActionReplayRejected):
@@ -246,8 +259,14 @@ class CacheOrchestrator:
                 if routing_hit.lookup_ms is not None:
                     cache_span["metadata"]["routing_lookup_ms"] = round(routing_hit.lookup_ms, 1)
                 if not await self._routing_hit_is_still_valid(routing_hit):
+                    # The served row itself (the neighbour for a semantic
+                    # hit) names an unavailable agent or invisible entity:
+                    # that row is invalid for every wording, so delete it.
                     with contextlib.suppress(Exception):
-                        await asyncio.to_thread(self._cache_manager.invalidate_routing, routing_hit.entry_id)
+                        await asyncio.to_thread(
+                            self._cache_manager.invalidate_routing,
+                            routing_hit.source_entry_id or routing_hit.entry_id,
+                        )
                     cache_span["metadata"]["hit_type"] = "semantic_invalid" if is_semantic else "routing_invalid"
                     cache_span["metadata"]["cached_agent_id"] = routing_hit.agent_id
                     cache_span["metadata"]["cache_tier"] = 0
@@ -277,6 +296,21 @@ class CacheOrchestrator:
         """
         if not entity_id:
             return False
+        # HA answers 200 for service calls on unknown entities, so a replay
+        # would "succeed" against a removed entity. Require the entity to be
+        # present in the entity index (fail-closed without an index).
+        if self._entity_index is None:
+            return False
+        try:
+            if _index_has_async_get_by_id(self._entity_index):
+                indexed = await self._entity_index.get_by_id_async(entity_id)
+            else:
+                indexed = self._entity_index.get_by_id(entity_id)
+        except Exception:
+            logger.debug("Entity index lookup failed for %s; treating as not visible", entity_id, exc_info=True)
+            return False
+        if indexed is None:
+            return False
         try:
             return await entity_is_visible(
                 agent_id,
@@ -292,6 +326,10 @@ class CacheOrchestrator:
                 exc_info=True,
             )
             return False
+
+    async def _cached_agent_is_known(self, agent_id: str) -> bool:
+        """Action-replay agent gate; same semantics as the routing tier's check."""
+        return await agent_is_known(agent_id, self._agent_registry)
 
     async def _routing_hit_is_still_valid(self, routing_hit: RoutingSkipOutcome) -> bool:
         """Validate a routing-cache hit before it is allowed to skip classification."""
@@ -367,11 +405,16 @@ class CacheOrchestrator:
             if self._get_turns is not None:
                 prior_turns = await self._get_turns(conversation_id)
             if self._store_turn is not None:
+                # Keep anaphora hints current: "turn it off" after a replayed
+                # "turn on the kitchen light" must refer to the kitchen light,
+                # exactly as after a live turn.
+                resolved_entities = await extract_resolved_entities(hit.replay_result, self._entity_index)
                 await self._store_turn(
                     conversation_id,
                     user_text,
                     speech,
                     agent_id=target_agent,
+                    resolved_entities=resolved_entities,
                     user_id=task_context.user_id if task_context else None,
                     language=task_context.language if task_context else None,
                     source=task_context.source if task_context else None,
@@ -435,11 +478,18 @@ class CacheOrchestrator:
         task: IngressTask | None = None,
         merged_multi_agent: bool = False,
         used_origin_context: bool = False,
+        speech_has_turn_additions: bool | None = None,
     ) -> tuple[bool, bool]:
-        """Store either an action-cache row or a routing-cache row, never both."""
+        """Store either an action-cache row or a routing-cache row, never both.
+
+        ``speech_has_turn_additions`` states whether the mediated ``speech``
+        carries per-turn additions (calendar reminder, closing follow-up
+        question). Only an explicit ``False`` lets the mediated speech become
+        the stored replay fallback; otherwise (``True`` or unknown) the base
+        agent speech is stored so a later replay never repeats a stale
+        reminder or question.
+        """
         if merged_multi_agent or not self._cache_manager or not speech or has_error:
-            return False, False
-        if self.legacy_pipeline_enabled():
             return False, False
         if not await self._get_bool_setting_impl("cache.enabled", True):
             return False, False
@@ -460,6 +510,15 @@ class CacheOrchestrator:
             if entity_id:
                 entity_ids.append(entity_id)
             entity_ids = list(dict.fromkeys(entity_ids))
+
+        # Context-dependent turns are keyed by their exact text but resolved
+        # through conversation state: a follow-up answer ("the kitchen one")
+        # or an anaphoric command ("turn it off") resolved via last_entities
+        # would replay against the same entity in an unrelated conversation.
+        # Neither tier stores them -- a routing row for "turn it off" would
+        # equally misroute when the referent is a different domain.
+        if self._is_context_dependent_turn(task, entity_ids, action_executed):
+            return False, False
 
         confidence_value = confidence if confidence is not None else 0.0
         readonly_action = self._is_readonly_action_result(action_executed)
@@ -530,7 +589,12 @@ class CacheOrchestrator:
                     agent_id=target_agent,
                     condensed_task=condensed_task,
                     confidence=confidence_value,
-                    response_text=speech,
+                    # Replay fallback speech (used when the rewrite fails):
+                    # never the mediated speech unless it provably carries no
+                    # per-turn reminder or closing question.
+                    response_text=(
+                        speech if speech_has_turn_additions is False else (original_response_text or speech)
+                    ),
                     original_response_text=original_response_text or speech,
                     cached_action=cached_action,
                     entity_ids=entity_ids,
@@ -570,14 +634,51 @@ class CacheOrchestrator:
             logger.warning("Failed to store routing decision", exc_info=True)
             return False, False
 
-    async def invalidate_served_routing(self, entry_id: str, *, reason: str) -> None:
+    @staticmethod
+    def _is_context_dependent_turn(task: IngressTask | None, entity_ids: list[str], action_executed) -> bool:
+        """True when the turn's outcome depended on conversation context.
+
+        Signals: the turn answered a pending clarifying question
+        (``is_followup`` / ``pending_question``), or an executed entity is one
+        of the anaphora hints offered via ``last_entities``. The second test is
+        deliberately conservative: an entity named explicitly that also
+        happens to be a recent referent is not stored either.
+        """
+        context = getattr(task, "context", None) if task is not None else None
+        if context is None:
+            return False
+        if getattr(context, "is_followup", False) or getattr(context, "pending_question", None):
+            return True
+        last_entities = getattr(context, "last_entities", None) or []
+        hinted = {str(getattr(le, "entity_id", "") or "").strip().lower() for le in last_entities}
+        hinted.discard("")
+        if not hinted:
+            return False
+        executed = {eid.strip().lower() for eid in entity_ids if eid}
+        if isinstance(action_executed, dict):
+            command = action_executed.get("executed_command")
+            if isinstance(command, dict) and command.get("entity_id"):
+                executed.add(str(command["entity_id"]).strip().lower())
+        return bool(executed & hinted)
+
+    async def invalidate_served_routing(
+        self,
+        entry_id: str,
+        *,
+        reason: str,
+        clarifying_question: bool = False,
+    ) -> None:
         """Invalidate a served routing-cache entry after the cached agent's turn failed (R-B).
 
         Thin wrapper over ``CacheManager.invalidate_routing``; failures are
         contained (the next identical phrasing simply re-classifies via LLM
-        on the next turn either way once the entry is gone).
+        on the next turn either way once the entry is gone). Semantic-hit
+        handles never delete the borrowed neighbour row (see
+        ``CacheManager.invalidate_routing``). ``clarifying_question=True``
+        marks a turn that ended in a clarifying question from the correctly
+        routed agent; it is not a routing failure and is a no-op.
         """
-        if not entry_id or not self._cache_manager:
+        if not entry_id or not self._cache_manager or clarifying_question:
             return
         try:
             await asyncio.to_thread(self._cache_manager.invalidate_routing, entry_id)

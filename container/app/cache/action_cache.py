@@ -221,6 +221,7 @@ class ActionCache(_BaseCache[ActionCacheEntry]):
             "rewrite_applied": str(entry.rewrite_applied).lower(),
             "rewrite_latency_ms": str(entry.rewrite_latency_ms or ""),
             "validated_at": entry.validated_at or "",
+            "context_dependent": str(entry.context_dependent).lower(),
         }
 
     def _deserialize_entry(self, document: str, metadata: dict, *, similarity: float) -> ActionCacheEntry | None:
@@ -256,4 +257,5 @@ class ActionCache(_BaseCache[ActionCacheEntry]):
             rewrite_applied=self._coerce_bool(metadata.get("rewrite_applied"), False),
             rewrite_latency_ms=self._coerce_float(metadata.get("rewrite_latency_ms"), 0.0),
             validated_at=metadata.get("validated_at") or None,
+            context_dependent=self._coerce_bool(metadata.get("context_dependent"), False),
         )
