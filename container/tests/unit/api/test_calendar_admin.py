@@ -117,8 +117,19 @@ class TestCalendarUsers:
 class TestCalendarEvents:
     async def test_list_calendar_events_and_crud_events(self, db_repository):
         ha_client = AsyncMock()
-        ha_client.get_calendar_events = AsyncMock(return_value=[{"summary": "Meeting"}])
+        ha_client.get_calendar_event_details = AsyncMock(
+            return_value=[
+                {
+                    "summary": "Meeting",
+                    "uid": "evt-1",
+                    "recurrence_id": "20240101",
+                    "start": {"dateTime": "2024-01-01T09:00:00+01:00"},
+                    "end": {"date": "2024-01-02"},
+                }
+            ]
+        )
         ha_client.call_service = AsyncMock(return_value={"success": True})
+        ha_client.send_ws_command = AsyncMock(return_value=None)
 
         app = _build_app(ha_client=ha_client)
 
@@ -138,17 +149,47 @@ class TestCalendarEvents:
             resp_delete = await client.request(
                 "DELETE",
                 "/api/admin/calendar/events",
-                json={"calendar_id": "calendar.work", "uid": "evt-123"},
+                json={"calendar_id": "calendar.work", "uid": "evt-123", "recurrence_id": "20240101"},
             )
 
         assert resp_list.status_code == 200
-        assert resp_list.json()["events"] == [{"summary": "Meeting"}]
+        assert resp_list.json()["events"] == [
+            {
+                "summary": "Meeting",
+                "uid": "evt-1",
+                "recurrence_id": "20240101",
+                "start": "2024-01-01T09:00:00+01:00",
+                "end": "2024-01-02",
+            }
+        ]
 
         assert resp_create.status_code == 200
         assert resp_create.json()["ok"] is True
 
         assert resp_delete.status_code == 200
         assert resp_delete.json()["ok"] is True
+        # #132: HA has no calendar.delete_event service; deletion uses the WS command.
+        ha_client.send_ws_command.assert_awaited_once_with(
+            "calendar/event/delete", entity_id="calendar.work", uid="evt-123", recurrence_id="20240101"
+        )
+        assert all(call.args[1] != "delete_event" for call in ha_client.call_service.await_args_list)
+
+    async def test_delete_without_websocket_returns_503(self, db_repository):
+        ha_client = AsyncMock()
+        ha_client.send_ws_command = AsyncMock(side_effect=RuntimeError("no ws"))
+        app = _build_app(ha_client=ha_client)
+
+        async for client in _client_for(app):
+            resp = await client.request(
+                "DELETE",
+                "/api/admin/calendar/events",
+                json={"calendar_id": "calendar.work", "uid": "evt-123"},
+            )
+
+        assert resp.status_code == 503
+        ha_client.send_ws_command.assert_awaited_once_with(
+            "calendar/event/delete", entity_id="calendar.work", uid="evt-123"
+        )
 
 
 @pytest.mark.asyncio
