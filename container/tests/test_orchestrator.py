@@ -2069,9 +2069,12 @@ class TestOrchestratorFiller:
         # Mock filler agent invocation
         orch._invoke_filler_agent = AsyncMock(return_value="Let me look that up for you.")
 
-        # Dispatcher delays just enough to exceed the 50ms threshold
+        # Deterministic slow agent: it answers only after the filler went out
+        # (no real sleep racing the 50ms threshold).
+        filler_seen = asyncio.Event()
+
         async def _slow_stream(req):
-            await asyncio.sleep(0.06)
+            await asyncio.wait_for(filler_seen.wait(), timeout=5)
             yield {"token": "Here is the answer", "done": False}
             yield {"token": "", "done": True}
 
@@ -2084,6 +2087,8 @@ class TestOrchestratorFiller:
         chunks = []
         async for c in orch.handle_task_stream(task):
             chunks.append(c)
+            if "filler_push" in c:
+                filler_seen.set()
 
         # A filler token should be yielded before real tokens
         filler_chunks = [c for c in chunks if "filler_push" in c]
@@ -2194,7 +2199,8 @@ class TestOrchestratorFiller:
         mock_complete.return_value = "general-agent: search the web"
 
         async def _filler_slow(user_text, agent, lang):
-            await asyncio.sleep(0.10)
+            # Never finishes on its own: the agent answer always wins the race.
+            await asyncio.Event().wait()
             return "Hold on..."
 
         orch._invoke_filler_agent = AsyncMock(side_effect=_filler_slow)
@@ -2247,8 +2253,11 @@ class TestOrchestratorFiller:
 
         orch._invoke_filler_agent = AsyncMock(return_value="Let me look that up for you.")
 
+        # Deterministic slow agent: it answers only after the filler went out.
+        filler_seen = asyncio.Event()
+
         async def _slow_stream(req):
-            await asyncio.sleep(0.06)
+            await asyncio.wait_for(filler_seen.wait(), timeout=5)
             yield {"token": "Here is the answer", "done": False}
             yield {"token": "", "done": True}
 
@@ -2263,6 +2272,8 @@ class TestOrchestratorFiller:
         chunks = []
         async for c in orch.handle_task_stream(task):
             chunks.append(c)
+            if "filler_push" in c:
+                filler_seen.set()
 
         # Filler should have been sent
         filler_chunks = [c for c in chunks if "filler_push" in c]

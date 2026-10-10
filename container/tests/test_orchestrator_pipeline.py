@@ -212,8 +212,12 @@ async def test_stream_with_filler_cancels_reader_on_timeout(mock_complete, mock_
     mock_complete.return_value = "light-agent (95%): Turn on light"
     orch, dispatcher = _make_orchestrator()
 
+    # Deterministic slow agent: it answers only after the filler went out
+    # (no real sleep racing the 50ms threshold).
+    filler_seen = asyncio.Event()
+
     async def _slow_stream(_request):
-        await asyncio.sleep(0.06)
+        await asyncio.wait_for(filler_seen.wait(), timeout=5)
         yield {"token": "late", "done": True}
 
     dispatcher.dispatch_stream = _slow_stream
@@ -227,6 +231,8 @@ async def test_stream_with_filler_cancels_reader_on_timeout(mock_complete, mock_
     chunks = []
     async for chunk in orch.handle_task_stream(task):
         chunks.append(chunk)
+        if chunk.get("filler_push"):
+            filler_seen.set()
 
     # Should have received filler and then terminal chunk without hanging
     assert any(c.get("filler_push") for c in chunks)

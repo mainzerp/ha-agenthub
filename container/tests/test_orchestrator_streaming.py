@@ -451,8 +451,12 @@ class TestStreamingDispatchInternals:
         mock_complete.return_value = "light-agent (95%): Turn on light"
         orch, dispatcher = _make_orchestrator()
 
+        # Deterministic slow agent: it answers only after the filler went out
+        # (no real sleep racing the 50ms threshold).
+        filler_seen = asyncio.Event()
+
         async def _slow_stream(_request):
-            await asyncio.sleep(0.06)
+            await asyncio.wait_for(filler_seen.wait(), timeout=5)
             yield {"token": "Light ", "done": False}
             yield {"token": "is on.", "done": True}
 
@@ -466,6 +470,8 @@ class TestStreamingDispatchInternals:
         chunks = []
         async for chunk in orch.handle_task_stream(task):
             chunks.append(chunk)
+            if chunk.get("filler_push"):
+                filler_seen.set()
 
         filler_chunks = [c for c in chunks if c.get("filler_push")]
         assert len(filler_chunks) >= 1
@@ -901,8 +907,11 @@ class TestFirstFrameLatency:
         mock_complete.return_value = "general-agent (95%): search the web"
         orch, dispatcher = _make_orchestrator()
 
+        # Deterministic slow agent: it answers only after the filler went out.
+        filler_seen = asyncio.Event()
+
         async def _slow_stream(_request):
-            await asyncio.sleep(0.06)
+            await asyncio.wait_for(filler_seen.wait(), timeout=5)
             yield {"token": "Real ", "done": False}
             yield {"token": "answer.", "done": True}
 
@@ -912,7 +921,11 @@ class TestFirstFrameLatency:
         orch._invoke_filler_agent = AsyncMock(return_value="One moment please.")
 
         task = _make_task("search something", conversation_id="conv-p0-filler-order")
-        chunks = [c async for c in orch.handle_task_stream(task)]
+        chunks = []
+        async for c in orch.handle_task_stream(task):
+            chunks.append(c)
+            if c.get("filler_push"):
+                filler_seen.set()
 
         filler_idx = next(i for i, c in enumerate(chunks) if c.get("filler_push"))
         first_token_idx = next(i for i, c in enumerate(chunks) if not c.get("done") and c.get("token"))
@@ -1154,8 +1167,10 @@ class TestTextOnlySourceRules:
         mock_complete.return_value = "light-agent (95%): Turn on light"
         orch, dispatcher = _make_orchestrator()
 
+        filler_seen = asyncio.Event()
+
         async def _slow_stream(_request):
-            await asyncio.sleep(0.06)
+            await asyncio.wait_for(filler_seen.wait(), timeout=5)
             yield {"token": "Light is on.", "done": True}
 
         dispatcher.dispatch_stream = _slow_stream
@@ -1164,7 +1179,11 @@ class TestTextOnlySourceRules:
         orch._invoke_filler_agent = AsyncMock(return_value="One moment please.")
 
         task = _make_source_task(source, f"conv-{source}-filler")
-        chunks = [c async for c in orch.handle_task_stream(task)]
+        chunks = []
+        async for c in orch.handle_task_stream(task):
+            chunks.append(c)
+            if c.get("filler_push"):
+                filler_seen.set()
 
         assert [c["filler_push"] for c in chunks if c.get("filler_push")] == ["One moment please."]
 
