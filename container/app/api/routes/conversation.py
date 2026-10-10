@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import time
 import uuid
+from collections.abc import AsyncGenerator, AsyncIterator
 from datetime import UTC, datetime
-from typing import cast
+from typing import Any, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
@@ -72,6 +74,28 @@ def set_dispatcher(dispatcher) -> None:
     """Called by main.py to inject the A2A dispatcher."""
     global _dispatcher
     _dispatcher = dispatcher
+
+
+# Fixed user-facing speech for a failed REST dispatch. The exception detail
+# goes to the log (with the trace id) and is never returned to the client.
+_DISPATCH_FAILED_SPEECH = "Sorry, something went wrong while handling that request."
+# Terminal-frame error when the dispatcher raised or its stream ended
+# without a done frame. Internal details stay in the log.
+_STREAM_FAILED_ERROR = "Internal error"
+
+
+@contextlib.asynccontextmanager
+async def closing_stream(stream: AsyncIterator[dict[str, Any]]) -> AsyncIterator[AsyncIterator[dict[str, Any]]]:
+    """Close an async-generator stream on exit (disconnect, error, or completion).
+
+    ``contextlib.aclosing`` requires ``aclose``; this helper also accepts
+    plain async iterators (test doubles) that have nothing to close.
+    """
+    try:
+        yield stream
+    finally:
+        if isinstance(stream, AsyncGenerator):
+            await stream.aclose()
 
 
 def _ws_terminal_error(message: str, **extra) -> dict:
@@ -139,6 +163,32 @@ def _apply_stream_chunk(
         else None
     )
     return frame
+
+
+def _missing_done_frame(
+    frame: StreamToken,
+    t0: float,
+    first_frame_ms: float | None,
+    trace_id: str | None,
+    streamed: bool,
+) -> StreamToken:
+    """Build the terminal frame for a dispatcher stream that ended without one.
+
+    Streamed tokens stay the answer (plain done frame); a stream that
+    produced no tokens ends with a generic terminal error.
+    """
+    logger.warning("Conversation stream ended without a done frame (trace_id=%s)", trace_id)
+    now_ms = (time.perf_counter() - t0) * 1000
+    chunk: dict[str, Any] = {"done": True}
+    if not streamed:
+        chunk["error"] = _STREAM_FAILED_ERROR
+    return _apply_stream_chunk(
+        frame,
+        chunk,
+        first_frame_ms=first_frame_ms if first_frame_ms is not None else now_ms,
+        now_ms=now_ms,
+        trace_id=trace_id,
+    )
 
 
 def _normalize_action_executed(raw) -> ActionResult | None:
@@ -232,9 +282,14 @@ async def conversation_rest(
         raise HTTPException(status_code=503, detail="Service not ready")
     try:
         response = await _dispatcher.dispatch(a2a_request)
-    except RuntimeError as exc:
+    except RuntimeError:
+        logger.warning(
+            "Conversation dispatch failed (trace_id=%s)",
+            getattr(request.state, "trace_id", None),
+            exc_info=True,
+        )
         return ConversationResponse(
-            speech=f"Error: {exc}",
+            speech=_DISPATCH_FAILED_SPEECH,
             conversation_id=conv_request.conversation_id,
         )
 
@@ -275,25 +330,41 @@ async def conversation_sse(
             parent_token = span_collector.push_parent(root_span_id)
         t0 = time.perf_counter()
         first_frame_ms: float | None = None
+        saw_done = False
+        streamed = False
+        trace_id = getattr(request.state, "trace_id", None)
         # P3: one frame model per turn, mutated per chunk (see _apply_stream_chunk).
         frame = StreamToken(token="")  # nosec B106
         try:
-            async for chunk in _dispatcher.dispatch_stream(a2a_request):
-                now_ms = (time.perf_counter() - t0) * 1000
-                if first_frame_ms is None:
-                    # This frame is about to be sent and is therefore the
-                    # first frame of the turn.
-                    first_frame_ms = now_ms
-                    # Expose to TracingMiddleware for the root-span marker.
-                    request.state.first_frame_ms = first_frame_ms
-                token = _apply_stream_chunk(
-                    frame,
-                    chunk,
-                    first_frame_ms=first_frame_ms,
-                    now_ms=now_ms,
-                    trace_id=getattr(request.state, "trace_id", None),
-                )
-                yield f"data: {token.model_dump_json()}\n\n"
+            # Close the dispatcher stream on client disconnect or error so
+            # the orchestrator's cleanup runs now, not at garbage collection.
+            async with closing_stream(_dispatcher.dispatch_stream(a2a_request)) as stream:
+                async for chunk in stream:
+                    if saw_done:
+                        # Drain (the orchestrator may still finish work after
+                        # its terminal chunk) but never emit past the done frame.
+                        continue
+                    now_ms = (time.perf_counter() - t0) * 1000
+                    if first_frame_ms is None:
+                        # This frame is about to be sent and is therefore the
+                        # first frame of the turn.
+                        first_frame_ms = now_ms
+                        # Expose to TracingMiddleware for the root-span marker.
+                        request.state.first_frame_ms = first_frame_ms
+                    token = _apply_stream_chunk(
+                        frame,
+                        chunk,
+                        first_frame_ms=first_frame_ms,
+                        now_ms=now_ms,
+                        trace_id=trace_id,
+                    )
+                    streamed = streamed or bool(token.token)
+                    saw_done = token.done
+                    yield f"data: {token.model_dump_json()}\n\n"
+            if not saw_done:
+                # The stream ended without a terminal frame: close the turn
+                # explicitly so clients do not wait for their own timeout.
+                yield f"data: {_missing_done_frame(frame, t0, first_frame_ms, trace_id, streamed).model_dump_json()}\n\n"
         finally:
             if span_collector and parent_token is not None:
                 span_collector.pop_parent(parent_token)
@@ -309,138 +380,36 @@ async def ws_conversation(
     _: str = Depends(require_api_key_ws),
 ):
     """WebSocket streaming endpoint."""
-    await websocket.accept()
-    # Validate Origin header against allowed WS origins
-    origin = websocket.headers.get("origin")
-    allowed: set[str] = getattr(websocket.app.state, "allowed_ws_origins", set())
-    if origin and (not allowed or origin not in allowed):
-        if not allowed:
-            reason = "Setup incomplete: no WebSocket origins configured"
-            logger.warning("Rejected WebSocket connection: allowed origins list is empty (setup incomplete)")
-        else:
-            reason = f"Origin {origin} not allowed"
-            logger.warning("Rejected WebSocket connection from disallowed origin: %s", origin)
-        await websocket.close(code=1008, reason=reason)
-        return
-    # Enforce per-IP WebSocket connection limit (Step 18)
+    # Enforce the per-IP WebSocket connection limit (Step 18) BEFORE the
+    # handshake completes: closing an unaccepted socket rejects the upgrade
+    # (HTTP 403), so the HA bridge sees a connect failure and uses REST
+    # instead of losing a turn on an accepted-then-closed socket.
     client_ip = _get_ws_client_ip(websocket)
     async with _get_active_ws_lock():
         current_count = _active_ws_connections.get(client_ip, 0)
         if current_count >= _MAX_WS_CONNECTIONS_PER_IP:
+            logger.warning("Rejected WebSocket handshake from %s: connection limit exceeded", client_ip)
             await websocket.close(code=1008, reason="Connection limit exceeded")
             return
         # Bound total tracked IPs to prevent unbounded memory growth.
         if len(_active_ws_connections) >= _MAX_WS_TRACKED_IPS and client_ip not in _active_ws_connections:
             _active_ws_connections.pop(next(iter(_active_ws_connections)), None)
         _active_ws_connections[client_ip] = current_count + 1
-    # FLOW-WS-TURN-1: ``/ws/conversation`` is a persistent socket
-    # carrying many independent HA conversation turns. The
-    # TracingMiddleware deliberately does NOT create a connection-
-    # level SpanCollector for this path (that would overwrite each
-    # per-turn ``total_duration_ms`` with the connection lifetime
-    # when the socket eventually closes). Instead, this handler
-    # mints a fresh ``trace_id`` + ``SpanCollector`` + root span per
-    # inbound message and flushes them in ``finally`` so the
-    # dashboard waterfall reflects exactly one HA turn per trace.
-    state = websocket.scope.setdefault("state", {})
-    source = state.get("source") or "ha"
-    ws_rate_limiter = WsMessageRateLimiter(rate=10.0, burst=20)
     try:
-        while True:
-            # M-6: receive first, then validate, then account the message
-            # against the rate limiter. Every rejection sends exactly ONE
-            # terminal frame per received message (M-1), so frames stay
-            # bounded by the ingress rate and no tight spin can occur.
-            raw = await websocket.receive_text()
-            if len(raw) > _MAX_WS_MESSAGE_SIZE:
-                await websocket.send_json(_ws_terminal_error("Message too large", max_bytes=_MAX_WS_MESSAGE_SIZE))
-                continue
-            if not await ws_rate_limiter.acquire():
-                await websocket.send_json(_ws_terminal_error("Rate limit exceeded", retry_after_ms=100))
-                continue
-            try:
-                data = json.loads(raw)
-                conv_request = ConversationRequest(**data)
-            except Exception as exc:
-                logger.warning("Invalid WebSocket request: %s", exc, exc_info=True)
-                await websocket.send_json(_ws_terminal_error("Invalid request"))
-                continue
-
-            # M-2: a missing dispatcher on an accepted socket must not raise
-            # HTTPException (undeliverable) nor leak span state -- answer with
-            # a terminal error frame and keep serving the connection.
-            if _dispatcher is None:
-                await websocket.send_json(_ws_terminal_error("Service not ready"))
-                continue
-
-            # Per-turn trace boundary.
-            trace_id = uuid.uuid4().hex[:16]
-            span_collector = SpanCollector(trace_id, source=cast(SpanSource, source))
-            root_span_id = uuid.uuid4().hex[:12]
-            parent_token = span_collector.push_parent(root_span_id)
-
-            # Expose to anything still reading scope state during this turn.
-            state["trace_id"] = trace_id
-            state["span_collector"] = span_collector
-            state["root_span_id"] = root_span_id
-
-            a2a_request, _task = _build_a2a_request(conv_request, "message/stream", span_collector)
-
-            t0 = time.perf_counter()
-            start_time = datetime.now(UTC).isoformat()
-            status = "ok"
-            disconnect_during_turn = False
-            first_frame_ms: float | None = None
-            # P3: one frame model per turn, mutated per chunk (see _apply_stream_chunk).
-            frame = StreamToken(token="")  # nosec B106
-            try:
-                async for chunk in _dispatcher.dispatch_stream(a2a_request):
-                    now_ms = (time.perf_counter() - t0) * 1000
-                    if first_frame_ms is None:
-                        # This frame is about to be sent and is therefore the
-                        # first frame of the turn.
-                        first_frame_ms = now_ms
-                    token = _apply_stream_chunk(
-                        frame, chunk, first_frame_ms=first_frame_ms, now_ms=now_ms, trace_id=trace_id
-                    )
-                    await websocket.send_json(token.model_dump())
-            except WebSocketDisconnect:
-                status = "error"
-                disconnect_during_turn = True
-            except Exception:
-                status = "error"
-                raise
-            finally:
-                span_collector.pop_parent(parent_token)
-                duration_ms = (time.perf_counter() - t0) * 1000
-                root_metadata: dict = {"status_code": 101, "ws_path": "/ws/conversation"}
-                if first_frame_ms is not None:
-                    root_metadata["first_frame_ms"] = round(first_frame_ms, 2)
-                span_collector.add_root_span(
-                    {
-                        "span_id": root_span_id,
-                        "trace_id": trace_id,
-                        "span_name": "ws_turn",
-                        "agent_id": None,
-                        "parent_span": None,
-                        "start_time": start_time,
-                        "duration_ms": round(duration_ms, 2),
-                        "status": status,
-                        "metadata": root_metadata,
-                    }
-                )
-                try:
-                    await span_collector.flush()
-                except Exception:
-                    logger.warning("Failed to flush per-turn spans for trace %s", trace_id, exc_info=True)
-                # Clear scope state so the next iteration cannot
-                # accidentally read stale values before the next mint.
-                state.pop("trace_id", None)
-                state.pop("span_collector", None)
-                state.pop("root_span_id", None)
-
-            if disconnect_during_turn:
-                raise WebSocketDisconnect()
+        await websocket.accept()
+        # Validate Origin header against allowed WS origins
+        origin = websocket.headers.get("origin")
+        allowed: set[str] = getattr(websocket.app.state, "allowed_ws_origins", set())
+        if origin and (not allowed or origin not in allowed):
+            if not allowed:
+                reason = "Setup incomplete: no WebSocket origins configured"
+                logger.warning("Rejected WebSocket connection: allowed origins list is empty (setup incomplete)")
+            else:
+                reason = f"Origin {origin} not allowed"
+                logger.warning("Rejected WebSocket connection from disallowed origin: %s", origin)
+            await websocket.close(code=1008, reason=reason)
+            return
+        await _serve_ws_conversation(websocket)
     except WebSocketDisconnect:
         logger.debug("WebSocket client disconnected")
     finally:
@@ -455,3 +424,147 @@ async def ws_conversation(
                 logger.warning("WebSocket connection count for %s was already zero on disconnect", client_ip)
             if _active_ws_connections[client_ip] == 0:
                 _active_ws_connections.pop(client_ip, None)
+
+
+async def _serve_ws_conversation(websocket: WebSocket) -> None:
+    """Serve conversation turns on an accepted ``/ws/conversation`` socket.
+
+    Every received message is answered with frames ending in exactly one
+    terminal (``done=True``) frame -- also when the dispatcher raises or its
+    stream ends early -- so a socket that closes before any frame of a turn
+    means the turn was never answered.
+    """
+    # FLOW-WS-TURN-1: ``/ws/conversation`` is a persistent socket
+    # carrying many independent HA conversation turns. The
+    # TracingMiddleware deliberately does NOT create a connection-
+    # level SpanCollector for this path (that would overwrite each
+    # per-turn ``total_duration_ms`` with the connection lifetime
+    # when the socket eventually closes). Instead, this handler
+    # mints a fresh ``trace_id`` + ``SpanCollector`` + root span per
+    # inbound message and flushes them in ``finally`` so the
+    # dashboard waterfall reflects exactly one HA turn per trace.
+    state = websocket.scope.setdefault("state", {})
+    source = state.get("source") or "ha"
+    ws_rate_limiter = WsMessageRateLimiter(rate=10.0, burst=20)
+    while True:
+        # M-6: receive first, then validate, then account the message
+        # against the rate limiter. Every rejection sends exactly ONE
+        # terminal frame per received message (M-1), so frames stay
+        # bounded by the ingress rate and no tight spin can occur.
+        raw = await websocket.receive_text()
+        if len(raw) > _MAX_WS_MESSAGE_SIZE:
+            await websocket.send_json(_ws_terminal_error("Message too large", max_bytes=_MAX_WS_MESSAGE_SIZE))
+            continue
+        if not await ws_rate_limiter.acquire():
+            await websocket.send_json(_ws_terminal_error("Rate limit exceeded", retry_after_ms=100))
+            continue
+        try:
+            data = json.loads(raw)
+            conv_request = ConversationRequest(**data)
+        except Exception as exc:
+            logger.warning("Invalid WebSocket request: %s", exc, exc_info=True)
+            await websocket.send_json(_ws_terminal_error("Invalid request"))
+            continue
+
+        # M-2: a missing dispatcher on an accepted socket must not raise
+        # HTTPException (undeliverable) nor leak span state -- answer with
+        # a terminal error frame and keep serving the connection.
+        if _dispatcher is None:
+            await websocket.send_json(_ws_terminal_error("Service not ready"))
+            continue
+
+        # Per-turn trace boundary.
+        trace_id = uuid.uuid4().hex[:16]
+        span_collector = SpanCollector(trace_id, source=cast(SpanSource, source))
+        root_span_id = uuid.uuid4().hex[:12]
+        parent_token = span_collector.push_parent(root_span_id)
+
+        # Expose to anything still reading scope state during this turn.
+        state["trace_id"] = trace_id
+        state["span_collector"] = span_collector
+        state["root_span_id"] = root_span_id
+
+        a2a_request, _task = _build_a2a_request(conv_request, "message/stream", span_collector)
+
+        t0 = time.perf_counter()
+        start_time = datetime.now(UTC).isoformat()
+        status = "ok"
+        disconnect_during_turn = False
+        first_frame_ms: float | None = None
+        saw_done = False
+        streamed = False
+        # P3: one frame model per turn, mutated per chunk (see _apply_stream_chunk).
+        frame = StreamToken(token="")  # nosec B106
+        try:
+            # Close the dispatcher stream on disconnect or error so the
+            # orchestrator's cleanup runs now, not at garbage collection.
+            async with closing_stream(_dispatcher.dispatch_stream(a2a_request)) as stream:
+                async for chunk in stream:
+                    if saw_done:
+                        # Drain (the orchestrator may still finish work after
+                        # its terminal chunk) but never send past the done
+                        # frame: the bridge reuses the socket for the next turn.
+                        continue
+                    now_ms = (time.perf_counter() - t0) * 1000
+                    if first_frame_ms is None:
+                        # This frame is about to be sent and is therefore the
+                        # first frame of the turn.
+                        first_frame_ms = now_ms
+                    token = _apply_stream_chunk(
+                        frame, chunk, first_frame_ms=first_frame_ms, now_ms=now_ms, trace_id=trace_id
+                    )
+                    streamed = streamed or bool(token.token)
+                    saw_done = token.done
+                    await websocket.send_json(token.model_dump())
+            if not saw_done:
+                # The stream ended without a terminal frame: close the turn
+                # explicitly so the bridge does not wait for its timeout.
+                status = "error"
+                await websocket.send_json(
+                    _missing_done_frame(frame, t0, first_frame_ms, trace_id, streamed).model_dump()
+                )
+        except WebSocketDisconnect:
+            status = "error"
+            disconnect_during_turn = True
+        except Exception:
+            status = "error"
+            logger.exception("WebSocket conversation turn failed (trace_id=%s)", trace_id)
+            if not saw_done:
+                # Answer the turn with a terminal error frame and keep the
+                # socket; internal details stay in the log.
+                try:
+                    await websocket.send_json(_ws_terminal_error(_STREAM_FAILED_ERROR, trace_id=trace_id))
+                except Exception:
+                    logger.debug("Could not send terminal error frame (trace_id=%s)", trace_id, exc_info=True)
+                    disconnect_during_turn = True
+        finally:
+            span_collector.pop_parent(parent_token)
+            duration_ms = (time.perf_counter() - t0) * 1000
+            root_metadata: dict = {"status_code": 101, "ws_path": "/ws/conversation"}
+            if first_frame_ms is not None:
+                root_metadata["first_frame_ms"] = round(first_frame_ms, 2)
+            span_collector.add_root_span(
+                {
+                    "span_id": root_span_id,
+                    "trace_id": trace_id,
+                    "span_name": "ws_turn",
+                    "agent_id": None,
+                    "parent_span": None,
+                    "start_time": start_time,
+                    "duration_ms": round(duration_ms, 2),
+                    "status": status,
+                    "metadata": root_metadata,
+                }
+            )
+            try:
+                await span_collector.flush()
+            except Exception:
+                logger.warning("Failed to flush per-turn spans for trace %s", trace_id, exc_info=True)
+            # Clear scope state so the next iteration cannot
+            # accidentally read stale values before the next mint.
+            state.pop("trace_id", None)
+            state.pop("span_collector", None)
+            state.pop("root_span_id", None)
+
+        if disconnect_during_turn:
+            raise WebSocketDisconnect()
