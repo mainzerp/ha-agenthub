@@ -878,6 +878,93 @@ class TestPreviousStateVerification:
         )
         assert result["success"] is True
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("action", "pre", "post"),
+        [
+            ("start", "docked", "idle"),
+            ("start", "docked", "returning"),
+            ("return_to_base", "cleaning", "idle"),
+            ("pause", "cleaning", "returning"),
+            ("stop", "cleaning", "returning"),
+        ],
+    )
+    async def test_vacuum_intermediate_state_is_not_a_failure(self, action, pre, post):
+        ha = _FakeHA("vacuum.robot", pre, post_state=post)
+        result = await execute_vacuum_action(
+            {"action": action, "entity": "robot"},
+            ha,
+            MagicMock(),
+            _matcher("vacuum.robot", "Robot"),
+        )
+        assert result["success"] is True
+        assert "failed" not in result["speech"]
+
+    @pytest.mark.asyncio
+    async def test_vacuum_error_after_start_still_fails(self):
+        ha = _FakeHA("vacuum.robot", "docked", post_state="error")
+        result = await execute_vacuum_action(
+            {"action": "start", "entity": "robot"},
+            ha,
+            MagicMock(),
+            _matcher("vacuum.robot", "Robot"),
+        )
+        assert result["success"] is False
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("pre", "post"), [("off", "on"), ("off", "idle"), ("off", "standby"), ("idle", "on")])
+    async def test_media_play_intermediate_state_is_not_a_failure(self, pre, post):
+        ha = _FakeHA("media_player.tv", pre, post_state=post)
+        result = await execute_media_action(
+            {"action": "play", "entity": "tv"},
+            ha,
+            MagicMock(),
+            _matcher("media_player.tv", "TV"),
+        )
+        assert result["success"] is True
+
+    @pytest.mark.asyncio
+    async def test_cover_stopped_mid_travel_is_not_a_failure(self):
+        ha = _FakeHA("cover.garage", "closed", post_state="stopped")
+        result = await execute_cover_action(
+            {"action": "open_cover", "entity": "garage"},
+            ha,
+            MagicMock(),
+            _matcher("cover.garage", "Garage"),
+        )
+        assert result["success"] is True
+
+    @pytest.mark.asyncio
+    async def test_climate_hvac_mode_change_reporting_other_mode_is_not_a_failure(self):
+        ha = _FakeHA("climate.living", "cool", post_state="heat_cool")
+        result = await execute_climate_action(
+            {"action": "set_hvac_mode", "entity": "living room", "parameters": {"hvac_mode": "heat"}},
+            ha,
+            MagicMock(),
+            _matcher("climate.living", "Living Room"),
+        )
+        assert result["success"] is True
+
+    @pytest.mark.parametrize(
+        ("expected", "observed", "previous", "outcome"),
+        [
+            ("cleaning", "idle", "docked", "unverified"),
+            ("returning", "idle", "cleaning", "unverified"),
+            ("playing", "on", "off", "unverified"),
+            ("open", "stopped", "closed", "unverified"),
+            ("heat", "cool", "off", "unverified"),
+            ("armed_home", "disarmed", "armed_away", "unverified"),
+            ("armed_away", "triggered", "disarmed", "mismatch"),
+            ("on", "unavailable", "off", "mismatch"),
+            ("cleaning", "error", "docked", "mismatch"),
+            ("cleaning", "docked", "docked", "unverified"),
+        ],
+    )
+    def test_classify_intermediate_states(self, expected, observed, previous, outcome):
+        from app.agents.action_executor import classify_verification_outcome
+
+        assert classify_verification_outcome(expected, observed, previous_state=previous) == outcome
+
     @pytest.mark.parametrize(
         ("state_resp", "expected"),
         [

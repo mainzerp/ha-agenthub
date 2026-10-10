@@ -113,8 +113,11 @@ class TestVerificationOutcome:
         assert classify_verification_outcome("armed_home", "disarmed") == VERIFY_UNVERIFIED
         assert classify_verification_outcome("on", None) == VERIFY_UNVERIFIED
         # Opt-in evidence: the state moved away from the pre-call state and settled elsewhere.
-        assert classify_verification_outcome("armed_home", "disarmed", previous_state="armed_away") == VERIFY_MISMATCH
+        assert classify_verification_outcome("armed_home", "triggered", previous_state="armed_away") == VERIFY_MISMATCH
         assert classify_verification_outcome("armed_home", "disarmed", previous_state="disarmed") == VERIFY_UNVERIFIED
+        # #132: a panel that disarms while switching arm modes passes through an
+        # intermediate state -- conservative: unverified, not a failure.
+        assert classify_verification_outcome("armed_home", "disarmed", previous_state="armed_away") == VERIFY_UNVERIFIED
         assert classify_verification_outcome("armed_home", "disarmed", strict=True) == VERIFY_MISMATCH
         # Equivalent terminal states are not contradictions.
         assert classify_verification_outcome("idle", "off") == VERIFY_REACHED

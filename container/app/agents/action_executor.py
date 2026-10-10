@@ -701,6 +701,50 @@ _EQUIVALENT_TARGET_STATES: dict[str, frozenset[str]] = {
 }
 
 
+# Climate HVAC modes: a thermostat may report another mode (often the old
+# one) for a moment while a mode change settles.
+_HVAC_MODES: frozenset[str] = frozenset({"off", "heat", "cool", "heat_cool", "auto", "dry", "fan_only"})
+
+# Plausible intermediate states per expected target. A device may pass
+# through these on its way to the target (a vacuum reports "idle" or
+# "returning" right after start, a player "on"/"idle" before "playing", a
+# panel "disarmed" while switching arm modes). They are never treated as a
+# contradiction of the pre-call ``previous_state``: the outcome stays
+# ``unverified`` (hedged speech, not cached), never a failure.
+_INTERMEDIATE_STATES_BY_TARGET: dict[str, frozenset[str]] = {
+    # vacuum start / clean_spot
+    "cleaning": frozenset({"idle", "returning", "paused"}),
+    # vacuum return_to_base (docked is an equivalent target state)
+    "returning": frozenset({"idle", "paused", "cleaning"}),
+    # media/music play
+    "playing": frozenset({"idle", "on", "standby", "paused"}),
+    # media/vacuum pause
+    "paused": frozenset({"idle", "on", "standby", "returning"}),
+    # media/vacuum stop (off/standby/docked/paused are equivalents)
+    "idle": frozenset({"on", "returning"}),
+    # turn_off of players/TVs that settle via idle/on
+    "off": frozenset({"idle", "on"}),
+    # covers that report a non-standard "stopped" mid-travel
+    "open": frozenset({"stopped"}),
+    "closed": frozenset({"stopped"}),
+    # locks that unlatch ("open") on unlock
+    "unlocked": frozenset({"open"}),
+    # alarm panels that disarm before switching arm modes
+    "armed_home": frozenset({"disarmed"}),
+    "armed_away": frozenset({"disarmed"}),
+    "armed_night": frozenset({"disarmed"}),
+}
+
+
+def _is_intermediate_state(expected_state: str, observed_state: str) -> bool:
+    """True when ``observed_state`` may be a step on the way to ``expected_state``."""
+    if observed_state in _INTERMEDIATE_STATES_BY_TARGET.get(expected_state, frozenset()):
+        return True
+    # Climate mode changes: any other HVAC mode may be the old mode still
+    # being reported (or the device's own interpretation, e.g. auto/heat_cool).
+    return expected_state in _HVAC_MODES and observed_state in _HVAC_MODES
+
+
 # Terminal fault states that contradict any commanded target. Only these
 # (or an opt-in pre-call comparison, see ``classify_verification_outcome``)
 # turn a non-target observation into a failure; any other non-target state
@@ -761,7 +805,10 @@ def classify_verification_outcome(
       elsewhere); or any non-target state when ``strict`` is set (opt-in).
     - ``unverified``: nothing observed, or a non-target state that may be
       the unchanged pre-call state of a device that reports later than
-      the verify window (Zigbee, cloud integrations). Not a failure.
+      the verify window (Zigbee, cloud integrations), or a plausible
+      intermediate state on the way to the target
+      (``_INTERMEDIATE_STATES_BY_TARGET``, HVAC mode changes) even when it
+      differs from ``previous_state``. Not a failure.
     """
     if observed_state is None:
         return VERIFY_UNVERIFIED
@@ -773,6 +820,8 @@ def classify_verification_outcome(
         return VERIFY_IN_PROGRESS
     if observed_state in FAULT_STATES or strict:
         return VERIFY_MISMATCH
+    if _is_intermediate_state(expected_state, observed_state):
+        return VERIFY_UNVERIFIED
     if previous_state is not None and observed_state != previous_state:
         return VERIFY_MISMATCH
     return VERIFY_UNVERIFIED
