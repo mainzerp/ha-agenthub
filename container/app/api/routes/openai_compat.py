@@ -17,14 +17,15 @@ Open WebUI specifics:
   headers identify the Open WebUI user; the user is recorded in
   ``external_user_mappings`` and the mapped Home Assistant user id (if
   any) is passed as ``user_id``. ``X-OpenWebUI-Chat-Id`` keys the
-  server-side conversation history.
+  server-side conversation history; without it every turn gets a fresh
+  conversation id (no server-side history), so separate chats never share
+  history.
 """
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
-import hashlib
 import json
 import logging
 import re
@@ -37,7 +38,7 @@ from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.api.routes.conversation import _apply_stream_chunk, _build_a2a_request
+from app.api.routes.conversation import _apply_stream_chunk, _build_a2a_request, closing_stream
 from app.api.routes.dashboard_api import resolve_chat_language
 from app.db.repository import ExternalUserMappingRepository
 from app.middleware.rate_limit import rate_limit_conversation
@@ -212,20 +213,19 @@ def _task_stub_content(task_type: str, prompt: str, from_header: bool) -> str:
     return _TASK_STUBS.get(task_type, "")
 
 
-def _conversation_id(request: Request, messages: list[ChatMessage]) -> str:
+def _conversation_id(request: Request) -> str:
     """Server-side conversation key for the Open WebUI chat.
 
-    Prefers ``X-OpenWebUI-Chat-Id``; otherwise derives a stable id from the
-    user and the first user message of the chat.
+    Uses ``X-OpenWebUI-Chat-Id``. Without it the request carries nothing
+    that reliably identifies the chat (a hash of the user and the first
+    message made unrelated chats that start alike share history), so the
+    turn gets a fresh id and runs without server-side history.
     """
     chat_id = _header(request, _HEADER_CHAT_ID)
     if chat_id:
         conversation_id = _CONVERSATION_ID_PREFIX + chat_id
         return conversation_id[:_CONVERSATION_ID_MAX_LENGTH] if _CONVERSATION_ID_MAX_LENGTH else conversation_id
-    user_key = _header(request, _HEADER_USER_ID) or "anon"
-    first_user_text = next((_message_text(m) for m in messages if m.role == "user"), "")
-    digest = hashlib.sha256(f"{user_key}\n{first_user_text}".encode()).hexdigest()[:32]
-    return _CONVERSATION_ID_PREFIX + digest
+    return _CONVERSATION_ID_PREFIX + uuid.uuid4().hex
 
 
 async def _resolve_user_id(request: Request) -> str | None:
@@ -249,11 +249,15 @@ async def _resolve_user_id(request: Request) -> str | None:
     return ha_user_id
 
 
-def _canned_error(error: Any) -> str:
-    """User-facing error text; same wording as the HA bridge."""
-    if isinstance(error, dict):
-        error = error.get("message") or error.get("code") or "unknown error"
-    return f"The assistant could not complete that request. ({error})"
+_CANNED_ERROR = "The assistant could not complete that request."
+
+
+def _canned_error() -> str:
+    """User-facing error text; same wording as the HA bridge.
+
+    The raw error is logged by the caller and never shown to the user.
+    """
+    return _CANNED_ERROR
 
 
 def _completion_id() -> str:
@@ -346,43 +350,55 @@ async def _stream_turn(request: Request, a2a_request, span_collector):
     content_started = False
     try:
         try:
-            async for chunk in _dispatcher.dispatch_stream(a2a_request):
-                now_ms = (time.perf_counter() - t0) * 1000
-                if first_frame_ms is None:
-                    first_frame_ms = now_ms
-                    request.state.first_frame_ms = first_frame_ms
-                if finished:
-                    continue
-                frame = _apply_stream_chunk(
-                    frame,
-                    chunk,
-                    first_frame_ms=first_frame_ms,
-                    now_ms=now_ms,
-                    trace_id=getattr(request.state, "trace_id", None),
+            async with closing_stream(_dispatcher.dispatch_stream(a2a_request)) as stream:
+                async for chunk in stream:
+                    now_ms = (time.perf_counter() - t0) * 1000
+                    if first_frame_ms is None:
+                        first_frame_ms = now_ms
+                        request.state.first_frame_ms = first_frame_ms
+                    if finished:
+                        continue
+                    frame = _apply_stream_chunk(
+                        frame,
+                        chunk,
+                        first_frame_ms=first_frame_ms,
+                        now_ms=now_ms,
+                        trace_id=getattr(request.state, "trace_id", None),
+                    )
+                    if frame.filler_push is not None:
+                        continue
+                    text = frame.token
+                    streamed += text
+                    if frame.done:
+                        finished = True
+                        if frame.mediated_speech and not streamed.strip():
+                            mediated = frame.mediated_speech
+                            text += mediated
+                        if frame.error and not (mediated or streamed).strip():
+                            logger.warning(
+                                "Container reported error in OpenAI stream done chunk (trace_id=%s): %s",
+                                frame.trace_id,
+                                frame.error,
+                            )
+                            text += _canned_error()
+                    if not content_started:
+                        text = text.lstrip()
+                    if text:
+                        content_started = True
+                        yield writer.content(text)
+            if not finished:
+                logger.warning(
+                    "OpenAI-compatible stream ended without a done frame (trace_id=%s)",
+                    getattr(request.state, "trace_id", None),
                 )
-                if frame.filler_push is not None:
-                    continue
-                text = frame.token
-                streamed += text
-                if frame.done:
-                    finished = True
-                    if frame.mediated_speech and not streamed.strip():
-                        mediated = frame.mediated_speech
-                        text += mediated
-                    if frame.error and not (mediated or streamed).strip():
-                        logger.warning("Container reported error in OpenAI stream done chunk: %s", frame.error)
-                        text += _canned_error(frame.error)
                 if not content_started:
-                    text = text.lstrip()
-                if text:
-                    content_started = True
-                    yield writer.content(text)
+                    yield writer.content(_canned_error())
         except asyncio.CancelledError:
             raise
         except Exception:
             logger.warning("OpenAI-compatible stream failed", exc_info=True)
             if not writer.role_sent:
-                yield writer.content(_canned_error("internal error"))
+                yield writer.content(_canned_error())
         for event in writer.finish():
             yield event
     finally:
@@ -445,7 +461,7 @@ async def chat_completions(
 
     conv_request = ConversationRequest(
         text=text,
-        conversation_id=_conversation_id(request, body.messages),
+        conversation_id=_conversation_id(request),
         # Same language resolution as the dashboard chat: the ``language``
         # setting (``auto`` = detect from the user input).
         language=await resolve_chat_language(),
@@ -460,10 +476,20 @@ async def chat_completions(
     a2a_request, _task = _build_a2a_request(conv_request, "message/send", span_collector, request)
     try:
         response = await _dispatcher.dispatch(a2a_request)
-    except RuntimeError as exc:
-        return _completion_body(f"Error: {exc}")
+    except RuntimeError:
+        logger.warning(
+            "OpenAI-compatible dispatch failed (trace_id=%s)",
+            getattr(request.state, "trace_id", None),
+            exc_info=True,
+        )
+        return _completion_body(_canned_error())
     result = response or {}
     content = (result.get("speech") or "").strip()
     if not content and result.get("error"):
-        content = _canned_error(result["error"])
+        logger.warning(
+            "Container reported error in OpenAI response (trace_id=%s): %s",
+            getattr(request.state, "trace_id", None),
+            result["error"],
+        )
+        content = _canned_error()
     return _completion_body(content)
