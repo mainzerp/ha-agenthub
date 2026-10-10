@@ -197,6 +197,28 @@ docker compose restart ha-agenthub
 - HA chat sessions expire after 5 minutes and ESPHome devices reset their stored `conversation_id` after 300 s (`conversation_timeout`) -- answers later than that lose correlation on every path (HA-core limits).
 - Wyoming satellites work as plain conversation targets; they are ANNOUNCE-only, so no re-listen is possible there -- the question is still spoken.
 
+## My Alarm Helper No Longer Rings
+
+**Symptoms:** An HA `input_datetime` helper used as an alarm stays silent. The log shows `AlarmMonitor: ... none carries the HA label 'agenthub_alarm'`.
+
+**Cause:** Only helpers that carry the label named by `alarm_monitor.label` (default `agenthub_alarm`) and are visible to `timer-agent` ring. Unlabeled helpers are ignored so automation schedule helpers do not ring as alarms.
+
+**Fix:**
+
+- In Home Assistant, add the label `agenthub_alarm` to the helper (or set `alarm_monitor.label` to a label you already use; letters, digits, `_`, `-`, and spaces only). Label changes are picked up within about five minutes.
+- Check the `timer-agent` visibility rules on the dashboard: the helper's domain, area, or entity must be allowed.
+- An empty `alarm_monitor.label` disables helper alarms entirely. AgentHub's own alarms (set by voice or on the Timers page) do not need a label.
+
+## Timer or Alarm Announcement Not Spoken
+
+**Symptoms:** The persistent notification appears, but nothing is spoken.
+
+**Checks:**
+
+- The satellite or media player of the origin device or origin room must be visible to `timer-agent`; invisible targets are skipped.
+- A failed satellite announce falls back to TTS on a media player of the origin device or room. When both fail, the log shows `notification was not spoken: every audio target failed`, and no voice follow-up starts.
+- After a container restart, timers and alarms that came due while it was down are reported once as missed instead of ringing late; delayed device actions more than 5 minutes late are dropped (log line `Dropping overdue ...`).
+
 ## Entity Not Found with LLM Clarification
 
 **Symptoms:** The assistant asks clarifying questions instead of acting when an entity is not found.

@@ -73,7 +73,7 @@ These helpers run inside the container pipeline but are **not** registered as A2
 
 - **Cancel Speech** -- LLM-generated acknowledgement for dismiss intents ("never mind")
 - **Wake Briefing Composer** -- Compose spoken morning briefings for internal alarms
-- **Alarm Monitor** -- Monitor internal alarms and trigger wake briefings
+- **Alarm Monitor** -- Ring HA `input_datetime` helpers that carry the `agenthub_alarm` label
 
 ### MCP Tools
 
