@@ -33,7 +33,6 @@ from app.agents.dispatch_manager import (
     DispatchManager,
 )
 from app.agents.filler_coordinator import FillerCoordinator
-from app.agents.ha_action_marker import HaActionMarker, track_ha_actions
 from app.agents.language_detect import detect_user_language, warm_up_language_detector
 from app.agents.mediation import (
     MediationService,
@@ -48,6 +47,7 @@ from app.analytics.collector import track_request, track_request_background
 from app.analytics.tracer import _optional_span, record_request_attribute
 from app.cache.cache_manager import ActionReplayOutcome, RoutingSkipOutcome
 from app.db.repository import SettingsRepository
+from app.ha_client.action_marker import HaActionMarker, track_ha_actions
 from app.ha_client.home_context import populate_task_context_home_context
 from app.memory import get_memory_service
 from app.models.agent import (
@@ -2372,7 +2372,7 @@ class OrchestratorAgent(BaseAgent):
         loop = asyncio.get_running_loop()
         stream_deadline = loop.time() + stream_dispatch_timeout
         # Double-execution guard: flipped by the executor once the agent's HA
-        # service call starts (see app.agents.ha_action_marker).
+        # service call starts (see app.ha_client.action_marker).
         ha_marker = HaActionMarker()
 
         def _remaining_budget() -> float:

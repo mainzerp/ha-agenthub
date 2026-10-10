@@ -203,13 +203,16 @@ frame handed to the client.
   with an error frame before any text is re-sent once to `general-agent`
   as a non-streaming task; if that fails too, the turn speaks a canned
   line.
-- **Double-execution guard:** the shared executor primitive
-  (`call_service_with_verification`) flags a per-dispatch marker
-  (`app/agents/ha_action_marker.py`) right before the HA service call.
-  When the marker is set, a failed dispatch is NOT re-sent to the
-  fallback agent; the turn answers that the command was sent but could
-  not be confirmed. Executors that call `ha_client.call_service`
-  directly (calendar, lists, send, timer) do not set the marker.
+- **Double-execution guard:** every HA write entry point of the HA client
+  (`HARestClient.call_service` and its WebSocket fallback,
+  `HAWebSocketClient.call_service`, `send_ws_command`, `fire_event`,
+  automation config save/delete) flags a per-dispatch marker
+  (`app/ha_client/action_marker.py`, a ContextVar) right before the
+  request goes out, so every executor is covered. Read-only calls
+  (`get*`, `search*`, `browse*`, `list*` services or commands) do
+  not flag it. When the marker is set, a failed dispatch is NOT re-sent
+  to the fallback agent; the turn answers that the command was sent but
+  could not be confirmed.
 - **Streaming timeout:** a timed-out stream is finalized like any other
   turn (turn stored, trace written, served routing-cache entry
   invalidated). When agent tokens were already relayed, the partial

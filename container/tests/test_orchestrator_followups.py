@@ -43,11 +43,11 @@ from app.agents.dispatch_manager import (  # noqa: E402
     _CANNED_ACTION_UNCONFIRMED_SPEECH,
     _CANNED_TIMEOUT_SPEECH,
 )
-from app.agents.ha_action_marker import note_ha_action_started  # noqa: E402
 from app.agents.mediation import MediationService  # noqa: E402
 from app.agents.orchestrator import OrchestratorAgent, PipelinePreludeResult  # noqa: E402
 from app.agents.pipeline_strategies import DefaultFinalizationStrategy  # noqa: E402
 from app.agents.task_pipeline import DispatchResult  # noqa: E402
+from app.ha_client.action_marker import note_ha_action_started  # noqa: E402
 from app.models.agent import AgentCard, IngressTask, TaskContext  # noqa: E402
 
 pytestmark = pytest.mark.asyncio
