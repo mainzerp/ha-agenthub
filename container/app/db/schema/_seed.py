@@ -233,6 +233,13 @@ async def _seed_defaults(db: aiosqlite.Connection) -> None:
             "Primary user message for actionable agents: 'original_when_translated' or 'description_first'",
         ),
         (
+            "alarm_monitor.label",
+            "agenthub_alarm",
+            "string",
+            "agents",
+            "HA label (id or name) that opts an input_datetime helper in as an alarm. Empty disables helper alarms.",
+        ),
+        (
             "wake_briefing.enabled",
             "true",
             "bool",
