@@ -25,16 +25,30 @@ Live pipeline in board format — headings are columns, cards are
 
 ## Testing
 
+- Embedding engine init race + flaky scenario tests · priority: P1 · area: embedding
+  Outcome: `get_embedding_engine` publishes the singleton only after a
+  successful init; the local model loads off the event loop under a lock;
+  scenario tests no longer load the real embedding model per xdist worker
+  and stop timing out into the general-agent fallback. Branch
+  fix/embedding-engine-init (no issue by decision), commit a093883, PR #131;
+  not released yet.
+  Passed: ruff clean; 6 new regression tests in tests/test_embedding.py
+  (fail on old code); scenario file 3x `-n auto` green (309 passed each,
+  ~40 s instead of ~2.5-3.5 min); container suite 3548 passed, 1 skipped.
+  Needs user verification: review the diff; after deploying, the container
+  log shows one "Loaded local embedding model" and voice stays responsive
+  during startup/first memory turn.
 - Sequential send: dictated messages and target parsing · priority: P1 · area: agents
   Outcome: "send the message X to device Y" delivers X verbatim; the
   send-agent finds the configured device inside any target phrasing
   (Unicode-aware; two separate device names = not found); content-agent
   refusals or the [[NO_CONTENT]] sentinel never reach the recipient; send
   errors are localized (en/de) and do not echo the parsed text. Found in
-  live trace e625b7f88bff4e69. Uncommitted, not released.
+  live trace e625b7f88bff4e69. Shipped in v2.7.3 (PR #125,
+  https://github.com/mainzerp/ha-agenthub/releases/tag/v2.7.3).
   Passed: ruff clean; container suite 3542 passed, 1 skipped; independent
-  review (findings fixed); scripts/ci.py full gate green on the first
-  round (bridge 145 passed); live device names resolve as expected.
+  review (findings fixed); scripts/ci.py full gate green on the release
+  state (bridge 145 passed, Trivy OK); live device names resolve as expected.
   Needs user verification on live after deploying: dictate "Sende die
   Nachricht: Ich komme später auf Lauras Handy" -> push arrives with exactly
   that text; trace shows dispatch_content returning the dictated text and an
