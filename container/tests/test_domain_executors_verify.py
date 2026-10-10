@@ -220,7 +220,8 @@ class TestBuildVerifiedSpeech:
         # fallback when an action phrase is registered.
         assert speech == "Done, Front Door locked."
 
-    def test_stale_observation_does_not_override_expected(self):
+    def test_contradicting_observation_is_not_spoken_as_success(self):
+        """#132: an observed contradicting state is never spoken as "Done"."""
         speech = build_verified_speech(
             friendly_name="Keller",
             action_name="turn_off",
@@ -230,6 +231,18 @@ class TestBuildVerifiedSpeech:
             action_phrases={"turn_off": "turned off"},
         )
         assert "is now on" not in speech
+        assert not speech.startswith("Done")
+        assert "reports on instead of off" in speech
+
+    def test_inconclusive_verification_keeps_intent_phrase(self):
+        speech = build_verified_speech(
+            friendly_name="Keller",
+            action_name="turn_off",
+            expected_state="off",
+            observed_state=None,
+            verified=False,
+            action_phrases={"turn_off": "turned off"},
+        )
         assert speech == "Done, Keller turned off."
 
     def test_falls_back_to_humanized_action_name(self):
@@ -440,8 +453,8 @@ class TestClimateExecutorVerification:
         )
 
     @pytest.mark.asyncio
-    async def test_set_hvac_mode_stale_observation_falls_back_to_intent(self):
-        """Observer saw the *old* mode -- don't contradict intent."""
+    async def test_set_hvac_mode_unchanged_observation_reports_failure(self):
+        """#132: observer still sees the *old* mode -- report it, never claim success."""
         from app.agents.climate_executor import execute_climate_action
 
         ha_client = _make_ha_client(
@@ -459,8 +472,9 @@ class TestClimateExecutorVerification:
             MagicMock(),
             matcher,
         )
-        assert result["success"] is True
+        assert result["success"] is False
         assert "is now cool" not in result["speech"]
+        assert not result["speech"].startswith("Done")
 
     @pytest.mark.asyncio
     async def test_fan_turn_off_empty_rest_ws_confirms(self):
@@ -563,8 +577,9 @@ class TestMediaExecutorVerification:
             MagicMock(),
             matcher,
         )
-        assert result["success"] is True
+        assert result["success"] is False
         assert "is now playing" not in result["speech"]
+        assert not result["speech"].startswith("Done")
         assert "TV" in result["speech"]
 
 
@@ -610,9 +625,9 @@ class TestSecurityExecutorVerification:
         )
 
     @pytest.mark.asyncio
-    async def test_alarm_arm_home_stale_disarmed_does_not_report_disarmed(self):
-        """Critical safety test: never claim the alarm is disarmed when we
-        issued an arm command."""
+    async def test_alarm_arm_home_unchanged_disarmed_reports_failure(self):
+        """Critical safety test (#132): an alarm that stays disarmed after an
+        arm command is reported as a failure, never as armed."""
         from app.agents.security_executor import execute_security_action
 
         ha_client = _make_ha_client(call_result=[], observed_state="disarmed")
@@ -623,9 +638,10 @@ class TestSecurityExecutorVerification:
             MagicMock(),
             matcher,
         )
-        assert result["success"] is True
-        assert "disarmed" not in result["speech"]
-        assert "armed" in result["speech"]
+        assert result["success"] is False
+        assert not result["speech"].startswith("Done")
+        assert "armed in home mode" not in result["speech"]
+        assert "'disarmed' instead of 'armed_home'" in result["speech"]
 
 
 # ---- scene -----------------------------------------------------------------
