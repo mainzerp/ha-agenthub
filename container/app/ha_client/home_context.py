@@ -41,6 +41,15 @@ class HomeContextProvider:
         self._last_ha_context: HomeContext | None = None
         self._refresh_lock = asyncio.Lock()
 
+    def invalidate(self) -> None:
+        """Drop the cached context so the next ``get`` re-reads overrides and HA.
+
+        Called when the ``home.timezone`` / ``home.location_name`` overrides
+        change; the last good HA context is kept as the fallback.
+        """
+        self._context = None
+        self._last_fetched = 0.0
+
     def _is_fresh(self, now: float) -> bool:
         ttl = self._ttl_seconds if self._last_refresh_ok else self._failure_retry_seconds
         return self._context is not None and (now - self._last_fetched) < ttl

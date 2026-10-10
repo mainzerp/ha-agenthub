@@ -1250,7 +1250,8 @@ class TestEntityIndexAPI:
 
     async def test_refresh_uses_snapshot_and_offloads_refresh(self, db_repository):
         """The refresh endpoint must use the enriched snapshot path and the
-        executor-backed refresh_async, and exclude hidden entities."""
+        executor-backed sync_async with the generation read BEFORE the
+        snapshot (#132, as bootstrap does), and exclude hidden entities."""
         ha_client = AsyncMock()
         ha_client.get_states = AsyncMock(
             return_value=[
@@ -1261,6 +1262,8 @@ class TestEntityIndexAPI:
         ha_client.get_hidden_entity_ids = AsyncMock(return_value={"light.hidden"})
 
         entity_index = MagicMock()
+        entity_index.mutation_generation = MagicMock(return_value=41)
+        entity_index.sync_async = AsyncMock(return_value={"added": 1, "updated": 0, "removed": 0, "unchanged": 0})
         entity_index.refresh_async = AsyncMock()
         entity_index.refresh = MagicMock()
 
@@ -1279,10 +1282,12 @@ class TestEntityIndexAPI:
                 resp = await client.post("/api/admin/entity-index/refresh")
 
         assert resp.status_code == 200
-        assert resp.json() == {"status": "ok", "count": 1}
-        entity_index.refresh_async.assert_awaited_once()
+        assert resp.json() == {"status": "ok", "count": 1, "added": 1, "updated": 0, "removed": 0, "unchanged": 0}
+        entity_index.sync_async.assert_awaited_once()
+        entity_index.refresh_async.assert_not_awaited()
         entity_index.refresh.assert_not_called()
-        entries = entity_index.refresh_async.await_args.args[0]
+        assert entity_index.sync_async.await_args.kwargs["snapshot_generation"] == 41
+        entries = entity_index.sync_async.await_args.args[0]
         assert [e.entity_id for e in entries] == ["light.visible"]
         assert app.state.hidden_entity_ids == {"light.hidden"}
 

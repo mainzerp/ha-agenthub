@@ -18,7 +18,7 @@ from app.agents import (
     security_executor,
     vacuum_executor,
 )
-from app.bootstrap._entity import build_entity_snapshot
+from app.bootstrap._entity import _snapshot_generation, build_entity_snapshot
 from app.cache.embedding import get_embedding_info
 from app.cache.vector_store import COLLECTION_ENTITY_INDEX
 from app.db.repository import EntityVisibilityRepository, SettingsRepository
@@ -418,18 +418,27 @@ async def match_preview(
 
 @router.post("/refresh")
 async def refresh_entity_index(request: Request):
-    """Force refresh entity index from Home Assistant."""
+    """Force a full resync of the entity index from a fresh Home Assistant snapshot.
+
+    Like the bootstrap/periodic resync, the index mutation generation is read
+    BEFORE the snapshot is fetched and passed to ``sync``, so WebSocket
+    updates applied while the snapshot was in flight are not undone. A diff
+    sync (not clear + rebuild) also keeps the index serving during refresh.
+    """
     entity_index = request.app.state.entity_index
     ha_client = request.app.state.ha_client
     if not entity_index or not ha_client:
         return {"status": "error", "detail": "Entity index or HA client not initialized"}
 
     try:
+        snapshot_generation = _snapshot_generation(entity_index)
         entities = await build_entity_snapshot(request.app, ha_client)
-        await entity_index.refresh_async(entities)
+        result = await entity_index.sync_async(entities, snapshot_generation=snapshot_generation)
+        counts = {key: result.get(key, 0) for key in ("added", "updated", "removed", "unchanged")}
         return {
             "status": "ok",
             "count": len(entities),
+            **counts,
         }
     except Exception as exc:
         logger.warning("Failed to refresh entity index", exc_info=True)

@@ -522,7 +522,7 @@ Get entity index statistics with per-domain breakdown.
 
 ### POST /api/admin/entity-index/refresh
 
-Force a full entity index refresh from Home Assistant.
+Force a full entity index resync from a fresh Home Assistant snapshot. Like the periodic resync, it is a diff sync that keeps WebSocket updates applied while the snapshot was fetched. Response: `{"status": "ok", "count": <snapshot size>, "added", "updated", "removed", "unchanged"}`.
 
 ---
 
