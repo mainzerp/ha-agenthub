@@ -170,7 +170,11 @@ their replies are joined in classification order into one message body:
   body for the channel; short plain messages stay unchanged and the
   formatter never answers or acts on the content. Delivery calls
   `notify.*` (phones) or `tts.speak` on the mapped `media_player`
-  entity (satellites, engine from the `tts.engine` setting).
+  entity (satellites, engine from the `tts.engine` setting). Text sent
+  to `notify.*` -- by the send agent and by timer/alarm push
+  notifications -- passes `app/util/ha_template.neutralize_ha_template`
+  first, so `{{ }}` / `{% %}` / `{# #}` in user or LLM text is never
+  rendered as a Home Assistant template.
 - **Speech:** `send-agent` error speeches and the orchestrator's
   sequential-send fallbacks are localized (English default, German).
   The "no matching send device" speech does not repeat the target text;

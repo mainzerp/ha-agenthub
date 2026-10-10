@@ -17,6 +17,7 @@ from app.models.agent import (
     DispatchTask,
     TaskResult,
 )
+from app.util.ha_template import neutralize_ha_template
 
 logger = logging.getLogger(__name__)
 
@@ -76,20 +77,6 @@ _SEND_SPEECH: dict[str, dict[str, str]] = {
         "de": "Ich konnte den Inhalt zum Senden nicht vorbereiten.",
     },
 }
-
-
-_TEMPLATE_OPENERS_RE = re.compile(r"\{(?=[{%#])")
-
-
-def neutralize_ha_template(text: str) -> str:
-    """Break Jinja delimiters so HA renders user/LLM content literally.
-
-    The legacy ``notify.*`` services treat ``message`` as a template, so
-    delivered content containing ``{{ ... }}`` / ``{% ... %}`` would be
-    evaluated by Home Assistant (reading arbitrary entity states).
-    Inserting a space after the opening brace keeps the text readable.
-    """
-    return _TEMPLATE_OPENERS_RE.sub("{ ", text or "")
 
 
 def localized_send_speech(message_id: str, language: str | None, **values: str) -> str:
