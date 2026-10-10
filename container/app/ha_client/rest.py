@@ -236,6 +236,33 @@ class HARestClient:
         events = entry.get("events")
         return events if isinstance(events, list) else []
 
+    async def get_calendar_event_details(self, entity_id: str, start: str, end: str) -> list[dict[str, Any]]:
+        """GET /api/calendars/<entity_id> -- events including ``uid`` and ``recurrence_id``.
+
+        ``calendar.get_events`` omits the identifiers that the
+        ``calendar/event/update`` and ``calendar/event/delete`` WebSocket
+        commands need. ``start``/``end`` must be timezone-aware ISO strings;
+        event ``start``/``end`` come back as ``{"dateTime": ...}`` or
+        ``{"date": ...}``.
+        """
+        assert self._client is not None
+        resp = await self._client.get(f"/api/calendars/{entity_id}", params={"start": start, "end": end})
+        resp.raise_for_status()
+        data = resp.json()
+        return [event for event in data if isinstance(event, dict)] if isinstance(data, list) else []
+
+    async def send_ws_command(self, msg_type: str, **kwargs: Any) -> dict | None:
+        """Send a request-response command over the shared WebSocket connection.
+
+        Raises ``RuntimeError`` when no WebSocket connection is available.
+        Returns the command's ``result`` payload; ``None`` means either an
+        empty success result or an error, so callers verify the effect.
+        """
+        ws = self._state_observer
+        if ws is None or not ws.is_connected():
+            raise RuntimeError("Home Assistant WebSocket connection is not available")
+        return await ws.send_command(msg_type, **kwargs)
+
     async def call_service(
         self,
         domain: str,
