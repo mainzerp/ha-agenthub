@@ -215,8 +215,8 @@ Each agent has per-agent settings stored in the `agent_configs` table:
 |-------|---------|-------------|
 | `enabled` | `1` | Whether the agent is active |
 | `model` | Varies per agent | LLM model identifier (e.g., `groq/llama-3.1-8b-instant`, `openrouter/openai/gpt-4o-mini`) |
-| `timeout` | `5` | Maximum response time in seconds |
-| `max_iterations` | `3` | Maximum processing iterations |
+| `timeout` | `5` | Per-call LLM provider timeout in seconds. Non-domain agents retry once after a timeout when the dispatch budget still allows it; domain agents never retry a timed-out call |
+| `max_iterations` | `3` | Maximum LLM-to-tool rounds in an MCP tool-calling loop (general and custom agents); afterwards the agent is forced to answer without tools |
 | `temperature` | `0.2` | LLM sampling temperature |
 | `max_tokens` | `1024` | Maximum tokens per LLM response |
 | `reasoning_effort` | (empty); `none` for `rewrite-agent` | Reasoning-effort hint: empty (dashboard "Default") sends no parameter; `none`, `low`, `medium`, or `high` is sent as `reasoning_effort` with `drop_params=True`, so litellm drops it for models it does not list as reasoning-capable. Reasoning models that do not accept the value (for example `none` on gpt-oss or gpt-5) can reject the call. |
@@ -305,7 +305,9 @@ Entity visibility for custom agents applies to entity-resolution helpers
 and HA-facing action paths that a custom agent uses through AgentHub's
 container runtime. LLM-only prompt text is not an entity access-control
 boundary by itself, and MCP tools must still be treated as trusted
-in-process capabilities scoped by their own tool behavior.
+in-process capabilities scoped by their own tool behavior: tool calls
+that name a hidden `entity_id` are rejected, but name- or area-based
+tool arguments are not mapped to entities (see the MCP section below).
 
 ## Entity Matching Configuration
 
@@ -342,6 +344,14 @@ MCP (Model Context Protocol) servers are managed through the admin dashboard or 
 - **Timeout**: Connection timeout in seconds (default: 30)
 
 MCP tools are discovered automatically after connection and can be assigned to specific agents.
+
+Tool-calling runtime limits (`app/agents/tool_calling.py`, `app/llm/client.py`):
+
+- **Exact tool names only:** a tool call is executed only when its name matches an assigned tool exactly (a leaked `<|...|>` control-token suffix is stripped). Unknown or misspelled names are never remapped to another tool; the LLM receives an error listing the valid names.
+- **Round limit:** the agent's `max_iterations` config bounds the LLM-to-tool rounds.
+- **Whole-loop deadline:** the loop is bounded by the agent's dispatch budget (`agent.dispatch_timeout.<agent_id>`, else the agent card's `timeout_sec`, capped by `a2a.max_dispatch_timeout`, minus 0.5 s). Provider timeouts and tool calls are clamped to the remaining budget, one second is reserved for the final answer, and the loop forces the final answer when less than one second remains.
+- **Result size:** each tool result is truncated to 8000 characters before it is fed back to the LLM.
+- **Entity visibility guard:** before a tool runs, every entity-id-shaped token in its arguments that exists in the entity index is checked against the agent's visibility rules; a reference to a hidden entity rejects the call. See [plugin-development.md](plugin-development.md) for the limits of this guard.
 
 ## Security Configuration
 

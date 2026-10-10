@@ -144,6 +144,34 @@ Use `ctx.agent_registry` when you need to inspect what the runtime has
 registered, and use the A2A dispatcher (`ctx.dispatcher`) when plugin-
 originated work should re-enter the normal A2A/orchestrator flow.
 
+`ctx.dispatcher.dispatch()` with `message/send` returns the raw agent
+result (`TaskResult` or dict) and raises `RuntimeError` on failure:
+`A2ADispatchError` (from `app.a2a.dispatcher`, with a JSON-RPC `code`)
+for an unknown method or invalid params, a plain `RuntimeError` when the
+agent failed. Catch `RuntimeError` around plugin dispatches.
+
+## MCP Tools And Entity Visibility
+
+MCP tools assigned to `general-agent` or a custom agent run outside the
+domain-agent action executor. A Home Assistant MCP server assigned this
+way can therefore act on devices without deterministic entity resolution,
+state verification or the action cache. The runtime applies one
+best-effort guard: before a tool runs, every entity-id-shaped token in its
+arguments (`light.kitchen`) that exists in the entity index is checked
+against the calling agent's visibility rules, and a reference to a hidden
+entity rejects the call.
+
+Limits of the guard:
+
+- Name-, area- or device-based arguments ("kitchen light", an area id)
+  are not mapped to entities and are not checked.
+- Tools that act on many entities without naming them (scenes, scripts,
+  "all lights") are not checked.
+
+Assign a Home Assistant MCP server only to agents whose visibility rules
+should not restrict device access, or scope the MCP server itself (for
+example, the entities exposed to the Home Assistant MCP server).
+
 ### Reading/Writing Settings
 
 ```python

@@ -17,13 +17,24 @@ from typing import Any
 from pydantic import ValidationError
 
 from app.agents.action_executor import (
+    find_rejected_action_objects,
     parse_actions,
     reset_request_candidate_ids,
     reset_request_visible_entries,
     set_request_candidate_ids,
     set_request_visible_entries,
 )
-from app.agents.base import BaseAgent, _render_prompt_template, language_code_to_name
+from app.agents.base import (
+    UNTRUSTED_DATA_NOTE,
+    UNTRUSTED_NAME_MAX_CHARS,
+    UNTRUSTED_STATE_MAX_CHARS,
+    UNTRUSTED_TEXT_MAX_CHARS,
+    BaseAgent,
+    _render_prompt_template,
+    language_code_to_name,
+    sanitize_untrusted_text,
+    wrap_untrusted_data,
+)
 from app.agents.decorator import agent
 from app.analytics.tracer import _optional_span
 from app.entity.tokens import entry_field_tokens, normalize_tokenize
@@ -38,6 +49,7 @@ from app.models.agent import (
     TaskContext,
     TaskResult,
 )
+from app.security.redaction import redact_sensitive_text, redact_sensitive_values
 
 logger = logging.getLogger(__name__)
 
@@ -80,6 +92,42 @@ def _not_found_speech(entity_query: str, language: str | None) -> str:
     return template.format(entity=entity_query)
 
 
+def _default_result_speech(result: dict) -> str:
+    """Fallback speech when an executor returned no ``speech`` after running."""
+    if result.get("success"):
+        return "Done."
+    return "Sorry, I could not complete that action."
+
+
+# Deterministic speech when the LLM emitted an action object that failed
+# validation (e.g. ``{"action": "turn_on", "entity": null}``). The prose
+# around such an object may claim success ("Done, the light is on") although
+# nothing executed, so it is never spoken. Same de/en template pattern as
+# ``_NOT_FOUND_SPEECH_TEMPLATES``.
+_INVALID_ACTION_TARGET_SPEECH = {
+    "de": "Entschuldigung, ich konnte nicht erkennen, welches Geraet du meinst. Welches Geraet soll ich verwenden?",
+    "en": "Sorry, I could not tell which device you meant. Which device should I use?",
+}
+_INVALID_ACTION_SPEECH = {
+    "de": "Entschuldigung, das konnte ich nicht ausfuehren. Kannst du das anders formulieren?",
+    "en": "Sorry, I could not carry that out. Could you rephrase it?",
+}
+
+
+def _invalid_action_speech(rejected: list[dict], language: str | None) -> str:
+    """Localized clarification for a rejected (invalid) action object."""
+    lang = (language or "en").lower().split("-", 1)[0]
+    missing_target = any(
+        isinstance(obj.get("action"), str)
+        and obj.get("action", "").strip()
+        and not str(obj.get("entity") or "").strip()
+        and not str(obj.get("entity_id") or "").strip()
+        for obj in rejected
+    )
+    templates = _INVALID_ACTION_TARGET_SPEECH if missing_target else _INVALID_ACTION_SPEECH
+    return templates.get(lang, templates["en"])
+
+
 # ENTITY_RES_REDESIGN Phase 7 (ambiguity follow-up MVP): when the top-1/top-2
 # candidate score gap is below this threshold, the candidate block is
 # annotated so the agent LLM asks a short clarifying question instead of
@@ -97,9 +145,9 @@ _AMBIGUITY_ANNOTATION = (
 
 # Follow-up inversion: on the turn answering a pending clarifying question,
 # tied candidates are resolved by the answer instead of re-asking. The
-# pending question is interpolated verbatim.
+# pending question is interpolated as delimited, length-bounded data.
 _CHOOSE_AND_ACT_ANNOTATION = (
-    "The user is answering your clarifying question '{pending_question}'. "
+    "The user is answering your clarifying question:\n{pending_question}\n"
     "Pick the candidate from the list that matches the answer and execute; "
     "do NOT ask again unless no candidate fits."
 )
@@ -115,7 +163,10 @@ _KEYWORD_RECALL_TOP_N = 12
 _KEYWORD_COMPOUND_MIN_TOKEN_LEN = 4
 
 
-def _recall_is_ambiguous(scored: list[tuple[Any, tuple[int, int, int]]]) -> bool:
+def _recall_is_ambiguous(
+    scored: list[tuple[Any, tuple[int, int, int]]],
+    preferred_area_id: str | None = None,
+) -> bool:
     """True when the two best recall score tuples tie.
 
     Scores are per-field-class int hit counts ``(name, identity, area)``;
@@ -123,13 +174,31 @@ def _recall_is_ambiguous(scored: list[tuple[Any, tuple[int, int, int]]]) -> bool
     to tuple equality, so ``_AMBIGUITY_SCORE_GAP`` is kept for documentation
     (it mirrors the area re-rank gap in deterministic_resolver.py) and no
     fractional scores are introduced.
+
+    Satellite-area tie-break ("here" / "this room"): when exactly one of
+    the tied top candidates sits in the satellite's area
+    (``preferred_area_id``), the tie is resolved by that area and the
+    recall is not ambiguous.
     """
     if len(scored) < 2:
         return False
     hits = sorted((hit_counts for _entry, hit_counts in scored), reverse=True)
     if hits[0] == (0, 0, 0):
         return False
-    return hits[0] == hits[1]
+    if hits[0] != hits[1]:
+        return False
+    if preferred_area_id:
+        top = hits[0]
+        in_area = [
+            entry for entry, hit_counts in scored if hit_counts == top and _entry_area(entry) == preferred_area_id
+        ]
+        if len(in_area) == 1:
+            return False
+    return True
+
+
+def _entry_area(entry: Any) -> str | None:
+    return getattr(entry, "area", None) or None
 
 
 class ActionableAgent(BaseAgent):
@@ -222,10 +291,24 @@ class ActionableAgent(BaseAgent):
                 counts[0] += 1
             return counts[0], counts[1], counts[2]
 
-        def _sort_key(pair: tuple[Any, tuple[int, int, int]]) -> tuple[int, int, int, int]:
+        # Satellite area ("here" / "this room"): entities in the area the
+        # user is speaking from win ties and stay recallable in large
+        # domains even without a token hit.
+        satellite_area_id = task.context.area_id if task.context else None
+
+        def _in_satellite_area(entry: Any) -> bool:
+            return bool(satellite_area_id) and _entry_area(entry) == satellite_area_id
+
+        def _sort_key(pair: tuple[Any, tuple[int, int, int]]) -> tuple[int, int, int, int, int]:
             name_hits, identity_hits, area_hits = pair[1]
-            # Ties: shorter name first -- the LLM makes the final decision.
-            return (-name_hits, -identity_hits, -area_hits, len(getattr(pair[0], "friendly_name", "") or ""))
+            # Ties: satellite area first, then shorter name -- the LLM makes the final decision.
+            return (
+                -name_hits,
+                -identity_hits,
+                -area_hits,
+                0 if _in_satellite_area(pair[0]) else 1,
+                len(getattr(pair[0], "friendly_name", "") or ""),
+            )
 
         if len(visible) <= _KEYWORD_RECALL_MAX_INJECT:
             scored = [(entry, _hits(entry)) for entry in visible]
@@ -233,7 +316,7 @@ class ActionableAgent(BaseAgent):
             return scored
 
         scored = [(entry, _hits(entry)) for entry in visible]
-        scored = [pair for pair in scored if any(pair[1])]
+        scored = [pair for pair in scored if any(pair[1]) or _in_satellite_area(pair[0])]
         scored.sort(key=_sort_key)
         return scored[:_KEYWORD_RECALL_TOP_N]
 
@@ -259,12 +342,18 @@ class ActionableAgent(BaseAgent):
                 [],
             )
 
-        lines = ["Candidate entities (choose from this list only):"]
+        # Friendly names and states are untrusted (anyone who can rename a
+        # device or set a text state controls them): delimited and bounded.
+        candidate_lines = []
         for idx, (entry, _hits) in enumerate(recalled, start=1):
             entity_id = getattr(entry, "entity_id", "") or ""
-            friendly_name = getattr(entry, "friendly_name", "") or entity_id
-            state = getattr(entry, "state", None) or "-"
-            lines.append(f"{idx}. {entity_id} — {friendly_name} ({state})")
+            friendly_name = sanitize_untrusted_text(
+                getattr(entry, "friendly_name", "") or entity_id, UNTRUSTED_NAME_MAX_CHARS
+            )
+            state = sanitize_untrusted_text(getattr(entry, "state", None) or "-", UNTRUSTED_STATE_MAX_CHARS)
+            candidate_lines.append(f"{idx}. {entity_id} — {friendly_name} ({state})")
+        lines = ["Candidate entities (choose from this list only):", wrap_untrusted_data("\n".join(candidate_lines))]
+        lines.append(UNTRUSTED_DATA_NOTE)
         lines.append("")
         lines.append(
             "You MUST emit the 'entity_id' field verbatim from this candidate list in the JSON action block. "
@@ -278,11 +367,14 @@ class ActionableAgent(BaseAgent):
         # Follow-up inversion: when this turn answers a pending clarifying
         # question, tied candidates are resolved by the answer instead of
         # re-asking (composition contract: ambiguity is computed once here).
-        if _recall_is_ambiguous(recalled):
-            context = task.context
+        context = task.context
+        if _recall_is_ambiguous(recalled, context.area_id if context else None):
             if context is not None and context.is_followup and context.pending_question:
                 lines.append("")
-                lines.append(_CHOOSE_AND_ACT_ANNOTATION.format(pending_question=context.pending_question))
+                pending = wrap_untrusted_data(
+                    sanitize_untrusted_text(context.pending_question, UNTRUSTED_TEXT_MAX_CHARS)
+                )
+                lines.append(_CHOOSE_AND_ACT_ANNOTATION.format(pending_question=pending))
             else:
                 lines.append("")
                 lines.append(_AMBIGUITY_ANNOTATION)
@@ -303,13 +395,15 @@ class ActionableAgent(BaseAgent):
         context = task.context
         if not context or not context.last_entities:
             return None
+        entity_lines = []
+        for idx, entry in enumerate(context.last_entities[:3], start=1):
+            name = sanitize_untrusted_text(entry.friendly_name or entry.entity_id, UNTRUSTED_NAME_MAX_CHARS)
+            entity_lines.append(f"{idx}. {name} ({entry.entity_id})")
         lines = [
             "Recently controlled entities (most recent first; use these ONLY for follow-up references "
-            'like "it", "that one", or "the same device"):'
+            'like "it", "that one", or "the same device"):',
+            wrap_untrusted_data("\n".join(entity_lines)),
         ]
-        for idx, entry in enumerate(context.last_entities[:3], start=1):
-            name = entry.friendly_name or entry.entity_id
-            lines.append(f"{idx}. {name} ({entry.entity_id})")
         lines.append("")
         lines.append(
             "When the user explicitly names a device, resolve THAT name instead (candidate list above) -- "
@@ -346,23 +440,24 @@ class ActionableAgent(BaseAgent):
         error.
         """
         language = (task.context.language if task.context else None) or "en"
-        messages = [
-            {
-                "role": "system",
-                "content": _render_prompt_template(
-                    self._load_prompt("entity_not_found"), language=language_code_to_name(language)
-                ),
-            },
-            {
-                "role": "user",
-                "content": (
-                    f"The user asked: {self._wrap_user_input(task.description)}\n"
-                    f'No device named "{entity_query}" was found. '
-                    "Generate a brief clarifying question asking the user to specify which device they mean."
-                ),
-            },
-        ]
         try:
+            # Prompt load inside the try: a cold cache miss is read off the
+            # event loop and a missing file degrades to the template.
+            system_prompt = _render_prompt_template(
+                await self._load_prompt_async("entity_not_found"), language=language_code_to_name(language)
+            )
+            entity_label = sanitize_untrusted_text(entity_query, UNTRUSTED_NAME_MAX_CHARS)
+            messages = [
+                {"role": "system", "content": system_prompt},
+                {
+                    "role": "user",
+                    "content": (
+                        f"The user asked: {self._wrap_user_input(task.description)}\n"
+                        f'No device named "{entity_label}" was found. '
+                        "Generate a brief clarifying question asking the user to specify which device they mean."
+                    ),
+                },
+            ]
             result = await self._call_llm(messages, span_collector=span_collector)
             return result.strip() if result and result.strip() else _not_found_speech(entity_query, language)
         except asyncio.CancelledError:
@@ -399,7 +494,9 @@ class ActionableAgent(BaseAgent):
                 span["metadata"]["action"] = action.get("action")
                 span["metadata"]["entity"] = action.get("entity")
                 span["metadata"]["success"] = result.get("success")
-                span["metadata"]["action_params"] = {k: v for k, v in action.items() if k not in ("action", "entity")}
+                span["metadata"]["action_params"] = redact_sensitive_values(
+                    {k: v for k, v in action.items() if k not in ("action", "entity")}
+                )
                 span["metadata"]["result_speech"] = (result.get("speech") or "")[:500]
         else:
             result = await self._do_execute(
@@ -513,7 +610,7 @@ class ActionableAgent(BaseAgent):
             except asyncio.CancelledError:
                 raise
             except Exception:
-                logger.exception("Action execution failed for %s action=%s", agent_id, action)
+                logger.exception("Action execution failed for %s action=%s", agent_id, redact_sensitive_values(action))
                 entity = action.get("entity", "the device")
                 results.append(
                     {
@@ -608,6 +705,23 @@ class ActionableAgent(BaseAgent):
         spoken-question heuristic as cache safeguard R-A. Normal prose
         answers keep ``voice_followup=False``.
         """
+        rejected = find_rejected_action_objects(response)
+        if rejected:
+            # The LLM tried to act but its action object failed validation
+            # (e.g. ``"entity": null``). Nothing executed, so the prose around
+            # it -- which may claim success -- must not be spoken.
+            logger.warning(
+                "Rejected %d invalid action object(s) for %s: %s",
+                len(rejected),
+                self.agent_card.agent_id,
+                redact_sensitive_values(rejected),
+            )
+            language = task.context.language if task.context else None
+            return TaskResult(
+                speech=_invalid_action_speech(rejected, language),
+                voice_followup=True,
+                metadata={"parse_miss": "invalid_action"},
+            )
         speech = strip_json_blocks(response)
         followup = speech.rstrip().endswith("?")
         return TaskResult(speech=speech, voice_followup=followup)
@@ -762,14 +876,18 @@ class ActionableAgent(BaseAgent):
 
         messages.append({"role": "user", "content": user_content})
 
+        # No LLM timeout retry for domain agents: a retried call (timeout +
+        # backoff + full second attempt) plus the HA action can outlive the
+        # A2A dispatch timeout, so the orchestrator would fall back after
+        # the action already ran.
         try:
             if span_collector:
                 async with span_collector.start_span("llm_call", agent_id=agent_id) as span:
-                    response = await self._call_llm(messages, span_collector=span_collector)
+                    response = await self._call_llm(messages, span_collector=span_collector, retry_on_timeout=False)
                     span["metadata"]["model"] = agent_id
-                    span["metadata"]["llm_response"] = response[:500] if response else ""
+                    span["metadata"]["llm_response"] = redact_sensitive_text(response[:500] if response else "")
             else:
-                response = await self._call_llm(messages)
+                response = await self._call_llm(messages, retry_on_timeout=False)
         except asyncio.CancelledError:
             raise
         except Exception as e:
@@ -848,7 +966,7 @@ class ActionableAgent(BaseAgent):
                         voice_followup=bool(result.get("voice_followup")) or followup_question,
                     )
                 return TaskResult(
-                    speech=result["speech"],
+                    speech=final_speech or _default_result_speech(result),
                     metadata=metadata,
                     voice_followup=bool(result.get("voice_followup")) or followup_question,
                     action_executed=self._action_executed_from_result(action, result),
@@ -856,7 +974,7 @@ class ActionableAgent(BaseAgent):
             except asyncio.CancelledError:
                 raise
             except Exception:
-                logger.exception("Action execution failed for %s action=%s", agent_id, action)
+                logger.exception("Action execution failed for %s action=%s", agent_id, redact_sensitive_values(action))
                 entity = action.get("entity", "the device")
                 return self._error_result(
                     AgentErrorCode.ACTION_FAILED,
@@ -866,7 +984,9 @@ class ActionableAgent(BaseAgent):
         # Path B: Action but no HA client
         if actions and not self._ha_client:
             first_action = actions[0]
-            logger.warning("Action parsed but ha_client is None for %s: %s", agent_id, first_action)
+            logger.warning(
+                "Action parsed but ha_client is None for %s: %s", agent_id, redact_sensitive_values(first_action)
+            )
             entity = first_action.get("entity", "the device")
             return self._error_result(
                 AgentErrorCode.HA_UNAVAILABLE,

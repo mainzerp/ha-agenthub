@@ -68,6 +68,7 @@ class DynamicAgent(BaseAgent):
         span_collector = task.span_collector
         prompt = PromptBuilder.build(
             self._system_prompt + "\nNEVER translate or normalize entity/room names.",
+            language=task.context.language if task.context else None,
             time_location=self._build_time_location_context(task.context),
             sequential_send=bool(task.context and task.context.sequential_send),
         )

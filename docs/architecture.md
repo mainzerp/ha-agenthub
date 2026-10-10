@@ -64,8 +64,9 @@ All configuration, secrets, and state are stored in SQLite. sqlite-vec provides 
 Agents communicate via an in-process Agent-to-Agent (A2A) message boundary:
 
 - **Registry** -- Maintains agent cards describing each agent's ID, name, description, skills, and endpoint. The current implementation keeps the registry in `app/a2a/registry.py`, with agent cards and handler instances stored in-memory.
-- **Dispatcher** -- Routes A2A task dispatches to agents by card and intent (`app/a2a/dispatcher.py`).
+- **Dispatcher** -- Routes A2A task dispatches to agents by card and intent (`app/a2a/dispatcher.py`). `message/send` returns the raw agent result on success and raises a `RuntimeError` on failure: `A2ADispatchError` (with a JSON-RPC `code`) for an unknown method or invalid params, a transport `RuntimeError` for agent failures. Error messages are generic; validation details are only logged. `message/stream` reports the same failures as a single `done` chunk with an `error` string. The `agent/discover` and `agent/list` management methods return JSON-RPC envelopes.
 - **Transport** -- `InProcessTransport` invokes agent handlers directly with async function calls (`handler.handle_task`, `handler.handle_task_stream`) within the container (`app/a2a/transport.py`). The transport abstraction allows for future HTTP-based transport.
+- **Default stream wrapper** -- Agents without token streaming yield one final chunk from `handle_task()`. It carries `speech`, `action_executed`, `voice_followup`, `directive`/`reason`, and, when set, `error` (the error code string, as in the non-streaming response), `metadata` and `actions_executed` (list of dicts).
 
 Each agent publishes an **Agent Card** containing its ID, capabilities, and supported intents. The orchestrator uses these cards to make routing decisions.
 
@@ -98,9 +99,18 @@ route to them through the same dispatcher boundary as built-in agents.
 5. **Specialist agent** (e.g., light-agent) receives the task:
    a. Uses the **entity matcher** to resolve "bedroom light" to `light.bedroom_main`.
    b. Calls the HA REST API (`ha_client/rest.py`) to execute `light/turn_on`.
-   c. Returns a response with speech text and action details.
+   c. Verifies the resulting state (`call_service_with_verification` in `app/agents/action_executor.py`) and returns a response with speech text and action details.
 6. The orchestrator checks the **action cache** for an exact hash match and stores the new result on miss.
 7. The response flows back through the API layer to the HA integration, which speaks it to the user.
+
+Domain-agent result rules (`app/agents/actionable.py`, `app/agents/action_executor.py`):
+
+- **Verification outcome:** the observed post-call state is classified as `reached` (target or an equivalent terminal state such as `off` for an expected `idle`), `in_progress` (transitional states: `opening`, `closing`, `locking`, `unlocking`, `arming`, `disarming`, `pending`, `buffering`, `starting`), `mismatch` (a contradicting terminal state, or still the old state after the verify window, e.g. a lock that reports `jammed`) or `unverified` (nothing observed). `mismatch` makes the call result `success=False` with a `StateVerificationError`, so executors report a failure instead of "Done"; `in_progress` is spoken as in progress.
+- **Invalid action objects:** when the agent LLM emits an action object that fails validation (e.g. `"entity": null`), the surrounding prose is never spoken (it may claim success). The agent returns a deterministic clarification with `voice_followup=True` and `metadata.parse_miss = "invalid_action"`.
+- **Satellite area:** keyword recall ranks entities in the satellite's area (`TaskContext.area_id`) first among equal scores, keeps them recallable in large domains, and does not flag a tie as ambiguous when exactly one tied candidate is in that area. Every agent prompt receives the satellite area name as context for "here" / "this room".
+- **Untrusted prompt data:** entity friendly names and states, last-entity names, the pending clarifying question and stored memory text are flattened, length-bounded and wrapped in `[UNTRUSTED_DATA_START]` / `[UNTRUSTED_DATA_END]` before they enter a system prompt.
+- **Secret redaction:** alarm/lock codes, PINs, passwords and tokens in action parameters are redacted (`app/security/redaction.py`) before they reach trace spans, the stored raw LLM response and logs. The service call still receives them verbatim.
+- **LLM timeouts:** domain agents call the LLM with `retry_on_timeout=False`, so a provider timeout returns `llm_error` at once instead of a retry that would outlive the dispatch budget after the HA action ran.
 
 For eligible plain timer start/cancel turns, the timer-agent may instead return a delegation directive, which the HA integration honors by calling Home Assistant's built-in conversation agent once.
 
