@@ -802,6 +802,9 @@ class TestTimerExecutorVerification:
 
         scheduler = MagicMock()
         scheduler.cancel = AsyncMock(return_value=1)
+        scheduler.list = AsyncMock(
+            return_value=[{"id": "t-1", "logical_name": "pasta", "kind": "plain", "origin_area": "kitchen"}]
+        )
         with patch("app.agents.timer_executor._helpers._get_scheduler", return_value=scheduler):
             result = await execute_timer_action(
                 {"action": "cancel_timer", "entity": "pasta"},
@@ -812,7 +815,9 @@ class TestTimerExecutorVerification:
             )
         assert result["success"] is True
         assert result["new_state"] == "idle"
-        scheduler.cancel.assert_awaited_once_with(logical_name="pasta", area="kitchen")
+        assert scheduler.list.await_args_list[0].kwargs["area"] == "kitchen"
+        assert "alarm" not in scheduler.list.await_args_list[0].kwargs["kinds"]
+        scheduler.cancel.assert_awaited_once_with(id_="t-1")
 
     @pytest.mark.asyncio
     async def test_cancel_timer_when_none_match_fails(self):
@@ -916,7 +921,7 @@ class TestTimerExecutorVerification:
                 _make_matcher("", ""),
             )
         assert result["success"] is False
-        assert "no active timer" in result["speech"].lower()
+        assert result["speech"] == "No timer is running."
 
     @pytest.mark.asyncio
     async def test_extend_timer_without_duration_fails(self):
@@ -948,7 +953,7 @@ class TestTimerExecutorVerification:
             "payload_json": "{}",
         }
         scheduler = MagicMock()
-        scheduler.cancel = AsyncMock(side_effect=[0, 1])
+        scheduler.cancel = AsyncMock(return_value=1)
         scheduler.list = AsyncMock(return_value=[stored_row])
 
         with patch("app.agents.timer_executor._helpers._get_scheduler", return_value=scheduler):
@@ -959,19 +964,22 @@ class TestTimerExecutorVerification:
                 _make_matcher("", ""),
             )
         assert result["success"] is True
-        second_call_kwargs = scheduler.cancel.await_args_list[1].kwargs
-        assert second_call_kwargs.get("id_") == "t-010"
+        scheduler.cancel.assert_awaited_once_with(id_="t-010")
 
     @pytest.mark.asyncio
     async def test_cancel_timer_exact_match_takes_precedence(self):
-        """When exact-match succeeds, list() is never called (no fallback executed)."""
+        """An exact name match wins over separator-insensitive and token-subset matches."""
         from unittest.mock import AsyncMock, patch
 
         from app.agents.timer_executor import execute_timer_action
 
+        rows = [
+            {"id": "t-exact", "logical_name": "pasta", "kind": "plain"},
+            {"id": "t-subset", "logical_name": "pasta sauce", "kind": "plain"},
+        ]
         scheduler = MagicMock()
         scheduler.cancel = AsyncMock(return_value=1)
-        scheduler.list = AsyncMock()
+        scheduler.list = AsyncMock(return_value=rows)
 
         with patch("app.agents.timer_executor._helpers._get_scheduler", return_value=scheduler):
             result = await execute_timer_action(
@@ -981,4 +989,4 @@ class TestTimerExecutorVerification:
                 _make_matcher("timer.pasta", "Pasta"),
             )
         assert result["success"] is True
-        scheduler.list.assert_not_awaited()
+        scheduler.cancel.assert_awaited_once_with(id_="t-exact")

@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import time
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
+from datetime import time as time_of_day
 from typing import Any
 
 from . import _helpers
@@ -83,6 +84,47 @@ def _filter_alarm_rows_by_schedule(
     return matches
 
 
+_WEEKDAY_CODE_INDEX: dict[str, int] = {"MO": 0, "TU": 1, "WE": 2, "TH": 3, "FR": 4, "SA": 5, "SU": 6}
+_INVALID_DATE_MESSAGE = (
+    "Invalid date format. Use YYYY-MM-DD, 'today', 'tomorrow', '+N' (days from today), or a weekday code (MO..SU)."
+)
+
+
+def _resolve_alarm_date(raw_date: str, today: date) -> tuple[date | None, bool]:
+    """Resolve the structured ``date`` parameter against the local ``today``.
+
+    Accepted values are schema tokens emitted by the timer prompt, not user
+    phrases: an ISO date, ``today``, ``tomorrow``, ``+N`` days, or a weekday
+    code (``MO``..``SU``) meaning the next such day. Returns ``(date, rolling)``
+    where ``rolling`` is True for weekday codes: when that day's time has
+    already passed, the alarm moves to the same weekday next week.
+    """
+    token = raw_date.strip()
+    lowered = token.casefold()
+    if lowered == "today":
+        return today, False
+    if lowered == "tomorrow":
+        return today + timedelta(days=1), False
+    if token.startswith("+") and token[1:].isdigit():
+        return today + timedelta(days=int(token[1:])), False
+    weekday = _WEEKDAY_CODE_INDEX.get(token.upper())
+    if weekday is not None:
+        return today + timedelta(days=(weekday - today.weekday()) % 7), True
+    try:
+        return datetime.fromisoformat(token).date(), False
+    except ValueError:
+        return None, False
+
+
+def _parse_time_of_day(raw_time: str) -> time_of_day | None:
+    for fmt in ("%H:%M:%S", "%H:%M"):
+        try:
+            return datetime.strptime(raw_time, fmt).time()
+        except ValueError:
+            continue
+    return None
+
+
 def _parse_alarm_target_epoch(
     params: dict[str, Any],
     *,
@@ -94,6 +136,30 @@ def _parse_alarm_target_epoch(
     raw_date = str(params.get("date", "")).strip()
 
     tz = _helpers._get_timezone_info(timezone)
+    # Local wall clock of the HA instance. Combining a local date and time
+    # with the zone (instead of adding seconds) keeps alarms DST-correct.
+    now_local = datetime.fromtimestamp(now_ts, tz=tz) if tz is not None else datetime.fromtimestamp(now_ts)
+
+    def _combine(day: date, at: time_of_day) -> datetime:
+        return datetime.combine(day, at, tzinfo=tz) if tz is not None else datetime.combine(day, at)
+
+    target_date: date | None = None
+    rolling = False
+    if raw_date and not raw_datetime:
+        target_date, rolling = _resolve_alarm_date(raw_date, now_local.date())
+        if target_date is None:
+            return None, _INVALID_DATE_MESSAGE
+
+    if raw_time and not raw_datetime and target_date is not None:
+        parsed_time = _parse_time_of_day(raw_time)
+        if parsed_time is None:
+            return None, "Invalid time format. Use HH:MM or HH:MM:SS."
+        scheduled = _combine(target_date, parsed_time)
+        if scheduled <= now_local and rolling:
+            scheduled = _combine(target_date + timedelta(days=7), parsed_time)
+        if scheduled <= now_local:
+            return None, "Alarm time must be in the future."
+        return int(scheduled.timestamp()), None
 
     if raw_datetime:
         candidate = raw_datetime.replace("T", " ")
@@ -135,23 +201,13 @@ def _parse_alarm_target_epoch(
             scheduled = scheduled + timedelta(days=1)
         return int(scheduled.timestamp()), None
 
-    if raw_date:
-        try:
-            target_date = datetime.fromisoformat(raw_date).date()
-        except ValueError:
-            return None, "Invalid date format. Use YYYY-MM-DD."
-        if tz is not None:
-            scheduled = datetime.combine(target_date, datetime.min.time(), tzinfo=tz)
-            now_local = datetime.fromtimestamp(now_ts, tz=tz)
-            if scheduled <= now_local:
-                return None, "Alarm date must be in the future."
-            return int(scheduled.timestamp()), None
-
-        scheduled = datetime.combine(target_date, datetime.min.time())
-        epoch = int(scheduled.timestamp())
-        if epoch <= now_ts:
+    if target_date is not None:
+        scheduled = _combine(target_date, datetime.min.time())
+        if scheduled <= now_local and rolling:
+            scheduled = _combine(target_date + timedelta(days=7), datetime.min.time())
+        if scheduled <= now_local:
             return None, "Alarm date must be in the future."
-        return epoch, None
+        return int(scheduled.timestamp()), None
 
     return None, "Provide one of datetime, time, or date for set_datetime."
 
@@ -216,6 +272,36 @@ def _build_recurring_alarm_payload(
     return normalized, None
 
 
+def _first_recurring_occurrence(
+    recurrence_payload: dict[str, Any],
+    *,
+    target_epoch: int,
+    now_ts: int,
+) -> tuple[int | None, dict[str, Any]]:
+    """Place the first occurrence on a day the recurrence allows.
+
+    A weekly Mon-Wed alarm requested on a Friday must first ring on Monday,
+    not on Saturday. The target day itself counts when it is allowed. The
+    week grid for ``interval > 1`` is anchored at the target's week and
+    stored as ``anchor_week`` so later occurrences keep it.
+    """
+    from app.agents.timer_scheduler import _compute_next_recurring_fire_epoch, _load_recurrence, _week_start
+
+    recurrence = _load_recurrence({"recurrence": recurrence_payload})
+    if recurrence is None:
+        return None, recurrence_payload
+    payload = dict(recurrence_payload)
+    if payload.get("freq") == "weekly" and "anchor_week" not in payload:
+        tz = recurrence.get("_tz")
+        target_local = (
+            datetime.fromtimestamp(target_epoch, tz=tz) if tz is not None else datetime.fromtimestamp(target_epoch)
+        )
+        payload["anchor_week"] = _week_start(target_local.date()).isoformat()
+        recurrence = _load_recurrence({"recurrence": payload}) or recurrence
+    first = _compute_next_recurring_fire_epoch({"fires_at": target_epoch}, recurrence, now_ts, include_current_day=True)
+    return first, payload
+
+
 async def _set_alarm(
     action: dict,
     *,
@@ -257,6 +343,18 @@ async def _set_alarm(
             "new_state": None,
             "speech": recurrence_error,
         }
+    if recurrence_payload is not None:
+        first_epoch, recurrence_payload = _first_recurring_occurrence(
+            recurrence_payload, target_epoch=int(target_epoch), now_ts=now_ts
+        )
+        if first_epoch is None:
+            return {
+                "success": False,
+                "entity_id": None,
+                "new_state": None,
+                "speech": "Could not compute the first occurrence of the recurring alarm.",
+            }
+        target_epoch = first_epoch
 
     entity_query = (action.get("entity") or "").strip()
     logical_name = entity_query or str(params.get("label", "")).strip() or "alarm"
@@ -359,119 +457,52 @@ async def _cancel_alarm(action: dict, *, area_id: str | None, timezone: str | No
             "metadata": {"status": "cancelled", "id": raw_id, "source": "internal"},
         }
 
-    scope = [row for row in pending if (area_id is None or row.get("origin_area") == area_id)]
     target_datetime = selectors.get("datetime", "")
     target_time = selectors.get("time", "")
     target_date = selectors.get("date", "")
     target_name = selectors.get("name", "")
-    matches: list[dict[str, Any]] = []
+    unnamed = _helpers._is_unnamed(target_name, "alarm")
 
-    if target_datetime:
-        matches = _filter_alarm_rows_by_schedule(scope, target_datetime=target_datetime, timezone=timezone)
-        matches.sort(key=lambda r: (int(r.get("fires_at") or 0), str(r.get("id") or "")))
-        if len(matches) == 1:
-            match = matches[0]
-            await scheduler.cancel(id_=str(match.get("id")))
-            return {
-                "success": True,
-                "action": action_name,
-                "entity_id": None,
-                "new_state": "cancelled",
-                "speech": f"Cancelled alarm '{match.get('logical_name') or 'alarm'}'.",
-                "metadata": {"status": "cancelled", "id": match.get("id"), "source": "internal"},
-            }
-        if len(matches) > 1:
-            candidates = [
-                {
-                    "id": row.get("id"),
-                    "logical_name": row.get("logical_name") or "alarm",
-                    "fires_at": int(row.get("fires_at") or 0),
-                    "local_time": _helpers._format_alarm_time_local(int(row.get("fires_at") or 0), timezone=timezone),
-                }
-                for row in matches
-            ]
-            choices = "; ".join(f"{c['logical_name']} at {c['local_time']} (id {c['id']})" for c in candidates)
-            return {
-                "success": False,
-                "entity_id": None,
-                "new_state": None,
-                "speech": (
-                    f"Multiple alarms are scheduled for {target_datetime}: {choices}. Please specify the alarm id."
-                ),
-                "metadata": {"status": "ambiguous", "candidates": candidates, "source": "internal"},
-            }
+    def _select(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        if target_datetime:
+            by_datetime = _filter_alarm_rows_by_schedule(rows, target_datetime=target_datetime, timezone=timezone)
+            if by_datetime:
+                return by_datetime
+        if target_time:
+            by_time = _filter_alarm_rows_by_schedule(
+                rows, target_time=target_time, target_date=target_date, timezone=timezone
+            )
+            if by_time:
+                return by_time
+        if not unnamed:
+            return _match_alarm_rows_by_name(rows, target_name)
+        if not target_datetime and not target_time:
+            # "Cancel my alarm": an unnamed reference addresses every alarm in scope.
+            return list(rows)
+        return []
 
-    if target_time:
-        matches = _filter_alarm_rows_by_schedule(
-            scope,
-            target_time=target_time,
-            target_date=target_date,
-            timezone=timezone,
-        )
-        matches.sort(key=lambda r: (int(r.get("fires_at") or 0), str(r.get("id") or "")))
-        if len(matches) == 1:
-            match = matches[0]
-            await scheduler.cancel(id_=str(match.get("id")))
-            return {
-                "success": True,
-                "action": action_name,
-                "entity_id": None,
-                "new_state": "cancelled",
-                "speech": f"Cancelled alarm '{match.get('logical_name') or 'alarm'}'.",
-                "metadata": {"status": "cancelled", "id": match.get("id"), "source": "internal"},
-            }
-        if len(matches) > 1:
-            candidates = [
-                {
-                    "id": row.get("id"),
-                    "logical_name": row.get("logical_name") or "alarm",
-                    "fires_at": int(row.get("fires_at") or 0),
-                    "local_time": _helpers._format_alarm_time_local(int(row.get("fires_at") or 0), timezone=timezone),
-                }
-                for row in matches
-            ]
-            request_label = target_time if not target_date else f"{target_date} {target_time}"
-            choices = "; ".join(f"{c['logical_name']} at {c['local_time']} (id {c['id']})" for c in candidates)
-            return {
-                "success": False,
-                "entity_id": None,
-                "new_state": None,
-                "speech": (
-                    f"Multiple alarms match {request_label}: {choices}. "
-                    "Please specify the alarm id or exact scheduled datetime."
-                ),
-                "metadata": {"status": "ambiguous", "candidates": candidates, "source": "internal"},
-            }
-
-    if target_name:
-        normalized_target = _helpers._normalize_alarm_name(target_name)
-        matches = [
-            row
-            for row in scope
-            if _helpers._normalize_alarm_name(str(row.get("logical_name") or "")) == normalized_target
-        ]
-        matches.sort(key=lambda r: (int(r.get("fires_at") or 0), str(r.get("id") or "")))
-    else:
-        return {
-            "success": False,
-            "entity_id": None,
-            "new_state": None,
-            "speech": "Please provide an alarm id, scheduled time, or alarm name to cancel.",
-        }
+    # Origin room first; alarms set from chat, another room, or via
+    # ``target_satellite`` are found by the unscoped fallback.
+    scoped = [row for row in pending if area_id is None or row.get("origin_area") == area_id]
+    matches = _select(scoped)
+    if not matches and area_id is not None:
+        matches = _select(pending)
+    matches.sort(key=lambda r: (int(r.get("fires_at") or 0), str(r.get("id") or "")))
 
     if not matches:
-        if target_datetime and target_name:
+        request_label = target_time if not target_date else f"{target_date} {target_time}"
+        if target_datetime and not unnamed:
             message = f"No pending internal alarm scheduled for {target_datetime} or named '{target_name}' was found."
         elif target_datetime:
             message = f"No pending internal alarm scheduled for {target_datetime} was found."
-        elif target_time and target_name:
-            request_label = target_time if not target_date else f"{target_date} {target_time}"
+        elif target_time and not unnamed:
             message = f"No pending internal alarm matching {request_label} or named '{target_name}' was found."
         elif target_time:
-            request_label = target_time if not target_date else f"{target_date} {target_time}"
             message = f"No pending internal alarm matching {request_label} was found."
-        else:
+        elif not unnamed:
             message = f"No pending internal alarm named '{target_name}' was found."
+        else:
+            message = "No internal alarm is scheduled."
         return {
             "success": False,
             "entity_id": None,
@@ -491,12 +522,18 @@ async def _cancel_alarm(action: dict, *, area_id: str | None, timezone: str | No
             for row in matches
         ]
         choices = "; ".join(f"{c['logical_name']} at {c['local_time']} (id {c['id']})" for c in candidates)
+        if target_datetime:
+            request_label = target_datetime
+        elif target_time:
+            request_label = target_time if not target_date else f"{target_date} {target_time}"
+        else:
+            request_label = f"'{target_name}'" if not unnamed else "your request"
         return {
             "success": False,
             "entity_id": None,
             "new_state": None,
             "speech": (
-                f"Multiple alarms match '{target_name}': {choices}. "
+                f"Multiple alarms match {request_label}: {choices}. "
                 "Please specify the alarm id or exact scheduled time."
             ),
             "metadata": {"status": "ambiguous", "candidates": candidates, "source": "internal"},
@@ -512,3 +549,14 @@ async def _cancel_alarm(action: dict, *, area_id: str | None, timezone: str | No
         "speech": f"Cancelled alarm '{match.get('logical_name') or 'alarm'}'.",
         "metadata": {"status": "cancelled", "id": match.get("id"), "source": "internal"},
     }
+
+
+def _match_alarm_rows_by_name(rows: list[dict[str, Any]], name: str) -> list[dict[str, Any]]:
+    """Match alarms by stored logical name, falling back to a token-subset match."""
+    normalized_target = _helpers._normalize_alarm_name(name)
+    exact = [
+        row for row in rows if _helpers._normalize_alarm_name(str(row.get("logical_name") or "")) == normalized_target
+    ]
+    if exact:
+        return exact
+    return _helpers._match_rows_by_name(rows, name)
