@@ -26,7 +26,12 @@ from app.models.agent import AgentCard, AgentErrorCode, DispatchTask, TaskResult
         "sleep_timer",
     ],
     prompt_name="timer",
-    allowed_domains=frozenset({"timer", "input_datetime", "input_boolean"}),
+    # ``allowed_domains`` drives keyword recall (the LLM candidate block).
+    # ``input_datetime`` is deliberately absent: timer-agent sees those
+    # helpers only so AlarmMonitor may ring labelled ones; alarms are
+    # AgentHub-internal and the agent never acts on a helper, so helpers
+    # must not be offered to the LLM as action candidates.
+    allowed_domains=frozenset({"timer", "input_boolean"}),
     db_gated=True,
 )
 class TimerAgent(ActionableAgent):
