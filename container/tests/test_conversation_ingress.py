@@ -14,6 +14,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from fastapi import WebSocketDisconnect
 
+from app.a2a.dispatcher import A2ADispatchError
 from app.api.routes import conversation as conv_module
 from app.models.conversation import ConversationRequest
 
@@ -214,4 +215,20 @@ class TestRestDispatchFailure:
 
         assert response.speech == conv_module._DISPATCH_FAILED_SPEECH
         assert "secret" not in response.speech
+        assert response.conversation_id == "c1"
+
+    async def test_rest_a2a_dispatch_error_speech_is_fixed(self, monkeypatch):
+        # message/send raises A2ADispatchError (a RuntimeError subclass) for
+        # unroutable requests instead of returning a JSON-RPC error envelope.
+        dispatcher = MagicMock()
+        dispatcher.dispatch = AsyncMock(side_effect=A2ADispatchError(-32602, "Invalid params"))
+        monkeypatch.setattr(conv_module, "_dispatcher", dispatcher)
+        request = SimpleNamespace(state=SimpleNamespace(span_collector=None, trace_id="abc"))
+
+        response = await conv_module.conversation_rest(
+            request, ConversationRequest(text="hi", conversation_id="c1"), "key"
+        )
+
+        assert response.speech == conv_module._DISPATCH_FAILED_SPEECH
+        assert "Invalid params" not in response.speech
         assert response.conversation_id == "c1"
