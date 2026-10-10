@@ -1,10 +1,20 @@
 """Lists-specific action execution.
 
 Dispatches todo list read/write actions via HA REST API.
+
+- Visibility is always applied (``lists-agent`` rules when no agent id is
+  passed); the target must be a ``todo.*`` entity.
+- Without a named list, the only visible list is used; several visible
+  lists produce a clarifying question instead of a silent first pick.
+- Item matching prefers a normalized exact match, then a unique substring
+  match; several matches produce a clarifying question.
+- Every result is ``cacheable=False``: list writes must never be replayed
+  from the action cache.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
@@ -14,6 +24,35 @@ from app.entity.visibility import filter_visible_results
 logger = logging.getLogger(__name__)
 
 _TODO_DOMAINS: frozenset[str] = frozenset({"todo"})
+_DEFAULT_AGENT_ID = "lists-agent"
+_MAX_LISTED_CHOICES = 4
+
+
+def _result(success: bool, speech: str, entity_id: str | None = None, **extra: Any) -> dict:
+    result: dict[str, Any] = {
+        "success": success,
+        "entity_id": entity_id,
+        "new_state": None,
+        "speech": speech,
+        "cacheable": False,
+    }
+    result.update(extra)
+    return result
+
+
+def _choice_result(speech: str, path: str, entity_id: str | None = None) -> dict:
+    """Clarifying question: requests a voice follow-up and is never rewritten as 'not found'."""
+    return _result(False, speech, entity_id, voice_followup=True, metadata={"resolution_path": path})
+
+
+def _join_choices(names: list[str]) -> str:
+    shown = names[:_MAX_LISTED_CHOICES]
+    if len(shown) == 1:
+        return shown[0]
+    text = ", ".join(shown[:-1]) + f" or {shown[-1]}"
+    if len(names) > len(shown):
+        text += f" (and {len(names) - len(shown)} more)"
+    return text
 
 
 async def execute_lists_action(
@@ -30,6 +69,7 @@ async def execute_lists_action(
 ) -> dict:
     """Dispatch a parsed lists action."""
     action_name = action.get("action", "").lower()
+    agent_id = agent_id or _DEFAULT_AGENT_ID
 
     if action_name == "list_lists":
         return await _list_lists(entity_index, entity_matcher, agent_id)
@@ -44,12 +84,33 @@ async def execute_lists_action(
     if action_name == "clear_completed":
         return await _clear_completed(action, ha_client, entity_index, entity_matcher, agent_id, span_collector)
 
-    return {
-        "success": False,
-        "entity_id": None,
-        "new_state": None,
-        "speech": f"Unknown lists action: {action_name}",
-    }
+    return _result(False, f"Unknown lists action: {action_name}")
+
+
+async def _visible_todo_entries(entity_index: Any, agent_id: str | None) -> list[Any]:
+    """Visible todo entities for the agent (fail closed on errors)."""
+    entries: list[Any] = []
+    if entity_index:
+        try:
+            if hasattr(entity_index, "list_entries_async"):
+                entries = list(await entity_index.list_entries_async(domains=_TODO_DOMAINS))
+            elif hasattr(entity_index, "list_entries"):
+                entries = list(entity_index.list_entries(domains=_TODO_DOMAINS))
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.warning("Listing todo entities failed", exc_info=True)
+            return []
+    entries = [e for e in entries if str(getattr(e, "entity_id", "")).startswith("todo.")]
+    if not entries:
+        return []
+    try:
+        return list(await filter_visible_results(agent_id or _DEFAULT_AGENT_ID, entries, entity_index))
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        logger.warning("Todo visibility filtering failed; hiding all lists", exc_info=True)
+        return []
 
 
 async def _resolve_todo_entity(
@@ -61,26 +122,40 @@ async def _resolve_todo_entity(
     span_collector=None,
 ) -> tuple[str | None, str | None, str | None]:
     """Resolve target todo entity. Returns (entity_id, friendly_name, speech_error)."""
+    target = await _resolve_todo_target(action, ha_client, entity_index, entity_matcher, agent_id, span_collector)
+    if isinstance(target, dict):
+        return None, None, target["speech"]
+    return target[0], target[1], None
+
+
+async def _resolve_todo_target(
+    action: dict,
+    ha_client: Any,
+    entity_index: Any,
+    entity_matcher: Any,
+    agent_id: str | None,
+    span_collector=None,
+) -> tuple[str, str] | dict:
+    """Resolve the target list. Returns ``(entity_id, friendly_name)`` or a ready result dict."""
     entity_query = action.get("entity", "")
     params = action.get("parameters") or {}
     explicit_list = str(params.get("list") or "").strip()
     if explicit_list:
         entity_query = explicit_list
+    entity_query = str(entity_query or "").strip()
 
     if not entity_query:
-        # Try to find any visible todo entity
-        entries = []
-        if entity_index:
-            if hasattr(entity_index, "list_entries_async"):
-                entries = await entity_index.list_entries_async(domains=_TODO_DOMAINS)
-            elif hasattr(entity_index, "list_entries"):
-                entries = entity_index.list_entries(domains=_TODO_DOMAINS)
-        if agent_id and entries:
-            entries = await filter_visible_results(agent_id, entries, entity_index)
-        if entries:
-            first = entries[0]
-            return str(getattr(first, "entity_id", "")), str(getattr(first, "friendly_name", "")), None
-        return None, None, "No todo list is available."
+        # No configured default list exists: use the only visible list,
+        # ask when several are visible.
+        entries = await _visible_todo_entries(entity_index, agent_id)
+        if not entries:
+            return _result(False, "No todo list is available.")
+        if len(entries) > 1:
+            names = [str(getattr(e, "friendly_name", "") or getattr(e, "entity_id", "")) for e in entries]
+            return _choice_result(f"Which list do you mean: {_join_choices(names)}?", "list_ambiguous")
+        first = entries[0]
+        entity_id = str(getattr(first, "entity_id", ""))
+        return entity_id, str(getattr(first, "friendly_name", "") or entity_id)
 
     resolution = {
         "entity_id": None,
@@ -97,18 +172,23 @@ async def _resolve_todo_entity(
                     entity_query,
                     entity_index,
                     entity_matcher,
-                    agent_id,
+                    agent_id or _DEFAULT_AGENT_ID,
                     allowed_domains=_TODO_DOMAINS,
                 )
                 em_span["metadata"] = resolution["metadata"]
+    except asyncio.CancelledError:
+        raise
     except Exception:
         logger.warning("Entity resolution failed for '%s'", entity_query, exc_info=True)
 
     entity_id = resolution["entity_id"]
     friendly_name = resolution["friendly_name"]
+    if entity_id and not str(entity_id).startswith("todo."):
+        logger.warning("Resolved entity %s is not a todo list; rejecting", entity_id)
+        entity_id = None
     if not entity_id:
-        return None, None, resolution["speech"] or f"Could not find a todo list matching '{entity_query}'."
-    return entity_id, friendly_name, None
+        return _result(False, resolution["speech"] or f"Could not find a todo list matching '{entity_query}'.")
+    return str(entity_id), str(friendly_name or entity_id)
 
 
 async def _get_todo_items(ha_client: Any, entity_id: str) -> list[dict[str, Any]]:
@@ -121,6 +201,8 @@ async def _get_todo_items(ha_client: Any, entity_id: str) -> list[dict[str, Any]
             {},
             return_response=True,
         )
+    except asyncio.CancelledError:
+        raise
     except Exception as exc:
         logger.warning("todo.get_items failed for %s: %s", entity_id, exc)
         return []
@@ -145,17 +227,24 @@ async def _get_todo_items(ha_client: Any, entity_id: str) -> list[dict[str, Any]
     return []
 
 
+def _normalize(text: Any) -> str:
+    return " ".join(str(text or "").casefold().split())
+
+
 def _find_items_by_query(items: list[dict[str, Any]], query: str) -> list[dict[str, Any]]:
-    """Find todo items whose summary matches the query (case-insensitive, substring)."""
-    query_lower = query.lower().strip()
-    if not query_lower:
+    """Find todo items matching the query.
+
+    Normalized exact summary matches win; otherwise items whose summary
+    contains the query. The reverse direction (summary inside the query)
+    is not matched, so "oat milk" never selects "Milk".
+    """
+    query_norm = _normalize(query)
+    if not query_norm:
         return []
-    matches = []
-    for item in items:
-        summary = str(item.get("summary", "")).lower()
-        if query_lower in summary or summary in query_lower:
-            matches.append(item)
-    return matches
+    exact = [item for item in items if _normalize(item.get("summary")) == query_norm]
+    if exact:
+        return exact
+    return [item for item in items if query_norm in _normalize(item.get("summary"))]
 
 
 def _format_item(item: dict[str, Any]) -> str:
@@ -167,39 +256,27 @@ def _format_item(item: dict[str, Any]) -> str:
     return summary
 
 
+def _ambiguity_question(query: str, matches: list[dict[str, Any]]) -> str:
+    names = [str(m.get("summary", "")) for m in matches]
+    return f"Which '{query}' do you mean: {_join_choices(names)}?"
+
+
 async def _list_lists(entity_index: Any, entity_matcher: Any, agent_id: str | None) -> dict:
     """List all available todo lists."""
-    entries = []
-    if entity_index:
-        if hasattr(entity_index, "list_entries_async"):
-            entries = await entity_index.list_entries_async(domains=_TODO_DOMAINS)
-        elif hasattr(entity_index, "list_entries"):
-            entries = entity_index.list_entries(domains=_TODO_DOMAINS)
-
-    if agent_id and entries:
-        entries = await filter_visible_results(agent_id, entries, entity_index)
+    entries = await _visible_todo_entries(entity_index, agent_id)
 
     if not entries:
-        return {
-            "success": True,
-            "entity_id": None,
-            "new_state": None,
-            "speech": "No todo lists are available.",
-            "cacheable": False,
-        }
+        return _result(True, "No todo lists are available.")
 
     lines = []
     for entry in entries:
         fn = getattr(entry, "friendly_name", None) or getattr(entry, "entity_id", "unknown")
         lines.append(str(fn))
 
-    return {
-        "success": True,
-        "entity_id": None,
-        "new_state": None,
-        "speech": "Available lists: " + ", ".join(lines) + ".",
-        "cacheable": False,
-        "metadata": {
+    return _result(
+        True,
+        "Available lists: " + ", ".join(lines) + ".",
+        metadata={
             "lists": [
                 {
                     "entity_id": getattr(e, "entity_id", ""),
@@ -208,7 +285,7 @@ async def _list_lists(entity_index: Any, entity_matcher: Any, agent_id: str | No
                 for e in entries
             ]
         },
-    }
+    )
 
 
 async def _list_items(
@@ -220,32 +297,22 @@ async def _list_items(
     span_collector=None,
 ) -> dict:
     """List items in a specific todo list."""
-    entity_id, friendly_name, error = await _resolve_todo_entity(
-        action, ha_client, entity_index, entity_matcher, agent_id, span_collector
-    )
-    if error:
-        return {"success": False, "entity_id": None, "new_state": None, "speech": error, "cacheable": False}
-    assert entity_id is not None
+    target = await _resolve_todo_target(action, ha_client, entity_index, entity_matcher, agent_id, span_collector)
+    if isinstance(target, dict):
+        return target
+    entity_id, friendly_name = target
 
     items = await _get_todo_items(ha_client, entity_id)
     if not items:
-        return {
-            "success": True,
-            "entity_id": entity_id,
-            "new_state": None,
-            "speech": f"{friendly_name} is empty.",
-            "cacheable": False,
-        }
+        return _result(True, f"{friendly_name} is empty.", entity_id)
 
     lines = [_format_item(item) for item in items]
-    return {
-        "success": True,
-        "entity_id": entity_id,
-        "new_state": None,
-        "speech": f"Items in {friendly_name}: " + "; ".join(lines) + ".",
-        "cacheable": False,
-        "metadata": {"items": items},
-    }
+    return _result(
+        True,
+        f"Items in {friendly_name}: " + "; ".join(lines) + ".",
+        entity_id,
+        metadata={"items": items},
+    )
 
 
 async def _add_item(
@@ -260,18 +327,12 @@ async def _add_item(
     params = action.get("parameters") or {}
     item_text = str(params.get("item") or "").strip()
     if not item_text:
-        return {
-            "success": False,
-            "entity_id": None,
-            "new_state": None,
-            "speech": "Please specify what to add.",
-        }
+        return _result(False, "Please specify what to add.")
 
-    entity_id, friendly_name, error = await _resolve_todo_entity(
-        action, ha_client, entity_index, entity_matcher, agent_id, span_collector
-    )
-    if error:
-        return {"success": False, "entity_id": None, "new_state": None, "speech": error}
+    target = await _resolve_todo_target(action, ha_client, entity_index, entity_matcher, agent_id, span_collector)
+    if isinstance(target, dict):
+        return target
+    entity_id, friendly_name = target
 
     # Support multiple items separated by commas
     items = [s.strip() for s in item_text.split(",") if s.strip()]
@@ -281,17 +342,14 @@ async def _add_item(
         try:
             await ha_client.call_service("todo", "add_item", entity_id, {"item": it})
             added.append(it)
+        except asyncio.CancelledError:
+            raise
         except Exception as exc:
             logger.warning("todo.add_item failed for %s: %s", entity_id, exc)
             failed.append(it)
 
     if failed and not added:
-        return {
-            "success": False,
-            "entity_id": entity_id,
-            "new_state": None,
-            "speech": f"Failed to add items to {friendly_name}.",
-        }
+        return _result(False, f"Failed to add items to {friendly_name}.", entity_id)
 
     parts = []
     if added:
@@ -299,12 +357,64 @@ async def _add_item(
     if failed:
         parts.append(f"Could not add {', '.join(failed)}.")
 
-    return {
-        "success": bool(added),
-        "entity_id": entity_id,
-        "new_state": None,
-        "speech": " ".join(parts),
-    }
+    return _result(bool(added), " ".join(parts), entity_id)
+
+
+async def _call_item_service(
+    ha_client: Any,
+    service: str,
+    entity_id: str,
+    item: dict[str, Any],
+    extra: dict[str, Any] | None = None,
+) -> bool:
+    """Call a per-item todo service by uid, falling back to the summary."""
+    identifiers = [i for i in (item.get("uid"), item.get("summary")) if i]
+    for identifier in dict.fromkeys(identifiers):
+        try:
+            await ha_client.call_service("todo", service, entity_id, {"item": identifier, **(extra or {})})
+            return True
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning("todo.%s failed for %s (%s): %s", service, entity_id, identifier, exc)
+    return False
+
+
+def _finish_item_result(
+    entity_id: str,
+    done_phrase: str,
+    done: list[str],
+    failed: list[str],
+    not_found: list[str],
+    questions: list[str],
+    failed_phrase: str,
+    friendly_name: str,
+    extra_notes: list[str] | None = None,
+) -> dict:
+    """Merge per-item outcomes; ``done_phrase`` is e.g. "Completed {items} in"."""
+    parts = []
+    if done:
+        parts.append(f"{done_phrase.format(items=', '.join(done))} {friendly_name}.")
+    if failed:
+        parts.append(f"Could not {failed_phrase} {', '.join(failed)}.")
+    if not_found:
+        if done or questions:
+            parts.append(f"Could not find {', '.join(not_found)}.")
+        else:
+            parts.append(f"Could not find '{', '.join(not_found)}' in {friendly_name}.")
+    parts.extend(extra_notes or [])
+    parts.extend(questions)
+    speech = " ".join(parts)
+    if questions:
+        # A clarifying question is pending: request the follow-up turn.
+        return _result(
+            bool(done),
+            speech,
+            entity_id,
+            voice_followup=True,
+            metadata={"resolution_path": "item_ambiguous"},
+        )
+    return _result(bool(done), speech, entity_id)
 
 
 async def _complete_item(
@@ -319,85 +429,52 @@ async def _complete_item(
     params = action.get("parameters") or {}
     item_text = str(params.get("item") or "").strip()
     if not item_text:
-        return {
-            "success": False,
-            "entity_id": None,
-            "new_state": None,
-            "speech": "Please specify which item to complete.",
-        }
+        return _result(False, "Please specify which item to complete.")
 
-    entity_id, friendly_name, error = await _resolve_todo_entity(
-        action, ha_client, entity_index, entity_matcher, agent_id, span_collector
-    )
-    if error:
-        return {"success": False, "entity_id": None, "new_state": None, "speech": error}
-    assert entity_id is not None
+    target = await _resolve_todo_target(action, ha_client, entity_index, entity_matcher, agent_id, span_collector)
+    if isinstance(target, dict):
+        return target
+    entity_id, friendly_name = target
 
     items = await _get_todo_items(ha_client, entity_id)
+    open_items = [item for item in items if item.get("status") != "completed"]
 
     # Support multiple items separated by commas
     queries = [s.strip() for s in item_text.split(",") if s.strip()]
-    completed = []
-    failed = []
-    not_found = []
+    completed: list[str] = []
+    failed: list[str] = []
+    not_found: list[str] = []
+    questions: list[str] = []
+    notes: list[str] = []
 
     for query in queries:
-        matches = _find_items_by_query(items, query)
+        matches = _find_items_by_query(open_items, query)
         if not matches:
-            not_found.append(query)
+            if _find_items_by_query(items, query):
+                notes.append(f"{query} is already done.")
+            else:
+                not_found.append(query)
             continue
         if len(matches) > 1:
-            # If ambiguous, prefer an incomplete item
-            incomplete = [m for m in matches if m.get("status") != "completed"]
-            target = incomplete[0] if incomplete else matches[0]
+            questions.append(_ambiguity_question(query, matches))
+            continue
+        target_item = matches[0]
+        if await _call_item_service(ha_client, "update_item", entity_id, target_item, {"status": "completed"}):
+            completed.append(str(target_item.get("summary", query)))
         else:
-            target = matches[0]
+            failed.append(query)
 
-        target_uid = target.get("uid") or target.get("summary", query)
-        try:
-            await ha_client.call_service(
-                "todo",
-                "update_item",
-                entity_id,
-                {"item": target_uid, "status": "completed"},
-            )
-            completed.append(target.get("summary", query))
-        except Exception as exc:
-            logger.warning("todo.update_item failed for %s: %s", entity_id, exc)
-            # Fallback: try by summary if uid failed
-            try:
-                await ha_client.call_service(
-                    "todo",
-                    "update_item",
-                    entity_id,
-                    {"item": target.get("summary", query), "status": "completed"},
-                )
-                completed.append(target.get("summary", query))
-            except Exception:
-                failed.append(query)
-
-    if not completed and not_found:
-        return {
-            "success": False,
-            "entity_id": entity_id,
-            "new_state": None,
-            "speech": f"Could not find '{', '.join(not_found)}' in {friendly_name}.",
-        }
-
-    parts = []
-    if completed:
-        parts.append(f"Completed {', '.join(completed)} in {friendly_name}.")
-    if failed:
-        parts.append(f"Could not complete {', '.join(failed)}.")
-    if not_found and completed:
-        parts.append(f"Could not find {', '.join(not_found)}.")
-
-    return {
-        "success": bool(completed),
-        "entity_id": entity_id,
-        "new_state": None,
-        "speech": " ".join(parts),
-    }
+    return _finish_item_result(
+        entity_id,
+        "Completed {items} in",
+        completed,
+        failed,
+        not_found,
+        questions,
+        "complete",
+        friendly_name,
+        notes,
+    )
 
 
 async def _remove_item(
@@ -412,27 +489,21 @@ async def _remove_item(
     params = action.get("parameters") or {}
     item_text = str(params.get("item") or "").strip()
     if not item_text:
-        return {
-            "success": False,
-            "entity_id": None,
-            "new_state": None,
-            "speech": "Please specify which item to remove.",
-        }
+        return _result(False, "Please specify which item to remove.")
 
-    entity_id, friendly_name, error = await _resolve_todo_entity(
-        action, ha_client, entity_index, entity_matcher, agent_id, span_collector
-    )
-    if error:
-        return {"success": False, "entity_id": None, "new_state": None, "speech": error}
-    assert entity_id is not None
+    target = await _resolve_todo_target(action, ha_client, entity_index, entity_matcher, agent_id, span_collector)
+    if isinstance(target, dict):
+        return target
+    entity_id, friendly_name = target
 
     items = await _get_todo_items(ha_client, entity_id)
 
     # Support multiple items separated by commas
     queries = [s.strip() for s in item_text.split(",") if s.strip()]
-    removed = []
-    failed = []
-    not_found = []
+    removed: list[str] = []
+    failed: list[str] = []
+    not_found: list[str] = []
+    questions: list[str] = []
 
     for query in queries:
         matches = _find_items_by_query(items, query)
@@ -440,55 +511,24 @@ async def _remove_item(
             not_found.append(query)
             continue
         if len(matches) > 1:
-            not_found.append(f"{query} (ambiguous)")
+            questions.append(_ambiguity_question(query, matches))
             continue
+        target_item = matches[0]
+        if await _call_item_service(ha_client, "remove_item", entity_id, target_item):
+            removed.append(str(target_item.get("summary", query)))
+        else:
+            failed.append(query)
 
-        target = matches[0]
-        target_uid = target.get("uid") or target.get("summary", query)
-        try:
-            await ha_client.call_service(
-                "todo",
-                "remove_item",
-                entity_id,
-                {"item": target_uid},
-            )
-            removed.append(target.get("summary", query))
-        except Exception as exc:
-            logger.warning("todo.remove_item failed for %s: %s", entity_id, exc)
-            # Fallback: try by summary
-            try:
-                await ha_client.call_service(
-                    "todo",
-                    "remove_item",
-                    entity_id,
-                    {"item": target.get("summary", query)},
-                )
-                removed.append(target.get("summary", query))
-            except Exception:
-                failed.append(query)
-
-    if not removed and not_found:
-        return {
-            "success": False,
-            "entity_id": entity_id,
-            "new_state": None,
-            "speech": f"Could not find '{', '.join(not_found)}' in {friendly_name}.",
-        }
-
-    parts = []
-    if removed:
-        parts.append(f"Removed {', '.join(removed)} from {friendly_name}.")
-    if failed:
-        parts.append(f"Could not remove {', '.join(failed)}.")
-    if not_found and removed:
-        parts.append(f"Could not find {', '.join(not_found)}.")
-
-    return {
-        "success": bool(removed),
-        "entity_id": entity_id,
-        "new_state": None,
-        "speech": " ".join(parts),
-    }
+    return _finish_item_result(
+        entity_id,
+        "Removed {items} from",
+        removed,
+        failed,
+        not_found,
+        questions,
+        "remove",
+        friendly_name,
+    )
 
 
 async def _clear_completed(
@@ -500,48 +540,24 @@ async def _clear_completed(
     span_collector=None,
 ) -> dict:
     """Remove all completed items from a todo list."""
-    entity_id, friendly_name, error = await _resolve_todo_entity(
-        action, ha_client, entity_index, entity_matcher, agent_id, span_collector
-    )
-    if error:
-        return {"success": False, "entity_id": None, "new_state": None, "speech": error}
-    assert entity_id is not None
+    target = await _resolve_todo_target(action, ha_client, entity_index, entity_matcher, agent_id, span_collector)
+    if isinstance(target, dict):
+        return target
+    entity_id, friendly_name = target
 
     items = await _get_todo_items(ha_client, entity_id)
     completed_items = [item for item in items if item.get("status") == "completed"]
 
     if not completed_items:
-        return {
-            "success": True,
-            "entity_id": entity_id,
-            "new_state": None,
-            "speech": f"No completed items in {friendly_name}.",
-        }
+        return _result(True, f"No completed items in {friendly_name}.", entity_id)
 
     removed = []
     failed = []
     for item in completed_items:
-        target_uid = item.get("uid") or item.get("summary", "")
-        try:
-            await ha_client.call_service(
-                "todo",
-                "remove_item",
-                entity_id,
-                {"item": target_uid},
-            )
+        if await _call_item_service(ha_client, "remove_item", entity_id, item):
             removed.append(item.get("summary", ""))
-        except Exception as exc:
-            logger.warning("todo.remove_item failed for %s: %s", entity_id, exc)
-            try:
-                await ha_client.call_service(
-                    "todo",
-                    "remove_item",
-                    entity_id,
-                    {"item": item.get("summary", "")},
-                )
-                removed.append(item.get("summary", ""))
-            except Exception:
-                failed.append(item.get("summary", ""))
+        else:
+            failed.append(item.get("summary", ""))
 
     parts = []
     if removed:
@@ -549,9 +565,4 @@ async def _clear_completed(
     if failed:
         parts.append(f"Could not remove {len(failed)} item(s).")
 
-    return {
-        "success": bool(removed),
-        "entity_id": entity_id,
-        "new_state": None,
-        "speech": " ".join(parts),
-    }
+    return _result(bool(removed), " ".join(parts), entity_id)

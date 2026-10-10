@@ -78,6 +78,13 @@ Thirteen specialized domain agents are reachable from intent classification:
 satellites, and notify targets). A `general-agent` fallback handles general
 questions and unroutable requests.
 
+Domain-specific write contracts:
+
+- **Automation config changes** -- `create_automation`, `update_automation`, and `delete_automation` are two-turn: the executor validates the change (every referenced entity must exist in the entity index and be visible to `automation-agent`; services must be on the allow-list in `automation_executor._SERVICE_ALLOWLIST`; device/area/floor/label targets and templated entity or service names are rejected), stores it in `automation_confirmation.confirmation_store` (in memory, keyed by `conversation_id`, 5-minute TTL), and asks for confirmation with a voice follow-up. When a later turn reaches the automation agent while a proposal is pending, the agent LLM classifies the answer (confirm/decline/modify/unrelated, prompt `automation_confirm.txt`); only a confirmation writes to HA. Updates patch the config fetched from HA and abort if it changed before confirmation. Enable, disable, and trigger execute immediately.
+- **Calendar** -- reads use `calendar.get_events` across the user's visible default calendars (or all visible calendars). Update and delete read event uids from `GET /api/calendars/<entity_id>` (`HARestClient.get_calendar_event_details`), send the `calendar/event/update` / `calendar/event/delete` WebSocket commands (`HARestClient.send_ws_command`), and verify by re-reading.
+- **Lists** -- visibility always applies; an unnamed list resolves only when exactly one list is visible, and ambiguous item matches ask instead of acting.
+- Calendar, lists, and automation config results are `cacheable=False`, so these writes never enter the action cache.
+
 Internal A2A-registered helper agents: filler-agent and rewrite-agent. The mediation pass is baked into the orchestrator agent. Runtime services and utility modules (not A2A agents) include language detection, input sanitization, cancel-speech detection, notification dispatch, timer scheduling, and alarm monitoring.
 
 Custom agents created through the admin API are also registered as A2A

@@ -1,6 +1,6 @@
 id: automation.delete_vacation_mode
 agent: automation-agent
-description: Delete an existing automation
+description: Delete an existing automation (first turn asks for confirmation; nothing is deleted)
 snapshot: home_default
 language: en
 context: {source: ha, area_id: living_room, device_id: satellite_living_room}
@@ -21,4 +21,4 @@ request:
 expected:
   routed_agent: automation-agent
   service_calls: []
-  speech_contains: ["deleted", "Vacation Mode"]
+  speech_contains: ["permanently deletes", "Vacation Mode", "Shall I delete it?"]

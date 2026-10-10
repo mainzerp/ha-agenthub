@@ -1393,7 +1393,32 @@ class MusicAgent(_ConfigurableDomainAgent):
     db_gated=True,
 )
 class AutomationAgent(_ConfigurableDomainAgent):
-    pass
+    """Automation agent: create/update/delete are proposed first and written only after confirmation."""
+
+    async def _handle_task_inner(self, task: DispatchTask) -> TaskResult:
+        # A pending automation proposal for this conversation turns the turn
+        # into a confirmation answer (LLM-classified, see automation_confirmation).
+        from app.agents.automation_confirmation import handle_pending_automation_answer
+
+        answered = await handle_pending_automation_answer(self, task)
+        if answered is not None:
+            return answered
+        return await super()._handle_task_inner(task)
+
+    async def _do_execute(self, action, ha_client, entity_index, entity_matcher, *, agent_id, span_collector=None):
+        # Resolved at call time so tests can patch the executor module.
+        from app.agents import automation_executor
+
+        task = self._get_current_task()
+        return await automation_executor.execute_automation_action(
+            action,
+            ha_client,
+            entity_index,
+            entity_matcher,
+            agent_id=agent_id,
+            span_collector=span_collector,
+            conversation_id=task.conversation_id if task else None,
+        )
 
 
 DomainAgent = _ConfigurableDomainAgent

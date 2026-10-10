@@ -1,6 +1,9 @@
 id: automation.create_kitchen_sunset
 agent: automation-agent
-description: Create a new automation via voice
+description: >-
+  Create a new automation via voice. The default seeded visibility rules limit
+  automation-agent to the automation domain, so the light target is rejected
+  fail-closed and nothing is proposed or saved.
 snapshot: home_default
 language: en
 context: {source: ha, area_id: kitchen, device_id: satellite_kitchen}
@@ -11,11 +14,12 @@ llm:
     automation-agent: |
       Creating the kitchen sunset automation.
       ```json
-      {"action": "create_automation", "entity": "kitchen sunset light", "parameters": {"config": {"alias": "Kitchen Sunset Light", "triggers": [{"platform": "sun", "event": "sunset"}], "actions": [{"service": "light.turn_on", "target": {"entity_id": "light.kitchen"}}]}}}
+      {"action": "create_automation", "entity": "kitchen sunset light", "parameters": {"config": {"alias": "Kitchen Sunset Light", "triggers": [{"platform": "sun", "event": "sunset"}], "actions": [{"service": "light.turn_on", "target": {"entity_id": "light.kitchen_ceiling"}}]}}}
       ```
 request:
   text: "create an automation that turns on the kitchen light at sunset"
 expected:
   routed_agent: automation-agent
   service_calls: []
-  speech_contains: ["created", "Kitchen Sunset Light"]
+  speech_contains: ["not permitted", "light.kitchen_ceiling"]
+  speech_excludes: ["created", "Shall I save this?"]
