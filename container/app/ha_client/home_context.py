@@ -21,18 +21,34 @@ class HomeContext(BaseModel):
 
 
 class HomeContextProvider:
-    """Singleton provider that caches HA home context with a configurable TTL."""
+    """Singleton provider that caches HA home context with a configurable TTL.
+
+    Precedence per field: a non-empty DB override (``home.timezone`` /
+    ``home.location_name``) always wins; otherwise HA ``/api/config``;
+    otherwise the last good HA value; otherwise the default (``UTC`` /
+    empty). A successful HA fetch is cached for ``_ttl_seconds``; a failed
+    one only for ``_failure_retry_seconds`` so a cold-start outage does not
+    pin UTC for an hour.
+    """
 
     def __init__(self) -> None:
         self._context: HomeContext | None = None
         self._last_fetched: float = 0.0
         self._ttl_seconds: int = 3600  # 1 hour
+        self._failure_retry_seconds: int = 60
+        self._last_refresh_ok: bool = True
+        # Last context fetched successfully from HA (without overrides).
+        self._last_ha_context: HomeContext | None = None
         self._refresh_lock = asyncio.Lock()
+
+    def _is_fresh(self, now: float) -> bool:
+        ttl = self._ttl_seconds if self._last_refresh_ok else self._failure_retry_seconds
+        return self._context is not None and (now - self._last_fetched) < ttl
 
     async def get(self, ha_client: Any) -> HomeContext:
         """Return cached HomeContext, refreshing from HA if stale."""
-        now = time.monotonic()
-        if self._context and (now - self._last_fetched) < self._ttl_seconds:
+        if self._is_fresh(time.monotonic()):
+            assert self._context is not None
             return self._context
         return await self.refresh(ha_client)
 
@@ -47,42 +63,52 @@ class HomeContextProvider:
         freshly cached context.
         """
         async with self._refresh_lock:
-            now = time.monotonic()
-            if self._context and (now - self._last_fetched) < self._ttl_seconds:
+            if self._is_fresh(time.monotonic()):
+                assert self._context is not None
                 return self._context
 
-            ctx = HomeContext()
+            ha_ctx: HomeContext | None = None
             try:
                 config = await ha_client.get_config()
                 if config:
-                    ctx = HomeContext(
+                    ha_ctx = HomeContext(
                         timezone=config.get("time_zone", "UTC") or "UTC",
                         location_name=config.get("location_name", "") or "",
                     )
-                    self._context = ctx
-                    self._last_fetched = time.monotonic()
-                    logger.info(
-                        "HomeContext refreshed: tz=%s location=%s",
-                        ctx.timezone,
-                        ctx.location_name,
-                    )
-                    return ctx
             except Exception:
                 logger.warning("Failed to fetch HA config for HomeContext", exc_info=True)
 
-            overrides = await self._load_overrides()
-            if overrides:
-                self._context = overrides
-                self._last_fetched = time.monotonic()
-                return overrides
+            refresh_ok = ha_ctx is not None
+            if ha_ctx is not None:
+                self._last_ha_context = ha_ctx
+            base = ha_ctx or self._last_ha_context or HomeContext()
 
-            if not self._context:
-                self._context = ctx
-                self._last_fetched = time.monotonic()
-            return self._context
+            overrides = await self._load_overrides()
+            ctx = HomeContext(
+                timezone=(overrides.timezone if overrides and overrides.timezone else base.timezone),
+                location_name=(
+                    overrides.location_name if overrides and overrides.location_name else base.location_name
+                ),
+            )
+            self._context = ctx
+            self._last_fetched = time.monotonic()
+            self._last_refresh_ok = refresh_ok
+            if refresh_ok:
+                logger.info("HomeContext refreshed: tz=%s location=%s", ctx.timezone, ctx.location_name)
+            else:
+                logger.info(
+                    "HomeContext: HA config unavailable, using tz=%s location=%s; retrying in %ds",
+                    ctx.timezone,
+                    ctx.location_name,
+                    self._failure_retry_seconds,
+                )
+            return ctx
 
     async def _load_overrides(self) -> HomeContext | None:
-        """Check DB settings for manual overrides."""
+        """Return DB overrides; an unset field is returned as an empty string.
+
+        Returns ``None`` when neither override is set or the lookup fails.
+        """
         try:
             from app.db.repository import SettingsRepository
 
@@ -90,8 +116,8 @@ class HomeContextProvider:
             loc = await SettingsRepository.get_value("home.location_name", "")
             if tz or loc:
                 return HomeContext(
-                    timezone=tz or "UTC",
-                    location_name=loc or "",
+                    timezone=(tz or "").strip(),
+                    location_name=(loc or "").strip(),
                 )
         except Exception:
             logger.debug("DB override lookup failed", exc_info=True)

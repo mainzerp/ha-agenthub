@@ -172,17 +172,25 @@ class TestRegistryCache:
         assert result2 == {"kitchen": "Kitchen", "bedroom": "Bedroom"}
         client.render_template.assert_not_called()
 
-        # --- get_area_registry: empty response ---
+        # --- get_area_registry: failed render keeps the last good lookup (#132) ---
         client.clear_area_registry_cache()
         client.render_template = AsyncMock(return_value="")
         result3 = await client.get_area_registry()
-        assert result3 == {}
+        assert result3 == {"kitchen": "Kitchen", "bedroom": "Bedroom"}
+        assert client._registry_cache_get("area_registry") is None  # failure is not cached
 
-        # --- get_area_registry: invalid JSON ---
+        # --- get_area_registry: invalid JSON keeps the last good lookup ---
         client.clear_area_registry_cache()
         client.render_template = AsyncMock(return_value="not-json")
         result4 = await client.get_area_registry()
-        assert result4 == {}
+        assert result4 == {"kitchen": "Kitchen", "bedroom": "Bedroom"}
+
+        # --- get_area_registry: failure without any last good lookup ---
+        fresh = HARestClient()
+        fresh.render_template = AsyncMock(return_value=None)
+        assert await fresh.get_area_registry() == {}
+        assert fresh.has_registry_data("area_registry") is False
+        assert fresh._registry_cache_get("area_registry") is None
 
         # --- get_user_language: cache miss ---
         client.get_config = AsyncMock(return_value={"language": "de"})

@@ -196,7 +196,9 @@ Managed via `GET/PUT /api/admin/personality/config` and the dashboard
 | Key | Default | Type | Description |
 |-----|---------|------|-------------|
 | `home.timezone` | (empty) | string | Override timezone for time/date references in agent prompts. Empty falls back to HA's configured timezone. |
-| `home.location_name` | (empty) | string | Friendly home name surfaced in prompts and the personality pipeline. |
+| `home.location_name` | (empty) | string | Friendly home name surfaced in prompts and the personality pipeline. Empty falls back to HA's configured location name. |
+
+Precedence per field: a non-empty override always wins over HA `/api/config`; without an override the HA value is used, then the last value fetched from HA, then `UTC` / empty. The resolved home context is cached for 1 hour after a successful HA fetch and retried after 60 seconds when HA was unreachable. Override changes apply on the next refresh.
 
 ### General Settings
 
@@ -316,7 +318,7 @@ Entity matching signal weights are stored in the `entity_matching_config` table 
 - **Phonetic matching** -- Soundex/Metaphone for sound-alike names
 - **Alias lookup** -- Exact match from the aliases table
 
-Aliases are managed in the `aliases` table and can be created/deleted from the admin dashboard. Example: alias "nightstand lamp" resolves to `light.bedroom_nightstand`.
+Aliases are managed in the `aliases` table and can be created/deleted from the admin dashboard. Example: alias "nightstand lamp" resolves to `light.bedroom_nightstand`. Optional user aliases from `/data/entity_aliases.yaml` are written to the same table during the entity-index prime, and the alias cache is reloaded afterwards. A query that equals an alias (after the shared folding) is an exact deterministic match; visibility rules and the executor's allowed domains still apply.
 
 ## Cache Configuration
 

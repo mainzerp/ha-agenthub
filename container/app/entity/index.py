@@ -64,6 +64,21 @@ class EntityIndex:
         # Guarded by _primary_lock; df(token) = len(postings[token]),
         # N = len(_primary). Not persisted -- derivable from index contents.
         self._token_postings: dict[str, set[str]] = {}
+        # Reverse map entity_id -> its indexed tokens, so a per-entity
+        # update touches only that entity's postings instead of scanning
+        # every token under the lock. Guarded by _primary_lock.
+        self._entity_tokens: dict[str, frozenset[str]] = {}
+        # Incremental-mutation bookkeeping (guarded by _primary_lock):
+        # every add / batch_add / remove bumps the generation and records it
+        # per entity_id (removals act as tombstones). A full snapshot taken
+        # at generation G must not overwrite entities mutated after G --
+        # see ``sync`` / ``populate``.
+        self._mutation_generation: int = 0
+        self._entity_mutation_gen: dict[str, int] = {}
+        # False while HA area assignments are unknown (the registry lookup
+        # failed and no last-good lookup exists). Visibility then fails
+        # closed for area-less entries under ``area_exclude`` rules.
+        self.area_assignments_known: bool = True
 
     @staticmethod
     def _build_metadata(entry: EntityIndexEntry) -> dict:
@@ -136,28 +151,107 @@ class EntityIndex:
     # Token posting map (token-based candidate preselection)
     # ------------------------------------------------------------------
 
-    def _rebuild_token_index_locked(self) -> None:
-        """Rebuild the token posting map from ``_primary``. Caller holds the lock."""
+    @staticmethod
+    def _build_token_maps(
+        entity_tokens: dict[str, frozenset[str]],
+    ) -> dict[str, set[str]]:
+        """Build a posting map from per-entity token sets (no lock needed: fresh objects)."""
         postings: dict[str, set[str]] = {}
-        for entry in self._primary.values():
-            for token in entry_tokens(entry):
-                postings.setdefault(token, set()).add(entry.entity_id)
-        self._token_postings = postings
+        for entity_id, tokens in entity_tokens.items():
+            for token in tokens:
+                postings.setdefault(token, set()).add(entity_id)
+        return postings
+
+    def _clear_token_index_locked(self) -> None:
+        """Drop all postings. Caller holds the lock."""
+        self._token_postings = {}
+        self._entity_tokens = {}
 
     def _remove_from_token_index_locked(self, entity_id: str) -> None:
-        """Drop ``entity_id`` from all posting sets. Caller holds the lock."""
-        empty_tokens: list[str] = []
-        for token, ids in self._token_postings.items():
+        """Drop ``entity_id`` from its own posting sets only. Caller holds the lock."""
+        tokens = self._entity_tokens.pop(entity_id, None)
+        if not tokens:
+            return
+        for token in tokens:
+            ids = self._token_postings.get(token)
+            if ids is None:
+                continue
             ids.discard(entity_id)
             if not ids:
-                empty_tokens.append(token)
-        for token in empty_tokens:
-            del self._token_postings[token]
+                del self._token_postings[token]
 
-    def _add_to_token_index_locked(self, entry: EntityIndexEntry) -> None:
-        """Index a single entry's tokens. Caller holds the lock."""
-        for token in entry_tokens(entry):
-            self._token_postings.setdefault(token, set()).add(entry.entity_id)
+    def _add_to_token_index_locked(self, entity_id: str, tokens: frozenset[str]) -> None:
+        """Index precomputed tokens for one entity. Caller holds the lock."""
+        self._entity_tokens[entity_id] = tokens
+        for token in tokens:
+            self._token_postings.setdefault(token, set()).add(entity_id)
+
+    def _upsert_primary_locked(self, entry: EntityIndexEntry, tokens: frozenset[str]) -> None:
+        """Replace one primary entry and its postings; record the mutation. Caller holds the lock."""
+        self._primary[entry.entity_id] = entry
+        self._remove_from_token_index_locked(entry.entity_id)
+        self._add_to_token_index_locked(entry.entity_id, tokens)
+        self._record_mutation_locked(entry.entity_id)
+
+    def _record_mutation_locked(self, entity_id: str) -> None:
+        """Bump the mutation generation for an incremental change. Caller holds the lock."""
+        self._mutation_generation += 1
+        self._entity_mutation_gen[entity_id] = self._mutation_generation
+
+    def mutation_generation(self) -> int:
+        """Return the current incremental-mutation generation.
+
+        Callers that build a full HA snapshot read this BEFORE fetching
+        states and pass it to :meth:`sync` / :meth:`populate`, so entity
+        updates and removals applied while the snapshot was in flight are
+        not undone by the (older) snapshot.
+        """
+        with self._primary_lock:
+            return self._mutation_generation
+
+    def _install_snapshot(self, entities: list[EntityIndexEntry], snapshot_generation: int) -> int:
+        """Replace the primary store with ``entities``, merging newer incremental updates.
+
+        Entities mutated after ``snapshot_generation`` keep their current
+        primary state (or stay removed). Tokens and postings are computed
+        outside the lock; only the swap and the small newer-entity delta
+        run under it. Returns the number of entities kept from newer
+        incremental updates instead of the snapshot.
+        """
+        primary: dict[str, EntityIndexEntry] = {e.entity_id: e for e in entities}
+        entity_token_map: dict[str, frozenset[str]] = {
+            eid: frozenset(entry_tokens(entry)) for eid, entry in primary.items()
+        }
+        postings = self._build_token_maps(entity_token_map)
+        with self._primary_lock:
+            newer_ids = [eid for eid, gen in self._entity_mutation_gen.items() if gen > snapshot_generation]
+            for eid in newer_ids:
+                for token in entity_token_map.pop(eid, frozenset()):
+                    ids = postings.get(token)
+                    if ids is not None:
+                        ids.discard(eid)
+                        if not ids:
+                            del postings[token]
+                current = self._primary.get(eid)
+                if current is None:
+                    primary.pop(eid, None)
+                    continue
+                primary[eid] = current
+                current_tokens = self._entity_tokens.get(eid)
+                if current_tokens is None:
+                    current_tokens = frozenset(entry_tokens(current))
+                entity_token_map[eid] = current_tokens
+                for token in current_tokens:
+                    postings.setdefault(token, set()).add(eid)
+            self._primary = primary
+            self._entity_tokens = entity_token_map
+            self._token_postings = postings
+        return len(newer_ids)
+
+    def _newer_entity_ids(self, snapshot_generation: int) -> set[str]:
+        """Entity ids mutated incrementally after ``snapshot_generation``."""
+        with self._primary_lock:
+            return {eid for eid, gen in self._entity_mutation_gen.items() if gen > snapshot_generation}
 
     def find_by_tokens(
         self,
@@ -214,13 +308,18 @@ class EntityIndex:
                 weights[token] = log(total / len(ids))
             return weights
 
-    def populate(self, entities: list[EntityIndexEntry]) -> None:
+    def populate(self, entities: list[EntityIndexEntry], snapshot_generation: int | None = None) -> None:
         """Bulk upsert all HA entities into the entity_index collection.
 
         Called at startup after fetching GET /api/states.
+        ``snapshot_generation`` (see :meth:`mutation_generation`) protects
+        incremental updates applied after the snapshot was taken; when
+        omitted, the generation at call time is used.
         """
         if not entities:
             return
+        if snapshot_generation is None:
+            snapshot_generation = self.mutation_generation()
         total = len(entities)
         self._status = {
             "state": "building",
@@ -243,11 +342,7 @@ class EntityIndex:
                 )
                 self._status["processed"] = min(start + len(batch), total)
                 self._status["progress"] = int(self._status["processed"] / total * 100)
-            with self._primary_lock:
-                self._primary.clear()
-                for e in entities:
-                    self._primary[e.entity_id] = e
-                self._rebuild_token_index_locked()
+            self._install_snapshot(entities, snapshot_generation)
             self._last_refresh = datetime.now(UTC).isoformat()
             self._status["state"] = "ready"
             self._status["progress"] = 100
@@ -255,7 +350,7 @@ class EntityIndex:
         except Exception as exc:
             with self._primary_lock:
                 self._primary.clear()
-                self._token_postings = {}
+                self._clear_token_index_locked()
             self._status["state"] = "error"
             self._status["error"] = str(exc)
             logger.error("Entity index populate failed: %s", exc)
@@ -291,6 +386,7 @@ class EntityIndex:
         reading current metadata falls through to the upsert (fail
         open -- never silently drop a write).
         """
+        tokens = frozenset(entry_tokens(entry))
         try:
             current = self._store.get(
                 COLLECTION_ENTITY_INDEX,
@@ -304,9 +400,7 @@ class EntityIndex:
                 # store because runtime state may have changed even though
                 # content_hash (identity fields) hasn't.
                 with self._primary_lock:
-                    self._primary[entry.entity_id] = entry
-                    self._remove_from_token_index_locked(entry.entity_id)
-                    self._add_to_token_index_locked(entry)
+                    self._upsert_primary_locked(entry, tokens)
                 return
         except Exception:
             logger.debug(
@@ -321,9 +415,7 @@ class EntityIndex:
             metadatas=[self._build_metadata(entry)],
         )
         with self._primary_lock:
-            self._primary[entry.entity_id] = entry
-            self._remove_from_token_index_locked(entry.entity_id)
-            self._add_to_token_index_locked(entry)
+            self._upsert_primary_locked(entry, tokens)
 
     def remove(self, entity_id: str) -> None:
         """Remove an entity from the index."""
@@ -331,6 +423,7 @@ class EntityIndex:
         with self._primary_lock:
             self._primary.pop(entity_id, None)
             self._remove_from_token_index_locked(entity_id)
+            self._record_mutation_locked(entity_id)
 
     def get_by_id(self, entity_id: str) -> EntityIndexEntry | None:
         """Retrieve a single entity by its ID, or None if not found."""
@@ -361,18 +454,26 @@ class EntityIndex:
                 self._store.delete(COLLECTION_ENTITY_INDEX, ids=all_data["ids"])
         with self._primary_lock:
             self._primary.clear()
-            self._rebuild_token_index_locked()
+            self._clear_token_index_locked()
         logger.info("Entity index cleared")
 
-    def refresh(self, entities: list[EntityIndexEntry]) -> None:
+    def refresh(self, entities: list[EntityIndexEntry], snapshot_generation: int | None = None) -> None:
         """Clear and re-populate from a fresh entity list."""
+        if snapshot_generation is None:
+            snapshot_generation = self.mutation_generation()
         self._status["state"] = "building"
         self._status["progress"] = 0
         self.clear()
-        self.populate(entities)
+        self.populate(entities, snapshot_generation)
 
-    def sync(self, entities: list[EntityIndexEntry]) -> dict:
+    def sync(self, entities: list[EntityIndexEntry], snapshot_generation: int | None = None) -> dict:
         """Smart diff sync: upsert changed/new, remove deleted, skip unchanged.
+
+        ``snapshot_generation`` is the :meth:`mutation_generation` read
+        before the HA snapshot was fetched. Entities updated or removed
+        incrementally (WebSocket events) after that point are left as they
+        are: the older snapshot neither overwrites nor resurrects nor
+        deletes them. When omitted, the generation at call time is used.
 
         Returns dict with counts: added, updated, removed, unchanged.
         """
@@ -382,13 +483,17 @@ class EntityIndex:
 
         if not entities:
             return {"added": 0, "updated": 0, "removed": 0, "unchanged": 0}
+        if snapshot_generation is None:
+            snapshot_generation = self.mutation_generation()
 
         prev_state = self._status["state"]
         self._status["state"] = "syncing"
 
         try:
-            # Build map of incoming entities
-            ha_map: dict[str, EntityIndexEntry] = {e.entity_id: e for e in entities}
+            # Build map of incoming entities, skipping entities whose newer
+            # incremental state must win over this snapshot.
+            newer_ids = self._newer_entity_ids(snapshot_generation)
+            ha_map: dict[str, EntityIndexEntry] = {e.entity_id: e for e in entities if e.entity_id not in newer_ids}
 
             # Fetch all current entries from the vector store
             current_data = self._store.get(
@@ -425,7 +530,7 @@ class EntityIndex:
                     added += 1
 
             # Find entities to remove (in the index but not in HA)
-            to_remove = [eid for eid in current_ids if eid not in ha_map]
+            to_remove = [eid for eid in current_ids if eid not in ha_map and eid not in newer_ids]
             removed = len(to_remove)
 
             # Batch upsert changed/new entities
@@ -461,18 +566,16 @@ class EntityIndex:
             self._status["processed"] = total_entities
             self._status["progress"] = 100
 
-            # Rebuild primary store from HA source of truth
-            with self._primary_lock:
-                self._primary.clear()
-                for e in entities:
-                    self._primary[e.entity_id] = e
-                self._rebuild_token_index_locked()
+            # Rebuild primary store from the HA snapshot, keeping entities
+            # that received newer incremental updates during the sync.
+            kept_newer = self._install_snapshot(entities, snapshot_generation)
 
             self._sync_stats = {
                 "added": added,
                 "updated": updated,
                 "removed": removed,
                 "unchanged": unchanged,
+                "kept_newer": kept_newer,
                 "last_sync": self._last_refresh,
                 "last_sync_duration_ms": elapsed_ms,
             }
@@ -582,12 +685,12 @@ class EntityIndex:
                 metadatas=meta_only_metas,
             )
 
-        # Always update primary store so runtime state is current
+        # Always update primary store so runtime state is current. Tokens are
+        # computed before taking the lock; the lock only covers the swap.
+        tokens_by_id = {e.entity_id: frozenset(entry_tokens(e)) for e in deduped}
         with self._primary_lock:
             for e in deduped:
-                self._primary[e.entity_id] = e
-                self._remove_from_token_index_locked(e.entity_id)
-                self._add_to_token_index_locked(e)
+                self._upsert_primary_locked(e, tokens_by_id[e.entity_id])
 
     # ------------------------------------------------------------------
     # Async wrappers (offload to thread pool via run_in_executor)
@@ -603,20 +706,42 @@ class EntityIndex:
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, self.remove, entity_id)
 
-    async def populate_async(self, entities: list[EntityIndexEntry]) -> None:
+    async def populate_async(
+        self,
+        entities: list[EntityIndexEntry],
+        snapshot_generation: int | None = None,
+    ) -> None:
         """Async wrapper -- offloads populate() to thread pool."""
+        if snapshot_generation is None:
+            snapshot_generation = self.mutation_generation()
         loop = asyncio.get_running_loop()
-        await loop.run_in_executor(None, self.populate, entities)
+        await loop.run_in_executor(None, self.populate, entities, snapshot_generation)
 
-    async def refresh_async(self, entities: list[EntityIndexEntry]) -> None:
+    async def refresh_async(
+        self,
+        entities: list[EntityIndexEntry],
+        snapshot_generation: int | None = None,
+    ) -> None:
         """Async wrapper -- offloads refresh() to thread pool."""
+        if snapshot_generation is None:
+            snapshot_generation = self.mutation_generation()
         loop = asyncio.get_running_loop()
-        await loop.run_in_executor(None, self.refresh, entities)
+        await loop.run_in_executor(None, self.refresh, entities, snapshot_generation)
 
-    async def sync_async(self, entities: list[EntityIndexEntry]) -> dict:
-        """Async wrapper -- offloads sync() to thread pool."""
+    async def sync_async(
+        self,
+        entities: list[EntityIndexEntry],
+        snapshot_generation: int | None = None,
+    ) -> dict:
+        """Async wrapper -- offloads sync() to thread pool.
+
+        Pass the :meth:`mutation_generation` read before fetching the HA
+        snapshot; when omitted, the generation at call time is used.
+        """
+        if snapshot_generation is None:
+            snapshot_generation = self.mutation_generation()
         loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(None, self.sync, entities)
+        return await loop.run_in_executor(None, self.sync, entities, snapshot_generation)
 
     async def search_async(self, query: str, n_results: int = 5) -> list[tuple[EntityIndexEntry, float]]:
         """Async wrapper -- offloads search() to thread pool.

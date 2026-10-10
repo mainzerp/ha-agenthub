@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import asynccontextmanager, contextmanager
 from contextvars import ContextVar
 from datetime import UTC, datetime
@@ -24,6 +25,14 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _ha_service_call_context: ContextVar[str | None] = ContextVar("_ha_service_call_context", default=None)
+# httpx errors raised before the request left this process: no TCP
+# connection (ConnectError / ConnectTimeout) or no free pool slot
+# (PoolTimeout). Only these allow a service-call retry over the WebSocket.
+_REQUEST_NEVER_SENT_ERRORS: tuple[type[Exception], ...] = (
+    httpx.ConnectError,
+    httpx.ConnectTimeout,
+    httpx.PoolTimeout,
+)
 _direct_ha_write_warning_count = 0
 
 
@@ -74,6 +83,11 @@ class HARestClient:
         # /api/template on every single sync.
         self._registry_cache: dict[str, tuple[float, Any]] = {}
         self._registry_cache_ttl_sec: float = 300.0
+        # Last successfully fetched registry lookup per key. A failed
+        # template render / parse is never cached; callers get this
+        # last-good value instead of an empty lookup that would wipe area,
+        # alias and device enrichment for every entity.
+        self._registry_last_good: dict[str, Any] = {}
         # Last successfully fetched hidden/disabled entity ids; used as a
         # fallback so a transient WS outage cannot wipe hidden filtering.
         self._last_hidden_entity_ids: set[str] | None = None
@@ -277,17 +291,17 @@ class HARestClient:
             if return_response and isinstance(data, dict) and "service_response" in data:
                 return data["service_response"]
             return data
-        except httpx.HTTPStatusError as exc:
-            should_fallback = exc.response.status_code == 500 or return_response
-            if not should_fallback:
-                raise
-            original_exc = exc
         except asyncio.CancelledError:
             raise
-        except (httpx.RequestError, ValueError) as exc:
-            if not return_response:
-                raise
+        except _REQUEST_NEVER_SENT_ERRORS as exc:
+            # The request provably never reached HA (no connection was
+            # established), so re-sending it over the WebSocket cannot
+            # execute the service twice.
             original_exc = exc
+        # Any HTTP status (including 5xx), read timeout, or body decode
+        # error means HA may already have executed the service: a WS
+        # resend could toggle a light, run a script, or pulse a relay twice.
+        # Those errors propagate unchanged.
 
         ws = self._state_observer
         if ws is not None and ws.is_connected():
@@ -398,44 +412,81 @@ class HARestClient:
         self._registry_cache[key] = (time.monotonic() + self._registry_cache_ttl_sec, value)
 
     def clear_area_registry_cache(self) -> None:
-        """Drop cached area / alias / device registry data."""
+        """Drop cached area / alias / device registry data.
+
+        The last-good lookups are kept: they are only a fallback for a
+        failed refetch, never served while a fetch succeeds.
+        """
         self._registry_cache.clear()
+
+    def has_registry_data(self, key: str) -> bool:
+        """Return True once the registry lookup ``key`` has been fetched successfully."""
+        return key in self._registry_last_good
+
+    async def _fetch_registry_lookup(
+        self,
+        key: str,
+        template: str,
+        parse_rows: Callable[[list[Any]], dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Render a registry template and parse its JSON list output.
+
+        Success is cached for the registry TTL and remembered as last-good.
+        A failed render (``None``), unparsable JSON, or a non-list payload
+        is NOT cached: the call returns a copy of the last-good lookup (or
+        an empty dict when none exists yet) and the next call retries.
+        """
+        cached = self._registry_cache_get(key)
+        if cached is not None:
+            return cached
+        rendered = await self.render_template(template)
+        result: dict[str, Any] | None = None
+        if rendered:
+            try:
+                data = json.loads(rendered)
+                if isinstance(data, list):
+                    result = parse_rows(data)
+            except asyncio.CancelledError:
+                raise
+            except (ValueError, TypeError, AttributeError):
+                logger.debug("Failed to parse %s template output", key, exc_info=True)
+        if result is None:
+            last_good = self._registry_last_good.get(key)
+            logger.warning(
+                "HA registry lookup %s failed; %s",
+                key,
+                "keeping last good lookup" if last_good is not None else "no previous lookup available",
+            )
+            return dict(last_good) if last_good is not None else {}
+        self._registry_last_good[key] = result
+        self._registry_cache_put(key, result)
+        return result
 
     async def get_area_registry(self) -> dict[str, str]:
         """Return ``{area_id: area_name}`` from the HA area registry."""
-        cached = self._registry_cache_get("area_registry")
-        if cached is not None:
-            return cached
+        # ``tojson`` escapes quotes / backslashes in area names; string
+        # interpolation produced invalid JSON for a name containing '"'.
         template = (
-            "[{% for a in areas() %}"
-            '{"id": "{{ a }}", "name": "{{ area_name(a) }}"}'
-            "{% if not loop.last %},{% endif %}"
-            "{% endfor %}]"
+            "{% set ns = namespace(items=[]) %}"
+            "{% for a in areas() %}"
+            "{% set ns.items = ns.items + [{'id': a, 'name': area_name(a)}] %}"
+            "{% endfor %}"
+            "{{ ns.items | tojson }}"
         )
-        rendered = await self.render_template(template)
-        result: dict[str, str] = {}
-        if rendered:
-            try:
-                import json as _json
 
-                data = _json.loads(rendered)
-                for row in data or []:
-                    aid = row.get("id")
-                    name = row.get("name")
-                    if aid and name:
-                        result[aid] = name
-            except asyncio.CancelledError:
-                raise
-            except (ValueError, TypeError):
-                logger.debug("Failed to parse area_registry template output", exc_info=True)
-        self._registry_cache_put("area_registry", result)
-        return result
+        def _parse(rows: list[Any]) -> dict[str, Any]:
+            result: dict[str, Any] = {}
+            for row in rows:
+                aid = row.get("id")
+                name = row.get("name")
+                if aid and name:
+                    result[str(aid)] = str(name)
+            return result
+
+        return await self._fetch_registry_lookup("area_registry", template, _parse)
 
     async def get_entity_aliases(self) -> dict[str, list[str]]:
         """Return ``{entity_id: [alias, ...]}`` from HA per-entity aliases."""
-        cached = self._registry_cache_get("entity_aliases")
-        if cached is not None:
-            return cached
         template = (
             "{% set ns = namespace(items=[]) %}"
             "{% for s in states %}"
@@ -445,32 +496,22 @@ class HARestClient:
             "{% endif %}{% endfor %}"
             "{{ ns.items | tojson }}"
         )
-        rendered = await self.render_template(template)
-        result: dict[str, list[str]] = {}
-        if rendered:
-            try:
-                import json as _json
 
-                data = _json.loads(rendered)
-                for row in data or []:
-                    eid = row.get("id")
-                    aliases = row.get("aliases") or []
-                    if eid and isinstance(aliases, list):
-                        cleaned = [str(a) for a in aliases if isinstance(a, str) and a]
-                        if cleaned:
-                            result[eid] = cleaned
-            except asyncio.CancelledError:
-                raise
-            except (ValueError, TypeError):
-                logger.debug("Failed to parse entity_aliases template output", exc_info=True)
-        self._registry_cache_put("entity_aliases", result)
-        return result
+        def _parse(rows: list[Any]) -> dict[str, Any]:
+            result: dict[str, Any] = {}
+            for row in rows:
+                eid = row.get("id")
+                aliases = row.get("aliases") or []
+                if eid and isinstance(aliases, list):
+                    cleaned = [str(a) for a in aliases if isinstance(a, str) and a]
+                    if cleaned:
+                        result[eid] = cleaned
+            return result
+
+        return await self._fetch_registry_lookup("entity_aliases", template, _parse)
 
     async def get_device_names(self) -> dict[str, str]:
         """Return ``{entity_id: device_name}`` for entities with a parent device."""
-        cached = self._registry_cache_get("device_names")
-        if cached is not None:
-            return cached
         template = (
             "{% set ns = namespace(items=[]) %}"
             "{% for s in states %}"
@@ -482,30 +523,20 @@ class HARestClient:
             "{% endif %}{% endif %}{% endfor %}"
             "{{ ns.items | tojson }}"
         )
-        rendered = await self.render_template(template)
-        result: dict[str, str] = {}
-        if rendered:
-            try:
-                import json as _json
 
-                data = _json.loads(rendered)
-                for row in data or []:
-                    eid = row.get("id")
-                    name = row.get("name")
-                    if eid and name:
-                        result[eid] = str(name)
-            except asyncio.CancelledError:
-                raise
-            except (ValueError, TypeError):
-                logger.debug("Failed to parse device_names template output", exc_info=True)
-        self._registry_cache_put("device_names", result)
-        return result
+        def _parse(rows: list[Any]) -> dict[str, Any]:
+            result: dict[str, Any] = {}
+            for row in rows:
+                eid = row.get("id")
+                name = row.get("name")
+                if eid and name:
+                    result[eid] = str(name)
+            return result
+
+        return await self._fetch_registry_lookup("device_names", template, _parse)
 
     async def get_entity_areas(self) -> dict[str, str]:
         """Return ``{entity_id: area_id}`` from the HA entity / device area registry."""
-        cached = self._registry_cache_get("entity_areas")
-        if cached is not None:
-            return cached
         template = (
             "{% set ns = namespace(items=[]) %}"
             "{% for s in states %}"
@@ -515,24 +546,17 @@ class HARestClient:
             "{% endif %}{% endfor %}"
             "{{ ns.items | tojson }}"
         )
-        rendered = await self.render_template(template)
-        result: dict[str, str] = {}
-        if rendered:
-            try:
-                import json as _json
 
-                data = _json.loads(rendered)
-                for row in data or []:
-                    eid = row.get("id")
-                    aid = row.get("area")
-                    if eid and aid:
-                        result[eid] = str(aid)
-            except asyncio.CancelledError:
-                raise
-            except (ValueError, TypeError):
-                logger.debug("Failed to parse entity_areas template output", exc_info=True)
-        self._registry_cache_put("entity_areas", result)
-        return result
+        def _parse(rows: list[Any]) -> dict[str, Any]:
+            result: dict[str, Any] = {}
+            for row in rows:
+                eid = row.get("id")
+                aid = row.get("area")
+                if eid and aid:
+                    result[eid] = str(aid)
+            return result
+
+        return await self._fetch_registry_lookup("entity_areas", template, _parse)
 
     async def get_hidden_entity_ids(self) -> set[str]:
         """Return entity IDs that are hidden or disabled in HA's entity registry.

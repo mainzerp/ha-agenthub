@@ -32,6 +32,13 @@ def _index_has_async_get_by_id(entity_index: Any) -> bool:
     return cached
 
 
+def _area_assignments_known(entity_index: Any) -> bool:
+    """Return False only when the index explicitly reports unknown area assignments."""
+    if entity_index is None:
+        return True
+    return getattr(entity_index, "area_assignments_known", True) is not False
+
+
 class VisibilityCandidate(Protocol):
     entity_id: str
 
@@ -164,8 +171,15 @@ async def _passes_visibility_filters(
         area = getattr(indexed_entry, "area", None) if indexed_entry else None
         if rules.area_include and (area is None or area not in rules.area_include):
             return False
-        if rules.area_exclude and area is not None and area in rules.area_exclude:
-            return False
+        if rules.area_exclude:
+            if area is not None and area in rules.area_exclude:
+                return False
+            # ``area=None`` normally means "not assigned to any area", which
+            # cannot be in an excluded area. While HA area assignments are
+            # unknown (registry lookup failed with no last-good data) it may
+            # just as well be an excluded area: fail closed.
+            if area is None and not _area_assignments_known(entity_index):
+                return False
 
     if rules.device_class_include and domain in DEVICE_CLASS_DOMAINS:
         indexed_entry = await get_entry()
