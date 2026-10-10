@@ -1,15 +1,25 @@
 # Version
 
-**Current Version:** 3.0.0
+**Current Version:** 3.0.1
 
 ## Recent Changes
 
-(tracking changes since 3.0.0)
-
-- Agents: the empty-recall prompt block is scoped per action (`@agent(entity_actions=..., entity_free_actions=...)` from the executors' `ENTITY_ACTIONS` / `ENTITY_FREE_ACTIONS`). Device agents keep their list and weather reads when no device word matches, and only device actions ask. Automation keeps create/list. Timer, lists and calendar get no block.
-- Parser: an empty `entity` is accepted wherever the executor resolves it. This covers every timer action (unnamed `start_timer` / `cancel_timer` / `query_timer` and others), every lists action, every calendar action (the prompt omits `entity`), and `list_covers` / `list_vacuums`. A missing `delayed_action` / `sleep_timer` target and an LLM clarifying question now get a clarification instead of "I could not understand the timer command". An ambiguous unnamed timer reference re-opens the conversation.
+(tracking changes since 3.0.1)
 
 ## Version History
+
+### 3.0.1 (PATCH) -- entity-free actions and timer/calendar parsing
+
+(PRs #144 and #145: commits 5dda2f1, 83aeeca, 10d6021)
+
+- Agents: `@agent` declares whether an agent's actions need a recalled entity candidate (`entity_candidates_required`, #144) and, per action, which ones do (`entity_actions` / `entity_free_actions`, #145), derived from each executor's dispatch tables (`ENTITY_ACTIONS` / `ENTITY_FREE_ACTIONS`); a parity test pins agent declarations, executor dispatch, the parser set and the prompt few-shot actions (5dda2f1, 83aeeca).
+- Agents: the empty-recall prompt block is scoped per action. Device agents keep their list and weather reads (`list_lights`, `query_weather`, `list_covers` and others) when no device word matches, and only device actions ask; automation keeps create/list; timer, lists and calendar get no block, so the "Do NOT output a JSON action block" instruction no longer contradicts the timer prompt. The candidate gate, visibility checks and deterministic-first resolution are unchanged (5dda2f1, 83aeeca).
+- Parser: an empty `entity` is accepted wherever the executor resolves it: every timer action (unnamed `start_timer` / `cancel_timer` / `query_timer` and others), every lists action, every calendar action, and `list_covers` / `list_vacuums`. Calendar requests without a named calendar parse again; the calendar prompt's own few-shot examples previously failed with "I could not understand the calendar command" (83aeeca).
+- Timer, lists, calendar: an LLM clarifying question reaches the user with a voice follow-up instead of `PARSE_ERROR`; a rejected action object asks "which device" only for entity actions, otherwise to rephrase (83aeeca).
+- Timers: `timer.txt` treats `entity` as optional for every action and asks for missing durations and targets instead of inventing them; `delayed_action` without `target_entity`, `sleep_timer` without `media_player` and an ambiguous unnamed timer reference ("Multiple timers are running") ask a question that keeps the conversation open (10d6021).
+- Docs: architecture (Entity Matching: empty recall, empty `entity` in the parser) and the `new-agent` skill describe the per-action declaration and the parity test (5dda2f1, 83aeeca).
+- Verification: 4069 container tests passed (1 skipped, 9 xfailed, 3 xpassed), 163 integration tests passed; Ruff lint and format passed; bandit, pip-audit, coverage gate (84.23%), docker build and smoke test passed in a local `scripts/ci.py --no-trivy` run (Trivy runs in the release pipeline).
+- Behavior change (no action needed): automation enable/disable/trigger/update/delete ask which automation is meant when keyword recall finds no candidate, while create/list run. No features or public APIs removed; no user action required.
 
 ### 3.0.0 (MAJOR) -- pipeline review hardening
 
