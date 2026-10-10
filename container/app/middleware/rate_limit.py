@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import functools
+import ipaddress
 import logging
 import time
 from collections.abc import Mapping
@@ -27,10 +29,44 @@ DEFAULT_WINDOW_SECONDS = 60
 _RATE_LIMIT_STORE_MAX_ENTRIES = 10000
 
 
-# Parse once at module load; entries are IP strings or networks.
+# Configured entries as written: single IPs ("10.0.0.5") or CIDR networks
+# ("10.0.0.0/24", "fd00::/8"). Matching goes through ``_is_trusted_proxy``.
 _TRUSTED_PROXIES: set[str] = set()
 if settings.trusted_proxies:
     _TRUSTED_PROXIES = {p.strip() for p in settings.trusted_proxies.split(",") if p.strip()}
+
+
+@functools.lru_cache(maxsize=8)
+def _parse_trusted_networks(entries: frozenset[str]) -> tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...]:
+    """Parse trusted-proxy entries into networks (a single IP is a /32 or /128)."""
+    networks = []
+    for entry in sorted(entries):
+        try:
+            networks.append(ipaddress.ip_network(entry, strict=False))
+        except ValueError:
+            logger.warning("Ignoring invalid TRUSTED_PROXIES entry %r (expected an IP or CIDR network)", entry)
+    return tuple(networks)
+
+
+def _is_trusted_proxy(ip: str) -> bool:
+    """Return True when ``ip`` matches a configured trusted proxy IP or network."""
+    if not ip or not _TRUSTED_PROXIES:
+        return False
+    if ip in _TRUSTED_PROXIES:
+        return True
+    try:
+        addr = ipaddress.ip_address(ip)
+    except ValueError:
+        return False
+    candidates = [addr]
+    if isinstance(addr, ipaddress.IPv6Address) and addr.ipv4_mapped is not None:
+        candidates.append(addr.ipv4_mapped)
+    networks = _parse_trusted_networks(frozenset(_TRUSTED_PROXIES))
+    return any(candidate in network for candidate in candidates for network in networks)
+
+
+# Report invalid entries once at startup instead of on the first request.
+_parse_trusted_networks(frozenset(_TRUSTED_PROXIES))
 
 
 def _make_key(identifier: str, scope: str) -> str:
@@ -81,11 +117,11 @@ def get_client_ip_from_headers(headers: Mapping[str, str], direct_ip: str) -> st
     every hop is trusted.
     """
     forwarded = headers.get("x-forwarded-for")
-    if not forwarded or direct_ip not in _TRUSTED_PROXIES:
+    if not forwarded or not _is_trusted_proxy(direct_ip):
         return direct_ip
     ips = [ip.strip() for ip in forwarded.split(",")]
     for ip in reversed(ips):
-        if ip and ip not in _TRUSTED_PROXIES:
+        if ip and not _is_trusted_proxy(ip):
             return ip
     # If every IP in the chain is trusted, fall back to the immediate proxy.
     return ips[-1] if ips else direct_ip
