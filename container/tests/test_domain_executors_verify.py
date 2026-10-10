@@ -207,7 +207,8 @@ class TestBuildVerifiedSpeech:
         )
         assert speech == "Done, Front Door is now locked."
 
-    def test_unverified_with_expected_falls_back_to_intent(self):
+    def test_unconfirmed_expected_state_uses_hedged_wording(self):
+        """#132: nothing observed for a targeted action -> hedged, never "Done"."""
         speech = build_verified_speech(
             friendly_name="Front Door",
             action_name="lock",
@@ -216,11 +217,10 @@ class TestBuildVerifiedSpeech:
             verified=False,
             action_phrases={"lock": "locked"},
         )
-        # Intent-first phrasing takes precedence over the expected-state
-        # fallback when an action phrase is registered.
-        assert speech == "Done, Front Door locked."
+        assert speech == "I sent the command to Front Door, but it has not confirmed the new state yet."
 
-    def test_stale_observation_does_not_override_expected(self):
+    def test_unchanged_observation_uses_hedged_wording(self):
+        """#132: a possibly stale (pre-call) state is neither success nor failure."""
         speech = build_verified_speech(
             friendly_name="Keller",
             action_name="turn_off",
@@ -230,7 +230,20 @@ class TestBuildVerifiedSpeech:
             action_phrases={"turn_off": "turned off"},
         )
         assert "is now on" not in speech
-        assert speech == "Done, Keller turned off."
+        assert not speech.startswith("Done")
+        assert "has not confirmed the new state yet" in speech
+
+    def test_fault_state_is_spoken_as_failure(self):
+        speech = build_verified_speech(
+            friendly_name="Front Door",
+            action_name="lock",
+            expected_state="locked",
+            observed_state="jammed",
+            verified=False,
+            action_phrases={"lock": "locked"},
+        )
+        assert not speech.startswith("Done")
+        assert "reports jammed instead of locked" in speech
 
     def test_falls_back_to_humanized_action_name(self):
         speech = build_verified_speech(
@@ -440,8 +453,8 @@ class TestClimateExecutorVerification:
         )
 
     @pytest.mark.asyncio
-    async def test_set_hvac_mode_stale_observation_falls_back_to_intent(self):
-        """Observer saw the *old* mode -- don't contradict intent."""
+    async def test_set_hvac_mode_unchanged_observation_is_hedged(self):
+        """#132: observer still sees the *old* mode -- not confirmed, never "Done"."""
         from app.agents.climate_executor import execute_climate_action
 
         ha_client = _make_ha_client(
@@ -461,6 +474,8 @@ class TestClimateExecutorVerification:
         )
         assert result["success"] is True
         assert "is now cool" not in result["speech"]
+        assert not result["speech"].startswith("Done")
+        assert "has not confirmed the new state yet" in result["speech"]
 
     @pytest.mark.asyncio
     async def test_fan_turn_off_empty_rest_ws_confirms(self):
@@ -565,6 +580,7 @@ class TestMediaExecutorVerification:
         )
         assert result["success"] is True
         assert "is now playing" not in result["speech"]
+        assert not result["speech"].startswith("Done")
         assert "TV" in result["speech"]
 
 
@@ -610,9 +626,9 @@ class TestSecurityExecutorVerification:
         )
 
     @pytest.mark.asyncio
-    async def test_alarm_arm_home_stale_disarmed_does_not_report_disarmed(self):
-        """Critical safety test: never claim the alarm is disarmed when we
-        issued an arm command."""
+    async def test_alarm_arm_home_unchanged_disarmed_is_not_reported_armed(self):
+        """Critical safety test (#132): an alarm still disarmed after the verify
+        window is never reported as armed (nor as disarmed): hedged wording."""
         from app.agents.security_executor import execute_security_action
 
         ha_client = _make_ha_client(call_result=[], observed_state="disarmed")
@@ -624,8 +640,10 @@ class TestSecurityExecutorVerification:
             matcher,
         )
         assert result["success"] is True
+        assert not result["speech"].startswith("Done")
+        assert "armed in home mode" not in result["speech"]
         assert "disarmed" not in result["speech"]
-        assert "armed" in result["speech"]
+        assert "has not confirmed the new state yet" in result["speech"]
 
 
 # ---- scene -----------------------------------------------------------------
