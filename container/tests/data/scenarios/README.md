@@ -2,7 +2,10 @@
 
 YAML-driven end-to-end scenarios that exercise the production OrchestratorAgent
 pipeline against a curated HA snapshot, a deterministic LLM stub, and an
-in-memory recording HA client. No network, no real LLM, no real HA.
+in-memory recording HA client. No network, no real LLM, no real HA, no real
+embedding model: the harness installs a deterministic embedding engine stub
+and disables session memory (re-enable per scenario via
+`preconditions.settings`).
 
 ## Layout
 

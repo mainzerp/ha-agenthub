@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import threading
 import time
 from collections import OrderedDict
 from contextlib import contextmanager
@@ -90,6 +91,9 @@ class EmbeddingEngine:
         self._provider: str | None = None
         self._model_name: str | None = None
         self._local_model = None  # SentenceTransformer instance, lazy-loaded
+        # Guards the one-time model load: embed_batch runs _embed_local in
+        # worker threads, so concurrent first calls could otherwise race.
+        self._local_model_lock = threading.Lock()
         self._cache = _EmbeddingCache()
 
     async def _load_config(self) -> None:
@@ -104,8 +108,18 @@ class EmbeddingEngine:
             self._model_name = await SettingsRepository.get_value("embedding.external_model", "")
 
     def _get_local_model(self):
-        """Lazy-load sentence-transformers model on first use."""
-        if self._local_model is None:
+        """Lazy-load the sentence-transformers model on first use.
+
+        Blocking (torch import + weight load): call it only off the event loop.
+        Thread-safe; the model is constructed at most once per engine.
+        """
+        if self._local_model is not None:
+            return self._local_model
+        with self._local_model_lock:
+            if self._local_model is not None:
+                return self._local_model
+            if not self._model_name:
+                raise RuntimeError("Local embedding model name is not configured; EmbeddingEngine is not initialized")
             os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
             os.environ.setdefault("TRANSFORMERS_NO_ADVISORY_WARNINGS", "1")
             from sentence_transformers import SentenceTransformer
@@ -125,13 +139,14 @@ class EmbeddingEngine:
             with _suppress_model_load_startup_logs():
                 self._local_model = SentenceTransformer(self._model_name)
             logger.info("Loaded local embedding model: %s", self._model_name)
-        return self._local_model
+            return self._local_model
 
     async def initialize(self) -> None:
         """Load config from DB and pre-load the model. Must call before embed/embed_batch."""
         await self._load_config()
         if self._provider == "local":
-            self._get_local_model()
+            # Model load is blocking and CPU-heavy (Directive 9): keep it off the loop.
+            await asyncio.to_thread(self._get_local_model)
 
     def get_info(self) -> dict:
         """Return embedding model configuration info."""
@@ -242,8 +257,12 @@ async def get_embedding_engine() -> EmbeddingEngine:
     if _engine is None:
         async with _engine_init_lock:
             if _engine is None:
-                _engine = EmbeddingEngine()
-                await _engine.initialize()
+                engine = EmbeddingEngine()
+                await engine.initialize()
+                # Publish only a fully initialized engine: an interrupted or
+                # failed initialize() must not leave a half-configured
+                # singleton (model_name=None) behind for later callers.
+                _engine = engine
     return _engine
 
 

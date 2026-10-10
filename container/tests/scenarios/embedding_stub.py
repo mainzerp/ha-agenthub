@@ -39,3 +39,26 @@ def deterministic_embedding(text: str) -> list[float]:
     if norm_val > 0:
         vec = [v / norm_val for v in vec]
     return vec
+
+
+class StubEmbeddingEngine:
+    """Drop-in for the ``app.cache.embedding`` singleton in scenario runs.
+
+    Serves :func:`deterministic_embedding` vectors so no scenario ever loads
+    the real sentence-transformers model (a per-worker multi-second load that
+    starves the CPU under pytest-xdist and trips dispatch timeouts).
+    """
+
+    _MODEL = "scenario-stub"
+
+    async def initialize(self) -> None:
+        return None
+
+    def get_info(self) -> dict:
+        return {"provider": "local", "model": self._MODEL, "dimensions": _DIM, "is_multilingual": True}
+
+    async def embed(self, text: str) -> list[float]:
+        return deterministic_embedding(text)
+
+    async def embed_batch(self, texts: list[str]) -> list[list[float]]:
+        return [deterministic_embedding(text) for text in texts]

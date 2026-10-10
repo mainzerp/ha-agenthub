@@ -1,13 +1,18 @@
-"""Tests for app.cache.embedding external provider retry behavior."""
+"""Tests for app.cache.embedding: engine init, local model loading, retries, keep-alive."""
 
 from __future__ import annotations
 
 import asyncio
+import sys
+import threading
+import time
+import types
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.cache.embedding import EmbeddingEngine, run_embedding_keepalive
+import app.cache.embedding as embedding_module
+from app.cache.embedding import EmbeddingEngine, get_embedding_engine, run_embedding_keepalive
 
 
 @pytest.mark.asyncio
@@ -185,3 +190,126 @@ class TestRunEmbeddingKeepalive:
 
         mock_get_engine.assert_not_called()
         assert sleep_calls == [300, 300]
+
+
+def _fake_sentence_transformers(factory) -> dict[str, types.ModuleType]:
+    """sys.modules overrides so _get_local_model never imports torch or loads weights."""
+    sentence_transformers_module = types.ModuleType("sentence_transformers")
+    sentence_transformers_module.SentenceTransformer = factory
+    huggingface_hub_module = types.ModuleType("huggingface_hub")
+    huggingface_hub_module.disable_progress_bars = MagicMock()
+    return {"sentence_transformers": sentence_transformers_module, "huggingface_hub": huggingface_hub_module}
+
+
+class TestGetEmbeddingEngineSingleton:
+    """The singleton is published only after initialize() completed."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("failure", [RuntimeError("settings read failed"), asyncio.CancelledError()])
+    async def test_failed_initialize_does_not_publish_singleton_and_retries(self, monkeypatch, failure):
+        monkeypatch.setattr(embedding_module, "_engine", None)
+        monkeypatch.setattr(embedding_module, "_engine_init_lock", asyncio.Lock())
+        calls = 0
+
+        async def _initialize(self):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise failure
+            self._provider = "local"
+            self._model_name = "all-MiniLM-L6-v2"
+
+        monkeypatch.setattr(EmbeddingEngine, "initialize", _initialize)
+
+        with pytest.raises(type(failure)):
+            await get_embedding_engine()
+        assert embedding_module._engine is None
+
+        engine = await get_embedding_engine()
+        assert calls == 2
+        assert embedding_module._engine is engine
+        assert engine._model_name == "all-MiniLM-L6-v2"
+        assert await get_embedding_engine() is engine
+        assert calls == 2
+
+
+class TestLocalModelLoading:
+    def test_concurrent_get_local_model_constructs_model_once(self):
+        engine = EmbeddingEngine()
+        engine._model_name = "all-MiniLM-L6-v2"
+        constructed: list[str] = []
+
+        def _slow_sentence_transformer(model_name):
+            constructed.append(model_name)
+            time.sleep(0.05)  # widen the race window
+            return object()
+
+        thread_count = 8
+        barrier = threading.Barrier(thread_count)
+        results: list[object] = []
+        results_lock = threading.Lock()
+
+        def _worker():
+            barrier.wait()
+            model = engine._get_local_model()
+            with results_lock:
+                results.append(model)
+
+        with patch.dict(sys.modules, _fake_sentence_transformers(_slow_sentence_transformer)):
+            threads = [threading.Thread(target=_worker) for _ in range(thread_count)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(timeout=5)
+
+        assert constructed == ["all-MiniLM-L6-v2"]
+        assert len(results) == thread_count
+        assert all(model is engine._local_model for model in results)
+
+    @pytest.mark.parametrize("model_name", [None, ""])
+    def test_get_local_model_without_model_name_raises_clear_error(self, model_name):
+        engine = EmbeddingEngine()
+        engine._provider = "local"
+        engine._model_name = model_name
+        factory = MagicMock()
+
+        with (
+            patch.dict(sys.modules, _fake_sentence_transformers(factory)),
+            pytest.raises(RuntimeError, match="model name is not configured"),
+        ):
+            engine._get_local_model()
+
+        factory.assert_not_called()
+        assert engine._local_model is None
+
+    @pytest.mark.asyncio
+    async def test_initialize_loads_local_model_off_event_loop(self):
+        engine = EmbeddingEngine()
+        loop_thread = threading.get_ident()
+        load_thread: list[int] = []
+        released = threading.Event()
+        released_seen: list[bool] = []
+
+        def _blocking_load():
+            load_thread.append(threading.get_ident())
+            # Only a free event loop can run _release(); on the loop this would
+            # block until the timeout and record False.
+            released_seen.append(released.wait(timeout=5))
+            return MagicMock()
+
+        async def _release():
+            released.set()
+
+        async def _get_value(key, default=None):
+            return "local" if key == "embedding.provider" else default
+
+        with (
+            patch("app.cache.embedding.SettingsRepository.get_value", new=AsyncMock(side_effect=_get_value)),
+            patch.object(engine, "_get_local_model", side_effect=_blocking_load),
+        ):
+            release_task = asyncio.create_task(_release())
+            await engine.initialize()
+            await release_task
+
+        assert load_thread and load_thread[0] != loop_thread
+        assert released_seen == [True]
