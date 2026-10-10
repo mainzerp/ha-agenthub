@@ -132,15 +132,18 @@ avoids direct peer-agent imports from the wake briefing module.
 A delivery turn ("send Anna the message: I am running late") is
 classified as two lines: a content-producing agent first, `send-agent`
 second. The orchestrator runs them in sequence; a `send-agent`-only
-classification is repaired or rejected by the classifier:
+classification is repaired or rejected by the classifier. When several
+content agents are classified, every content leg runs (concurrently) and
+their replies are joined in classification order into one message body:
 
 - **Content contract:** the content agent runs in sequential-send mode.
   Its prompt states that the reply is used verbatim as the message body
   and delivery happens elsewhere (no refusal), that dictated message
   text is returned exactly, without meta commentary, and that it replies
   with only `[[NO_CONTENT]]` when it cannot produce content.
-- **Skip rule:** an empty content reply (`parse_error`), or a content
-  error, partial failure, or reply containing the sentinel
+- **Skip rule:** an empty content reply from any leg (`parse_error`),
+  or a content error, partial failure, or reply containing the sentinel
+  in any leg
   (`content_unavailable`; case-insensitive, extra or missing brackets
   and markdown escapes such as `\[\[NO\_CONTENT\]\]` tolerated, the
   underscore required), ends the turn with a fallback speech;
@@ -166,13 +169,51 @@ classification is repaired or rejected by the classifier:
   The "no matching send device" speech does not repeat the target text;
   the `app.agents.send` logger records it at info level.
 
-Multi-step intents ("close the blinds and tell me how warm it got
-in the bedroom today") are sequenced by the orchestrator: each step
-is dispatched as its own A2A task against the chosen
-domain agent, with subsequent steps receiving the previous step's
-result as context. Per-action domain filtering in the executors
-ensures, for example, that a `camera_turn_on` step
-cannot land on a same-named `lock` or `switch` entity.
+Multi-intent turns ("close the blinds and tell me how warm it got
+in the bedroom today") are dispatched in parallel, one A2A task per
+classified agent, and the replies are merged by the mediation LLM.
+At most 5 intents are dispatched per turn (`MAX_PARALLEL_INTENTS` in
+`pipeline_strategies.py`, highest confidence first); intents over the
+cap are not executed and the merged reply tells the user so. Per-action
+domain filtering in the executors ensures, for example, that a
+`camera_turn_on` step cannot land on a same-named `lock` or `switch`
+entity.
+
+A dismissal in the same utterance as actions ("turn on the light, no,
+forget it") is treated as a retraction: the classifier prompt asks for
+a lone `cancel-interaction` line, and the sanitizer drops every other
+intent when `cancel-interaction` appears next to them, so nothing is
+executed.
+
+### Dispatch Failures and Timeouts
+
+Every agent dispatch has a per-agent time budget (`a2a.default_timeout`,
+agent `timeout_sec`, capped by `a2a.max_dispatch_timeout`). Streaming
+dispatches enforce it on the reads of the agent stream, never across a
+frame handed to the client.
+
+- **Fallback:** a dispatch that times out, raises, or (streaming) ends
+  with an error frame before any text is re-sent once to `general-agent`
+  as a non-streaming task; if that fails too, the turn speaks a canned
+  line.
+- **Double-execution guard:** the shared executor primitive
+  (`call_service_with_verification`) flags a per-dispatch marker
+  (`app/agents/ha_action_marker.py`) right before the HA service call.
+  When the marker is set, a failed dispatch is NOT re-sent to the
+  fallback agent; the turn answers that the command was sent but could
+  not be confirmed. Executors that call `ha_client.call_service`
+  directly (calendar, lists, send, timer) do not set the marker.
+- **Streaming timeout:** a timed-out stream is finalized like any other
+  turn (turn stored, trace written, served routing-cache entry
+  invalidated). When agent tokens were already relayed, the partial
+  answer stands and nothing is appended. When only a canned line goes
+  out, a clarifying question popped by the turn is re-armed.
+- **Language:** canned error, timeout and status lines (dispatch
+  failures, all agents failed, classification errors) are English in
+  code and rendered in the turn language by the mediation LLM
+  (`prompts/localize.txt`, bounded call); English is the fallback when
+  that call fails. Error turns go through personality mediation like
+  any other turn.
 
 ### Filler / In-Stream Preamble
 
@@ -202,11 +243,19 @@ Answer-leg correlation in the container is keyed strictly by
 `conversation_id`: the classify stage injects the stored history plus a
 previous-agent hint and condenses the short answer against the pending
 question. The container also records the pending question itself
-(in-memory, 300 s TTL, single-shot) when `voice_followup` is effective:
+(in-memory, 300 s TTL, single-shot) with the agent that asked it, for
+single- and multi-agent turns, when `voice_followup` is effective:
 the answering turn bypasses the action-cache replay and the routing
 cache, classification gets a follow-up merge hint so the condensed task
 is self-contained, and a tied candidate block inverts its ambiguity
-annotation to choose-and-act instead of re-asking. On every response path the integration places the HA-side
+annotation to choose-and-act instead of re-asking. The answer is pinned
+to the asking agent: the classification LLM (same single call) prefixes
+its line with `[ANSWER]` when the message answers the question, and the
+orchestrator then dispatches to the asking agent with
+`context.pending_question` and `context.is_followup` set. Without the
+marker the turn is classified normally; when it goes to another agent,
+the stale follow-up context is dropped. Comma-joined multi-agent askers,
+`send-agent` and pseudo agents are never pinned. On every response path the integration places the HA-side
 `conversation_id` (`user_input.conversation_id`) into the
 `ConversationResult`; the container's own `conversation_id` is a
 container-internal correlation key only and is never forwarded to HA

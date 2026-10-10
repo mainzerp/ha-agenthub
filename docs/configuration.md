@@ -146,7 +146,7 @@ relevant route before tuning.
 | Key | Default | Type | Description |
 |-----|---------|------|-------------|
 | `a2a.default_timeout` | `10` | int | Default agent timeout in seconds. Seeded database default is `10`; code fallback if the DB setting is absent is `5`. |
-| `a2a.max_iterations` | `3` | int | Max iterations per agent to prevent loops |
+| `a2a.max_iterations` | `3` | int | Reserved; not read at runtime (no effect) |
 | `a2a.max_dispatch_timeout` | `60` | int | Hard upper bound (seconds) on a single A2A dispatch, regardless of per-agent overrides. |
 | `agent.dispatch_timeout.<agent_id>` | (unset) | int | Per-agent dispatch timeout override; falls back to the agent's `AgentCard.timeout_sec` and then to `a2a.default_timeout`. Capped by `a2a.max_dispatch_timeout`. |
 

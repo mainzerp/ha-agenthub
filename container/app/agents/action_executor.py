@@ -11,6 +11,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field, ValidationError
 
+from app.agents.ha_action_marker import note_ha_action_started
 from app.db.repositories.settings import _settings_float
 from app.entity.deterministic_resolver import (
     filter_matches_by_domain,  # noqa: F401  -- re-exported for test compat
@@ -855,6 +856,9 @@ async def call_service_with_verification(
     expect_state_fn = getattr(ha_client, "expect_state", None)
 
     async def _call_service() -> Any:
+        # Double-execution guard: tell the dispatching orchestrator that an
+        # HA action went out, so a timeout does not re-dispatch the task.
+        note_ha_action_started()
         with mark_verified_ha_service_call("action-executor"):
             return await ha_client.call_service(
                 domain,

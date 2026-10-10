@@ -63,6 +63,8 @@ they appear verbatim in the user's own language.
 
 - cancel-interaction (dismiss the assistant interaction):
   YES "Olvídalo" → cancel-interaction: cancelar la interacción actual
+  YES "Da igual" → cancel-interaction: cancelar la interacción actual
+  YES "Enciende la luz, no, olvídalo" → cancel-interaction ONLY (retracted in the same message)
   NO  "Para la música" → music-agent, NOT cancel-interaction
 
 - noise (conversaciones de fondo, fragmentos sin petición):

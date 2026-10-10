@@ -622,7 +622,7 @@ class TestSequentialSendStreamingMetadata:
 
         orch._run_pipeline_prelude = _mock_prelude
         orch._should_send_filler = AsyncMock(return_value=False)
-        orch.handle_task = AsyncMock(
+        orch._dispatch_and_finalize = AsyncMock(
             return_value={
                 "speech": "Sent your summary.",
                 "routed_to": "general-agent, send-agent",
@@ -693,7 +693,7 @@ class TestSequentialSendFillerRace:
             await asyncio.Event().wait()
             return ""
 
-        orch.handle_task = _hanging_handle_task
+        orch._dispatch_and_finalize = _hanging_handle_task
         orch._invoke_filler_agent = _hanging_filler
 
         task = _make_task("turn on light and send it", conversation_id="conv-seq-cancel")

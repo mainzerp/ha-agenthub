@@ -46,3 +46,12 @@ def detect_user_language(text: str, fallback: str = "en") -> str:
     except Exception:
         logger.debug("Language detection error, using fallback '%s'", fallback)
         return fallback
+
+
+def warm_up_language_detector() -> None:
+    """Load the langdetect profiles once (blocking; call via ``asyncio.to_thread``).
+
+    The first ``detect_langs`` call loads every language profile from disk,
+    which takes long enough to stall a live turn; startup pays it instead.
+    """
+    detect_user_language("This sentence warms up the language detector.", fallback="")

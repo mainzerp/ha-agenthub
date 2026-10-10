@@ -39,6 +39,22 @@ logger = logging.getLogger(__name__)
 
 _FOLLOWUP_TAG = "[FOLLOWUP]"
 
+# English system lines; ``MediationService.localize_message`` renders them
+# in the turn language (English text is the fallback when that LLM fails).
+_NOTHING_PROCESSED_SPEECH = "I couldn't process that request."
+_ALL_AGENTS_FAILED_SPEECH = "I'm sorry, I couldn't complete that request. All agents encountered errors."
+
+# Upper bound for the localization LLM call: it runs on error paths that
+# already waited for a failed agent, so it must not add a long stall.
+_LOCALIZE_TIMEOUT_SEC = 6.0
+_LOCALIZE_MAX_TOKENS = 256
+
+
+def is_english_language(language: str | None) -> bool:
+    """True for English or an unknown/empty language code (no localization)."""
+    primary = (language or "en").strip().lower().split("-", 1)[0]
+    return primary in ("", "en")
+
 
 class MediationStreamError(Exception):
     """Raised when the mediation LLM stream fails (M-10).
@@ -138,6 +154,9 @@ class MediationService:
         span_collector=None,
         reminder_text: str | None = None,
         failed_agents: list[str] | None = None,
+        *,
+        language: str | None = None,
+        skipped_tasks: list[str] | None = None,
     ) -> tuple[str, bool]:
         """Merge multiple agent responses into a single natural answer via LLM.
 
@@ -147,17 +166,24 @@ class MediationService:
         If failed_agents is given, the LLM briefly notes the unreachable
         agents in the user's language (replaces the old hardcoded English
         suffix; the LLM-free ``format_fallback`` stays note-less).
+        If skipped_tasks is given (intents over the per-turn dispatch cap),
+        the LLM tells the user those parts were not executed.
+        System lines without agent output (nothing answered, all agents
+        failed) are localized into ``language`` via :meth:`localize_message`.
         Falls back to bracket-prefixed format on failure.
         """
         if not agent_responses:
-            return "I couldn't process that request.", False
+            canned = _ALL_AGENTS_FAILED_SPEECH if failed_agents else _NOTHING_PROCESSED_SPEECH
+            return await self.localize_message(canned, language, span_collector=span_collector), False
 
-        # Only one response and nothing failed: return it directly
+        # Only one response and nothing failed or skipped: return it directly
         # (append reminder as fallback). When some agents failed, the
         # merge still goes through the LLM so the failure note lands in
         # the user's language.
-        if len(agent_responses) == 1 and not failed_agents:
-            speech = agent_responses[0][1] or "I couldn't process that request."
+        if len(agent_responses) == 1 and not failed_agents and not skipped_tasks:
+            speech = agent_responses[0][1] or await self.localize_message(
+                _NOTHING_PROCESSED_SPEECH, language, span_collector=span_collector
+            )
             if reminder_text:
                 separator = " " if speech and speech[-1] in ".!?" else ". "
                 return (f"{speech}{separator}{reminder_text}" if speech else reminder_text), False
@@ -190,6 +216,12 @@ class MediationService:
                     "Briefly note that these agents could not be reached, in the same language "
                     "as the user's question. Do not invent reasons.\n\n"
                 )
+            if skipped_tasks:
+                user_content += (
+                    "Not executed (too many requests in one message): " + "; ".join(skipped_tasks) + "\n"
+                    "Briefly tell the user, in the same language as the user's question, that these parts "
+                    "were not executed and can be asked again separately.\n\n"
+                )
             if reminder_text:
                 user_content += f"Reminder to weave in: {reminder_text}\n\n"
             user_content += "Combine into one natural response:"
@@ -221,9 +253,60 @@ class MediationService:
 
     @staticmethod
     def format_fallback(agent_responses: list[tuple[str, str, bool]]) -> str:
-        """Fallback formatting when LLM merge fails."""
+        """Fallback formatting when LLM merge fails.
+
+        LLM-free by design (the merge LLM just failed), so the empty-output
+        line stays English.
+        """
         parts = [f"[{aid}] {sp}" for aid, sp, _ in agent_responses if sp and sp.strip()]
-        return "\n\n".join(parts) if parts else "I couldn't process that request."
+        return "\n\n".join(parts) if parts else _NOTHING_PROCESSED_SPEECH
+
+    # ------------------------------------------------------------------
+    # System-line localization
+    # ------------------------------------------------------------------
+
+    async def localize_message(
+        self,
+        text: str,
+        language: str | None,
+        *,
+        span_collector=None,
+    ) -> str:
+        """Render an orchestrator-generated English line in the turn language.
+
+        Used for canned error/timeout/status lines that no agent produced,
+        so no static translation table is needed. English (or unknown)
+        languages return ``text`` unchanged without an LLM call; any LLM
+        failure or timeout also returns the English ``text``.
+        """
+        if not text or not text.strip() or is_english_language(language):
+            return text
+        try:
+            system_prompt = await self._orch._load_prompt_async("localize")
+            system_prompt = system_prompt.replace("{language}", language_code_to_name(language)).strip()
+            messages = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": text},
+            ]
+            overrides: dict[str, Any] = {
+                "temperature": self._orch._mediation_temperature,
+                "max_tokens": _LOCALIZE_MAX_TOKENS,
+            }
+            if self._orch._mediation_model:
+                overrides["model"] = self._orch._mediation_model
+            async with _optional_span(span_collector, "localize", agent_id="orchestrator") as span:
+                span["metadata"]["language"] = language
+                result = await asyncio.wait_for(
+                    self._orch._call_llm(messages, span_collector=span_collector, **overrides),
+                    timeout=_LOCALIZE_TIMEOUT_SEC,
+                )
+            localized = strip_parenthetical_asides(result).strip() if isinstance(result, str) else ""
+            return localized or text
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.warning("System-line localization failed, using English text", exc_info=True)
+            return text
 
     # ------------------------------------------------------------------
     # Single-agent mediation
