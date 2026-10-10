@@ -2,7 +2,7 @@
 
 from app.agents.actionable import ActionableAgent
 from app.agents.decorator import agent
-from app.agents.lists_executor import execute_lists_action
+from app.agents.lists_executor import ENTITY_ACTIONS, ENTITY_FREE_ACTIONS, execute_lists_action
 from app.models.agent import AgentCard, AgentErrorCode, DispatchTask, TaskResult
 
 
@@ -28,7 +28,8 @@ from app.models.agent import AgentCard, AgentErrorCode, DispatchTask, TaskResult
     allowed_domains=frozenset({"todo", "shopping_list"}),
     # The executor resolves the target list itself (visible todo lists only):
     # list_lists needs no list, an unnamed list falls back to the only one.
-    entity_candidates_required=False,
+    entity_actions=ENTITY_ACTIONS,
+    entity_free_actions=ENTITY_FREE_ACTIONS,
     db_gated=True,
 )
 class ListsAgent(ActionableAgent):
@@ -55,6 +56,9 @@ class ListsAgent(ActionableAgent):
         )
 
     def _handle_parse_miss(self, task: DispatchTask, response: str) -> TaskResult:
+        clarification = self._parse_miss_clarification(task, response)
+        if clarification is not None:
+            return clarification
         return self._error_result(
             AgentErrorCode.PARSE_ERROR,
             "I could not understand the lists command. Please try again.",

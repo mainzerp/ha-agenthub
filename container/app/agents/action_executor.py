@@ -397,31 +397,64 @@ _PLAIN_FENCE_RE = re.compile(r"```\s*\n?(.*?)\n?\s*```", re.DOTALL)
 # P2-6 (FLOW-PARSE-1): unified action schema.
 # ``parse_action`` accepts an LLM payload only when it conforms to this
 # minimal contract: a non-empty ``action`` string, plus *either* a
-# device target (``entity`` / ``entity_id``) *or* an explicit read-only
-# action that does not require one (``list_lights``). Anything else is
-# treated as a parse miss and the caller falls through to the next
-# regex / fallback path so a malformed JSON block in one fence cannot
-# poison parsing of a valid block in a later fence.
+# device target (``entity`` / ``entity_id``) *or* an action that runs
+# without one (``list_lights``). Anything else is treated as a parse miss
+# and the caller falls through to the next regex / fallback path so a
+# malformed JSON block in one fence cannot poison parsing of a valid block
+# in a later fence.
+#
+# This is the parser-side copy of every agent's ``entity_free_actions``
+# declaration (the ``ENTITY_FREE_ACTIONS`` tables next to each executor).
+# It cannot import the executors (they import this module), so
+# ``tests/unit/test_entity_action_declarations.py`` pins the parity: every
+# declared entity-free action is accepted here, no entity-requiring action is.
 _ACTIONS_WITHOUT_ENTITY: frozenset[str] = frozenset(
     {
-        # Light / switch / sensor read paths
+        # Device agents: list paths and the weather reads (the executor
+        # falls back to the only visible weather entity)
         "list_lights",
-        # Climate / scene / security / media / music / automation list paths
         "list_climate",
-        "list_automations",
+        "list_covers",
+        "list_vacuums",
+        "list_scenes",
         "list_security",
         "list_media_players",
         "list_music_players",
-        "list_scenes",
         "query_weather",
         "query_weather_forecast",
-        # Timer agent list/query paths that aggregate across entities
+        # Automation: list, and create (no pre-existing entity)
+        "list_automations",
+        "create_automation",
+        # Timer agent: AgentHub-internal labels; an empty entity means "no
+        # name" (the only running timer, or a clarifying question)
+        "start_timer",
+        "cancel_timer",
+        "extend_timer",
+        "pause_timer",
+        "resume_timer",
+        "finish_timer",
+        "snooze_timer",
+        "start_timer_with_notification",
+        "delayed_action",
+        "sleep_timer",
+        "set_datetime",
+        "cancel_alarm",
+        "query_timer",
         "list_timers",
         "list_alarms",
-        # Lists agent list/query paths
+        # Lists agent: an empty entity uses the only visible list or asks
         "list_lists",
-        # Automation CRUD actions that do not require a pre-existing entity
-        "create_automation",
+        "list_items",
+        "add_item",
+        "complete_item",
+        "remove_item",
+        "clear_completed",
+        # Calendar agent: an omitted entity uses the default calendars
+        "list_events",
+        "query_event",
+        "create_event",
+        "delete_event",
+        "update_event",
     }
 )
 

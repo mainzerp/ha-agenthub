@@ -37,6 +37,17 @@ _SEARCH_HORIZON = timedelta(days=365)
 _START_MATCH_TOLERANCE = timedelta(seconds=59)
 _MAX_LISTED_CHOICES = 3
 
+# Entity-candidate declaration (read by ``CalendarAgent``'s ``@agent`` call,
+# see ``ActionableAgent._entity_actions``). The executor resolves calendars
+# itself (``parameters.calendar`` or ``entity``, else the user's default
+# calendars, else every visible calendar), so no action needs a recalled
+# entity candidate and an empty or omitted ``entity`` is valid everywhere.
+# The dispatch only accepts these actions.
+ENTITY_ACTIONS: frozenset[str] = frozenset()
+ENTITY_FREE_ACTIONS: frozenset[str] = frozenset(
+    {"list_events", "query_event", "create_event", "delete_event", "update_event"}
+)
+
 _WS_UNAVAILABLE_SPEECH = (
     "Changing or deleting calendar events needs the Home Assistant WebSocket connection, "
     "which is not available right now."
@@ -237,7 +248,7 @@ async def execute_calendar_action(
         "delete_event": _delete_event,
         "update_event": _update_event,
     }
-    handler = handlers.get(action_name)
+    handler = handlers.get(action_name) if action_name in ENTITY_FREE_ACTIONS else None
     if handler is None:
         return _result(False, f"Unknown calendar action: {action_name}")
     return await handler(

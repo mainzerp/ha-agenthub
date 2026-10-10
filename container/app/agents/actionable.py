@@ -16,6 +16,17 @@ from typing import Any
 
 from pydantic import ValidationError
 
+from app.agents import (
+    automation_executor,
+    climate_executor,
+    cover_executor,
+    light_executor,
+    media_executor,
+    music_executor,
+    scene_executor,
+    security_executor,
+    vacuum_executor,
+)
 from app.agents.action_executor import (
     _MAX_ACTIONS_PER_TURN,
     VERIFY_UNVERIFIED,
@@ -120,12 +131,21 @@ _INVALID_ACTION_SPEECH = {
 }
 
 
-def _invalid_action_speech(rejected: list[dict], language: str | None) -> str:
-    """Localized clarification for a rejected (invalid) action object."""
+def _invalid_action_speech(
+    rejected: list[dict], language: str | None, entity_actions: frozenset[str] | None = None
+) -> str:
+    """Localized clarification for a rejected (invalid) action object.
+
+    A missing target only asks "which device" for an action that needs one:
+    ``entity_actions`` is the agent's declaration (``None``: every action).
+    Any other rejected object (e.g. an unknown action name) gets the generic
+    rephrase request.
+    """
     lang = (language or "en").lower().split("-", 1)[0]
     missing_target = any(
         isinstance(obj.get("action"), str)
         and obj.get("action", "").strip()
+        and (entity_actions is None or obj.get("action", "").strip().lower() in entity_actions)
         and not str(obj.get("entity") or "").strip()
         and not str(obj.get("entity_id") or "").strip()
         for obj in rejected
@@ -158,20 +178,26 @@ _CHOOSE_AND_ACT_ANNOTATION = (
     "do NOT ask again unless no candidate fits."
 )
 
-# Empty keyword recall. Agents whose actions act on an entity candidate
-# (``_entity_candidates_required``) get the strict block: no candidate, no
-# action, ask instead. Agents whose actions run without a candidate get the
-# neutral note, which must not contradict their prompt's output contract.
-# The executor-side candidate gate (empty set: every LLM entity_id rejected)
-# applies to both. English-only per Directive 13.
+# Empty keyword recall, scoped per action (``ActionableAgent._entity_actions``).
+# Every action needs a candidate (undeclared, or no entity-free action): the
+# strict block -- no candidate, no action, ask instead. Some actions need one:
+# the scoped block forbids only those and names the actions that stay allowed,
+# so it never contradicts the prompt's output contract for them. No action
+# needs one: nothing is injected. The executor-side candidate gate (empty
+# set: every LLM entity_id rejected) applies in every case. English-only per
+# Directive 13.
 _NO_CANDIDATES_BLOCK = (
     "No matching devices were found for this request. "
     "Do NOT output a JSON action block. "
     "Ask the user a short clarifying question in natural language to find out which device they mean."
 )
-_NO_CANDIDATES_NOTE = (
+_NO_CANDIDATES_SCOPED_BLOCK = (
     "No matching devices were found for this request, so do not invent an 'entity_id'. "
-    "Actions that do not need a device are unaffected -- follow the output format documented above."
+    "Do NOT output a JSON action block for an action that needs a device ({entity_actions}): "
+    "for such a request, ask the user a short clarifying question in natural language "
+    "to find out which one they mean. "
+    "These actions need no device and stay allowed -- follow the output format documented above: "
+    "{entity_free_actions}."
 )
 
 # Agent-side keyword recall (ENTITY_RESOLUTION_REWORK): domains with at most
@@ -231,22 +257,24 @@ class ActionableAgent(BaseAgent):
         - _prompt_name (str): name of the prompt file (e.g., "light")
         - _do_execute(): async method that delegates to the domain-specific executor
 
-    ``_entity_candidates_required`` (set via ``@agent(entity_candidates_required=...)``)
-    declares whether the agent's actions act on a recalled entity candidate.
-    True (default, device agents): an empty keyword recall injects the
-    "no matching devices -- ask, no JSON action" block. False (agents whose
-    actions run without a candidate, e.g. AgentHub-internal timers, or whose
-    executor resolves its own target): an empty recall injects a neutral
-    note instead, so the prompt never forbids the JSON action its own
-    contract requires. The executor-side candidate gate is identical for
-    both values.
+    Entity-candidate declaration (set via ``@agent(entity_actions=...,
+    entity_free_actions=...)``, normally the executor's ``ENTITY_ACTIONS`` /
+    ``ENTITY_FREE_ACTIONS`` tables): ``_entity_actions`` are the actions that
+    act on one recalled entity candidate, ``_entity_free_actions`` the ones
+    that run without one. ``None`` (the default) means undeclared: every
+    action needs a candidate. On an empty keyword recall the prompt gets the
+    strict "ask, no JSON action" block when every action needs a candidate,
+    a scoped block that forbids only ``_entity_actions`` and names the
+    allowed ``_entity_free_actions`` when some do, and nothing when none do.
+    The executor-side candidate gate is identical in every case.
     """
 
     _prompt_name: str = ""
     _clarify_on_not_found: bool = True
     _allowed_domains: frozenset[str] | None = None
     _supports_conditions: bool = False
-    _entity_candidates_required: bool = True
+    _entity_actions: frozenset[str] | None = None
+    _entity_free_actions: frozenset[str] = frozenset()
 
     def __init__(self, ha_client=None, entity_index=None, entity_matcher=None) -> None:
         super().__init__(ha_client=ha_client, entity_index=entity_index)
@@ -353,6 +381,28 @@ class ActionableAgent(BaseAgent):
         scored.sort(key=_sort_key)
         return scored[:_KEYWORD_RECALL_TOP_N]
 
+    def _no_candidates_context(self) -> str | None:
+        """Prompt context for an empty keyword recall, scoped by action declaration.
+
+        Undeclared agents and agents without entity-free actions get the
+        strict block (ask which device, no JSON action). Agents with both
+        kinds get the scoped block: entity actions are forbidden, the
+        entity-free ones stay allowed under the prompt's own output format.
+        Agents without entity actions get nothing -- no instruction may
+        contradict the JSON contract their prompt requires.
+        """
+        entity_actions = self._entity_actions
+        if entity_actions is None:
+            return _NO_CANDIDATES_BLOCK
+        if not entity_actions:
+            return None
+        if not self._entity_free_actions:
+            return _NO_CANDIDATES_BLOCK
+        return _NO_CANDIDATES_SCOPED_BLOCK.format(
+            entity_actions=", ".join(sorted(entity_actions)),
+            entity_free_actions=", ".join(sorted(self._entity_free_actions)),
+        )
+
     async def _build_query_candidate_context(
         self, task: DispatchTask
     ) -> tuple[str | None, list[tuple[Any, tuple[int, int, int]]]]:
@@ -362,18 +412,12 @@ class ActionableAgent(BaseAgent):
         as ``entity_id -- friendly_name (state)``; the LLM must emit the
         ``entity_id`` field verbatim from this list (an id outside the list
         is rejected fail-closed by the executor, without a matcher re-run).
-        An empty recall yields, for agents with
-        ``_entity_candidates_required``, a block instructing the LLM to ask
-        which device the user means (natural language, no JSON action);
-        for all other agents a neutral note that leaves the prompt's own
-        output contract in force.
+        An empty recall yields :meth:`_no_candidates_context`.
         """
         recalled = await self._recall_keyword_candidates(task)
 
         if not recalled:
-            if self._entity_candidates_required:
-                return _NO_CANDIDATES_BLOCK, []
-            return _NO_CANDIDATES_NOTE, []
+            return self._no_candidates_context(), []
 
         # Friendly names and states are untrusted (anyone who can rename a
         # device or set a text state controls them): delimited and bounded.
@@ -791,6 +835,22 @@ class ActionableAgent(BaseAgent):
         spoken-question heuristic as cache safeguard R-A. Normal prose
         answers keep ``voice_followup=False``.
         """
+        clarification = self._parse_miss_clarification(task, response)
+        if clarification is not None:
+            return clarification
+        return TaskResult(speech=strip_json_blocks(response), voice_followup=False)
+
+    def _parse_miss_clarification(self, task: DispatchTask, response: str) -> TaskResult | None:
+        """Clarifying answer for a parse miss, or ``None`` when there is none.
+
+        Two cases ask the user instead of failing: an action object that
+        failed validation (nothing executed, so the surrounding prose -- which
+        may claim success -- is replaced by a localized clarification), and a
+        natural-language clarifying question from the LLM (right-trimmed text
+        ends with ``?``), passed through with ``voice_followup``. Agents that
+        otherwise answer a parse miss with ``PARSE_ERROR`` call this first so
+        a question such as "for how long?" still reaches the user.
+        """
         rejected = find_rejected_action_objects(response)
         if rejected:
             # The LLM tried to act but its action object failed validation
@@ -804,13 +864,14 @@ class ActionableAgent(BaseAgent):
             )
             language = task.context.language if task.context else None
             return TaskResult(
-                speech=_invalid_action_speech(rejected, language),
+                speech=_invalid_action_speech(rejected, language, self._entity_actions),
                 voice_followup=True,
                 metadata={"parse_miss": "invalid_action"},
             )
         speech = strip_json_blocks(response)
-        followup = speech.rstrip().endswith("?")
-        return TaskResult(speech=speech, voice_followup=followup)
+        if speech.rstrip().endswith("?"):
+            return TaskResult(speech=speech, voice_followup=True)
+        return None
 
     async def handle_task(self, task: DispatchTask) -> TaskResult:
         # FLOW-CTX-1 (0.18.6): expose the incoming TaskContext so
@@ -1205,6 +1266,8 @@ class _ConfigurableDomainAgent(ActionableAgent):
     allowed_domains=frozenset({"light", "switch", "sensor"}),
     executor_module="app.agents.light_executor",
     executor_name="execute_light_action",
+    entity_actions=light_executor.ENTITY_ACTIONS,
+    entity_free_actions=light_executor.ENTITY_FREE_ACTIONS,
 )
 class LightAgent(_ConfigurableDomainAgent):
     _supports_conditions = True
@@ -1248,6 +1311,8 @@ class LightAgent(_ConfigurableDomainAgent):
     allowed_domains=frozenset({"climate", "sensor", "weather", "fan", "humidifier"}),
     executor_module="app.agents.climate_executor",
     executor_name="execute_climate_action",
+    entity_actions=climate_executor.ENTITY_ACTIONS,
+    entity_free_actions=climate_executor.ENTITY_FREE_ACTIONS,
     db_gated=True,
 )
 class ClimateAgent(_ConfigurableDomainAgent):
@@ -1279,6 +1344,8 @@ class ClimateAgent(_ConfigurableDomainAgent):
     allowed_domains=frozenset({"cover"}),
     executor_module="app.agents.cover_executor",
     executor_name="execute_cover_action",
+    entity_actions=cover_executor.ENTITY_ACTIONS,
+    entity_free_actions=cover_executor.ENTITY_FREE_ACTIONS,
 )
 class CoverAgent(_ConfigurableDomainAgent):
     pass
@@ -1308,6 +1375,8 @@ class CoverAgent(_ConfigurableDomainAgent):
     allowed_domains=frozenset({"vacuum"}),
     executor_module="app.agents.vacuum_executor",
     executor_name="execute_vacuum_action",
+    entity_actions=vacuum_executor.ENTITY_ACTIONS,
+    entity_free_actions=vacuum_executor.ENTITY_FREE_ACTIONS,
 )
 class VacuumAgent(_ConfigurableDomainAgent):
     pass
@@ -1325,6 +1394,8 @@ class VacuumAgent(_ConfigurableDomainAgent):
     allowed_domains=frozenset({"scene"}),
     executor_module="app.agents.scene_executor",
     executor_name="execute_scene_action",
+    entity_actions=scene_executor.ENTITY_ACTIONS,
+    entity_free_actions=scene_executor.ENTITY_FREE_ACTIONS,
     db_gated=True,
 )
 class SceneAgent(_ConfigurableDomainAgent):
@@ -1358,6 +1429,8 @@ class SceneAgent(_ConfigurableDomainAgent):
     allowed_domains=frozenset({"alarm_control_panel", "lock", "camera", "binary_sensor", "sensor"}),
     executor_module="app.agents.security_executor",
     executor_name="execute_security_action",
+    entity_actions=security_executor.ENTITY_ACTIONS,
+    entity_free_actions=security_executor.ENTITY_FREE_ACTIONS,
     db_gated=True,
 )
 class SecurityAgent(_ConfigurableDomainAgent):
@@ -1387,6 +1460,8 @@ class SecurityAgent(_ConfigurableDomainAgent):
     allowed_domains=frozenset({"media_player"}),
     executor_module="app.agents.media_executor",
     executor_name="execute_media_action",
+    entity_actions=media_executor.ENTITY_ACTIONS,
+    entity_free_actions=media_executor.ENTITY_FREE_ACTIONS,
     db_gated=True,
 )
 class MediaAgent(_ConfigurableDomainAgent):
@@ -1416,6 +1491,8 @@ class MediaAgent(_ConfigurableDomainAgent):
     allowed_domains=frozenset({"media_player"}),
     executor_module="app.agents.music_executor",
     executor_name="execute_music_action",
+    entity_actions=music_executor.ENTITY_ACTIONS,
+    entity_free_actions=music_executor.ENTITY_FREE_ACTIONS,
 )
 class MusicAgent(_ConfigurableDomainAgent):
     pass
@@ -1444,8 +1521,8 @@ class MusicAgent(_ConfigurableDomainAgent):
     allowed_domains=frozenset({"automation", "script"}),
     executor_module="app.agents.automation_executor",
     executor_name="execute_automation_action",
-    # create_automation and list_automations need no existing entity.
-    entity_candidates_required=False,
+    entity_actions=automation_executor.ENTITY_ACTIONS,
+    entity_free_actions=automation_executor.ENTITY_FREE_ACTIONS,
     db_gated=True,
 )
 class AutomationAgent(_ConfigurableDomainAgent):

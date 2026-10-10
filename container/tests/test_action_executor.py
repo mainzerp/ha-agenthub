@@ -175,11 +175,17 @@ class TestParseAction:
         result = parse_action(response)
         assert result is None
 
-    def test_parse_action_rejects_entityless_start_timer(self):
-        """Timer writes stay aligned with the shared entity-required contract."""
+    def test_parse_action_accepts_entityless_start_timer(self):
+        """Timer labels are AgentHub-internal: an unnamed timer has no entity
+        (timer.txt allows an empty one), and the executor handles it."""
         response = '```json\n{"action": "start_timer", "parameters": {"duration": "00:05:00"}}\n```'
         result = parse_action(response)
-        assert result is None
+        assert result is not None
+        assert result["action"] == "start_timer"
+
+    def test_parse_action_rejects_entityless_device_write(self):
+        """A device write without a target stays a parse miss."""
+        assert parse_action('```json\n{"action": "turn_on", "entity": ""}\n```') is None
 
     def test_parse_action_rejects_empty_action_string(self):
         """P2-6 (FLOW-PARSE-1): the schema requires ``action`` to be a

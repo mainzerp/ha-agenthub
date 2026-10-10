@@ -823,7 +823,8 @@ class TestTimerAgent:
     @patch(
         "app.llm.client.complete",
         new_callable=AsyncMock,
-        return_value='```json\n{"action": "start_timer", "parameters": {"duration": "00:05:00"}}\n```\nStarting the timer now.',
+        # Prose that claims success without an action block (and asks nothing).
+        return_value="Starting the timer now.",
     )
     async def test_handle_task_parse_miss_returns_explicit_failure(self, mock_complete):
         agent = TimerAgent()

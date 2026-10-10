@@ -30,6 +30,8 @@ For standard domains, add an `@agent`-decorated subclass of `_ConfigurableDomain
     allowed_domains=frozenset({"<ha_domain>"}),
     executor_module="app.agents.<domain>_executor",
     executor_name="execute_<domain>_action",
+    entity_actions=<domain>_executor.ENTITY_ACTIONS,
+    entity_free_actions=<domain>_executor.ENTITY_FREE_ACTIONS,
     db_gated=True,  # optional: toggleable in admin UI
 )
 class <Domain>Agent(_ConfigurableDomainAgent):
@@ -38,7 +40,11 @@ class <Domain>Agent(_ConfigurableDomainAgent):
 
 `agent_card` and prompt loading are generated from the decorator metadata — no manual `agent_card` property or `_do_execute` override is needed for standard agents. Agents that need task context can use `self._get_current_task()` / `self._get_current_task_context()` (ContextVar accessors).
 
-`entity_candidates_required` (default `True`) controls what an empty keyword recall injects into the prompt. Keep the default when every action targets a recalled device: the agent then asks which device is meant and emits no JSON action. Pass `entity_candidates_required=False` when actions run without a recalled candidate (AgentHub-internal state such as timers, or an executor that resolves its own target such as lists/calendar); the agent then gets a neutral note so the prompt's own JSON contract stays in force. Executor-side `entity_id` validation is unchanged either way. See `docs/architecture.md` (Entity Matching).
+Declare per action whether it needs a recalled entity candidate. The executor owns the tables, derived from its dispatch maps: `ENTITY_ACTIONS` (act on one target entity) and `ENTITY_FREE_ACTIONS` (run without one, e.g. `list_<domain>`). Pass both to `@agent(entity_actions=..., entity_free_actions=...)` and import the executor module at the top of `actionable.py`. The two sets drive two things:
+- An empty keyword recall injects a block that forbids only the entity actions and names the entity-free ones as allowed. If every action needs a candidate, the block is the strict "ask, no JSON action" one. If no action needs one, nothing is injected.
+- The parser accepts an empty `entity` only for the entity-free actions. Add them to `_ACTIONS_WITHOUT_ENTITY` in `container/app/agents/action_executor.py`.
+
+`tests/unit/test_entity_action_declarations.py` checks four things: that the declaration, executor dispatch, parser set and prompt few-shot actions agree. Add the new agent there. `entity_candidates_required=True/False` remains as a coarse shorthand ("every action" / "no action") and cannot be combined with the sets. Executor-side `entity_id` validation is unchanged either way. See `docs/architecture.md` (Entity Matching).
 
 Use `BaseAgent` directly (not `ActionableAgent`/`_ConfigurableDomainAgent`) when there is no HA action to parse — e.g. pure-query or conversational agents (see `container/app/agents/general.py`). Agents with unique logic (timer, lists, calendar) subclass `ActionableAgent` in their own `container/app/agents/<domain>.py` and override `_do_execute`.
 

@@ -1,11 +1,16 @@
-"""Empty keyword recall: strict no-candidates block vs. neutral note.
+"""Empty keyword recall: the no-candidates block is scoped per action.
 
-Agents whose actions act on a recalled entity candidate keep the strict
-"no matching devices -- do NOT output a JSON action block" instruction.
-Agents whose actions run without a candidate (``entity_candidates_required``
-False) get a neutral note instead, so the injected context never forbids the
-JSON action block their own prompt contract requires. The executor-side
-candidate gate is identical for both.
+Each actionable agent declares which of its actions act on a recalled entity
+candidate (``entity_actions``) and which run without one
+(``entity_free_actions``). On an empty recall:
+
+- every action needs a candidate (undeclared agent): the strict block;
+- some actions need one (device agents, automation): a scoped block that
+  forbids only those actions and names the entity-free ones as allowed;
+- no action needs one (timer, lists, calendar): nothing is injected, so the
+  prompt's own JSON contract stays in force.
+
+The executor-side candidate gate is identical in every case.
 """
 
 from __future__ import annotations
@@ -41,24 +46,17 @@ from tests.helpers import make_dispatch_task  # noqa: E402
 from app.agents import action_executor  # noqa: E402
 from app.agents.actionable import (  # noqa: E402
     _NO_CANDIDATES_BLOCK,
-    _NO_CANDIDATES_NOTE,
     ActionableAgent,
     AutomationAgent,
-    ClimateAgent,
-    CoverAgent,
     LightAgent,
-    MediaAgent,
-    MusicAgent,
-    SceneAgent,
-    SecurityAgent,
-    VacuumAgent,
 )
 from app.agents.calendar import CalendarAgent  # noqa: E402
-from app.agents.decorator import agent  # noqa: E402
+from app.agents.decorator import _AGENT_CLASSES, agent  # noqa: E402
 from app.agents.lists import ListsAgent  # noqa: E402
 from app.agents.timer import TimerAgent  # noqa: E402
 
 _STRICT_SENTENCE = "Do NOT output a JSON action block."
+_NO_MATCH_PREFIX = "No matching devices were found"
 
 
 def _empty_recall_index():
@@ -76,151 +74,164 @@ def _visible_passthrough():
     )
 
 
+def _context_for(agent_cls):
+    """``_no_candidates_context`` for an abstract test class (reads class attributes only)."""
+    return ActionableAgent._no_candidates_context(agent_cls)
+
+
 def _wire(agent_instance):
     agent_instance._entity_index = _empty_recall_index()
     agent_instance._entity_matcher = None
     agent_instance._ha_client = AsyncMock()
 
 
+async def _run(agent_instance, description, llm_response, execute_result=None):
+    """Run one turn with an empty recall; returns (result, system_prompt, mock_exec)."""
+    _wire(agent_instance)
+    task = make_dispatch_task(description=description)
+    with (
+        patch.object(agent_instance, "_load_prompt_async", new_callable=AsyncMock, return_value="Agent prompt."),
+        patch.object(agent_instance, "_call_llm", new_callable=AsyncMock, return_value=llm_response) as mock_llm,
+        patch.object(
+            agent_instance,
+            "_do_execute",
+            new_callable=AsyncMock,
+            return_value=execute_result or {"success": True, "entity_id": None, "speech": "Done."},
+        ) as mock_exec,
+        patch(
+            "app.agents.automation_confirmation.handle_pending_automation_answer",
+            new=AsyncMock(return_value=None),
+        ),
+        _visible_passthrough(),
+    ):
+        result = await agent_instance.handle_task(task)
+    return result, mock_llm.call_args.args[0][0]["content"], mock_exec
+
+
 # ---------------------------------------------------------------------------
-# Declarations
+# Block selection
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    "agent_cls",
-    [LightAgent, ClimateAgent, CoverAgent, VacuumAgent, SceneAgent, SecurityAgent, MediaAgent, MusicAgent],
-)
-def test_device_agents_require_entity_candidates(agent_cls):
-    assert agent_cls._entity_candidates_required is True
-
-
-@pytest.mark.parametrize("agent_cls", [TimerAgent, ListsAgent, CalendarAgent, AutomationAgent])
-def test_candidate_free_agents_declare_flag(agent_cls):
-    assert agent_cls._entity_candidates_required is False
-    assert agent_cls._agent_meta["entity_candidates_required"] is False
-
-
-def test_decorator_without_flag_keeps_class_default():
-    """Omitting the decorator argument keeps the class attribute (default True)."""
-
-    @agent(agent_id="test-nocand-default", name="T", description="d", skills=[])
-    class _DefaultAgent(ActionableAgent):
+def test_undeclared_agent_gets_strict_block():
+    @agent(agent_id="test-nocand-undeclared", name="T", description="d", skills=[])
+    class _Undeclared(ActionableAgent):
         pass
 
-    @agent(agent_id="test-nocand-classattr", name="T", description="d", skills=[])
-    class _ClassAttrAgent(ActionableAgent):
-        _entity_candidates_required = False
+    try:
+        assert _Undeclared._entity_actions is None
+        assert _context_for(_Undeclared) == _NO_CANDIDATES_BLOCK
+    finally:
+        _AGENT_CLASSES.pop("test-nocand-undeclared", None)
 
-    from app.agents.decorator import _AGENT_CLASSES
+
+def test_device_agent_gets_scoped_block():
+    block = LightAgent()._no_candidates_context()
+    assert block is not None
+    assert _STRICT_SENTENCE not in block
+    forbidden, allowed = block.split("stay allowed", 1)
+    for action in ("turn_on", "turn_off", "set_brightness", "query_light_state"):
+        assert action in forbidden
+    assert "list_lights" in allowed
+    assert "list_lights" not in forbidden
+
+
+@pytest.mark.parametrize("agent_cls", [TimerAgent, ListsAgent, CalendarAgent])
+def test_agent_without_entity_actions_gets_no_block(agent_cls):
+    assert agent_cls._entity_actions == frozenset()
+    assert agent_cls()._no_candidates_context() is None
+
+
+def test_declared_without_free_actions_falls_back_to_strict_block():
+    @agent(
+        agent_id="test-nocand-allentity",
+        name="T",
+        description="d",
+        skills=[],
+        entity_actions=frozenset({"turn_on"}),
+        entity_free_actions=frozenset(),
+    )
+    class _AllEntity(ActionableAgent):
+        pass
 
     try:
-        assert _DefaultAgent._entity_candidates_required is True
-        assert _DefaultAgent._agent_meta["entity_candidates_required"] is None
-        assert _ClassAttrAgent._entity_candidates_required is False
+        assert _context_for(_AllEntity) == _NO_CANDIDATES_BLOCK
     finally:
-        _AGENT_CLASSES.pop("test-nocand-default", None)
-        _AGENT_CLASSES.pop("test-nocand-classattr", None)
-
-
-def test_note_does_not_forbid_json_action():
-    assert _STRICT_SENTENCE not in _NO_CANDIDATES_NOTE
-    assert _STRICT_SENTENCE in _NO_CANDIDATES_BLOCK
+        _AGENT_CLASSES.pop("test-nocand-allentity", None)
 
 
 # ---------------------------------------------------------------------------
-# Timer: empty recall, prompt without the block, timer action executes
+# Device agent: the read/list action survives, device actions ask
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_timer_empty_recall_prompt_has_note_and_action_executes():
-    timer = TimerAgent()
-    _wire(timer)
-    task = make_dispatch_task(description="set a timer for 5 minutes")
-    llm_response = '```json\n{"action": "start_timer", "entity": "timer", "parameters": {"duration": "00:05:00"}}\n```'
-
-    seen_gate: list = []
-
-    async def _fake_execute(action, *_args, **_kwargs):
-        # The closed-contract gate is still published (empty set), so any
-        # LLM-supplied entity_id would be rejected by the executor.
-        seen_gate.append(action_executor._request_candidate_ids.get())
-        return {"success": True, "entity_id": None, "speech": "Started timer for 5 minutes."}
-
-    with (
-        patch.object(timer, "_load_prompt_async", new_callable=AsyncMock, return_value="You control timers."),
-        patch.object(timer, "_call_llm", new_callable=AsyncMock, return_value=llm_response) as mock_llm,
-        patch("app.agents.timer.execute_timer_action", new=AsyncMock(side_effect=_fake_execute)) as mock_exec,
-        _visible_passthrough(),
-    ):
-        result = await timer.handle_task(task)
-
-    system_msg = mock_llm.call_args.args[0][0]["content"]
-    assert _STRICT_SENTENCE not in system_msg
-    assert _NO_CANDIDATES_NOTE in system_msg
-
+async def test_light_empty_recall_allows_list_lights():
+    result, system_msg, mock_exec = await _run(
+        LightAgent(),
+        "which lights are on",
+        '```json\n{"action": "list_lights", "entity": "", "parameters": {}}\n```',
+        execute_result={"success": True, "entity_id": None, "speech": "Kitchen is on."},
+    )
+    assert LightAgent()._no_candidates_context() in system_msg
     mock_exec.assert_awaited_once()
-    executed_action = mock_exec.await_args.args[0]
-    assert executed_action["action"] == "start_timer"
-    assert executed_action["parameters"] == {"duration": "00:05:00"}
-    assert seen_gate == [frozenset()]
+    assert mock_exec.await_args.args[0]["action"] == "list_lights"
     assert result.error is None
-    assert result.speech == "Started timer for 5 minutes."
-    assert result.action_executed is not None
-    assert result.action_executed.action == "start_timer"
+    assert result.speech == "Kitchen is on."
 
 
 @pytest.mark.asyncio
-async def test_timer_empty_recall_llm_entity_id_still_rejected_by_gate():
-    """The neutral note does not loosen executor validation: with an empty
-    recall the candidate gate is an empty set, so a direct entity_id is
-    rejected fail-closed by ``resolve_and_validate_entity``."""
-    token = action_executor.set_request_candidate_ids(set())
-    try:
-        resolved = await action_executor.resolve_and_validate_entity(
-            "kitchen",
-            entity_index=None,
-            entity_matcher=None,
-            agent_id="timer-agent",
-            allowed_domains=frozenset({"media_player"}),
-            validate_domain_fn=lambda _eid: True,
-            direct_entity_id="media_player.kitchen",
-        )
-    finally:
-        action_executor.reset_request_candidate_ids(token)
-    assert resolved["entity_id"] is None
-
-
-# ---------------------------------------------------------------------------
-# Device agent: empty recall keeps the strict block
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_light_empty_recall_keeps_strict_block():
-    light = LightAgent()
-    _wire(light)
-    task = make_dispatch_task(description="turn on the kitchen light")
-
-    with (
-        patch.object(light, "_load_prompt_async", new_callable=AsyncMock, return_value="You are a light agent."),
-        patch.object(light, "_call_llm", new_callable=AsyncMock, return_value="Which light do you mean?") as mock_llm,
-        patch.object(light, "_do_execute", new_callable=AsyncMock) as mock_exec,
-        _visible_passthrough(),
-    ):
-        result = await light.handle_task(task)
-
-    system_msg = mock_llm.call_args.args[0][0]["content"]
-    assert _NO_CANDIDATES_BLOCK in system_msg
-    assert _NO_CANDIDATES_NOTE not in system_msg
+async def test_light_empty_recall_device_action_asks():
+    result, system_msg, mock_exec = await _run(LightAgent(), "turn on the kitchen light", "Which light do you mean?")
+    assert "turn_on" in system_msg.split("stay allowed", 1)[0]
     mock_exec.assert_not_awaited()
     assert result.speech == "Which light do you mean?"
     assert result.voice_followup is True
 
 
+@pytest.mark.asyncio
+async def test_light_empty_recall_gate_still_empty():
+    """The scoped block does not loosen executor validation: the candidate
+    gate seen by the executor is still the empty set."""
+    seen_gate: list = []
+
+    async def _fake_execute(action, *_args, **_kwargs):
+        seen_gate.append(action_executor._request_candidate_ids.get())
+        return {"success": True, "entity_id": None, "speech": "Listed."}
+
+    light = LightAgent()
+    _wire(light)
+    with (
+        patch.object(light, "_load_prompt_async", new_callable=AsyncMock, return_value="Agent prompt."),
+        patch.object(
+            light,
+            "_call_llm",
+            new_callable=AsyncMock,
+            return_value='```json\n{"action": "list_lights", "entity": ""}\n```',
+        ),
+        patch.object(light, "_do_execute", new=AsyncMock(side_effect=_fake_execute)),
+        _visible_passthrough(),
+    ):
+        await light.handle_task(make_dispatch_task(description="which lights are on"))
+    assert seen_gate == [frozenset()]
+
+
+@pytest.mark.asyncio
+async def test_automation_empty_recall_scoped_block_allows_create():
+    result, system_msg, mock_exec = await _run(
+        AutomationAgent(),
+        "create an automation that turns on the porch light at sunset",
+        '```json\n{"action": "create_automation", "entity": "", "parameters": {"alias": "Porch"}}\n```',
+    )
+    forbidden, allowed = system_msg.split("stay allowed", 1)
+    assert "enable_automation" in forbidden
+    assert "create_automation" in allowed
+    mock_exec.assert_awaited_once()
+    assert result.error is None
+
+
 # ---------------------------------------------------------------------------
-# Other candidate-free agents: note instead of block, action executes
+# Agents without entity actions: no block, empty entity executes
 # ---------------------------------------------------------------------------
 
 
@@ -229,49 +240,87 @@ async def test_light_empty_recall_keeps_strict_block():
     ("agent_cls", "description", "llm_action"),
     [
         (
+            TimerAgent,
+            "set a timer for 5 minutes",
+            '{"action": "start_timer", "entity": "", "parameters": {"duration": "00:05:00"}}',
+        ),
+        (
             ListsAgent,
-            "add milk to the shopping list",
-            '{"action": "add_item", "entity": "shopping list", "parameters": {"item": "milk"}}',
+            "add milk",
+            '{"action": "add_item", "entity": "", "parameters": {"item": "milk"}}',
         ),
         (
             CalendarAgent,
             "what is on my calendar tomorrow",
-            '{"action": "list_events", "entity": "calendar", "parameters": {"start": "tomorrow"}}',
-        ),
-        (
-            AutomationAgent,
-            "create an automation that turns on the porch light at sunset",
-            '{"action": "create_automation", "entity": "", "parameters": {"alias": "Porch light at sunset"}}',
+            '{"action": "list_events", "parameters": {"start_date_time": "2026-10-12 00:00:00", '
+            '"end_date_time": "2026-10-12 23:59:59"}}',
         ),
     ],
 )
-async def test_candidate_free_agent_empty_recall_gets_note(agent_cls, description, llm_action):
-    instance = agent_cls()
-    _wire(instance)
-    task = make_dispatch_task(description=description)
-
-    with (
-        patch.object(instance, "_load_prompt_async", new_callable=AsyncMock, return_value="Agent prompt."),
-        patch.object(
-            instance, "_call_llm", new_callable=AsyncMock, return_value=f"```json\n{llm_action}\n```"
-        ) as mock_llm,
-        patch.object(
-            instance,
-            "_do_execute",
-            new_callable=AsyncMock,
-            return_value={"success": True, "entity_id": None, "speech": "Done."},
-        ) as mock_exec,
-        patch(
-            "app.agents.automation_confirmation.handle_pending_automation_answer",
-            new=AsyncMock(return_value=None),
-        ),
-        _visible_passthrough(),
-    ):
-        result = await instance.handle_task(task)
-
-    system_msg = mock_llm.call_args.args[0][0]["content"]
-    assert _STRICT_SENTENCE not in system_msg
-    assert _NO_CANDIDATES_NOTE in system_msg
+async def test_entity_free_agent_empty_recall_no_block_and_executes(agent_cls, description, llm_action):
+    result, system_msg, mock_exec = await _run(agent_cls(), description, f"```json\n{llm_action}\n```")
+    assert _NO_MATCH_PREFIX not in system_msg
     mock_exec.assert_awaited_once()
     assert result.error is None
     assert result.speech == "Done."
+
+
+# ---------------------------------------------------------------------------
+# Decorator: per-action sets and the coarse shorthand
+# ---------------------------------------------------------------------------
+
+
+def test_decorator_shorthand_maps_to_action_sets():
+    @agent(agent_id="test-nocand-true", name="T", description="d", skills=[], entity_candidates_required=True)
+    class _AllRequired(ActionableAgent):
+        pass
+
+    @agent(agent_id="test-nocand-false", name="T", description="d", skills=[], entity_candidates_required=False)
+    class _NoneRequired(ActionableAgent):
+        pass
+
+    try:
+        assert _AllRequired._entity_actions is None
+        assert _context_for(_AllRequired) == _NO_CANDIDATES_BLOCK
+        assert _NoneRequired._entity_actions == frozenset()
+        assert _context_for(_NoneRequired) is None
+        assert _NoneRequired._agent_meta["entity_candidates_required"] is False
+    finally:
+        _AGENT_CLASSES.pop("test-nocand-true", None)
+        _AGENT_CLASSES.pop("test-nocand-false", None)
+
+
+def test_decorator_without_declaration_keeps_class_default():
+    @agent(agent_id="test-nocand-classattr", name="T", description="d", skills=[])
+    class _ClassAttrAgent(ActionableAgent):
+        _entity_actions = frozenset()
+
+    try:
+        assert _ClassAttrAgent._entity_actions == frozenset()
+        assert _ClassAttrAgent._agent_meta["entity_actions"] is None
+    finally:
+        _AGENT_CLASSES.pop("test-nocand-classattr", None)
+
+
+def test_decorator_rejects_shorthand_with_action_sets():
+    with pytest.raises(TypeError):
+        agent(
+            agent_id="test-nocand-both",
+            name="T",
+            description="d",
+            skills=[],
+            entity_candidates_required=True,
+            entity_actions=frozenset({"turn_on"}),
+        )
+
+
+def test_decorator_rejects_overlapping_action_sets():
+    with pytest.raises(ValueError, match="turn_on"):
+        agent(
+            agent_id="test-nocand-overlap",
+            name="T",
+            description="d",
+            skills=[],
+            entity_actions=frozenset({"turn_on"}),
+            entity_free_actions=frozenset({"turn_on", "list_lights"}),
+        )

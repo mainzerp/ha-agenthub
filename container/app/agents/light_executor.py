@@ -37,6 +37,15 @@ _ACTION_SERVICE_MAP: dict[str, str] = {
 
 _ALLOWED_DOMAINS: frozenset[str] = frozenset({"light", "switch", "sensor"})
 
+# Entity-candidate declaration (read by the agent's ``@agent`` call, see
+# ``ActionableAgent._entity_actions``): every action this executor
+# dispatches, split into actions that act on one target entity (they need a
+# recalled entity candidate) and actions that run without one. Derived from
+# the dispatch tables so the declaration cannot drift from the executor.
+_READ_ACTIONS: frozenset[str] = frozenset({"query_light_state", "list_lights", "query_entity_history"})
+ENTITY_FREE_ACTIONS: frozenset[str] = frozenset({"list_lights"})
+ENTITY_ACTIONS: frozenset[str] = (frozenset(_ACTION_SERVICE_MAP) | _READ_ACTIONS) - ENTITY_FREE_ACTIONS
+
 # FLOW-DOMAIN-1 (0.19.2): per-action HA-domain allow-set used to filter
 # both the deterministic entity_index sweep and the hybrid matcher's
 # top candidates before tie-breaking. Read paths intentionally include
@@ -251,7 +260,7 @@ async def execute_light_action(
     entity_query = action.get("entity", "")
 
     # Read-only actions (no service call)
-    if action_name in ("query_light_state", "list_lights", "query_entity_history"):
+    if action_name in _READ_ACTIONS:
         return await _handle_light_read_action(
             action_name,
             entity_query,

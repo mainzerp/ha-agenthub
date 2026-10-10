@@ -80,6 +80,15 @@ _ALLOWED_DOMAINS: frozenset[str] = frozenset({"alarm_control_panel", "lock", "ca
 # lock, alarm panel, camera, or binary_sensor depending on the snapshot).
 _READ_DOMAINS: frozenset[str] = _ALLOWED_DOMAINS
 
+# Entity-candidate declaration (read by the agent's ``@agent`` call, see
+# ``ActionableAgent._entity_actions``): every action this executor
+# dispatches, split into actions that act on one target entity (they need a
+# recalled entity candidate) and actions that run without one. Derived from
+# the dispatch tables so the declaration cannot drift from the executor.
+_READ_ACTIONS: frozenset[str] = frozenset({"query_security_state", "list_security", "query_entity_history"})
+ENTITY_FREE_ACTIONS: frozenset[str] = frozenset({"list_security"})
+ENTITY_ACTIONS: frozenset[str] = (frozenset(_SECURITY_ACTION_MAP) | _READ_ACTIONS) - ENTITY_FREE_ACTIONS
+
 
 def _validate_domain(entity_id: str) -> bool:
     """Check that entity_id belongs to an allowed domain for this executor."""
@@ -125,7 +134,7 @@ async def execute_security_action(
     entity_query = action.get("entity", "")
 
     # Read-only actions (no service call)
-    if action_name in ("query_security_state", "list_security", "query_entity_history"):
+    if action_name in _READ_ACTIONS:
         return await _handle_security_read_action(
             action_name,
             entity_query,

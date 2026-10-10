@@ -63,6 +63,20 @@ _ALLOWED_DOMAINS: frozenset[str] = frozenset({"automation"})
 # regression-proof if the allow-set ever broadens.
 _ACTION_DOMAINS: frozenset[str] = frozenset({"automation"})
 
+# Entity-candidate declaration (read by the agent's ``@agent`` call, see
+# ``ActionableAgent._entity_actions``): every action this executor
+# dispatches, split into actions that act on one target entity (they need a
+# recalled entity candidate) and actions that run without one. Derived from
+# the dispatch tables so the declaration cannot drift from the executor.
+_CONFIG_ACTIONS: frozenset[str] = frozenset(
+    {"create_automation", "update_automation", "delete_automation", "get_automation_config"}
+)
+_READ_ACTIONS: frozenset[str] = frozenset({"query_automation_state", "list_automations"})
+ENTITY_FREE_ACTIONS: frozenset[str] = frozenset({"create_automation", "list_automations"})
+ENTITY_ACTIONS: frozenset[str] = (
+    frozenset(_AUTOMATION_ACTION_MAP) | _CONFIG_ACTIONS | _READ_ACTIONS
+) - ENTITY_FREE_ACTIONS
+
 
 def _validate_domain(entity_id: str) -> bool:
     """Check that entity_id belongs to an allowed domain for this executor."""
@@ -149,7 +163,7 @@ async def execute_automation_action(
     entity_query = action.get("entity", "")
 
     # Config CRUD actions (no HA service call; writes only after confirmation)
-    if action_name in ("create_automation", "update_automation", "delete_automation", "get_automation_config"):
+    if action_name in _CONFIG_ACTIONS:
         return await _handle_automation_config_action(
             action_name,
             action,
@@ -163,7 +177,7 @@ async def execute_automation_action(
         )
 
     # Read-only actions (no service call)
-    if action_name in ("query_automation_state", "list_automations"):
+    if action_name in _READ_ACTIONS:
         return await _handle_automation_read_action(
             action_name,
             entity_query,

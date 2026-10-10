@@ -5,7 +5,7 @@ from app.agents.decorator import agent
 from app.agents.satellite_targeting import (
     resolve_satellite_target_name,
 )
-from app.agents.timer_executor import execute_timer_action
+from app.agents.timer_executor import ENTITY_ACTIONS, ENTITY_FREE_ACTIONS, execute_timer_action
 from app.models.agent import AgentCard, AgentErrorCode, DispatchTask, TaskResult
 
 
@@ -34,7 +34,8 @@ from app.models.agent import AgentCard, AgentErrorCode, DispatchTask, TaskResult
     allowed_domains=frozenset({"timer", "input_boolean"}),
     # Timers and alarms are AgentHub-internal logical labels: no action
     # needs a recalled entity candidate (recall is empty on default installs).
-    entity_candidates_required=False,
+    entity_actions=ENTITY_ACTIONS,
+    entity_free_actions=ENTITY_FREE_ACTIONS,
     db_gated=True,
 )
 class TimerAgent(ActionableAgent):
@@ -114,6 +115,11 @@ class TimerAgent(ActionableAgent):
         return result
 
     def _handle_parse_miss(self, task: DispatchTask, response: str) -> TaskResult:
+        # A clarifying question ("for how long?") reaches the user; only an
+        # answer that is neither an action nor a question is a parse error.
+        clarification = self._parse_miss_clarification(task, response)
+        if clarification is not None:
+            return clarification
         return self._error_result(
             AgentErrorCode.PARSE_ERROR,
             "I could not understand the timer command well enough to run it. Please try again.",

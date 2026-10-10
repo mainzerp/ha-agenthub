@@ -23,6 +23,15 @@ _SCENE_ACTION_MAP: dict[str, tuple[str, str]] = {
 
 _ALLOWED_DOMAINS: frozenset[str] = frozenset({"scene"})
 
+# Entity-candidate declaration (read by the agent's ``@agent`` call, see
+# ``ActionableAgent._entity_actions``): every action this executor
+# dispatches, split into actions that act on one target entity (they need a
+# recalled entity candidate) and actions that run without one. Derived from
+# the dispatch tables so the declaration cannot drift from the executor.
+_READ_ACTIONS: frozenset[str] = frozenset({"query_scene", "list_scenes"})
+ENTITY_FREE_ACTIONS: frozenset[str] = frozenset({"list_scenes"})
+ENTITY_ACTIONS: frozenset[str] = (frozenset(_SCENE_ACTION_MAP) | _READ_ACTIONS) - ENTITY_FREE_ACTIONS
+
 
 def _validate_domain(entity_id: str) -> bool:
     """Check that entity_id belongs to an allowed domain for this executor."""
@@ -67,7 +76,7 @@ async def execute_scene_action(
     entity_query = action.get("entity", "")
 
     # Read-only actions (no service call)
-    if action_name in ("query_scene", "list_scenes"):
+    if action_name in _READ_ACTIONS:
         return await _handle_scene_read_action(
             action_name,
             entity_query,
