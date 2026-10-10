@@ -96,16 +96,45 @@ class TestRoutingCacheStoreConcurrency:
         # would deadlock before reaching the assertion.
         assert store.upsert.call_count == 50
 
-    def test_invalidate_by_entry_id_bumps_generation(self):
-        """F6 / T3: invalidate_by_entry_id() must bump the invalidation
-        generation so a concurrent store() that captured the pre-invalidate
-        generation is rejected and cannot resurrect the deleted row."""
+    def test_invalidate_by_entry_id_rejects_inflight_store_of_same_key(self):
+        """F6 / T3: a store() of the invalidated row that was in flight when the
+        row was deleted is rejected and cannot resurrect it."""
         cache, store = self._make_cache()
-        gen_before = cache._state.current_generation()
-        cache.invalidate_by_entry_id("some-entry-id")
-        gen_after = cache._state.current_generation()
-        assert gen_after != gen_before, "invalidation must bump the state generation"
+        entry_id = cache.make_entry_id("turn on the light", language="en")
+        original_flush = cache._flush_pending_updates
+
+        def flush_then_invalidate():
+            original_flush()
+            cache.invalidate_by_entry_id(entry_id)
+
+        cache._flush_pending_updates = flush_then_invalidate
+        cache.store(query_text="turn on the light", agent_id="light-agent", confidence=0.9)
+
+        store.upsert.assert_not_called()
         assert store.delete.call_count == 1
+
+    def test_invalidate_by_entry_id_is_per_key(self):
+        """#132: a single-row invalidation must not abort unrelated in-flight
+        stores, bump the tier generation, or drop other rows' hit counts."""
+        cache, store = self._make_cache()
+        cache._state.record_pending_update("other-row", "q", {"hit_count": "3"}, flush_interval=10_000)
+        cache._state.record_pending_update("victim", "q", {"hit_count": "1"}, flush_interval=10_000)
+        gen_before = cache._state.current_generation()
+        original_flush = cache._flush_pending_updates
+
+        def flush_then_invalidate_other():
+            # Keep the pending map intact for the assertion below.
+            cache._state.invalidate_key("victim")
+
+        cache._flush_pending_updates = flush_then_invalidate_other
+        cache.store(query_text="turn on the light", agent_id="light-agent", confidence=0.9)
+        cache._flush_pending_updates = original_flush
+
+        store.upsert.assert_called_once()
+        assert cache._state.current_generation() == gen_before
+        pending = cache._state.snapshot_pending()
+        assert "other-row" in pending
+        assert "victim" not in pending
 
 
 class TestRoutingCacheFlushRequeue:

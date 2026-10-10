@@ -11,7 +11,7 @@ import pytest
 
 from app.cache._base_cache import _LRU_PAGE_SIZE, make_text_id, normalize_text
 from app.cache.action_cache import ActionCache, _is_readonly_action, make_action_entry_id
-from app.cache.cache_manager import ActionReplayOutcome, CacheManager, CacheResult
+from app.cache.cache_manager import ActionReplayOutcome, ActionReplayRejected, CacheManager, CacheResult
 from app.cache.embedding import EmbeddingEngine
 from app.cache.routing_cache import RoutingCache, make_routing_entry_id
 from app.cache.sqlite_cache_store import (
@@ -206,15 +206,14 @@ class TestCacheManager:
         track.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_try_replay_action_returns_none_for_context_dependent_entry(self):
+    async def test_try_replay_action_rejects_context_dependent_entry(self):
         manager, _store = self._make_manager()
         entry = make_action_cache_entry(cached_action=CachedAction(service="light/turn_on", entity_id="light.kitchen"))
-        # Simulate a conditional action entry that should never be replayed.
-        # Use a MagicMock wrapper because ActionCacheEntry does not have a
-        # ``context_dependent`` field (the guard is defensive / future-proof).
-        mock_entry = MagicMock(wraps=entry)
-        mock_entry.context_dependent = True
-        manager._action_cache.lookup_with_id = MagicMock(return_value=("test-id", mock_entry, 0.99))
+        # Context-dependent turns are never stored; a row that still carries
+        # the flag (e.g. imported) is removed and forces a live turn.
+        entry.context_dependent = True
+        manager._action_cache.lookup_with_id = MagicMock(return_value=("test-id", entry, 0.99))
+        manager._action_cache.invalidate_by_entry_id = MagicMock()
 
         result = await manager.try_replay_action(
             query_text=entry.query_text,
@@ -223,7 +222,9 @@ class TestCacheManager:
             execute_cached_action=AsyncMock(return_value={"success": True, "entity_id": "light.kitchen"}),
         )
 
-        assert result is None
+        assert isinstance(result, ActionReplayRejected)
+        assert result.reason == "context_dependent"
+        manager._action_cache.invalidate_by_entry_id.assert_called_once_with("test-id")
 
     @pytest.mark.asyncio
     async def test_try_replay_action_transient_replay_miss_does_not_invalidate(self):

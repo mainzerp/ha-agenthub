@@ -72,7 +72,7 @@ The export and import API surface uses the `action` tier name.
 | `embedding.external_model` | (empty) | string | External model (e.g., `openai/text-embedding-3-small`) |
 | `embedding.dimension` | `768` | int | Embedding vector dimension |
 
-Changing the embedding model requires a container restart; the entity index, routing cache, and session memory are re-embedded automatically.
+Changing the embedding model requires a container restart; the entity index and session memory are re-embedded automatically. Routing-cache vectors are tagged with the model that produced them: vectors from a previous model are dropped when the semantic tier encounters them, and each entry is re-embedded on its next exact hit. A failed embedding-engine initialization is retried after a 30 s cooldown; until then embedding callers fail fast (the routing cache degrades to exact-hash only).
 
 ### Session Memory Settings
 

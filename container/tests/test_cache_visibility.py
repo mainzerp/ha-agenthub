@@ -39,6 +39,13 @@ from tests.helpers import make_cached_action, make_entity_index_entry  # noqa: E
 pytestmark = pytest.mark.asyncio
 
 
+def _indexed_entity_index(entity_id: str = "light.kitchen", area: str | None = "kitchen") -> MagicMock:
+    """An entity index that knows ``entity_id`` (replay requires index presence)."""
+    entity_index = MagicMock()
+    entity_index.get_by_id.return_value = make_entity_index_entry(entity_id, "Kitchen Light", area=area)
+    return entity_index
+
+
 def _make_orchestrator(entity_index=None):
     dispatcher = AsyncMock()
     cache_manager = MagicMock()
@@ -75,7 +82,7 @@ class TestCachedActionVisibility:
         assert result is False
 
     async def test_cached_action_executes_when_entity_still_visible(self):
-        orch, _dispatcher, _cache_manager, _ha_client = _make_orchestrator()
+        orch, _dispatcher, _cache_manager, _ha_client = _make_orchestrator(entity_index=_indexed_entity_index())
 
         rules = [{"rule_type": "domain_include", "rule_value": "light"}]
         with patch(
@@ -87,7 +94,7 @@ class TestCachedActionVisibility:
         assert result is True
 
     async def test_cached_action_no_rules_means_full_access(self):
-        orch, _dispatcher, _cache_manager, _ha_client = _make_orchestrator()
+        orch, _dispatcher, _cache_manager, _ha_client = _make_orchestrator(entity_index=_indexed_entity_index())
 
         with patch(
             "app.db.repository.EntityVisibilityRepository.get_rules",
@@ -97,8 +104,34 @@ class TestCachedActionVisibility:
 
         assert result is True
 
-    async def test_visibility_lookup_failure_fails_closed(self):
+    async def test_entity_missing_from_index_blocks_replay_without_rules(self):
+        """#132: an agent without rules used to pass any entity id; HA answers
+        200 for unknown entities, so a removed entity "replayed" successfully."""
+        entity_index = MagicMock()
+        entity_index.get_by_id.return_value = None
+        orch, _dispatcher, _cache_manager, _ha_client = _make_orchestrator(entity_index=entity_index)
+
+        with patch(
+            "app.db.repository.EntityVisibilityRepository.get_rules",
+            new=AsyncMock(return_value=[]),
+        ):
+            result = await orch._cached_action_is_still_visible("light-agent", "light.removed")
+
+        assert result is False
+
+    async def test_no_entity_index_fails_closed(self):
         orch, _dispatcher, _cache_manager, _ha_client = _make_orchestrator()
+
+        with patch(
+            "app.db.repository.EntityVisibilityRepository.get_rules",
+            new=AsyncMock(return_value=[]),
+        ):
+            result = await orch._cached_action_is_still_visible("light-agent", "light.kitchen")
+
+        assert result is False
+
+    async def test_visibility_lookup_failure_fails_closed(self):
+        orch, _dispatcher, _cache_manager, _ha_client = _make_orchestrator(entity_index=_indexed_entity_index())
 
         with patch(
             "app.agents.cache_orchestrator.entity_is_visible",
