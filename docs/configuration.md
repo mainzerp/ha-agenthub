@@ -276,7 +276,7 @@ configuration.
 | Key | Default | Type | Description |
 |-----|---------|------|-------------|
 | `calendar.reminder_injection.enabled` | `true` | bool | Enable proactive calendar reminder injection into orchestrator responses |
-| `calendar.reminder_injection.offsets` | `[1440, 60, 15]` | json | Reminder offset markers in minutes |
+| `calendar.reminder_injection.offsets` | `[1440, 60, 15]` | json | Reminder offset markers in minutes; per event only the closest applicable offset fires, once |
 | `calendar.reminder_injection.lookahead_hours` | `24` | int | How many hours ahead to look for upcoming calendar events |
 
 ## Custom Agents
