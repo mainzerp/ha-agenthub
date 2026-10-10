@@ -417,7 +417,7 @@ class TestOrchestratorAgent:
         orch = OrchestratorAgent(dispatcher=AsyncMock())
         await orch.initialize()
         assert orch._default_timeout == 10
-        assert orch._max_iterations == 5
+        assert not hasattr(orch, "_max_iterations")
 
     async def test_parse_classification_valid(self):
         orch = OrchestratorAgent(dispatcher=AsyncMock())
@@ -471,7 +471,9 @@ class TestOrchestratorAgent:
         assert len(results) == 1
         assert results[0][0] == "light-agent"
 
-    async def test_parse_classification_cap_at_3(self):
+    async def test_parse_classification_keeps_every_intent(self):
+        """Regression (#132): no silent truncation of intents at parse time --
+        the multi-agent dispatch enforces its fan-out cap and reports skips."""
         orch = OrchestratorAgent(dispatcher=AsyncMock())
         orch._registry = AsyncMock()
         orch._registry.list_agents = AsyncMock(
@@ -484,7 +486,7 @@ class TestOrchestratorAgent:
         )
         response = "light-agent (95%): a\nmusic-agent (90%): b\nclimate-agent (85%): c\ntimer-agent (80%): d"
         results = await orch._parse_classification(response, "original")
-        assert len(results) == 3
+        assert [r[0] for r in results] == ["light-agent", "music-agent", "climate-agent", "timer-agent"]
 
     async def test_parse_classification_dedup_same_agent(self):
         orch = OrchestratorAgent(dispatcher=AsyncMock())
@@ -1600,10 +1602,17 @@ class TestOrchestratorAgent:
     async def test_handle_task_stream_general_agent_error_returns_canned_speech(
         self, mock_complete, mock_track, mock_settings
     ):
-        """General-agent streaming errors should yield one canned response without a final error field."""
+        """General-agent streaming errors should yield one canned response without a final error field.
+
+        The canned English line is localized into the turn language through
+        the mediation LLM (#132): here the language is pinned to German.
+        """
         orch, dispatcher, _, cache_manager = self._make_orchestrator()
-        mock_complete.return_value = "general-agent (85%): respond to greeting"
-        mock_settings.get_value = AsyncMock(return_value="")
+        mock_complete.side_effect = [
+            "general-agent (85%): respond to greeting",
+            "Das konnte ich gerade nicht verarbeiten.",
+        ]
+        mock_settings.get_value = AsyncMock(side_effect=lambda k, d=None: "de" if k == "language" else "")
 
         async def mock_stream(request):
             yield {"token": "", "done": True, "error": "Agent error: general-agent"}
@@ -1616,7 +1625,7 @@ class TestOrchestratorAgent:
         done_chunks = [c for c in chunks if c.get("done")]
         assert len(done_chunks) == 1
         assert done_chunks[0].get("error") is None
-        assert done_chunks[0].get("mediated_speech") == "I couldn't process that request right now."
+        assert done_chunks[0].get("mediated_speech") == "Das konnte ich gerade nicht verarbeiten."
         cache_manager.store_response.assert_not_called()
 
     # --- Fix 2: Multi-agent partial failure tests ---
@@ -1655,7 +1664,8 @@ class TestOrchestratorAgent:
         failed = result["partial_failure"]["failed_agents"]
         assert len(failed) == 1
         assert failed[0]["agent_id"] == "light-agent"
-        assert failed[0]["error"] == "timeout"
+        # Structured canned error code (#132): the agent raised, it did not time out.
+        assert failed[0]["error"] == "agent_error"
         # M-13: partial success is not a turn error -- no error key, and the
         # failure note is woven in by the LLM merge (not a hardcoded suffix).
         assert result.get("error") is None
@@ -2169,7 +2179,9 @@ class TestOrchestratorFiller:
     async def test_stream_filler_generated_but_not_sent_records_generate_span(
         self, mock_complete, mock_track, mock_settings
     ):
-        """When filler is generated but agent responds during generation, only filler_generate span is recorded."""
+        """Past the threshold the filler races the agent (#132): an agent answer
+        that lands before the filler finished cancels the filler instead of
+        waiting for it -- no filler is sent and none is recorded as generated."""
         from app.analytics.tracer import SpanCollector
 
         orch, dispatcher, _ = self._make_filler_orchestrator()
@@ -2208,11 +2220,10 @@ class TestOrchestratorFiller:
         filler_chunks = [c for c in chunks if "filler_push" in c]
         assert len(filler_chunks) == 0
 
-        # filler_generate span should exist with was_sent=False
+        # The agent won the race: the filler was cancelled before it finished.
         fg_spans = [s for s in collector._spans if s.get("span_name") == "filler_generate"]
-        assert len(fg_spans) == 1
-        assert fg_spans[0]["metadata"]["was_sent"] is False
-        assert fg_spans[0]["metadata"]["filler_text"] == "Hold on..."
+        assert fg_spans == []
+        assert orch._invoke_filler_agent.await_count == 1
 
         # filler_send span should NOT exist
         fs_spans = [s for s in collector._spans if s.get("span_name") == "filler_send"]
@@ -3446,28 +3457,6 @@ class TestFollowupDetection:
         assert _strip_followup_tag(None) == (None, False)
         assert _strip_followup_tag(123) == (123, False)
 
-    def test_merge_uses_mediated_followup(self):
-        """When mediated_followup=True, voice_followup=True regardless of agent_requested."""
-        orch = self._make_orchestrator()
-        speech, vf = orch._merge_voice_followup_and_organic(
-            "Should I turn it off?",
-            agent_requested=False,
-            mediated_followup=True,
-        )
-        assert vf is True
-        assert speech == "Should I turn it off?"
-
-    def test_merge_no_followup_when_both_false(self):
-        """When both agent_requested and mediated_followup are False, vf is False."""
-        orch = self._make_orchestrator()
-        speech, vf = orch._merge_voice_followup_and_organic(
-            "The kitchen light is now on.",
-            agent_requested=False,
-            mediated_followup=False,
-        )
-        assert vf is False
-        assert speech == "The kitchen light is now on."
-
     async def test_finalize_sets_pending_question_on_effective_followup(self):
         """voice_followup_effective=True records the pending question on the
         ConversationManager with the mediated speech and routed agent."""
@@ -3781,7 +3770,6 @@ class TestOrchestratorPhase3Gaps:
         orch = self._make_orchestrator()
         await orch._load_reliability_config()
         assert orch._default_timeout == 0
-        assert orch._max_iterations == 0
         assert orch._max_dispatch_timeout == 0.0
 
     @patch("app.agents.orchestrator.SettingsRepository")
@@ -3799,7 +3787,6 @@ class TestOrchestratorPhase3Gaps:
         # int("") raises ValueError, caught by the except block;
         # attributes retain their initial default values.
         assert orch._default_timeout == 5
-        assert orch._max_iterations == 3
         assert orch._max_dispatch_timeout == 60.0
 
     # G27: cancel-interaction pseudo-agent routing

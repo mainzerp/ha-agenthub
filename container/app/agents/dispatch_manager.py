@@ -1,7 +1,7 @@
 """Dispatch manager extracted from OrchestratorAgent.
 
-Handles single-agent and multi-agent dispatch, fallback dispatch,
-response mediation, and response normalization.
+Handles single-agent dispatch, fallback dispatch, and response
+normalization.
 """
 
 from __future__ import annotations
@@ -17,6 +17,7 @@ from app.a2a._request import build_send_request
 from app.a2a.protocol import JsonRpcRequest
 from app.agents.agent_registry import CachedAgentRegistry
 from app.agents.cancel_speech import generate_cancel_speech
+from app.agents.ha_action_marker import HaActionMarker, track_ha_actions
 from app.analytics.collector import track_agent_timeout, track_request, track_request_background
 from app.analytics.tracer import _optional_span
 from app.db.repository import SettingsRepository
@@ -31,37 +32,53 @@ from app.models.agent import (
 
 logger = logging.getLogger(__name__)
 
+# English system lines. Callers localize them into the turn language through
+# the mediation LLM (``MediationService.localize_message``); the English text
+# is the fallback when that LLM call fails.
 _CANNED_TIMEOUT_SPEECH = "I couldn't process that request in time."
 _CANNED_GENERAL_ERROR_SPEECH = "I couldn't process that request right now."
+_CANNED_ACTION_UNCONFIRMED_SPEECH = "I sent the command, but I could not confirm that it completed."
+
+# Structured error codes of canned results (``result["error"]["code"]``).
+CANNED_CODE_TIMEOUT = "timeout"
+CANNED_CODE_AGENT_ERROR = "agent_error"
+CANNED_CODE_ACTION_UNCONFIRMED = "action_unconfirmed"
+# Canned outcomes where no agent consumed the turn: an open clarifying
+# question stays pending so the user can answer again.
+RETRYABLE_CANNED_CODES = frozenset({CANNED_CODE_TIMEOUT, CANNED_CODE_AGENT_ERROR})
+
+
+def canned_result(speech: str, code: str) -> dict[str, Any]:
+    """Result dict for an orchestrator-generated (canned) failure line.
+
+    ``error.canned`` is the structured flag downstream code uses instead of
+    comparing the speech against English literals.
+    """
+    return {"speech": speech, "error": {"code": code, "recoverable": True, "canned": True}}
+
+
+def canned_error_code(error: Any) -> str | None:
+    """Return the code of a canned error dict, else ``None``."""
+    if isinstance(error, dict) and error.get("canned"):
+        return str(error.get("code") or CANNED_CODE_AGENT_ERROR)
+    return None
 
 
 class DispatchManager:
-    """Manages single-agent dispatch, fallback, sequential send, and mediation."""
+    """Manages single-agent dispatch and the fallback dispatch."""
 
     def __init__(
         self,
         dispatcher,
         agent_registry: CachedAgentRegistry | None = None,
         ha_client=None,
-        call_llm: Callable[..., Awaitable[str]] | None = None,
-        load_prompt_async: Callable[[str], Awaitable[str]] | None = None,
         resolve_dispatch_timeout: Callable[[str], Awaitable[float]] | None = None,
-        wrap_user_input: Callable[[str], str] | None = None,
-        mediation_model: str | None = None,
-        mediation_temperature: float = 0.3,
-        mediation_max_tokens: int = 2048,
         settings_repo=None,
     ) -> None:
         self._dispatcher = dispatcher
         self._agent_registry = agent_registry
         self._ha_client = ha_client
-        self._call_llm = call_llm
-        self._load_prompt_async = load_prompt_async
         self._resolve_dispatch_timeout_fn = resolve_dispatch_timeout
-        self._wrap_user_input = wrap_user_input or (lambda x: x)
-        self._mediation_model = mediation_model
-        self._mediation_temperature = mediation_temperature
-        self._mediation_max_tokens = mediation_max_tokens
         self._settings_repo = settings_repo
 
     async def resolve_dispatch_timeout(self, agent_id: str, default_timeout: int = 5) -> float:
@@ -210,6 +227,7 @@ class DispatchManager:
             request_id=conversation_id or "orchestrator-dispatch",
             span_collector=span_collector,
         )
+        ha_marker = HaActionMarker()
         try:
             t0 = time.perf_counter()
             noop_span: dict[str, Any] = {"metadata": {}}
@@ -221,10 +239,11 @@ class DispatchManager:
             dispatch_timeout = await self.resolve_dispatch_timeout(target_agent)
             async with dispatch_ctx as span:
                 _t_dispatch_pre = time.perf_counter()
-                response = await asyncio.wait_for(
-                    self._dispatcher.dispatch(request),
-                    timeout=dispatch_timeout,
-                )
+                with track_ha_actions(ha_marker):
+                    response = await asyncio.wait_for(
+                        self._dispatcher.dispatch(request),
+                        timeout=dispatch_timeout,
+                    )
                 _t_dispatch_post = time.perf_counter()
                 latency_ms = (time.perf_counter() - t0) * 1000
                 span["metadata"]["latency_ms"] = round(latency_ms, 1)
@@ -251,12 +270,21 @@ class DispatchManager:
                 dispatch_timeout,
             )
             await track_agent_timeout(target_agent, int(dispatch_timeout))
+            if ha_marker.started:
+                return self._action_unconfirmed(target_agent, "timeout")
             fb_result = await self.dispatch_fallback(request, target_agent, span_collector, "timeout")
             if fb_result is not None:
                 target_agent, response = fb_result
             else:
-                return target_agent, _CANNED_TIMEOUT_SPEECH, None
+                return (
+                    target_agent,
+                    _CANNED_TIMEOUT_SPEECH,
+                    canned_result(_CANNED_TIMEOUT_SPEECH, CANNED_CODE_TIMEOUT),
+                )
         except RuntimeError as exc:
+            if ha_marker.started:
+                logger.warning("Agent %s error after its HA action started: %s", target_agent, exc)
+                return self._action_unconfirmed(target_agent, "agent_error")
             logger.warning(
                 "Agent %s error: %s -- falling back to %s",
                 target_agent,
@@ -266,21 +294,12 @@ class DispatchManager:
             fb_result = await self.dispatch_fallback(request, target_agent, span_collector, "agent_error")
             if fb_result is not None:
                 target_agent, response = fb_result
-            elif target_agent == FALLBACK_AGENT:
-                error_code = str(exc)[:64]
-                return (
-                    FALLBACK_AGENT,
-                    _CANNED_GENERAL_ERROR_SPEECH,
-                    {
-                        "speech": _CANNED_GENERAL_ERROR_SPEECH,
-                        "error": {
-                            "code": error_code,
-                            "recoverable": True,
-                        },
-                    },
-                )
             else:
-                return target_agent, _CANNED_GENERAL_ERROR_SPEECH, None
+                return (
+                    target_agent,
+                    _CANNED_GENERAL_ERROR_SPEECH,
+                    canned_result(_CANNED_GENERAL_ERROR_SPEECH, CANNED_CODE_AGENT_ERROR),
+                )
 
         result = self.normalize_agent_result(response, agent_id=target_agent)
         speech = result.get("speech", "")
@@ -296,3 +315,21 @@ class DispatchManager:
             )
 
         return target_agent, speech, result
+
+    @staticmethod
+    def _action_unconfirmed(target_agent: str, reason: str) -> tuple[str, str, dict[str, Any]]:
+        """No fallback re-dispatch once the agent's HA action went out.
+
+        Re-sending the task to the fallback agent could execute the action a
+        second time; the turn reports "sent, not confirmed" instead.
+        """
+        logger.warning(
+            "Agent %s failed (%s) after an HA action started; skipping fallback re-dispatch",
+            target_agent,
+            reason,
+        )
+        return (
+            target_agent,
+            _CANNED_ACTION_UNCONFIRMED_SPEECH,
+            canned_result(_CANNED_ACTION_UNCONFIRMED_SPEECH, CANNED_CODE_ACTION_UNCONFIRMED),
+        )

@@ -3,9 +3,7 @@ terminal-frame streaming mediation contract.
 
 P1-1 keeps the existing public ``handle_task`` / ``handle_task_stream`` API
 but routes both methods through ``_run_pipeline`` which selects between the
-non-streaming and streaming impls. The legacy direct-call path can be
-restored at runtime via ``ORCHESTRATOR_LEGACY_PIPELINE=1`` for emergency
-rollback.
+non-streaming and streaming impls.
 
 The current canonical flow relays sub-agent tokens immediately when
 mediation is inactive (no personality configured and no calendar
@@ -156,45 +154,33 @@ async def test_streaming_pipeline_terminates_with_done(mock_complete, mock_track
 
 
 # ---------------------------------------------------------------------------
-# Feature flag rollback path (ORCHESTRATOR_LEGACY_PIPELINE=1)
+# The legacy rollback flag no longer bypasses the unified pipeline (#132)
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_legacy_pipeline_flag_routes_directly_to_impls(monkeypatch):
-    """With the rollback flag set, handle_task must bypass _run_pipeline
-    and call _handle_task_impl directly; same for the streaming entry."""
+async def test_legacy_pipeline_flag_no_longer_bypasses_run_pipeline(monkeypatch):
+    """ORCHESTRATOR_LEGACY_PIPELINE=1 has no orchestrator-side effect: both
+    public entry points always go through _run_pipeline."""
     orch, _ = _make_orchestrator()
     monkeypatch.setenv("ORCHESTRATOR_LEGACY_PIPELINE", "1")
+    calls = {"pipeline": 0}
 
-    impl_called = {"sync": 0, "stream": 0}
+    async def _spy(task, *, streaming, **_kwargs):
+        calls["pipeline"] += 1
+        if streaming:
+            yield {"token": "", "done": True, "conversation_id": task.conversation_id}
+        else:
+            yield {"done": True, "payload": {"speech": "ok", "conversation_id": task.conversation_id}}
 
-    async def _fake_impl(task, *, _pre_classified=None, _classify_reason=None, _allow_classify_cache_lookup=None):
-        impl_called["sync"] += 1
-        return {"speech": "ok", "conversation_id": task.conversation_id, "routed_to": "x"}
-
-    async def _fake_stream_impl(task):
-        impl_called["stream"] += 1
-        yield {"token": "", "done": True, "conversation_id": task.conversation_id}
-
-    orch._handle_task_impl = _fake_impl
-    orch._handle_task_stream_impl = _fake_stream_impl
-
-    # _run_pipeline must NOT be invoked in legacy mode -- spy that fails on call.
-    async def _trap(*_args, **_kwargs):
-        pytest.fail("_run_pipeline must be bypassed when legacy flag is set")
-        yield {}  # pragma: no cover
-
-    orch._run_pipeline = _trap
+    orch._run_pipeline = _spy
 
     task = _make_task("hello", conversation_id="conv-legacy")
     result = await orch.handle_task(task)
     assert result["speech"] == "ok"
-    assert impl_called["sync"] == 1
-
     chunks = [c async for c in orch.handle_task_stream(task)]
     assert chunks and chunks[-1]["done"] is True
-    assert impl_called["stream"] == 1
+    assert calls["pipeline"] == 2
 
 
 # ---------------------------------------------------------------------------
