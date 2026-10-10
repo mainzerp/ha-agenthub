@@ -212,7 +212,7 @@ docker compose restart ha-agenthub
 **Fix:**
 
 - In Home Assistant, add the label `agenthub_alarm` to the helper (or set `alarm_monitor.label` to a label you already use; letters, digits, `_`, `-`, and spaces only). Label changes are picked up within about five minutes.
-- Check the `timer-agent` visibility rules on the dashboard: the helper's domain, area, or entity must be allowed.
+- The default `timer-agent` visibility rules already allow `input_datetime`, so a default install needs only the label. If you restricted the `timer-agent` rules, the helper's domain, area, or entity must still be allowed (log line `Alarm helper ... is not visible to timer-agent; not ringing`).
 - An empty `alarm_monitor.label` disables helper alarms entirely. AgentHub's own alarms (set by voice or on the Timers page) do not need a label.
 
 ## Timer or Alarm Announcement Not Spoken
@@ -221,7 +221,7 @@ docker compose restart ha-agenthub
 
 **Checks:**
 
-- The satellite or media player of the origin device or origin room must be visible to `timer-agent`; invisible targets are skipped.
+- The satellite or media player of the origin device or origin room must be visible to `timer-agent`; invisible targets are skipped. The default rules allow `assist_satellite` and `media_player`; if you restricted the `timer-agent` rules, keep both allowed. A skipped satellite falls back to TTS on a media player.
 - A failed satellite announce falls back to TTS on a media player of the origin device or room. When both fail, the log shows `notification was not spoken: every audio target failed`, and no voice follow-up starts.
 - After a container restart, timers and alarms that came due while it was down are reported once as missed instead of ringing late; delayed device actions more than 5 minutes late are dropped (log line `Dropping overdue ...`).
 

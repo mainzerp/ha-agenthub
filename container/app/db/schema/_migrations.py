@@ -957,6 +957,44 @@ async def _migrate_to_45(db: aiosqlite.Connection) -> None:
     await db.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (45)")
 
 
+# Domains the timer agent must see by default: AlarmMonitor rings a labelled
+# ``input_datetime`` helper only when it is visible to ``timer-agent``, and
+# timer/alarm announcements skip ``assist_satellite`` targets invisible to it.
+# Migration 29 removed the ``input_datetime`` include and ``assist_satellite``
+# was never included, so default installs needed these rules restored.
+_TIMER_AGENT_RESTORED_DOMAINS: tuple[str, ...] = ("input_datetime", "assist_satellite")
+
+
+async def _migrate_to_46(db: aiosqlite.Connection) -> None:
+    # Migration 46: restore the timer-agent default visibility for alarm
+    # helpers and announcement satellites.
+    #
+    # Visibility semantics (app/entity/visibility.py): an agent without any
+    # rules sees every entity, and an agent with rules but no
+    # ``domain_include`` rule is not restricted by domain at all. Adding an
+    # include to such an agent would RESTRICT it to the included domains, so
+    # the rules are only added when timer-agent already has at least one
+    # ``domain_include`` rule (its default allow-list). A domain the admin
+    # deliberately excluded via ``domain_exclude`` is left alone.
+    cursor = await db.execute(
+        "SELECT rule_type, rule_value FROM entity_visibility_rules WHERE agent_id = ?",
+        ("timer-agent",),
+    )
+    rows = await cursor.fetchall()
+    has_domain_include = any(row[0] == "domain_include" for row in rows)
+    excluded = {row[1] for row in rows if row[0] == "domain_exclude"}
+    if has_domain_include:
+        await db.executemany(
+            "INSERT OR IGNORE INTO entity_visibility_rules (agent_id, rule_type, rule_value) VALUES (?, ?, ?)",
+            [
+                ("timer-agent", "domain_include", domain)
+                for domain in _TIMER_AGENT_RESTORED_DOMAINS
+                if domain not in excluded
+            ],
+        )
+    await db.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (46)")
+
+
 # Ordered registry of (version, migration_callable). Each migration records
 # its own version marker. Applied in ascending order for versions greater
 # than the current schema version.
@@ -1005,6 +1043,7 @@ MIGRATIONS: list[tuple[int, Callable[[aiosqlite.Connection], Awaitable[None]]]] 
     (43, _migrate_to_43),
     (44, _migrate_to_44),
     (45, _migrate_to_45),
+    (46, _migrate_to_46),
 ]
 
 

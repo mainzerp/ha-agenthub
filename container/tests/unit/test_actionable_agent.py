@@ -131,7 +131,7 @@ class TestAllowedDomains:
             (AutomationAgent, {"automation", "script"}),
             (ListsAgent, {"todo", "shopping_list"}),
             (MusicAgent, {"media_player"}),
-            (TimerAgent, {"timer", "input_datetime", "input_boolean"}),
+            (TimerAgent, {"timer", "input_boolean"}),
         ],
     )
     def test_expected_domain_values(self, agent_cls, expected_domains):
