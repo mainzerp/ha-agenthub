@@ -18,7 +18,7 @@ rapidfuzz==3.14.6
 pyphonetics==0.5.3
 
 # HTTP clients (async)
-aiohttp>=3.14.3,<4.0.0
+aiohttp>=3.14.4,<4.0.0
 httpx==0.28.1
 
 # Data validation
