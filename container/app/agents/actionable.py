@@ -17,9 +17,11 @@ from typing import Any
 from pydantic import ValidationError
 
 from app.agents.action_executor import (
+    _MAX_ACTIONS_PER_TURN,
     VERIFY_UNVERIFIED,
     find_rejected_action_objects,
     parse_actions,
+    parse_actions_capped,
     reset_request_candidate_ids,
     reset_request_visible_entries,
     reset_verify_records,
@@ -634,8 +636,14 @@ class ActionableAgent(BaseAgent):
         agent_id: str,
         span_collector,
         timing_marks: tuple[float, float, float, float],
+        *,
+        dropped_actions: int = 0,
     ) -> TaskResult:
         """Execute several parsed action blocks sequentially and merge the results.
+
+        ``dropped_actions`` counts action blocks beyond the per-turn cap
+        (``_MAX_ACTIONS_PER_TURN``) that were not executed: the speech says
+        so and ``metadata["actions_dropped"]`` records the count.
 
         Multi-action turns (the LLM emitted one fenced JSON block per
         requested action) run in utterance order -- never parallelized --
@@ -710,7 +718,15 @@ class ActionableAgent(BaseAgent):
             )
         )
 
-        metadata = results[0].get("metadata") or {}
+        metadata = dict(results[0].get("metadata") or {})
+        speech = " ".join(s for result in results if (s := (result.get("speech") or "").strip()))
+        if dropped_actions:
+            metadata["actions_dropped"] = dropped_actions
+            not_done = (
+                f"I only carried out the first {len(actions)} actions; "
+                f"{dropped_actions} more {'was' if dropped_actions == 1 else 'were'} not executed."
+            )
+            speech = f"{speech} {not_done}" if speech else not_done
         _t5 = time.perf_counter()
         logger.info(
             "dispatch_timing agent=%s pre_entities=%.1fms entities=%.1fms llm_parse=%.1fms ha_action=%.1fms post_action=%.1fms total=%.1fms",
@@ -723,8 +739,8 @@ class ActionableAgent(BaseAgent):
             (_t5 - _t0) * 1000,
         )
         return TaskResult(
-            # Merge per-action confirmations into one utterance.
-            speech=" ".join(s for result in results if (s := (result.get("speech") or "").strip())),
+            # Per-action confirmations merged into one utterance.
+            speech=speech,
             metadata=metadata,
             voice_followup=any(self._result_requests_voice_followup(result) for result in results),
             error=turn_error,
@@ -950,6 +966,10 @@ class ActionableAgent(BaseAgent):
             )
 
         actions = parse_actions(response)
+        dropped_actions = 0
+        if len(actions) >= _MAX_ACTIONS_PER_TURN:
+            # Only a capped turn can have dropped blocks; re-parse to count them.
+            _, dropped_actions = parse_actions_capped(response)
 
         # Path A: Action(s) + HA client -> execute
         if actions and self._ha_client:
@@ -957,7 +977,14 @@ class ActionableAgent(BaseAgent):
             # blocks. They run sequentially in utterance order, each with
             # its own ha_action span, and their results are merged.
             if len(actions) > 1:
-                return await self._handle_multi_action(actions, task, agent_id, span_collector, (_t0, _t1, _t2, _t3))
+                return await self._handle_multi_action(
+                    actions,
+                    task,
+                    agent_id,
+                    span_collector,
+                    (_t0, _t1, _t2, _t3),
+                    dropped_actions=dropped_actions,
+                )
             action = actions[0]
             try:
                 result = await self._execute_parsed_action(action, task, agent_id, span_collector)

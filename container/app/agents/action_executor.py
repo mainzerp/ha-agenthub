@@ -557,7 +557,8 @@ def _collect_actions_from_text(text: str) -> list[dict]:
 
 # Multi-action turns (one fenced JSON block per requested action, per the
 # domain prompts) are capped so a runaway LLM response cannot flood the
-# home with service calls.
+# home with service calls. The light prompt (prompts/light.txt) states the
+# same limit and asks the user to narrow a larger request down.
 _MAX_ACTIONS_PER_TURN = 8
 
 
@@ -573,7 +574,17 @@ def _action_dedupe_key(action: dict) -> tuple:
 
 
 def parse_actions(llm_response: str) -> list[dict]:
+    """Extract all structured action dicts from an LLM response (see :func:`parse_actions_capped`)."""
+    actions, _dropped = parse_actions_capped(llm_response)
+    return actions
+
+
+def parse_actions_capped(llm_response: str) -> tuple[list[dict], int]:
     """Extract all structured action dicts from an LLM response, in order.
+
+    Returns ``(actions, dropped)``: ``dropped`` counts the distinct action
+    blocks beyond ``_MAX_ACTIONS_PER_TURN`` that will NOT be executed, so
+    the caller can tell the user that not everything was done.
 
     Multi-action turns: the domain prompts instruct the LLM to emit one
     fenced JSON block per action, so every block that decodes and
@@ -606,14 +617,15 @@ def parse_actions(llm_response: str) -> list[dict]:
         seen.add(key)
         deduped.append(action)
 
-    if len(deduped) > _MAX_ACTIONS_PER_TURN:
+    dropped = max(0, len(deduped) - _MAX_ACTIONS_PER_TURN)
+    if dropped:
         logger.warning(
             "parse_actions: truncating %d action blocks to _MAX_ACTIONS_PER_TURN=%d",
             len(deduped),
             _MAX_ACTIONS_PER_TURN,
         )
         deduped = deduped[:_MAX_ACTIONS_PER_TURN]
-    return deduped
+    return deduped, dropped
 
 
 def find_rejected_action_objects(llm_response: str) -> list[dict]:
