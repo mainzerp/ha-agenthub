@@ -196,6 +196,8 @@ docker compose restart ha-agenthub
 - Update both the container and the HA integration -- older integrations never set `continue_conversation` on streamed turns, and older containers only set `voice_followup` for light-domain questions.
 - HA chat sessions expire after 5 minutes and ESPHome devices reset their stored `conversation_id` after 300 s (`conversation_timeout`) -- answers later than that lose correlation on every path (HA-core limits).
 - Wyoming satellites work as plain conversation targets; they are ANNOUNCE-only, so no re-listen is possible there -- the question is still spoken.
+- An answer reached the wrong agent: check the trace's `classify.parse_and_sanitize` span. `followup_pinned_to` is set when the classifier marked the turn as an answer (`[ANSWER]`) and the turn was pinned to the asking agent; without it the turn was classified as a new request. Askers recorded as a comma-joined multi-agent tag are never pinned.
+- The answer turn timed out or failed with a canned line: the pending question is re-armed, so answering again within the 300 s window still reaches the asking agent.
 
 ## Entity Not Found with LLM Clarification
 
