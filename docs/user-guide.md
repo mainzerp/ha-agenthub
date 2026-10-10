@@ -234,6 +234,17 @@ The **Timers** page at `/dashboard/timers` manages timers and alarms created thr
 
 Wake briefings apply only to AgentHub-managed internal alarms, not to HA native plain timers.
 
+Timer and alarm behavior by voice or chat:
+
+- **Unnamed references.** "Cancel the timer" or "add 5 minutes" acts on the only running timer; with several, the assistant asks which one. Timers set in another room, from chat, or on a named satellite are found when the current room has none. Timer commands never change alarms.
+- **Pause and resume.** Pausing keeps the remaining time; resuming continues from there. Paused timers stay paused across restarts until resumed or cancelled.
+- **Snooze.** Snoozing rings once after the snooze time (default 5 minutes). It never ends a recurring alarm series.
+- **Alarm dates.** "Wake me tomorrow at 7" or "Monday at 6:30" ring on that day in the Home Assistant timezone, including across daylight-saving changes. A weekly alarm first rings on its next listed weekday.
+- **After a restart.** Timers and alarms that came due while AgentHub was down do not ring late: they are reported once, together, as missed (within one minute of the due time they still ring). A missed recurring alarm keeps its series. Delayed device actions run if at most 5 minutes late and are otherwise dropped and logged.
+- **Language.** Announcements are generated in the configured language; fixed fallback texts are translated through the rewrite agent, with English as the last resort.
+
+**Action required for HA helper alarms:** an `input_datetime` helper rings as an alarm only when it carries the HA label `agenthub_alarm` (setting `alarm_monitor.label`) and is visible to the timer agent. In Home Assistant, open **Settings > Devices & services > Helpers**, select each helper that should ring, and add the label. Helpers without the label (for example automation schedule helpers) no longer ring.
+
 ### Calendar
 
 ![Calendar page showing events and reminder settings](screenshots/16_calendar.png)

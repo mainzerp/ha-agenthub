@@ -7,11 +7,14 @@ import contextlib
 import json as _json
 import logging
 import re
+import time
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
-from app.agents.base import _load_prompt_path, _prompt_path, _render_prompt_template
-from app.agents.timer_executor._timers import _DEFERRED_ALLOWED_DOMAINS
+from app.agents.base import _load_prompt_path_async, _prompt_path, _render_prompt_template, language_code_to_name
+from app.agents.timer_executor._timers import deferred_action_rejection, deferred_owner_agent
 from app.db.repository import SettingsRepository
 from app.entity.visibility import entity_is_visible
 from app.models.agent import BackgroundEvent, TaskContext
@@ -66,8 +69,8 @@ async def _announce_deferred_failure(
 ) -> None:
     """Best-effort user notification for a rejected/failed deferred action.
 
-    Announces through the standard timer-notification channels when the
-    event carries origin info; otherwise logs at error level.
+    Announces through the standard notification channels when the event
+    carries origin info; otherwise logs at error level.
     """
     origin_device_id = payload.get("origin_device_id")
     origin_area = payload.get("origin_area")
@@ -82,12 +85,13 @@ async def _announce_deferred_failure(
         language=payload.get("language"),
     )
     try:
-        await dispatch_timer_notification(
+        await dispatch_text_notification(
             ha_client=ha_client,
-            timer_name=failure,
-            entity_id="agenthub_internal:deferred_action_failure",
+            title=_NOTIFICATION_TITLE,
+            text=failure,
             metadata=metadata,
             entity_index=entity_index,
+            kind_label="Deferred action",
         )
     except asyncio.CancelledError:
         raise
@@ -149,6 +153,23 @@ async def handle_background_event(
         )
         return {"speech": ""}
 
+    if event.event_type == "timer_notification" and isinstance(payload.get("missed"), list):
+        metadata = NotificationMetadata(
+            media_player_entity=payload.get("media_player"),
+            origin_device_id=payload.get("origin_device_id"),
+            origin_area=payload.get("origin_area"),
+            duration=None,
+            language=payload.get("language"),
+        )
+        await dispatch_missed_notification(
+            ha_client=ha_client,
+            missed=payload["missed"],
+            timezone=payload.get("timezone"),
+            metadata=metadata,
+            entity_index=entity_index,
+        )
+        return {"speech": ""}
+
     if event.event_type == "timer_notification":
         metadata = NotificationMetadata(
             media_player_entity=payload.get("media_player"),
@@ -176,13 +197,19 @@ async def handle_background_event(
         if not target_entity or "/" not in target_action:
             return _error_result("Background delayed action payload is incomplete.", code="parse_error")
         domain, service = target_action.split("/", 1)
-        # H-2 fire-time recheck (fail-closed): domain allow-list + visibility.
-        # The entity may have been hidden or removed between schedule and fire.
-        if domain not in _DEFERRED_ALLOWED_DOMAINS:
-            failure = f"Delayed action rejected: domain '{domain}' is not allowed for deferred actions."
+        # H-2 fire-time recheck (fail-closed): per-domain service allow-list,
+        # target in the action's domain, and visibility for the agent that
+        # owns the domain. The entity may have been hidden or removed between
+        # schedule and fire, and rows persisted before this policy existed
+        # are rechecked here too.
+        rejection = deferred_action_rejection(domain, service)
+        if rejection is None and target_entity.split(".", 1)[0] != domain:
+            rejection = f"{target_entity} is not in the '{domain}' domain."
+        if rejection:
+            failure = f"Delayed action rejected: {rejection}"
             await _announce_deferred_failure(ha_client, payload, entity_index, failure=failure)
             return _error_result(failure, code="forbidden_domain", recoverable=False)
-        agent_id = payload.get("agent_id") or "timer-agent"
+        agent_id = deferred_owner_agent(domain) or "timer-agent"
         if not await _deferred_entity_still_visible(agent_id, target_entity, entity_index):
             failure = f"Delayed action rejected: {target_entity} is not visible to {agent_id}."
             await _announce_deferred_failure(ha_client, payload, entity_index, failure=failure)
@@ -212,8 +239,13 @@ async def handle_background_event(
         media_player = payload.get("media_player") or ""
         if not media_player:
             return _error_result("Background sleep timer payload is incomplete.", code="parse_error")
-        # H-2 fire-time recheck (fail-closed): visibility of the media player.
-        agent_id = payload.get("agent_id") or "timer-agent"
+        # H-2 fire-time recheck (fail-closed): visibility of the media player
+        # for the agent that owns media players.
+        agent_id = deferred_owner_agent("media_player") or "timer-agent"
+        if not media_player.startswith("media_player."):
+            failure = f"Sleep timer stop rejected: {media_player} is not a media player."
+            await _announce_deferred_failure(ha_client, payload, entity_index, failure=failure)
+            return _error_result(failure, code="forbidden_domain", recoverable=False)
         if not await _deferred_entity_still_visible(agent_id, media_player, entity_index):
             failure = f"Sleep timer stop rejected: {media_player} is not visible to {agent_id}."
             await _announce_deferred_failure(ha_client, payload, entity_index, failure=failure)
@@ -358,14 +390,16 @@ async def _run_voice_followup_after_conversation(
     logger.debug("Voice follow-up skipped: no satellite and no origin_device_id")
 
 
-_FALLBACK_MESSAGES = {
-    "de": "Timer {name} ist abgelaufen",
-    "en": "Timer {name} has finished",
-}
-_GENERIC_FALLBACK_MESSAGES = {
-    "de": "Der Timer ist abgelaufen",
-    "en": "The timer has finished",
-}
+# English fallback texts. Other languages are produced from these through the
+# rewrite path (``_localize_text``); English is the final fallback. Kept as
+# dicts for the deprecated ``notification_dispatcher`` re-exports.
+_FALLBACK_MESSAGES = {"en": "Timer {name} has finished"}
+_GENERIC_FALLBACK_MESSAGES = {"en": "The timer has finished"}
+_ALARM_FALLBACK_MESSAGE = "Alarm {name} has triggered"
+_NOTIFICATION_TITLE = "AgentHub"
+# Visibility for announcement targets is evaluated for the agent that owns
+# timers and alarms.
+_ANNOUNCE_VISIBILITY_AGENT = "timer-agent"
 _TTS_TO_LISTEN_DELAY = 10.0
 _DEFAULT_CHIME_URL = "media-source://media_source/local/notification.mp3"
 _CHIME_TO_TTS_DELAY = 1.5
@@ -400,6 +434,100 @@ async def _resolve_notification_language(ha_client: Any, metadata: Any = None) -
     return resolved or "en"
 
 
+def _is_english(language: str | None) -> bool:
+    return (language or "en").strip().lower().split("-", 1)[0] in ("", "en")
+
+
+def _get_rewrite_agent() -> Any | None:
+    try:
+        from app.main import app
+
+        return getattr(app.state, "rewrite_agent", None)
+    except Exception:
+        return None
+
+
+async def _localize_text(text: str, language: str | None) -> str:
+    """Return ``text`` (English) in ``language`` via the rewrite path; English is the final fallback."""
+    if not text or _is_english(language):
+        return text
+    rewrite_agent = _get_rewrite_agent()
+    rewrite = getattr(rewrite_agent, "rewrite", None)
+    if not callable(rewrite):
+        return text
+    try:
+        localized = await rewrite(text, language=str(language))
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        logger.warning("Localizing a notification to %s failed; using English", language, exc_info=True)
+        return text
+    return (localized or "").strip() or text
+
+
+async def _deliver_announcement(
+    ha_client: Any,
+    *,
+    message: str,
+    metadata: Any,
+    entity_index: Any,
+    profile: dict,
+    kind_label: str,
+) -> None:
+    """Speak ``message`` on the best visible target and start follow-up only after success.
+
+    A failed satellite announce falls back to TTS on a media player
+    (origin device first, then the origin room).
+    """
+    if not profile.get("tts_enabled", True) or not message:
+        return
+    origin_device_id = metadata.origin_device_id if metadata else None
+    area = metadata.origin_area if metadata else None
+    satellite_entity, media_player = await _resolve_notification_audio_target(
+        ha_client,
+        media_player=metadata.media_player_entity if metadata else None,
+        origin_device_id=origin_device_id,
+        area=area,
+        entity_index=entity_index,
+        kind_label=kind_label,
+    )
+
+    spoken_on: str | None = None
+    if satellite_entity:
+        if await _notify_satellite_announce(ha_client, satellite_entity, message):
+            spoken_on = satellite_entity
+        elif not media_player:
+            media_player = await _resolve_timer_playback_target(
+                ha_client, origin_device_id=origin_device_id, area=area, entity_index=entity_index
+            )
+            if media_player:
+                logger.info(
+                    "%s announce on %s failed; falling back to TTS on %s", kind_label, satellite_entity, media_player
+                )
+    if spoken_on is None and media_player:
+        if profile.get("chime_enabled", True):
+            await _play_chime(ha_client, media_player, profile)
+        if await _notify_tts(ha_client, media_player, message, profile):
+            spoken_on = media_player
+    if spoken_on is None:
+        if satellite_entity or media_player:
+            logger.warning("%s notification was not spoken: every audio target failed", kind_label)
+        return
+    spawn(
+        _trigger_conversation_continuation(ha_client, spoken_on, area, profile, entity_index=entity_index),
+        name="tts-followup",
+    )
+
+
+async def _deliver_text_channels(ha_client: Any, profile: dict, *, title: str, message: str) -> None:
+    if not message:
+        return
+    if profile.get("persistent_enabled", True):
+        await _notify_persistent(ha_client, title, message)
+    if profile.get("push_enabled", False):
+        await _notify_push(ha_client, profile.get("push_targets", []), title, message)
+
+
 async def dispatch_timer_notification(
     ha_client: Any,
     timer_name: str,
@@ -410,75 +538,26 @@ async def dispatch_timer_notification(
     """Dispatch timer notifications across all configured channels."""
     profile = await _load_notification_profile()
     language = await _resolve_notification_language(ha_client, metadata)
-    lang_key = "de" if language.startswith("de") else "en"
-
-    media_player = metadata.media_player_entity if metadata else None
-    origin_device_id = metadata.origin_device_id if metadata else None
-    area = metadata.origin_area if metadata else None
-    duration = metadata.duration if metadata else None
-    satellite_entity, media_player = await _resolve_notification_audio_target(
-        ha_client,
-        media_player=media_player,
-        origin_device_id=origin_device_id,
-        area=area,
-        entity_index=entity_index,
-        kind_label="Timer",
-    )
 
     has_meaningful_name = _has_meaningful_timer_name(timer_name, entity_id)
     message = await _generate_tts_message(
         timer_name=timer_name,
-        duration=duration,
-        area=area,
+        duration=metadata.duration if metadata else None,
+        area=metadata.origin_area if metadata else None,
         language=language,
         has_meaningful_name=has_meaningful_name,
     )
     if not message:
         if has_meaningful_name:
-            message = _render_prompt_template(
-                _FALLBACK_MESSAGES.get(lang_key, _FALLBACK_MESSAGES["en"]),
-                name=timer_name,
-            )
+            fallback = _render_prompt_template(_FALLBACK_MESSAGES["en"], name=timer_name)
         else:
-            message = _GENERIC_FALLBACK_MESSAGES.get(lang_key, _GENERIC_FALLBACK_MESSAGES["en"])
+            fallback = _GENERIC_FALLBACK_MESSAGES["en"]
+        message = await _localize_text(fallback, language)
 
-    if profile.get("tts_enabled", True):
-        if satellite_entity and message:
-            await _notify_satellite_announce(ha_client, satellite_entity, message)
-            spawn(
-                _trigger_conversation_continuation(
-                    ha_client,
-                    satellite_entity,
-                    area,
-                    profile,
-                    entity_index=entity_index,
-                ),
-                name="tts-followup",
-            )
-        elif media_player:
-            if profile.get("chime_enabled", True):
-                await _play_chime(ha_client, media_player, profile)
-
-            if message:
-                await _notify_tts(ha_client, media_player, message, profile)
-
-            spawn(
-                _trigger_conversation_continuation(
-                    ha_client,
-                    media_player,
-                    area,
-                    profile,
-                    entity_index=entity_index,
-                ),
-                name="tts-followup",
-            )
-
-    if profile.get("persistent_enabled", True) and message:
-        await _notify_persistent(ha_client, timer_name, message)
-
-    if profile.get("push_enabled", False) and message:
-        push_targets = profile.get("push_targets", [])
-        await _notify_push(ha_client, push_targets, timer_name, message)
+    await _deliver_announcement(
+        ha_client, message=message, metadata=metadata, entity_index=entity_index, profile=profile, kind_label="Timer"
+    )
+    await _deliver_text_channels(ha_client, profile, title=timer_name, message=message)
 
 
 async def dispatch_alarm_notification(
@@ -492,63 +571,85 @@ async def dispatch_alarm_notification(
     """Dispatch notifications for an alarm that has fired."""
     profile = await _load_notification_profile()
     language = await _resolve_notification_language(ha_client, metadata)
-    lang_key = "de" if language.startswith("de") else "en"
-    media_player = metadata.media_player_entity if metadata else None
-    origin_device_id = metadata.origin_device_id if metadata else None
-    area = metadata.origin_area if metadata else None
-    satellite_entity, media_player = await _resolve_notification_audio_target(
-        ha_client,
-        media_player=media_player,
-        origin_device_id=origin_device_id,
-        area=area,
-        entity_index=entity_index,
-        kind_label="Alarm",
-    )
-
-    alarm_messages = {
-        "de": "Alarm {name} ist ausgeloest",
-        "en": "Alarm {name} has triggered",
-    }
-    message = _render_prompt_template(
-        alarm_messages.get(lang_key, alarm_messages["en"]),
-        name=alarm_name,
-    )
+    message = await _localize_text(_render_prompt_template(_ALARM_FALLBACK_MESSAGE, name=alarm_name), language)
     spoken_message = (custom_message or "").strip() or message
 
-    if profile.get("tts_enabled", True):
-        if satellite_entity and spoken_message:
-            await _notify_satellite_announce(ha_client, satellite_entity, spoken_message)
-            spawn(
-                _trigger_conversation_continuation(
-                    ha_client,
-                    satellite_entity,
-                    area,
-                    profile,
-                    entity_index=entity_index,
-                ),
-                name="alarm-tts-followup",
-            )
-        elif media_player and spoken_message:
-            if profile.get("chime_enabled", True):
-                await _play_chime(ha_client, media_player, profile)
-            await _notify_tts(ha_client, media_player, spoken_message, profile)
-            spawn(
-                _trigger_conversation_continuation(
-                    ha_client,
-                    media_player,
-                    area,
-                    profile,
-                    entity_index=entity_index,
-                ),
-                name="alarm-tts-followup",
-            )
+    await _deliver_announcement(
+        ha_client,
+        message=spoken_message,
+        metadata=metadata,
+        entity_index=entity_index,
+        profile=profile,
+        kind_label="Alarm",
+    )
+    await _deliver_text_channels(ha_client, profile, title=alarm_name, message=message)
 
-    if profile.get("persistent_enabled", True):
-        await _notify_persistent(ha_client, alarm_name, message)
 
-    if profile.get("push_enabled", False):
-        push_targets = profile.get("push_targets", [])
-        await _notify_push(ha_client, push_targets, alarm_name, message)
+async def dispatch_text_notification(
+    ha_client: Any,
+    *,
+    title: str,
+    text: str,
+    metadata: Any = None,
+    entity_index: Any = None,
+    kind_label: str = "Notification",
+) -> None:
+    """Deliver a fixed English ``text`` (localized to the notification language) on all channels."""
+    profile = await _load_notification_profile()
+    language = await _resolve_notification_language(ha_client, metadata)
+    message = await _localize_text(text, language)
+    await _deliver_announcement(
+        ha_client, message=message, metadata=metadata, entity_index=entity_index, profile=profile, kind_label=kind_label
+    )
+    await _deliver_text_channels(ha_client, profile, title=title, message=message)
+
+
+def _format_due(epoch: int, timezone: str | None, now_epoch: int) -> str:
+    tz = None
+    if timezone:
+        try:
+            tz = ZoneInfo(str(timezone))
+        except Exception:
+            tz = None
+    due = datetime.fromtimestamp(int(epoch), tz=tz) if tz is not None else datetime.fromtimestamp(int(epoch))
+    now = datetime.fromtimestamp(int(now_epoch), tz=tz) if tz is not None else datetime.fromtimestamp(int(now_epoch))
+    return due.strftime("%H:%M") if due.date() == now.date() else due.strftime("%Y-%m-%d %H:%M")
+
+
+def _missed_summary(missed: list[Any], timezone: str | None, now_epoch: int) -> str:
+    parts: list[str] = []
+    for item in missed:
+        if not isinstance(item, dict):
+            continue
+        kind = "alarm" if item.get("kind") == "alarm" else "timer"
+        name = str(item.get("name") or "").strip()
+        due = _format_due(int(item.get("due_epoch") or 0), timezone, now_epoch)
+        parts.append(f"{kind} '{name}' (due {due})" if name else f"{kind} (due {due})")
+    if not parts:
+        return ""
+    return "While AgentHub was offline, these were missed: " + "; ".join(parts) + "."
+
+
+async def dispatch_missed_notification(
+    ha_client: Any,
+    *,
+    missed: list[Any],
+    timezone: str | None = None,
+    metadata: Any = None,
+    entity_index: Any = None,
+) -> None:
+    """Report timers/alarms that came due while the container was down, once and together."""
+    text = _missed_summary(missed, timezone, int(time.time()))
+    if not text:
+        return
+    await dispatch_text_notification(
+        ha_client,
+        title=_NOTIFICATION_TITLE,
+        text=text,
+        metadata=metadata,
+        entity_index=entity_index,
+        kind_label="Missed timer",
+    )
 
 
 def _has_meaningful_timer_name(timer_name: str, entity_id: str) -> bool:
@@ -570,11 +671,9 @@ async def _generate_tts_message(
     if not has_meaningful_name:
         return None
 
-    lang_instruction = "German" if language.startswith("de") else "English"
-
     system_prompt = _render_prompt_template(
-        _load_prompt_path(_prompt_path("timer_announcement")),
-        language=lang_instruction,
+        await _load_prompt_path_async(_prompt_path("timer_announcement")),
+        language=language_code_to_name(language),
     )
     context_parts = [f"Timer name:\n{wrap_user_input(timer_name)}"]
     if duration:
@@ -639,7 +738,8 @@ async def _notify_tts(
     media_player_entity: str,
     message: str,
     profile: dict,
-) -> None:
+) -> bool:
+    """Speak ``message`` on a media player; returns True when a TTS call succeeded."""
     tts_engine = profile.get("tts_engine", "tts.google_translate_say")
     try:
         await ha_client.call_service(
@@ -652,6 +752,7 @@ async def _notify_tts(
             },
         )
         logger.info("TTS notification sent to %s: %s", media_player_entity, message)
+        return True
     except asyncio.CancelledError:
         raise
     except Exception:
@@ -665,17 +766,20 @@ async def _notify_tts(
                 media_player_entity,
                 {"message": message},
             )
+            return True
         except asyncio.CancelledError:
             raise
         except Exception:
             logger.error("TTS fallback also failed on %s", media_player_entity, exc_info=True)
+            return False
 
 
 async def _notify_satellite_announce(
     ha_client: Any,
     satellite_entity: str,
     message: str,
-) -> None:
+) -> bool:
+    """Announce ``message`` on an assist satellite; returns True on success."""
     try:
         await ha_client.call_service(
             "assist_satellite",
@@ -686,10 +790,12 @@ async def _notify_satellite_announce(
             },
         )
         logger.info("Assist satellite announce sent to %s", satellite_entity)
+        return True
     except asyncio.CancelledError:
         raise
     except Exception:
         logger.warning("Assist satellite announce failed on %s", satellite_entity, exc_info=True)
+        return False
 
 
 async def _notify_persistent(
@@ -722,15 +828,11 @@ async def _notify_push(
                 "notify",
                 target,
                 None,
+                # No actionable buttons: nothing handles mobile notification
+                # action events, so buttons would do nothing.
                 {
                     "message": message,
                     "title": timer_name,
-                    "data": {
-                        "actions": [
-                            {"action": "SNOOZE_5", "title": "Snooze 5 min"},
-                            {"action": "DISMISS", "title": "Dismiss"},
-                        ],
-                    },
                 },
             )
             logger.info("Push notification sent to %s", target)
@@ -764,46 +866,53 @@ async def _load_notification_profile() -> dict:
     return defaults
 
 
+async def _announce_target_visible(entity_id: str | None, entity_index: Any) -> bool:
+    """Fail-closed visibility check for an announcement target (timer agent rules)."""
+    if not entity_id:
+        return False
+    try:
+        return await entity_is_visible(_ANNOUNCE_VISIBILITY_AGENT, entity_id, entity_index)
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        logger.warning("Visibility check failed for announcement target %s; skipping it", entity_id, exc_info=True)
+        return False
+
+
+async def _resolve_area_target(area: str | None, entity_index: Any, domain: str) -> str | None:
+    """Pick the first visible ``domain`` entity in ``area`` (sorted by entity_id for determinism).
+
+    The entity index is the only source: HA state attributes carry no area,
+    so a state scan cannot answer this.
+    """
+    normalized_area = _normalize_area_for_match(area)
+    if not normalized_area or entity_index is None:
+        return None
+    try:
+        entries = await entity_index.list_entries_async(domains={domain})
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        logger.warning("EntityIndex %s lookup failed for area %s", domain, area, exc_info=True)
+        return None
+    candidates = sorted(
+        str(entry.entity_id)
+        for entry in entries
+        if str(getattr(entry, "entity_id", "")).startswith(f"{domain}.")
+        and _normalize_area_for_match(getattr(entry, "area", None)) == normalized_area
+    )
+    for entity_id in candidates:
+        if await _announce_target_visible(entity_id, entity_index):
+            return entity_id
+    return None
+
+
 async def _resolve_satellite_device(
     ha_client: Any,
     area: str | None,
     entity_index: Any = None,
 ) -> str | None:
-    normalized_area = _normalize_area_for_match(area)
-    if not normalized_area:
-        return None
-
-    if entity_index is not None:
-        try:
-            entries = await entity_index.list_entries_async(
-                domains={"assist_satellite"},
-            )
-            for entry in entries:
-                if _normalize_area_for_match(getattr(entry, "area", None)) == normalized_area:
-                    return entry.entity_id
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            logger.warning(
-                "EntityIndex satellite lookup failed for area %s",
-                area,
-                exc_info=True,
-            )
-
-    try:
-        states = await ha_client.get_states()
-        for state in states:
-            entity_id = state.get("entity_id", "")
-            if not entity_id.startswith("assist_satellite."):
-                continue
-            state_area = state.get("attributes", {}).get("area_id")
-            if _normalize_area_for_match(state_area) == normalized_area:
-                return entity_id
-    except asyncio.CancelledError:
-        raise
-    except Exception:
-        logger.warning("Failed to resolve satellite for area %s", area, exc_info=True)
-    return None
+    return await _resolve_area_target(area, entity_index, "assist_satellite")
 
 
 _HA_DEVICE_ID_RE = re.compile(r"^[a-zA-Z0-9_]+$")
@@ -905,35 +1014,7 @@ async def _resolve_media_player_from_area(
     area: str | None,
     entity_index: Any = None,
 ) -> str | None:
-    normalized_area = _normalize_area_for_match(area)
-    if not normalized_area:
-        return None
-
-    if entity_index is not None:
-        try:
-            entries = await entity_index.list_entries_async(domains={"media_player"})
-            for entry in entries:
-                if _normalize_area_for_match(getattr(entry, "area", None)) == normalized_area:
-                    return entry.entity_id
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            logger.warning("EntityIndex media_player lookup failed for area %s", area, exc_info=True)
-
-    try:
-        states = await ha_client.get_states()
-        for state in states:
-            entity_id = state.get("entity_id", "")
-            if not entity_id.startswith("media_player."):
-                continue
-            state_area = state.get("attributes", {}).get("area_id")
-            if _normalize_area_for_match(state_area) == normalized_area:
-                return entity_id
-    except asyncio.CancelledError:
-        raise
-    except Exception:
-        logger.warning("State scan media_player lookup failed for area %s", area, exc_info=True)
-    return None
+    return await _resolve_area_target(area, entity_index, "media_player")
 
 
 async def _resolve_timer_playback_target(
@@ -943,8 +1024,9 @@ async def _resolve_timer_playback_target(
     area: str | None,
     entity_index: Any = None,
 ) -> str | None:
+    """Media player of the origin device first, then a visible one in the origin room."""
     media_player = await _resolve_media_player_from_origin_device(ha_client, origin_device_id)
-    if media_player:
+    if media_player and await _announce_target_visible(media_player, entity_index):
         return media_player
     return await _resolve_media_player_from_area(ha_client, area, entity_index=entity_index)
 
@@ -958,11 +1040,17 @@ async def _resolve_notification_audio_target(
     entity_index: Any = None,
     kind_label: str,
 ) -> tuple[str | None, str | None]:
+    # Origin device first (the device the request came from), then the
+    # origin room. Every target must be visible to the timer agent.
     satellite_entity = await _resolve_satellite_from_origin_device(ha_client, origin_device_id)
+    if satellite_entity and not await _announce_target_visible(satellite_entity, entity_index):
+        satellite_entity = None
     if not satellite_entity:
         satellite_entity = await _resolve_satellite_device(ha_client, area, entity_index=entity_index)
 
     resolved_media_player = media_player
+    if resolved_media_player and not await _announce_target_visible(resolved_media_player, entity_index):
+        resolved_media_player = None
     if not resolved_media_player and not satellite_entity:
         resolved_media_player = await _resolve_timer_playback_target(
             ha_client,

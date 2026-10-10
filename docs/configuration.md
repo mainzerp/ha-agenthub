@@ -266,6 +266,25 @@ The orchestrator uses a lower temperature (0.3) for consistent intent classifica
 | `wake_briefing.timeout_seconds` | `10` | int | Total budget for composing a wake briefing before falling back |
 | `wake_briefing.composer_prompt` | (see seeded default) | string | System prompt for the wake-briefing composer LLM |
 
+### Home Assistant helper alarms
+
+The alarm monitor rings an `input_datetime` helper (with a time part) only
+when the helper carries the HA label named by `alarm_monitor.label` AND is
+visible to `timer-agent`. Unlabeled helpers are ignored; when helpers exist
+but none carries the label, a warning is logged once after startup.
+
+| Key | Default | Type | Description |
+|-----|---------|------|-------------|
+| `alarm_monitor.label` | `agenthub_alarm` | string | HA label id or name that opts a helper in as an alarm. Letters, digits, `_`, `-`, and spaces only. Empty disables helper alarms. |
+
+Notification targets for timers and alarms (assist satellites and media
+players found through the origin device or the origin room) must be visible
+to `timer-agent`. Deferred device actions (`delayed_action`, sleep timers)
+are checked against the visibility rules of the agent that owns the target
+domain (for example `light-agent` for `light.*`, `security-agent` for
+`lock.*`), and only argument-free services on a per-domain allow-list can be
+scheduled; unlocking and disarming are never schedulable.
+
 Internal helper agents (`filler-agent`, `rewrite-agent`,
 `mediation`, `notification-dispatcher`, `cancel-speech`,
 `language-detect`, `sanitize`, `alarm-monitor`)

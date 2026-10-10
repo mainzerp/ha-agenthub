@@ -72,7 +72,7 @@ class TestStartTimerErrors:
 
 class TestCancelTimerErrors:
     async def test_set_timer_missing_entity_id(self):
-        """cancel_timer rejects when entity_query is empty."""
+        """cancel_timer with an empty entity and no running timer reports that none runs."""
         scheduler = MagicMock()
         scheduler.list = AsyncMock(return_value=[])
         scheduler.cancel = AsyncMock(return_value=0)
@@ -85,7 +85,8 @@ class TestCancelTimerErrors:
                 agent_id="timer-agent",
             )
         assert result["success"] is False
-        assert "specify which timer" in result["speech"].lower()
+        assert result["speech"] == "No timer is running."
+        scheduler.cancel.assert_not_called()
 
 
 class TestDispatchUnknownAction:
@@ -407,7 +408,7 @@ class TestCancelAlarmBranches:
                 agent_id="timer-agent",
             )
         assert result["success"] is False
-        assert "Please provide an alarm id" in result["speech"]
+        assert result["speech"] == "No internal alarm is scheduled."
 
     async def test_cancel_alarm_name_no_match(self):
         scheduler = MagicMock()
@@ -639,7 +640,8 @@ class TestDelayedAction:
 
     async def test_delayed_action_schedules_resolved_entity(self):
         """H-2: a resolvable, visible target is scheduled with the RESOLVED
-        entity_id and the scheduling agent_id in the payload."""
+        entity_id; visibility and the payload agent_id belong to the agent
+        that owns the target domain (light-agent), not the timer agent."""
         scheduler = MagicMock()
         scheduler.schedule = AsyncMock(return_value="timer-1")
         resolved = {
@@ -676,10 +678,12 @@ class TestDelayedAction:
         mock_resolve.assert_awaited_once()
         resolve_args = mock_resolve.await_args
         assert resolve_args.args[0] == "kitchen light"
+        assert resolve_args.args[3] == "light-agent"
+        assert resolve_args.args[4] == frozenset({"light"})
         scheduler.schedule.assert_awaited_once()
         schedule_kwargs = scheduler.schedule.await_args.kwargs
         assert schedule_kwargs["payload"]["target_entity"] == "light.kitchen_ceiling"
-        assert schedule_kwargs["payload"]["agent_id"] == "timer-agent"
+        assert schedule_kwargs["payload"]["agent_id"] == "light-agent"
 
 
 class TestSleepTimer:
@@ -721,8 +725,9 @@ class TestSleepTimer:
 
 
 class TestPauseOrResume:
-    async def test_resume_timer(self):
+    async def test_resume_timer_without_paused_timer(self):
         scheduler = MagicMock()
+        scheduler.list = AsyncMock(return_value=[])
         with patch("app.agents.timer_executor._helpers._get_scheduler", return_value=scheduler):
             result = await execute_timer_action(
                 {"action": "resume_timer", "entity": "Kitchen", "parameters": {}},
@@ -732,4 +737,5 @@ class TestPauseOrResume:
                 agent_id="timer-agent",
             )
         assert result["success"] is False
-        assert "Resume is not supported" in result["speech"]
+        assert result["speech"] == "No paused timer named 'Kitchen' was found."
+        assert scheduler.list.await_args.kwargs["states"] == {"paused"}

@@ -1,34 +1,62 @@
-"""Background alarm monitor for input_datetime entities."""
+"""Background alarm monitor for opted-in input_datetime helpers.
+
+Only ``input_datetime`` helpers that carry the configured Home Assistant label
+(setting ``alarm_monitor.label``, default ``agenthub_alarm``) AND are visible
+to the timer agent are treated as alarms. Labels live in the HA entity
+registry; they are read through the ``label_entities()`` template function.
+"""
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
 import logging
+import re
+import time
 import uuid
 from datetime import UTC, datetime, tzinfo
 from typing import Any
 from zoneinfo import ZoneInfo
 
 from app.a2a._request import build_send_request
+from app.db.repository import SettingsRepository
+from app.entity.visibility import entity_is_visible
 from app.models.agent import BackgroundEvent, BackgroundTask, TaskContext
 
 logger = logging.getLogger(__name__)
 
 _CHECK_INTERVAL = 30.0  # seconds
 _MATCH_WINDOW = 60  # seconds -- alarm fires if now is within this window AFTER the alarm time
+_LABEL_SETTING_KEY = "alarm_monitor.label"
+DEFAULT_ALARM_LABEL = "agenthub_alarm"
+_LABEL_CACHE_TTL = 300.0  # seconds between label_entities() lookups
+# Visibility is evaluated for the agent that owns alarms.
+_ALARM_AGENT_ID = "timer-agent"
+# Label ids and names are inserted into a Jinja template, so only plain
+# word characters, spaces, and hyphens are accepted.
+_SAFE_LABEL_RE = re.compile(r"^[\w\- ]{1,100}$")
 
 
 class AlarmMonitor:
-    """Polls input_datetime entities and dispatches notifications when alarm time is reached."""
+    """Polls opted-in input_datetime helpers and dispatches notifications when alarm time is reached."""
 
-    def __init__(self, entity_index: Any, dispatcher: Any, ha_client: Any = None) -> None:
+    def __init__(
+        self,
+        entity_index: Any,
+        dispatcher: Any,
+        ha_client: Any = None,
+        *,
+        settings_repo: Any = SettingsRepository,
+    ) -> None:
         self._entity_index = entity_index
         self._dispatcher = dispatcher
         self._ha_client = ha_client
+        self._settings_repo = settings_repo
         self._fired: set[str] = set()
         self._last_reset_date: str = ""
         self._task: asyncio.Task | None = None
+        self._labeled_cache: tuple[float, str, frozenset[str]] | None = None
+        self._unlabeled_warning_logged = False
 
     async def start(self) -> None:
         """Start the background monitoring task."""
@@ -101,11 +129,34 @@ class AlarmMonitor:
             logger.warning("Failed to read input_datetime entries in AlarmMonitor", exc_info=True)
             return
 
-        for entry in entries:
+        candidates = [
+            entry
+            for entry in entries
+            if str(getattr(entry, "entity_id", "")).startswith("input_datetime.") and getattr(entry, "has_time", False)
+        ]
+        if not candidates:
+            return
+
+        label = await self._alarm_label()
+        if not label:
+            return
+        labeled = await self._labeled_entity_ids(label)
+        if not labeled:
+            if not self._unlabeled_warning_logged:
+                self._unlabeled_warning_logged = True
+                logger.warning(
+                    "AlarmMonitor: %d input_datetime helper(s) with a time exist, but none carries the HA label "
+                    "%r (or the label lookup failed), so none will ring as an alarm. Add the label in Home "
+                    "Assistant to every helper that should ring (setting %s), or ignore this if they are not alarms.",
+                    len(candidates),
+                    label,
+                    _LABEL_SETTING_KEY,
+                )
+            return
+
+        for entry in candidates:
             entity_id = entry.entity_id
-            if not entity_id.startswith("input_datetime."):
-                continue
-            if not entry.has_time:
+            if entity_id not in labeled:
                 continue
 
             state_val = entry.state or ""
@@ -124,10 +175,60 @@ class AlarmMonitor:
             # Fire only at or after the alarm time, never early.
             delta = (now - alarm_time).total_seconds()
             if 0 <= delta <= _MATCH_WINDOW and fire_key not in self._fired:
+                if not await self._is_visible(entity_id):
+                    logger.info("Alarm helper %s is not visible to %s; not ringing", entity_id, _ALARM_AGENT_ID)
+                    continue
                 self._fired.add(fire_key)
                 friendly_name = entry.friendly_name or entity_id
                 logger.info("Alarm triggered: %s (%s)", entity_id, friendly_name)
                 await self._fire_notification(entry)
+
+    async def _alarm_label(self) -> str:
+        """Return the configured opt-in label; empty disables the monitor."""
+        try:
+            raw = await self._settings_repo.get_value(_LABEL_SETTING_KEY, DEFAULT_ALARM_LABEL)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.debug("AlarmMonitor could not read %s; using default", _LABEL_SETTING_KEY, exc_info=True)
+            raw = DEFAULT_ALARM_LABEL
+        label = DEFAULT_ALARM_LABEL if raw is None else str(raw).strip()
+        if label and not _SAFE_LABEL_RE.match(label):
+            logger.warning("AlarmMonitor: ignoring unsafe %s value %r", _LABEL_SETTING_KEY, label)
+            return ""
+        return label
+
+    async def _labeled_entity_ids(self, label: str) -> frozenset[str]:
+        """Return entity ids carrying ``label`` (HA label id or name), cached for a few minutes."""
+        cached = self._labeled_cache
+        now = time.monotonic()
+        if cached is not None and cached[1] == label and now - cached[0] < _LABEL_CACHE_TTL:
+            return cached[2]
+        render = getattr(self._ha_client, "render_template", None)
+        if not callable(render):
+            return frozenset()
+        template = "{{ label_entities('" + label + "') | join(',') }}"
+        try:
+            rendered = await render(template)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.debug("AlarmMonitor label lookup failed for %r", label, exc_info=True)
+            rendered = None
+        ids = frozenset(item.strip() for item in str(rendered or "").split(",") if item.strip())
+        # An empty answer may be a transient HA failure: only cache hits.
+        self._labeled_cache = (now, label, ids) if ids else None
+        return ids
+
+    async def _is_visible(self, entity_id: str) -> bool:
+        """Fail-closed visibility check for the timer agent."""
+        try:
+            return await entity_is_visible(_ALARM_AGENT_ID, entity_id, self._entity_index)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.warning("Visibility check failed for alarm helper %s; not ringing", entity_id, exc_info=True)
+            return False
 
     def _parse_alarm_time(self, state_val: str, attrs: dict, now: datetime) -> datetime | None:
         """Parse input_datetime state into a datetime for comparison."""

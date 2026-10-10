@@ -40,25 +40,73 @@ async def _query_timer(entity_query: str, *, area_id: str | None = None) -> dict
             "speech": "Timer scheduler is unavailable.",
             "cacheable": False,
         }
-    rows = await scheduler.list(logical_name=entity_query or None, area=area_id)
+    rows = await _helpers._find_rows(
+        scheduler,
+        entity_query,
+        area_id=area_id,
+        kinds=_helpers.TIMER_KINDS,
+        unnamed_kinds=_helpers.COUNTDOWN_KINDS,
+        kind_word="timer",
+        states=_LISTED_STATES,
+    )
     if not rows:
+        speech = (
+            "No timer is currently running."
+            if _helpers._is_unnamed(entity_query, "timer")
+            else f"No timer named '{entity_query}' is currently running."
+        )
         return {
             "success": False,
             "entity_id": None,
             "new_state": None,
-            "speech": f"No timer named '{entity_query}' is currently running.",
+            "speech": speech,
             "cacheable": False,
         }
-    row = rows[0]
-    remaining = max(0, int(row["fires_at"]) - int(datetime.now().timestamp()))
-    human = _helpers._format_duration_human(remaining)
+    now = int(datetime.now().timestamp())
+    parts = [_describe_row(row, now) for row in rows]
     return {
         "success": True,
         "entity_id": None,
-        "new_state": "active",
-        "speech": f"{row['logical_name']} has {human} remaining.",
+        "new_state": "paused" if all(r.get("state") == "paused" for r in rows) else "active",
+        "speech": "; ".join(parts) + ".",
         "cacheable": False,
     }
+
+
+_LISTED_STATES = frozenset({"pending", "paused"})
+
+
+def _remaining_seconds(row: dict[str, Any], now: int) -> int:
+    if row.get("state") == "paused":
+        try:
+            payload = json.loads(row.get("payload_json") or "{}")
+            return max(0, int(payload.get("paused_remaining_seconds") or 0))
+        except (TypeError, ValueError):
+            return 0
+    return max(0, int(row["fires_at"]) - now)
+
+
+def _describe_row(row: dict[str, Any], now: int) -> str:
+    human = _helpers._format_duration_human(_remaining_seconds(row, now))
+    if row.get("state") == "paused":
+        return f"{row['logical_name']} is paused with {human} remaining"
+    return f"{row['logical_name']} has {human} remaining"
+
+
+async def _list_scoped(
+    scheduler: Any,
+    *,
+    area_id: str | None,
+    kinds: frozenset[str],
+    states: frozenset[str] | None = None,
+) -> list[dict]:
+    """List rows of ``kinds`` in the origin room, falling back to every room."""
+    extra = {"states": set(states)} if states else {}
+    if area_id is not None:
+        rows = await scheduler.list(area=area_id, kinds=set(kinds), **extra)
+        if rows:
+            return rows
+    return await scheduler.list(area=None, kinds=set(kinds), **extra)
 
 
 async def _list_timers(*, area_id: str | None = None) -> dict:
@@ -71,7 +119,9 @@ async def _list_timers(*, area_id: str | None = None) -> dict:
             "speech": "No timers are currently running.",
             "cacheable": False,
         }
-    rows = await scheduler.list(area=area_id)
+    # Room-scoped first; timers set from chat or another room are listed when
+    # the origin room has none. Alarms are listed by list_alarms.
+    rows = await _list_scoped(scheduler, area_id=area_id, kinds=_helpers.TIMER_KINDS, states=_LISTED_STATES)
     if not rows:
         return {
             "success": True,
@@ -83,8 +133,9 @@ async def _list_timers(*, area_id: str | None = None) -> dict:
     now = int(datetime.now().timestamp())
     parts: list[str] = []
     for row in rows:
-        remaining = max(0, int(row["fires_at"]) - now)
-        parts.append(f"{row['logical_name']} ({_helpers._format_duration_human(remaining)} remaining)")
+        human = _helpers._format_duration_human(_remaining_seconds(row, now))
+        suffix = "paused, " if row.get("state") == "paused" else ""
+        parts.append(f"{row['logical_name']} ({suffix}{human} remaining)")
     return {
         "success": True,
         "entity_id": "",
@@ -105,7 +156,7 @@ async def _list_alarms(*, area_id: str | None = None, timezone: str | None = Non
             "cacheable": False,
         }
 
-    rows = await scheduler.list(area=area_id, kinds={"alarm"})
+    rows = await _list_scoped(scheduler, area_id=area_id, kinds=_helpers.ALARM_KINDS)
     if not rows:
         return {
             "success": True,

@@ -203,6 +203,28 @@ docker compose restart ha-agenthub
 - An answer reached the wrong agent: check the trace's `classify.parse_and_sanitize` span. `followup_pinned_to` is set when the classifier marked the turn as an answer (`[ANSWER]`) and the turn was pinned to the asking agent; without it the turn was classified as a new request. Askers recorded as a comma-joined multi-agent tag are never pinned.
 - The answer turn timed out or failed with a canned line: the pending question is re-armed, so answering again within the 300 s window still reaches the asking agent.
 
+## My Alarm Helper No Longer Rings
+
+**Symptoms:** An HA `input_datetime` helper used as an alarm stays silent. The log shows `AlarmMonitor: ... none carries the HA label 'agenthub_alarm'`.
+
+**Cause:** Only helpers that carry the label named by `alarm_monitor.label` (default `agenthub_alarm`) and are visible to `timer-agent` ring. Unlabeled helpers are ignored so automation schedule helpers do not ring as alarms.
+
+**Fix:**
+
+- In Home Assistant, add the label `agenthub_alarm` to the helper (or set `alarm_monitor.label` to a label you already use; letters, digits, `_`, `-`, and spaces only). Label changes are picked up within about five minutes.
+- Check the `timer-agent` visibility rules on the dashboard: the helper's domain, area, or entity must be allowed.
+- An empty `alarm_monitor.label` disables helper alarms entirely. AgentHub's own alarms (set by voice or on the Timers page) do not need a label.
+
+## Timer or Alarm Announcement Not Spoken
+
+**Symptoms:** The persistent notification appears, but nothing is spoken.
+
+**Checks:**
+
+- The satellite or media player of the origin device or origin room must be visible to `timer-agent`; invisible targets are skipped.
+- A failed satellite announce falls back to TTS on a media player of the origin device or room. When both fail, the log shows `notification was not spoken: every audio target failed`, and no voice follow-up starts.
+- After a container restart, timers and alarms that came due while it was down are reported once as missed instead of ringing late; delayed device actions more than 5 minutes late are dropped (log line `Dropping overdue ...`).
+
 ## Entity Not Found with LLM Clarification
 
 **Symptoms:** The assistant asks clarifying questions instead of acting when an entity is not found.
