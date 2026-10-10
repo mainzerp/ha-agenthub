@@ -43,7 +43,7 @@ from app.agents.action_executor import (  # noqa: E402
 )
 from app.agents.climate_executor import execute_climate_action  # noqa: E402
 from app.agents.cover_executor import execute_cover_action  # noqa: E402
-from app.agents.executor_state_check import is_redundant_action  # noqa: E402
+from app.agents.executor_state_check import is_redundant_action, verification_previous_state  # noqa: E402
 from app.agents.light_executor import execute_light_action  # noqa: E402
 from app.agents.media_executor import execute_media_action  # noqa: E402
 from app.agents.music_executor import execute_music_action  # noqa: E402
@@ -793,3 +793,100 @@ class TestSatelliteTargeting:
         )
         assert error is None
         assert target is not None and target.device_id == "device-1"
+
+
+# ---------------------------------------------------------------------------
+# Integration follow-up: the pre-call state feeds the verification
+# ---------------------------------------------------------------------------
+
+
+class TestPreviousStateVerification:
+    @pytest.mark.asyncio
+    async def test_alarm_moving_to_other_state_after_arm_fails(self):
+        """disarmed -> triggered after an arm call contradicts the command."""
+        ha = _FakeHA("alarm_control_panel.house", "disarmed", post_state="triggered")
+        result = await execute_security_action(
+            {"action": "alarm_arm_away", "entity": "house alarm"},
+            ha,
+            MagicMock(),
+            _matcher("alarm_control_panel.house", "House Alarm"),
+        )
+        assert result["success"] is False
+        assert "triggered" in result["speech"]
+
+    @pytest.mark.asyncio
+    async def test_alarm_unchanged_after_arm_stays_unverified(self):
+        """An unchanged pre-call state may be a late report: not a failure."""
+        ha = _FakeHA("alarm_control_panel.house", "disarmed", post_state="disarmed")
+        result = await execute_security_action(
+            {"action": "alarm_arm_away", "entity": "house alarm"},
+            ha,
+            MagicMock(),
+            _matcher("alarm_control_panel.house", "House Alarm"),
+        )
+        assert result["success"] is True
+
+    @pytest.mark.asyncio
+    async def test_light_turning_unavailable_after_turn_on_fails(self):
+        ha = _FakeHA("light.kitchen", "off", post_state="unavailable")
+        result = await execute_light_action(
+            {"action": "turn_on", "entity": "kitchen light"},
+            ha,
+            MagicMock(),
+            _matcher("light.kitchen", "Kitchen Light"),
+        )
+        assert result["success"] is False
+
+    @pytest.mark.asyncio
+    async def test_group_state_is_not_compared(self):
+        """Groups report an aggregate state: no pre-call comparison."""
+        ha = _FakeHA(
+            "light.downstairs",
+            "on",
+            {"entity_id": ["light.a", "light.b"]},
+            post_state="unavailable",
+        )
+        result = await execute_light_action(
+            {"action": "turn_off", "entity": "downstairs lights"},
+            ha,
+            MagicMock(),
+            _matcher("light.downstairs", "Downstairs"),
+        )
+        assert result["success"] is True
+        assert ha.calls, "group turn_off must still call the service"
+
+    @pytest.mark.asyncio
+    async def test_noop_path_skips_the_call(self):
+        ha = _FakeHA("lock.front", "locked", post_state="unlocked")
+        result = await execute_security_action(
+            {"action": "lock", "entity": "front door"},
+            ha,
+            MagicMock(),
+            _matcher("lock.front", "Front Door"),
+        )
+        assert result.get("noop") is True
+        assert ha.calls == []
+
+    @pytest.mark.asyncio
+    async def test_tv_standby_after_turn_off_is_reached(self):
+        ha = _FakeHA("media_player.tv", "on", post_state="standby")
+        result = await execute_media_action(
+            {"action": "turn_off", "entity": "tv"},
+            ha,
+            MagicMock(),
+            _matcher("media_player.tv", "TV"),
+        )
+        assert result["success"] is True
+
+    @pytest.mark.parametrize(
+        ("state_resp", "expected"),
+        [
+            ({"state": "disarmed", "attributes": {}}, "disarmed"),
+            ({"state": "unavailable", "attributes": {}}, None),
+            ({"state": "unknown"}, None),
+            ({"state": "on", "attributes": {"entity_id": ["light.a"]}}, None),
+            (None, None),
+        ],
+    )
+    def test_verification_previous_state(self, state_resp, expected):
+        assert verification_previous_state(state_resp) == expected

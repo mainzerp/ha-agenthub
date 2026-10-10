@@ -678,10 +678,13 @@ TRANSITIONAL_STATES: frozenset[str] = frozenset(
 )
 
 # Terminal states that satisfy an expected target although they differ from
-# it literally (players that report "off"/"standby" after stop, a vacuum that
-# is already "docked" when asked to return).
+# it literally (players that report "off"/"standby"/"paused" after stop, a
+# TV that reports "standby" after turn_off, a vacuum that is already
+# "docked" when asked to return). Executors pass the pre-call state as
+# ``previous_state``, so a missing equivalent would turn into a failure.
 _EQUIVALENT_TARGET_STATES: dict[str, frozenset[str]] = {
-    "idle": frozenset({"off", "standby", "docked"}),
+    "idle": frozenset({"off", "standby", "docked", "paused"}),
+    "off": frozenset({"standby"}),
     "returning": frozenset({"docked"}),
 }
 

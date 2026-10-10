@@ -132,6 +132,27 @@ def is_redundant_action(
     return _state_matches(action_name, current_state)
 
 
+_NON_COMPARABLE_STATES: frozenset[str] = frozenset({"", "unknown", "unavailable"})
+
+
+def verification_previous_state(state_resp: Any) -> str | None:
+    """Pre-call state to pass as ``previous_state`` to ``call_service_with_verification``.
+
+    Returns the state the executor read for its no-op check, so a device
+    that moved to a different non-target state after the call ("disarmed"
+    -> "triggered" after an arm) counts as a contradiction, while an
+    unchanged state stays ``unverified``. Returns ``None`` (no comparison)
+    for groups, whose aggregate state follows the members, and for
+    ``unknown``/``unavailable`` or unreadable pre-call states.
+    """
+    if not isinstance(state_resp, dict) or is_group_state(state_resp):
+        return None
+    state = state_resp.get("state")
+    if not isinstance(state, str) or state.strip().lower() in _NON_COMPARABLE_STATES:
+        return None
+    return state
+
+
 def supported_features(state_resp: Any) -> int | None:
     """Return the ``supported_features`` bitmask, or None when HA did not report one."""
     if not isinstance(state_resp, dict):
