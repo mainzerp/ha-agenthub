@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -28,10 +29,13 @@ sys.modules.setdefault("litellm", _litellm_mock)
 
 import app.llm.client  # noqa: E402,F401
 from app.agents.dispatch_manager import (  # noqa: E402
+    _CANNED_ACTION_UNCONFIRMED_SPEECH,
     _CANNED_GENERAL_ERROR_SPEECH,
     _CANNED_TIMEOUT_SPEECH,
     DispatchManager,
+    canned_error_code,
 )
+from app.agents.ha_action_marker import note_ha_action_started  # noqa: E402
 
 
 class TestDispatchManagerFallback:
@@ -68,7 +72,8 @@ class TestDispatchManagerFallback:
             span_collector=[],
         )
         assert speech == _CANNED_GENERAL_ERROR_SPEECH
-        assert _result is None
+        # Structured canned flag (#132) instead of a None result.
+        assert canned_error_code(_result["error"]) == "agent_error"
         assert agent_id == "light-agent"
 
     @patch("app.agents.dispatch_manager.track_request", new_callable=AsyncMock)
@@ -92,7 +97,7 @@ class TestDispatchManagerFallback:
             span_collector=[],
         )
         assert speech == _CANNED_TIMEOUT_SPEECH
-        assert _result is None
+        assert canned_error_code(_result["error"]) == "timeout"
         assert agent_id == "light-agent"
 
     @patch("app.agents.dispatch_manager.track_request", new_callable=AsyncMock)
@@ -113,9 +118,65 @@ class TestDispatchManagerFallback:
         assert speech == _CANNED_GENERAL_ERROR_SPEECH
         assert result is not None
         assert result["speech"] == _CANNED_GENERAL_ERROR_SPEECH
-        assert result["error"]["code"] == "general-agent down"
+        assert result["error"]["code"] == "agent_error"
+        assert result["error"]["canned"] is True
         assert result["error"]["recoverable"] is True
         assert agent_id == "general-agent"
+
+    @patch("app.agents.dispatch_manager.track_request", new_callable=AsyncMock)
+    @patch("app.agents.dispatch_manager.track_agent_timeout", new_callable=AsyncMock)
+    async def test_timeout_after_ha_action_started_skips_fallback(self, mock_track_timeout, mock_track_request):
+        """#132 item 9: once the agent's HA service call started, a dispatch
+        timeout must NOT re-dispatch the task to the fallback agent (double
+        execution); the turn reports "sent, not confirmed" instead."""
+        dm, dispatcher, agent_registry = self._make_dispatch_manager()
+        agent_registry.resolve_dispatch_timeout = AsyncMock(return_value=0.05)
+
+        async def _slow_agent_after_ha_call(_request):
+            note_ha_action_started()
+            await asyncio.sleep(5)
+            return {"speech": "never"}
+
+        dispatcher.dispatch = AsyncMock(side_effect=_slow_agent_after_ha_call)
+        agent_id, speech, result = await dm.dispatch_single(
+            target_agent="light-agent",
+            condensed_task="turn on light",
+            user_text="turn on light",
+            conversation_id="conv-double-exec",
+            turns=[],
+            span_collector=[],
+        )
+        assert dispatcher.dispatch.await_count == 1
+        assert agent_id == "light-agent"
+        assert speech == _CANNED_ACTION_UNCONFIRMED_SPEECH
+        assert canned_error_code(result["error"]) == "action_unconfirmed"
+
+    @patch("app.agents.dispatch_manager.track_request", new_callable=AsyncMock)
+    @patch("app.agents.dispatch_manager.track_agent_timeout", new_callable=AsyncMock)
+    async def test_timeout_without_ha_action_still_falls_back(self, mock_track_timeout, mock_track_request):
+        """#132 item 9: without an HA call the timeout fallback is unchanged."""
+        dm, dispatcher, agent_registry = self._make_dispatch_manager()
+        agent_registry.resolve_dispatch_timeout = AsyncMock(return_value=0.05)
+        calls = []
+
+        async def _dispatch(request):
+            calls.append(request.params["agent_id"])
+            if len(calls) == 1:
+                await asyncio.sleep(5)
+            return {"speech": "Fallback answered."}
+
+        dispatcher.dispatch = AsyncMock(side_effect=_dispatch)
+        agent_id, speech, _result = await dm.dispatch_single(
+            target_agent="light-agent",
+            condensed_task="turn on light",
+            user_text="turn on light",
+            conversation_id="conv-no-ha-call",
+            turns=[],
+            span_collector=[],
+        )
+        assert calls == ["light-agent", "general-agent"]
+        assert agent_id == "general-agent"
+        assert speech == "Fallback answered."
 
     @patch("app.agents.dispatch_manager.track_request", new_callable=AsyncMock)
     async def test_runtime_error_primary_with_successful_fallback(self, mock_track_request):

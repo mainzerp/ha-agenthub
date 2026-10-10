@@ -20,9 +20,22 @@ from app.agents.cache_orchestrator import routing_hit_is_still_valid
 from app.analytics.tracer import _optional_span
 from app.cache.cache_manager import CacheManager
 from app.llm.client import LLMError
-from app.models.agent import FALLBACK_AGENT, INTERNAL_ONLY_AGENTS, NOISE_AGENT
+from app.models.agent import CANCEL_INTERACTION_AGENT, FALLBACK_AGENT, INTERNAL_ONLY_AGENTS, NOISE_AGENT
 
 logger = logging.getLogger(__name__)
+
+# Classifier decision marker: the line answers the pending clarifying
+# question and must go to the agent that asked it (follow-up pinning).
+ANSWER_MARKER = "[ANSWER]"
+
+# Agents a pending question can never be pinned to: pseudo-agents and the
+# delivery-only send-agent (it needs a content partner).
+_UNPINNABLE_AGENTS = frozenset({CANCEL_INTERACTION_AGENT, NOISE_AGENT, "send-agent"})
+
+# English system lines raised as _RecoverableClassificationError; the
+# orchestrator localizes them into the turn language before speaking.
+_NO_AGENT_MESSAGE = "I couldn't determine the right agent for that request."
+_NO_CONTENT_MESSAGE = "I couldn't determine what content to deliver."
 
 
 class _RecoverableClassificationError(RuntimeError):
@@ -91,6 +104,7 @@ class ClassificationEngine:
         wrap_user_input: Callable[[str], str] | None = None,
         append_conversation_turn_messages: Callable[[list[dict], list[dict], Any], None] | None = None,
         entity_index: Any | None = None,
+        get_pending_agent: Callable[[str | None], str | None] | None = None,
     ) -> None:
         self._agent_registry = agent_registry
         self._cache_manager = cache_manager
@@ -100,6 +114,9 @@ class ClassificationEngine:
         self._wrap_user_input = wrap_user_input or (lambda x: x)
         self._append_conversation_turn_messages = append_conversation_turn_messages or (lambda msgs, turns, **kw: None)
         self._entity_index = entity_index
+        # Follow-up pinning: returns the agent that asked the clarifying
+        # question consumed by the current turn (None when unknown).
+        self._get_pending_agent = get_pending_agent
 
     async def _get_known_agents(self) -> set[str]:
         return await self._agent_registry.get_known_agents()
@@ -121,8 +138,8 @@ class ClassificationEngine:
     def cancel_interaction_description_line() -> str:
         return (
             "- cancel-interaction: User dismisses or aborts ONLY the current voice/chat turn "
-            "(nevermind, forget it, scratch that, no thanks, stop as in stop talking, "
-            "German e.g. abbrechen/egal/schon gut when meaning dismiss—not device control). "
+            "(nevermind, forget it, scratch that, no thanks, stop as in stop talking; "
+            "the same dismissals in any language, never device control). "
             "NOT for canceling timers, alarms, or media playback—route those to timer-agent, "
             "music-agent, etc."
         )
@@ -239,6 +256,7 @@ class ClassificationEngine:
         _call_llm = call_llm or self._call_llm
         _load_prompt = load_prompt_async or self._load_prompt_async
         _get_turns_fn = get_turns or self._get_turns
+        pending_agent = await self._resolve_pending_agent(conversation_id) if pending_question else None
         t_start = time.perf_counter()
         async with _optional_span(span_collector, "classify.agents", agent_id="orchestrator") as subspan:
             await self._get_known_agents()
@@ -365,6 +383,14 @@ class ClassificationEngine:
                     "request into ONE condensed task for the same agent. If the message is unrelated "
                     "background chatter that does not answer the question, route to noise instead."
                 )
+                if pending_agent:
+                    followup_hint += (
+                        f" The question was asked by {pending_agent}. When the user's message answers it "
+                        f"(including a short yes/no or a choice), output exactly ONE line prefixed with "
+                        f"{ANSWER_MARKER}: {ANSWER_MARKER} {pending_agent} (<confidence>%): <merged condensed task>. "
+                        f"Never use {ANSWER_MARKER} for a clearly new request, a dismissal, or noise -- "
+                        "classify those normally."
+                    )
             messages[0]["content"] = messages[0]["content"].replace("{followup_hint}", followup_hint)
             if turns:
                 self._append_conversation_turn_messages(messages, turns, max_content_length=300)
@@ -383,14 +409,19 @@ class ClassificationEngine:
                 span_collector, "classify.parse_and_sanitize", agent_id="orchestrator"
             ) as subspan:
                 logger.info("Classification LLM response for '%s': %s", user_text[:60], repr(response[:300]))
-                classifications = await self.parse_classification(response, user_text)
-                classifications, _was_repaired = await self.sanitize_or_repair_classifications(
-                    classifications,
-                    user_text=user_text,
-                    conversation_id=conversation_id,
-                    span_collector=span_collector,
-                    language=language,
-                )
+                pinned = await self._pin_pending_answer(response, user_text, pending_agent) if pending_agent else None
+                if pinned is not None:
+                    classifications = pinned
+                    subspan["metadata"]["followup_pinned_to"] = pending_agent
+                else:
+                    classifications = await self.parse_classification(response, user_text)
+                    classifications, _was_repaired = await self.sanitize_or_repair_classifications(
+                        classifications,
+                        user_text=user_text,
+                        conversation_id=conversation_id,
+                        span_collector=span_collector,
+                        language=language,
+                    )
                 subspan["span_name"] = "classify.parse_and_sanitize"
                 subspan["status"] = "ok"
             t_parse = time.perf_counter()
@@ -426,6 +457,41 @@ class ClassificationEngine:
         except Exception:
             logger.exception("Intent classification failed, falling back to %s", FALLBACK_AGENT)
             return [(FALLBACK_AGENT, user_text, 0.0)], False
+
+    async def _resolve_pending_agent(self, conversation_id: str | None) -> str | None:
+        """Agent that asked the pending clarifying question, when it can be pinned."""
+        if self._get_pending_agent is None:
+            return None
+        agent_id = self._get_pending_agent(conversation_id)
+        if not agent_id or agent_id in _UNPINNABLE_AGENTS or agent_id in INTERNAL_ONLY_AGENTS:
+            return None
+        if agent_id not in await self._get_known_agents():
+            # Comma-joined multi-agent tags and unregistered agents are not
+            # routable: the turn classifies normally (with the follow-up hint).
+            return None
+        return agent_id
+
+    async def _pin_pending_answer(
+        self, response: str, user_text: str, pending_agent: str
+    ) -> list[tuple[str, str, float | None]] | None:
+        """Pin the turn to ``pending_agent`` when the classifier marked an answer.
+
+        The classifier decides (one LLM call, no keyword lists) whether the
+        message answers the pending question by prefixing the line with
+        :data:`ANSWER_MARKER`. The merged condensed task of that line is
+        kept; the agent id is forced to the asking agent. Returns ``None``
+        when no line carries the marker (normal classification applies).
+        """
+        marked_line = next(
+            (line.strip() for line in response.split("\n") if line.strip().startswith(ANSWER_MARKER)),
+            None,
+        )
+        if marked_line is None:
+            return None
+        parsed = await self.parse_classification(marked_line, user_text)
+        _agent, condensed, confidence = parsed[0]
+        logger.info("Follow-up answer pinned to %s: %s", pending_agent, condensed[:80])
+        return [(pending_agent, condensed or user_text, confidence)]
 
     async def parse_classification(self, response: str, original_text: str) -> list[tuple[str, str, float | None]]:
         """Parse LLM classification response (single or multi-line).
@@ -465,6 +531,7 @@ class ClassificationEngine:
         lines = [line.strip() for line in response.split("\n") if line.strip()]
         for line in lines:
             line = line.lstrip()
+            line = line.removeprefix(ANSWER_MARKER).strip()
             line = line.removeprefix("[SEQ]").strip()
             confidence: float | None
             match = re.match(r"^([\w-]+)\s*\((\d+)%?\)\s*:\s*(.+)$", line, re.DOTALL)
@@ -516,8 +583,12 @@ class ClassificationEngine:
                 condensed = condensed + " ; " + " ; ".join(extra_tasks)
             deduped.append((agent_id, condensed, confidence))
 
+        # No truncation here: per-agent deduplication already bounds the list
+        # by the number of registered agents, and the multi-agent dispatch
+        # enforces its fan-out cap explicitly (intents over the cap are
+        # reported to the user, never dropped silently).
         deduped.sort(key=lambda x: x[2] if x[2] is not None else -1.0, reverse=True)
-        return deduped[:3]
+        return deduped
 
     async def repair_send_agent_classifications(
         self,
@@ -528,7 +599,7 @@ class ClassificationEngine:
         language: str = "en",
     ) -> list[tuple[str, str, float | None]]:
         if self._load_prompt_async is None or self._call_llm is None:
-            raise _RecoverableClassificationError("I couldn't determine what content to deliver.")
+            raise _RecoverableClassificationError(_NO_CONTENT_MESSAGE)
 
         system_prompt_template = await self._load_prompt_async("orchestrator")
         agent_descriptions = await self.build_agent_descriptions()
@@ -591,19 +662,32 @@ class ClassificationEngine:
         """
         filtered = [c for c in classifications if c[0] not in INTERNAL_ONLY_AGENTS]
         if not filtered:
-            raise _RecoverableClassificationError("I couldn't determine the right agent for that request.")
+            raise _RecoverableClassificationError(_NO_AGENT_MESSAGE)
         if len(filtered) > 1:
             # noise is only meaningful as the sole classification -- a real
             # intent alongside it wins, so drop noise from mixed lists.
             non_noise = [c for c in filtered if c[0] != NOISE_AGENT]
             filtered = non_noise or filtered[:1]
+        if len(filtered) > 1:
+            # A dismissal in the same utterance as actions ("turn on the
+            # light, no, forget it") is a retraction: the conservative choice
+            # is to execute nothing and only acknowledge the cancel. The
+            # classifier prompt asks for a lone cancel line in that case;
+            # this guards against mixed outputs.
+            cancel_entries = [c for c in filtered if c[0] == CANCEL_INTERACTION_AGENT]
+            if cancel_entries:
+                logger.info(
+                    "Cancel-interaction mixed with %d other intent(s); cancel wins, actions dropped",
+                    len(filtered) - len(cancel_entries),
+                )
+                return cancel_entries[:1], False
 
         send_entries = [c for c in filtered if c[0] == "send-agent"]
         content_entries = [c for c in filtered if c[0] != "send-agent"]
 
         if not send_entries:
             if require_send_partner:
-                raise _RecoverableClassificationError("I couldn't determine what content to deliver.")
+                raise _RecoverableClassificationError(_NO_CONTENT_MESSAGE)
             return filtered, False
 
         if content_entries:
@@ -627,4 +711,4 @@ class ClassificationEngine:
             )
             return re_sanitized, True
 
-        raise _RecoverableClassificationError("I couldn't determine what content to deliver.")
+        raise _RecoverableClassificationError(_NO_CONTENT_MESSAGE)

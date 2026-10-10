@@ -214,11 +214,11 @@ class TestSequentialSendFiller:
 
         # Mock handle_task to delay just enough to exceed the 50ms threshold.
 
-        async def _slow_handle(task, _pre_classified=None):
+        async def _slow_handle(task, prelude, **_kw):
             await asyncio.sleep(0.06)
             return {"speech": "Here is the recipe. Sent to Laura Handy."}
 
-        orch.handle_task = AsyncMock(side_effect=_slow_handle)
+        orch._dispatch_and_finalize = AsyncMock(side_effect=_slow_handle)
 
         task = _make_task("find recipe and send to Laura")
         task.conversation_id = "conv-seq-slow"
@@ -256,7 +256,7 @@ class TestSequentialSendFiller:
         orch._invoke_filler_agent = AsyncMock(return_value="One moment please.")
 
         # handle_task completes instantly
-        orch.handle_task = AsyncMock(return_value={"speech": "Done and sent."})
+        orch._dispatch_and_finalize = AsyncMock(return_value={"speech": "Done and sent."})
 
         task = _make_task("find recipe and send")
         task.conversation_id = "conv-seq-fast"
@@ -282,7 +282,7 @@ class TestSequentialSendFiller:
         orch._should_send_filler = AsyncMock(return_value=False)
         orch._invoke_filler_agent = AsyncMock(return_value="One moment please.")
 
-        orch.handle_task = AsyncMock(return_value={"speech": "Done."})
+        orch._dispatch_and_finalize = AsyncMock(return_value={"speech": "Done."})
 
         task = _make_task("find recipe and send")
         task.conversation_id = "conv-seq-disabled"
@@ -323,11 +323,11 @@ class TestSequentialSendFiller:
 
         orch._invoke_filler_agent = AsyncMock(side_effect=_slow_filler)
 
-        async def _medium_handle(task, _pre_classified=None):
+        async def _medium_handle(task, prelude, **_kw):
             await handle_done.wait()
             return {"speech": "Done."}
 
-        orch.handle_task = AsyncMock(side_effect=_medium_handle)
+        orch._dispatch_and_finalize = AsyncMock(side_effect=_medium_handle)
 
         task = _make_task("find recipe and send")
         task.conversation_id = "conv-seq-race"
@@ -361,11 +361,11 @@ class TestSequentialSendFiller:
         orch._should_send_filler = AsyncMock(return_value=True)
         orch._invoke_filler_agent = AsyncMock(return_value="Hold on.")
 
-        async def _slow_handle(task, _pre_classified=None):
+        async def _slow_handle(task, prelude, **_kw):
             await asyncio.sleep(0.06)
             return {"speech": "Done."}
 
-        orch.handle_task = AsyncMock(side_effect=_slow_handle)
+        orch._dispatch_and_finalize = AsyncMock(side_effect=_slow_handle)
 
         collector = SpanCollector("trace-seq-filler")
 
@@ -423,11 +423,11 @@ class TestSequentialSendFiller:
 
         orch._invoke_filler_agent = AsyncMock(side_effect=_filler)
 
-        async def _blocked_handle(task, _pre_classified=None):
+        async def _blocked_handle(task, prelude, **_kw):
             await handle_release.wait()
             return {"speech": "Done and sent."}
 
-        orch.handle_task = AsyncMock(side_effect=_blocked_handle)
+        orch._dispatch_and_finalize = AsyncMock(side_effect=_blocked_handle)
 
         async def _watchdog():
             # Release handle_task once the filler has started; on a t=0
@@ -485,7 +485,7 @@ class TestSequentialSendFiller:
                 raise
 
         orch._invoke_filler_agent = AsyncMock(side_effect=_hanging_filler)
-        orch.handle_task = AsyncMock(return_value={"speech": "Done and sent."})
+        orch._dispatch_and_finalize = AsyncMock(return_value={"speech": "Done and sent."})
 
         task = _make_task("find recipe and send")
         task.conversation_id = "conv-seq-cancel"

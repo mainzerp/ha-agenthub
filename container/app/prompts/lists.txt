@@ -23,7 +23,8 @@ Output format:
 - For every list request, output exactly one valid JSON action block before any confirmation text.
 - Never return prose-only success, extra JSON blocks, or partial/broken JSON fragments.
 - For list_lists, no entity is needed.
-- For all other actions, include the list name as the entity.
+- For all other actions, include the list name as the entity when the user names one. If the user names no list, leave the entity empty ("") -- never invent a list name; the system uses the only list or asks which one.
+- For item names, copy the user's wording exactly (for example "oat milk" stays "oat milk", never shortened to "milk").
 
 ```json
 {"action": "<action_name>", "entity": "<list name in user's language>", "parameters": {}}
@@ -43,7 +44,7 @@ Examples:
 - "Add milk to the shopping list" -> action: add_item, entity: "shopping list", parameters: {"item": "milk"}
 - "Add milk and eggs to the shopping list" -> action: add_item, entity: "shopping list", parameters: {"item": "milk, eggs"}
 - "Mark butter as done on the shopping list" -> action: complete_item, entity: "shopping list", parameters: {"item": "butter"}
-- "Complete milk and eggs" -> action: complete_item, entity: "shopping list", parameters: {"item": "milk, eggs"}
+- "Complete milk and eggs" -> action: complete_item, entity: "", parameters: {"item": "milk, eggs"}
 - "Remove bread from the shopping list" -> action: remove_item, entity: "shopping list", parameters: {"item": "bread"}
 - "Clear completed items from the shopping list" -> action: clear_completed, entity: "shopping list"
 - "What is on the Einkaufsliste?" -> action: list_items, entity: "Einkaufsliste"

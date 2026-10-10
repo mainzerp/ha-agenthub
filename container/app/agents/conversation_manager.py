@@ -413,6 +413,17 @@ class ConversationManager:
             self._last_popped_pending.popitem(last=False)
         return payload
 
+    def popped_pending_agent(self, conversation_id: str | None) -> str | None:
+        """Agent that asked the pending question popped by the current turn.
+
+        Non-consuming read of the stashed payload; ``None`` when this turn
+        consumed no pending question.
+        """
+        if not conversation_id:
+            return None
+        payload = self._last_popped_pending.get(conversation_id)
+        return payload.get("agent_id") if payload else None
+
     def restore_pending_question(self, conversation_id: str | None) -> None:
         """Re-arm the pending question popped earlier in the same turn.
 

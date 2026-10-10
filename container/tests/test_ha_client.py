@@ -314,7 +314,8 @@ class TestHARestClient:
         assert client._client is not None
         await client.close()
 
-    async def test_call_service_fallback_to_websocket_on_500(self):
+    async def test_call_service_does_not_resend_over_websocket_after_500(self):
+        """#132: a 5xx means HA may have executed the call; never re-send it over WS."""
         client = HARestClient()
         client._base_url = "http://ha.local"
         client._client = httpx.AsyncClient(base_url="http://ha.local", headers={})
@@ -326,14 +327,50 @@ class TestHARestClient:
         ws_mock.call_service = AsyncMock(return_value={"weather.home": {"forecast": []}})
         client._state_observer = ws_mock
 
-        result = await client.call_service("weather", "get_forecasts", entity_id="weather.home", return_response=True)
-        assert result == {"weather.home": {"forecast": []}}
+        with pytest.raises(httpx.HTTPStatusError):
+            await client.call_service("weather", "get_forecasts", entity_id="weather.home", return_response=True)
+        with pytest.raises(httpx.HTTPStatusError):
+            await client.call_service("switch", "toggle", entity_id="switch.relay")
+        ws_mock.call_service.assert_not_called()
+        await client.close()
+
+    async def test_call_service_does_not_resend_over_websocket_after_read_timeout(self):
+        """A read timeout happens after the request was sent: no WS resend."""
+        client = HARestClient()
+        client._base_url = "http://ha.local"
+        client._client = httpx.AsyncClient(base_url="http://ha.local", headers={})
+        client._client.post = AsyncMock(side_effect=httpx.ReadTimeout("slow"))
+
+        ws_mock = MagicMock()
+        ws_mock.is_connected.return_value = True
+        ws_mock.call_service = AsyncMock(return_value={"result": "ok"})
+        client._state_observer = ws_mock
+
+        with pytest.raises(httpx.ReadTimeout):
+            await client.call_service("calendar", "get_events", return_response=True)
+        ws_mock.call_service.assert_not_called()
+        await client.close()
+
+    async def test_call_service_falls_back_to_websocket_on_connect_error_without_return_response(self):
+        """A connect error proves HA never saw the request: WS fallback is safe for writes too."""
+        client = HARestClient()
+        client._base_url = "http://ha.local"
+        client._client = httpx.AsyncClient(base_url="http://ha.local", headers={})
+        client._client.post = AsyncMock(side_effect=httpx.ConnectError("connection refused"))
+
+        ws_mock = MagicMock()
+        ws_mock.is_connected.return_value = True
+        ws_mock.call_service = AsyncMock(return_value={"result": "ws"})
+        client._state_observer = ws_mock
+
+        result = await client.call_service("light", "turn_on", entity_id="light.kitchen")
+        assert result == {"result": "ws"}
         ws_mock.call_service.assert_awaited_once_with(
-            "weather",
-            "get_forecasts",
-            entity_id="weather.home",
+            "light",
+            "turn_on",
+            entity_id="light.kitchen",
             service_data=None,
-            return_response=True,
+            return_response=False,
         )
         await client.close()
 

@@ -93,8 +93,14 @@ def summarize_history_for_speech(
     history_groups: list[list[dict[str, Any]]],
     *,
     display_tz: tzinfo,
+    unit: str | None = None,
 ) -> str:
-    """Turn HA /api/history response into a concise sentence for TTS/chat."""
+    """Turn HA /api/history response into a concise sentence for TTS/chat.
+
+    ``unit`` is the entity's ``unit_of_measurement`` (history is fetched
+    with ``no_attributes``, so rows normally carry no unit); it wins over
+    any unit found in the last history row's attributes.
+    """
     if not history_groups or not history_groups[0]:
         return (
             f"No recorder history for {friendly_name} ({entity_id}) in that time range. "
@@ -129,11 +135,12 @@ def summarize_history_for_speech(
     if len(values_f) >= 2:
         lo, hi = min(values_f), max(values_f)
         avg = sum(values_f) / len(values_f)
-        unit = ""
-        attrs = last.get("attributes") or {}
-        if isinstance(attrs, dict):
-            unit = str(attrs.get("unit_of_measurement") or "").strip()
-        u = f" {unit}" if unit else ""
+        resolved_unit = (unit or "").strip()
+        if not resolved_unit:
+            attrs = last.get("attributes") or {}
+            if isinstance(attrs, dict):
+                resolved_unit = str(attrs.get("unit_of_measurement") or "").strip()
+        u = f" {resolved_unit}" if resolved_unit else ""
         return (
             f"{friendly_name}: from {t_first} to {t_last}, "
             f"values ranged from {lo:.2f}{u} to {hi:.2f}{u} "

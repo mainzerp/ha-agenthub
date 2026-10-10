@@ -9,9 +9,10 @@ from __future__ import annotations
 
 import logging
 import re
-import unicodedata
 from typing import Any
 
+from app.entity.aliases import AliasResolver
+from app.entity.tokens import fold_text
 from app.entity.visibility import entity_is_visible, filter_visible_results
 
 logger = logging.getLogger(__name__)
@@ -82,14 +83,15 @@ def _supports_method(obj: Any, method_name: str) -> bool:
 def _normalize_lookup_text(text: str) -> str:
     """Normalize an entity lookup query for deterministic comparisons.
 
-    Lowercase, NFKD, strip combining marks, replace non-word characters
-    AND underscores with spaces (``_`` is a ``\\w`` char but acts as a
-    word separator in user-typed snake_case queries like
-    "jalousie_mitte"), then collapse whitespace.
+    Applies the shared :func:`app.entity.tokens.fold_text` folding
+    (lowercase, NFKD, strip combining marks, ``ß`` -> ``ss``, German
+    digraphs ae/oe/ue collapsed) so the exact stages fold exactly like
+    the hybrid matcher. Then replaces non-word characters AND
+    underscores with spaces (``_`` is a ``\\w`` char but acts as a word
+    separator in user-typed snake_case queries like "jalousie_mitte")
+    and collapses whitespace.
     """
-    normalized = unicodedata.normalize("NFKD", text.lower().strip())
-    normalized = "".join(ch for ch in normalized if unicodedata.category(ch) != "Mn")
-    normalized = _NON_WORD_LOOKUP_RE.sub(" ", normalized)
+    normalized = _NON_WORD_LOOKUP_RE.sub(" ", fold_text(text))
     return _WHITESPACE_RE.sub(" ", normalized).strip()
 
 
@@ -143,25 +145,105 @@ async def _filter_visible_entries(
     return visible
 
 
-def rerank_matches_by_area(matches: list[Any], preferred_area_id: str | None) -> list[Any]:
-    """Reorder hybrid matcher results to prefer the originating area."""
+_AREA_RERANK_MARGIN = 0.05
+# Hybrid matcher ambiguity margin: when the runner-up scores within this
+# distance of the top candidate (and neither the speaker's area nor the
+# caller's preferred domain separates them), the resolver asks instead of
+# silently picking one of two near-equal entities.
+_HYBRID_AMBIGUITY_MARGIN = 0.02
+
+
+def _match_area(match: Any, entity_index: Any | None) -> str | None:
+    """Return a match's area id: its own ``area`` attribute, else the index entry's.
+
+    ``MatchResult`` carries no area, so the index is the source of truth;
+    a candidate object that does carry ``area`` (index entries, test
+    doubles) is used directly.
+    """
+    area = getattr(match, "area", None)
+    if isinstance(area, str) and area:
+        return area
+    if entity_index is None or not _supports_method(entity_index, "get_by_id"):
+        return None
+    try:
+        entry = entity_index.get_by_id(getattr(match, "entity_id", "") or "")
+    except Exception:
+        return None
+    area = getattr(entry, "area", None) if entry is not None else None
+    return area if isinstance(area, str) and area else None
+
+
+def rerank_matches_by_area(
+    matches: list[Any],
+    preferred_area_id: str | None,
+    entity_index: Any | None = None,
+) -> list[Any]:
+    """Reorder hybrid matcher results to prefer the originating area.
+
+    Areas are read from the entity index (``MatchResult`` has no area
+    field); a candidate in ``preferred_area_id`` scoring within
+    ``_AREA_RERANK_MARGIN`` of the top candidate is moved to the front.
+    """
     if not matches or not preferred_area_id or len(matches) < 2:
         return matches
     top = matches[0]
-    if (getattr(top, "area", None) or None) == preferred_area_id:
+    if _match_area(top, entity_index) == preferred_area_id:
         return matches
     top_score = getattr(top, "score", 0.0) or 0.0
     for idx in range(1, len(matches)):
         candidate = matches[idx]
-        if (getattr(candidate, "area", None) or None) != preferred_area_id:
+        if _match_area(candidate, entity_index) != preferred_area_id:
             continue
         cand_score = getattr(candidate, "score", 0.0) or 0.0
-        if cand_score >= top_score - 0.05:
+        if cand_score >= top_score - _AREA_RERANK_MARGIN:
             reordered = list(matches)
             reordered[0], reordered[idx] = reordered[idx], reordered[0]
             return reordered
         break
     return matches
+
+
+def _numeric_score(match: Any) -> float | None:
+    """Return a candidate's score as float, or None when it carries no numeric score."""
+    score = getattr(match, "score", None)
+    if isinstance(score, bool) or not isinstance(score, (int, float)):
+        return None
+    return float(score)
+
+
+def _break_hybrid_tie(
+    matches: list[Any],
+    entity_index: Any | None,
+    *,
+    preferred_area_id: str | None = None,
+    preferred_domain: str | None = None,
+) -> Any | None:
+    """Return the hybrid top candidate, or None when it is ambiguous.
+
+    Candidates scoring within ``_HYBRID_AMBIGUITY_MARGIN`` of the top are
+    near-ties. A near-tie is broken only by the same signals the
+    deterministic stages use: a single candidate in the speaker's area,
+    then a single candidate of the caller's preferred domain. Otherwise
+    the resolver fails closed and asks for clarification.
+    """
+    top = matches[0]
+    top_score = _numeric_score(top)
+    if top_score is None:
+        return top
+    near = [
+        m for m in matches if (score := _numeric_score(m)) is not None and score >= top_score - _HYBRID_AMBIGUITY_MARGIN
+    ]
+    if len(near) <= 1:
+        return top
+    if preferred_area_id:
+        in_area = [m for m in near if _match_area(m, entity_index) == preferred_area_id]
+        if len(in_area) == 1:
+            return in_area[0]
+    if preferred_domain:
+        in_domain = [m for m in near if (getattr(m, "entity_id", "") or "").split(".", 1)[0] == preferred_domain]
+        if len(in_domain) == 1:
+            return in_domain[0]
+    return None
 
 
 def filter_matches_by_domain(
@@ -259,21 +341,51 @@ def _build_exact_terms(entity_query: str) -> list[str]:
     return [normalized] if normalized else []
 
 
-def _normalized_entry_fields(entry: Any) -> tuple[Any, str, list[str], str]:
+def _normalized_entry_fields(entry: Any) -> tuple[Any, str, list[str], frozenset[str]]:
     """Compute an entry's normalized match fields once per snapshot.
 
-    ``area`` is guarded by an isinstance check: previously area
-    normalization only ran inside the area-fallback stage, so entries
-    without a real string area (e.g. lightweight test doubles) never
-    reached it -- the eager precompute must stay that tolerant.
+    The last element holds the normalized area id slug AND the
+    human-readable ``area_name`` so the area fallback matches what users
+    actually say ("Wohnzimmer") as well as the slug ("wohnzimmer").
+    Both are guarded by isinstance checks: entries without real string
+    areas (e.g. lightweight test doubles) must stay tolerated.
     """
-    area = getattr(entry, "area", None)
+    areas: set[str] = set()
+    for raw_area in (getattr(entry, "area", None), getattr(entry, "area_name", None)):
+        if isinstance(raw_area, str) and raw_area:
+            normalized_area = _normalize_lookup_text(raw_area)
+            if normalized_area:
+                areas.add(normalized_area)
     return (
         entry,
         _normalize_lookup_text(entry.friendly_name or ""),
         [_normalize_lookup_text(alias) for alias in (getattr(entry, "aliases", None) or []) if alias],
-        _normalize_lookup_text(area if isinstance(area, str) else ""),
+        frozenset(areas),
     )
+
+
+async def _user_alias_entity_ids(entity_matcher: Any, normalized_terms: set[str]) -> set[str]:
+    """Entity ids whose user/DB alias (``aliases`` table) equals a normalized term.
+
+    The alias table is reached through the matcher's ``AliasResolver``
+    (loaded from the DB, including YAML user aliases). Only a real
+    ``AliasResolver`` is consulted so mocked matchers stay inert. The
+    caller intersects the result with the visibility- and
+    domain-filtered snapshot (Directive 5).
+    """
+    alias_resolver = getattr(entity_matcher, "alias_resolver", None) if entity_matcher is not None else None
+    if not isinstance(alias_resolver, AliasResolver) or not normalized_terms:
+        return set()
+    try:
+        alias_map = await alias_resolver.list_all()
+    except Exception:
+        logger.debug("User alias lookup failed; skipping DB alias stage", exc_info=True)
+        return set()
+    return {
+        entity_id
+        for alias, entity_id in alias_map.items()
+        if entity_id and _normalize_lookup_text(alias) in normalized_terms
+    }
 
 
 async def resolve_entity_deterministic_first(
@@ -324,6 +436,11 @@ async def resolve_entity_deterministic_first(
         for term in ordered_terms:
             entity_id_query = term.lower()
             if not _ENTITY_ID_RE.fullmatch(entity_id_query):
+                continue
+            # The executor's allowed domains bound this stage exactly like
+            # the listing-based stages below: an out-of-domain entity_id
+            # is never selected here.
+            if allowed_domains is not None and entity_id_query.split(".", 1)[0] not in allowed_domains:
                 continue
             exact_entry = await entity_index.get_by_id_async(entity_id_query)
             if not exact_entry:
@@ -408,10 +525,16 @@ async def resolve_entity_deterministic_first(
             }
 
         if enable_exact_alias:
+            # HA per-entity aliases (on the index entry) and user/DB aliases
+            # (``aliases`` table, incl. the YAML user file) are both exact
+            # deterministic alias matches. DB aliases only resolve to
+            # entities present in the visibility/domain-filtered snapshot.
+            user_alias_ids = await _user_alias_entity_ids(entity_matcher, normalized_terms)
             alias_matches = [
                 entry
                 for entry, _, norm_aliases, _ in normalized_entries
-                if any(norm_alias in normalized_terms for norm_alias in norm_aliases)
+                if entry.entity_id in user_alias_ids
+                or any(norm_alias in normalized_terms for norm_alias in norm_aliases)
             ]
             candidate, ambiguity = _select_deterministic_candidate(
                 alias_matches,
@@ -498,8 +621,9 @@ async def resolve_entity_deterministic_first(
         domain_set = allowed_domains if allowed_domains is not None else frozenset()
         area_matches = [
             entry
-            for entry, _, _, norm_area in normalized_entries
-            if (not domain_set or getattr(entry, "domain", "") in domain_set) and norm_area in area_queries
+            for entry, _, _, norm_areas in normalized_entries
+            if (not domain_set or getattr(entry, "domain", "") in domain_set)
+            and not norm_areas.isdisjoint(area_queries)
         ]
         candidate, ambiguity = _select_deterministic_candidate(
             area_matches,
@@ -587,7 +711,10 @@ async def resolve_entity_deterministic_first(
                 "speech": ambiguity,
             }
 
-    if entity_matcher:
+    # An ambiguous exact / alias / area / containment stage is a
+    # deterministic finding: the hybrid matcher must not override it with a
+    # fuzzy pick (Directive 4.1). Ask the user instead.
+    if ambiguous_result is None and entity_matcher:
         matches = await entity_matcher.match(
             entity_query,
             agent_id=agent_id,
@@ -603,11 +730,33 @@ async def resolve_entity_deterministic_first(
         metadata.update({"match_count": len(filtered_matches), "resolution_path": "hybrid_matcher"})
         if filtered_matches:
             original_top = filtered_matches[0]
-            reranked = rerank_matches_by_area(filtered_matches, preferred_area_id)
+            reranked = rerank_matches_by_area(filtered_matches, preferred_area_id, entity_index)
             chosen = reranked[0]
             if chosen is not original_top:
                 metadata["area_rerank_from"] = original_top.entity_id
                 metadata["area_rerank_reason"] = "preferred_area_match"
+            else:
+                chosen = _break_hybrid_tie(
+                    filtered_matches,
+                    entity_index,
+                    preferred_area_id=preferred_area_id,
+                    preferred_domain=preferred_domain,
+                )
+                if chosen is None:
+                    metadata.update(
+                        {
+                            "resolution_path": "hybrid_matcher_ambiguous",
+                            "candidate_entities": _serialize_match_candidates(filtered_matches, entity_index),
+                        }
+                    )
+                    return _with_visible_entries(
+                        _build_resolution_result(
+                            entity_query=entity_query,
+                            metadata=metadata,
+                            speech=f"Multiple entities match '{entity_query}'. Please be more specific.",
+                        ),
+                        visible_entries,
+                    )
             metadata["top_entity_id"] = chosen.entity_id
             metadata["top_friendly_name"] = chosen.friendly_name or chosen.entity_id
             metadata["top_score"] = getattr(chosen, "score", 0.0)

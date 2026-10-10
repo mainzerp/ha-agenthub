@@ -18,7 +18,7 @@ import logging
 import time
 import uuid
 from collections.abc import Sequence
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -31,6 +31,13 @@ logger = logging.getLogger(__name__)
 
 _VALID_KINDS = frozenset({"plain", "notification", "delayed_action", "sleep", "snooze", "alarm"})
 _STARTUP_RECOVERY_RETRY_DELAY_SECONDS = 2.0
+# Overdue rows found at startup (container was down when they were due):
+# device actions (delayed_action, sleep) still run when at most this late and
+# are dropped otherwise; timers and alarms ring normally only within the short
+# grace window and are otherwise reported once as missed instead of late.
+_OVERDUE_DEVICE_ACTION_MAX_SECONDS = 300
+_OVERDUE_RING_GRACE_SECONDS = 60
+_DEVICE_ACTION_KINDS = frozenset({"delayed_action", "sleep"})
 _RECURRING_WEEKDAY_INDEX: dict[str, int] = {
     "MO": 0,
     "TU": 1,
@@ -76,6 +83,13 @@ def _load_recurrence(payload: dict[str, Any]) -> dict[str, Any] | None:
         "anchor_time": anchor_text,
         "_anchor_time_obj": anchor_time,
     }
+    anchor_week_text = str(recurrence.get("anchor_week") or "").strip()
+    if anchor_week_text:
+        try:
+            normalized["_anchor_week_obj"] = _week_start(date.fromisoformat(anchor_week_text))
+            normalized["anchor_week"] = anchor_week_text
+        except ValueError:
+            logger.debug("Invalid recurrence anchor_week %r, ignoring", anchor_week_text)
 
     timezone_name = recurrence.get("timezone")
     if timezone_name:
@@ -113,7 +127,26 @@ def _load_recurrence(payload: dict[str, Any]) -> dict[str, Any] | None:
     return normalized
 
 
-def _compute_next_recurring_fire_epoch(row: dict[str, Any], recurrence: dict[str, Any], now_ts: int) -> int | None:
+def _week_start(day: date) -> date:
+    """Return the Monday of the ISO week containing ``day``."""
+    return day - timedelta(days=day.weekday())
+
+
+def _compute_next_recurring_fire_epoch(
+    row: dict[str, Any],
+    recurrence: dict[str, Any],
+    now_ts: int,
+    *,
+    include_current_day: bool = False,
+) -> int | None:
+    """Return the next occurrence after the day of the row's ``fires_at`` (local wall clock).
+
+    ``include_current_day`` also considers the day of ``fires_at`` itself; it
+    places the first occurrence of a new recurring alarm on a listed weekday.
+    Weekly recurrences with ``interval > 1`` count weeks from a fixed anchor
+    week (``anchor_week`` in the payload, else the week of ``fires_at``), so
+    several weekdays inside one active week stay on the same interval grid.
+    """
     tz = recurrence.get("_tz")
     anchor_time = recurrence.get("_anchor_time_obj")
     freq = recurrence.get("freq")
@@ -129,7 +162,7 @@ def _compute_next_recurring_fire_epoch(row: dict[str, Any], recurrence: dict[str
     now_local = datetime.fromtimestamp(int(now_ts), tz=tz) if tz is not None else datetime.fromtimestamp(int(now_ts))
 
     if freq == "daily":
-        next_date = current_local.date() + timedelta(days=interval)
+        next_date = current_local.date() + timedelta(days=0 if include_current_day else interval)
         next_local = datetime.combine(next_date, anchor_time, tzinfo=tz)
         while next_local <= now_local:
             next_date = next_date + timedelta(days=interval)
@@ -140,10 +173,12 @@ def _compute_next_recurring_fire_epoch(row: dict[str, Any], recurrence: dict[str
     if not weekdays:
         return None
     base_date = current_local.date()
-    for day_offset in range(1, 366 * max(1, interval)):
+    anchor_week = recurrence.get("_anchor_week_obj") or _week_start(base_date)
+    first_offset = 0 if include_current_day else 1
+    for day_offset in range(first_offset, 366 * max(1, interval)):
         candidate_date = base_date + timedelta(days=day_offset)
-        weeks_since_base = (candidate_date - base_date).days // 7
-        if weeks_since_base % interval != 0:
+        weeks_since_anchor = (_week_start(candidate_date) - anchor_week).days // 7
+        if weeks_since_anchor % interval != 0:
             continue
         if candidate_date.weekday() not in weekdays:
             continue
@@ -173,6 +208,7 @@ class TimerScheduler:
         self._tasks: dict[str, asyncio.Task] = {}
         self._by_logical: dict[str, list[str]] = {}
         self._startup_recovery_task: asyncio.Task | None = None
+        self._overdue_tasks: list[asyncio.Task] = []
         self._started = False
 
     async def _dispatch_background_event(
@@ -219,27 +255,21 @@ class TimerScheduler:
     async def start(self) -> None:
         """Rehydrate pending timers from the DB.
 
-        Overdue timers fire immediately during startup. All other
-        pending timers get an asyncio task that sleeps until their
-        ``fires_at``.
+        Future timers get an asyncio task that sleeps until their
+        ``fires_at``. Overdue rows are handed to a background task (see
+        ``_process_overdue_rows``) so startup never waits on HA calls.
         """
         if self._started:
             return
         self._started = True
-        rehydrated = 0
-        fired_on_recovery = 0
         try:
             rows = await self._repo.list_pending()
         except Exception:
             logger.error("TimerScheduler.start: failed to load pending timers", exc_info=True)
             self._schedule_startup_recovery_retry()
             rows = []
-        rehydrated, fired_on_recovery = await self._rehydrate_rows(rows)
-        logger.info(
-            "TimerScheduler started: rehydrated=%d fired_on_recovery=%d",
-            rehydrated,
-            fired_on_recovery,
-        )
+        rehydrated, overdue = self._rehydrate_rows(rows)
+        logger.info("TimerScheduler started: rehydrated=%d overdue=%d", rehydrated, overdue)
 
     async def stop(self) -> None:
         """Cancel all in-flight timer tasks. DB rows remain pending."""
@@ -252,13 +282,16 @@ class TimerScheduler:
             for result in results:
                 if isinstance(result, BaseException):
                     logger.error("Timer task raised exception during stop", exc_info=(type(result), result, None))
-        startup_recovery = self._startup_recovery_task
+        background = [self._startup_recovery_task, *self._overdue_tasks]
         self._startup_recovery_task = None
-        if startup_recovery and not startup_recovery.done():
-            startup_recovery.cancel()
-            startup_results = await asyncio.gather(startup_recovery, return_exceptions=True)
-            for result in startup_results:
-                if isinstance(result, BaseException):
+        self._overdue_tasks = []
+        for bg_task in background:
+            if bg_task is None or bg_task.done():
+                continue
+            bg_task.cancel()
+            bg_results = await asyncio.gather(bg_task, return_exceptions=True)
+            for result in bg_results:
+                if isinstance(result, BaseException) and not isinstance(result, asyncio.CancelledError):
                     logger.error(
                         "Startup recovery task raised exception during stop", exc_info=(type(result), result, None)
                     )
@@ -330,22 +363,25 @@ class TimerScheduler:
         id_: str | None = None,
         logical_name: str | None = None,
         area: str | None = None,
+        kinds: set[str] | frozenset[str] | None = None,
     ) -> int:
-        """Cancel by id or by logical_name (optionally scoped to area).
+        """Cancel by id or by logical_name (optionally scoped to area and kinds).
 
-        Returns the number of timers cancelled.
+        Paused rows are cancellable too. Returns the number of timers cancelled.
         """
         now = int(time.time())
         if id_:
             row = await self._repo.get(id_)
-            if not row or row.get("state") != "pending":
+            if not row or row.get("state") not in ("pending", "paused"):
                 return 0
             await self._repo.mark_cancelled(id_, now)
             self._cancel_task(id_)
             return 1
         if not logical_name:
             return 0
-        rows = await self._repo.list_pending_for(logical_name=logical_name, area=area)
+        rows = await self._repo.list_pending_for(
+            logical_name=logical_name, area=area, kinds=kinds, states={"pending", "paused"}
+        )
         if not rows:
             return 0
         count = 0
@@ -361,9 +397,47 @@ class TimerScheduler:
         logical_name: str | None = None,
         area: str | None = None,
         kinds: set[str] | frozenset[str] | None = None,
+        states: set[str] | frozenset[str] | None = None,
     ) -> list[dict]:
-        """Return pending timers, optionally filtered by logical_name and/or area."""
-        return await self._repo.list_pending_for(logical_name=logical_name, area=area, kinds=kinds)
+        """Return timers (pending by default), optionally filtered by name, area, kind, and state."""
+        return await self._repo.list_pending_for(logical_name=logical_name, area=area, kinds=kinds, states=states)
+
+    async def pause(self, id_: str) -> int | None:
+        """Pause a pending timer; returns the remaining seconds, or None when it is not pending.
+
+        The row moves to state ``paused`` with ``paused_remaining_seconds`` in
+        its payload and its firing task is cancelled. Paused rows are not
+        rehydrated on restart; they wait for ``resume`` or ``cancel``.
+        """
+        row = await self._repo.get(id_)
+        if not row or row.get("state") != "pending":
+            return None
+        remaining = max(0, int(row.get("fires_at") or 0) - int(time.time()))
+        payload = _load_payload(row)
+        payload["paused_remaining_seconds"] = remaining
+        if not await self._repo.mark_paused(id_, json.dumps(payload)):
+            return None
+        self._cancel_task(id_)
+        return remaining
+
+    async def resume(self, id_: str) -> int | None:
+        """Resume a paused timer; returns the remaining seconds, or None when it is not paused."""
+        row = await self._repo.get(id_)
+        if not row or row.get("state") != "paused":
+            return None
+        payload = _load_payload(row)
+        try:
+            remaining = max(0, int(payload.pop("paused_remaining_seconds", 0) or 0))
+        except (TypeError, ValueError):
+            remaining = 0
+        fires_at = int(time.time()) + remaining
+        payload_json = json.dumps(payload)
+        if not await self._repo.mark_resumed(id_, fires_at=fires_at, payload_json=payload_json):
+            return None
+        resumed = dict(row)
+        resumed.update({"state": "pending", "fires_at": fires_at, "payload_json": payload_json})
+        self._spawn_task(resumed)
+        return remaining
 
     async def reschedule(
         self,
@@ -476,45 +550,133 @@ class TimerScheduler:
         try:
             await asyncio.sleep(_STARTUP_RECOVERY_RETRY_DELAY_SECONDS)
             rows = await self._repo.list_pending()
-            rehydrated, fired_on_recovery = await self._rehydrate_rows(rows)
+            rehydrated, overdue = self._rehydrate_rows(rows)
             logger.info(
-                "TimerScheduler startup recovery retry: rehydrated=%d fired_on_recovery=%d",
+                "TimerScheduler startup recovery retry: rehydrated=%d overdue=%d",
                 rehydrated,
-                fired_on_recovery,
+                overdue,
             )
         except asyncio.CancelledError:
             raise
         except Exception:
             logger.error("TimerScheduler startup recovery retry failed", exc_info=True)
 
-    async def _rehydrate_rows(self, rows: Sequence[dict]) -> tuple[int, int]:
+    def _rehydrate_rows(self, rows: Sequence[dict]) -> tuple[int, int]:
+        """Spawn tasks for future rows and hand overdue rows to a background task.
+
+        Returns ``(rehydrated, overdue)``. Never awaits HA work, so startup is
+        not blocked by overdue processing.
+        """
         rehydrated = 0
-        fired_on_recovery = 0
+        overdue_rows: list[dict] = []
         now = int(time.time())
         for row in rows:
             timer_id = row.get("id")
             if not timer_id or timer_id in self._tasks:
                 continue
             if int(row["fires_at"]) <= now:
-                try:
-                    await self._fire(row)
-                    await self._repo.mark_fired(timer_id, now)
-                    fired_on_recovery += 1
-                except Exception:
-                    logger.error(
-                        "TimerScheduler.start: fire-on-recovery failed for %s",
-                        row.get("id"),
-                        exc_info=True,
-                    )
-                    # Match _run: a failed fire is still terminal, so it does not re-fire on every restart.
-                    try:
-                        await self._repo.mark_fired(timer_id, now)
-                    except Exception:
-                        logger.error("Timer %s mark_fired failed on recovery", timer_id, exc_info=True)
+                overdue_rows.append(row)
             else:
                 self._spawn_task(row)
                 rehydrated += 1
-        return rehydrated, fired_on_recovery
+        if overdue_rows:
+            task = asyncio.create_task(self._process_overdue_rows(overdue_rows), name="timer-overdue-recovery")
+            self._overdue_tasks.append(task)
+            task.add_done_callback(self._forget_overdue_task)
+        return rehydrated, len(overdue_rows)
+
+    def _forget_overdue_task(self, task: asyncio.Task) -> None:
+        if task in self._overdue_tasks:
+            self._overdue_tasks.remove(task)
+
+    async def wait_for_overdue_processing(self) -> None:
+        """Await in-flight overdue processing (used by tests)."""
+        while self._overdue_tasks:
+            await asyncio.gather(*list(self._overdue_tasks), return_exceptions=True)
+
+    async def _process_overdue_rows(self, rows: Sequence[dict]) -> None:
+        """Handle rows that came due while the container was down.
+
+        - ``delayed_action`` / ``sleep``: executed when at most
+          ``_OVERDUE_DEVICE_ACTION_MAX_SECONDS`` late, otherwise dropped and logged.
+        - ``plain`` / ``notification`` / ``snooze`` / ``alarm``: ring normally within
+          ``_OVERDUE_RING_GRACE_SECONDS``; later ones are reported once, together,
+          as missed. A missed recurring alarm still schedules its next occurrence.
+        """
+        now = int(time.time())
+        missed: list[dict] = []
+        for row in sorted(rows, key=lambda r: (int(r.get("fires_at") or 0), str(r.get("id") or ""))):
+            timer_id = str(row.get("id"))
+            overdue_by = max(0, now - int(row.get("fires_at") or 0))
+            kind = row.get("kind")
+            try:
+                if kind in _DEVICE_ACTION_KINDS:
+                    if overdue_by > _OVERDUE_DEVICE_ACTION_MAX_SECONDS:
+                        logger.warning(
+                            "Dropping overdue %s timer %s (%r): %ds late after restart (limit %ds)",
+                            kind,
+                            timer_id,
+                            row.get("logical_name"),
+                            overdue_by,
+                            _OVERDUE_DEVICE_ACTION_MAX_SECONDS,
+                        )
+                        await self._repo.mark_expired(timer_id, now)
+                        continue
+                elif overdue_by > _OVERDUE_RING_GRACE_SECONDS:
+                    missed.append(row)
+                    await self._repo.mark_expired(timer_id, now)
+                    if kind == "alarm":
+                        await self._schedule_next_recurrence(row, _load_payload(row))
+                    continue
+                await self._fire(row)
+                await self._repo.mark_fired(timer_id, now)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.error("TimerScheduler: overdue recovery failed for %s", timer_id, exc_info=True)
+                # Match _run: a failed fire is still terminal, so it does not re-fire on every restart.
+                try:
+                    await self._repo.mark_fired(timer_id, now)
+                except Exception:
+                    logger.error("Timer %s mark_fired failed on recovery", timer_id, exc_info=True)
+        if missed:
+            await self._dispatch_missed(missed)
+
+    async def _dispatch_missed(self, rows: Sequence[dict]) -> None:
+        """Send one consolidated notification for timers/alarms missed while offline."""
+        logger.warning("TimerScheduler: %d timers/alarms were missed while AgentHub was offline", len(rows))
+        if self._dispatcher is None:
+            return
+        items: list[dict[str, Any]] = []
+        for row in rows:
+            payload = _load_payload(row)
+            is_alarm = row.get("kind") == "alarm"
+            name = (payload.get("alarm_label") if is_alarm else None) or row.get("logical_name") or ""
+            items.append(
+                {
+                    "name": str(name),
+                    "kind": "alarm" if is_alarm else "timer",
+                    "due_epoch": int(row.get("fires_at") or 0),
+                }
+            )
+        latest = rows[-1]
+        latest_payload = _load_payload(latest)
+        try:
+            await self._dispatch_background_event(
+                "timer_notification",
+                {
+                    "missed": items,
+                    "entity_id": "agenthub_internal:missed",
+                    "origin_device_id": latest.get("origin_device_id"),
+                    "origin_area": latest.get("origin_area"),
+                    "language": latest_payload.get("language"),
+                    "timezone": latest_payload.get("timezone"),
+                },
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.error("TimerScheduler: missed-timer notification failed", exc_info=True)
 
     def _cancel_task(self, timer_id: str) -> None:
         task = self._tasks.pop(timer_id, None)
@@ -588,7 +750,7 @@ class TimerScheduler:
         duration_str = _seconds_to_hms(duration_seconds)
         language = payload.get("language")
         dispatcher = self._dispatcher
-        if dispatcher is None and kind != "snooze":
+        if dispatcher is None:
             logger.warning("TimerScheduler fire skipped for %s: no dispatcher available", row["id"])
             return
 
@@ -682,18 +844,32 @@ class TimerScheduler:
             return
 
         if kind == "snooze":
-            snooze_seconds = int(payload.get("snooze_seconds") or duration_seconds)
-            await self.schedule(
-                logical_name=logical_name,
-                kind="plain",
-                duration_seconds=snooze_seconds,
-                origin_device_id=origin_device_id,
-                origin_area=origin_area,
-                payload={"snoozed_from": row["id"], "language": language},
+            # Legacy rows only: new snoozes are scheduled as plain timers. The
+            # snooze delay has already elapsed, so ring now instead of
+            # scheduling a second timer of the same length.
+            await self._dispatch_background_event(
+                "timer_notification",
+                {
+                    "timer_name": logical_name,
+                    "entity_id": f"agenthub_internal:{row['id']}",
+                    "media_player": payload.get("media_player"),
+                    "origin_device_id": origin_device_id,
+                    "origin_area": origin_area,
+                    "duration": duration_str,
+                    "language": language,
+                },
             )
             return
 
         logger.warning("Unknown timer kind for %s: %s", row["id"], kind)
+
+
+def _load_payload(row: dict) -> dict[str, Any]:
+    try:
+        payload = json.loads(row.get("payload_json") or "{}")
+    except (json.JSONDecodeError, TypeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
 
 
 def _seconds_to_hms(total: int) -> str:

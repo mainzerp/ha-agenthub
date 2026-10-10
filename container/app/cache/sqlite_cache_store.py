@@ -92,6 +92,14 @@ CREATE TABLE IF NOT EXISTS routing_cache_vec_dim (
 
 _ROUTING_VEC_TABLE = "routing_cache_vec"
 
+# Metadata keys owned by the hit path (see update_access_stats).
+_ACCESS_STAT_KEYS = ("hit_count", "last_accessed")
+
+# Routing-entry metadata key naming the embedding model that produced the
+# entry's vec row. Vectors from different models are not comparable even at
+# the same dimension, so a mismatch makes the vector unusable.
+ROUTING_EMBEDDING_MODEL_KEY = "embedding_model"
+
 
 def _serialize_vec(vector: list[float]) -> bytes:
     """Serialize a float vector into the compact little-endian f32 BLOB sqlite-vec expects."""
@@ -305,25 +313,54 @@ class SqliteCacheStore:
             (entry_id, cursor.lastrowid, len(embedding)),
         )
 
-    def store_routing_embedding(self, entry_id: str, embedding: list[float]) -> bool:
+    def store_routing_embedding(self, entry_id: str, embedding: list[float], *, model_id: str | None = None) -> bool:
         """Store the embedding for an existing routing entry (lazy backfill path).
 
         Only writes when the routing entry itself still exists, so no orphan
-        vec rows are left behind. Returns True when a vec row was written.
+        vec rows are left behind. When ``model_id`` is given, the entry's
+        metadata is tagged with it in the same transaction. Returns True when
+        a vec row was written.
         """
         if not self._vec_available or not embedding:
             return False
         conn = self._ensure_conn()
         with self._lock:
-            row = conn.execute(
-                f"SELECT 1 FROM {COLLECTION_ROUTING_CACHE} WHERE entry_id = ?",
-                (entry_id,),
-            ).fetchone()
-            if row is None:
-                return False
-            self._write_routing_embedding(conn, entry_id, embedding)
-            conn.commit()
+            try:
+                row = conn.execute(
+                    f"SELECT metadata_json FROM {COLLECTION_ROUTING_CACHE} WHERE entry_id = ?",
+                    (entry_id,),
+                ).fetchone()
+                if row is None:
+                    return False
+                self._write_routing_embedding(conn, entry_id, embedding)
+                if model_id:
+                    try:
+                        meta = json.loads(row[0]) if row[0] else {}
+                    except (json.JSONDecodeError, TypeError):
+                        meta = {}
+                    meta[ROUTING_EMBEDDING_MODEL_KEY] = model_id
+                    conn.execute(
+                        f"UPDATE {COLLECTION_ROUTING_CACHE} SET metadata_json = ? WHERE entry_id = ?",
+                        (json.dumps(meta), entry_id),
+                    )
+                conn.commit()
+            except BaseException:
+                conn.rollback()
+                raise
         return True
+
+    def drop_routing_embeddings(self, entry_ids: list[str]) -> None:
+        """Remove the vec rows of routing entries whose vectors are unusable (model change)."""
+        if not self._vec_available or not entry_ids:
+            return
+        conn = self._ensure_conn()
+        with self._lock:
+            try:
+                self._drop_routing_embedding_rows(conn, list(entry_ids))
+                conn.commit()
+            except BaseException:
+                conn.rollback()
+                raise
 
     def has_routing_embedding(self, entry_id: str) -> bool:
         """True when a vec row exists for the entry (or vec support is off)."""
@@ -533,6 +570,120 @@ class SqliteCacheStore:
                         (metadata_json, now, entry_id),
                     )
                 conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+
+    def update_access_stats(self, collection: str, ids: list[str], metadatas: list[dict]) -> None:
+        """Merge only the access statistics (hit_count, last_accessed) into existing rows.
+
+        Hit-path flushes carry a metadata snapshot taken at lookup time.
+        Writing that snapshot wholesale would revert content changed after
+        the hit (validator corrections, embedding-model tags), so only the
+        access keys are merged into the current row. Deleted rows stay deleted.
+        """
+        if not ids:
+            return
+        conn = self._ensure_conn()
+        now = datetime.now(UTC).isoformat()
+        with self._lock:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                for entry_id, snapshot in zip(ids, metadatas, strict=False):
+                    row = conn.execute(
+                        f"SELECT metadata_json FROM {collection} WHERE entry_id = ?",
+                        (entry_id,),
+                    ).fetchone()
+                    if row is None:
+                        continue
+                    try:
+                        current = json.loads(row[0]) if row[0] else {}
+                    except (json.JSONDecodeError, TypeError):
+                        current = {}
+                    for key in _ACCESS_STAT_KEYS:
+                        if key in (snapshot or {}):
+                            current[key] = snapshot[key]
+                    conn.execute(
+                        f"UPDATE {collection} SET metadata_json = ?, last_accessed = ? WHERE entry_id = ?",
+                        (json.dumps(current), now, entry_id),
+                    )
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+
+    @staticmethod
+    def _row_metadata_matches(
+        conn: sqlite3.Connection,
+        collection: str,
+        entry_id: str,
+        expected: dict[str, str],
+    ) -> dict | None:
+        """Return the row's metadata when every ``expected`` key matches (caller holds the lock)."""
+        row = conn.execute(
+            f"SELECT metadata_json FROM {collection} WHERE entry_id = ?",
+            (entry_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        try:
+            meta = json.loads(row[0]) if row[0] else {}
+        except (json.JSONDecodeError, TypeError):
+            return None
+        if not all(str(meta.get(key) or "") == str(value or "") for key, value in expected.items()):
+            return None
+        return meta
+
+    def patch_metadata_if_matches(
+        self,
+        collection: str,
+        entry_id: str,
+        expected: dict[str, str],
+        patch: dict[str, str],
+    ) -> bool:
+        """Compare-and-swap metadata patch: update only an existing, unchanged row.
+
+        ``expected`` is compared against the stored metadata under the store
+        lock in one transaction; on any mismatch (or a deleted row) nothing is
+        written. Returns True when the row was patched.
+        """
+        conn = self._ensure_conn()
+        with self._lock:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                meta = self._row_metadata_matches(conn, collection, entry_id, expected)
+                if meta is None:
+                    conn.rollback()
+                    return False
+                meta.update(patch)
+                conn.execute(
+                    f"UPDATE {collection} SET metadata_json = ? WHERE entry_id = ?",
+                    (json.dumps(meta), entry_id),
+                )
+                if collection == COLLECTION_ACTION_CACHE:
+                    self._write_sidecar_rows(conn, entry_id, meta)
+                conn.commit()
+                return True
+            except Exception:
+                conn.rollback()
+                raise
+
+    def delete_if_metadata_matches(self, collection: str, entry_id: str, expected: dict[str, str]) -> bool:
+        """Compare-and-delete: remove the row only while ``expected`` still matches."""
+        conn = self._ensure_conn()
+        with self._lock:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                if self._row_metadata_matches(conn, collection, entry_id, expected) is None:
+                    conn.rollback()
+                    return False
+                conn.execute(f"DELETE FROM {collection} WHERE entry_id = ?", (entry_id,))
+                if collection == COLLECTION_ACTION_CACHE:
+                    self._drop_sidecar_rows(conn, [entry_id])
+                if collection == COLLECTION_ROUTING_CACHE:
+                    self._drop_routing_embedding_rows(conn, [entry_id])
+                conn.commit()
+                return True
             except Exception:
                 conn.rollback()
                 raise

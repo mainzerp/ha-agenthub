@@ -21,7 +21,10 @@ async def setup_monitors(
 ) -> None:
     """Create and start AlarmMonitor and TimerScheduler.
 
-    Stores ``alarm_monitor`` and ``timer_scheduler`` on ``app.state``.
+    Stores ``alarm_monitor`` and ``timer_scheduler`` on ``app.state``. The
+    AlarmMonitor only rings ``input_datetime`` helpers that carry the
+    configured HA label (``alarm_monitor.label``) and are visible to the
+    timer agent.
     """
     alarm_monitor = getattr(app.state, "alarm_monitor", None)
     if alarm_monitor is None:
@@ -40,5 +43,7 @@ async def setup_monitors(
             ScheduledTimersRepository,
             dispatcher=dispatcher,
         )
-        await timer_scheduler.start()
+        # Publish before start(): overdue rows are processed in a background
+        # task, and timer turns arriving meanwhile must find the scheduler.
         app.state.timer_scheduler = timer_scheduler
+        await timer_scheduler.start()

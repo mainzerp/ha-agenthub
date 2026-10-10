@@ -194,14 +194,14 @@ class _BaseCache[TEntry](ABC):
     def store(self, entry: TEntry, *, embedding: list[float] | None = None) -> None:
         if not self._enabled:
             return
-        generation = self._state.current_generation()
+        entry_id = self.make_entry_id(entry.query_text, language=getattr(entry, "language", "en"))  # type: ignore[attr-defined]
+        token = self._state.store_token()
         if self._state.record_store(self._eviction_interval):
             self._enforce_lru()
         self._flush_pending_updates()
-        if not self._state.matches_generation(generation):
+        if not self._state.store_token_valid(token, entry_id):
             logger.info("Skipping %s cache store after flush invalidation", self._collection_name)
             return
-        entry_id = self.make_entry_id(entry.query_text, language=getattr(entry, "language", "en"))  # type: ignore[attr-defined]
         self._store.upsert(
             self._collection_name,
             ids=[entry_id],
@@ -211,10 +211,65 @@ class _BaseCache[TEntry](ABC):
         )
 
     def invalidate_by_entry_id(self, entry_id: str) -> bool:
-        self._state.invalidate()
-        self._state.discard_pending(entry_id)
+        # Per-key invalidation: only an in-flight store of this very row is
+        # aborted; unrelated stores and queued hit counts survive.
+        self._state.invalidate_key(entry_id)
         self._store.delete(self._collection_name, ids=[entry_id])
         return True
+
+    def invalidate_if_unchanged(self, entry_id: str, *, expected_created_at: str | None) -> bool:
+        """Delete ``entry_id`` only while it still carries ``expected_created_at``.
+
+        Used by background maintenance (cache validator) that works on a
+        snapshot: a row re-stored by a live turn after the snapshot has a new
+        ``created_at`` and must not be deleted on the strength of stale data.
+        Returns True when the row was deleted.
+        """
+        expected = {"created_at": expected_created_at or ""}
+        deleter = _store_method(self._store, "delete_if_metadata_matches")
+        if deleter is not None:
+            deleted = bool(deleter(self._collection_name, entry_id, expected))
+        else:
+            # Non-atomic fallback for stores without compare-and-delete.
+            deleted = self._matching_row_metadata(entry_id, expected) is not None
+            if deleted:
+                self._store.delete(self._collection_name, ids=[entry_id])
+        if deleted:
+            self._state.invalidate_key(entry_id)
+        return deleted
+
+    def patch_if_unchanged(self, entry_id: str, *, expected_created_at: str | None, patch: dict[str, str]) -> bool:
+        """Merge ``patch`` into the row's metadata only while it is unchanged.
+
+        Compare-and-swap on ``created_at``: a deleted row is never
+        resurrected and a row re-stored after the caller's snapshot is never
+        reverted. Only the patched keys change; hit counts and other fields
+        written meanwhile are preserved. Returns True when the row was updated.
+        """
+        # Queued hit-count updates are flushed first so an older metadata
+        # snapshot cannot be written over the patched content later.
+        self._flush_pending_updates()
+        expected = {"created_at": expected_created_at or ""}
+        patcher = _store_method(self._store, "patch_metadata_if_matches")
+        if patcher is not None:
+            return bool(patcher(self._collection_name, entry_id, expected, patch))
+        # Non-atomic fallback for stores without compare-and-swap.
+        meta = self._matching_row_metadata(entry_id, expected)
+        if meta is None:
+            return False
+        meta.update(patch)
+        self._store.update_metadata(self._collection_name, ids=[entry_id], metadatas=[meta])
+        return True
+
+    def _matching_row_metadata(self, entry_id: str, expected: dict[str, str]) -> dict | None:
+        """Return a copy of the row's metadata when every ``expected`` key matches, else None."""
+        page = self._store.get(self._collection_name, ids=[entry_id], include=["metadatas"])
+        if not (page.get("ids") or []):
+            return None
+        meta = dict(_extract_single(page.get("metadatas")) or {})
+        if not all(str(meta.get(key) or "") == value for key, value in expected.items()):
+            return None
+        return meta
 
     def invalidate_by_entity_id(self, entity_ids: Iterable[str]) -> int:
         targets = {str(entity_id).strip().lower() for entity_id in entity_ids if entity_id}
@@ -252,7 +307,7 @@ class _BaseCache[TEntry](ABC):
         if not to_delete:
             return 0
         for entry_id in to_delete:
-            self._state.discard_pending(entry_id)
+            self._state.invalidate_key(entry_id)
         for start in range(0, len(to_delete), 500):
             self._store.delete(self._collection_name, ids=to_delete[start : start + 500])
         logger.debug(
@@ -434,8 +489,15 @@ class _BaseCache[TEntry](ABC):
             return
         ids = list(pending.keys())
         metas = [pending[entry_id][1] for entry_id in ids]
+        # Prefer a merge of only the access statistics: a full-metadata write
+        # from a hit snapshot would revert content changed after the hit
+        # (validator corrections, embedding-model tags).
+        merge = _store_method(self._store, "update_access_stats")
         try:
-            self._store.update_metadata(self._collection_name, ids=ids, metadatas=metas)
+            if merge is not None:
+                merge(self._collection_name, ids=ids, metadatas=metas)
+            else:
+                self._store.update_metadata(self._collection_name, ids=ids, metadatas=metas)
         except Exception:
             self._state.requeue_failed(pending)
             logger.warning("Failed to flush %s cache metadata updates; re-queued", self._collection_name, exc_info=True)

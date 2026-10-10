@@ -29,7 +29,7 @@ _litellm_mock.RateLimitError = _RateLimitError
 sys.modules.setdefault("litellm", _litellm_mock)
 
 import app.llm.client  # noqa: E402,F401
-from app.agents.dispatch_manager import _CANNED_TIMEOUT_SPEECH  # noqa: E402
+from app.agents.dispatch_manager import _CANNED_TIMEOUT_SPEECH, canned_result  # noqa: E402
 from app.agents.orchestrator import OrchestratorAgent  # noqa: E402
 from app.agents.pipeline_strategies import (  # noqa: E402
     DefaultCacheReplayStrategy,
@@ -225,10 +225,11 @@ class TestDefaultDispatchStrategyMultiAgent:
 
     @pytest.mark.asyncio
     async def test_multi_agent_canned_speech_treated_as_error(self):
-        """G12: Canned timeout/error speech should be treated as failure."""
+        """G12: a canned timeout result is a failure, detected by its
+        structured ``error.canned`` flag (#132), not by its English text."""
         strategy, _dm, _ = self._make_strategy(
             dispatch_side_effect=[
-                ("light-agent", _CANNED_TIMEOUT_SPEECH, {"action_executed": None}),
+                ("light-agent", _CANNED_TIMEOUT_SPEECH, canned_result(_CANNED_TIMEOUT_SPEECH, "timeout")),
                 ("music-agent", "Playing jazz.", {"action_executed": None}),
             ]
         )
@@ -245,12 +246,50 @@ class TestDefaultDispatchStrategyMultiAgent:
         assert result.has_error is False
         assert len(result.failed_agents) == 1
         assert result.failed_agents[0][0] == "light-agent"
-        assert result.failed_agents[0][1] == "canned_speech"
+        assert result.failed_agents[0][1] == "timeout"
         assert len(result.agent_responses) == 1
 
     @pytest.mark.asyncio
-    async def test_multi_agent_none_result_treated_as_timeout(self):
-        """G12: None result from dispatch_single should be treated as timeout."""
+    async def test_multi_agent_speech_matching_canned_text_is_not_a_failure(self):
+        """#132: an agent answer that happens to equal the English canned line
+        but carries no error flag is a normal answer (no literal matching)."""
+        strategy, _dm, _ = self._make_strategy(
+            dispatch_side_effect=[
+                ("light-agent", _CANNED_TIMEOUT_SPEECH, {"action_executed": None}),
+                ("music-agent", "Playing jazz.", {"action_executed": None}),
+            ]
+        )
+        classifications = [
+            ("light-agent", "turn on light", 0.95),
+            ("music-agent", "play jazz", 0.90),
+        ]
+        task = _make_task("turn on light and play jazz")
+        result = await strategy.execute(
+            task, classifications, "turn on light and play jazz", "conv-1", [], None, "en", TaskContext()
+        )
+        assert result.failed_agents == []
+        assert len(result.agent_responses) == 2
+
+    @pytest.mark.asyncio
+    async def test_multi_agent_intents_over_cap_are_reported_not_dropped(self):
+        """#132 item 6: intents over the fan-out cap are not dispatched but
+        reported as ``intent_limit`` failures (never silently dropped)."""
+        from app.agents.pipeline_strategies import INTENT_LIMIT_REASON, MAX_PARALLEL_INTENTS
+
+        agents = [f"agent-{i}" for i in range(MAX_PARALLEL_INTENTS + 1)]
+        strategy, dm, _ = self._make_strategy(
+            dispatch_side_effect=[(a, f"done {a}", {"action_executed": None}) for a in agents[:MAX_PARALLEL_INTENTS]]
+        )
+        classifications = [(a, f"task {a}", 0.9 - i * 0.01) for i, a in enumerate(agents)]
+        task = _make_task("many things")
+        result = await strategy.execute(task, classifications, "many things", "conv-1", [], None, "en", TaskContext())
+        assert dm.dispatch_single.await_count == MAX_PARALLEL_INTENTS
+        assert result.failed_agents == [(agents[-1], INTENT_LIMIT_REASON)]
+        assert len(result.agent_responses) == MAX_PARALLEL_INTENTS
+
+    @pytest.mark.asyncio
+    async def test_multi_agent_none_result_treated_as_failure(self):
+        """G12: None result from dispatch_single is a failure."""
         strategy, _dm, _ = self._make_strategy(
             dispatch_side_effect=[
                 ("light-agent", "Light is on.", {"action_executed": None}),
@@ -270,7 +309,7 @@ class TestDefaultDispatchStrategyMultiAgent:
         assert result.has_error is False
         assert len(result.failed_agents) == 1
         assert result.failed_agents[0][0] == "music-agent"
-        assert result.failed_agents[0][1] == "timeout"
+        assert result.failed_agents[0][1] == "no_result"
         assert len(result.agent_responses) == 1
 
     @pytest.mark.asyncio

@@ -28,12 +28,17 @@ class _EmbeddingCache:
 
     Keys are ``(provider, model, text)`` so that embeddings from different
     providers or models do not collide.
+
+    Thread-safe: ``embed_batch`` runs on the event loop and, through the
+    vector store's sync embedding shim, on worker threads, so every access
+    to the OrderedDict happens under one lock.
     """
 
     def __init__(self, maxsize: int = 1024, ttl: float = 300.0) -> None:
         self._maxsize = maxsize
         self._ttl = ttl
         self._cache: OrderedDict[tuple[str, str, str], tuple[list[float], float]] = OrderedDict()
+        self._lock = threading.Lock()
 
     def _is_expired(self, timestamp: float) -> bool:
         return time.monotonic() - timestamp > self._ttl
@@ -46,28 +51,31 @@ class _EmbeddingCache:
 
     def get(self, provider: str, model: str, text: str) -> list[float] | None:
         """Return a cached embedding if it exists and has not expired."""
-        self._evict_expired()
-        key = (provider, model, text)
-        if key in self._cache:
-            embedding, timestamp = self._cache[key]
-            if not self._is_expired(timestamp):
-                self._cache.move_to_end(key)
-                return embedding
-            del self._cache[key]
-        return None
+        with self._lock:
+            self._evict_expired()
+            key = (provider, model, text)
+            if key in self._cache:
+                embedding, timestamp = self._cache[key]
+                if not self._is_expired(timestamp):
+                    self._cache.move_to_end(key)
+                    return embedding
+                del self._cache[key]
+            return None
 
     def set(self, provider: str, model: str, text: str, embedding: list[float]) -> None:
         """Store an embedding, evicting expired or oldest entries if needed."""
-        self._evict_expired()
-        key = (provider, model, text)
-        self._cache[key] = (embedding, time.monotonic())
-        self._cache.move_to_end(key)
-        if len(self._cache) > self._maxsize:
-            self._cache.popitem(last=False)
+        with self._lock:
+            self._evict_expired()
+            key = (provider, model, text)
+            self._cache[key] = (embedding, time.monotonic())
+            self._cache.move_to_end(key)
+            if len(self._cache) > self._maxsize:
+                self._cache.popitem(last=False)
 
     def clear(self) -> None:
         """Drop all cached embeddings."""
-        self._cache.clear()
+        with self._lock:
+            self._cache.clear()
 
 
 @contextmanager
@@ -147,6 +155,15 @@ class EmbeddingEngine:
         if self._provider == "local":
             # Model load is blocking and CPU-heavy (Directive 9): keep it off the loop.
             await asyncio.to_thread(self._get_local_model)
+
+    @property
+    def model_id(self) -> str:
+        """Stable identity of the producing model, ``"<provider>:<model>"``.
+
+        Persisted next to stored vectors so vectors from a different model
+        (even of the same dimension) are recognised as unusable.
+        """
+        return f"{self._provider or 'unknown'}:{self._model_name or 'unknown'}"
 
     def get_info(self) -> dict:
         """Return embedding model configuration info."""
@@ -243,7 +260,22 @@ class EmbeddingEngine:
 
 
 _engine: EmbeddingEngine | None = None
-_engine_init_lock = asyncio.Lock()
+# The in-flight initialization, shared by every concurrent caller. It runs as
+# its own task so a cancelled caller cannot abandon a half-finished model
+# load (whose worker thread keeps running) and make the next caller start a
+# second, parallel load.
+_engine_init_task: asyncio.Task | None = None
+# Failure backoff: after a failed initialization, callers fail fast for this
+# many seconds instead of re-running (and queueing behind) a doomed init on
+# every cache miss and store.
+_ENGINE_INIT_RETRY_COOLDOWN_S = 30.0
+_engine_init_failed_at: float | None = None
+_engine_init_error: BaseException | None = None
+
+
+class EmbeddingEngineUnavailableError(RuntimeError):
+    """Raised while the embedding engine is in its post-failure cooldown."""
+
 
 # Fixed keep-alive payload. Safe because the default interval (15 min)
 # exceeds the 300 s _EmbeddingCache TTL, so every run performs a real
@@ -251,19 +283,66 @@ _engine_init_lock = asyncio.Lock()
 _KEEPALIVE_WARMUP_TEXT = "embedding keep-alive warmup"
 
 
+async def _initialize_engine() -> EmbeddingEngine:
+    engine = EmbeddingEngine()
+    await engine.initialize()
+    return engine
+
+
+def _on_engine_init_done(task: asyncio.Task) -> None:
+    """Publish a successful init; record a failure for the retry cooldown."""
+    global _engine, _engine_init_task, _engine_init_failed_at, _engine_init_error
+    if _engine_init_task is task:
+        _engine_init_task = None
+    if task.cancelled():
+        # Cancellation of the init itself (loop shutdown) is not a model
+        # failure: no cooldown, the next caller simply starts over.
+        return
+    exc = task.exception()
+    if exc is not None:
+        _engine_init_failed_at = time.monotonic()
+        _engine_init_error = exc
+        logger.warning(
+            "Embedding engine initialization failed; retrying after %.0f s cooldown",
+            _ENGINE_INIT_RETRY_COOLDOWN_S,
+            exc_info=exc,
+        )
+        return
+    # Publish only a fully initialized engine: an interrupted or failed
+    # initialize() must not leave a half-configured singleton
+    # (model_name=None) behind for later callers.
+    _engine = task.result()
+    _engine_init_failed_at = None
+    _engine_init_error = None
+
+
 async def get_embedding_engine() -> EmbeddingEngine:
-    """Return the singleton EmbeddingEngine, initializing on first call."""
-    global _engine
-    if _engine is None:
-        async with _engine_init_lock:
-            if _engine is None:
-                engine = EmbeddingEngine()
-                await engine.initialize()
-                # Publish only a fully initialized engine: an interrupted or
-                # failed initialize() must not leave a half-configured
-                # singleton (model_name=None) behind for later callers.
-                _engine = engine
-    return _engine
+    """Return the singleton EmbeddingEngine, initializing on first call.
+
+    Concurrent callers share one initialization task. A caller that is
+    cancelled stops waiting but does not cancel the shared init. After a
+    failed init, callers raise :class:`EmbeddingEngineUnavailableError`
+    without retrying until the cooldown has elapsed.
+    """
+    global _engine_init_task
+    if _engine is not None:
+        return _engine
+    task = _engine_init_task
+    if task is not None and task.get_loop() is not asyncio.get_running_loop():
+        # A task bound to a closed loop (test harness, restart) can never finish here.
+        task = None
+    if task is None:
+        if (
+            _engine_init_failed_at is not None
+            and time.monotonic() - _engine_init_failed_at < _ENGINE_INIT_RETRY_COOLDOWN_S
+        ):
+            raise EmbeddingEngineUnavailableError(
+                "Embedding engine initialization failed recently; retry pending"
+            ) from _engine_init_error
+        task = asyncio.create_task(_initialize_engine(), name="embedding-engine-init")
+        task.add_done_callback(_on_engine_init_done)
+        _engine_init_task = task
+    return await asyncio.shield(task)
 
 
 async def get_embedding_info() -> dict:

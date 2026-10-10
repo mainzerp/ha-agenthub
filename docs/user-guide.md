@@ -234,11 +234,29 @@ The **Timers** page at `/dashboard/timers` manages timers and alarms created thr
 
 Wake briefings apply only to AgentHub-managed internal alarms, not to HA native plain timers.
 
+Timer and alarm behavior by voice or chat:
+
+- **Unnamed references.** "Cancel the timer" or "add 5 minutes" acts on the only running timer; with several, the assistant asks which one. Timers set in another room, from chat, or on a named satellite are found when the current room has none. Timer commands never change alarms.
+- **Pause and resume.** Pausing keeps the remaining time; resuming continues from there. Paused timers stay paused across restarts until resumed or cancelled.
+- **Snooze.** Snoozing rings once after the snooze time (default 5 minutes). It never ends a recurring alarm series.
+- **Alarm dates.** "Wake me tomorrow at 7" or "Monday at 6:30" ring on that day in the Home Assistant timezone, including across daylight-saving changes. A weekly alarm first rings on its next listed weekday.
+- **After a restart.** Timers and alarms that came due while AgentHub was down do not ring late: they are reported once, together, as missed (within one minute of the due time they still ring). A missed recurring alarm keeps its series. Delayed device actions run if at most 5 minutes late and are otherwise dropped and logged.
+- **Language.** Announcements are generated in the configured language; fixed fallback texts are translated through the rewrite agent, with English as the last resort.
+
+**Action required for HA helper alarms:** an `input_datetime` helper rings as an alarm only when it carries the HA label `agenthub_alarm` (setting `alarm_monitor.label`) and is visible to the timer agent. In Home Assistant, open **Settings > Devices & services > Helpers**, select each helper that should ring, and add the label. Helpers without the label (for example automation schedule helpers) no longer ring.
+
 ### Calendar
 
 ![Calendar page showing events and reminder settings](screenshots/16_calendar.png)
 
 The **Calendar** page at `/dashboard/calendar` shows calendar events and configures proactive reminder injection. The orchestrator can include upcoming calendar reminders in its replies when `calendar.reminder_injection.enabled` is true. You can also add calendar users and events directly from this page.
+
+Calendar behavior in conversation:
+
+- **Reminders** -- per event and user, only the closest applicable offset fires, once (an event 10 minutes away gets the 15-minute reminder, not also the 1-hour and 1-day ones). All-day events only use offsets of one day or more. Events are tracked by summary plus start time, because Home Assistant does not return event ids for `calendar.get_events`.
+- **Reading** -- without a named calendar, the calendar agent reads all of the user's visible default calendars (or all visible calendars when none are configured) and merges the events by start time.
+- **Creating** -- events default to one hour; a day without a time creates an all-day event. When no calendar is named and several are available, the agent asks which one to use.
+- **Changing or deleting** -- the agent finds the event by summary and day (or time), asks when several events match, and needs the Home Assistant WebSocket connection (it uses the `calendar/event/update` and `calendar/event/delete` commands and re-reads the calendar to confirm).
 
 ### Persons
 
@@ -341,6 +359,18 @@ These short procedures link the dashboard pages described above.
     - Open **Settings** (`/dashboard/settings`).
     - Edit the **Language**, **Filler**, or **Mediation** sections.
     - Save and test in **Chat**.
+
+11. **Create, change, or delete an automation by voice or chat**
+    - Ask for the change (for example "create an automation that turns on the living room light at sunset").
+    - The automation agent describes the change and asks "Shall I save this?" (or "Shall I delete it?"). Nothing is written yet.
+    - Answer within 5 minutes in the same conversation: a clear yes saves it, a no discards it, and a different instruction replaces the proposal. A late answer is told that the proposal expired.
+    - Every referenced entity must exist in the entity index and be visible to the automation agent, and only common device services are allowed; otherwise the agent names what it rejected. Device, area, floor, and label targets are not supported. The default visibility rules limit the automation agent to the `automation` domain, so add include rules on the **Agents** page for the domains your automations should control (for example `light`).
+    - Changes to an existing automation are applied as a patch to its current configuration; if the automation was edited in Home Assistant before you confirmed, nothing is saved.
+    - Enabling, disabling, and triggering an automation still happen immediately.
+
+12. **Work with to-do lists**
+    - Name the list ("add milk to the shopping list"); without a name the only visible list is used, and with several lists the agent asks which one.
+    - Items match exactly first, then by a unique partial match; if several items match ("milk" with "oat milk" and "almond milk"), the agent asks which one.
 
 ## Troubleshooting from the UI
 

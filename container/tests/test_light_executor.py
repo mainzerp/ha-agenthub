@@ -125,6 +125,9 @@ class TestExecuteLightAction:
     @pytest.mark.asyncio
     async def test_set_brightness(self, ha_client, entity_matcher, entity_index):
         ha_client.get_state = AsyncMock(return_value={"state": "off", "attributes": {}})
+        # The device reports the commanded state (REST response); an unchanged
+        # state after the verify window is a verification mismatch (#132).
+        ha_client.call_service = AsyncMock(return_value=[{"entity_id": "light.kitchen_ceiling", "state": "on"}])
         action = {"action": "set_brightness", "entity": "kitchen light", "parameters": {"brightness": 128}}
         result = await execute_light_action(action, ha_client, entity_index, entity_matcher)
 
@@ -257,6 +260,9 @@ class TestExecuteLightAction:
     @pytest.mark.asyncio
     async def test_exact_friendly_name_resolves_without_hybrid_match(self, ha_client):
         ha_client.get_state = AsyncMock(return_value={"state": "off", "attributes": {}})
+        # The device reports the commanded state (REST response); an unchanged
+        # state after the verify window is a verification mismatch (#132).
+        ha_client.call_service = AsyncMock(return_value=[{"entity_id": "light.keller", "state": "on"}])
         matcher = MagicMock(spec=EntityMatcher)
         matcher.match = AsyncMock(return_value=[])
         matcher.filter_visible_results = AsyncMock(side_effect=lambda agent_id, results: results)
@@ -333,9 +339,12 @@ class TestExecuteLightAction:
         ha_client.call_service.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_exact_friendly_name_ambiguity_falls_back_to_hybrid_matcher(self, ha_client):
-        """When multiple entities share the same friendly name, the hybrid matcher should break the tie."""
+    async def test_exact_friendly_name_ambiguity_is_not_overridden_by_hybrid_matcher(self, ha_client):
+        """Two entities sharing a friendly name: ask, even when the hybrid matcher has a pick (#132)."""
         ha_client.get_state = AsyncMock(return_value={"state": "off", "attributes": {}})
+        # The device reports the commanded state (REST response); an unchanged
+        # state after the verify window is a verification mismatch (#132).
+        ha_client.call_service = AsyncMock(return_value=[{"entity_id": "light.keller_main", "state": "on"}])
         match_result = MagicMock()
         match_result.entity_id = "light.keller_main"
         match_result.friendly_name = "Keller"
@@ -355,9 +364,10 @@ class TestExecuteLightAction:
         action = {"action": "turn_on", "entity": "Keller", "parameters": {}}
         result = await execute_light_action(action, ha_client, index, matcher, agent_id="light-agent")
 
-        assert result["success"] is True
-        assert result["entity_id"] == "light.keller_main"
-        ha_client.call_service.assert_awaited_once()
+        assert result["success"] is False
+        assert "Multiple entities match 'Keller'" in result["speech"]
+        matcher.match.assert_not_awaited()
+        ha_client.call_service.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_ambiguity_returns_voice_followup(self, ha_client):
@@ -465,7 +475,8 @@ class TestExecuteLightAction:
 
     @pytest.mark.asyncio
     async def test_intent_speech_when_verified_state_is_stale(self, ha_client, entity_matcher, entity_index):
-        """turn_off + observed 'on' must not speak 'is now on'."""
+        """turn_off + observed 'on' must not speak 'is now on' (late-reporting
+        device: not a failure; ActionableAgent hedges the speech, #132)."""
         ha_client.call_service = AsyncMock(return_value=None)
         ha_client.get_state = AsyncMock(
             return_value={"state": "on", "attributes": {}},
@@ -877,6 +888,9 @@ class TestExecuteLightActionCondition:
         self, ha_client, entity_matcher, entity_index
     ):
         ha_client.get_state = AsyncMock(return_value={"state": "off", "attributes": {}})
+        # The device reports the commanded state (REST response); an unchanged
+        # state after the verify window is a verification mismatch (#132).
+        ha_client.call_service = AsyncMock(return_value=[{"entity_id": "light.kitchen_ceiling", "state": "on"}])
         action = {
             "action": "turn_on",
             "entity": "kitchen light",
@@ -910,6 +924,9 @@ class TestExecuteLightActionCondition:
     @pytest.mark.asyncio
     async def test_no_condition_regression_cacheable_true(self, ha_client, entity_matcher, entity_index):
         ha_client.get_state = AsyncMock(return_value={"state": "off", "attributes": {}})
+        # The device reports the commanded state (REST response); an unchanged
+        # state after the verify window is a verification mismatch (#132).
+        ha_client.call_service = AsyncMock(return_value=[{"entity_id": "light.kitchen_ceiling", "state": "on"}])
         action = {"action": "turn_on", "entity": "kitchen light", "parameters": {}}
         result = await execute_light_action(action, ha_client, entity_index, entity_matcher)
 

@@ -23,6 +23,21 @@ _INTERNAL_ERROR = -32603
 _TIMEOUT_ERROR = -32000
 
 
+class A2ADispatchError(RuntimeError):
+    """A ``message/send`` request the dispatcher cannot route (bad method or params).
+
+    Raised -- like transport failures (``RuntimeError``) -- instead of
+    returning a JSON-RPC error envelope, so ``dispatch()`` callers handle
+    one shape: the raw agent result on success, an exception otherwise.
+    The message is a short generic string that is safe to surface; the
+    validation detail is only logged.
+    """
+
+    def __init__(self, code: int, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+
+
 class _JsonRpcError(BaseModel):
     code: int
     message: str
@@ -86,7 +101,14 @@ class Dispatcher:
         self._transport = transport
 
     async def dispatch(self, request: JsonRpcRequest) -> Any:
-        """Dispatch a non-streaming JSON-RPC request."""
+        """Dispatch a non-streaming JSON-RPC request.
+
+        ``message/send`` returns the raw agent result (``TaskResult`` /
+        dict) and raises ``RuntimeError`` on failure: ``A2ADispatchError``
+        for an unknown method or invalid params, a transport ``RuntimeError``
+        for agent failures. The ``agent/discover`` and ``agent/list``
+        management methods return JSON-RPC envelopes.
+        """
         method = request.method
 
         if method == "message/send":
@@ -96,7 +118,8 @@ class Dispatcher:
         elif method == "agent/list":
             return await self._handle_agent_list(request)
         else:
-            return _error_response(request.id, _METHOD_NOT_FOUND, f"Method not found: {method}")
+            logger.warning("A2A dispatch: unknown method %r (request %s)", method, request.id)
+            raise A2ADispatchError(_METHOD_NOT_FOUND, f"Method not found: {method}")
 
     async def dispatch_stream(self, request: JsonRpcRequest) -> AsyncGenerator[dict[str, Any], None]:
         """Dispatch a streaming JSON-RPC request (message/stream)."""
@@ -114,10 +137,13 @@ class Dispatcher:
             params = _MessageStreamParams(**{k: v for k, v in raw_params.items() if k != "_span_collector"})
             task = _validate_task(params.agent_id, params.task)
         except Exception as exc:
+            # The validation detail (a pydantic dump) is logged, never put
+            # into the chunk: chunk errors can reach user-facing speech.
+            logger.warning("A2A stream dispatch: invalid params (request %s): %s", request.id, exc)
             yield {
                 "token": "",
                 "done": True,
-                "error": f"Invalid params: {exc}",
+                "error": "Invalid params",
             }
             return
 
@@ -132,7 +158,8 @@ class Dispatcher:
             params = _MessageSendParams(**{k: v for k, v in raw_params.items() if k != "_span_collector"})
             task = _validate_task(params.agent_id, params.task)
         except Exception as exc:
-            return _error_response(request.id, _INVALID_PARAMS, f"Invalid params: {exc}")
+            logger.warning("A2A dispatch: invalid params (request %s): %s", request.id, exc)
+            raise A2ADispatchError(_INVALID_PARAMS, "Invalid params") from exc
 
         task.span_collector = span_collector
         return await self._transport.send(params.agent_id, task, request.id)
@@ -141,7 +168,8 @@ class Dispatcher:
         try:
             params = _AgentDiscoverParams(**(request.params or {}))
         except Exception as exc:
-            return _error_response(request.id, _INVALID_PARAMS, f"Invalid params: {exc}")
+            logger.warning("A2A agent/discover: invalid params (request %s): %s", request.id, exc)
+            return _error_response(request.id, _INVALID_PARAMS, "Invalid params")
 
         card = await self._registry.discover(params.agent_id)
         if card is None:

@@ -117,7 +117,9 @@ class ActionCacheValidator:
         errors = 0
 
         try:
-            entries = list(self._cache_manager.iter_action_entries(page_size=1000))
+            # The paged scan is blocking sqlite I/O over up to max_entries rows
+            # (Directive 9): materialize it on a worker thread.
+            entries = await asyncio.to_thread(lambda: list(self._cache_manager.iter_action_entries(page_size=1000)))
         except Exception:
             logger.warning("Failed to iterate action cache entries", exc_info=True)
             return {"scanned": 0, "inconsistent": 0, "corrected": 0, "deleted": 0, "errors": 1}
@@ -147,7 +149,7 @@ class ActionCacheValidator:
                         old_response_text=entry.response_text,
                         deleted=True,
                     )
-                    self._cache_manager.invalidate_action(entry_id)
+                    await self._invalidate_snapshot(entry_id, entry)
                     deleted += 1
                 except Exception:
                     logger.warning("Failed to invalidate entry with no action", exc_info=True)
@@ -212,7 +214,7 @@ class ActionCacheValidator:
                                 old_response_text=entry.response_text,
                                 deleted=True,
                             )
-                            self._cache_manager.invalidate_action(entry_id)
+                            await self._invalidate_snapshot(entry_id, entry)
                             deleted += 1
                     else:
                         # Use batch result
@@ -262,7 +264,7 @@ class ActionCacheValidator:
                                     old_response_text=entry.response_text,
                                     deleted=True,
                                 )
-                                self._cache_manager.invalidate_action(entry_id)
+                                await self._invalidate_snapshot(entry_id, entry)
                                 deleted += 1
                         else:
                             is_valid, was_corrected, was_deleted = await self._process_validation_result(
@@ -324,6 +326,20 @@ class ActionCacheValidator:
             errors,
         )
         return result
+
+    async def _invalidate_snapshot(self, entry_id: str, entry: ActionCacheEntry) -> bool:
+        """Delete a snapshot entry off the loop, only while the row is unchanged.
+
+        Compare-and-delete on the snapshot's ``created_at``: a row re-stored by
+        a live turn after the scan started is kept.
+        """
+        return bool(
+            await asyncio.to_thread(
+                self._cache_manager.invalidate_action,
+                entry_id,
+                expected_created_at=entry.created_at or "",
+            )
+        )
 
     async def get_history(self) -> list[dict]:
         """Return the last 50 validation run records from persistent storage."""
@@ -553,7 +569,7 @@ class ActionCacheValidator:
                     old_response_text=entry.response_text,
                     deleted=True,
                 )
-                self._cache_manager.invalidate_action(entry_id)
+                await self._invalidate_snapshot(entry_id, entry)
                 return False, False, True
 
         # "invalidate" or None (unparseable)
@@ -569,7 +585,7 @@ class ActionCacheValidator:
             old_response_text=entry.response_text,
             deleted=True,
         )
-        self._cache_manager.invalidate_action(entry_id)
+        await self._invalidate_snapshot(entry_id, entry)
         return False, False, True
 
     async def _validate_entry(self, entry: ActionCacheEntry) -> tuple[bool, str | None, str | None]:

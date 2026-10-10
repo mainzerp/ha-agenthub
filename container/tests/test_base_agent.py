@@ -293,7 +293,10 @@ class TestBaseAgentStream:
         chunks = [c async for c in agent.handle_task_stream(task)]
         assert len(chunks) == 1
         assert chunks[0]["done"] is True
-        assert "error" not in chunks[0]
+        # #132: the final chunk carries the error code like the non-streaming
+        # result (TaskResult.error), not a raw exception string.
+        assert chunks[0]["error"] == "internal"
+        assert "simulated failure" not in str(chunks[0])
         assert "Sorry, something went wrong" in chunks[0]["token"]
 
 

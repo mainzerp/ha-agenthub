@@ -70,6 +70,8 @@ Navigate to `http://<host>:8080/setup/` and use the "Test" button for each provi
 3. Verify the entity is exposed in Home Assistant -- only entities visible through the HA REST API (`/api/states`) are indexed.
 4. Add an alias: In the admin dashboard, create an alias mapping your preferred name to the exact entity ID (e.g., "bedroom light" -> `light.bedroom_main`).
 5. Check entity matching weights: Adjust the signal weights on the Entity Index dashboard page if matches are consistently wrong.
+6. "Multiple entities match '...'": two or more visible entities share the name, alias, or area that was said, or the fuzzy matcher found two near-equal candidates. The agent asks instead of guessing. Rename one entity in HA, add a distinct alias, or name the room.
+7. Areas or device names look stale or missing: the container log shows `HA registry lookup <key> failed` when the `/api/template` registry lookup fails. The last good lookup stays in use; until the entity-area lookup has succeeded once, agents with `area_exclude` visibility rules do not see entities without an area. Check HA reachability and the HA log for template errors.
 
 ## Cache Not Working
 
@@ -83,6 +85,8 @@ Navigate to `http://<host>:8080/setup/` and use the "Test" button for each provi
 - sqlite-vec entity index not initialized: The action cache relies on the entity index; check the Entity Index dashboard page and startup logs for embedding or vec0 errors.
 - Threshold settings: the routing cache consults its semantic sqlite-vec tier after an exact-hash miss; raise `cache.routing.semantic_threshold` (default 0.92) if semantically similar but wrong requests get routed to the wrong agent, lower it to increase semantic hit rate. `cache.action.semantic_threshold` is a legacy value retained for backward compatibility -- the action cache uses exact SHA-256 hash matching only.
 - Cold cache after upgrade: the routing-cache schema version 5 purges all pre-existing routing entries at the first boot after the upgrade (a cold cache start is expected; entries rebuild organically from new requests).
+- Context-dependent turns are never cached: an answer to a clarifying question, or a command whose entity was a recent anaphora referent ("turn it off", or naming the entity acted on in the previous turn), stores neither an action nor a routing row. Repeat the full command in a fresh conversation to cache it.
+- Origin-bound replay: an action row learned from a turn without area or device (dashboard, text API) does not replay on a satellite turn, and vice versa; the live turn relearns the row for its origin.
 - Action replay relearning after upgrade: action rows without the current command and origin provenance are discarded one row at a time when read, and old action rows in a cache import are skipped with a warning. Repeat the command from its intended area or device to create a verified replacement; do not flush unrelated cache tiers or settings.
 
 **Verify cache tables and entity index:**
@@ -196,6 +200,30 @@ docker compose restart ha-agenthub
 - Update both the container and the HA integration -- older integrations never set `continue_conversation` on streamed turns, and older containers only set `voice_followup` for light-domain questions.
 - HA chat sessions expire after 5 minutes and ESPHome devices reset their stored `conversation_id` after 300 s (`conversation_timeout`) -- answers later than that lose correlation on every path (HA-core limits).
 - Wyoming satellites work as plain conversation targets; they are ANNOUNCE-only, so no re-listen is possible there -- the question is still spoken.
+- An answer reached the wrong agent: check the trace's `classify.parse_and_sanitize` span. `followup_pinned_to` is set when the classifier marked the turn as an answer (`[ANSWER]`) and the turn was pinned to the asking agent; without it the turn was classified as a new request. Askers recorded as a comma-joined multi-agent tag are never pinned.
+- The answer turn timed out or failed with a canned line: the pending question is re-armed, so answering again within the 300 s window still reaches the asking agent.
+
+## My Alarm Helper No Longer Rings
+
+**Symptoms:** An HA `input_datetime` helper used as an alarm stays silent. The log shows `AlarmMonitor: ... none carries the HA label 'agenthub_alarm'`.
+
+**Cause:** Only helpers that carry the label named by `alarm_monitor.label` (default `agenthub_alarm`) and are visible to `timer-agent` ring. Unlabeled helpers are ignored so automation schedule helpers do not ring as alarms.
+
+**Fix:**
+
+- In Home Assistant, add the label `agenthub_alarm` to the helper (or set `alarm_monitor.label` to a label you already use; letters, digits, `_`, `-`, and spaces only). Label changes are picked up within about five minutes.
+- Check the `timer-agent` visibility rules on the dashboard: the helper's domain, area, or entity must be allowed.
+- An empty `alarm_monitor.label` disables helper alarms entirely. AgentHub's own alarms (set by voice or on the Timers page) do not need a label.
+
+## Timer or Alarm Announcement Not Spoken
+
+**Symptoms:** The persistent notification appears, but nothing is spoken.
+
+**Checks:**
+
+- The satellite or media player of the origin device or origin room must be visible to `timer-agent`; invisible targets are skipped.
+- A failed satellite announce falls back to TTS on a media player of the origin device or room. When both fail, the log shows `notification was not spoken: every audio target failed`, and no voice follow-up starts.
+- After a container restart, timers and alarms that came due while it was down are reported once as missed instead of ringing late; delayed device actions more than 5 minutes late are dropped (log line `Dropping overdue ...`).
 
 ## Entity Not Found with LLM Clarification
 

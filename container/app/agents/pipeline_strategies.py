@@ -15,7 +15,7 @@ from app.agents.cache_orchestrator import CacheOrchestrator
 from app.agents.classification_engine import ClassificationEngine
 from app.agents.compound_utterance import looks_compound
 from app.agents.conversation_manager import ConversationManager, extract_resolved_entities
-from app.agents.dispatch_manager import DispatchManager
+from app.agents.dispatch_manager import DispatchManager, canned_error_code
 from app.agents.sanitize import strip_markdown
 from app.agents.task_pipeline import CacheReplayResult, DispatchResult
 from app.cache.cache_manager import CacheManager
@@ -33,6 +33,13 @@ __all__ = [
 ]
 
 logger = logging.getLogger(__name__)
+
+# Fan-out cap for one multi-intent turn. Intents beyond the cap (lowest
+# confidence first) are not dispatched; they are reported to the user via
+# the merge step instead of being dropped silently.
+MAX_PARALLEL_INTENTS = 5
+# ``failed_agents`` reason for intents skipped by the fan-out cap.
+INTENT_LIMIT_REASON = "intent_limit"
 
 
 class CacheReplayStrategy(ABC):
@@ -343,6 +350,13 @@ class DefaultDispatchStrategy(DispatchStrategy):
         # Multi-agent dispatch
         import asyncio
 
+        # Classifications arrive sorted by confidence; the lowest-confidence
+        # intents over the cap are reported as not executed.
+        for aid, _ctask, _conf in classifications[MAX_PARALLEL_INTENTS:]:
+            logger.warning("Intent for %s exceeds the per-turn cap of %d; not dispatched", aid, MAX_PARALLEL_INTENTS)
+            failed_agents.append((aid, INTENT_LIMIT_REASON))
+        dispatched = classifications[:MAX_PARALLEL_INTENTS]
+
         dispatch_coros = [
             self._dispatch_manager.dispatch_single(
                 aid,
@@ -354,7 +368,7 @@ class DefaultDispatchStrategy(DispatchStrategy):
                 incoming_context=incoming_context,
                 resolved_language=language,
             )
-            for aid, ctask, _ in classifications
+            for aid, ctask, _ in dispatched
         ]
         dispatch_results = await asyncio.gather(*dispatch_coros, return_exceptions=True)
 
@@ -362,7 +376,7 @@ class DefaultDispatchStrategy(DispatchStrategy):
         action_executed = None
         routed_agents: list[str] = []
         for idx, dr in enumerate(dispatch_results):
-            agent_id_for_idx = classifications[idx][0]
+            agent_id_for_idx = dispatched[idx][0]
             if isinstance(dr, Exception):
                 logger.warning("Multi-agent dispatch error for %s: %s", agent_id_for_idx, dr)
                 failed_agents.append((agent_id_for_idx, str(dr)))
@@ -370,21 +384,14 @@ class DefaultDispatchStrategy(DispatchStrategy):
             aid, sp, res = dr  # type: ignore[misc]
             res_dict = res or {}
             res_error = res_dict.get("error") if isinstance(res_dict, dict) else None
-            if (
-                res is None
-                or res_error
-                or sp
-                in (
-                    "I couldn't process that request in time.",
-                    "I couldn't process that request right now.",
-                )
-            ):
+            # Structured failure detection: canned dispatch outcomes carry
+            # ``error.canned`` (DispatchManager.canned_result); no comparison
+            # against English speech literals.
+            if res is None or res_error:
                 if res_error:
-                    reason = res_error.get("code", "canned_error") if isinstance(res_error, dict) else "canned_error"
-                elif res is None:
-                    reason = "timeout"
+                    reason = res_error.get("code", "agent_error") if isinstance(res_error, dict) else "agent_error"
                 else:
-                    reason = "canned_speech"
+                    reason = "no_result"
                 logger.warning("Multi-agent dispatch reported error for %s: %s", agent_id_for_idx, reason)
                 failed_agents.append((agent_id_for_idx, reason))
                 continue
@@ -434,7 +441,9 @@ class DefaultFinalizationStrategy(FinalizationStrategy):
         self._calendar_injector = calendar_injector
         self._conversation_manager = conversation_manager
         self._merge_responses = merge_responses
-        self._merge_voice_followup_and_organic = merge_voice_followup_and_organic
+        # Accepted for PipelineDirector constructor compatibility only; the
+        # follow-up flags are merged inline (the orchestrator no-op is gone).
+        del merge_voice_followup_and_organic
         self._finalize_single_agent_response = finalize_single_agent_response
         self._create_trace = create_trace
 
@@ -472,10 +481,23 @@ class DefaultFinalizationStrategy(FinalizationStrategy):
             original_speech = speech
             from app.analytics.tracer import _optional_span
 
+            skipped_ids = {aid for aid, reason in failed_agents if reason == INTENT_LIMIT_REASON}
+            unreachable = [aid for aid, reason in failed_agents if reason != INTENT_LIMIT_REASON]
+            skipped_tasks = [f"{aid}: {ctask}" for aid, ctask, _ in classifications if aid in skipped_ids]
             async with _optional_span(span_collector, "return", agent_id="orchestrator") as ret_span:
                 ret_span["metadata"]["from_agent"] = routed_to
+                if skipped_tasks:
+                    ret_span["metadata"]["intents_skipped"] = sorted(skipped_ids)
                 if not agent_responses and failed_agents:
-                    speech = "I'm sorry, I couldn't complete that request. All agents encountered errors."
+                    # All agents failed: the merge step localizes the system
+                    # line into the turn language (English on LLM failure).
+                    speech, _ = await self._merge_responses(
+                        [],
+                        user_text,
+                        span_collector=span_collector,
+                        failed_agents=unreachable or sorted(skipped_ids),
+                        language=language,
+                    )
                     mediated_followup = False
                 else:
                     reminder_text = None
@@ -496,17 +518,22 @@ class DefaultFinalizationStrategy(FinalizationStrategy):
                         user_text,
                         span_collector=span_collector,
                         reminder_text=reminder_text,
-                        failed_agents=[aid for aid, _ in failed_agents] if failed_agents else None,
+                        failed_agents=unreachable or None,
+                        language=language,
+                        skipped_tasks=skipped_tasks or None,
                     )
 
                 ret_span["metadata"]["agent_response"] = speech
-                speech, voice_followup_effective = self._merge_voice_followup_and_organic(
-                    speech,
-                    agent_requested=agent_voice_followup,
-                    mediated_followup=mediated_followup,
-                )
+                followup_question = bool(agent_voice_followup or mediated_followup)
+                # Follow-up signal (multi-agent): a merged answer that asks the
+                # user something records the pending question exactly like the
+                # single-agent funnel (_finalize_post_mediation) does. A
+                # comma-joined ``routed_to`` is never pinned; the next turn
+                # still gets the follow-up hint during classification.
+                if followup_question and self._conversation_manager is not None:
+                    self._conversation_manager.set_pending_question(conversation_id, speech, routed_to)
                 source = task.context.source if task and task.context else None
-                voice_followup_effective = voice_followup_effective and source_allows_voice_followup(source)
+                voice_followup_effective = followup_question and source_allows_voice_followup(source)
                 ret_span["metadata"]["final_response"] = speech
                 ret_span["metadata"]["mediated"] = (speech != original_speech) or len(classifications) > 1
                 ret_span["metadata"]["voice_followup"] = voice_followup_effective
@@ -558,10 +585,13 @@ class DefaultFinalizationStrategy(FinalizationStrategy):
                 voice_followup_requested=agent_voice_followup,
                 routed_to=routed_to,
                 mediation_agent=mediation_agent,
-                skip_mediation_on_error=True,
+                # Error turns are mediated too, so canned system lines reach
+                # the user in the turn language and personality.
+                skip_mediation_on_error=False,
                 skip_response_cache=is_sequential_send,
                 used_origin_context=used_origin_context,
                 routing_entry_id=routing_entry_id,
+                canned_code=canned_error_code(agent_error),
             )
 
         response = {

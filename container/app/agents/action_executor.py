@@ -11,6 +11,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field, ValidationError
 
+from app.agents.ha_action_marker import note_ha_action_started
 from app.db.repositories.settings import _settings_float
 from app.entity.deterministic_resolver import (
     filter_matches_by_domain,  # noqa: F401  -- re-exported for test compat
@@ -616,6 +617,31 @@ def parse_actions(llm_response: str) -> list[dict]:
     return deduped
 
 
+def find_rejected_action_objects(llm_response: str) -> list[dict]:
+    """Return JSON objects with an ``"action"`` key that FAILED action validation.
+
+    Companion to :func:`parse_actions` for the parse-miss path: an LLM
+    response such as ``{"action": "turn_on", "entity": null}`` plus "Done,
+    the light is on" contains an action attempt that never executed. The
+    caller must not speak the surrounding prose as if it had succeeded.
+    """
+    decoder = json.JSONDecoder()
+    rejected: list[dict] = []
+    idx = 0
+    while True:
+        start = llm_response.find("{", idx)
+        if start == -1:
+            return rejected
+        try:
+            obj, end = decoder.raw_decode(llm_response, start)
+        except json.JSONDecodeError:
+            idx = start + 1
+            continue
+        if isinstance(obj, dict) and "action" in obj and _validate_action_dict(obj) is None:
+            rejected.append(obj)
+        idx = end
+
+
 def parse_action(llm_response: str) -> dict | None:
     """Extract the first structured action dict from an LLM response.
 
@@ -629,6 +655,115 @@ def parse_action(llm_response: str) -> dict | None:
     return actions[0] if actions else None
 
 
+# Post-call verification outcomes (``call_service_with_verification``).
+VERIFY_REACHED = "reached"  # observed state equals the expected target
+VERIFY_IN_PROGRESS = "in_progress"  # transitional state on the way to the target
+VERIFY_MISMATCH = "mismatch"  # known terminal state that contradicts the target
+VERIFY_UNVERIFIED = "unverified"  # nothing observed, or not (yet) confirmed within the verify window
+VERIFY_ERROR = "error"  # the service call itself raised
+
+# HA states that mean "the command is still being carried out". Reported as
+# in progress, never as success or failure.
+TRANSITIONAL_STATES: frozenset[str] = frozenset(
+    {
+        "opening",
+        "closing",
+        "locking",
+        "unlocking",
+        "arming",
+        "disarming",
+        "pending",
+        "buffering",
+        "starting",
+    }
+)
+
+# Terminal states that satisfy an expected target although they differ from
+# it literally (players that report "off"/"standby" after stop, a vacuum that
+# is already "docked" when asked to return).
+_EQUIVALENT_TARGET_STATES: dict[str, frozenset[str]] = {
+    "idle": frozenset({"off", "standby", "docked"}),
+    "returning": frozenset({"docked"}),
+}
+
+
+# Terminal fault states that contradict any commanded target. Only these
+# (or an opt-in pre-call comparison, see ``classify_verification_outcome``)
+# turn a non-target observation into a failure; any other non-target state
+# may simply be the pre-call state of a device that reports late.
+FAULT_STATES: frozenset[str] = frozenset({"jammed", "problem", "error", "fault"})
+
+
+def unverified_speech(friendly_name: str) -> str:
+    """Hedged wording for a command whose new state was not confirmed in time."""
+    return f"I sent the command to {friendly_name}, but it has not confirmed the new state yet."
+
+
+# Per-request verification records (``call_service_with_verification``
+# appends one dict per call). ActionableAgent opens a fresh list around each
+# executor call so it can hedge the speech of, and keep out of the action
+# cache, actions whose new state was not confirmed -- without every
+# executor having to forward the verification outcome.
+_request_verify_records: contextvars.ContextVar[list[dict[str, Any]] | None] = contextvars.ContextVar(
+    "action_executor_verify_records", default=None
+)
+
+
+def start_verify_records() -> tuple[contextvars.Token, list[dict[str, Any]]]:
+    """Begin collecting verification records for one executor call."""
+    records: list[dict[str, Any]] = []
+    return _request_verify_records.set(records), records
+
+
+def reset_verify_records(token: contextvars.Token) -> None:
+    """Stop collecting (restore the previous collector)."""
+    _request_verify_records.reset(token)
+
+
+class StateVerificationError(Exception):
+    """The service call ran, but the entity did not reach the expected state."""
+
+    def __init__(self, entity_id: str, expected_state: str | None, observed_state: str | None) -> None:
+        self.entity_id = entity_id
+        self.expected_state = expected_state
+        self.observed_state = observed_state
+        super().__init__(f"the device reports '{observed_state}' instead of '{expected_state}'")
+
+
+def classify_verification_outcome(
+    expected_state: str | None,
+    observed_state: str | None,
+    *,
+    previous_state: str | None = None,
+    strict: bool = False,
+) -> str:
+    """Classify an observed post-call state against the expected target.
+
+    - ``reached``: the target (or an equivalent terminal state).
+    - ``in_progress``: a transitional state (``TRANSITIONAL_STATES``).
+    - ``mismatch``: a known fault state (``FAULT_STATES``, e.g. ``jammed``);
+      or, when the caller passes the pre-call ``previous_state``, a
+      non-target state the entity moved to (it changed and settled
+      elsewhere); or any non-target state when ``strict`` is set (opt-in).
+    - ``unverified``: nothing observed, or a non-target state that may be
+      the unchanged pre-call state of a device that reports later than
+      the verify window (Zigbee, cloud integrations). Not a failure.
+    """
+    if observed_state is None:
+        return VERIFY_UNVERIFIED
+    if expected_state is None:
+        return VERIFY_REACHED
+    if observed_state == expected_state or observed_state in _EQUIVALENT_TARGET_STATES.get(expected_state, ()):
+        return VERIFY_REACHED
+    if observed_state in TRANSITIONAL_STATES:
+        return VERIFY_IN_PROGRESS
+    if observed_state in FAULT_STATES or strict:
+        return VERIFY_MISMATCH
+    if previous_state is not None and observed_state != previous_state:
+        return VERIFY_MISMATCH
+    return VERIFY_UNVERIFIED
+
+
 async def call_service_with_verification(
     ha_client: Any,
     domain: str,
@@ -640,6 +775,8 @@ async def call_service_with_verification(
     ws_timeout: float | None = None,
     poll_interval: float | None = None,
     poll_max: float | None = None,
+    previous_state: str | None = None,
+    strict: bool = False,
 ) -> dict[str, Any]:
     """Shared primitive for domain executors: REST ``call_service`` + WS verify.
 
@@ -674,18 +811,29 @@ async def call_service_with_verification(
         ws_timeout / poll_interval / poll_max: Override the corresponding
             ``state_verify.*`` settings; ``None`` means "read from
             SettingsRepository defaults".
+        previous_state: Optional pre-call state. When given, a non-target
+            state that differs from it counts as a contradiction.
+        strict: Opt-in: any non-target, non-transitional state is a
+            contradiction (no executor uses this today).
 
     Returns:
         Dict with:
-            success: False iff an exception was raised during the call.
+            success: False when the call raised OR the entity ended in a
+                contradicting terminal state (``outcome == "mismatch"``).
+                An ``unverified`` outcome stays ``success=True``.
+            call_succeeded: False iff an exception was raised during the call.
+            outcome: one of ``VERIFY_REACHED`` / ``VERIFY_IN_PROGRESS`` /
+                ``VERIFY_MISMATCH`` / ``VERIFY_UNVERIFIED`` / ``VERIFY_ERROR``
+                (see :func:`classify_verification_outcome`).
             entity_id: echoed for convenience.
             call_result: raw REST response (``list``/``dict``/``None``).
             observed_state: merged state from REST / WS / poll.
-            verified: True iff ``observed_state`` matches
-                ``expected_state`` (or ``expected_state is None`` and
-                *something* was observed). Use this to decide between
-                observed-state speech and intent-first speech.
-            error: the exception when ``success`` is False, else ``None``.
+            verified: True iff the outcome is ``VERIFY_REACHED``. Use this to
+                decide between observed-state speech and intent-first speech.
+            cacheable: False for a mismatch, or an ``unverified`` outcome of an
+                action with an ``expected_state``.
+            error: the exception (call failure) or a
+                :class:`StateVerificationError` (mismatch), else ``None``.
     """
     if ws_timeout is None:
         ws_timeout = await _settings_float(
@@ -708,6 +856,9 @@ async def call_service_with_verification(
     expect_state_fn = getattr(ha_client, "expect_state", None)
 
     async def _call_service() -> Any:
+        # Double-execution guard: tell the dispatching orchestrator that an
+        # HA action went out, so a timeout does not re-dispatch the task.
+        note_ha_action_started()
         with mark_verified_ha_service_call("action-executor"):
             return await ha_client.call_service(
                 domain,
@@ -752,6 +903,8 @@ async def call_service_with_verification(
         )
         return {
             "success": False,
+            "call_succeeded": False,
+            "outcome": VERIFY_ERROR,
             "entity_id": entity_id,
             "call_result": None,
             "observed_state": None,
@@ -760,25 +913,62 @@ async def call_service_with_verification(
         }
 
     observed = _extract_state_from_call_result(call_result, entity_id)
-    if observed is None and observer:
-        observed = observer.get("new_state")
+    observer_state = observer.get("new_state") if observer else None
+    if observed is None:
+        observed = observer_state
+    elif expected_state and observed != expected_state and observer_state == expected_state:
+        # The synchronous REST snapshot can catch an intermediate state
+        # ("locking"); the WS waiter saw the target state afterwards.
+        observed = observer_state
 
-    verified = observed is not None if expected_state is None else observed == expected_state
+    outcome = classify_verification_outcome(expected_state, observed, previous_state=previous_state, strict=strict)
+    verified = outcome == VERIFY_REACHED
+    records = _request_verify_records.get()
+    if records is not None:
+        records.append(
+            {"entity_id": entity_id, "outcome": outcome, "expected_state": expected_state, "observed_state": observed}
+        )
 
-    if expected_state and observed is not None and observed != expected_state:
+    if outcome == VERIFY_UNVERIFIED and expected_state:
         logger.info(
-            "State verify mismatch for %s: expected=%s observed=%s",
+            "State verify unconfirmed for %s: expected=%s observed=%s (device may report late)",
             entity_id,
             expected_state,
             observed,
         )
 
+    if outcome == VERIFY_MISMATCH:
+        # The command ran, but the device ended in a contradicting terminal
+        # state: a lock that reports "jammed", or (with ``previous_state``)
+        # a state it moved to that is not the target. Reported as a
+        # failure so executors never claim success.
+        logger.warning(
+            "State verify mismatch for %s: expected=%s observed=%s",
+            entity_id,
+            expected_state,
+            observed,
+        )
+        return {
+            "success": False,
+            "call_succeeded": True,
+            "outcome": outcome,
+            "entity_id": entity_id,
+            "call_result": call_result,
+            "observed_state": observed,
+            "verified": False,
+            "cacheable": False,
+            "error": StateVerificationError(entity_id, expected_state, observed),
+        }
+
     return {
         "success": True,
+        "call_succeeded": True,
+        "outcome": outcome,
         "entity_id": entity_id,
         "call_result": call_result,
         "observed_state": observed,
         "verified": verified,
+        "cacheable": outcome != VERIFY_UNVERIFIED or expected_state is None,
         "error": None,
     }
 
@@ -801,30 +991,35 @@ def build_verified_speech(
     "started", …).
 
     Priority:
-      1. If ``verified`` and we have an ``expected_state`` or
-         ``observed_state``, speak the authoritative state.
-      2. Otherwise use the ``action_phrases`` mapping if it carries the
-         action name (intent-first wording even on stale observations).
-      3. Fall back to the humanized action name (``set_hvac_mode`` ->
-         ``set hvac mode``).
+      1. ``verified`` with an ``expected_state``: "is now <expected>".
+      2. An expected target that was NOT confirmed: a transitional state is
+         spoken as in progress, a known fault state as a failure, and
+         anything else (unchanged pre-call state, nothing observed) with
+         the hedged :func:`unverified_speech` -- never as "Done".
+      3. No expected target (toggle, or attribute-only actions such as fan
+         speed or volume, which often change no state): the
+         ``action_phrases`` entry, else "is now <observed>", else the
+         humanized action name.
     """
     phrases = action_phrases or {}
-    # 1. Deterministic verified target wins: "is now <expected>".
-    if expected_state and verified:
-        return f"Done, {friendly_name} is now {expected_state}."
-    # 2. For non-state-changing actions (or stale observations), prefer
-    #    an intent-first phrase when we have one -- never let an observed
-    #    but contradictory state leak into speech.
+    if expected_state:
+        if verified:
+            return f"Done, {friendly_name} is now {expected_state}."
+        outcome = classify_verification_outcome(expected_state, observed_state)
+        if outcome == VERIFY_REACHED:
+            return f"Done, {friendly_name} is now {expected_state}."
+        if outcome == VERIFY_IN_PROGRESS and observed_state:
+            return f"OK, {friendly_name} is {observed_state.replace('_', ' ')} now."
+        if outcome == VERIFY_MISMATCH and observed_state:
+            return (
+                f"The command was sent, but {friendly_name} reports {observed_state.replace('_', ' ')} "
+                f"instead of {expected_state.replace('_', ' ')}."
+            )
+        return unverified_speech(friendly_name)
     if action_name in phrases:
         return f"Done, {friendly_name} {phrases[action_name]}."
-    # 3. We do have an expected target but verification was inconclusive
-    #    (empty REST + no WS evidence). Stay on intent.
-    if expected_state:
-        return f"Done, {friendly_name} is now {expected_state}."
-    # 4. No expected target, but something observed -- speak it.
     if observed_state:
         return f"Done, {friendly_name} is now {observed_state}."
-    # 5. Last resort: humanize the action name.
     return f"Done, {friendly_name} {action_name.replace('_', ' ')}."
 
 

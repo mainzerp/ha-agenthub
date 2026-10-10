@@ -135,6 +135,91 @@ def _normalize_alarm_name(s: str) -> str:
     return text
 
 
+# Scheduler row kinds by user-facing concept. ``TIMER_KINDS`` are everything a
+# timer action may address by name; ``COUNTDOWN_KINDS`` are what an unnamed
+# "the timer" refers to (sleep timers and delayed actions must be named).
+TIMER_KINDS: frozenset[str] = frozenset({"plain", "notification", "snooze", "sleep", "delayed_action"})
+COUNTDOWN_KINDS: frozenset[str] = frozenset({"plain", "notification", "snooze"})
+ALARM_KINDS: frozenset[str] = frozenset({"alarm"})
+
+
+def _default_timer_label(seconds: int) -> str:
+    """Label for an unnamed timer (``30 seconds timer``, ``5 minutes timer``)."""
+    return f"{_format_duration_human(int(seconds))} timer"
+
+
+def _name_tokens(name: str) -> frozenset[str]:
+    return frozenset(_normalize_alarm_name(name).split())
+
+
+def _is_unnamed(name: str | None, kind_word: str) -> bool:
+    """True when ``name`` carries no identity: empty, or just the kind word itself.
+
+    ``kind_word`` is the canonical internal kind (``timer`` or ``alarm``); the
+    check is structural and not a per-language phrase list.
+    """
+    normalized = _normalize_alarm_name(name or "")
+    return not normalized or normalized == kind_word
+
+
+def _match_rows_by_name(rows: list[dict[str, Any]], name: str) -> list[dict[str, Any]]:
+    """Match rows by name: exact, then separator-insensitive, then token subset.
+
+    The token-subset stage lets a short reference ("timer", "pasta") address
+    a longer stored label ("3 minutes timer", "pasta timer").
+    """
+    wanted = name.strip().casefold()
+    exact = [r for r in rows if str(r.get("logical_name") or "").strip().casefold() == wanted]
+    if exact:
+        return exact
+    norm = _normalize_timer_name(name)
+    normalized = [r for r in rows if _normalize_timer_name(str(r.get("logical_name") or "")) == norm]
+    if normalized:
+        return normalized
+    tokens = _name_tokens(name)
+    if not tokens:
+        return []
+    return [r for r in rows if tokens <= _name_tokens(str(r.get("logical_name") or ""))]
+
+
+async def _find_rows(
+    scheduler: Any,
+    name: str | None,
+    *,
+    area_id: str | None,
+    kinds: frozenset[str],
+    unnamed_kinds: frozenset[str],
+    kind_word: str,
+    states: frozenset[str] | None = None,
+) -> list[dict[str, Any]]:
+    """Find scheduler rows for a user reference, room-scoped first.
+
+    The origin room is searched first; when it yields nothing, every room is
+    searched (timers set from chat, another room, or via ``target_satellite``
+    carry a different ``origin_area``). An unnamed reference resolves to the
+    rows of ``unnamed_kinds``; the caller acts when exactly one row remains
+    and asks otherwise.
+    """
+    unnamed = _is_unnamed(name, kind_word)
+    scopes: list[str | None] = [area_id, None] if area_id is not None else [None]
+    for scope in scopes:
+        rows = await scheduler.list(area=scope, kinds=set(kinds), **({"states": set(states)} if states else {}))
+        # Rows without a kind predate kinds and are plain timers.
+        rows = [r for r in rows if (r.get("kind") or "plain") in kinds]
+        if unnamed:
+            matches = [r for r in rows if (r.get("kind") or "plain") in unnamed_kinds]
+        else:
+            matches = _match_rows_by_name(rows, str(name))
+        if matches:
+            return matches
+    return []
+
+
+def _same_name(rows: list[dict[str, Any]]) -> bool:
+    names = {_normalize_timer_name(str(r.get("logical_name") or "")) for r in rows}
+    return len(names) == 1
+
+
 def _get_timezone_info(timezone: str | None) -> ZoneInfo | None:
     if not timezone:
         return None

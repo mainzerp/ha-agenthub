@@ -29,16 +29,22 @@ class TestParseEventStart:
         assert result is not None
         assert result == datetime(2026, 6, 8, 10, 30, 0, tzinfo=UTC)
 
-        # dict with date only (all-day event) -- Python 3.11+ fromisoformat parses
-        # date-only strings, so this returns a naive datetime (no tzinfo set).
+        # dict with date only (all-day event): must be aware (local midnight,
+        # UTC by default) so it compares against an aware ``now``.
         result = injector._parse_event_start({"date": "2026-06-08"})
         assert result is not None
-        assert result == datetime(2026, 6, 8, 0, 0, 0)
+        assert result == datetime(2026, 6, 8, 0, 0, 0, tzinfo=UTC)
+        assert result < datetime.now(UTC) + timedelta(days=36500)
 
-        # plain date string -- also parsed by fromisoformat in Python 3.11+
-        result = injector._parse_event_start("2026-06-08")
+        # plain date string, interpreted in the given local timezone
+        tz = timezone(timedelta(hours=2))
+        result = injector._parse_event_start("2026-06-08", tz)
         assert result is not None
-        assert result == datetime(2026, 6, 8, 0, 0, 0)
+        assert result == datetime(2026, 6, 8, 0, 0, 0, tzinfo=tz)
+
+        # naive datetime string gets the local timezone
+        result = injector._parse_event_start("2026-06-08T09:00:00", tz)
+        assert result == datetime(2026, 6, 8, 9, 0, 0, tzinfo=tz)
 
         # None / falsy input
         assert injector._parse_event_start(None) is None
@@ -85,7 +91,47 @@ class TestMarkerActive:
         assert injector._marker_active(event_start, now, 60) is False
 
 
+class TestClosestActiveOffset:
+    def test_only_closest_offset_is_selected(self):
+        injector = CalendarReminderInjector(ha_client=None, entity_index=None)
+        now = datetime(2026, 6, 8, 12, 0, 0, tzinfo=UTC)
+        offsets = [15, 60, 1440]
+
+        # 10 minutes ahead: 15, 60 and 1440 are all "active" -- only 15 applies.
+        assert injector._closest_active_offset(now + timedelta(minutes=10), now, offsets) == 15
+        # 45 minutes ahead: 60 and 1440 active -- only 60 applies.
+        assert injector._closest_active_offset(now + timedelta(minutes=45), now, offsets) == 60
+        # 5 hours ahead: only 1440.
+        assert injector._closest_active_offset(now + timedelta(hours=5), now, offsets) == 1440
+        # Beyond every window.
+        assert injector._closest_active_offset(now + timedelta(days=2), now, offsets) is None
+
+    def test_all_day_events_skip_minute_offsets(self):
+        injector = CalendarReminderInjector(ha_client=None, entity_index=None)
+        now = datetime(2026, 6, 8, 23, 50, 0, tzinfo=UTC)
+        start = datetime(2026, 6, 9, 0, 0, 0, tzinfo=UTC)
+        assert injector._closest_active_offset(start, now, [15, 60, 1440], all_day=True) == 1440
+        assert injector._closest_active_offset(start, now, [15, 60], all_day=True) is None
+
+    def test_is_all_day(self):
+        assert CalendarReminderInjector._is_all_day("2026-06-08") is True
+        assert CalendarReminderInjector._is_all_day({"date": "2026-06-08"}) is True
+        assert CalendarReminderInjector._is_all_day("2026-06-08T09:00:00+02:00") is False
+        assert CalendarReminderInjector._is_all_day({"dateTime": "2026-06-08T09:00:00Z"}) is False
+
+
 class TestFallbackAndGenerateReminderText:
+    def test_day_phrase_uses_today_when_same_day(self):
+        injector = CalendarReminderInjector(ha_client=None, entity_index=None)
+        now = datetime(2026, 6, 8, 8, 0, 0, tzinfo=UTC)
+        start = datetime(2026, 6, 8, 20, 0, 0, tzinfo=UTC)
+        assert injector._fallback_reminder_text("Party", 1440, start, "en", now=now) == (
+            "By the way: Party is today at 20:00."
+        )
+        assert injector._fallback_reminder_text("Holiday", 1440, start, "en", now=now, all_day=True) == (
+            "By the way: Holiday is today."
+        )
+
     def test_fallback_and_generate_reminder_text(self):
         injector = CalendarReminderInjector(ha_client=None, entity_index=None)
 
