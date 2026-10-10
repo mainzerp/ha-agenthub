@@ -201,7 +201,7 @@ class TestExecuteClimateAction:
         result = await execute_climate_action(action, ha_client, entity_index, entity_matcher)
 
         assert result["success"] is False
-        assert "Failed to execute" in result["speech"]
+        assert "failed for" in result["speech"]
 
     @pytest.mark.asyncio
     async def test_domain_validation_rejects_media(self, ha_client):

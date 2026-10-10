@@ -163,7 +163,9 @@ class TestExecuteLightAction:
         result = await execute_light_action(action, ha_client, entity_index, entity_matcher)
 
         assert result["success"] is False
-        assert "Failed to execute" in result["speech"]
+        assert "failed for Kitchen Ceiling" in result["speech"]
+        # Raw exception text must never reach user speech.
+        assert "Connection refused" not in result["speech"]
 
     @pytest.mark.asyncio
     async def test_no_fallback_to_entity_index(self, ha_client, entity_index):
@@ -464,8 +466,8 @@ class TestExecuteLightAction:
         ha_client.get_state.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_intent_speech_when_verified_state_is_stale(self, ha_client, entity_matcher, entity_index):
-        """turn_off + observed 'on' must not speak 'is now on'."""
+    async def test_contradicting_observed_state_is_not_spoken_as_success(self, ha_client, entity_matcher, entity_index):
+        """turn_off + observed 'on' must not speak success (T5 / #132)."""
         ha_client.call_service = AsyncMock(return_value=None)
         ha_client.get_state = AsyncMock(
             return_value={"state": "on", "attributes": {}},
@@ -476,7 +478,9 @@ class TestExecuteLightAction:
 
         assert result["success"] is True
         assert "is now on" not in result["speech"]
-        assert "turned off Kitchen Ceiling" in result["speech"]
+        assert "turned off" not in result["speech"]
+        assert "still reports on" in result["speech"]
+        assert result.get("cacheable") is False
 
     @pytest.mark.asyncio
     async def test_toggle_uses_observed_state(self, ha_client, entity_matcher, entity_index):
@@ -910,6 +914,7 @@ class TestExecuteLightActionCondition:
     @pytest.mark.asyncio
     async def test_no_condition_regression_cacheable_true(self, ha_client, entity_matcher, entity_index):
         ha_client.get_state = AsyncMock(return_value={"state": "off", "attributes": {}})
+        ha_client.call_service = AsyncMock(return_value=[{"entity_id": "light.kitchen_ceiling", "state": "on"}])
         action = {"action": "turn_on", "entity": "kitchen light", "parameters": {}}
         result = await execute_light_action(action, ha_client, entity_index, entity_matcher)
 

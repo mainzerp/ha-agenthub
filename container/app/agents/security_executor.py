@@ -13,7 +13,7 @@ from app.agents.action_executor import (
     call_service_with_verification,
     resolve_and_validate_entity,
 )
-from app.agents.executor_state_check import _state_matches
+from app.agents.executor_state_check import failure_speech, is_redundant_action
 from app.entity.visibility import entity_is_visible
 from app.ha_client.history_query import execute_recorder_history_query
 from app.models.agent import TaskContext
@@ -169,13 +169,19 @@ async def execute_security_action(
     entity_id = resolved["entity_id"]
     friendly_name = resolved["friendly_name"]
 
-    # Deterministic skip: if already in target state, do not call HA.
     try:
         state_resp = await ha_client.get_state(entity_id)
-        current_state = state_resp.get("state") if isinstance(state_resp, dict) else None
     except Exception:
-        current_state = None
-    if _state_matches(action_name, current_state):
+        logger.debug("Pre-action state read failed for %s", entity_id, exc_info=True)
+        state_resp = None
+    current_state = state_resp.get("state") if isinstance(state_resp, dict) else None
+
+    # Build service data. Cameras take no service data.
+    service_data = _build_security_service_data(action) if domain != "camera" else {}
+
+    # Deterministic skip: only a parameterless action on a single entity that
+    # is already in the target state is redundant (groups always run).
+    if is_redundant_action(action_name, state_resp, service_data):
         return {
             "success": True,
             "entity_id": entity_id,
@@ -183,9 +189,6 @@ async def execute_security_action(
             "noop": True,
             "speech": f"Done, {friendly_name} is already {current_state}.",
         }
-
-    # Build service data
-    service_data = _build_security_service_data(action)
 
     expected_state = _EXPECTED_STATE_BY_ACTION.get(action_name)
     verify = await call_service_with_verification(
@@ -201,11 +204,14 @@ async def execute_security_action(
             "success": False,
             "entity_id": entity_id,
             "new_state": None,
-            "speech": f"Failed to execute {action_name} on {friendly_name}: {verify['error']}",
+            "speech": failure_speech(action_name, friendly_name),
         }
 
     new_state = verify["observed_state"]
-    return {
+    # Codes/PINs are secrets: they are never echoed into the result, the
+    # trace-visible service data, or the action cache.
+    public_data = {k: v for k, v in service_data.items() if k != "code"}
+    result: dict[str, Any] = {
         "success": True,
         "action": action_name,
         "entity_id": entity_id,
@@ -218,7 +224,19 @@ async def execute_security_action(
             verified=verify["verified"],
             action_phrases=_ACTION_PHRASES,
         ),
+        "service_data": public_data,
+        "executed_command": {
+            "domain": domain,
+            "service": service,
+            "entity_id": entity_id,
+            "service_data": public_data,
+        },
     }
+    if "code" in service_data:
+        # A replay without the code would fail; a replay with it would mean
+        # storing the secret. Never cache coded security actions.
+        result["cacheable"] = False
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -327,13 +345,13 @@ async def _query_security_state(
             "cacheable": False,
             "metadata": resolution_metadata,
         }
-    except Exception as exc:
+    except Exception:
         logger.error("State query failed for %s", entity_id, exc_info=True)
         return {
             "success": False,
             "entity_id": entity_id,
             "new_state": None,
-            "speech": f"Failed to query security status: {exc}",
+            "speech": "Sorry, I could not query security status.",
             "cacheable": False,
             "metadata": resolution_metadata,
         }
@@ -383,13 +401,13 @@ async def _query_security_entity_history(
 async def _list_security(ha_client: Any, agent_id: str | None = None, entity_index: Any = None) -> dict:
     try:
         states = await ha_client.get_states()
-    except Exception as exc:
+    except Exception:
         logger.error("Failed to fetch states for list_security", exc_info=True)
         return {
             "success": False,
             "entity_id": "",
             "new_state": None,
-            "speech": f"Failed to list security devices: {exc}",
+            "speech": "Sorry, I could not list security devices.",
         }
 
     locks = []

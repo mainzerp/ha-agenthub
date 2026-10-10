@@ -12,6 +12,7 @@ from app.agents.action_executor import (
     call_service_with_verification,
     resolve_and_validate_entity,
 )
+from app.agents.executor_state_check import failure_speech
 from app.entity.visibility import entity_is_visible
 
 logger = logging.getLogger(__name__)
@@ -126,16 +127,31 @@ async def execute_scene_action(
             "success": False,
             "entity_id": entity_id,
             "new_state": None,
-            "speech": f"Failed to execute {action_name} on {friendly_name}: {verify['error']}",
+            "speech": failure_speech("activate", friendly_name),
         }
 
-    return {
+    if verify["verified"]:
+        speech = f"Done, {friendly_name} has been activated."
+    else:
+        # HA accepted the call but no activation was observed (no changed
+        # state in the REST response, no WS event): do not claim success.
+        speech = f"I sent the activation to {friendly_name}, but could not confirm that it ran."
+    result: dict[str, Any] = {
         "success": True,
         "action": action_name,
         "entity_id": entity_id,
         "new_state": verify["observed_state"],
-        "speech": f"Done, {friendly_name} has been activated.",
+        "speech": speech,
+        "executed_command": {
+            "domain": domain,
+            "service": service,
+            "entity_id": entity_id,
+            "service_data": service_data,
+        },
     }
+    if not verify["verified"]:
+        result["cacheable"] = False
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -197,9 +213,9 @@ async def _query_scene(
 async def _list_scenes(ha_client: Any, agent_id: str | None = None, entity_index: Any = None) -> dict:
     try:
         states = await ha_client.get_states()
-    except Exception as exc:
+    except Exception:
         logger.error("Failed to fetch states for list_scenes", exc_info=True)
-        return {"success": False, "entity_id": "", "new_state": None, "speech": f"Failed to list scenes: {exc}"}
+        return {"success": False, "entity_id": "", "new_state": None, "speech": "Sorry, I could not list scenes."}
 
     scenes = [s for s in states if s.get("entity_id", "").startswith("scene.")]
     if agent_id and entity_index is not None:

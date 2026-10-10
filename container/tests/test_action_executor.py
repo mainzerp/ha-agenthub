@@ -877,6 +877,7 @@ class TestMusicExecutor:
             "search",
             "media_player.ma_kitchen",
             {"name": "jazz", "media_type": "track"},
+            return_response=True,
         )
 
     @pytest.mark.asyncio
@@ -896,6 +897,7 @@ class TestMusicExecutor:
             "search",
             "media_player.ma_kitchen",
             {"name": "jazz", "media_type": "track", "library_only": True},
+            return_response=True,
         )
 
     @pytest.mark.asyncio
@@ -928,7 +930,8 @@ class TestMusicExecutor:
         result = await execute_music_action(action, ha_client, entity_index, entity_matcher)
 
         assert result["success"] is False
-        assert "Failed" in result["speech"]
+        assert "failed for" in result["speech"]
+        assert "Connection refused" not in result["speech"]
 
     @pytest.mark.asyncio
     async def test_entity_resolution_prefers_matcher(self, ha_client, entity_matcher, entity_index):

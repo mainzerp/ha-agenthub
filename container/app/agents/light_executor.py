@@ -10,23 +10,21 @@ from pydantic import ValidationError
 
 from app.agents.action_executor import (
     ActionCondition,
-    _ensure_str,
     _evaluate_condition,
     _synthesize_direct_entity_metadata,
     _validate_direct_entity_id,
     call_service_with_verification,
     resolve_and_validate_entity,
 )
-from app.agents.executor_state_check import _state_matches
+from app.agents.executor_state_check import failure_speech, is_redundant_action
 from app.entity.visibility import entity_is_visible
 from app.ha_client.history_query import execute_recorder_history_query
-from app.ha_client.rest import allow_internal_ha_service_calls
 from app.models.agent import TaskContext
 
 logger = logging.getLogger(__name__)
 
 
-# Map action names to (service, extra_data_builder)
+# Map action names to the HA service of the entity's own domain.
 _ACTION_SERVICE_MAP: dict[str, str] = {
     "turn_on": "turn_on",
     "turn_off": "turn_off",
@@ -55,38 +53,45 @@ _ACTION_DOMAINS_LIGHT: dict[str, frozenset[str]] = {
     "list_lights": frozenset({"light", "switch"}),
 }
 
-# FLOW-VERIFY-1: map each action to the state we expect HA to end up in.
-# ``toggle`` has no deterministic target, so it is intentionally absent and
-# the caller must treat ``expected`` as ``None`` (= "any next change").
-_EXPECTED_STATE_BY_DOMAIN_ACTION: dict[tuple[str, str], str | frozenset[str] | None] = {
-    # Light
+# FLOW-VERIFY-1: map each write action to the state we expect HA to end up
+# in. ``toggle`` has no deterministic target, so it is intentionally absent
+# and the caller treats ``expected`` as ``None`` (= "any next change").
+_EXPECTED_STATE_BY_DOMAIN_ACTION: dict[tuple[str, str], str] = {
     ("light", "turn_on"): "on",
     ("light", "turn_off"): "off",
     ("light", "set_brightness"): "on",
     ("light", "set_color"): "on",
     ("light", "set_color_temp"): "on",
-    # Climate
-    ("climate", "turn_on"): frozenset({"heat", "cool"}),
-    ("climate", "turn_off"): "off",
-    # Security
-    ("lock", "lock"): "locked",
-    ("lock", "unlock"): "unlocked",
-    # Media
-    ("media_player", "turn_on"): "on",
-    ("media_player", "turn_off"): "off",
-    # Music
-    ("music", "turn_on"): "playing",
-    ("music", "turn_off"): "off",
+    ("switch", "turn_on"): "on",
+    ("switch", "turn_off"): "off",
 }
 
-# Kept for backward compatibility with callers that expect action-only mapping.
-_EXPECTED_STATE_BY_ACTION: dict[str, str] = {
-    "turn_on": "on",
-    "turn_off": "off",
-    "set_brightness": "on",
-    "set_color": "on",
-    "set_color_temp": "on",
+# Light ``turn_on`` parameters accepted from the LLM. Relative brightness
+# (``brightness_step`` / ``brightness_step_pct``) is native HA: HA computes
+# the new level from the light's current brightness.
+_INT_PARAMS: frozenset[str] = frozenset(
+    {
+        "brightness",
+        "brightness_pct",
+        "brightness_step",
+        "brightness_step_pct",
+        "color_temp",
+        "color_temp_kelvin",
+    }
+)
+# LLM spellings mapped onto the canonical HA parameter name.
+_PARAM_ALIASES: dict[str, str] = {
+    "kelvin": "color_temp_kelvin",
+    "color": "color_name",
+    "colour": "color_name",
+    "colour_name": "color_name",
 }
+_COLOR_PARAMS: frozenset[str] = frozenset({"color_name", "rgb_color", "hs_color", "xy_color"})
+_COLOR_TEMP_PARAMS: frozenset[str] = frozenset({"color_temp", "color_temp_kelvin"})
+_BRIGHTNESS_PARAMS: frozenset[str] = frozenset(
+    {"brightness", "brightness_pct", "brightness_step", "brightness_step_pct", "white"}
+)
+_COLOR_MODES: frozenset[str] = frozenset({"hs", "xy", "rgb", "rgbw", "rgbww"})
 
 
 def _validate_domain(entity_id: str) -> bool:
@@ -95,33 +100,94 @@ def _validate_domain(entity_id: str) -> bool:
     return domain in _ALLOWED_DOMAINS
 
 
-def _build_service_data(action: dict) -> dict[str, Any]:
-    """Build HA service_data from action parameters."""
+def _is_number_list(value: Any, length: int) -> bool:
+    return (
+        isinstance(value, list)
+        and len(value) == length
+        and all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in value)
+    )
+
+
+def _parse_service_data(action: dict) -> tuple[dict[str, Any], list[str]]:
+    """Build HA service_data from action parameters.
+
+    Returns ``(data, rejected)``: ``rejected`` lists parameter names that
+    are unknown or carry an invalid value. The executor refuses such an
+    action instead of silently dropping the parameter.
+    """
     params = action.get("parameters") or {}
     data: dict[str, Any] = {}
+    rejected: list[str] = []
+    if not isinstance(params, dict):
+        return data, ["parameters"]
 
-    if "brightness" in params:
-        data["brightness"] = int(params["brightness"])
-    if "color_name" in params:
-        data["color_name"] = params["color_name"]
-    if "rgb_color" in params:
-        rc = params["rgb_color"]
-        if isinstance(rc, list) and len(rc) == 3 and all(isinstance(v, int) for v in rc):
-            data["rgb_color"] = rc
-    if "effect" in params:
-        data["effect"] = str(params["effect"])
-    if "white" in params:
-        data["white"] = int(params["white"]) if isinstance(params["white"], (int, float)) else params["white"]
-    if "flash" in params:
-        data["flash"] = str(params["flash"])
-    if "color_temp" in params:
-        data["color_temp"] = int(params["color_temp"])
-    if "color_temp_kelvin" in params:
-        data["color_temp_kelvin"] = int(params["color_temp_kelvin"])
-    if "transition" in params:
-        data["transition"] = float(params["transition"])
+    for raw_key, value in params.items():
+        key = _PARAM_ALIASES.get(raw_key, raw_key)
+        try:
+            if key in _INT_PARAMS:
+                if isinstance(value, bool):
+                    raise ValueError(key)
+                data[key] = round(float(value))
+            elif key == "transition":
+                data[key] = float(value)
+            elif key in ("color_name", "effect", "flash"):
+                if not isinstance(value, str) or not value.strip():
+                    raise ValueError(key)
+                data[key] = value.strip()
+            elif key == "rgb_color":
+                if not _is_number_list(value, 3):
+                    raise ValueError(key)
+                data[key] = [int(v) for v in value]
+            elif key in ("hs_color", "xy_color"):
+                if not _is_number_list(value, 2):
+                    raise ValueError(key)
+                data[key] = [float(v) for v in value]
+            elif key == "white":
+                data[key] = int(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else value
+            else:
+                rejected.append(str(raw_key))
+        except (TypeError, ValueError):
+            rejected.append(str(raw_key))
+    return data, rejected
 
-    return data
+
+def _build_service_data(action: dict) -> dict[str, Any]:
+    """Build HA service_data from action parameters (rejected keys are left out)."""
+    return _parse_service_data(action)[0]
+
+
+def _unsupported_reason(
+    entity_id: str,
+    friendly_name: str,
+    state_resp: Any,
+    service_data: dict[str, Any],
+) -> str | None:
+    """Return an honest "not supported" line when the target cannot honour ``service_data``.
+
+    Only the obvious cases are refused; anything HA can emulate (e.g. a
+    colour temperature on an RGB light) is left to HA.
+    """
+    if not service_data:
+        return None
+    keys = set(service_data) - {"transition", "flash", "effect"}
+    if entity_id.startswith("switch."):
+        if keys:
+            return f"{friendly_name} is a switch and can only be turned on or off."
+        return None
+    attrs = state_resp.get("attributes") if isinstance(state_resp, dict) else None
+    modes_raw = attrs.get("supported_color_modes") if isinstance(attrs, dict) else None
+    if not isinstance(modes_raw, (list, tuple, set, frozenset)) or not modes_raw:
+        # HA did not report colour modes: let HA decide.
+        return None
+    modes = {str(m) for m in modes_raw}
+    if modes <= {"onoff"} and keys & (_BRIGHTNESS_PARAMS | _COLOR_PARAMS | _COLOR_TEMP_PARAMS):
+        return f"{friendly_name} can only be turned on or off; it does not support dimming or colors."
+    if modes <= {"onoff", "brightness"}:
+        if keys & _COLOR_PARAMS:
+            return f"{friendly_name} does not support colors."
+        if keys & _COLOR_TEMP_PARAMS:
+            return f"{friendly_name} does not support color temperature."
+    return None
 
 
 def _build_action_speech(
@@ -133,15 +199,17 @@ def _build_action_speech(
 ) -> str:
     """Build an intent-first speech line for a completed action.
 
-    We deliberately avoid claiming a state we did not observe. If the
-    observed state matches the intent, we report it. Otherwise we fall
-    back to intent language ("turned off X") so that a stale or slow
-    state update does not contradict what the user asked for.
+    We never claim a state we did not observe, and a contradicting
+    observation is never spoken as success: when HA reports a state other
+    than the expected one, the line says so. When nothing was observed
+    (slow device, inconclusive verification) we fall back to intent
+    language ("turned off X").
     """
     if expected_state and new_state == expected_state:
         return f"Done, {friendly_name} is now {new_state}."
+    if expected_state and new_state:
+        return f"I sent the command to {friendly_name}, but it still reports {new_state}."
     if expected_state:
-        # Covers both "observed but mismatching" and "not observed at all".
         return f"Done, turned {expected_state} {friendly_name}."
     # ``toggle`` path: no deterministic target. Report what we saw if any.
     if new_state:
@@ -171,7 +239,8 @@ async def execute_light_action(
         entity_matcher: EntityMatcher instance.
 
     Returns:
-        dict with "success", "entity_id", "new_state", and "speech".
+        dict with "success", "entity_id", "new_state", "speech" and, for
+        executed writes, "executed_command" (the exact HA call).
     """
     action_name = action.get("action", "").lower()
     entity_query = action.get("entity", "")
@@ -224,13 +293,48 @@ async def execute_light_action(
     entity_id = resolved["entity_id"]
     friendly_name = resolved["friendly_name"]
 
-    # Deterministic skip: if already in target state, do not call HA.
+    # Extract domain from entity_id
+    domain = entity_id.split(".")[0] if "." in entity_id else "light"
+
+    service_data, rejected = _parse_service_data(action)
+    if rejected:
+        logger.warning("Rejected light parameters %s for %s", rejected, entity_id)
+        return {
+            "success": False,
+            "entity_id": entity_id,
+            "new_state": None,
+            "speech": f"I can't apply {', '.join(sorted(rejected))} to {friendly_name}.",
+            "cacheable": False,
+        }
+    if action_name in ("turn_off", "toggle") and service_data:
+        # turn_off/toggle accept only transition/flash in HA; anything else
+        # means the LLM mixed up the action.
+        service_data = {k: v for k, v in service_data.items() if k in ("transition", "flash")}
+
     try:
         state_resp = await ha_client.get_state(entity_id)
-        current_state = state_resp.get("state") if isinstance(state_resp, dict) else None
     except Exception:
-        current_state = None
-    if _state_matches(action_name, current_state):
+        logger.debug("Pre-action state read failed for %s", entity_id, exc_info=True)
+        state_resp = None
+    current_state = state_resp.get("state") if isinstance(state_resp, dict) else None
+
+    unsupported = _unsupported_reason(entity_id, friendly_name, state_resp, service_data)
+    if unsupported:
+        return {
+            "success": False,
+            "entity_id": entity_id,
+            "new_state": current_state,
+            "speech": unsupported,
+            "cacheable": False,
+        }
+    if domain == "switch":
+        # switch.* services accept no light options (transition/flash/effect).
+        service_data = {}
+
+    # Deterministic skip: only a parameterless action on a single entity that
+    # is already in the target state is redundant (brightness/colour changes
+    # and groups always run).
+    if is_redundant_action(action_name, state_resp, service_data):
         return {
             "success": True,
             "entity_id": entity_id,
@@ -238,9 +342,6 @@ async def execute_light_action(
             "noop": True,
             "speech": f"Done, {friendly_name} is already {current_state}.",
         }
-
-    # Extract domain from entity_id
-    domain = entity_id.split(".")[0] if "." in entity_id else "light"
 
     # Evaluate pre-action condition if present. Conditional actions are
     # never cacheable because their outcome depends on runtime state.
@@ -266,11 +367,12 @@ async def execute_light_action(
             preferred_area_id=preferred_area_id,
         )
         if error is not None:
+            logger.warning("Condition evaluation failed for %s: %s", entity_id, error)
             return {
                 "success": False,
                 "entity_id": entity_id,
                 "new_state": None,
-                "speech": f"Could not evaluate condition for {friendly_name}: {error}",
+                "speech": f"Could not check the condition '{condition.entity}' for {friendly_name}.",
                 "cacheable": False,
             }
         if not passed:
@@ -284,32 +386,29 @@ async def execute_light_action(
             }
         # Condition passed -- continue to service call, but mark non-cacheable.
 
-    # Build service data
-    service_data = _build_service_data(action)
-
     # FLOW-VERIFY-1 / FLOW-VERIFY-SHARED (0.18.5): delegate the
-    # call_service + WS-waiter dance to the shared helper.
-    expected_state = _ensure_str(_EXPECTED_STATE_BY_DOMAIN_ACTION.get((domain, action_name)))
-    with allow_internal_ha_service_calls(f"action-executor:{agent_id or 'unknown'}"):
-        verify = await call_service_with_verification(
-            ha_client,
-            domain,
-            service,
-            entity_id,
-            service_data=service_data,
-            expected_state=expected_state,
-        )
+    # call_service + WS-waiter dance to the shared helper (which also marks
+    # the call as a verified internal HA write).
+    expected_state = _EXPECTED_STATE_BY_DOMAIN_ACTION.get((domain, action_name))
+    verify = await call_service_with_verification(
+        ha_client,
+        domain,
+        service,
+        entity_id,
+        service_data=service_data,
+        expected_state=expected_state,
+    )
 
     if not verify["success"]:
         return {
             "success": False,
             "entity_id": entity_id,
             "new_state": None,
-            "speech": f"Failed to execute {action_name} on {friendly_name}: {verify['error']}",
+            "speech": failure_speech(action_name, friendly_name),
         }
 
     new_state = verify["observed_state"]
-    result = {
+    result: dict[str, Any] = {
         "success": True,
         "action": action_name,
         "entity_id": entity_id,
@@ -320,8 +419,19 @@ async def execute_light_action(
             expected_state=expected_state,
             new_state=new_state,
         ),
+        "executed_command": {
+            "domain": domain,
+            "service": service,
+            "entity_id": entity_id,
+            "service_data": dict(service_data),
+        },
     }
-    if raw_condition is not None:
+    if raw_condition is not None or action_name == "toggle":
+        # Conditional results depend on runtime state; toggle's outcome
+        # depends on the state at execution time.
+        result["cacheable"] = False
+    if expected_state and new_state is not None and new_state != expected_state:
+        # Contradicting observation: never cache an unverified outcome.
         result["cacheable"] = False
     return result
 
@@ -428,13 +538,13 @@ async def _query_light_state(
             "cacheable": False,
             "metadata": resolution_metadata,
         }
-    except Exception as exc:
+    except Exception:
         logger.error("State query failed for %s", entity_id, exc_info=True)
         return {
             "success": False,
             "entity_id": entity_id,
             "new_state": None,
-            "speech": f"Failed to query light status: {exc}",
+            "speech": "Sorry, I could not read the light status.",
             "cacheable": False,
             "metadata": resolution_metadata,
         }
@@ -493,13 +603,13 @@ async def _list_lights(
 ) -> dict:
     try:
         states = await ha_client.get_states()
-    except Exception as exc:
+    except Exception:
         logger.error("Failed to fetch states for list_lights", exc_info=True)
         return {
             "success": False,
             "entity_id": "",
             "new_state": None,
-            "speech": f"Failed to list lights: {exc}",
+            "speech": "Sorry, I could not list the lights.",
             "cacheable": False,
         }
 

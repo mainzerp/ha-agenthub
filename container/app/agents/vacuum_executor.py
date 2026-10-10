@@ -13,7 +13,7 @@ from app.agents.action_executor import (
     call_service_with_verification,
     resolve_and_validate_entity,
 )
-from app.agents.executor_state_check import _state_matches
+from app.agents.executor_state_check import failure_speech, is_redundant_action
 from app.entity.visibility import entity_is_visible
 from app.models.agent import TaskContext
 
@@ -47,6 +47,12 @@ _ACTION_PHRASES: dict[str, str] = {
 }
 
 _ALLOWED_DOMAINS: frozenset[str] = frozenset({"vacuum"})
+
+# Service-data keys each vacuum service accepts; other services take none.
+_SERVICE_DATA_KEYS: dict[str, frozenset[str]] = {
+    "set_fan_speed": frozenset({"fan_speed"}),
+    "send_command": frozenset({"command", "params"}),
+}
 
 # FLOW-DOMAIN-1 (0.19.2): per-action HA-domain allow-set.
 _VACUUM_WRITE_DOMAINS: frozenset[str] = frozenset({"vacuum"})
@@ -145,13 +151,21 @@ async def execute_vacuum_action(
     entity_id = resolved["entity_id"]
     friendly_name = resolved["friendly_name"]
 
-    # Deterministic skip: if already in target state, do not call HA.
     try:
         state_resp = await ha_client.get_state(entity_id)
-        current_state = state_resp.get("state") if isinstance(state_resp, dict) else None
     except Exception:
-        current_state = None
-    if _state_matches(action_name, current_state):
+        logger.debug("Pre-action state read failed for %s", entity_id, exc_info=True)
+        state_resp = None
+    current_state = state_resp.get("state") if isinstance(state_resp, dict) else None
+
+    # Build service data (only the keys the target service accepts).
+    raw_data = _build_vacuum_service_data(action)
+    allowed_keys = _SERVICE_DATA_KEYS.get(action_name, frozenset())
+    service_data = {k: v for k, v in raw_data.items() if k in allowed_keys}
+
+    # Deterministic skip: only a parameterless action on a single vacuum that
+    # is already in the target state is redundant.
+    if is_redundant_action(action_name, state_resp, service_data):
         return {
             "success": True,
             "entity_id": entity_id,
@@ -159,9 +173,6 @@ async def execute_vacuum_action(
             "noop": True,
             "speech": f"Done, {friendly_name} is already {current_state}.",
         }
-
-    # Build service data
-    service_data = _build_vacuum_service_data(action)
 
     expected_state = _EXPECTED_STATE_BY_ACTION.get(action_name)
 
@@ -178,11 +189,11 @@ async def execute_vacuum_action(
             "success": False,
             "entity_id": entity_id,
             "new_state": None,
-            "speech": f"Failed to execute {action_name} on {friendly_name}: {verify['error']}",
+            "speech": failure_speech(action_name, friendly_name),
         }
 
     new_state = verify["observed_state"]
-    return {
+    result: dict[str, Any] = {
         "success": True,
         "action": action_name,
         "entity_id": entity_id,
@@ -195,7 +206,18 @@ async def execute_vacuum_action(
             verified=verify["verified"],
             action_phrases=_ACTION_PHRASES,
         ),
+        "executed_command": {
+            "domain": domain,
+            "service": service,
+            "entity_id": entity_id,
+            "service_data": service_data,
+        },
     }
+    if action_name in ("locate", "send_command"):
+        # One-shot side effects (beep, arbitrary vendor command): never
+        # replay them from the cache.
+        result["cacheable"] = False
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -279,13 +301,13 @@ async def _query_vacuum_state(
             "cacheable": False,
             "metadata": resolution_metadata,
         }
-    except Exception as exc:
+    except Exception:
         logger.error("State query failed for %s", entity_id, exc_info=True)
         return {
             "success": False,
             "entity_id": entity_id,
             "new_state": None,
-            "speech": f"Failed to query vacuum status: {exc}",
+            "speech": "Sorry, I could not query vacuum status.",
             "cacheable": False,
             "metadata": resolution_metadata,
         }
@@ -294,13 +316,13 @@ async def _query_vacuum_state(
 async def _list_vacuums(ha_client: Any, agent_id: str | None = None, entity_index: Any = None) -> dict:
     try:
         states = await ha_client.get_states()
-    except Exception as exc:
+    except Exception:
         logger.error("Failed to fetch states for list_vacuums", exc_info=True)
         return {
             "success": False,
             "entity_id": "",
             "new_state": None,
-            "speech": f"Failed to list vacuums: {exc}",
+            "speech": "Sorry, I could not list vacuums.",
             "cacheable": False,
         }
 

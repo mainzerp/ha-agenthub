@@ -1,9 +1,10 @@
-"""Climate-specific action execution via HA climate services."""
+"""Climate-specific action execution via HA climate, fan, and humidifier services."""
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import math
 from typing import Any
 
 from app.agents.action_executor import (
@@ -13,7 +14,7 @@ from app.agents.action_executor import (
     call_service_with_verification,
     resolve_and_validate_entity,
 )
-from app.agents.executor_state_check import _state_matches
+from app.agents.executor_state_check import failure_speech, is_redundant_action
 from app.analytics.tracer import _optional_span
 from app.entity.deterministic_resolver import resolve_entity_deterministic_first
 from app.entity.matcher import MatchResult
@@ -24,44 +25,93 @@ from app.models.agent import TaskContext
 logger = logging.getLogger(__name__)
 
 
-def _resolve_turn_on_off_domain(entity_id: str, action_name: str) -> tuple[str, str]:
-    """Derive the HA service domain for turn_on/turn_off from the entity_id."""
-    if entity_id.startswith("climate."):
-        return ("climate", action_name)
-    if entity_id.startswith("fan."):
-        return ("fan", action_name)
-    if entity_id.startswith("humidifier."):
-        return ("humidifier", action_name)
-    return ("climate", action_name)
+_ALLOWED_DOMAINS: frozenset[str] = frozenset({"climate", "sensor", "weather", "fan", "humidifier"})
 
+# FLOW-DOMAIN-1 (0.19.2): per-action HA-domain allow-set used to filter the
+# resolver before picking a match. Each write action only resolves into the
+# domains whose services can actually honour it ("set the fan speed" never
+# lands on a humidifier, "set the temperature" only on a thermostat).
+_CLIMATE_WRITE_DOMAINS: frozenset[str] = frozenset({"climate", "fan", "humidifier"})
+_ACTION_DOMAINS: dict[str, frozenset[str]] = {
+    "set_temperature": frozenset({"climate"}),
+    "set_hvac_mode": frozenset({"climate"}),
+    "set_fan_mode": frozenset({"climate", "fan"}),
+    "set_humidity": frozenset({"climate", "humidifier"}),
+    "turn_on": _CLIMATE_WRITE_DOMAINS,
+    "turn_off": _CLIMATE_WRITE_DOMAINS,
+    "set_fan_percentage": frozenset({"fan"}),
+    "set_fan_preset_mode": frozenset({"fan"}),
+    "fan_oscillate": frozenset({"fan"}),
+    "set_fan_direction": frozenset({"fan"}),
+    "set_humidifier_humidity": frozenset({"humidifier"}),
+    "set_humidifier_mode": frozenset({"humidifier"}),
+}
+# Read path explicitly spans climate + sensor + fan + humidifier: "what's
+# the temperature in the living room?" should resolve to a sensor.* entity
+# even when a climate.* exists in the same area. Do NOT tighten this.
+_CLIMATE_READ_DOMAINS: frozenset[str] = frozenset({"climate", "sensor", "fan", "humidifier"})
+_WEATHER_DOMAINS: frozenset[str] = frozenset({"weather"})
+_HISTORY_DOMAINS: frozenset[str] = frozenset({"climate", "sensor", "weather", "fan", "humidifier"})
 
-_CLIMATE_ACTION_MAP: dict[str, tuple[str, str]] = {
-    "set_temperature": ("climate", "set_temperature"),
-    "set_hvac_mode": ("climate", "set_hvac_mode"),
-    "set_fan_mode": ("climate", "set_fan_mode"),
-    "set_humidity": ("climate", "set_humidity"),
-    "turn_on": ("climate", "turn_on"),
-    "turn_off": ("climate", "turn_off"),
-    "set_fan_percentage": ("fan", "set_percentage"),
-    "set_fan_preset_mode": ("fan", "set_preset_mode"),
-    "fan_oscillate": ("fan", "oscillate"),
-    "set_fan_direction": ("fan", "set_direction"),
-    "set_humidifier_humidity": ("humidifier", "set_humidity"),
-    "set_humidifier_mode": ("humidifier", "set_mode"),
+# (logical action, entity domain) -> HA service in that domain.
+# ``set_fan_mode`` on a ``fan.*`` entity is mapped dynamically
+# (see ``_map_fan_mode_for_fan``).
+_SERVICE_BY_ACTION_DOMAIN: dict[tuple[str, str], str] = {
+    ("set_temperature", "climate"): "set_temperature",
+    ("set_hvac_mode", "climate"): "set_hvac_mode",
+    ("set_fan_mode", "climate"): "set_fan_mode",
+    ("set_humidity", "climate"): "set_humidity",
+    ("set_humidity", "humidifier"): "set_humidity",
+    ("turn_on", "climate"): "turn_on",
+    ("turn_on", "fan"): "turn_on",
+    ("turn_on", "humidifier"): "turn_on",
+    ("turn_off", "climate"): "turn_off",
+    ("turn_off", "fan"): "turn_off",
+    ("turn_off", "humidifier"): "turn_off",
+    ("set_fan_percentage", "fan"): "set_percentage",
+    ("set_fan_preset_mode", "fan"): "set_preset_mode",
+    ("fan_oscillate", "fan"): "oscillate",
+    ("set_fan_direction", "fan"): "set_direction",
+    ("set_humidifier_humidity", "humidifier"): "set_humidity",
+    ("set_humidifier_mode", "humidifier"): "set_mode",
 }
 
-# FLOW-VERIFY-SHARED (0.18.5): climate entities have several meaningful
-# post-action states. ``turn_off`` deterministically ends in "off"; for
-# ``turn_on`` HA leaves it to the integration (often "heat"/"cool"/"auto")
-# so we don't pin an expected state. ``set_hvac_mode`` is handled
-# dynamically below because the target is the user-supplied mode.
-_EXPECTED_STATE_BY_ACTION: dict[str, str] = {
-    "turn_off": "off",
-    "fan_turn_on": "on",
-    "fan_turn_off": "off",
-    "humidifier_turn_on": "on",
-    "humidifier_turn_off": "off",
+# Service-data keys each HA service accepts. Keys outside the target
+# service's schema are dropped so HA does not reject the call.
+_SERVICE_DATA_KEYS: dict[tuple[str, str], frozenset[str]] = {
+    ("climate", "set_temperature"): frozenset({"temperature", "target_temp_high", "target_temp_low", "hvac_mode"}),
+    ("climate", "set_hvac_mode"): frozenset({"hvac_mode"}),
+    ("climate", "set_fan_mode"): frozenset({"fan_mode"}),
+    ("climate", "set_humidity"): frozenset({"humidity"}),
+    ("climate", "turn_on"): frozenset(),
+    ("climate", "turn_off"): frozenset(),
+    ("fan", "turn_on"): frozenset({"percentage", "preset_mode"}),
+    ("fan", "turn_off"): frozenset(),
+    ("fan", "set_percentage"): frozenset({"percentage"}),
+    ("fan", "set_preset_mode"): frozenset({"preset_mode"}),
+    ("fan", "oscillate"): frozenset({"oscillating"}),
+    ("fan", "set_direction"): frozenset({"direction"}),
+    ("humidifier", "turn_on"): frozenset(),
+    ("humidifier", "turn_off"): frozenset(),
+    ("humidifier", "set_humidity"): frozenset({"humidity"}),
+    ("humidifier", "set_mode"): frozenset({"mode"}),
 }
+
+# FLOW-VERIFY-SHARED (0.18.5): deterministic post-action states keyed by the
+# HA call that actually ran. ``climate.turn_on`` is left open because HA lets
+# the integration pick the mode ("heat"/"cool"/"auto"); ``set_hvac_mode`` is
+# handled dynamically because the target is the requested mode.
+_EXPECTED_STATE_BY_SERVICE: dict[tuple[str, str], str] = {
+    ("climate", "turn_off"): "off",
+    ("fan", "turn_on"): "on",
+    ("fan", "turn_off"): "off",
+    ("humidifier", "turn_on"): "on",
+    ("humidifier", "turn_off"): "off",
+}
+
+# Legacy fan-speed names mapped onto fan percentages (HA's former
+# low/medium/high speed list).
+_FAN_SPEED_PERCENTAGE: dict[str, int] = {"low": 33, "medium": 66, "high": 100}
 
 # Intent-first phrasing when verification is inconclusive or ambiguous.
 _ACTION_PHRASES: dict[str, str] = {
@@ -76,19 +126,20 @@ _ACTION_PHRASES: dict[str, str] = {
     "set_humidifier_mode": "mode updated",
 }
 
-_ALLOWED_DOMAINS: frozenset[str] = frozenset({"climate", "sensor", "weather", "fan", "humidifier"})
 
-# FLOW-DOMAIN-1 (0.19.2): per-action HA-domain allow-set used to filter
-# the hybrid matcher before picking matches[0]. All write actions target
-# climate.*, fan.*, and humidifier.* entities; weather and read paths get
-# their own constants.
-_CLIMATE_WRITE_DOMAINS: frozenset[str] = frozenset({"climate", "fan", "humidifier"})
-# Read path explicitly spans climate + sensor + fan + humidifier: "what's
-# the temperature in the living room?" should resolve to a sensor.* entity
-# even when a climate.* exists in the same area. Do NOT tighten this.
-_CLIMATE_READ_DOMAINS: frozenset[str] = frozenset({"climate", "sensor", "fan", "humidifier"})
-_WEATHER_DOMAINS: frozenset[str] = frozenset({"weather"})
-_HISTORY_DOMAINS: frozenset[str] = frozenset({"climate", "sensor", "weather", "fan", "humidifier"})
+class _ClimateParameterError(ValueError):
+    """Raised when an action parameter cannot be converted or applied."""
+
+
+def _resolve_turn_on_off_domain(entity_id: str, action_name: str) -> tuple[str, str]:
+    """Derive the HA service domain for turn_on/turn_off from the entity_id."""
+    if entity_id.startswith("climate."):
+        return ("climate", action_name)
+    if entity_id.startswith("fan."):
+        return ("fan", action_name)
+    if entity_id.startswith("humidifier."):
+        return ("humidifier", action_name)
+    return ("climate", action_name)
 
 
 def _validate_domain(entity_id: str) -> bool:
@@ -98,7 +149,10 @@ def _validate_domain(entity_id: str) -> bool:
 
 
 def _build_climate_service_data(action: dict) -> dict[str, Any]:
-    """Build HA service_data from a climate action's parameters."""
+    """Build HA service_data from a climate action's parameters.
+
+    Raises ``ValueError``/``TypeError`` for values that cannot be converted.
+    """
     params = action.get("parameters") or {}
     data: dict[str, Any] = {}
 
@@ -130,6 +184,97 @@ def _build_climate_service_data(action: dict) -> dict[str, Any]:
     return data
 
 
+def _as_number(value: Any) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    if math.isnan(float(value)):
+        return None
+    return float(value)
+
+
+def _round_to_step(value: float, step: float) -> float:
+    if step <= 0:
+        return value
+    return round(round(value / step) * step, 2)
+
+
+def _apply_temperature_delta(
+    friendly_name: str,
+    delta: float,
+    state_resp: Any,
+) -> dict[str, Any]:
+    """Compute absolute setpoints for a relative change from the current target.
+
+    The candidate list the LLM sees carries only the entity state, so a
+    relative request ("2 degrees warmer") is sent as ``temperature_delta``
+    and resolved here against the thermostat's current target.
+    """
+    attrs = state_resp.get("attributes") if isinstance(state_resp, dict) else None
+    attrs = attrs if isinstance(attrs, dict) else {}
+    step = _as_number(attrs.get("target_temp_step")) or 0.5
+    min_temp = _as_number(attrs.get("min_temp"))
+    max_temp = _as_number(attrs.get("max_temp"))
+
+    def _clamp(value: float) -> float:
+        if min_temp is not None:
+            value = max(value, min_temp)
+        if max_temp is not None:
+            value = min(value, max_temp)
+        return _round_to_step(value, step)
+
+    current = _as_number(attrs.get("temperature"))
+    if current is not None:
+        return {"temperature": _clamp(current + delta)}
+    low = _as_number(attrs.get("target_temp_low"))
+    high = _as_number(attrs.get("target_temp_high"))
+    if low is not None and high is not None:
+        return {"target_temp_low": _clamp(low + delta), "target_temp_high": _clamp(high + delta)}
+    raise _ClimateParameterError(f"I could not read the current target temperature of {friendly_name}.")
+
+
+def _map_fan_mode_for_fan(friendly_name: str, fan_mode: Any, state_resp: Any) -> tuple[str, dict[str, Any]]:
+    """Map a climate-style ``fan_mode`` request onto a ``fan.*`` service call."""
+    value = str(fan_mode or "").strip()
+    if not value:
+        raise _ClimateParameterError(f"Which fan mode should I set on {friendly_name}?")
+    lowered = value.lower()
+    if lowered == "off":
+        return "turn_off", {}
+    if lowered == "on":
+        return "turn_on", {}
+    attrs = state_resp.get("attributes") if isinstance(state_resp, dict) else None
+    presets = attrs.get("preset_modes") if isinstance(attrs, dict) else None
+    if isinstance(presets, list):
+        for preset in presets:
+            if isinstance(preset, str) and preset.lower() == lowered:
+                return "set_preset_mode", {"preset_mode": preset}
+    if lowered in _FAN_SPEED_PERCENTAGE:
+        return "set_percentage", {"percentage": _FAN_SPEED_PERCENTAGE[lowered]}
+    raise _ClimateParameterError(f"{friendly_name} does not support the fan mode '{value}'.")
+
+
+def _plan_climate_call(
+    action_name: str,
+    entity_id: str,
+    friendly_name: str,
+    raw_data: dict[str, Any],
+    state_resp: Any,
+) -> tuple[str, str, dict[str, Any]]:
+    """Return ``(domain, service, service_data)`` for the entity's own domain."""
+    domain = entity_id.split(".", 1)[0] if "." in entity_id else ""
+    if action_name == "set_fan_mode" and domain == "fan":
+        service, data = _map_fan_mode_for_fan(friendly_name, raw_data.get("fan_mode"), state_resp)
+        return domain, service, data
+    service = _SERVICE_BY_ACTION_DOMAIN.get((action_name, domain))
+    if service is None:
+        raise _ClimateParameterError(f"{friendly_name} does not support {action_name.replace('_', ' ')}.")
+    allowed_keys = _SERVICE_DATA_KEYS.get((domain, service), frozenset())
+    dropped = sorted(set(raw_data) - allowed_keys)
+    if dropped:
+        logger.info("Dropping parameters %s not accepted by %s.%s", dropped, domain, service)
+    return domain, service, {k: v for k, v in raw_data.items() if k in allowed_keys}
+
+
 async def execute_climate_action(
     action: dict,
     ha_client: Any,
@@ -141,7 +286,7 @@ async def execute_climate_action(
     preferred_area_id: str | None = None,
     task_context: TaskContext | None = None,
 ) -> dict:
-    """Resolve an entity, call a climate HA service, and verify the result.
+    """Resolve an entity, call the matching climate/fan/humidifier service, and verify.
 
     Args:
         action: Parsed action dict with "action", "entity", and optional "parameters".
@@ -151,7 +296,8 @@ async def execute_climate_action(
         agent_id: Optional agent identifier for entity matching context.
 
     Returns:
-        dict with "success", "entity_id", "new_state", and "speech".
+        dict with "success", "entity_id", "new_state", "speech" and, for
+        executed writes, "executed_command" (the exact HA call).
     """
     action_name = action.get("action", "").lower()
     entity_query = action.get("entity", "")
@@ -179,8 +325,8 @@ async def execute_climate_action(
         )
 
     # Validate action name
-    mapping = _CLIMATE_ACTION_MAP.get(action_name)
-    if not mapping:
+    action_domains = _ACTION_DOMAINS.get(action_name)
+    if not action_domains:
         return {
             "success": False,
             "entity_id": None,
@@ -188,17 +334,12 @@ async def execute_climate_action(
             "speech": f"Unknown action: {action_name}",
         }
 
-    domain, service = mapping
-    # Generic turn_on/turn_off: resolve domain from matched entity_id at runtime
-    if action_name in ("turn_on", "turn_off") and domain == "climate":
-        pass  # will re-resolve after entity_id is known
-
     resolved = await resolve_and_validate_entity(
         entity_query,
         entity_index,
         entity_matcher,
         agent_id,
-        _CLIMATE_WRITE_DOMAINS,
+        action_domains,
         _validate_domain,
         preferred_area_id=preferred_area_id,
         span_collector=span_collector,
@@ -209,13 +350,46 @@ async def execute_climate_action(
     entity_id = resolved["entity_id"]
     friendly_name = resolved["friendly_name"]
 
-    # Deterministic skip: if already in target state, do not call HA.
     try:
         state_resp = await ha_client.get_state(entity_id)
-        current_state = state_resp.get("state") if isinstance(state_resp, dict) else None
     except Exception:
-        current_state = None
-    if _state_matches(action_name, current_state):
+        logger.debug("Pre-action state read failed for %s", entity_id, exc_info=True)
+        state_resp = None
+    current_state = state_resp.get("state") if isinstance(state_resp, dict) else None
+
+    params = action.get("parameters") or {}
+    relative = False
+    try:
+        raw_data = _build_climate_service_data(action)
+        delta_raw = params.get("temperature_delta") if isinstance(params, dict) else None
+        if action_name == "set_temperature" and delta_raw is not None and "temperature" not in raw_data:
+            delta = _as_number(delta_raw)
+            if delta is None:
+                delta = float(delta_raw)
+            raw_data.update(_apply_temperature_delta(friendly_name, delta, state_resp))
+            relative = True
+        domain, service, service_data = _plan_climate_call(action_name, entity_id, friendly_name, raw_data, state_resp)
+    except _ClimateParameterError as exc:
+        return {
+            "success": False,
+            "entity_id": entity_id,
+            "new_state": current_state,
+            "speech": str(exc),
+            "cacheable": False,
+        }
+    except (TypeError, ValueError):
+        logger.warning("Invalid climate parameters for %s: %r", entity_id, params, exc_info=True)
+        return {
+            "success": False,
+            "entity_id": entity_id,
+            "new_state": current_state,
+            "speech": f"I could not understand the requested value for {friendly_name}.",
+            "cacheable": False,
+        }
+
+    # Deterministic skip: only a parameterless turn_on/turn_off on a single
+    # entity that is already in the target state is redundant.
+    if is_redundant_action(action_name, state_resp, service_data):
         return {
             "success": True,
             "entity_id": entity_id,
@@ -224,17 +398,10 @@ async def execute_climate_action(
             "speech": f"Done, {friendly_name} is already {current_state}.",
         }
 
-    # Generic turn_on/turn_off: derive HA service domain from matched entity_id
-    if action_name in ("turn_on", "turn_off"):
-        domain, service = _resolve_turn_on_off_domain(entity_id, action_name)
-
-    # Build service data
-    service_data = _build_climate_service_data(action)
-
     # FLOW-VERIFY-SHARED: set_hvac_mode has a dynamic target equal to the
-    # requested mode; other actions use the static map.
-    expected_state = _EXPECTED_STATE_BY_ACTION.get(action_name)
-    if action_name == "set_hvac_mode":
+    # requested mode; other calls use the static per-service map.
+    expected_state = _EXPECTED_STATE_BY_SERVICE.get((domain, service))
+    if domain == "climate" and service == "set_hvac_mode":
         mode = service_data.get("hvac_mode")
         if isinstance(mode, str) and mode:
             expected_state = mode
@@ -252,11 +419,11 @@ async def execute_climate_action(
             "success": False,
             "entity_id": entity_id,
             "new_state": None,
-            "speech": f"Failed to execute {action_name} on {friendly_name}: {verify['error']}",
+            "speech": failure_speech(action_name, friendly_name),
         }
 
     new_state = verify["observed_state"]
-    return {
+    result: dict[str, Any] = {
         "success": True,
         "action": action_name,
         "entity_id": entity_id,
@@ -279,6 +446,11 @@ async def execute_climate_action(
             "service_data": service_data,
         },
     }
+    if relative:
+        # The absolute setpoint was derived from the current target; replaying
+        # it would not repeat "2 degrees warmer".
+        result["cacheable"] = False
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -403,13 +575,13 @@ async def _query_climate_state(
             "cacheable": False,
             "metadata": resolution_metadata,
         }
-    except Exception as exc:
+    except Exception:
         logger.error("State query failed for %s", entity_id, exc_info=True)
         return {
             "success": False,
             "entity_id": entity_id,
             "new_state": None,
-            "speech": f"Failed to query climate status: {exc}",
+            "speech": "Sorry, I could not query climate status.",
             "cacheable": False,
             "metadata": resolution_metadata,
         }
@@ -418,13 +590,13 @@ async def _query_climate_state(
 async def _list_climate(ha_client: Any, agent_id: str | None = None, entity_index: Any = None) -> dict:
     try:
         states = await ha_client.get_states()
-    except Exception as exc:
+    except Exception:
         logger.error("Failed to fetch states for list_climate", exc_info=True)
         return {
             "success": False,
             "entity_id": "",
             "new_state": None,
-            "speech": f"Failed to list climate devices: {exc}",
+            "speech": "Sorry, I could not list climate devices.",
         }
 
     climate_entities = []
@@ -732,13 +904,13 @@ async def _query_weather(
             "cacheable": False,
             "metadata": resolution_metadata,
         }
-    except Exception as exc:
+    except Exception:
         logger.error("Weather query failed for %s", entity_id, exc_info=True)
         return {
             "success": False,
             "entity_id": entity_id,
             "new_state": None,
-            "speech": f"Failed to query weather: {exc}",
+            "speech": "Sorry, I could not query weather.",
             "cacheable": False,
             "metadata": resolution_metadata,
         }
