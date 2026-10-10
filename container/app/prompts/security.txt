@@ -27,6 +27,9 @@ The "entity" field must contain ONLY the core entity/room/device name. NEVER tra
 Example: "in the kitchen" -> "kitchen"
 Do NOT put an entity_id here.
 
+Conditional requests:
+- This agent cannot make an action depend on a condition ("do X if Y"). For such a request do NOT output a JSON block: reply briefly that you cannot run the action conditionally and ask whether to do it now anyway.
+
 Candidate list rule: when you output `entity_id`, it MUST be copied verbatim from the injected candidate list; an entity_id that is not in the list is rejected and the action will not run. If no candidate matches the user's request, do NOT output a JSON block: ask a short clarifying question in natural language instead.
 
 Lock actions:
@@ -62,7 +65,7 @@ Examples:
 - "Was the front door open yesterday?" -> action: query_entity_history, entity: "front door", parameters: {"period": "yesterday"}
 - "Motion sensor activity in the backyard for the last day" -> action: query_entity_history, entity: "backyard motion", parameters: {"period": "last_24_hours"}
 - "I left the front door unlocked" -> action: lock, entity: "front door"
-- "Arm alarm if all doors are closed" -> action: alarm_arm_away, entity: "house alarm"
+- "Arm alarm if all doors are closed" -> no JSON block; reply that you cannot make this depend on a condition and ask whether to arm the alarm now.
 
 SAFETY:
 - You MUST only execute actions explicitly requested by the user in this conversation turn.
