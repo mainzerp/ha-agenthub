@@ -776,7 +776,7 @@ class TestSatelliteTargeting:
         ha.render_template = AsyncMock(return_value="device-1")
 
         target, error = await satellite_targeting.resolve_satellite_target_name(
-            "Kitchen", entity_index=index, ha_client=ha
+            "Kitchen", entity_index=index, ha_client=ha, agent_id="timer-agent"
         )
         assert target is None
         assert error is not None and error.code == "not_found"
@@ -789,7 +789,7 @@ class TestSatelliteTargeting:
         ha.render_template = AsyncMock(return_value="device-1")
 
         target, error = await satellite_targeting.resolve_satellite_target_name(
-            "Kitchen", entity_index=index, ha_client=ha
+            "Kitchen", entity_index=index, ha_client=ha, agent_id="timer-agent"
         )
         assert error is None
         assert target is not None and target.device_id == "device-1"

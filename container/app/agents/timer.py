@@ -52,6 +52,7 @@ class TimerAgent(ActionableAgent):
                 explicit_target_name,
                 entity_index=entity_index,
                 ha_client=ha_client,
+                agent_id=agent_id,
             )
             if resolution_error is not None:
                 return {

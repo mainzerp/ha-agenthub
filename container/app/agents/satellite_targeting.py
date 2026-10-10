@@ -9,9 +9,6 @@ from typing import Any
 
 from app.entity.visibility import filter_visible_results
 
-# The timer agent is the only caller today; other callers pass their own id.
-_DEFAULT_AGENT_ID = "timer-agent"
-
 
 @dataclass(frozen=True)
 class ResolvedSatelliteTarget:
@@ -38,13 +35,14 @@ async def resolve_satellite_target_name(
     *,
     entity_index: Any,
     ha_client: Any,
-    agent_id: str | None = _DEFAULT_AGENT_ID,
+    agent_id: str,
 ) -> tuple[ResolvedSatelliteTarget | None, SatelliteResolutionError | None]:
     """Resolve an explicit satellite name to assist-satellite entity + device context.
 
-    Only satellites visible to ``agent_id`` under the per-agent entity
-    visibility rules are considered (Directive 5); an invisible satellite
-    resolves exactly like a non-existent one.
+    Only satellites visible to ``agent_id`` (required, passed explicitly by
+    the calling agent) under the per-agent entity visibility rules are
+    considered (Directive 5); an invisible satellite resolves exactly like a
+    non-existent one.
     """
     normalized_target = _normalize_name(name)
     if not normalized_target:
@@ -60,8 +58,7 @@ async def resolve_satellite_target_name(
     elif _supports_method(entity_index, "list_entries"):
         entries = entity_index.list_entries(domains={"assist_satellite"})
     entries = [e for e in entries if str(getattr(e, "entity_id", "") or "").startswith("assist_satellite.")]
-    if agent_id:
-        entries = await filter_visible_results(agent_id, entries, entity_index)
+    entries = await filter_visible_results(agent_id, entries, entity_index)
 
     matches: list[Any] = []
     for entry in entries:

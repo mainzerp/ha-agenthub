@@ -923,6 +923,28 @@ class TestTimerAgent:
     @patch(
         "app.llm.client.complete",
         new_callable=AsyncMock,
+        return_value='```json\n{"action": "start_timer", "entity": "timer", "parameters": {"duration": "00:05:00", "target_satellite": "Kitchen"}}\n```\nDone.',
+    )
+    async def test_explicit_satellite_resolution_passes_timer_agent_id(self, _mock_complete, _mock_exec):
+        """#132: satellite visibility is checked for the timer agent explicitly."""
+        agent = TimerAgent(ha_client=MagicMock(), entity_index=MagicMock(), entity_matcher=MagicMock())
+        with patch(
+            "app.agents.timer.resolve_satellite_target_name",
+            new_callable=AsyncMock,
+            return_value=(None, None),
+        ) as mock_resolve:
+            await agent.handle_task(_make_task("set a timer for five minutes in the kitchen"))
+
+        assert mock_resolve.await_args.kwargs["agent_id"] == "timer-agent"
+
+    @patch(
+        "app.agents.timer.execute_timer_action",
+        new_callable=AsyncMock,
+        return_value={"success": True, "entity_id": None, "new_state": "active", "speech": "Done."},
+    )
+    @patch(
+        "app.llm.client.complete",
+        new_callable=AsyncMock,
         return_value='```json\n{"action": "start_timer", "entity": "timer", "parameters": {"duration": "00:05:00"}}\n```\nDone.',
     )
     async def test_no_explicit_satellite_keeps_context(self, _mock_complete, mock_exec):
