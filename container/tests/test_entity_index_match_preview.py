@@ -239,7 +239,7 @@ async def test_match_preview_climate_agent_allows_climate_entity(preview_client)
     deterministic_resolve.assert_awaited_once()
     call = deterministic_resolve.await_args
     assert call.args == ("wohnzimmer", _ei, em, "climate-agent")
-    assert call.kwargs == {"allowed_domains": frozenset({"climate", "sensor", "weather"})}
+    assert call.kwargs == {"allowed_domains": frozenset({"climate", "sensor", "weather", "fan", "humidifier"})}
 
 
 @pytest.mark.asyncio
@@ -316,8 +316,8 @@ async def test_match_preview_response_exposes_agent_allowed_domains(preview_clie
         )
     assert resp.status_code == 200, resp.text
     data = resp.json()
-    assert set(data["agent_allowed_domains"]) == {"climate", "sensor", "weather"}
-    assert set(data["preferred_domains"]) == {"climate", "sensor", "weather"}
+    assert set(data["agent_allowed_domains"]) == {"climate", "sensor", "weather", "fan", "humidifier"}
+    assert set(data["preferred_domains"]) == {"climate", "sensor", "weather", "fan", "humidifier"}
 
 
 @pytest.mark.asyncio
@@ -453,8 +453,8 @@ async def test_match_preview_diagnostics_no_allowed_entities(preview_client):
     assert data["hybrid"] == []
     diag = data["diagnostics"]
     assert diag["reason"] == "no_entities_of_allowed_domains"
-    assert set(diag["allowed_domains"]) == {"climate", "sensor", "weather"}
-    assert diag["domain_counts"] == {"climate": 0, "sensor": 0, "weather": 0}
+    assert set(diag["allowed_domains"]) == {"climate", "sensor", "weather", "fan", "humidifier"}
+    assert diag["domain_counts"] == {"climate": 0, "sensor": 0, "weather": 0, "fan": 0, "humidifier": 0}
 
 
 @pytest.mark.asyncio

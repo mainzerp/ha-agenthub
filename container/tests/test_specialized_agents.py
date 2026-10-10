@@ -743,6 +743,14 @@ class TestVacuumAgent:
 
 
 class TestTimerAgent:
+    @pytest.fixture(autouse=True)
+    def _no_visibility_rules(self, monkeypatch):
+        # Satellite targeting applies the timer agent's visibility rules.
+        monkeypatch.setattr(
+            "app.entity.visibility.EntityVisibilityRepository.get_rules",
+            AsyncMock(return_value=[]),
+        )
+
     @patch(
         "app.agents.timer.execute_timer_action",
         new_callable=AsyncMock,

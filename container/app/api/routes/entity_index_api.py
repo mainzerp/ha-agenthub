@@ -7,6 +7,17 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
+from app.agents import (
+    automation_executor,
+    climate_executor,
+    cover_executor,
+    light_executor,
+    media_executor,
+    music_executor,
+    scene_executor,
+    security_executor,
+    vacuum_executor,
+)
 from app.bootstrap._entity import build_entity_snapshot
 from app.cache.embedding import get_embedding_info
 from app.cache.vector_store import COLLECTION_ENTITY_INDEX
@@ -24,24 +35,20 @@ router = APIRouter(
 )
 
 
-# Mirrors each executor's local _ALLOWED_DOMAINS constant. Keep in sync
-# manually if any executor changes its allowed domains.
-#   action_executor.py     -> light-agent (and switch/sensor light path)
-#   climate_executor.py    -> climate-agent
-#   automation_executor.py -> automation-agent
-#   media_executor.py      -> media-agent
-#   music_executor.py      -> music-agent
-#   scene_executor.py      -> scene-agent
-#   security_executor.py   -> security-agent
-#   timer_executor/        -> timer-agent
+# Each executor's ``_ALLOWED_DOMAINS`` constant is the single source of
+# truth; this map imports it instead of mirroring it. The ``@agent``
+# metadata in ``app/agents/actionable.py`` is held equal to the same
+# constants by ``tests/test_agent_domain_parity.py``.
 AGENT_ALLOWED_DOMAINS: dict[str, frozenset[str]] = {
-    "light-agent": frozenset({"light", "switch", "sensor"}),
-    "climate-agent": frozenset({"climate", "sensor", "weather"}),
-    "automation-agent": frozenset({"automation"}),
-    "media-agent": frozenset({"media_player"}),
-    "music-agent": frozenset({"media_player"}),
-    "scene-agent": frozenset({"scene"}),
-    "security-agent": frozenset({"alarm_control_panel", "lock", "camera", "binary_sensor", "sensor"}),
+    "light-agent": light_executor._ALLOWED_DOMAINS,
+    "climate-agent": climate_executor._ALLOWED_DOMAINS,
+    "cover-agent": cover_executor._ALLOWED_DOMAINS,
+    "automation-agent": automation_executor._ALLOWED_DOMAINS,
+    "media-agent": media_executor._ALLOWED_DOMAINS,
+    "music-agent": music_executor._ALLOWED_DOMAINS,
+    "scene-agent": scene_executor._ALLOWED_DOMAINS,
+    "security-agent": security_executor._ALLOWED_DOMAINS,
+    "vacuum-agent": vacuum_executor._ALLOWED_DOMAINS,
     "timer-agent": frozenset(),
 }
 

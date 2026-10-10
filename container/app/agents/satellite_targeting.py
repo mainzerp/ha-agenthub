@@ -1,4 +1,4 @@
-"""Helpers for explicit assist-satellite target extraction and resolution."""
+"""Helpers for resolving an explicitly named assist-satellite target."""
 
 from __future__ import annotations
 
@@ -7,30 +7,10 @@ import unicodedata
 from dataclasses import dataclass
 from typing import Any
 
-_EXPLICIT_TARGET_PATTERNS: tuple[re.Pattern[str], ...] = (
-    re.compile(
-        r"\b(?:on|using|via)\s+(?:the\s+)?(?P<name>[\w\s\-]{1,80}?)\s+(?:satellite|satellit)\b",
-        re.IGNORECASE,
-    ),
-    re.compile(
-        r"\b(?:auf|am|an|uber|ueber|mit)\s+(?:dem\s+|der\s+|den\s+|die\s+|das\s+)?(?P<name>[\w\s\-]{1,80}?)\s+(?:satellite|satellit)\b",
-        re.IGNORECASE,
-    ),
-)
+from app.entity.visibility import filter_visible_results
 
-_DISALLOWED_TARGET_NAMES = {
-    "satellite",
-    "satellit",
-    "timer",
-    "alarm",
-    "wecker",
-    "der",
-    "die",
-    "das",
-    "dem",
-    "den",
-    "the",
-}
+# The timer agent is the only caller today; other callers pass their own id.
+_DEFAULT_AGENT_ID = "timer-agent"
 
 
 @dataclass(frozen=True)
@@ -53,33 +33,19 @@ class SatelliteResolutionError:
     candidates: list[str]
 
 
-def extract_explicit_satellite_target(utterance: str | None) -> str | None:
-    """Extract explicitly named satellite target from a user utterance."""
-    text = " ".join(str(utterance or "").strip().split())
-    if not text:
-        return None
-
-    for pattern in _EXPLICIT_TARGET_PATTERNS:
-        match = pattern.search(text)
-        if not match:
-            continue
-        candidate = (match.group("name") or "").strip(" ,.;:!?")
-        if not candidate:
-            continue
-        normalized = _normalize_name(candidate)
-        if not normalized or normalized in _DISALLOWED_TARGET_NAMES:
-            continue
-        return candidate
-    return None
-
-
 async def resolve_satellite_target_name(
     name: str,
     *,
     entity_index: Any,
     ha_client: Any,
+    agent_id: str | None = _DEFAULT_AGENT_ID,
 ) -> tuple[ResolvedSatelliteTarget | None, SatelliteResolutionError | None]:
-    """Resolve an explicit satellite name to assist-satellite entity + device context."""
+    """Resolve an explicit satellite name to assist-satellite entity + device context.
+
+    Only satellites visible to ``agent_id`` under the per-agent entity
+    visibility rules are considered (Directive 5); an invisible satellite
+    resolves exactly like a non-existent one.
+    """
     normalized_target = _normalize_name(name)
     if not normalized_target:
         return None, SatelliteResolutionError(
@@ -93,12 +59,12 @@ async def resolve_satellite_target_name(
         entries = await entity_index.list_entries_async(domains={"assist_satellite"})
     elif _supports_method(entity_index, "list_entries"):
         entries = entity_index.list_entries(domains={"assist_satellite"})
+    entries = [e for e in entries if str(getattr(e, "entity_id", "") or "").startswith("assist_satellite.")]
+    if agent_id:
+        entries = await filter_visible_results(agent_id, entries, entity_index)
 
     matches: list[Any] = []
     for entry in entries:
-        entity_id = str(getattr(entry, "entity_id", "") or "")
-        if not entity_id.startswith("assist_satellite."):
-            continue
         labels = _candidate_labels(entry)
         if normalized_target in labels:
             matches.append(entry)
