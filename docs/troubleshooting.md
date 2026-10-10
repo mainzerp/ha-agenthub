@@ -70,6 +70,8 @@ Navigate to `http://<host>:8080/setup/` and use the "Test" button for each provi
 3. Verify the entity is exposed in Home Assistant -- only entities visible through the HA REST API (`/api/states`) are indexed.
 4. Add an alias: In the admin dashboard, create an alias mapping your preferred name to the exact entity ID (e.g., "bedroom light" -> `light.bedroom_main`).
 5. Check entity matching weights: Adjust the signal weights on the Entity Index dashboard page if matches are consistently wrong.
+6. "Multiple entities match '...'": two or more visible entities share the name, alias, or area that was said, or the fuzzy matcher found two near-equal candidates. The agent asks instead of guessing. Rename one entity in HA, add a distinct alias, or name the room.
+7. Areas or device names look stale or missing: the container log shows `HA registry lookup <key> failed` when the `/api/template` registry lookup fails. The last good lookup stays in use; until the entity-area lookup has succeeded once, agents with `area_exclude` visibility rules do not see entities without an area. Check HA reachability and the HA log for template errors.
 
 ## Cache Not Working
 

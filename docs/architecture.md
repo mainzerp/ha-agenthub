@@ -328,9 +328,24 @@ Entity selection is agent-side, not orchestrator-side. The orchestrator only rou
 
 - **Keyword recall** -- each actionable agent filters its visible entities by normalized token overlap against the task description (plus the last user turn for follow-ups), with compound containment (a German compound like "Innenhofüberdachung" hits the tokens of "Innenhof Überdachung"). Hits are scored per field class `(name, identity, area)` so name/alias evidence outranks area-token evidence; the name class gets a +1 exact-name bonus when every token of the friendly name (or an alias) appears verbatim in the query, so an explicitly named entity outranks partial name overlaps. A tied top-2 score tuple marks the recall ambiguous and annotates the candidate block to ask instead of guess. Small domains inject the whole visible list; larger domains inject the top 12.
 - **Closed contract** -- the candidate block lists `entity_id -- friendly_name (state)`; the LLM must emit an `entity_id` verbatim from that list. The executor validates the picked id against the recalled set fail-closed (no matcher re-run); an id outside the set is rejected and the agent asks a clarifying question. When the LLM emits only a free-form entity name, the executor falls back to deterministic-first resolution.
-- **Deterministic-first fallback** -- exact entity_id, exact friendly_name (space-insensitive, so compounds match spaced names), exact alias, then the hybrid matcher: alias fast path, token-based candidate preselection, and span-scored string signals (Levenshtein, Jaro-Winkler, phonetic) with an area bonus and a coverage floor rule. Embedding-based entity recall was removed; embeddings remain in use for the routing cache semantic tier and session memory.
+- **Deterministic-first fallback** -- exact entity_id (within the executor's allowed domains), exact friendly_name (space-insensitive, so compounds match spaced names), exact alias (HA per-entity aliases plus user/DB aliases from the `aliases` table, restricted to the visible, allowed-domain snapshot), optional strip-device-noun and area stages (the area stage matches the area id slug and the area name), word-boundary containment, then the hybrid matcher: alias fast path, token-based candidate preselection, and span-scored string signals (Levenshtein, Jaro-Winkler, phonetic) with an area bonus and a coverage floor rule. Embedding-based entity recall was removed; embeddings remain in use for the routing cache semantic tier and session memory.
+- **Shared folding** -- every stage folds text the same way (`app/entity/tokens.py` `fold_text`): lowercase, diacritics stripped, `ß` -> `ss`, and the German digraphs `ae`/`oe`/`ue` collapsed, so "Kueche", "Küche" and "Kuche" are equal.
+- **Ambiguity is final** -- when any deterministic stage finds several equally good candidates, the resolver asks (`*_ambiguous` resolution path) and the hybrid matcher does not run. In the hybrid stage, candidates within 0.02 of the top score are a near-tie (`hybrid_matcher_ambiguous`) unless exactly one of them is in the speaker's area or of the caller's preferred domain. The area rerank (a speaker-area candidate within 0.05 of the top moves first) reads candidate areas from the entity index.
 
-By default, a weighted matcher score above 0.60 returns a confident match. Below the configured threshold, resolution fails closed and the agent asks which device the user means.
+By default, a weighted matcher score above 0.60 returns a confident match. Below the configured threshold, resolution fails closed and the agent asks which device the user means. A user/DB alias hit on an indexed entity is floored like a verbatim name (0.65).
+
+### Entity Index Sync
+
+- WebSocket `state_changed` and registry events update the index incrementally; a full sync runs at startup, every `entity_sync.interval_minutes`, and after every WebSocket reconnect (events emitted while the socket was down are lost).
+- A full sync replaces the index with an HA snapshot but keeps entities that were updated or removed incrementally after the snapshot was taken (mutation generation read before fetching states), so it never resurrects removed entities or reverts newer names.
+- Area, alias, device-name and entity-area registry lookups are fetched via `/api/template` and cached for 5 minutes. A failed lookup is not cached; the last good lookup stays in use. Every registry event (entity, device, area) clears this cache before refreshing the affected entities.
+- Until the entity-area lookup has succeeded once, area assignments are unknown: visibility fails closed for entities without an area under `area_exclude` rules.
+
+### Home Assistant Client
+
+- **WebSocket liveness** -- aiohttp's heartbeat (PING every 15 s, connection closed when no PONG arrives) detects dead connections; the receive loop has no idle timeout, so a quiet home with no events keeps its connection.
+- **Service-call fallback** -- a REST service call is re-sent over the WebSocket only when the request provably never reached HA (connect error, connect or pool timeout). Any HTTP status (including 5xx), read timeout or body decode error propagates, because HA may already have executed the call.
+- **Recorder history** -- history is fetched without attributes; the speech summary takes the unit from the entity's current state.
 
 ## Data Storage
 
