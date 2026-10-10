@@ -13,6 +13,7 @@ from app.a2a.dispatcher import (
     _METHOD_NOT_FOUND,
     _PARSE_ERROR,
     _TIMEOUT_ERROR,
+    A2ADispatchError,
     Dispatcher,
     _AgentDiscoverParams,
     _error_response,
@@ -230,9 +231,9 @@ class TestDispatcher:
     async def test_dispatch_unknown_method_returns_error(self):
         dispatcher, _, _ = self._make_dispatcher()
         request = JsonRpcRequest(method="unknown/method", id="r2")
-        resp = await dispatcher.dispatch(request)
-        assert resp.error is not None
-        assert resp.error.code == _METHOD_NOT_FOUND
+        with pytest.raises(A2ADispatchError) as exc_info:
+            await dispatcher.dispatch(request)
+        assert exc_info.value.code == _METHOD_NOT_FOUND
 
     async def test_dispatch_agent_discover(self):
         dispatcher, reg, _ = self._make_dispatcher()
@@ -261,9 +262,11 @@ class TestDispatcher:
     async def test_dispatch_message_send_missing_params(self):
         dispatcher, _, _ = self._make_dispatcher()
         request = JsonRpcRequest(method="message/send", id="r6", params={})
-        resp = await dispatcher.dispatch(request)
-        assert resp.error is not None
-        assert resp.error.code == _INVALID_PARAMS
+        with pytest.raises(A2ADispatchError) as exc_info:
+            await dispatcher.dispatch(request)
+        assert exc_info.value.code == _INVALID_PARAMS
+        # Raised like transport failures, so RuntimeError handlers catch it.
+        assert isinstance(exc_info.value, RuntimeError)
 
     async def test_dispatch_stream_valid(self):
         dispatcher, reg, _ = self._make_dispatcher()
