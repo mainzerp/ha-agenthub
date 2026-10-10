@@ -123,7 +123,7 @@ class TestClimateExecutor:
             {"action": "turn_off", "entity": "thermostat", "parameters": {}}, ha, MagicMock(), matcher
         )
         assert result["success"] is False
-        assert "Failed" in result["speech"]
+        assert "failed for" in result["speech"] or "could not" in result["speech"]
 
     async def test_turn_off_skips_when_already_off(self):
         matcher = AsyncMock()
@@ -336,7 +336,8 @@ class TestLightExecutorQueries:
             agent_id="light-agent",
         )
         assert not result["success"]
-        assert "Failed" in result["speech"]
+        assert "could not read" in result["speech"]
+        assert "HA down" not in result["speech"]
 
     async def test_list_lights(self):
         ha = AsyncMock()
@@ -429,7 +430,7 @@ class TestClimateExecutorQueries:
             agent_id="climate-agent",
         )
         assert not result["success"]
-        assert "Failed" in result["speech"]
+        assert "failed for" in result["speech"] or "could not" in result["speech"]
 
     async def test_list_climate(self):
         ha = AsyncMock()
@@ -1169,7 +1170,7 @@ class TestSecurityExecutorQueries:
             agent_id="security-agent",
         )
         assert not result["success"]
-        assert "Failed" in result["speech"]
+        assert "failed for" in result["speech"] or "could not" in result["speech"]
 
     async def test_list_security(self):
         ha = AsyncMock()
@@ -1272,7 +1273,7 @@ class TestMusicExecutorQueries:
             agent_id="music-agent",
         )
         assert not result["success"]
-        assert "Failed" in result["speech"]
+        assert "failed for" in result["speech"] or "could not" in result["speech"]
 
     async def test_query_music_state_with_direct_entity_id(self):
         ha = AsyncMock()
@@ -1476,7 +1477,7 @@ class TestMediaExecutorQueries:
             agent_id="media-agent",
         )
         assert not result["success"]
-        assert "Failed" in result["speech"]
+        assert "failed for" in result["speech"] or "could not" in result["speech"]
 
     async def test_query_media_state_with_direct_entity_id(self):
         ha = AsyncMock()

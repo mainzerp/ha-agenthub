@@ -19,7 +19,7 @@ A multi-agent AI assistant for Home Assistant with container-based A2A orchestra
 - **Two-tier cache** -- Routing cache (skip intent classification; SQLite-backed SHA-256 exact matching plus a semantic similarity tier; exact hits with persisted entity bindings additionally skip entity resolution) and action cache, formerly response cache (caches the full agent response after the pipeline runs; exact hash matching)
 - **Cache backup and restore** -- Export and import the routing and action caches as a portable JSON envelope via `/api/admin/cache/export` and `/api/admin/cache/import`
 - **Action-cache validator** -- Background validation of action-cache entries with configurable model/batch size, exposed via `/api/admin/cache/validate`
-- **Conditional actions** -- `ActionableAgent` skips redundant service calls when the current HA state already matches the requested end state
+- **Redundant-call skip** -- device executors skip a parameterless call on a single entity whose current HA state already matches the requested end state; calls with parameters (brightness, color, position, code) and group entities always run
 - **Hybrid entity matching** -- Five-signal weighted matcher (Levenshtein, Jaro-Winkler, phonetic, embedding similarity, alias lookup) with LLM disambiguation fallback. Agents can explicitly declare extracted entities via `@entities:` lines in their replies, replacing legacy regex heuristics with structured LLM-driven entity extraction
 - **MCP tool integration** -- Connect external tool servers via Model Context Protocol (stdio and SSE transports) and assign tools to agents
 - **Open WebUI / OpenAI-compatible API** -- `/v1/models` and `/v1/chat/completions` let Open WebUI chat with and control the house; background tasks are stubbed, and Open WebUI users map to Home Assistant users on the Persons page
@@ -44,16 +44,16 @@ A multi-agent AI assistant for Home Assistant with container-based A2A orchestra
 
 | Agent | HA Domains | Capabilities |
 |-------|-----------|-------------|
-| **Light Agent** | `light`, `switch`, `sensor` (illuminance) | On/off, toggle, brightness, color, color temperature |
-| **Climate Agent** | `climate`, `weather`, `sensor` | Temperature, HVAC mode, fan speed, humidity, weather queries |
-| **Media Agent** | `media_player` | Playback, volume, source selection |
-| **Music Agent** | `media_player` | Music-focused playback (radio, playlists) |
+| **Light Agent** | `light`, `switch`, `sensor` (illuminance) | On/off, toggle, absolute and relative brightness, color, color temperature, conditional actions |
+| **Climate Agent** | `climate`, `fan`, `humidifier`, `weather`, `sensor` | Temperature (absolute and relative), HVAC mode, fan speed/preset/oscillation/direction, humidity, weather queries |
+| **Media Agent** | `media_player` | Playback, volume (absolute, relative, step), mute/unmute, source selection |
+| **Music Agent** | `media_player` | Music-focused playback (radio, playlists), library search, volume |
 | **Cover Agent** | `cover` | Open, close, stop, set position, tilt control |
 | **Vacuum Agent** | `vacuum` | Start, pause, stop, return to base, clean spot, set fan speed |
 | **Scene Agent** | `scene` | Scene activation |
 | **Timer Agent** | `timer`, `input_datetime`, `input_boolean` | Timers, alarms, reminders |
 | **Automation Agent** | `automation`, `script` | Trigger, enable, disable, and query automations |
-| **Security Agent** | `lock`, `binary_sensor`, `alarm_control_panel` | Arm/disarm, lock/unlock, camera status |
+| **Security Agent** | `lock`, `alarm_control_panel`, `camera`, `binary_sensor`, `sensor` | Arm/disarm, lock/unlock, camera on/off and status |
 | **Calendar Agent** | `calendar` | Query events, add reminders |
 | **Lists Agent** | `todo`, `shopping_list` | Shopping and todo list management |
 | **Send Agent** | — | Deliver content to phones, satellites, and notification targets |

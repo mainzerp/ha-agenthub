@@ -7,15 +7,15 @@ import logging
 from typing import Any
 
 from app.agents.action_executor import (
-    _ensure_str,
-    _synthesize_direct_entity_metadata,
-    _validate_direct_entity_id,
     build_verified_speech,
     call_service_with_verification,
+    resolve_and_validate_entity,
 )
-from app.analytics.tracer import _optional_span
-from app.entity.deterministic_resolver import resolve_entity_deterministic_first
+from app.agents.executor_state_check import failure_speech, lacks_feature
+from app.agents.media_executor import normalize_volume_level
 from app.entity.visibility import entity_is_visible
+from app.ha_client.rest import allow_internal_ha_service_calls
+from app.models.agent import TaskContext
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +23,8 @@ _MUSIC_ACTION_MAP: dict[str, tuple[str, str]] = {
     "play_media": ("music_assistant", "play_media"),
     "search": ("music_assistant", "search"),
     "volume_set": ("media_player", "volume_set"),
+    "volume_up": ("media_player", "volume_up"),
+    "volume_down": ("media_player", "volume_down"),
     "media_play": ("media_player", "media_play"),
     "media_pause": ("media_player", "media_pause"),
     "media_next_track": ("media_player", "media_next_track"),
@@ -41,10 +43,21 @@ _EXPECTED_STATE_BY_ACTION: dict[str, str] = {
 
 _ACTION_PHRASES: dict[str, str] = {
     "volume_set": "volume updated",
+    "volume_up": "volume turned up",
+    "volume_down": "volume turned down",
     "media_next_track": "skipped to the next track",
     "media_previous_track": "skipped to the previous track",
     "shuffle_set": "shuffle updated",
     "repeat_set": "repeat mode updated",
+}
+
+# HA ``MediaPlayerEntityFeature`` bits for the volume actions (any of them).
+_FEATURE_VOLUME_SET = 4
+_FEATURE_VOLUME_STEP = 1024
+_REQUIRED_FEATURES: dict[str, tuple[int, str]] = {
+    "volume_set": (_FEATURE_VOLUME_SET, "setting the volume"),
+    "volume_up": (_FEATURE_VOLUME_SET | _FEATURE_VOLUME_STEP, "changing the volume"),
+    "volume_down": (_FEATURE_VOLUME_SET | _FEATURE_VOLUME_STEP, "changing the volume"),
 }
 
 _ALLOWED_DOMAINS: frozenset[str] = frozenset({"media_player"})
@@ -94,7 +107,7 @@ def _build_music_service_data(action: dict) -> dict[str, Any]:
             data["library_only"] = bool(params["library_only"])
     elif action_name == "volume_set":
         if "volume_level" in params:
-            data["volume_level"] = float(params["volume_level"])
+            data["volume_level"] = normalize_volume_level(params["volume_level"])
     elif action_name == "shuffle_set":
         if "shuffle" in params:
             data["shuffle"] = bool(params["shuffle"])
@@ -112,6 +125,12 @@ def _format_search_results(results: Any) -> str:
 
     if isinstance(results, dict):
         items = results.get("items") or results.get("result") or []
+        if not items:
+            # Music Assistant groups results per media type
+            # ({"artists": [...], "tracks": [...], ...}).
+            for value in results.values():
+                if isinstance(value, list):
+                    items = [*items, *value]
     elif isinstance(results, list):
         items = results
     else:
@@ -126,7 +145,7 @@ def _format_search_results(results: Any) -> str:
             name = item.get("name") or item.get("title") or "Unknown"
             artist = item.get("artist") or item.get("artists") or ""
             if isinstance(artist, list):
-                artist = ", ".join(str(a) for a in artist)
+                artist = ", ".join(str(a.get("name", "")) if isinstance(a, dict) else str(a) for a in artist if a)
             if artist:
                 lines.append(f"{i}. {name} by {artist}")
             else:
@@ -137,6 +156,15 @@ def _format_search_results(results: Any) -> str:
     return "I found: " + "; ".join(lines) + "."
 
 
+def _relative_volume_level(state_resp: Any, delta: float) -> float | None:
+    """Absolute volume (0.0-1.0) for a relative change, or None when unknown."""
+    attrs = state_resp.get("attributes") if isinstance(state_resp, dict) else None
+    current = attrs.get("volume_level") if isinstance(attrs, dict) else None
+    if isinstance(current, bool) or not isinstance(current, (int, float)):
+        return None
+    return round(min(1.0, max(0.0, float(current) + delta)), 2)
+
+
 async def execute_music_action(
     action: dict,
     ha_client: Any,
@@ -144,6 +172,9 @@ async def execute_music_action(
     entity_matcher: Any,
     agent_id: str | None = None,
     span_collector=None,
+    *,
+    preferred_area_id: str | None = None,
+    task_context: TaskContext | None = None,
 ) -> dict:
     """Resolve an entity, call a music HA service, and verify the result.
 
@@ -152,9 +183,12 @@ async def execute_music_action(
         ha_client: HARestClient instance.
         entity_index: EntityIndex instance.
         entity_matcher: EntityMatcher instance.
+        preferred_area_id: Origin area of the request; used as the area
+            tie-breaker when resolving the target speaker.
 
     Returns:
-        dict with "success", "entity_id", "new_state", and "speech".
+        dict with "success", "entity_id", "new_state", "speech" and, for
+        executed writes, "executed_command" (the exact HA call).
     """
     action_name = action.get("action", "").lower()
     entity_query = action.get("entity", "")
@@ -169,6 +203,7 @@ async def execute_music_action(
             entity_matcher,
             agent_id,
             span_collector=span_collector,
+            preferred_area_id=preferred_area_id,
             action=action,
         )
 
@@ -184,79 +219,97 @@ async def execute_music_action(
 
     domain, service = mapping
 
-    # LLM-picked entity_id is validation input only (Directive 4): the
-    # same fail-closed gate as the shared helper, applied inline.
-    not_found_speech: str | None = None
-    entity_id_direct = await _validate_direct_entity_id(
-        action.get("entity_id"),
+    # Directive 4: shared deterministic-first resolver; an LLM-picked
+    # entity_id is validation input only and must pass the candidate gate.
+    resolved = await resolve_and_validate_entity(
+        entity_query,
+        entity_index,
+        entity_matcher,
+        agent_id,
+        _ACTION_DOMAINS,
         _validate_domain,
-        agent_id=agent_id,
-        entity_index=entity_index,
-        allowed_domains=_ACTION_DOMAINS,
+        preferred_area_id=preferred_area_id,
+        span_collector=span_collector,
+        direct_entity_id=action.get("entity_id"),
     )
-    if entity_id_direct:
-        entity_id = entity_id_direct
-        friendly_name = _synthesize_direct_entity_metadata(entity_id, entity_index).get("top_friendly_name", entity_id)
-    else:
-        resolution = {
-            "entity_id": None,
-            "friendly_name": entity_query,
-            "speech": None,
-            "metadata": {"query": entity_query, "match_count": 0, "resolution_path": "not_attempted"},
-        }
-        try:
-            if entity_index or entity_matcher:
-                async with _optional_span(span_collector, "entity_match", agent_id=agent_id) as em_span:
-                    resolution = await resolve_entity_deterministic_first(
-                        entity_query,
-                        entity_index,
-                        entity_matcher,
-                        agent_id,
-                        allowed_domains=_ACTION_DOMAINS,
-                    )
-                    em_span["metadata"] = resolution["metadata"]
-        except Exception:
-            logger.warning("Entity resolution failed for '%s'", entity_query, exc_info=True)
-
-        entity_id = resolution["entity_id"]
-        friendly_name = resolution["friendly_name"]
-        if entity_id and not _validate_domain(entity_id):
-            logger.warning("Resolved entity %s not in allowed domains %s", entity_id, _ALLOWED_DOMAINS)
-            entity_id = None
-        if not entity_id:
-            not_found_speech = resolution["speech"]
-
-    if not entity_id:
-        return {
-            "success": False,
-            "entity_id": None,
-            "new_state": None,
-            "speech": not_found_speech or f"Could not find an entity matching '{entity_query}'.",
-        }
+    if resolved["not_found_result"] is not None:
+        return resolved["not_found_result"]
+    entity_id = resolved["entity_id"]
+    friendly_name = resolved["friendly_name"]
 
     # Build service data
-    service_data = _build_music_service_data(action)
+    try:
+        service_data = _build_music_service_data(action)
+    except (TypeError, ValueError):
+        logger.warning("Invalid music parameters for %s: %r", entity_id, action.get("parameters"))
+        return {
+            "success": False,
+            "entity_id": entity_id,
+            "new_state": None,
+            "speech": f"I could not understand the requested value for {friendly_name}.",
+            "cacheable": False,
+        }
 
-    # Special case: search returns speech with results
+    # Special case: search is read-only and returns its results as speech.
     if action_name == "search":
         try:
-            results = await ha_client.call_service(domain, service, entity_id, service_data or None)
-            speech = _format_search_results(results)
-            return {
-                "success": True,
-                "action": action_name,
-                "entity_id": entity_id,
-                "new_state": None,
-                "speech": speech,
-            }
-        except Exception as exc:
+            with allow_internal_ha_service_calls(f"music-search:{agent_id or 'unknown'}"):
+                results = await ha_client.call_service(
+                    domain, service, entity_id, service_data or None, return_response=True
+                )
+        except Exception:
             logger.error("Search service call failed on %s", entity_id, exc_info=True)
             return {
                 "success": False,
                 "entity_id": entity_id,
                 "new_state": None,
-                "speech": f"Failed to search on {friendly_name}: {exc}",
+                "speech": failure_speech("search", friendly_name),
+                "cacheable": False,
             }
+        return {
+            "success": True,
+            "action": action_name,
+            "entity_id": entity_id,
+            "new_state": None,
+            "speech": _format_search_results(results),
+            "cacheable": False,
+        }
+
+    state_resp: Any = None
+    relative = False
+    params = action.get("parameters") or {}
+    needs_state = action_name in _REQUIRED_FEATURES
+    if needs_state:
+        try:
+            state_resp = await ha_client.get_state(entity_id)
+        except Exception:
+            logger.debug("Pre-action state read failed for %s", entity_id, exc_info=True)
+            state_resp = None
+
+    if action_name == "volume_set" and "volume_level" not in service_data and isinstance(params, dict):
+        delta = params.get("volume_delta")
+        if isinstance(delta, (int, float)) and not isinstance(delta, bool):
+            level = _relative_volume_level(state_resp, float(delta))
+            if level is None:
+                return {
+                    "success": False,
+                    "entity_id": entity_id,
+                    "new_state": None,
+                    "speech": f"I could not read the current volume of {friendly_name}.",
+                    "cacheable": False,
+                }
+            service_data["volume_level"] = level
+            relative = True
+
+    required = _REQUIRED_FEATURES.get(action_name)
+    if required is not None and lacks_feature(state_resp, required[0]):
+        return {
+            "success": False,
+            "entity_id": entity_id,
+            "new_state": state_resp.get("state") if isinstance(state_resp, dict) else None,
+            "speech": f"{friendly_name} does not support {required[1]}.",
+            "cacheable": False,
+        }
 
     expected_state = _EXPECTED_STATE_BY_ACTION.get(action_name)
     verify = await call_service_with_verification(
@@ -272,11 +325,11 @@ async def execute_music_action(
             "success": False,
             "entity_id": entity_id,
             "new_state": None,
-            "speech": f"Failed to execute {action_name} on {friendly_name}: {verify['error']}",
+            "speech": failure_speech(action_name, friendly_name, verify),
         }
 
     new_state = verify["observed_state"]
-    return {
+    result: dict[str, Any] = {
         "success": True,
         "action": action_name,
         "entity_id": entity_id,
@@ -289,7 +342,18 @@ async def execute_music_action(
             verified=verify["verified"],
             action_phrases=_ACTION_PHRASES,
         ),
+        "executed_command": {
+            "domain": domain,
+            "service": service,
+            "entity_id": entity_id,
+            "service_data": service_data,
+        },
     }
+    if relative:
+        # The absolute level was derived from the current volume; replaying
+        # it would not repeat "a bit louder".
+        result["cacheable"] = False
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -333,53 +397,26 @@ async def _query_music_state(
     agent_id: str | None,
     span_collector=None,
     *,
+    preferred_area_id: str | None = None,
     action: dict | None = None,
 ) -> dict:
-    entity_id_direct = await _validate_direct_entity_id(
-        action.get("entity_id") if action else None,
+    resolved = await resolve_and_validate_entity(
+        entity_query,
+        entity_index,
+        entity_matcher,
+        agent_id,
+        _ACTION_DOMAINS,
         _validate_domain,
-        agent_id=agent_id,
-        entity_index=entity_index,
+        preferred_area_id=preferred_area_id,
+        span_collector=span_collector,
+        direct_entity_id=action.get("entity_id") if action else None,
     )
-    if entity_id_direct:
-        entity_id = entity_id_direct
-        resolution_metadata = _synthesize_direct_entity_metadata(entity_id, entity_index)
-    else:
-        resolution = {
-            "entity_id": None,
-            "friendly_name": entity_query,
-            "speech": None,
-            "metadata": {"query": entity_query, "match_count": 0, "resolution_path": "not_attempted"},
-        }
-        try:
-            if entity_index or entity_matcher:
-                async with _optional_span(span_collector, "entity_match", agent_id=agent_id) as em_span:
-                    resolution = await resolve_entity_deterministic_first(
-                        entity_query,
-                        entity_index,
-                        entity_matcher,
-                        agent_id,
-                        allowed_domains=_ACTION_DOMAINS,
-                    )
-                    em_span["metadata"] = resolution["metadata"]
-        except Exception:
-            logger.warning("Entity resolution failed for '%s'", entity_query, exc_info=True)
-
-        entity_id = _ensure_str(resolution["entity_id"])
-        if entity_id and not _validate_domain(entity_id):
-            logger.warning("Resolved entity %s not in allowed domains %s", entity_id, _ALLOWED_DOMAINS)
-            entity_id = None
-        resolution_metadata = resolution.get("metadata", {})
-
-    if not entity_id:
-        return {
-            "success": False,
-            "entity_id": None,
-            "new_state": None,
-            "speech": resolution.get("speech") or f"Could not find an entity matching '{entity_query}'.",
-            "cacheable": False,
-            "metadata": resolution_metadata,
-        }
+    if resolved["not_found_result"] is not None:
+        result = resolved["not_found_result"]
+        result["cacheable"] = False
+        return result
+    entity_id = resolved["entity_id"]
+    resolution_metadata = resolved["resolution"].get("metadata", {})
 
     try:
         state_resp = await ha_client.get_state(entity_id)
@@ -401,13 +438,13 @@ async def _query_music_state(
             "cacheable": False,
             "metadata": resolution_metadata,
         }
-    except Exception as exc:
+    except Exception:
         logger.error("State query failed for %s", entity_id, exc_info=True)
         return {
             "success": False,
             "entity_id": entity_id,
             "new_state": None,
-            "speech": f"Failed to query music player status: {exc}",
+            "speech": "Sorry, I could not read the music player status.",
             "cacheable": False,
             "metadata": resolution_metadata,
         }
@@ -416,9 +453,15 @@ async def _query_music_state(
 async def _list_music_players(ha_client: Any, agent_id: str | None = None, entity_index: Any = None) -> dict:
     try:
         states = await ha_client.get_states()
-    except Exception as exc:
+    except Exception:
         logger.error("Failed to fetch states for list_music_players", exc_info=True)
-        return {"success": False, "entity_id": "", "new_state": None, "speech": f"Failed to list music players: {exc}"}
+        return {
+            "success": False,
+            "entity_id": "",
+            "new_state": None,
+            "speech": "Sorry, I could not list the music players.",
+            "cacheable": False,
+        }
 
     players = [s for s in states if s.get("entity_id", "").startswith("media_player.")]
     if agent_id and entity_index is not None:
@@ -458,6 +501,7 @@ async def _handle_music_read_action(
     agent_id: str | None,
     span_collector=None,
     *,
+    preferred_area_id: str | None = None,
     action: dict | None = None,
 ) -> dict:
     if action_name == "query_music_state":
@@ -468,6 +512,7 @@ async def _handle_music_read_action(
             entity_matcher,
             agent_id,
             span_collector=span_collector,
+            preferred_area_id=preferred_area_id,
             action=action,
         )
     if action_name == "list_music_players":

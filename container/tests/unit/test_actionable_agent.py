@@ -122,8 +122,8 @@ class TestAllowedDomains:
         "agent_cls,expected_domains",
         [
             (LightAgent, {"light", "switch", "sensor"}),
-            (ClimateAgent, {"climate", "weather", "sensor"}),
-            (SecurityAgent, {"lock", "binary_sensor", "alarm_control_panel"}),
+            (ClimateAgent, {"climate", "weather", "sensor", "fan", "humidifier"}),
+            (SecurityAgent, {"lock", "binary_sensor", "alarm_control_panel", "camera", "sensor"}),
             (CoverAgent, {"cover"}),
             (VacuumAgent, {"vacuum"}),
             (MediaAgent, {"media_player"}),

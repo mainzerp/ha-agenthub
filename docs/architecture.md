@@ -115,8 +115,8 @@ Domain-agent result rules (`app/agents/actionable.py`, `app/agents/action_execut
 - **Verification outcome:** within the verify window (`state_verify.ws_timeout_sec` + `state_verify.poll_max_sec`, about 2.5 s by default) the observed post-call state is classified as:
   - `reached`: the target, or an equivalent terminal state such as `off` for an expected `idle`. Spoken as done.
   - `in_progress`: a transitional state (`opening`, `closing`, `locking`, `unlocking`, `arming`, `disarming`, `pending`, `buffering`, `starting`). `success=True`, spoken as in progress.
-  - `mismatch`: a known fault state (`jammed`, `problem`, `error`, `fault`). Also any non-target state that differs from a caller-supplied pre-call `previous_state`, or any non-target state with the opt-in `strict=True`. The result is `success=False` with a `StateVerificationError`, so executors report a failure.
-  - `unverified`: nothing observed, or a non-target state that may still be the pre-call state of a device that reports late (Zigbee, cloud). `success=True`, but the agent speaks hedged wording ("I sent the command to X, but it has not confirmed the new state yet.") and marks the action `cacheable=False`. The agent collects the outcomes per executor call, so this works without executor changes. Actions without an expected state (toggle, fan speed, volume) keep their intent wording.
+  - `mismatch`: a known fault state (`jammed`, `problem`, `error`, `fault`). Also any non-target state that differs from a caller-supplied pre-call `previous_state`, or any non-target state with the opt-in `strict=True`. The result is `success=False` with a `StateVerificationError`, so executors report a failure; `failure_speech` names the observed state in plain words ("Sorry, lock failed: Front Door reports jammed.") and never includes exception text.
+  - `unverified`: nothing observed, or a non-target state that may still be the pre-call state of a device that reports late (Zigbee, cloud). `success=True`, but the agent speaks hedged wording ("I sent the command to X, but it has not confirmed the new state yet.") and marks the action `cacheable=False`. The agent collects the outcomes per executor call, so this works without executor changes; the hedge replaces the executor speech, and executors that hedge themselves use the same `unverified_speech`, so the user hears one hedge. Actions without an expected state (toggle, fan speed, volume) keep their intent wording.
 - **Invalid action objects:** when the agent LLM emits an action object that fails validation (e.g. `"entity": null`), the surrounding prose is never spoken (it may claim success). The agent returns a deterministic clarification with `voice_followup=True` and `metadata.parse_miss = "invalid_action"`.
 - **Satellite area:** keyword recall ranks entities in the satellite's area (`TaskContext.area_id`) first among equal scores, keeps them recallable in large domains, and does not flag a tie as ambiguous when exactly one tied candidate is in that area. Every agent prompt receives the satellite area name as context for "here" / "this room".
 - **Untrusted prompt data:** entity friendly names and states, last-entity names, the pending clarifying question and stored memory text are flattened, length-bounded and wrapped in `[UNTRUSTED_DATA_START]` / `[UNTRUSTED_DATA_END]` before they enter a system prompt.
@@ -375,6 +375,19 @@ history queries to agents that need them (mostly the general agent).
 See `container/tests/test_recorder_history.py` for the tool's
 contract.
 
+### Device Executors
+
+The light, climate, cover, media, music, scene, security, and vacuum executors
+share one contract:
+
+- **Domains** -- each executor's `_ALLOWED_DOMAINS` is the source of truth; the `@agent` metadata (keyword recall) and the admin match-preview map (`AGENT_ALLOWED_DOMAINS`) must equal it. Write actions resolve within a per-action domain set through `resolve_and_validate_entity` (candidate gate, visibility, deterministic-first).
+- **Per-domain services** -- climate maps each logical action onto the resolved entity's own domain (`fan.set_percentage`/`set_preset_mode`, `humidifier.set_humidity`, ...) and drops payload keys the target service does not accept.
+- **No-op skip** -- only a parameterless action on a single entity already in the target state is skipped; non-empty service data and group entities (an `entity_id` member list) always run. Tilt actions are never skipped on the cover's position state.
+- **Capabilities** -- when HA reports `supported_features` / `supported_color_modes`, an action the device cannot perform (cover position or tilt, media volume set/step/mute, dimming or color on on/off lights, parameters on switches) returns an honest "does not support" answer without a service call.
+- **Relative changes** -- `brightness_step_pct` (native HA), `temperature_delta` (resolved against the current target), `volume_up`/`volume_down` (native HA), and `volume_delta` (resolved against the current volume). Unknown light parameters are rejected, not dropped.
+- **Results** -- every executed write returns `executed_command` (`domain`, `service`, `entity_id`, `service_data`). Failure speech is generic; exception text and URLs are only logged.
+- **Conditions** -- only the light executor evaluates the `condition` field; the other agents' prompts decline conditional requests instead of dropping the condition.
+
 ### Cancel-Intent / Dismiss
 
 The `cancel_speech` agent detects user requests to dismiss the
@@ -403,8 +416,9 @@ exact-hash miss); the action cache is exact-hash only:
   - **Miss**: Continues to routing-cache lookup or the live pipeline; a provenance rejection always forces the full live path.
   - Max entries: 50,000 with LRU eviction.
   - No-op executions (entity already in the target state) are never stored: their response text is state-dependent and would be wrong on replay.
+  - Executors mark state-dependent results `cacheable: false` and they are never stored: `toggle`, relative changes resolved against the current state (`temperature_delta`, `volume_delta`), coded security actions, unconfirmed scene activations, light results whose observed state contradicts the request, vacuum `locate`/`send_command`, and music `search`.
 
-Action rows that depended on an ingress area or device record that provenance and replay only for the matching origin; rows learned without origin context replay only on turns without an area or device. A provenance rejection forces the full live path, including classification and entity resolution. Climate rows retain the actual domain, service, entity, and validated service payload issued by the executor; conditional, read-only, no-op, malformed, and legacy rows are not replayed. Legacy rows without current command or origin provenance are discarded individually and relearned from a live turn.
+Action rows that depended on an ingress area or device record that provenance and replay only for the matching origin; rows learned without origin context replay only on turns without an area or device. A provenance rejection forces the full live path, including classification and entity resolution. Device-agent rows (light, climate, cover, media, music, scene, security, vacuum) retain the actual domain, service, entity, and validated service payload the executor issued (`executed_command`; security codes are never included); conditional, read-only, no-op, malformed, and legacy rows are not replayed. Legacy rows without current command or origin provenance are discarded individually and relearned from a live turn.
 
 Routing entries are invalidated when the served agent turn fails. Action rows are invalidated when their stored command or provenance is malformed, and entries are also invalidated when relevant entity fields change (name, `area_id`, `device_id`, hidden, disabled, aliases, labels). Visibility is rechecked on every action-cache replay. Single-row invalidation is per key: it aborts only an in-flight store of that row. The cache validator works on a snapshot and writes back with compare-and-swap on `created_at`, so it never resurrects a deleted row or reverts a re-stored one; hit-count flushes merge only `hit_count`/`last_accessed`.
 

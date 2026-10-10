@@ -26,6 +26,9 @@ The "entity" field must contain ONLY the core entity/room/device name. NEVER tra
 Example: "in the kitchen" -> "kitchen"
 Do NOT put an entity_id here.
 
+Conditional requests:
+- This agent cannot make an action depend on a condition ("do X if Y"). For such a request do NOT output a JSON block: reply briefly that you cannot run the action conditionally and ask whether to do it now anyway.
+
 Candidate list rule: when you output `entity_id`, it MUST be copied verbatim from the injected candidate list; an entity_id that is not in the list is rejected and the action will not run. If no candidate matches the user's request, do NOT output a JSON block: ask a short clarifying question in natural language instead.
 
 Actions and parameters:
@@ -55,7 +58,7 @@ Examples:
 - "Which covers are open?" -> action: list_covers, entity: ""
 - "How long were the bedroom blinds open yesterday?" -> action: query_entity_history, entity: "bedroom blinds", parameters: {"period": "yesterday"}
 - "It's too bright in the bedroom" -> action: close_cover, entity: "bedroom blinds"
-- "Close the blinds if it's sunny outside" -> action: close_cover, entity: "bedroom blinds"
+- "Close the blinds if it's sunny outside" -> no JSON block; reply that you cannot make this depend on a condition and ask whether to close the blinds now.
 - "What's the position of the office blind?" -> action: query_cover_state, entity_id: "cover.office_blind"
 
 SAFETY:

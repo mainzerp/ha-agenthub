@@ -7,16 +7,13 @@ import logging
 from typing import Any
 
 from app.agents.action_executor import (
-    _ensure_str,
-    _synthesize_direct_entity_metadata,
-    _validate_direct_entity_id,
     build_verified_speech,
     call_service_with_verification,
+    resolve_and_validate_entity,
 )
-from app.agents.executor_state_check import _state_matches
-from app.analytics.tracer import _optional_span
-from app.entity.deterministic_resolver import resolve_entity_deterministic_first
+from app.agents.executor_state_check import failure_speech, is_redundant_action, lacks_feature
 from app.entity.visibility import entity_is_visible
+from app.models.agent import TaskContext
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +26,8 @@ _MEDIA_ACTION_MAP: dict[str, tuple[str, str]] = {
     "next_track": ("media_player", "media_next_track"),
     "previous_track": ("media_player", "media_previous_track"),
     "set_volume": ("media_player", "volume_set"),
+    "volume_up": ("media_player", "volume_up"),
+    "volume_down": ("media_player", "volume_down"),
     "mute": ("media_player", "volume_mute"),
     "select_source": ("media_player", "select_source"),
     "play_media": ("media_player", "play_media"),
@@ -47,11 +46,24 @@ _EXPECTED_STATE_BY_ACTION: dict[str, str] = {
 
 _ACTION_PHRASES: dict[str, str] = {
     "set_volume": "volume updated",
+    "volume_up": "volume turned up",
+    "volume_down": "volume turned down",
     "mute": "muted",
     "next_track": "skipped to the next track",
     "previous_track": "skipped to the previous track",
     "select_source": "source selected",
     "play_media": "playback started",
+}
+
+# HA ``MediaPlayerEntityFeature`` bits for the volume actions (any of them).
+_FEATURE_VOLUME_SET = 4
+_FEATURE_VOLUME_MUTE = 8
+_FEATURE_VOLUME_STEP = 1024
+_REQUIRED_FEATURES: dict[str, tuple[int, str]] = {
+    "set_volume": (_FEATURE_VOLUME_SET, "setting the volume"),
+    "volume_up": (_FEATURE_VOLUME_SET | _FEATURE_VOLUME_STEP, "changing the volume"),
+    "volume_down": (_FEATURE_VOLUME_SET | _FEATURE_VOLUME_STEP, "changing the volume"),
+    "mute": (_FEATURE_VOLUME_MUTE, "muting"),
 }
 
 _ALLOWED_DOMAINS: frozenset[str] = frozenset({"media_player"})
@@ -66,6 +78,22 @@ def _validate_domain(entity_id: str) -> bool:
     return domain in _ALLOWED_DOMAINS
 
 
+def normalize_volume_level(value: Any) -> float:
+    """Return a 0.0-1.0 volume level; a percentage (1 < value <= 100) is scaled down.
+
+    Raises ``ValueError``/``TypeError`` for values that are not numbers or
+    are out of range.
+    """
+    if isinstance(value, bool):
+        raise ValueError("volume_level")
+    level = float(value)
+    if 1.0 < level <= 100.0:
+        level = level / 100.0
+    if not 0.0 <= level <= 1.0:
+        raise ValueError("volume_level")
+    return round(level, 2)
+
+
 def _build_media_service_data(action: dict) -> dict[str, Any]:
     """Build HA service_data from a media action's parameters."""
     params = action.get("parameters") or {}
@@ -74,10 +102,10 @@ def _build_media_service_data(action: dict) -> dict[str, Any]:
 
     if action_name == "set_volume":
         if "volume_level" in params:
-            data["volume_level"] = float(params["volume_level"])
+            data["volume_level"] = normalize_volume_level(params["volume_level"])
     elif action_name == "mute":
-        if "is_volume_muted" in params:
-            data["is_volume_muted"] = bool(params["is_volume_muted"])
+        # HA requires the flag; a bare "mute" means mute.
+        data["is_volume_muted"] = bool(params.get("is_volume_muted", True))
     elif action_name == "select_source":
         if "source" in params:
             data["source"] = str(params["source"])
@@ -90,6 +118,15 @@ def _build_media_service_data(action: dict) -> dict[str, Any]:
     return data
 
 
+def _relative_volume_level(state_resp: Any, delta: float) -> float | None:
+    """Absolute volume (0.0-1.0) for a relative change, or None when unknown."""
+    attrs = state_resp.get("attributes") if isinstance(state_resp, dict) else None
+    current = attrs.get("volume_level") if isinstance(attrs, dict) else None
+    if isinstance(current, bool) or not isinstance(current, (int, float)):
+        return None
+    return round(min(1.0, max(0.0, float(current) + delta)), 2)
+
+
 async def execute_media_action(
     action: dict,
     ha_client: Any,
@@ -99,6 +136,7 @@ async def execute_media_action(
     span_collector=None,
     *,
     preferred_area_id: str | None = None,
+    task_context: TaskContext | None = None,
 ) -> dict:
     """Resolve an entity, call a media_player HA service, and verify the result.
 
@@ -110,7 +148,8 @@ async def execute_media_action(
         agent_id: Optional agent identifier for entity matching context.
 
     Returns:
-        dict with "success", "entity_id", "new_state", and "speech".
+        dict with "success", "entity_id", "new_state", "speech" and, for
+        executed writes, "executed_command" (the exact HA call).
     """
     action_name = action.get("action", "").lower()
     entity_query = action.get("entity", "")
@@ -140,64 +179,73 @@ async def execute_media_action(
 
     domain, service = mapping
 
-    # LLM-picked entity_id is validation input only (Directive 4): the
-    # same fail-closed gate as the shared helper, applied inline.
-    not_found_speech: str | None = None
-    entity_id_direct = await _validate_direct_entity_id(
-        action.get("entity_id"),
+    # Directive 4: shared deterministic-first resolver; an LLM-picked
+    # entity_id is validation input only and must pass the candidate gate.
+    resolved = await resolve_and_validate_entity(
+        entity_query,
+        entity_index,
+        entity_matcher,
+        agent_id,
+        _ACTION_DOMAINS,
         _validate_domain,
-        agent_id=agent_id,
-        entity_index=entity_index,
-        allowed_domains=_ACTION_DOMAINS,
+        preferred_area_id=preferred_area_id,
+        span_collector=span_collector,
+        direct_entity_id=action.get("entity_id"),
     )
-    if entity_id_direct:
-        entity_id = entity_id_direct
-        friendly_name = _synthesize_direct_entity_metadata(entity_id, entity_index).get("top_friendly_name", entity_id)
-    else:
-        resolution = {
-            "entity_id": None,
-            "friendly_name": entity_query,
-            "speech": None,
-            "metadata": {"query": entity_query, "match_count": 0, "resolution_path": "not_attempted"},
-        }
-        try:
-            if entity_index or entity_matcher:
-                async with _optional_span(span_collector, "entity_match", agent_id=agent_id) as em_span:
-                    resolution = await resolve_entity_deterministic_first(
-                        entity_query,
-                        entity_index,
-                        entity_matcher,
-                        agent_id,
-                        allowed_domains=_ACTION_DOMAINS,
-                        preferred_area_id=preferred_area_id,
-                    )
-                    em_span["metadata"] = resolution["metadata"]
-        except Exception:
-            logger.warning("Entity resolution failed for '%s'", entity_query, exc_info=True)
+    if resolved["not_found_result"] is not None:
+        return resolved["not_found_result"]
+    entity_id = resolved["entity_id"]
+    friendly_name = resolved["friendly_name"]
 
-        entity_id = resolution["entity_id"]
-        friendly_name = resolution["friendly_name"]
-        if entity_id and not _validate_domain(entity_id):
-            logger.warning("Resolved entity %s not in allowed domains %s", entity_id, _ALLOWED_DOMAINS)
-            entity_id = None
-        if not entity_id:
-            not_found_speech = resolution["speech"]
-
-    if not entity_id:
-        return {
-            "success": False,
-            "entity_id": None,
-            "new_state": None,
-            "speech": not_found_speech or f"Could not find an entity matching '{entity_query}'.",
-        }
-
-    # Deterministic skip: if already in target state, do not call HA.
     try:
         state_resp = await ha_client.get_state(entity_id)
-        current_state = state_resp.get("state") if isinstance(state_resp, dict) else None
     except Exception:
-        current_state = None
-    if _state_matches(action_name, current_state):
+        logger.debug("Pre-action state read failed for %s", entity_id, exc_info=True)
+        state_resp = None
+    current_state = state_resp.get("state") if isinstance(state_resp, dict) else None
+
+    try:
+        service_data = _build_media_service_data(action)
+    except (TypeError, ValueError):
+        logger.warning("Invalid media parameters for %s: %r", entity_id, action.get("parameters"))
+        return {
+            "success": False,
+            "entity_id": entity_id,
+            "new_state": current_state,
+            "speech": f"I could not understand the requested value for {friendly_name}.",
+            "cacheable": False,
+        }
+
+    relative = False
+    params = action.get("parameters") or {}
+    if action_name == "set_volume" and "volume_level" not in service_data and isinstance(params, dict):
+        delta = params.get("volume_delta")
+        if isinstance(delta, (int, float)) and not isinstance(delta, bool):
+            level = _relative_volume_level(state_resp, float(delta))
+            if level is None:
+                return {
+                    "success": False,
+                    "entity_id": entity_id,
+                    "new_state": current_state,
+                    "speech": f"I could not read the current volume of {friendly_name}.",
+                    "cacheable": False,
+                }
+            service_data["volume_level"] = level
+            relative = True
+
+    required = _REQUIRED_FEATURES.get(action_name)
+    if required is not None and lacks_feature(state_resp, required[0]):
+        return {
+            "success": False,
+            "entity_id": entity_id,
+            "new_state": current_state,
+            "speech": f"{friendly_name} does not support {required[1]}.",
+            "cacheable": False,
+        }
+
+    # Deterministic skip: only a parameterless action on a single player that
+    # is already in the target state is redundant (groups always run).
+    if is_redundant_action(action_name, state_resp, service_data):
         return {
             "success": True,
             "entity_id": entity_id,
@@ -205,8 +253,6 @@ async def execute_media_action(
             "noop": True,
             "speech": f"Done, {friendly_name} is already {current_state}.",
         }
-
-    service_data = _build_media_service_data(action)
 
     expected_state = _EXPECTED_STATE_BY_ACTION.get(action_name)
     verify = await call_service_with_verification(
@@ -222,11 +268,15 @@ async def execute_media_action(
             "success": False,
             "entity_id": entity_id,
             "new_state": None,
-            "speech": f"Failed to execute {action_name} on {friendly_name}: {verify['error']}",
+            "speech": failure_speech(action_name, friendly_name, verify),
         }
 
+    phrases = _ACTION_PHRASES
+    if action_name == "mute" and service_data.get("is_volume_muted") is False:
+        phrases = {**_ACTION_PHRASES, "mute": "unmuted"}
+
     new_state = verify["observed_state"]
-    return {
+    result: dict[str, Any] = {
         "success": True,
         "action": action_name,
         "entity_id": entity_id,
@@ -237,9 +287,20 @@ async def execute_media_action(
             expected_state=expected_state,
             observed_state=new_state,
             verified=verify["verified"],
-            action_phrases=_ACTION_PHRASES,
+            action_phrases=phrases,
         ),
+        "executed_command": {
+            "domain": domain,
+            "service": service,
+            "entity_id": entity_id,
+            "service_data": service_data,
+        },
     }
+    if relative:
+        # The absolute level was derived from the current volume; replaying
+        # it would not repeat "a bit louder".
+        result["cacheable"] = False
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -286,52 +347,23 @@ async def _query_media_state(
     preferred_area_id: str | None = None,
     action: dict | None = None,
 ) -> dict:
-    entity_id_direct = await _validate_direct_entity_id(
-        action.get("entity_id") if action else None,
+    resolved = await resolve_and_validate_entity(
+        entity_query,
+        entity_index,
+        entity_matcher,
+        agent_id,
+        _ACTION_DOMAINS,
         _validate_domain,
-        agent_id=agent_id,
-        entity_index=entity_index,
+        preferred_area_id=preferred_area_id,
+        span_collector=span_collector,
+        direct_entity_id=action.get("entity_id") if action else None,
     )
-    if entity_id_direct:
-        entity_id = entity_id_direct
-        resolution_metadata = _synthesize_direct_entity_metadata(entity_id, entity_index)
-    else:
-        resolution = {
-            "entity_id": None,
-            "friendly_name": entity_query,
-            "speech": None,
-            "metadata": {"query": entity_query, "match_count": 0, "resolution_path": "not_attempted"},
-        }
-        try:
-            if entity_index or entity_matcher:
-                async with _optional_span(span_collector, "entity_match", agent_id=agent_id) as em_span:
-                    resolution = await resolve_entity_deterministic_first(
-                        entity_query,
-                        entity_index,
-                        entity_matcher,
-                        agent_id,
-                        allowed_domains=_ACTION_DOMAINS,
-                        preferred_area_id=preferred_area_id,
-                    )
-                    em_span["metadata"] = resolution["metadata"]
-        except Exception:
-            logger.warning("Entity resolution failed for '%s'", entity_query, exc_info=True)
-
-        entity_id = _ensure_str(resolution["entity_id"])
-        if entity_id and not _validate_domain(entity_id):
-            logger.warning("Resolved entity %s not in allowed domains %s", entity_id, _ALLOWED_DOMAINS)
-            entity_id = None
-        resolution_metadata = resolution.get("metadata", {})
-
-    if not entity_id:
-        return {
-            "success": False,
-            "entity_id": None,
-            "new_state": None,
-            "speech": resolution.get("speech") or f"Could not find an entity matching '{entity_query}'.",
-            "cacheable": False,
-            "metadata": resolution_metadata,
-        }
+    if resolved["not_found_result"] is not None:
+        result = resolved["not_found_result"]
+        result["cacheable"] = False
+        return result
+    entity_id = resolved["entity_id"]
+    resolution_metadata = resolved["resolution"].get("metadata", {})
 
     try:
         state_resp = await ha_client.get_state(entity_id)
@@ -353,13 +385,13 @@ async def _query_media_state(
             "cacheable": False,
             "metadata": resolution_metadata,
         }
-    except Exception as exc:
+    except Exception:
         logger.error("State query failed for %s", entity_id, exc_info=True)
         return {
             "success": False,
             "entity_id": entity_id,
             "new_state": None,
-            "speech": f"Failed to query media player status: {exc}",
+            "speech": "Sorry, I could not read the media player status.",
             "cacheable": False,
             "metadata": resolution_metadata,
         }
@@ -368,9 +400,14 @@ async def _query_media_state(
 async def _list_media_players(ha_client: Any, agent_id: str | None = None, entity_index: Any = None) -> dict:
     try:
         states = await ha_client.get_states()
-    except Exception as exc:
+    except Exception:
         logger.error("Failed to fetch states for list_media_players", exc_info=True)
-        return {"success": False, "entity_id": "", "new_state": None, "speech": f"Failed to list media players: {exc}"}
+        return {
+            "success": False,
+            "entity_id": "",
+            "new_state": None,
+            "speech": "Sorry, I could not list media players.",
+        }
 
     players = [s for s in states if s.get("entity_id", "").startswith("media_player.")]
     if agent_id and entity_index is not None:

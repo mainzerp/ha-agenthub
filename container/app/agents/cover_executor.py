@@ -13,7 +13,7 @@ from app.agents.action_executor import (
     call_service_with_verification,
     resolve_and_validate_entity,
 )
-from app.agents.executor_state_check import _state_matches
+from app.agents.executor_state_check import failure_speech, is_redundant_action, lacks_feature
 from app.entity.visibility import entity_is_visible
 from app.ha_client.history_query import execute_recorder_history_query
 from app.models.agent import TaskContext
@@ -33,12 +33,11 @@ _COVER_ACTION_MAP: dict[str, tuple[str, str]] = {
 
 # FLOW-VERIFY-SHARED (0.18.5): cover actions have deterministic post-action states.
 # set_cover_position with position=0 -> "closed", position=100 -> "open".
-# Other positions do not have a deterministic target state.
+# Other positions do not have a deterministic target state. Tilt actions have
+# none either: the cover's state describes its position, not its tilt.
 _EXPECTED_STATE_BY_ACTION: dict[str, str] = {
     "open_cover": "open",
     "close_cover": "closed",
-    "open_cover_tilt": "open",
-    "close_cover_tilt": "closed",
 }
 
 # Intent-first phrasing when verification is inconclusive or ambiguous.
@@ -46,7 +45,28 @@ _ACTION_PHRASES: dict[str, str] = {
     "stop_cover": "stopped",
     "stop_cover_tilt": "tilt stopped",
     "set_cover_position": "position updated",
+    "open_cover_tilt": "tilt opened",
+    "close_cover_tilt": "tilt closed",
     "set_cover_tilt_position": "tilt position updated",
+}
+
+# HA ``CoverEntityFeature`` bit each action needs, plus the wording used in
+# the honest "not supported" answer.
+_REQUIRED_FEATURES: dict[str, tuple[int, str]] = {
+    "open_cover": (1, "opening"),
+    "close_cover": (2, "closing"),
+    "set_cover_position": (4, "setting a position"),
+    "stop_cover": (8, "stopping"),
+    "open_cover_tilt": (16, "tilting"),
+    "close_cover_tilt": (32, "tilting"),
+    "stop_cover_tilt": (64, "tilting"),
+    "set_cover_tilt_position": (128, "setting a tilt position"),
+}
+
+# Service-data keys each cover service accepts; other services take none.
+_SERVICE_DATA_KEYS: dict[str, frozenset[str]] = {
+    "set_cover_position": frozenset({"position"}),
+    "set_cover_tilt_position": frozenset({"tilt_position"}),
 }
 
 _ALLOWED_DOMAINS: frozenset[str] = frozenset({"cover"})
@@ -89,13 +109,6 @@ def _resolve_expected_state(action_name: str, service_data: dict[str, Any]) -> s
         if position == 100:
             return "open"
         # Other positions: no deterministic target
-        return None
-    if action_name == "set_cover_tilt_position":
-        tilt_position = service_data.get("tilt_position")
-        if tilt_position == 0:
-            return "closed"
-        if tilt_position == 100:
-            return "open"
         return None
     return None
 
@@ -170,13 +183,43 @@ async def execute_cover_action(
     entity_id = resolved["entity_id"]
     friendly_name = resolved["friendly_name"]
 
-    # Deterministic skip: if already in target state, do not call HA.
     try:
         state_resp = await ha_client.get_state(entity_id)
-        current_state = state_resp.get("state") if isinstance(state_resp, dict) else None
     except Exception:
-        current_state = None
-    if _state_matches(action_name, current_state):
+        logger.debug("Pre-action state read failed for %s", entity_id, exc_info=True)
+        state_resp = None
+    current_state = state_resp.get("state") if isinstance(state_resp, dict) else None
+
+    # Build service data (only the keys the target service accepts).
+    try:
+        raw_data = _build_cover_service_data(action)
+    except (TypeError, ValueError):
+        logger.warning("Invalid cover parameters for %s: %r", entity_id, action.get("parameters"))
+        return {
+            "success": False,
+            "entity_id": entity_id,
+            "new_state": current_state,
+            "speech": f"I could not understand the requested position for {friendly_name}.",
+            "cacheable": False,
+        }
+    allowed_keys = _SERVICE_DATA_KEYS.get(action_name, frozenset())
+    service_data = {k: v for k, v in raw_data.items() if k in allowed_keys}
+
+    # Honest "not supported" answer when HA reports a feature mask without
+    # the capability this action needs (e.g. tilt on a plain roller shutter).
+    required = _REQUIRED_FEATURES.get(action_name)
+    if required is not None and lacks_feature(state_resp, required[0]):
+        return {
+            "success": False,
+            "entity_id": entity_id,
+            "new_state": current_state,
+            "speech": f"{friendly_name} does not support {required[1]}.",
+            "cacheable": False,
+        }
+
+    # Deterministic skip: only a parameterless open/close on a single cover
+    # that is already in the target state is redundant (groups always run).
+    if is_redundant_action(action_name, state_resp, service_data):
         return {
             "success": True,
             "entity_id": entity_id,
@@ -184,9 +227,6 @@ async def execute_cover_action(
             "noop": True,
             "speech": f"Done, {friendly_name} is already {current_state}.",
         }
-
-    # Build service data
-    service_data = _build_cover_service_data(action)
 
     # Resolve expected state
     expected_state = _resolve_expected_state(action_name, service_data)
@@ -204,7 +244,7 @@ async def execute_cover_action(
             "success": False,
             "entity_id": entity_id,
             "new_state": None,
-            "speech": f"Failed to execute {action_name} on {friendly_name}: {verify['error']}",
+            "speech": failure_speech(action_name, friendly_name, verify),
         }
 
     new_state = verify["observed_state"]
@@ -221,6 +261,12 @@ async def execute_cover_action(
             verified=verify["verified"],
             action_phrases=_ACTION_PHRASES,
         ),
+        "executed_command": {
+            "domain": domain,
+            "service": service,
+            "entity_id": entity_id,
+            "service_data": service_data,
+        },
     }
 
 
@@ -302,13 +348,13 @@ async def _query_cover_state(
             "cacheable": False,
             "metadata": resolution_metadata,
         }
-    except Exception as exc:
+    except Exception:
         logger.error("State query failed for %s", entity_id, exc_info=True)
         return {
             "success": False,
             "entity_id": entity_id,
             "new_state": None,
-            "speech": f"Failed to query cover status: {exc}",
+            "speech": "Sorry, I could not query cover status.",
             "cacheable": False,
             "metadata": resolution_metadata,
         }
@@ -317,13 +363,13 @@ async def _query_cover_state(
 async def _list_covers(ha_client: Any, agent_id: str | None = None, entity_index: Any = None) -> dict:
     try:
         states = await ha_client.get_states()
-    except Exception as exc:
+    except Exception:
         logger.error("Failed to fetch states for list_covers", exc_info=True)
         return {
             "success": False,
             "entity_id": "",
             "new_state": None,
-            "speech": f"Failed to list covers: {exc}",
+            "speech": "Sorry, I could not list covers.",
             "cacheable": False,
         }
 

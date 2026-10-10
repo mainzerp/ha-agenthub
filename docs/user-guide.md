@@ -372,6 +372,14 @@ These short procedures link the dashboard pages described above.
     - Name the list ("add milk to the shopping list"); without a name the only visible list is used, and with several lists the agent asks which one.
     - Items match exactly first, then by a unique partial match; if several items match ("milk" with "oat milk" and "almond milk"), the agent asks which one.
 
+## Device Command Behavior
+
+- **Relative requests** -- "a bit brighter", "two degrees warmer", and "turn it up" change the current value instead of guessing an absolute one.
+- **Several devices** -- "turn off all lights in the kitchen" runs one action per matching light (at most 8 per turn; name a room when more lights match).
+- **Conditions** -- only lights support "do X if Y". Other agents say they cannot run the action conditionally and ask whether to do it now.
+- **Unsupported features** -- when Home Assistant reports that a device lacks a capability (tilt, position, volume, dimming, color), the agent says so instead of sending the command.
+- **Already in that state** -- a plain on/off/open/close request for a single device that is already in that state is answered without a service call; requests with values (brightness, color, position) and group entities always run.
+
 ## Troubleshooting from the UI
 
 Many common problems can be diagnosed without opening a terminal. The dashboard pages most useful for troubleshooting are:

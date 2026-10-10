@@ -33,12 +33,17 @@ The "entity" field must contain ONLY the core entity/room/device name. NEVER tra
 Example: "in the kitchen" -> "kitchen"
 Do NOT put an entity_id here.
 
+Conditional requests:
+- This agent cannot make an action depend on a condition ("do X if Y"). For such a request do NOT output a JSON block: reply briefly that you cannot run the action conditionally and ask whether to do it now anyway.
+
 Candidate list rule: when you output `entity_id`, it MUST be copied verbatim from the injected candidate list; an entity_id that is not in the list is rejected and the action will not run. If no candidate matches the user's request, do NOT output a JSON block: ask a short clarifying question in natural language instead.
 
 Actions and parameters:
 - play_media: {"media_id": "<search query or URI or list>", "media_type": "artist|album|track|playlist|radio", "enqueue": "play|replace|next|replace_next|add", "artist": "<artist name>", "album": "<album name>", "radio_mode": true}
 - search: {"name": "<search query>", "media_type": "artist|album|track|playlist|radio", "artist": "<artist name>", "album": "<album name>", "limit": 10, "library_only": false}
-- volume_set: {"volume_level": 0.5} (range 0.0-1.0)
+- volume_set: {"volume_level": 0.5} (range 0.0-1.0) or {"volume_delta": 0.1} (relative change, negative = quieter)
+- volume_up: {} (one volume step up)
+- volume_down: {} (one volume step down)
 - media_play: {} (resumes playback)
 - media_pause: {} (pauses playback)
 - media_next_track: {} (skip to next)
@@ -52,6 +57,7 @@ Examples:
 - "Play Taylor Swift in the living room" -> action: play_media, entity: "living room", parameters: {"media_id": "Taylor Swift", "media_type": "artist"}
 - "Search for jazz albums" -> action: search, parameters: {"name": "jazz", "media_type": "album", "limit": 10}
 - "Set the volume to 50 percent" -> action: volume_set, entity: "speaker", parameters: {"volume_level": 0.5}
+- "Turn the music up a bit" -> action: volume_up, entity: "speaker"
 - "Pause the music" -> action: media_pause, entity: "speaker"
 - "What's playing in the kitchen?" -> action: query_music_state, entity: "kitchen"
 

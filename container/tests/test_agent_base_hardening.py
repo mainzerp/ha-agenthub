@@ -305,8 +305,55 @@ class TestVerificationOutcome:
         ):
             result = await execute_security_action({"action": "lock", "entity": "front door"}, ha_client, None, None)
         assert result["success"] is False
-        assert "jammed" in result["speech"]
-        assert not result["speech"].startswith("Done")
+        assert result["speech"] == "Sorry, lock failed: Front Door reports jammed."
+        assert "instead of" not in result["speech"]
+
+    def test_failure_speech_names_only_a_plain_observed_mismatch_state(self):
+        from app.agents.executor_state_check import failure_speech
+
+        mismatch = {"outcome": VERIFY_MISMATCH, "observed_state": "jammed", "error": RuntimeError("x")}
+        assert failure_speech("open_cover", "Garage", mismatch) == "Sorry, open cover failed: Garage reports jammed."
+        moved = {"outcome": VERIFY_MISMATCH, "observed_state": "armed_away"}
+        assert failure_speech("alarm_arm_home", "Alarm", moved) == (
+            "Sorry, alarm arm home failed: Alarm reports armed away."
+        )
+        # A raised service call never leaks exception text.
+        call_error = {"outcome": "error", "observed_state": None, "error": RuntimeError("http://ha.local/api 500")}
+        assert failure_speech("lock", "Front Door", call_error) == "Sorry, lock failed for Front Door."
+        # Observed values that are not a plain state word stay generic.
+        for odd in ("see http://ha.local/x", "x" * 40, "", None, 3):
+            odd_verify = {"outcome": VERIFY_MISMATCH, "observed_state": odd}
+            assert failure_speech("lock", "Front Door", odd_verify) == "Sorry, lock failed for Front Door."
+        assert failure_speech("lock", "Front Door") == "Sorry, lock failed for Front Door."
+
+    async def test_contradicting_light_state_is_hedged_exactly_once(self):
+        """A non-fault contradicting state is unverified: one hedge, no success claim."""
+        ha_client = SimpleNamespace(
+            call_service=AsyncMock(return_value=[{"entity_id": "light.kitchen", "state": "on"}]),
+            get_state=AsyncMock(return_value={"state": "on", "attributes": {}}),
+        )
+        resolved = {
+            "entity_id": "light.kitchen",
+            "friendly_name": "Kitchen",
+            "resolution": {},
+            "not_found_result": None,
+        }
+        agent = _light_agent(ha_client=ha_client)
+        agent._call_llm = AsyncMock(return_value='```json\n{"action": "turn_off", "entity": "Kitchen"}\n```')
+        with (
+            patch(
+                "app.agents.light_executor.resolve_and_validate_entity",
+                new=AsyncMock(return_value=resolved),
+            ),
+            patch("app.agents.action_executor._settings_float", new=AsyncMock(return_value=0.01)),
+        ):
+            result = await agent.handle_task(_task("turn off the kitchen"))
+        assert result.speech == "I sent the command to Kitchen, but it has not confirmed the new state yet."
+        assert result.speech.count("I sent the command") == 1
+        assert "still reports" not in result.speech
+        assert result.error is None
+        assert result.action_executed.success is True
+        assert result.action_executed.cacheable is False
 
 
 # ---------------------------------------------------------------------------
