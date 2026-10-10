@@ -243,7 +243,7 @@ Timer and alarm behavior by voice or chat:
 - **After a restart.** Timers and alarms that came due while AgentHub was down do not ring late: they are reported once, together, as missed (within one minute of the due time they still ring). A missed recurring alarm keeps its series. Delayed device actions run if at most 5 minutes late and are otherwise dropped and logged.
 - **Language.** Announcements are generated in the configured language; fixed fallback texts are translated through the rewrite agent, with English as the last resort.
 
-**Action required for HA helper alarms:** an `input_datetime` helper rings as an alarm only when it carries the HA label `agenthub_alarm` (setting `alarm_monitor.label`) and is visible to the timer agent. In Home Assistant, open **Settings > Devices & services > Helpers**, select each helper that should ring, and add the label. Helpers without the label (for example automation schedule helpers) no longer ring.
+**Action required for HA helper alarms:** an `input_datetime` helper rings as an alarm only when it carries the HA label `agenthub_alarm` (setting `alarm_monitor.label`) and is visible to the timer agent. In Home Assistant, open **Settings > Devices & services > Helpers**, select each helper that should ring, and add the label. Helpers without the label (for example automation schedule helpers) no longer ring. With the default visibility rules nothing else is needed; if you restricted the `timer-agent` visibility rules, keep the `input_datetime` domain (or the helper itself) allowed, and `assist_satellite` for spoken announcements on satellites.
 
 ### Calendar
 

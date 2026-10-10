@@ -273,6 +273,14 @@ when the helper carries the HA label named by `alarm_monitor.label` AND is
 visible to `timer-agent`. Unlabeled helpers are ignored; when helpers exist
 but none carries the label, a warning is logged once after startup.
 
+The default `timer-agent` visibility rules include the `input_datetime` and
+`assist_satellite` domains (with `persistent_notification` and
+`media_player`), so on a default install only the label is needed. If you
+restricted the `timer-agent` rules yourself, keep `input_datetime` (alarm
+helpers) and `assist_satellite` (announcements) allowed. `timer-agent` never
+offers `input_datetime` helpers to its LLM as action candidates; the rule
+only lets the alarm monitor ring them.
+
 | Key | Default | Type | Description |
 |-----|---------|------|-------------|
 | `alarm_monitor.label` | `agenthub_alarm` | string | HA label id or name that opts a helper in as an alarm. Letters, digits, `_`, `-`, and spaces only. Empty disables helper alarms. |

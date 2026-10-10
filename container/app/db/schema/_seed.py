@@ -644,6 +644,10 @@ async def _seed_defaults(db: aiosqlite.Connection) -> None:
         ("automation-agent", "domain_include", "automation"),
         ("timer-agent", "domain_include", "persistent_notification"),
         ("timer-agent", "domain_include", "media_player"),
+        # Labelled alarm helpers (AlarmMonitor) and announcement satellites
+        # must be visible to timer-agent; kept equal to migration 46.
+        ("timer-agent", "domain_include", "input_datetime"),
+        ("timer-agent", "domain_include", "assist_satellite"),
         ("calendar-agent", "domain_include", "calendar"),
         ("lists-agent", "domain_include", "todo"),
         ("cover-agent", "domain_include", "cover"),
