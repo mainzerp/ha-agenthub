@@ -333,8 +333,8 @@ class TestExecuteLightAction:
         ha_client.call_service.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_exact_friendly_name_ambiguity_falls_back_to_hybrid_matcher(self, ha_client):
-        """When multiple entities share the same friendly name, the hybrid matcher should break the tie."""
+    async def test_exact_friendly_name_ambiguity_is_not_overridden_by_hybrid_matcher(self, ha_client):
+        """Two entities sharing a friendly name: ask, even when the hybrid matcher has a pick (#132)."""
         ha_client.get_state = AsyncMock(return_value={"state": "off", "attributes": {}})
         match_result = MagicMock()
         match_result.entity_id = "light.keller_main"
@@ -355,9 +355,10 @@ class TestExecuteLightAction:
         action = {"action": "turn_on", "entity": "Keller", "parameters": {}}
         result = await execute_light_action(action, ha_client, index, matcher, agent_id="light-agent")
 
-        assert result["success"] is True
-        assert result["entity_id"] == "light.keller_main"
-        ha_client.call_service.assert_awaited_once()
+        assert result["success"] is False
+        assert "Multiple entities match 'Keller'" in result["speech"]
+        matcher.match.assert_not_awaited()
+        ha_client.call_service.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_ambiguity_returns_voice_followup(self, ha_client):

@@ -5,7 +5,6 @@ from __future__ import annotations
 import contextlib
 import logging
 import re
-import unicodedata
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
@@ -16,7 +15,7 @@ if TYPE_CHECKING:
 from app.entity.aliases import AliasResolver
 from app.entity.index import EntityIndex
 from app.entity.signals import AliasSignal, JaroWinklerSignal, LevenshteinSignal, PhoneticSignal
-from app.entity.tokens import normalize_tokenize
+from app.entity.tokens import fold_text, normalize_tokenize
 from app.entity.visibility import filter_visible_results
 from app.models.entity_index import EntityIndexEntry
 
@@ -24,12 +23,8 @@ logger = logging.getLogger(__name__)
 
 
 def _normalize_for_containment(text: str) -> str:
-    """Normalize text for containment checks: lowercase, strip diacritics, collapse German digraphs."""
-    text = text.lower().strip()
-    text = unicodedata.normalize("NFKD", text)
-    text = "".join(c for c in text if unicodedata.category(c) != "Mn")
-    text = text.replace("ae", "a").replace("oe", "o").replace("ue", "u")
-    return text
+    """Normalize text for containment checks (shared :func:`fold_text`)."""
+    return fold_text(text)
 
 
 @dataclass
@@ -131,6 +126,11 @@ class EntityMatcher:
         self._token_preselection_enabled: bool = True
         self._token_preselection_max_df_ratio: float = 0.5
         self._token_preselection_max_candidates: int = 20
+
+    @property
+    def alias_resolver(self) -> AliasResolver:
+        """User/DB alias resolver shared with the deterministic resolver's exact alias stage."""
+        return self._alias_resolver
 
     async def load_config(self) -> None:
         """Load matching weights and thresholds from DB."""
@@ -326,7 +326,10 @@ class EntityMatcher:
                         # effect (the marker-gated reverse-containment bonus
                         # was removed with the span-scoring redesign; the
                         # Floor-Regel took its place).
-                        results[entry.entity_id].signal_scores["token_preselection"] = 1.0
+                        existing = results[entry.entity_id]
+                        existing.signal_scores["token_preselection"] = 1.0
+                        if not existing.friendly_name:
+                            existing.friendly_name = entry.friendly_name or ""
                     else:
                         results[entry.entity_id] = MatchResult(
                             entity_id=entry.entity_id,
@@ -358,6 +361,23 @@ class EntityMatcher:
         else:
             entry_map = self._entity_index.get_by_ids(candidate_ids)
 
+        # Alias hits are seeded without a friendly_name; fill it from the
+        # index so string scoring and the returned result see the real name.
+        # A DB/user alias equals the whole query verbatim, so an alias hit on
+        # an indexed entity is floored like a verbatim friendly-name span.
+        # Stale aliases pointing at entities missing from the index stay
+        # unfloored and fall below the confidence threshold.
+        floored: set[str] = set()
+        for result in results.values():
+            idx_entry = entry_map.get(result.entity_id)
+            if idx_entry is None:
+                continue
+            if not result.friendly_name:
+                indexed_name = getattr(idx_entry, "friendly_name", "")
+                result.friendly_name = indexed_name if isinstance(indexed_name, str) else ""
+            if result.signal_scores.get("alias", 0.0) >= 1.0:
+                floored.add(result.entity_id)
+
         # IDF weights for span coverage: one locked read for all candidates.
         entity_tokens_by_id: dict[str, set[str]] = {
             r.entity_id: normalize_tokenize(r.friendly_name) for r in results.values() if r.friendly_name
@@ -371,7 +391,6 @@ class EntityMatcher:
             logger.debug("token_idf unavailable, falling back to unweighted coverage", exc_info=True)
             idf_map = {}
 
-        floored: set[str] = set()
         for result in results.values():
             entity_tokens = entity_tokens_by_id.get(result.entity_id)
             if not entity_tokens:
