@@ -158,6 +158,22 @@ _CHOOSE_AND_ACT_ANNOTATION = (
     "do NOT ask again unless no candidate fits."
 )
 
+# Empty keyword recall. Agents whose actions act on an entity candidate
+# (``_entity_candidates_required``) get the strict block: no candidate, no
+# action, ask instead. Agents whose actions run without a candidate get the
+# neutral note, which must not contradict their prompt's output contract.
+# The executor-side candidate gate (empty set: every LLM entity_id rejected)
+# applies to both. English-only per Directive 13.
+_NO_CANDIDATES_BLOCK = (
+    "No matching devices were found for this request. "
+    "Do NOT output a JSON action block. "
+    "Ask the user a short clarifying question in natural language to find out which device they mean."
+)
+_NO_CANDIDATES_NOTE = (
+    "No matching devices were found for this request, so do not invent an 'entity_id'. "
+    "Actions that do not need a device are unaffected -- follow the output format documented above."
+)
+
 # Agent-side keyword recall (ENTITY_RESOLUTION_REWORK): domains with at most
 # this many visible entities skip filtering -- the whole visible list is
 # injected. Larger domains are token-filtered down to the top N.
@@ -214,12 +230,23 @@ class ActionableAgent(BaseAgent):
         - agent_card (property)
         - _prompt_name (str): name of the prompt file (e.g., "light")
         - _do_execute(): async method that delegates to the domain-specific executor
+
+    ``_entity_candidates_required`` (set via ``@agent(entity_candidates_required=...)``)
+    declares whether the agent's actions act on a recalled entity candidate.
+    True (default, device agents): an empty keyword recall injects the
+    "no matching devices -- ask, no JSON action" block. False (agents whose
+    actions run without a candidate, e.g. AgentHub-internal timers, or whose
+    executor resolves its own target): an empty recall injects a neutral
+    note instead, so the prompt never forbids the JSON action its own
+    contract requires. The executor-side candidate gate is identical for
+    both values.
     """
 
     _prompt_name: str = ""
     _clarify_on_not_found: bool = True
     _allowed_domains: frozenset[str] | None = None
     _supports_conditions: bool = False
+    _entity_candidates_required: bool = True
 
     def __init__(self, ha_client=None, entity_index=None, entity_matcher=None) -> None:
         super().__init__(ha_client=ha_client, entity_index=entity_index)
@@ -335,18 +362,18 @@ class ActionableAgent(BaseAgent):
         as ``entity_id -- friendly_name (state)``; the LLM must emit the
         ``entity_id`` field verbatim from this list (an id outside the list
         is rejected fail-closed by the executor, without a matcher re-run).
-        An empty recall yields a block instructing the LLM to ask which
-        device the user means (natural language, no JSON action).
+        An empty recall yields, for agents with
+        ``_entity_candidates_required``, a block instructing the LLM to ask
+        which device the user means (natural language, no JSON action);
+        for all other agents a neutral note that leaves the prompt's own
+        output contract in force.
         """
         recalled = await self._recall_keyword_candidates(task)
 
         if not recalled:
-            return (
-                "No matching devices were found for this request. "
-                "Do NOT output a JSON action block. "
-                "Ask the user a short clarifying question in natural language to find out which device they mean.",
-                [],
-            )
+            if self._entity_candidates_required:
+                return _NO_CANDIDATES_BLOCK, []
+            return _NO_CANDIDATES_NOTE, []
 
         # Friendly names and states are untrusted (anyone who can rename a
         # device or set a text state controls them): delimited and bounded.
@@ -1417,6 +1444,8 @@ class MusicAgent(_ConfigurableDomainAgent):
     allowed_domains=frozenset({"automation", "script"}),
     executor_module="app.agents.automation_executor",
     executor_name="execute_automation_action",
+    # create_automation and list_automations need no existing entity.
+    entity_candidates_required=False,
     db_gated=True,
 )
 class AutomationAgent(_ConfigurableDomainAgent):

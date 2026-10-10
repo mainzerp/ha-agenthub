@@ -24,6 +24,7 @@ def agent(
     executor_name: str = "",
     db_gated: bool = False,
     needs_entity_matcher: bool = True,
+    entity_candidates_required: bool | None = None,
     expected_latency: str | None = None,
     timeout_sec: float | None = None,
     factory: Any = None,
@@ -41,6 +42,7 @@ def agent(
             "executor_name": executor_name,
             "db_gated": db_gated,
             "needs_entity_matcher": needs_entity_matcher,
+            "entity_candidates_required": entity_candidates_required,
             "expected_latency": expected_latency,
             "timeout_sec": timeout_sec,
             "factory": factory,
@@ -53,6 +55,9 @@ def agent(
             cls._prompt_name = prompt_name
         if allowed_domains is not None:
             cls._allowed_domains = allowed_domains
+        # None keeps the class default (ActionableAgent: True).
+        if entity_candidates_required is not None:
+            cls._entity_candidates_required = entity_candidates_required
 
         _AGENT_CLASSES[agent_id] = cls
         return cls

@@ -32,6 +32,9 @@ from app.models.agent import AgentCard, AgentErrorCode, DispatchTask, TaskResult
     # AgentHub-internal and the agent never acts on a helper, so helpers
     # must not be offered to the LLM as action candidates.
     allowed_domains=frozenset({"timer", "input_boolean"}),
+    # Timers and alarms are AgentHub-internal logical labels: no action
+    # needs a recalled entity candidate (recall is empty on default installs).
+    entity_candidates_required=False,
     db_gated=True,
 )
 class TimerAgent(ActionableAgent):

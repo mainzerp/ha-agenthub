@@ -26,6 +26,9 @@ from app.models.agent import AgentCard, AgentErrorCode, DispatchTask, TaskResult
     ],
     prompt_name="lists",
     allowed_domains=frozenset({"todo", "shopping_list"}),
+    # The executor resolves the target list itself (visible todo lists only):
+    # list_lists needs no list, an unnamed list falls back to the only one.
+    entity_candidates_required=False,
     db_gated=True,
 )
 class ListsAgent(ActionableAgent):

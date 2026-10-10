@@ -38,6 +38,8 @@ class <Domain>Agent(_ConfigurableDomainAgent):
 
 `agent_card` and prompt loading are generated from the decorator metadata — no manual `agent_card` property or `_do_execute` override is needed for standard agents. Agents that need task context can use `self._get_current_task()` / `self._get_current_task_context()` (ContextVar accessors).
 
+`entity_candidates_required` (default `True`) controls what an empty keyword recall injects into the prompt. Keep the default when every action targets a recalled device: the agent then asks which device is meant and emits no JSON action. Pass `entity_candidates_required=False` when actions run without a recalled candidate (AgentHub-internal state such as timers, or an executor that resolves its own target such as lists/calendar); the agent then gets a neutral note so the prompt's own JSON contract stays in force. Executor-side `entity_id` validation is unchanged either way. See `docs/architecture.md` (Entity Matching).
+
 Use `BaseAgent` directly (not `ActionableAgent`/`_ConfigurableDomainAgent`) when there is no HA action to parse — e.g. pure-query or conversational agents (see `container/app/agents/general.py`). Agents with unique logic (timer, lists, calendar) subclass `ActionableAgent` in their own `container/app/agents/<domain>.py` and override `_do_execute`.
 
 ## Step 2: Executor file
