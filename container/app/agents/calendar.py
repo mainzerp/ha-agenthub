@@ -28,6 +28,9 @@ logger = logging.getLogger(__name__)
         "calendar_query",
     ],
     prompt_name="calendar",
+    # The executor resolves calendars itself (the user's default calendars,
+    # else every visible calendar): reads and creates need no recalled candidate.
+    entity_candidates_required=False,
     db_gated=True,
 )
 class CalendarAgent(ActionableAgent):
