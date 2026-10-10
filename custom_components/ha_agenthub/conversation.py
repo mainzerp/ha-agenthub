@@ -168,13 +168,48 @@ _STRIP_MARKDOWN_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"~~([^~]+)~~"), r"\1"),
     (re.compile(r"^[\s]*([-*_]){3,}\s*$", re.MULTILINE), ""),
     (re.compile(r"^[\s]*[-*+]\s+", re.MULTILINE), ""),
-    (re.compile(r"^[\s]*\d+\.\s+", re.MULTILINE), ""),
+]
+_STRIP_MARKDOWN_POST_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"^>\s?", re.MULTILINE), ""),
     (re.compile(r"<[^>]+>"), ""),
     (re.compile(r"https?://\S+"), ""),
     (re.compile(r"\n{3,}"), "\n\n"),
     (re.compile(r" {2,}"), " "),
 ]
+
+
+_NUMBERED_ITEM_RE = re.compile(r"^[ \t]*(\d+)\.[ \t]+(?=\S)")
+
+
+def _strip_numbered_list_markers(text: str) -> str:
+    """Remove ``N.`` markers only from real numbered lists.
+
+    Lock-step twin of ``_strip_numbered_list_markers`` in
+    ``container/app/agents/sanitize.py``: a real list is a run of at least
+    two consecutive lines numbered ``1.``, ``2.`` ... in order, so a date
+    such as ``3. Oktober 2026.`` keeps its number.
+    """
+    lines = text.split("\n")
+    matches = [_NUMBERED_ITEM_RE.match(line) for line in lines]
+    i = 0
+    while i < len(lines):
+        first = matches[i]
+        if first is None or int(first.group(1)) != 1:
+            i += 1
+            continue
+        j = i + 1
+        while j < len(lines):
+            nxt = matches[j]
+            if nxt is None or int(nxt.group(1)) != j - i + 1:
+                break
+            j += 1
+        if j - i >= 2:
+            for k in range(i, j):
+                match = matches[k]
+                if match is not None:
+                    lines[k] = lines[k][match.end() :]
+        i = j
+    return "\n".join(lines)
 
 
 def _strip_markdown(text: str) -> str:
@@ -194,6 +229,9 @@ def _strip_markdown(text: str) -> str:
     if not text:
         return text
     for pattern, replacement in _STRIP_MARKDOWN_PATTERNS:
+        text = pattern.sub(replacement, text)
+    text = _strip_numbered_list_markers(text)
+    for pattern, replacement in _STRIP_MARKDOWN_POST_PATTERNS:
         text = pattern.sub(replacement, text)
     lines = [line.strip() for line in text.splitlines()]
     return "\n".join(lines).strip()

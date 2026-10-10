@@ -327,6 +327,13 @@ when nothing was streamed. Markdown markers are removed before
 `[FOLLOWUP]` detection, so a wrapped tag (`**[FOLLOWUP]**`) is still
 recognised.
 
+Final speech goes through `sanitize.strip_markdown` (the HA bridge's
+`_strip_markdown` is a lock-step twin, enforced by the corpus in
+`container/tests/data/sanitize_corpus.txt`). Numbered-list markers are
+removed only inside a real list -- two or more consecutive lines numbered
+`1.`, `2.`, ... in order -- so dates such as `3. Oktober 2026` keep their
+number; the streaming filter never removes them.
+
 ### Language Detection and Per-Agent Directive
 
 The `language` setting (default `auto`) controls reply language.
