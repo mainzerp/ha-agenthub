@@ -29,6 +29,7 @@ _litellm_mock.exceptions.APIError = _APIError
 _litellm_mock.RateLimitError = _RateLimitError
 sys.modules.setdefault("litellm", _litellm_mock)
 
+from app.agents.action_executor import unverified_speech  # noqa: E402
 from app.agents.light_executor import execute_light_action  # noqa: E402
 from app.entity.index import EntityIndex  # noqa: E402
 from app.entity.matcher import EntityMatcher  # noqa: E402
@@ -477,7 +478,12 @@ class TestExecuteLightAction:
 
     @pytest.mark.asyncio
     async def test_contradicting_observed_state_is_not_spoken_as_success(self, ha_client, entity_matcher, entity_index):
-        """turn_off + observed 'on' must not speak success (T5 / #132)."""
+        """turn_off + observed 'on' must not speak success (T5 / #132).
+
+        'on' is not a fault state, so verification reports ``unverified``
+        (late-reporting device), not a failure: the executor speaks the
+        shared hedge that ActionableAgent also uses for that outcome.
+        """
         ha_client.call_service = AsyncMock(return_value=None)
         ha_client.get_state = AsyncMock(
             return_value={"state": "on", "attributes": {}},
@@ -489,7 +495,7 @@ class TestExecuteLightAction:
         assert result["success"] is True
         assert "is now on" not in result["speech"]
         assert "turned off" not in result["speech"]
-        assert "still reports on" in result["speech"]
+        assert result["speech"] == unverified_speech("Kitchen Ceiling")
         assert result.get("cacheable") is False
 
     @pytest.mark.asyncio
