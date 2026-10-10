@@ -27,6 +27,16 @@ _TODO_DOMAINS: frozenset[str] = frozenset({"todo"})
 _DEFAULT_AGENT_ID = "lists-agent"
 _MAX_LISTED_CHOICES = 4
 
+# Entity-candidate declaration (read by ``ListsAgent``'s ``@agent`` call, see
+# ``ActionableAgent._entity_actions``). The executor resolves the target list
+# itself (visible ``todo.*`` only): ``list_lists`` needs no list and an empty
+# ``entity`` uses the only visible list or asks which one, so no action needs
+# a recalled entity candidate. The dispatch only accepts these actions.
+ENTITY_ACTIONS: frozenset[str] = frozenset()
+ENTITY_FREE_ACTIONS: frozenset[str] = frozenset(
+    {"list_lists", "list_items", "add_item", "complete_item", "remove_item", "clear_completed"}
+)
+
 
 def _result(success: bool, speech: str, entity_id: str | None = None, **extra: Any) -> dict:
     result: dict[str, Any] = {
@@ -71,6 +81,8 @@ async def execute_lists_action(
     action_name = action.get("action", "").lower()
     agent_id = agent_id or _DEFAULT_AGENT_ID
 
+    if action_name not in ENTITY_FREE_ACTIONS:
+        return _result(False, f"Unknown lists action: {action_name}")
     if action_name == "list_lists":
         return await _list_lists(entity_index, entity_matcher, agent_id)
     if action_name == "list_items":

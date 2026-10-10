@@ -3,7 +3,7 @@
 import logging
 
 from app.agents.actionable import ActionableAgent
-from app.agents.calendar_executor import execute_calendar_action
+from app.agents.calendar_executor import ENTITY_ACTIONS, ENTITY_FREE_ACTIONS, execute_calendar_action
 from app.agents.decorator import agent
 from app.agents.user_identity import UserIdentityResolver
 from app.models.agent import AgentCard, AgentErrorCode, DispatchTask, TaskResult
@@ -29,8 +29,9 @@ logger = logging.getLogger(__name__)
     ],
     prompt_name="calendar",
     # The executor resolves calendars itself (the user's default calendars,
-    # else every visible calendar): reads and creates need no recalled candidate.
-    entity_candidates_required=False,
+    # else every visible calendar): no action needs a recalled candidate.
+    entity_actions=ENTITY_ACTIONS,
+    entity_free_actions=ENTITY_FREE_ACTIONS,
     db_gated=True,
 )
 class CalendarAgent(ActionableAgent):
@@ -79,6 +80,9 @@ class CalendarAgent(ActionableAgent):
         )
 
     def _handle_parse_miss(self, task: DispatchTask, response: str) -> TaskResult:
+        clarification = self._parse_miss_clarification(task, response)
+        if clarification is not None:
+            return clarification
         return self._error_result(
             AgentErrorCode.PARSE_ERROR,
             "I could not understand the calendar command. Please try again.",

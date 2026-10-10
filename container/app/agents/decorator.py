@@ -25,10 +25,34 @@ def agent(
     db_gated: bool = False,
     needs_entity_matcher: bool = True,
     entity_candidates_required: bool | None = None,
+    entity_actions: frozenset[str] | None = None,
+    entity_free_actions: frozenset[str] | None = None,
     expected_latency: str | None = None,
     timeout_sec: float | None = None,
     factory: Any = None,
 ):
+    """Register an agent class and inject its declarative metadata.
+
+    Entity-candidate declaration (``ActionableAgent`` subclasses): pass
+    ``entity_actions`` (actions that act on one recalled entity candidate)
+    and ``entity_free_actions`` (actions that run without one), ideally the
+    executor's ``ENTITY_ACTIONS`` / ``ENTITY_FREE_ACTIONS`` tables.
+    ``entity_candidates_required`` is the coarse shorthand: ``True`` means
+    every action needs a candidate, ``False`` means none does. It cannot be
+    combined with the per-action sets. Omitting all three keeps the class
+    defaults.
+    """
+    per_action = entity_actions is not None or entity_free_actions is not None
+    if per_action and entity_candidates_required is not None:
+        raise TypeError(
+            f"@agent({agent_id!r}): pass either entity_candidates_required or entity_actions/entity_free_actions"
+        )
+    declared_entity_actions = frozenset(entity_actions or ())
+    declared_free_actions = frozenset(entity_free_actions or ())
+    overlap = declared_entity_actions & declared_free_actions
+    if overlap:
+        raise ValueError(f"@agent({agent_id!r}): actions declared both entity and entity-free: {sorted(overlap)}")
+
     def decorator(cls):
         meta = {
             "agent_id": agent_id,
@@ -43,6 +67,8 @@ def agent(
             "db_gated": db_gated,
             "needs_entity_matcher": needs_entity_matcher,
             "entity_candidates_required": entity_candidates_required,
+            "entity_actions": declared_entity_actions if per_action else None,
+            "entity_free_actions": declared_free_actions if per_action else None,
             "expected_latency": expected_latency,
             "timeout_sec": timeout_sec,
             "factory": factory,
@@ -55,9 +81,18 @@ def agent(
             cls._prompt_name = prompt_name
         if allowed_domains is not None:
             cls._allowed_domains = allowed_domains
-        # None keeps the class default (ActionableAgent: True).
-        if entity_candidates_required is not None:
-            cls._entity_candidates_required = entity_candidates_required
+        # Entity-candidate declaration (see ActionableAgent._entity_actions).
+        # Nothing passed keeps the class default (ActionableAgent: every
+        # action needs a candidate).
+        if per_action:
+            cls._entity_actions = declared_entity_actions
+            cls._entity_free_actions = declared_free_actions
+        elif entity_candidates_required is True:
+            cls._entity_actions = None
+            cls._entity_free_actions = frozenset()
+        elif entity_candidates_required is False:
+            cls._entity_actions = frozenset()
+            cls._entity_free_actions = frozenset()
 
         _AGENT_CLASSES[agent_id] = cls
         return cls

@@ -53,6 +53,17 @@ _CLIMATE_READ_DOMAINS: frozenset[str] = frozenset({"climate", "sensor", "fan", "
 _WEATHER_DOMAINS: frozenset[str] = frozenset({"weather"})
 _HISTORY_DOMAINS: frozenset[str] = frozenset({"climate", "sensor", "weather", "fan", "humidifier"})
 
+# Entity-candidate declaration (read by the agent's ``@agent`` call, see
+# ``ActionableAgent._entity_actions``): every action this executor
+# dispatches, split into actions that act on one target entity (they need a
+# recalled entity candidate) and actions that run without one. Derived from
+# the dispatch tables so the declaration cannot drift from the executor.
+_READ_ACTIONS: frozenset[str] = frozenset(
+    {"query_climate_state", "list_climate", "query_weather", "query_weather_forecast", "query_entity_history"}
+)
+ENTITY_FREE_ACTIONS: frozenset[str] = frozenset({"list_climate", "query_weather", "query_weather_forecast"})
+ENTITY_ACTIONS: frozenset[str] = (frozenset(_ACTION_DOMAINS) | _READ_ACTIONS) - ENTITY_FREE_ACTIONS
+
 # (logical action, entity domain) -> HA service in that domain.
 # ``set_fan_mode`` on a ``fan.*`` entity is mapped dynamically
 # (see ``_map_fan_mode_for_fan``).
@@ -303,13 +314,7 @@ async def execute_climate_action(
     entity_query = action.get("entity", "")
 
     # Read-only actions (no service call)
-    if action_name in (
-        "query_climate_state",
-        "list_climate",
-        "query_weather",
-        "query_weather_forecast",
-        "query_entity_history",
-    ):
+    if action_name in _READ_ACTIONS:
         return await _handle_climate_read_action(
             action_name,
             entity_query,

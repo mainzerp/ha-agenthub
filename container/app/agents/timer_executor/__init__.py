@@ -50,6 +50,8 @@ from ._timers import (
 )
 
 __all__ = [
+    "ENTITY_ACTIONS",
+    "ENTITY_FREE_ACTIONS",
     "_build_recurring_alarm_payload",
     "_build_timer_service_data",
     "_extract_cancel_alarm_selectors",
@@ -65,6 +67,33 @@ __all__ = [
     "_supports_method",
     "execute_timer_action",
 ]
+
+# Entity-candidate declaration (read by ``TimerAgent``'s ``@agent`` call, see
+# ``ActionableAgent._entity_actions``). Timers and alarms are AgentHub-internal
+# logical labels, so no timer action acts on a recalled entity candidate: an
+# empty or kind-equal ``entity`` means "no name" (the only running timer, or a
+# question when that is ambiguous). ``delayed_action`` and ``sleep_timer`` name
+# their device in ``parameters`` and resolve it through
+# ``resolve_and_validate_entity`` (visibility checked) at schedule time.
+_READ_ACTIONS: frozenset[str] = frozenset({"query_timer", "list_timers", "list_alarms"})
+_WRITE_ACTIONS: frozenset[str] = frozenset(
+    {
+        "start_timer",
+        "cancel_timer",
+        "extend_timer",
+        "pause_timer",
+        "resume_timer",
+        "finish_timer",
+        "snooze_timer",
+        "start_timer_with_notification",
+        "delayed_action",
+        "sleep_timer",
+        "set_datetime",
+        "cancel_alarm",
+    }
+)
+ENTITY_ACTIONS: frozenset[str] = frozenset()
+ENTITY_FREE_ACTIONS: frozenset[str] = _READ_ACTIONS | _WRITE_ACTIONS
 
 
 async def execute_timer_action(
@@ -87,7 +116,14 @@ async def execute_timer_action(
     action_name = action.get("action", "").lower()
     entity_query = action.get("entity", "")
 
-    if action_name in ("query_timer", "list_timers", "list_alarms"):
+    if action_name not in ENTITY_FREE_ACTIONS:
+        return {
+            "success": False,
+            "entity_id": None,
+            "new_state": None,
+            "speech": f"Unknown timer action: {action_name}",
+        }
+    if action_name in _READ_ACTIONS:
         return await _handle_read_action(
             action_name,
             entity_query,
