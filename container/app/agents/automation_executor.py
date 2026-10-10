@@ -894,7 +894,7 @@ async def _propose_update(
     merged = _apply_patch(existing, set_map, add_map)
     if merged == existing:
         return _cfg_result(False, f"That would not change '{friendly_name}'.", entity_id)
-    if not _section(merged, "triggers") or not _section(merged, "actions"):
+    if any(key in set_map and not set_map[key] for key in ("triggers", "actions")):
         return _cfg_result(False, "An automation needs at least one trigger and one action.", entity_id)
 
     patch_config = _patch_config(set_map, add_map)

@@ -353,7 +353,7 @@ These short procedures link the dashboard pages described above.
     - Ask for the change (for example "create an automation that turns on the living room light at sunset").
     - The automation agent describes the change and asks "Shall I save this?" (or "Shall I delete it?"). Nothing is written yet.
     - Answer within 5 minutes in the same conversation: a clear yes saves it, a no discards it, and a different instruction replaces the proposal. A late answer is told that the proposal expired.
-    - Every referenced entity must exist in the entity index and be visible to the automation agent, and only common device services are allowed; otherwise the agent names what it rejected. Device, area, floor, and label targets are not supported.
+    - Every referenced entity must exist in the entity index and be visible to the automation agent, and only common device services are allowed; otherwise the agent names what it rejected. Device, area, floor, and label targets are not supported. The default visibility rules limit the automation agent to the `automation` domain, so add include rules on the **Agents** page for the domains your automations should control (for example `light`).
     - Changes to an existing automation are applied as a patch to its current configuration; if the automation was edited in Home Assistant before you confirmed, nothing is saved.
     - Enabling, disabling, and triggering an automation still happen immediately.
 
