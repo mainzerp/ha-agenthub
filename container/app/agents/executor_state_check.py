@@ -2,16 +2,43 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
+from app.agents.action_executor import VERIFY_MISMATCH
 
-def failure_speech(action_name: str, friendly_name: str) -> str:
+# An observed HA state is only spoken when it is a short plain word
+# ("jammed", "unlocked", "armed_away"); anything else stays generic.
+_SPEAKABLE_STATE_RE = re.compile(r"[A-Za-z][A-Za-z0-9_ -]{0,31}")
+
+
+def _speakable_observed_state(verify: Any) -> str | None:
+    """Return the contradicting observed state of a ``mismatch`` verification, if speakable."""
+    if not isinstance(verify, dict) or verify.get("outcome") != VERIFY_MISMATCH:
+        return None
+    observed = verify.get("observed_state")
+    if not isinstance(observed, str):
+        return None
+    observed = observed.strip()
+    if not _SPEAKABLE_STATE_RE.fullmatch(observed):
+        return None
+    return observed.replace("_", " ")
+
+
+def failure_speech(action_name: str, friendly_name: str, verify: dict[str, Any] | None = None) -> str:
     """Generic user-facing failure line.
 
-    Never embeds exception text, URLs, or other internals: callers log the
-    details (``call_service_with_verification`` already logs the traceback).
+    When ``verify`` (a ``call_service_with_verification`` result) reports a
+    ``mismatch`` -- the command ran, but the device settled in a
+    contradicting state such as ``jammed`` -- the observed state is named in
+    plain words. Never embeds exception text, URLs, or other internals:
+    callers log the details (``call_service_with_verification`` already
+    logs the traceback).
     """
     verb = (action_name or "update").replace("_", " ")
+    observed = _speakable_observed_state(verify)
+    if observed:
+        return f"Sorry, {verb} failed: {friendly_name} reports {observed}."
     return f"Sorry, {verb} failed for {friendly_name}."
 
 

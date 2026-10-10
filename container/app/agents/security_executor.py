@@ -204,7 +204,7 @@ async def execute_security_action(
             "success": False,
             "entity_id": entity_id,
             "new_state": None,
-            "speech": failure_speech(action_name, friendly_name),
+            "speech": failure_speech(action_name, friendly_name, verify),
         }
 
     new_state = verify["observed_state"]

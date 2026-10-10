@@ -15,6 +15,7 @@ from app.agents.action_executor import (
     _validate_direct_entity_id,
     call_service_with_verification,
     resolve_and_validate_entity,
+    unverified_speech,
 )
 from app.agents.executor_state_check import failure_speech, is_redundant_action
 from app.entity.visibility import entity_is_visible
@@ -200,15 +201,19 @@ def _build_action_speech(
     """Build an intent-first speech line for a completed action.
 
     We never claim a state we did not observe, and a contradicting
-    observation is never spoken as success: when HA reports a state other
-    than the expected one, the line says so. When nothing was observed
+    observation is never spoken as success. A contradicting non-fault
+    state (fault states fail in ``call_service_with_verification``) is
+    usually the unchanged pre-call state of a device that reports late, so
+    it gets the shared :func:`unverified_speech` hedge -- the same line
+    ActionableAgent substitutes for an ``unverified`` outcome, so the user
+    hears one hedge, never two different ones. When nothing was observed
     (slow device, inconclusive verification) we fall back to intent
-    language ("turned off X").
+    language ("turned off X"); the agent layer hedges that case.
     """
     if expected_state and new_state == expected_state:
         return f"Done, {friendly_name} is now {new_state}."
     if expected_state and new_state:
-        return f"I sent the command to {friendly_name}, but it still reports {new_state}."
+        return unverified_speech(friendly_name)
     if expected_state:
         return f"Done, turned {expected_state} {friendly_name}."
     # ``toggle`` path: no deterministic target. Report what we saw if any.
@@ -404,7 +409,7 @@ async def execute_light_action(
             "success": False,
             "entity_id": entity_id,
             "new_state": None,
-            "speech": failure_speech(action_name, friendly_name),
+            "speech": failure_speech(action_name, friendly_name, verify),
         }
 
     new_state = verify["observed_state"]

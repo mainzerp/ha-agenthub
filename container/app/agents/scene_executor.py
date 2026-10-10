@@ -127,7 +127,7 @@ async def execute_scene_action(
             "success": False,
             "entity_id": entity_id,
             "new_state": None,
-            "speech": failure_speech("activate", friendly_name),
+            "speech": failure_speech("activate", friendly_name, verify),
         }
 
     if verify["verified"]:
