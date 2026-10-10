@@ -321,13 +321,24 @@ prefers the current option values where they exist. It cannot reconstruct
 credentials that were already discarded. Reconfigure the integration with the
 container URL and API key; migration does not create replacement credentials.
 
-## REST Error Messages: 401/403 vs 5xx vs Unreachable
+## Integration Error Messages
 
-The HA integration's REST fallback distinguishes the most common
-failure modes (since version 1.0.0):
+The HA integration speaks fixed messages for transport and request
+failures; raw container errors are only logged (HA log, with the
+container trace id):
 
-| Symptom | Likely cause | Remediation |
-|---------|--------------|-------------|
-| `Authentication rejected` | Container API key is wrong or was rotated. | Re-enter the API key via the integration options dialog. |
-| `Backend error` | Container returned 5xx (LLM outage, internal error). | Check container logs and the `/healthz` probe. |
-| `Container unreachable` | TCP/DNS failure between HA and the container. | Verify networking, `CONTAINER_PORT`, reverse proxy, and that the container is running. |
+| Spoken message (start) | Likely cause | Remediation |
+|------------------------|--------------|-------------|
+| "...API key was rejected" | REST `401`/`403`: container API key is wrong or was rotated. | Re-enter the API key in the integration (reauth starts automatically). |
+| "...container returned an error" | REST `5xx` (LLM outage, internal error). | Check container logs and the `/api/health` probe. |
+| "...container is unavailable" | TCP/DNS failure between HA and the container. | Verify networking, `CONTAINER_PORT`, reverse proxy, and that the container is running. |
+| "...did not answer in time" | No reply within the integration's response timeout (`ws_receive_timeout`, default 120 s; WS and REST). | Check the trace for slow LLM calls; raise the timeout in the integration options if needed. The action may still have run. |
+| "The connection dropped before the reply finished" | The socket closed after the container had started answering the turn. | Check container restarts and proxy idle timeouts. The turn is not retried because the action may have run. |
+| "...request is too long" | Text over 500 characters (checked by the integration). | Shorten the request. |
+| "...could not accept that request" | REST `422` / WS `Invalid request`: a field failed validation. | Check the HA log for the request. |
+| "...too many requests" | REST `429` / WS `Rate limit exceeded`. | Wait a moment; look for automations that send turns in a loop. |
+| "The assistant could not complete that request." | The container ended the turn with an error and no speech. | Look up the trace id from the HA log on the Traces page. |
+
+A WebSocket that closes before the first frame of a turn (for example an
+idle socket the container had already closed) is retried over REST
+automatically.

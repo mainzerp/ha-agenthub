@@ -101,6 +101,8 @@ Send a natural language command and receive a full response.
 | `conversation_id` | string | Conversation thread identifier. |
 | `voice_followup` | bool | When true, the HA integration is asked to keep the microphone open for an immediate follow-up turn. |
 
+When dispatch fails, `speech` is a fixed generic message; the error detail is logged with the trace id (`X-Trace-Id` response header) and never returned. Validation errors (for example `text` over 500 characters) return `422`; the per-IP rate limit (30/minute) returns `429`.
+
 ### POST /api/conversation/stream
 
 Send a command and receive a streaming SSE response.
@@ -126,7 +128,7 @@ data: {"token": "", "done": true, "conversation_id": "abc123"}
 | `conversation_id` | string \| null | Set on the terminal event. |
 | `trace_id` | string \| null | Per-turn trace id (16 hex chars), set on the terminal event; correlates the stream with shipped logs and the traces dashboard. |
 | `mediated_speech` | string \| null | Final mediated speech replacement (set when the personality / mediation pipeline rewrites the streamed tokens; only when no tokens were streamed). |
-| `error` | string \| null | Set when the stream is terminating due to an error. |
+| `error` | string \| null | Set when the stream is terminating due to an error. `"Internal error"` when dispatch raised or the stream ended without a terminal frame (details are only logged). |
 | `voice_followup` | bool | Mirrors the REST `voice_followup` flag on the terminal event. |
 | `sanitized` | bool | When true, the integration must skip its defensive markdown stripper because the container already sanitised the speech. |
 | `filler_push` | string \| null | Interim filler sentence; the HA integration prepends it to the assistant message as an in-stream preamble. |
@@ -147,6 +149,19 @@ WebSocket endpoint for streaming conversation.
 ```
 
 **Receive:** Stream of token objects, same format as SSE events.
+
+Turn contract (also for SSE):
+
+- Every received message is answered with frames that end in exactly one
+  terminal `done=true` frame, also when dispatch raises (terminal `error`
+  frame, socket stays open) or the stream ends without a done frame.
+  Nothing is sent after the terminal frame, so one socket carries
+  consecutive turns.
+- Ingress rejections are terminal frames: `Message too large`,
+  `Rate limit exceeded` (with `retry_after_ms`), `Invalid request`,
+  `Service not ready`.
+- At most 5 concurrent sockets per client IP; an over-limit connect is
+  rejected before the handshake completes (HTTP 403).
 
 ---
 
@@ -181,7 +196,7 @@ Returns one model:
 
 | Header | Use |
 |--------|-----|
-| `X-OpenWebUI-Chat-Id` | Conversation id `owui-<chat id>` (truncated to 64 characters). Without it: `owui-` + first 32 hex chars of `sha256(<user id or "anon"> + "\n" + <first user message>)`. |
+| `X-OpenWebUI-Chat-Id` | Conversation id `owui-<chat id>` (truncated to 64 characters). Without it every turn gets a fresh id (`owui-<random hex>`) and runs without server-side history. |
 | `X-OpenWebUI-User-Id` | Records the user in `external_user_mappings` (source `openwebui`) and passes the mapped Home Assistant user id as `user_id`; unmapped users run without `user_id`. Mapping errors never fail the request. |
 | `X-OpenWebUI-User-Name`, `X-OpenWebUI-User-Email` | Stored as display metadata for the Persons page. |
 | `X-OpenWebUI-Task` | Marks an Open WebUI background task (see below). Empty values, unrendered `{{...}}` placeholders and `none`/`null`/`false`/`undefined` (case-insensitive) mean "no task". |
@@ -884,20 +899,22 @@ error messages.
 
 ## WebSocket close-error contract
 
-`/ws/conversation` uses application close codes that the HA
-integration reacts to specifically:
+`/ws/conversation` closes and rejections, and how the HA integration
+reacts:
 
-| Code | Reason |
-|------|--------|
-| `4401` | Authentication failed (missing or invalid API key during the WebSocket handshake). The integration falls back to REST. |
-| `4408` | Idle/heartbeat timeout. The integration reconnects with backoff. |
-| `1011` | Server-side error during a turn. The integration reconnects and retries the turn over REST if a final response was not received. |
-| `1008` | Origin rejection / policy violation. The origin was not in `app.state.allowed_ws_origins` or another policy was violated. |
-| `1000` | Normal close (initiated by the client or container shutdown). |
+| Code | When | Integration behavior |
+|------|------|----------------------|
+| `4001` | Missing or invalid API key; rejected before the handshake completes. | Connect fails; the turn uses REST (a REST `401`/`403` starts reauth). |
+| `1008` | Per-IP connection limit; rejected before the handshake completes. | Connect fails; the turn uses REST. |
+| `1008` | Origin not in `app.state.allowed_ws_origins`; sent after accept with a reason. | Reconnects with backoff; turns use REST meanwhile. |
+| `1011` | uvicorn keepalive ping timeout (`--ws-ping-interval 30 --ws-ping-timeout 10`) or an unhandled server error. | Idle socket: detached and reconnected. During a turn: before the first frame the turn is retried over REST, after it the turn ends with a dropped-connection message. |
+| `1000` | Normal close (client or container shutdown). | Same as `1011`. |
 
-The contract is exercised by the integration tests in
-`container/tests/test_ha_client.py` and the matching client logic in
-`custom_components/ha_agenthub/conversation.py`.
+The client logic lives in `custom_components/ha_agenthub/conversation.py`
+(tests: `custom_components/tests/test_integration.py`,
+`container/tests/test_ha_client.py`); the server side in
+`container/app/api/routes/conversation.py`
+(tests: `container/tests/test_conversation_ingress.py`).
 
 
 ---

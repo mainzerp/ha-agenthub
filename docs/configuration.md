@@ -21,7 +21,7 @@ These are the only settings that use environment variables. All other configurat
 | `FERNET_KEY_PATH` | `/data/.fernet_key` | Path to the Fernet encryption key. Backup target. |
 | `COOKIE_SECURE` | `true` | Set to `true` when serving the dashboard behind HTTPS so the admin session and CSRF cookies are restricted to TLS. Setting it on plain HTTP silently breaks login (browser drops the cookie). Local development should override it to `false`. (Production compose defaults this to `true`; the in-app fallback is also `true` in `app/config.py`.) |
 | `CORS_ORIGINS` | `""` | Comma-separated list of allowed CORS origins. |
-| `TRUSTED_PROXIES` | `""` | Comma-separated list of trusted proxy IPs for correct client-IP extraction behind a reverse proxy. |
+| `TRUSTED_PROXIES` | `""` | Comma-separated list of trusted reverse-proxy IPs or CIDR networks (for example `172.18.0.0/16`) for correct client-IP extraction from `X-Forwarded-For`. Invalid entries are logged and ignored. |
 
 Environment variables are loaded by Pydantic `BaseSettings` in `app/config.py` and support `.env` file loading.
 
@@ -361,7 +361,7 @@ These options live in the HA integration's options dialog (Settings -> Devices &
 |--------|---------|-------------|
 | `ship_logs` | `false` | Ship the integration's own log records (`custom_components.ha_agenthub` package logger) to the container's log buffer via `POST /api/logs/ingest`, batched every 5 seconds. |
 | `ship_logs_level` | `DEBUG` | Minimum level for shipped records: `DEBUG`, `INFO`, `WARNING`, or `ERROR`. Gated by a handler-level filter only; the HA logger's own level still applies, so records below the effective HA log level never reach the shipper. |
-| `ws_receive_timeout` | `120` | Timeout in seconds for each bridge WebSocket receive wait. The options flow accepts finite positive numbers, including decimals. `0`, negative values, booleans, nonnumeric values, `NaN`, and infinities are rejected. Invalid legacy stored values use the default at runtime. |
+| `ws_receive_timeout` | `120` | Response timeout in seconds (UI label "Response timeout"): bounds each bridge WebSocket receive wait and the whole REST fallback request. The options flow accepts finite positive numbers, including decimals. `0`, negative values, booleans, nonnumeric values, `NaN`, and infinities are rejected. Invalid legacy stored values use the default at runtime. |
 
 Notes:
 

@@ -192,12 +192,38 @@ question. The container also records the pending question itself
 the answering turn bypasses the action-cache replay and the routing
 cache, classification gets a follow-up merge hint so the condensed task
 is self-contained, and a tied candidate block inverts its ambiguity
-annotation to choose-and-act instead of re-asking. On every response path the integration places the HA-side
-`conversation_id` (`user_input.conversation_id`) into the
-`ConversationResult`; the container's own `conversation_id` is a
-container-internal correlation key only and is never forwarded to HA
-(HA core regenerates unknown-but-valid ULIDs, which would silently break
-session continuity).
+annotation to choose-and-act instead of re-asking. On every response path the integration sends the HA chat
+session id (`chat_log.conversation_id`; HA assigns a fresh ULID when the
+caller sent none and replaces unknown non-ULID ids) to the container and
+places the same id into the `ConversationResult`; the container's own
+`conversation_id` is a container-internal correlation key only and is
+never forwarded to HA (HA core regenerates unknown-but-valid ULIDs, which
+would silently break session continuity).
+
+### HA Bridge Transport
+
+- One shared `/ws/conversation` socket. While idle, a background reader
+  keeps it serviced: aiohttp answers the container's pings only inside
+  `receive()`, and a container-side close detaches the socket and requests
+  a reconnect.
+- A turn takes the socket out of shared use before the request write. A
+  failed or cancelled send closes the socket; after a clean done frame
+  the socket is shared again.
+- The container answers every received message with frames ending in one
+  terminal (`done=True`) frame, including a terminal error frame
+  (`error: "Internal error"`) when dispatch raises or the stream ends
+  without a done frame. Frames after the done frame are never sent.
+- A close before the turn's first frame counts as not delivered and the
+  turn is retried over `POST /api/conversation`. A failure after the first
+  frame is not retried (the action may have run); the user hears a
+  dropped-connection message, or a timeout message when the configured
+  response timeout expires.
+- The per-IP WebSocket limit is checked before the handshake completes, so
+  an over-limit connect fails and the bridge uses REST.
+- The REST fallback uses the same response timeout (`ws_receive_timeout`,
+  default 120 s). Requests over 500 characters are answered locally.
+  Raw container error strings are never spoken; they are logged with the
+  trace id.
 
 ### Mediation Streaming
 
@@ -265,8 +291,9 @@ Several hardening measures guard the WebSocket and A2A dispatch paths:
 - **WebSocket origin validation** -- The set `app.state.allowed_ws_origins`
   controls acceptable WebSocket origins. An empty set rejects all origins.
 - **Per-IP connection limits** -- WebSocket connections are capped per client
-  IP, with hardened client-IP extraction that resists spoofed `X-Forwarded-For`
-  values.
+  IP (5, rejected before the handshake completes), with hardened client-IP
+  extraction that resists spoofed `X-Forwarded-For` values (`TRUSTED_PROXIES`
+  accepts IPs and CIDR networks).
 - **Per-agent dispatch timeout overrides** -- Settings shaped as
   `agent.dispatch_timeout.<agent_id>` override individual agent timeouts and are
   capped by the global `a2a.max_dispatch_timeout`.

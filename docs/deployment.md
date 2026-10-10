@@ -124,7 +124,7 @@ COOKIE_SECURE=false
 # Comma-separated list of allowed CORS origins (e.g., "https://ha-agenthub.example.com")
 # CORS_ORIGINS=
 
-# Comma-separated list of trusted proxy IPs for correct client-IP extraction behind a reverse proxy
+# Comma-separated list of trusted proxy IPs or CIDR networks for correct client-IP extraction behind a reverse proxy
 # TRUSTED_PROXIES=
 
 # Path to Fernet encryption key (default: /data/.fernet_key)
@@ -265,9 +265,9 @@ house) through the OpenAI-compatible API (`/v1`, see
    chat but run without a Home Assistant user id.
 
 Limitation: without `X-OpenWebUI-Chat-Id` (Open WebUI older than 0.6.17, or
-user info forwarding disabled) the conversation id is derived from the user and
-the first message, so chats of the same user that start with the same first
-message share server-side history.
+user info forwarding disabled) every turn gets a fresh conversation id and runs
+without server-side history: follow-up answers and clarifications are not
+linked to the previous turn. Enable step 2 for multi-turn chats.
 
 ## Networking
 
