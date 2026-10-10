@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
@@ -13,6 +14,33 @@ from app.ha_client.history_util import (
 from app.models.agent import TaskContext
 
 logger = logging.getLogger(__name__)
+
+
+async def _current_unit_of_measurement(entity_id: str, ha_client: Any) -> str | None:
+    """Return the entity's current ``unit_of_measurement`` (best effort).
+
+    Recorder history is requested with ``no_attributes``, so the unit is
+    taken from the live state instead. Any failure yields ``None`` and
+    the summary simply omits the unit.
+    """
+    if not hasattr(ha_client, "get_state"):
+        return None
+    try:
+        state = await ha_client.get_state(entity_id)
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        logger.debug("Could not read current state for unit of %s", entity_id, exc_info=True)
+        return None
+    if not isinstance(state, dict):
+        return None
+    attrs = state.get("attributes")
+    if not isinstance(attrs, dict):
+        return None
+    unit = attrs.get("unit_of_measurement")
+    if not isinstance(unit, str):
+        return None
+    return unit.strip() or None
 
 
 async def execute_recorder_history_query(
@@ -84,6 +112,7 @@ async def execute_recorder_history_query(
         friendly_name,
         history,
         display_tz=display_zone_for_context(task_context),
+        unit=await _current_unit_of_measurement(entity_id, ha_client),
     )
     return {
         "success": True,
