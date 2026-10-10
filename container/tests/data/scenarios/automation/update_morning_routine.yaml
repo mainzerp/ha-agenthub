@@ -1,6 +1,6 @@
 id: automation.update_morning_routine
 agent: automation-agent
-description: Update an existing automation
+description: Update an existing automation (first turn proposes a patch and asks; nothing is saved)
 snapshot: home_default
 language: en
 context: {source: ha, area_id: bedroom, device_id: satellite_bedroom}
@@ -14,11 +14,12 @@ llm:
     automation-agent: |
       Updating the morning routine.
       ```json
-      {"action": "update_automation", "entity": "morning routine", "parameters": {"config": {"alias": "Morning Routine", "triggers": [{"platform": "time", "at": "07:00:00"}], "actions": [{"service": "light.turn_on", "target": {"entity_id": "light.bedroom"}}]}}}
+      {"action": "update_automation", "entity": "morning routine", "parameters": {"set": {"triggers": [{"platform": "time", "at": "07:00:00"}]}}}
       ```
 request:
-  text: "update the morning routine to turn on the bedroom light at 7 AM"
+  text: "change the morning routine to run at 7 AM"
 expected:
   routed_agent: automation-agent
   service_calls: []
-  speech_contains: ["updated", "Morning Routine"]
+  speech_contains: ["Morning Routine", "replace triggers", "Shall I save this?"]
+  speech_excludes: ["updated"]

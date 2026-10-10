@@ -64,8 +64,9 @@ All configuration, secrets, and state are stored in SQLite. sqlite-vec provides 
 Agents communicate via an in-process Agent-to-Agent (A2A) message boundary:
 
 - **Registry** -- Maintains agent cards describing each agent's ID, name, description, skills, and endpoint. The current implementation keeps the registry in `app/a2a/registry.py`, with agent cards and handler instances stored in-memory.
-- **Dispatcher** -- Routes A2A task dispatches to agents by card and intent (`app/a2a/dispatcher.py`).
+- **Dispatcher** -- Routes A2A task dispatches to agents by card and intent (`app/a2a/dispatcher.py`). `message/send` returns the raw agent result on success and raises a `RuntimeError` on failure: `A2ADispatchError` (with a JSON-RPC `code`) for an unknown method or invalid params, a transport `RuntimeError` for agent failures. Error messages are generic; validation details are only logged. `message/stream` reports the same failures as a single `done` chunk with an `error` string. The `agent/discover` and `agent/list` management methods return JSON-RPC envelopes.
 - **Transport** -- `InProcessTransport` invokes agent handlers directly with async function calls (`handler.handle_task`, `handler.handle_task_stream`) within the container (`app/a2a/transport.py`). The transport abstraction allows for future HTTP-based transport.
+- **Default stream wrapper** -- Agents without token streaming yield one final chunk from `handle_task()`. It carries `speech`, `action_executed`, `voice_followup`, `directive`/`reason`, and, when set, `error` (the error code string, as in the non-streaming response), `metadata` and `actions_executed` (list of dicts).
 
 Each agent publishes an **Agent Card** containing its ID, capabilities, and supported intents. The orchestrator uses these cards to make routing decisions.
 
@@ -76,6 +77,13 @@ Thirteen specialized domain agents are reachable from intent classification:
 `automation`, `security`, `calendar`, `lists`, and `send` (delivery to phones,
 satellites, and notify targets). A `general-agent` fallback handles general
 questions and unroutable requests.
+
+Domain-specific write contracts:
+
+- **Automation config changes** -- `create_automation`, `update_automation`, and `delete_automation` are two-turn: the executor validates the change (every referenced entity must exist in the entity index and be visible to `automation-agent`; services must be on the allow-list in `automation_executor._SERVICE_ALLOWLIST`; device/area/floor/label targets and templated entity or service names are rejected), stores it in `automation_confirmation.confirmation_store` (in memory, keyed by `conversation_id`, 5-minute TTL), and asks for confirmation with a voice follow-up. When a later turn reaches the automation agent while a proposal is pending, the agent LLM classifies the answer (confirm/decline/modify/unrelated, prompt `automation_confirm.txt`); only a confirmation writes to HA. Updates patch the config fetched from HA and abort if it changed before confirmation. Enable, disable, and trigger execute immediately.
+- **Calendar** -- reads use `calendar.get_events` across the user's visible default calendars (or all visible calendars). Update and delete read event uids from `GET /api/calendars/<entity_id>` (`HARestClient.get_calendar_event_details`), send the `calendar/event/update` / `calendar/event/delete` WebSocket commands (`HARestClient.send_ws_command`), and verify by re-reading.
+- **Lists** -- visibility always applies; an unnamed list resolves only when exactly one list is visible, and ambiguous item matches ask instead of acting.
+- Calendar, lists, and automation config results are `cacheable=False`, so these writes never enter the action cache.
 
 Internal A2A-registered helper agents: filler-agent and rewrite-agent. The mediation pass is baked into the orchestrator agent. Runtime services and utility modules (not A2A agents) include language detection, input sanitization, cancel-speech detection, notification dispatch, timer scheduling, and alarm monitoring.
 
@@ -98,9 +106,22 @@ route to them through the same dispatcher boundary as built-in agents.
 5. **Specialist agent** (e.g., light-agent) receives the task:
    a. Uses the **entity matcher** to resolve "bedroom light" to `light.bedroom_main`.
    b. Calls the HA REST API (`ha_client/rest.py`) to execute `light/turn_on`.
-   c. Returns a response with speech text and action details.
+   c. Verifies the resulting state (`call_service_with_verification` in `app/agents/action_executor.py`) and returns a response with speech text and action details.
 6. The orchestrator checks the **action cache** for an exact hash match and stores the new result on miss.
 7. The response flows back through the API layer to the HA integration, which speaks it to the user.
+
+Domain-agent result rules (`app/agents/actionable.py`, `app/agents/action_executor.py`):
+
+- **Verification outcome:** within the verify window (`state_verify.ws_timeout_sec` + `state_verify.poll_max_sec`, about 2.5 s by default) the observed post-call state is classified as:
+  - `reached`: the target, or an equivalent terminal state such as `off` for an expected `idle`. Spoken as done.
+  - `in_progress`: a transitional state (`opening`, `closing`, `locking`, `unlocking`, `arming`, `disarming`, `pending`, `buffering`, `starting`). `success=True`, spoken as in progress.
+  - `mismatch`: a known fault state (`jammed`, `problem`, `error`, `fault`). Also any non-target state that differs from a caller-supplied pre-call `previous_state`, or any non-target state with the opt-in `strict=True`. The result is `success=False` with a `StateVerificationError`, so executors report a failure.
+  - `unverified`: nothing observed, or a non-target state that may still be the pre-call state of a device that reports late (Zigbee, cloud). `success=True`, but the agent speaks hedged wording ("I sent the command to X, but it has not confirmed the new state yet.") and marks the action `cacheable=False`. The agent collects the outcomes per executor call, so this works without executor changes. Actions without an expected state (toggle, fan speed, volume) keep their intent wording.
+- **Invalid action objects:** when the agent LLM emits an action object that fails validation (e.g. `"entity": null`), the surrounding prose is never spoken (it may claim success). The agent returns a deterministic clarification with `voice_followup=True` and `metadata.parse_miss = "invalid_action"`.
+- **Satellite area:** keyword recall ranks entities in the satellite's area (`TaskContext.area_id`) first among equal scores, keeps them recallable in large domains, and does not flag a tie as ambiguous when exactly one tied candidate is in that area. Every agent prompt receives the satellite area name as context for "here" / "this room".
+- **Untrusted prompt data:** entity friendly names and states, last-entity names, the pending clarifying question and stored memory text are flattened, length-bounded and wrapped in `[UNTRUSTED_DATA_START]` / `[UNTRUSTED_DATA_END]` before they enter a system prompt.
+- **Secret redaction:** alarm/lock codes, PINs, passwords and tokens in action parameters are redacted (`app/security/redaction.py`) before they reach trace spans, the stored raw LLM response and logs. The service call still receives them verbatim.
+- **LLM timeouts:** domain agents call the LLM with `retry_on_timeout=False`, so a provider timeout returns `llm_error` at once instead of a retry that would outlive the dispatch budget after the HA action ran.
 
 For eligible plain timer start/cancel turns, the timer-agent may instead return a delegation directive, which the HA integration honors by calling Home Assistant's built-in conversation agent once.
 
@@ -118,15 +139,18 @@ avoids direct peer-agent imports from the wake briefing module.
 A delivery turn ("send Anna the message: I am running late") is
 classified as two lines: a content-producing agent first, `send-agent`
 second. The orchestrator runs them in sequence; a `send-agent`-only
-classification is repaired or rejected by the classifier:
+classification is repaired or rejected by the classifier. When several
+content agents are classified, every content leg runs (concurrently) and
+their replies are joined in classification order into one message body:
 
 - **Content contract:** the content agent runs in sequential-send mode.
   Its prompt states that the reply is used verbatim as the message body
   and delivery happens elsewhere (no refusal), that dictated message
   text is returned exactly, without meta commentary, and that it replies
   with only `[[NO_CONTENT]]` when it cannot produce content.
-- **Skip rule:** an empty content reply (`parse_error`), or a content
-  error, partial failure, or reply containing the sentinel
+- **Skip rule:** an empty content reply from any leg (`parse_error`),
+  or a content error, partial failure, or reply containing the sentinel
+  in any leg
   (`content_unavailable`; case-insensitive, extra or missing brackets
   and markdown escapes such as `\[\[NO\_CONTENT\]\]` tolerated, the
   underscore required), ends the turn with a fallback speech;
@@ -152,13 +176,51 @@ classification is repaired or rejected by the classifier:
   The "no matching send device" speech does not repeat the target text;
   the `app.agents.send` logger records it at info level.
 
-Multi-step intents ("close the blinds and tell me how warm it got
-in the bedroom today") are sequenced by the orchestrator: each step
-is dispatched as its own A2A task against the chosen
-domain agent, with subsequent steps receiving the previous step's
-result as context. Per-action domain filtering in the executors
-ensures, for example, that a `camera_turn_on` step
-cannot land on a same-named `lock` or `switch` entity.
+Multi-intent turns ("close the blinds and tell me how warm it got
+in the bedroom today") are dispatched in parallel, one A2A task per
+classified agent, and the replies are merged by the mediation LLM.
+At most 5 intents are dispatched per turn (`MAX_PARALLEL_INTENTS` in
+`pipeline_strategies.py`, highest confidence first); intents over the
+cap are not executed and the merged reply tells the user so. Per-action
+domain filtering in the executors ensures, for example, that a
+`camera_turn_on` step cannot land on a same-named `lock` or `switch`
+entity.
+
+A dismissal in the same utterance as actions ("turn on the light, no,
+forget it") is treated as a retraction: the classifier prompt asks for
+a lone `cancel-interaction` line, and the sanitizer drops every other
+intent when `cancel-interaction` appears next to them, so nothing is
+executed.
+
+### Dispatch Failures and Timeouts
+
+Every agent dispatch has a per-agent time budget (`a2a.default_timeout`,
+agent `timeout_sec`, capped by `a2a.max_dispatch_timeout`). Streaming
+dispatches enforce it on the reads of the agent stream, never across a
+frame handed to the client.
+
+- **Fallback:** a dispatch that times out, raises, or (streaming) ends
+  with an error frame before any text is re-sent once to `general-agent`
+  as a non-streaming task; if that fails too, the turn speaks a canned
+  line.
+- **Double-execution guard:** the shared executor primitive
+  (`call_service_with_verification`) flags a per-dispatch marker
+  (`app/agents/ha_action_marker.py`) right before the HA service call.
+  When the marker is set, a failed dispatch is NOT re-sent to the
+  fallback agent; the turn answers that the command was sent but could
+  not be confirmed. Executors that call `ha_client.call_service`
+  directly (calendar, lists, send, timer) do not set the marker.
+- **Streaming timeout:** a timed-out stream is finalized like any other
+  turn (turn stored, trace written, served routing-cache entry
+  invalidated). When agent tokens were already relayed, the partial
+  answer stands and nothing is appended. When only a canned line goes
+  out, a clarifying question popped by the turn is re-armed.
+- **Language:** canned error, timeout and status lines (dispatch
+  failures, all agents failed, classification errors) are English in
+  code and rendered in the turn language by the mediation LLM
+  (`prompts/localize.txt`, bounded call); English is the fallback when
+  that call fails. Error turns go through personality mediation like
+  any other turn.
 
 ### Filler / In-Stream Preamble
 
@@ -188,11 +250,19 @@ Answer-leg correlation in the container is keyed strictly by
 `conversation_id`: the classify stage injects the stored history plus a
 previous-agent hint and condenses the short answer against the pending
 question. The container also records the pending question itself
-(in-memory, 300 s TTL, single-shot) when `voice_followup` is effective:
+(in-memory, 300 s TTL, single-shot) with the agent that asked it, for
+single- and multi-agent turns, when `voice_followup` is effective:
 the answering turn bypasses the action-cache replay and the routing
 cache, classification gets a follow-up merge hint so the condensed task
 is self-contained, and a tied candidate block inverts its ambiguity
-annotation to choose-and-act instead of re-asking. On every response path the integration places the HA-side
+annotation to choose-and-act instead of re-asking. The answer is pinned
+to the asking agent: the classification LLM (same single call) prefixes
+its line with `[ANSWER]` when the message answers the question, and the
+orchestrator then dispatches to the asking agent with
+`context.pending_question` and `context.is_followup` set. Without the
+marker the turn is classified normally; when it goes to another agent,
+the stale follow-up context is dropped. Comma-joined multi-agent askers,
+`send-agent` and pseudo agents are never pinned. On every response path the integration places the HA-side
 `conversation_id` (`user_input.conversation_id`) into the
 `ConversationResult`; the container's own `conversation_id` is a
 container-internal correlation key only and is never forwarded to HA
@@ -311,17 +381,19 @@ SQLite. The routing cache additionally has a semantic similarity tier
 exact-hash miss); the action cache is exact-hash only:
 
 - **Routing Cache** -- Caches the mapping from user intent to target agent. A hit (exact SHA-256 hash match, or semantic match above `cache.routing.semantic_threshold` with fail-closed validation) skips LLM-based intent classification entirely. Max entries: 50,000 with LRU eviction. Entity resolution is NOT cached: the routed agent recalls its own entities via keyword matching (see Entity Matching).
-  - **Hygiene**: turns that resolved no entity (failed action or a clarifying-question ending) are never stored, and a served entry is invalidated when the cached agent's turn fails, so a poisoned phrasing re-classifies via LLM on the next turn. Entries below the current schema version are treated as a miss on read.
+  - **Hygiene**: turns that resolved no entity (failed action or a clarifying-question ending) are never stored, and a served entry is invalidated when the cached agent's turn fails, so a poisoned phrasing re-classifies via LLM on the next turn. A failed semantic hit never deletes the borrowed neighbour entry (it may route its own wording correctly); the neighbour is suppressed in memory for that exact query text instead. Entries below the current schema version are treated as a miss on read.
+  - **Embedding model**: each routing entry records the `<provider>:<model>` that produced its vector. A semantic candidate whose vector came from a different model (even at the same dimension) is skipped and its vector dropped; the entry is re-embedded on its next exact hit.
 - **Action Cache** -- Caches full agent responses including executor-confirmed HA actions.
-  - **Hit** (exact hash match): Rechecks every referenced entity's current visibility before replaying the stored HA command, then the rewrite agent rephrases the raw agent response in the turn language with the personality applied. If the rewrite fails or returns no text, the stored mediated response is returned; the `rewrite` span is marked failed (`success: false`, `fallback: cached_response`) and rewrite analytics count a failure.
+  - **Hit** (exact hash match): Requires the owning agent to be registered and every referenced entity to exist in the entity index and be visible before replaying the stored HA command, then the rewrite agent rephrases the raw agent response in the turn language with the personality applied. If the rewrite fails or returns no text, the stored fallback response is returned; the `rewrite` span is marked failed (`success: false`, `fallback: cached_response`) and rewrite analytics count a failure. The stored fallback never carries per-turn additions: it is the base agent speech unless the caching turn asserted its mediated speech had no calendar reminder or closing question. The replayed entity is recorded as an anaphora hint, as on a live turn.
+  - **Not stored**: context-dependent turns -- a follow-up answer to a clarifying question, or a turn whose executed entity was offered as an anaphora hint (`last_entities`) -- store neither an action nor a routing row.
   - **Miss**: Continues to routing-cache lookup or the live pipeline; a provenance rejection always forces the full live path.
   - Max entries: 50,000 with LRU eviction.
   - No-op executions (entity already in the target state) are never stored: their response text is state-dependent and would be wrong on replay.
   - Executors mark state-dependent results `cacheable: false` and they are never stored: `toggle`, relative changes resolved against the current state (`temperature_delta`, `volume_delta`), coded security actions, unconfirmed scene activations, light results whose observed state contradicts the request, vacuum `locate`/`send_command`, and music `search`.
 
-Action rows that depended on an ingress area or device record that provenance and replay only for the matching origin. A provenance rejection forces the full live path, including classification and entity resolution. Device-agent rows (light, climate, cover, media, music, scene, security, vacuum) retain the actual domain, service, entity, and validated service payload the executor issued (`executed_command`; security codes are never included); conditional, read-only, no-op, malformed, and legacy rows are not replayed. Legacy rows without current command or origin provenance are discarded individually and relearned from a live turn.
+Action rows that depended on an ingress area or device record that provenance and replay only for the matching origin; rows learned without origin context replay only on turns without an area or device. A provenance rejection forces the full live path, including classification and entity resolution. Device-agent rows (light, climate, cover, media, music, scene, security, vacuum) retain the actual domain, service, entity, and validated service payload the executor issued (`executed_command`; security codes are never included); conditional, read-only, no-op, malformed, and legacy rows are not replayed. Legacy rows without current command or origin provenance are discarded individually and relearned from a live turn.
 
-Routing entries are invalidated when the served agent turn fails. Action rows are invalidated when their stored command or provenance is malformed, and entries are also invalidated when relevant entity fields change (name, `area_id`, `device_id`, hidden, disabled, aliases, labels). Visibility is rechecked on every action-cache replay.
+Routing entries are invalidated when the served agent turn fails. Action rows are invalidated when their stored command or provenance is malformed, and entries are also invalidated when relevant entity fields change (name, `area_id`, `device_id`, hidden, disabled, aliases, labels). Visibility is rechecked on every action-cache replay. Single-row invalidation is per key: it aborts only an in-flight store of that row. The cache validator works on a snapshot and writes back with compare-and-swap on `created_at`, so it never resurrects a deleted row or reverts a re-stored one; hit-count flushes merge only `hit_count`/`last_accessed`.
 
 ## Session Memory
 
@@ -342,9 +414,24 @@ Entity selection is agent-side, not orchestrator-side. The orchestrator only rou
 
 - **Keyword recall** -- each actionable agent filters its visible entities by normalized token overlap against the task description (plus the last user turn for follow-ups), with compound containment (a German compound like "Innenhofüberdachung" hits the tokens of "Innenhof Überdachung"). Hits are scored per field class `(name, identity, area)` so name/alias evidence outranks area-token evidence; the name class gets a +1 exact-name bonus when every token of the friendly name (or an alias) appears verbatim in the query, so an explicitly named entity outranks partial name overlaps. A tied top-2 score tuple marks the recall ambiguous and annotates the candidate block to ask instead of guess. Small domains inject the whole visible list; larger domains inject the top 12.
 - **Closed contract** -- the candidate block lists `entity_id -- friendly_name (state)`; the LLM must emit an `entity_id` verbatim from that list. The executor validates the picked id against the recalled set fail-closed (no matcher re-run); an id outside the set is rejected and the agent asks a clarifying question. When the LLM emits only a free-form entity name, the executor falls back to deterministic-first resolution.
-- **Deterministic-first fallback** -- exact entity_id, exact friendly_name (space-insensitive, so compounds match spaced names), exact alias, then the hybrid matcher: alias fast path, token-based candidate preselection, and span-scored string signals (Levenshtein, Jaro-Winkler, phonetic) with an area bonus and a coverage floor rule. Embedding-based entity recall was removed; embeddings remain in use for the routing cache semantic tier and session memory.
+- **Deterministic-first fallback** -- exact entity_id (within the executor's allowed domains), exact friendly_name (space-insensitive, so compounds match spaced names), exact alias (HA per-entity aliases plus user/DB aliases from the `aliases` table, restricted to the visible, allowed-domain snapshot), optional strip-device-noun and area stages (the area stage matches the area id slug and the area name), word-boundary containment, then the hybrid matcher: alias fast path, token-based candidate preselection, and span-scored string signals (Levenshtein, Jaro-Winkler, phonetic) with an area bonus and a coverage floor rule. Embedding-based entity recall was removed; embeddings remain in use for the routing cache semantic tier and session memory.
+- **Shared folding** -- every stage folds text the same way (`app/entity/tokens.py` `fold_text`): lowercase, diacritics stripped, `ß` -> `ss`, and the German digraphs `ae`/`oe`/`ue` collapsed, so "Kueche", "Küche" and "Kuche" are equal.
+- **Ambiguity is final** -- when any deterministic stage finds several equally good candidates, the resolver asks (`*_ambiguous` resolution path) and the hybrid matcher does not run. In the hybrid stage, candidates within 0.02 of the top score are a near-tie (`hybrid_matcher_ambiguous`) unless exactly one of them is in the speaker's area or of the caller's preferred domain. The area rerank (a speaker-area candidate within 0.05 of the top moves first) reads candidate areas from the entity index.
 
-By default, a weighted matcher score above 0.60 returns a confident match. Below the configured threshold, resolution fails closed and the agent asks which device the user means.
+By default, a weighted matcher score above 0.60 returns a confident match. Below the configured threshold, resolution fails closed and the agent asks which device the user means. A user/DB alias hit on an indexed entity is floored like a verbatim name (0.65).
+
+### Entity Index Sync
+
+- WebSocket `state_changed` and registry events update the index incrementally; a full sync runs at startup, every `entity_sync.interval_minutes`, and after every WebSocket reconnect (events emitted while the socket was down are lost).
+- A full sync replaces the index with an HA snapshot but keeps entities that were updated or removed incrementally after the snapshot was taken (mutation generation read before fetching states), so it never resurrects removed entities or reverts newer names.
+- Area, alias, device-name and entity-area registry lookups are fetched via `/api/template` and cached for 5 minutes. A failed lookup is not cached; the last good lookup stays in use. Every registry event (entity, device, area) clears this cache before refreshing the affected entities.
+- Until the entity-area lookup has succeeded once, area assignments are unknown: visibility fails closed for entities without an area under `area_exclude` rules.
+
+### Home Assistant Client
+
+- **WebSocket liveness** -- aiohttp's heartbeat (PING every 15 s, connection closed when no PONG arrives) detects dead connections; the receive loop has no idle timeout, so a quiet home with no events keeps its connection.
+- **Service-call fallback** -- a REST service call is re-sent over the WebSocket only when the request provably never reached HA (connect error, connect or pool timeout). Any HTTP status (including 5xx), read timeout or body decode error propagates, because HA may already have executed the call.
+- **Recorder history** -- history is fetched without attributes; the speech summary takes the unit from the entity's current state.
 
 ## Data Storage
 

@@ -26,10 +26,12 @@ Return exactly one JSON action block, then a brief confirmation text.
 
 Action definitions:
 - list_events: parameters {start_date_time, end_date_time, calendar?}
-- query_event: parameters {summary, date?, calendar?}
-- create_event: parameters {summary, start_date_time, end_date_time, description?, location?, rrule?, calendar?}
-- delete_event: parameters {summary, start_date_time, calendar?} or {uid}
-- update_event: parameters {summary, start_date_time, end_date_time?, description?, location?, calendar?} (only include fields that changed)
+- query_event: parameters {summary, calendar?}
+- create_event: parameters {summary, start_date_time, end_date_time?, description?, location?, rrule?, calendar?} for a timed event (end defaults to one hour after start), or {summary, start_date, end_date?, calendar?} with date-only values (YYYY-MM-DD) for an all-day event (end_date is exclusive and defaults to the next day).
+- delete_event: parameters {summary, start_date_time?, calendar?}
+- update_event: parameters {summary, start_date_time?, new_summary?, new_start_date_time?, new_end_date_time?, new_description?, new_location?, calendar?}. summary and start_date_time identify the existing event with its CURRENT values; the new_* fields carry only what changes.
+
+Times: use "YYYY-MM-DD HH:MM:SS" for times the user stated. When the user names a day but no time (for example to find an event to delete or change), pass the date only ("YYYY-MM-DD"); never invent a time.
 
 If the user does not specify a calendar, omit the "entity" field entirely. Do not invent a calendar name.
 
@@ -40,8 +42,14 @@ User: "What's on my calendar tomorrow?"
 User: "Add a dentist appointment on Friday at 2 PM for one hour"
 -> {"action": "create_event", "parameters": {"summary": "Dentist appointment", "start_date_time": "2024-06-21 14:00:00", "end_date_time": "2024-06-21 15:00:00"}}
 
+User: "Put Anna's birthday on Saturday in the calendar"
+-> {"action": "create_event", "parameters": {"summary": "Anna's birthday", "start_date": "2024-06-22"}}
+
 User: "Delete the team meeting on Monday"
--> {"action": "delete_event", "parameters": {"summary": "team meeting", "start_date_time": "2024-06-24 09:00:00"}}
+-> {"action": "delete_event", "parameters": {"summary": "team meeting", "start_date_time": "2024-06-24"}}
+
+User: "Move the team meeting on Monday to 11 AM"
+-> {"action": "update_event", "parameters": {"summary": "team meeting", "start_date_time": "2024-06-24", "new_start_date_time": "2024-06-24 11:00:00"}}
 
 User: "What's my next doctor appointment?"
 -> {"action": "query_event", "parameters": {"summary": "doctor"}}

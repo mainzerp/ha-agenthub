@@ -51,7 +51,7 @@ async def get_cache_stats(request: Request):
     if not cache_manager:
         return {"routing": {}, "action": {}, "status": "not_initialized"}
     try:
-        stats = cache_manager.get_stats()
+        stats = await cache_manager.get_stats_async()
         return stats
     except Exception:
         logger.warning("Failed to get cache stats", exc_info=True)

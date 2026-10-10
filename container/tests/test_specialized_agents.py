@@ -1237,7 +1237,7 @@ class TestTimerExecutor:
         assert "kitchen timer" in result["speech"]
 
     async def test_snooze_timer(self):
-        """snooze_timer cancels existing then schedules a snooze on the scheduler."""
+        """snooze_timer replaces only a same-named countdown and schedules the snooze as a plain timer."""
         from unittest.mock import patch as _patch
 
         scheduler = MagicMock()
@@ -1257,8 +1257,10 @@ class TestTimerExecutor:
             )
         assert result["success"]
         scheduler.cancel.assert_awaited_once()
+        assert scheduler.cancel.await_args.kwargs["kinds"] == {"plain", "notification"}
         scheduler.schedule.assert_awaited_once()
-        assert scheduler.schedule.await_args.kwargs["kind"] == "snooze"
+        assert scheduler.schedule.await_args.kwargs["kind"] == "plain"
+        assert scheduler.schedule.await_args.kwargs["duration_seconds"] == 300
 
     async def test_set_datetime_schedules_internal_alarm(self):
         """set_datetime creates an internal scheduler-backed alarm."""

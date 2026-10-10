@@ -1,9 +1,7 @@
 import asyncio
-import difflib
 import inspect
 import json
 import logging
-import re
 import time
 from collections.abc import AsyncGenerator, Callable
 from typing import Any
@@ -15,6 +13,7 @@ from app.analytics.tracer import _optional_span
 from app.db.repository import AgentConfigRepository
 from app.llm.providers import resolve_provider_params
 from app.models.agent import AgentConfig
+from app.security.redaction import redact_sensitive_values
 
 try:
     from litellm.exceptions import Timeout as LiteLLMTimeout
@@ -65,18 +64,93 @@ async def _close_stream_response(response: Any) -> None:
 
 
 def _sanitize_tool_name(name: str, valid_names: set[str]) -> str | None:
-    """Return a valid tool name, or None if the name cannot be repaired."""
+    """Return the tool name to execute, or None when it is not an exact match.
+
+    Only exact names are executed. The single repair is stripping a leaked
+    chat-template control-token suffix (``web_search<|channel|>commentary``)
+    and surrounding whitespace -- neither can be part of a tool name, so the
+    remainder is the name the model emitted. Fuzzy or prefix matches are
+    NOT repaired: remapping an unknown name to a *different* valid tool would
+    execute something the model never asked for. Unknown names go down the
+    invalid-name path, which returns an error string to the LLM.
+    """
+    if not name:
+        return None
     if name in valid_names:
         return name
-    match = re.match(r"^([a-zA-Z0-9_-]+)", name)
-    if match:
-        prefix = match.group(1)
-        if prefix in valid_names:
-            return prefix
-    close = difflib.get_close_matches(name, valid_names, n=1, cutoff=0.5)
-    if close:
-        return close[0]
+    candidate = name.split("<|", 1)[0].strip()
+    if candidate and candidate in valid_names:
+        return candidate
     return None
+
+
+# Minimum remaining budget (seconds) required to start another LLM attempt
+# (retry or tool round) when the caller passed a ``deadline``. Below this,
+# the attempt would almost certainly be cut off by the dispatch timeout.
+_MIN_ATTEMPT_BUDGET_SEC = 1.0
+
+# Backoff before the single retry after a provider timeout.
+_LLM_TIMEOUT_RETRY_DELAY_SEC = 2.0
+
+
+class LLMDeadlineExceededError(LLMError):
+    """Raised when the caller-supplied deadline leaves no budget for an LLM call."""
+
+
+def _remaining_budget(deadline: float | None) -> float | None:
+    """Seconds left until ``deadline`` (``time.monotonic()`` based); None = unbounded."""
+    if deadline is None:
+        return None
+    return deadline - time.monotonic()
+
+
+def _bounded_timeout(config_timeout: float, deadline: float | None) -> float:
+    """Clamp a per-call provider timeout to the remaining deadline budget."""
+    remaining = _remaining_budget(deadline)
+    if remaining is None:
+        return config_timeout
+    if remaining <= 0:
+        raise LLMDeadlineExceededError("LLM deadline exceeded before the provider call")
+    return min(float(config_timeout), remaining)
+
+
+def _has_budget_for_attempt(deadline: float | None, delay: float = 0.0) -> bool:
+    """True when another attempt (after ``delay``) still fits the deadline."""
+    remaining = _remaining_budget(deadline)
+    return remaining is None or remaining - delay >= _MIN_ATTEMPT_BUDGET_SEC
+
+
+def _resolve_max_tool_rounds(max_tool_rounds: int | None, config: AgentConfig) -> int:
+    """Explicit argument wins; otherwise the agent's ``max_iterations`` config (min 1)."""
+    if max_tool_rounds is not None:
+        return max(1, int(max_tool_rounds))
+    try:
+        return max(1, int(config.max_iterations))
+    except (TypeError, ValueError):
+        return 3
+
+
+# Tool result fed back to the LLM when a tool call outlives the deadline.
+_TOOL_TIMEOUT_RESULT = "Tool error: the tool call did not finish within the remaining time budget."
+
+
+async def _execute_tool_with_deadline(tool_executor: Callable, fn_name: str, fn_args: dict, deadline: float | None):
+    """Run one tool call, bounded by the remaining deadline budget.
+
+    ``_MIN_ATTEMPT_BUDGET_SEC`` of the budget is reserved for the final
+    answer round, so a hanging tool cannot consume the whole deadline.
+    """
+    remaining = _remaining_budget(deadline)
+    if remaining is None:
+        return await tool_executor(fn_name, fn_args)
+    remaining -= _MIN_ATTEMPT_BUDGET_SEC
+    if remaining <= 0:
+        return _TOOL_TIMEOUT_RESULT
+    try:
+        return await asyncio.wait_for(tool_executor(fn_name, fn_args), timeout=remaining)
+    except TimeoutError:
+        logger.warning("Tool '%s' exceeded the remaining deadline budget (%.1fs)", fn_name, remaining)
+        return _TOOL_TIMEOUT_RESULT
 
 
 async def _record_nonstream_call_metrics(
@@ -116,7 +190,21 @@ async def complete(
     messages: list[dict],
     **overrides: Any,
 ) -> str:
+    """Non-streaming LLM completion with bounded retries.
+
+    Optional overrides besides model/max_tokens/temperature/reasoning_effort:
+        span_collector: trace collector for ``llm_provider_call`` spans.
+        deadline: absolute ``time.monotonic()`` deadline for the whole call,
+            retries included. Every provider timeout is clamped to the
+            remaining budget, and a retry only starts when at least
+            ``_MIN_ATTEMPT_BUDGET_SEC`` remain after its backoff.
+        retry_on_timeout: when False, a provider timeout is raised at once
+            instead of being retried (domain agents: the HA action still
+            has to run inside the dispatch budget).
+    """
     span_collector = overrides.pop("span_collector", None)
+    deadline: float | None = overrides.pop("deadline", None)
+    retry_on_timeout = bool(overrides.pop("retry_on_timeout", True))
     row = await AgentConfigRepository.get(agent_id)
     if row is None:
         raise ValueError(f"No config found for agent: {agent_id}")
@@ -133,13 +221,14 @@ async def complete(
 
     logger.debug("LLM call: agent=%s model=%s tokens=%s temp=%s", agent_id, model, max_tokens, temperature)
 
+    call_kwargs: dict[str, Any] = {}
     try:
         call_kwargs = dict(
             model=model,
             messages=messages,
             max_tokens=max_tokens,
             temperature=temperature,
-            timeout=config.timeout,
+            timeout=_bounded_timeout(config.timeout, deadline),
             **provider_params,
         )
         if reasoning_effort:
@@ -172,6 +261,18 @@ async def complete(
         # reasoning models whose thinking tokens exhaust max_tokens), the
         # retry runs with a doubled token budget; same-budget retries would
         # fail again deterministically.
+        if not content and not _has_budget_for_attempt(deadline, _LLM_EMPTY_RESPONSE_RETRY_DELAY_SEC):
+            finish_reason = response.choices[0].finish_reason if response.choices else "unknown"
+            logger.warning(
+                "Empty LLM response for agent=%s model=%s; no deadline budget left for a retry",
+                agent_id,
+                model,
+            )
+            raise ValueError(
+                f"Empty LLM response for agent={agent_id} without retry budget "
+                f"(model={model} max_tokens={max_tokens} finish_reason={finish_reason})"
+            )
+
         if not content:
             finish_reason_first = response.choices[0].finish_reason if response.choices else "unknown"
             retry_max_tokens = max_tokens
@@ -196,6 +297,7 @@ async def complete(
                     finish_reason_first,
                 )
             await asyncio.sleep(_LLM_EMPTY_RESPONSE_RETRY_DELAY_SEC)
+            call_kwargs["timeout"] = _bounded_timeout(config.timeout, deadline)
             async with _optional_span(span_collector, "llm_provider_call", agent_id=agent_id) as pspan:
                 t0 = time.perf_counter()
                 response = await litellm.acompletion(**call_kwargs)
@@ -245,8 +347,19 @@ async def complete(
         raise
     except Exception as e:
         if LiteLLMTimeout is not None and isinstance(e, LiteLLMTimeout):
+            if not retry_on_timeout:
+                logger.warning("LLM timeout for agent=%s model=%s (timeout retry disabled)", agent_id, model)
+                raise
+            if not _has_budget_for_attempt(deadline, _LLM_TIMEOUT_RETRY_DELAY_SEC):
+                logger.warning(
+                    "LLM timeout for agent=%s model=%s; no deadline budget left for a retry",
+                    agent_id,
+                    model,
+                )
+                raise
             logger.warning("LLM timeout for agent=%s model=%s, retrying once after 2s", agent_id, model)
-            await asyncio.sleep(2)
+            await asyncio.sleep(_LLM_TIMEOUT_RETRY_DELAY_SEC)
+            call_kwargs["timeout"] = _bounded_timeout(config.timeout, deadline)
             try:
                 async with _optional_span(span_collector, "llm_provider_call", agent_id=agent_id) as pspan:
                     t0 = time.perf_counter()
@@ -420,7 +533,7 @@ async def complete_with_tools(
     messages: list[dict],
     tools: list[dict],
     tool_executor: Callable,
-    max_tool_rounds: int = 5,
+    max_tool_rounds: int | None = None,
     **overrides: Any,
 ) -> str:
     """LLM completion with tool/function calling loop.
@@ -433,17 +546,24 @@ async def complete_with_tools(
             When the model returns multiple ``tool_calls`` in one assistant message,
             they are executed **in parallel** (``asyncio.gather``); tool messages are
             still appended in the same order as ``tool_calls`` for the next LLM turn.
-        max_tool_rounds: Max LLM<->tool round-trips (default 5).
-        **overrides: Model/temperature/max_tokens overrides.
+        max_tool_rounds: Max LLM<->tool round-trips; ``None`` uses the agent's
+            ``max_iterations`` config.
+        **overrides: Model/temperature/max_tokens overrides, plus
+            ``deadline`` (absolute ``time.monotonic()``): a whole-loop budget.
+            Provider timeouts and tool calls are clamped to the remaining
+            budget; when less than ``_MIN_ATTEMPT_BUDGET_SEC`` remains before
+            a round, the loop stops and forces the final answer.
 
     Returns:
         Final text response from the LLM.
     """
     span_collector = overrides.pop("span_collector", None)
+    deadline: float | None = overrides.pop("deadline", None)
     row = await AgentConfigRepository.get(agent_id)
     if row is None:
         raise ValueError(f"No config found for agent: {agent_id}")
     config = AgentConfig(**row)
+    max_tool_rounds = _resolve_max_tool_rounds(max_tool_rounds, config)
 
     model = overrides.get("model") or config.model
     if model is None:
@@ -457,7 +577,16 @@ async def complete_with_tools(
     # Make a mutable copy of messages for the tool-call loop
     msgs = list(messages)
 
+    rounds_run = 0
     for _round in range(max_tool_rounds):
+        if _round > 0 and not _has_budget_for_attempt(deadline):
+            logger.warning(
+                "Tool-loop deadline reached after %d round(s) for agent=%s, forcing final response",
+                _round,
+                agent_id,
+            )
+            break
+        rounds_run = _round + 1
         logger.debug(
             "LLM tool-call round %d: agent=%s model=%s",
             _round + 1,
@@ -471,7 +600,7 @@ async def complete_with_tools(
             tool_choice="auto",
             max_tokens=max_tokens,
             temperature=temperature,
-            timeout=config.timeout,
+            timeout=_bounded_timeout(config.timeout, deadline),
             **provider_params,
         )
         if reasoning_effort:
@@ -539,8 +668,9 @@ async def complete_with_tools(
                     agent_id,
                     ", ".join(sorted(valid_names)) if valid_names else "none",
                 )
-                fallback = difflib.get_close_matches(original_name, valid_names, n=1, cutoff=0.1)
-                fallback_name = fallback[0] if fallback else (next(iter(valid_names)) if valid_names else None)
+                # History placeholder only (the call is NOT executed): the
+                # tool message carries the invalid-name error for the LLM.
+                fallback_name = sorted(valid_names)[0] if valid_names else None
                 if fallback_name is not None:
                     tc.function.name = fallback_name
                     invalid_map[tc.id] = original_name
@@ -593,10 +723,10 @@ async def complete_with_tools(
                     fn_args = {}
                     logger.warning("Failed to parse tool arguments for '%s'", fn_name)
 
-                logger.debug("Executing tool '%s' with args: %s", fn_name, fn_args)
+                logger.debug("Executing tool '%s' with args: %s", fn_name, redact_sensitive_values(fn_args))
 
                 try:
-                    result_str = await tool_executor(fn_name, fn_args)
+                    result_str = await _execute_tool_with_deadline(tool_executor, fn_name, fn_args, deadline)
                 except asyncio.CancelledError:
                     raise
                 except Exception as e:
@@ -618,9 +748,10 @@ async def complete_with_tools(
                 }
             )
 
-    # Max rounds exhausted -- force a final text response without tools
+    # Max rounds exhausted (or deadline reached) -- force a final text response without tools
     logger.warning(
-        "Max tool rounds (%d) exhausted for agent=%s, forcing final response",
+        "Tool loop ended after %d round(s) (max %d) for agent=%s, forcing final response",
+        rounds_run,
         max_tool_rounds,
         agent_id,
     )
@@ -629,7 +760,7 @@ async def complete_with_tools(
         messages=msgs,
         max_tokens=max_tokens,
         temperature=temperature,
-        timeout=config.timeout,
+        timeout=_bounded_timeout(config.timeout, deadline),
         **provider_params,
     )
     if reasoning_effort:
@@ -644,7 +775,7 @@ async def complete_with_tools(
             model=model,
             t0=t0,
             response=response,
-            extra_metadata={"round": max_tool_rounds + 1, "forced_final": True},
+            extra_metadata={"round": rounds_run + 1, "forced_final": True},
         )
     if not response.choices:
         raise LLMError("Empty choices from provider")
@@ -664,7 +795,7 @@ async def complete_with_tools_stream(
     messages: list[dict],
     tools: list[dict],
     tool_executor: Callable,
-    max_tool_rounds: int = 5,
+    max_tool_rounds: int | None = None,
     **overrides: Any,
 ) -> AsyncGenerator[str, None]:
     """Streaming variant of :func:`complete_with_tools`.
@@ -686,10 +817,12 @@ async def complete_with_tools_stream(
         to reconstruct the final response.
     """
     span_collector = overrides.pop("span_collector", None)
+    deadline: float | None = overrides.pop("deadline", None)
     row = await AgentConfigRepository.get(agent_id)
     if row is None:
         raise ValueError(f"No config found for agent: {agent_id}")
     config = AgentConfig(**row)
+    max_tool_rounds = _resolve_max_tool_rounds(max_tool_rounds, config)
 
     model = overrides.get("model") or config.model
     if model is None:
@@ -721,7 +854,7 @@ async def complete_with_tools_stream(
             messages=round_msgs,
             max_tokens=max_tokens,
             temperature=temperature,
-            timeout=config.timeout,
+            timeout=_bounded_timeout(config.timeout, deadline),
             stream=True,
             **provider_params,
         )
@@ -818,7 +951,16 @@ async def complete_with_tools_stream(
             for idx, slot in sorted(tool_calls_acc.items())
         ]
 
+    rounds_run = 0
     for _round in range(max_tool_rounds):
+        if _round > 0 and not _has_budget_for_attempt(deadline):
+            logger.warning(
+                "Tool-loop deadline reached after %d round(s) for agent=%s, forcing final response",
+                _round,
+                agent_id,
+            )
+            break
+        rounds_run = _round + 1
         logger.debug(
             "LLM tool-call stream round %d: agent=%s model=%s",
             _round + 1,
@@ -859,8 +1001,9 @@ async def complete_with_tools_stream(
                     agent_id,
                     ", ".join(sorted(valid_names)) if valid_names else "none",
                 )
-                fallback = difflib.get_close_matches(original_name, valid_names, n=1, cutoff=0.1)
-                fallback_name = fallback[0] if fallback else (next(iter(valid_names)) if valid_names else None)
+                # History placeholder only (the call is NOT executed): the
+                # tool message carries the invalid-name error for the LLM.
+                fallback_name = sorted(valid_names)[0] if valid_names else None
                 if fallback_name is not None:
                     tc["function"]["name"] = fallback_name
                     invalid_map[tc["id"]] = original_name
@@ -900,10 +1043,10 @@ async def complete_with_tools_stream(
                     fn_args = {}
                     logger.warning("Failed to parse tool arguments for '%s'", fn_name)
 
-                logger.debug("Executing tool '%s' with args: %s", fn_name, fn_args)
+                logger.debug("Executing tool '%s' with args: %s", fn_name, redact_sensitive_values(fn_args))
 
                 try:
-                    result_str = await tool_executor(fn_name, fn_args)
+                    result_str = await _execute_tool_with_deadline(tool_executor, fn_name, fn_args, deadline)
                 except asyncio.CancelledError:
                     raise
                 except Exception as e:
@@ -925,12 +1068,13 @@ async def complete_with_tools_stream(
                 }
             )
 
-    # Max rounds exhausted -- force a final text response without tools (streamed).
+    # Max rounds exhausted (or deadline reached) -- force a final text response without tools (streamed).
     logger.warning(
-        "Max tool rounds (%d) exhausted for agent=%s, forcing final response",
+        "Tool loop ended after %d round(s) (max %d) for agent=%s, forcing final response",
+        rounds_run,
         max_tool_rounds,
         agent_id,
     )
     final_result: dict[str, Any] = {}
-    async for _token in _stream_round(msgs, max_tool_rounds + 1, with_tools=False, result=final_result):
+    async for _token in _stream_round(msgs, rounds_run + 1, with_tools=False, result=final_result):
         yield _token

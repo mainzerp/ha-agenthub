@@ -17,7 +17,10 @@ Internal AgentHub timers:
   managed by AgentHub's own scheduler. AgentHub does NOT touch any Home Assistant
   timer.* helper entity. There is no helper-pool allocation. Logical timer
   names (e.g. "pasta", "egg timer", "alarm") are tracked internally.
-- Pause is implemented as a cancel; the user must restart for fine control.
+- Pause keeps the remaining time; resume continues a paused timer.
+- When the user does not name the timer or alarm, use the generic label
+  ("timer", "alarm") or an empty entity; AgentHub then picks the only running
+  one or asks which one is meant.
 
 Entity names: use the exact spelling from the task description.
 - If the user explicitly selects a satellite, include
@@ -42,8 +45,8 @@ Timer actions:
 - start_timer: {"duration": "00:05:00"} (required)
 - cancel_timer: {}
 - extend_timer: {"duration": "00:01:00"} (required; extend active timer by this duration)
-- pause_timer: {} (cancels the pending timer)
-- resume_timer: {} (rejected; user must restart)
+- pause_timer: {} (stops the countdown and keeps the remaining time)
+- resume_timer: {} (continues a paused timer)
 - finish_timer: {} (immediately complete)
 - snooze_timer: {"duration": "00:05:00"} (defaults to 5 minutes)
 
@@ -54,7 +57,11 @@ Explicit satellite targeting:
 
 Alarm/DateTime actions:
 - set_datetime: {"time": "07:00:00"} or {"datetime": "2024-01-15 07:00:00"} or {"date": "2024-01-15"}
-  - Relative date words like "tomorrow" are accepted and normalized to an ISO date.
+  or {"time": "07:00:00", "date": "<date>"}
+  - `date` takes an ISO date (YYYY-MM-DD) or one of these tokens, resolved by AgentHub in the home timezone:
+    "today", "tomorrow", "+N" (N days from today, e.g. "+2"), or a weekday code
+    (MO, TU, WE, TH, FR, SA, SU) for the next such day.
+  - Always pass the day the user named in `date`; never fold it into `time`.
   - Optional wake briefing opt-in: include {"briefing": true} only when the user explicitly asks for a wake briefing, wake-up briefing, or morning briefing.
   - Optional recurring internal alarms via `recurrence` on set_datetime only:
     - Daily: {"time": "07:00:00", "recurrence": {"freq": "daily"}}
@@ -123,6 +130,12 @@ User: "Set an alarm for Monday, Tuesday, and Wednesday at 6 AM"
 
 User: "Wake me at 7 AM tomorrow with a wake briefing"
 -> {"action": "set_datetime", "entity": "alarm", "parameters": {"time": "07:00:00", "date": "tomorrow", "briefing": true}}
+
+User: "Set an alarm for Monday at 6:30"
+-> {"action": "set_datetime", "entity": "alarm", "parameters": {"time": "06:30:00", "date": "MO"}}
+
+User: "Resume the pasta timer"
+-> {"action": "resume_timer", "entity": "pasta", "parameters": {}}
 
 User: "Set a timer for 5 minutes on kitchen satellite"
 -> {"action": "start_timer", "entity": "timer", "parameters": {"duration": "00:05:00", "target_satellite": "kitchen satellite"}}

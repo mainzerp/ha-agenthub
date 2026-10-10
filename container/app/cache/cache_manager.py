@@ -5,7 +5,10 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import threading
 import time
+from collections import OrderedDict
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -13,12 +16,40 @@ from app.analytics.collector import track_cache_event_background, track_rewrite
 from app.analytics.tracer import _optional_span
 from app.cache.action_cache import _ACTION_CACHE_SCHEMA_VERSION, ActionCache
 from app.cache.embedding import get_embedding_engine
-from app.cache.routing_cache import RoutingCache
+from app.cache.routing_cache import RoutingCache, make_routing_entry_id
 from app.cache.sqlite_cache_store import COLLECTION_ACTION_CACHE, COLLECTION_ROUTING_CACHE, SqliteCacheStore
 from app.models.cache import ActionCacheEntry, CachedAction, RoutingCacheEntry
 from app.util.tasks import spawn
 
 logger = logging.getLogger(__name__)
+
+# Served-entry token prefix for semantic routing hits. A semantic hit serves a
+# NEIGHBOUR entry stored for different wording; when the turn it routed fails,
+# the neighbour itself is not proven wrong (it may route its own wording
+# correctly), so invalidating the token suppresses that neighbour for this
+# exact query instead of deleting it.
+SEMANTIC_ENTRY_TOKEN_PREFIX = "semantic:"
+_MAX_SEMANTIC_SUPPRESSIONS = 4096
+
+
+def make_semantic_entry_token(query_entry_id: str, neighbour_entry_id: str) -> str:
+    return f"{SEMANTIC_ENTRY_TOKEN_PREFIX}{query_entry_id}:{neighbour_entry_id}"
+
+
+def parse_semantic_entry_token(token: str) -> tuple[str, str] | None:
+    """Return ``(query_entry_id, neighbour_entry_id)`` for a semantic token, else None."""
+    if not token or not token.startswith(SEMANTIC_ENTRY_TOKEN_PREFIX):
+        return None
+    query_entry_id, sep, neighbour_entry_id = token[len(SEMANTIC_ENTRY_TOKEN_PREFIX) :].partition(":")
+    if not sep or not query_entry_id or not neighbour_entry_id:
+        return None
+    return query_entry_id, neighbour_entry_id
+
+
+def _engine_model_id(engine) -> str | None:
+    """The engine's ``model_id`` when it is a real string (test doubles may lack it)."""
+    model_id = getattr(engine, "model_id", None)
+    return model_id if isinstance(model_id, str) and model_id else None
 
 
 @dataclass
@@ -66,6 +97,9 @@ class ActionReplayRejected:
 @dataclass
 class RoutingSkipOutcome:
     kind: str
+    # Served-entry handle passed back to ``invalidate_routing`` when the
+    # routed turn fails. Equals the row id for exact hits; a semantic token
+    # (see ``make_semantic_entry_token``) for semantic hits.
     entry_id: str
     agent_id: str
     condensed_task: str
@@ -73,6 +107,8 @@ class RoutingSkipOutcome:
     language: str = "en"
     entity_ids: list[str] = field(default_factory=list)
     lookup_ms: float | None = None
+    # The routing row that produced the hit (the neighbour for semantic hits).
+    source_entry_id: str = ""
 
 
 class CacheManager:
@@ -89,6 +125,9 @@ class CacheManager:
         self._rewrite_agent = rewrite_agent
         self._rewrite_enabled: bool = False
         self._backfill_inflight: set[str] = set()
+        # query entry id -> neighbour routing entry ids that misrouted it.
+        self._semantic_suppressions: OrderedDict[str, set[str]] = OrderedDict()
+        self._semantic_suppressions_lock = threading.Lock()
 
     @property
     def response_cache(self) -> ActionCache:
@@ -168,8 +207,13 @@ class CacheManager:
         check_visibility,
         execute_cached_action,
         span_collector=None,
+        check_agent: Callable[[str], Awaitable[bool]] | None = None,
     ) -> ActionReplayOutcome | ActionReplayRejected | None:
-        """Attempt to replay a cached action after current-turn validation."""
+        """Attempt to replay a cached action after current-turn validation.
+
+        ``check_agent`` (optional) confirms the cached owning agent is still
+        registered/enabled -- the same gate the routing tier applies.
+        """
         if not self._action_cache._enabled:
             return None
         try:
@@ -190,9 +234,12 @@ class CacheManager:
                 return ActionReplayRejected(entry_id=entry_id, reason="invalid_command")
             return None
 
-        # Defensive: never replay context-dependent (conditional) entries.
-        if getattr(entry, "context_dependent", False):
-            return None
+        # Context-dependent turns (follow-up answers, anaphora resolved via
+        # last_entities) are never stored; a row that still carries the flag
+        # (e.g. imported) is removed and forces a live turn.
+        if entry.context_dependent:
+            await self._invalidate_action_entry(entry_id)
+            return ActionReplayRejected(entry_id=entry_id, reason="context_dependent")
 
         # The current version introduced executor-audited commands and
         # explicit origin provenance.  Old action rows cannot prove either,
@@ -208,6 +255,12 @@ class CacheManager:
             or (entry.origin_area_id is None and entry.origin_device_id is None)
         ):
             return ActionReplayRejected(entry_id=entry_id, reason="origin_mismatch")
+        # The reverse direction: an entry learned without origin context
+        # (dashboard/text turn) must not replay on a satellite turn that has
+        # an area or device -- the live turn may resolve the same wording to
+        # an entity in that area. The row stays valid for origin-less turns.
+        if not entry.origin_required and (origin_area_id or origin_device_id):
+            return ActionReplayRejected(entry_id=entry_id, reason="origin_mismatch")
 
         if not self._cached_command_is_structurally_valid(entry.cached_action):
             await self._invalidate_action_entry(entry_id)
@@ -216,6 +269,16 @@ class CacheManager:
         # Re-validation: check visibility for every entity referenced by the
         # cached entry, not just the primary action target.
         cached_agent_id = entry.agent_id if entry.agent_id is not None else requesting_agent_id
+        if check_agent is not None:
+            try:
+                agent_ok = bool(await check_agent(cached_agent_id))
+            except Exception:
+                logger.warning("Action cache agent check failed", exc_info=True)
+                agent_ok = False
+            if not agent_ok:
+                await self._invalidate_action_entry(entry_id)
+                track_cache_event_background(tier="action", hit_type="miss")
+                return ActionReplayRejected(entry_id=entry_id, reason="agent_unavailable")
         entity_ids_to_check = list(dict.fromkeys([entry.cached_action.entity_id, *(entry.entity_ids or [])]))
         try:
             visibility_results = await asyncio.gather(
@@ -321,7 +384,7 @@ class CacheManager:
             # Lazy backfill: entries stored before the semantic tier existed
             # get their embedding on the next exact hit (documented choice --
             # no bulk re-embed migration).
-            self._schedule_semantic_backfill(entry_id, query_text)
+            self._schedule_semantic_backfill(entry_id, query_text, entry.embedding_model)
             track_cache_event_background(
                 tier="routing",
                 hit_type="routing_hit",
@@ -337,6 +400,7 @@ class CacheManager:
                 language=entry.language,
                 entity_ids=entry.entity_ids or [],
                 lookup_ms=(time.perf_counter() - t0) * 1000,
+                source_entry_id=entry_id or "",
             )
 
         # Exact miss: semantic tier (P4). The embedding encode offloads the
@@ -352,6 +416,7 @@ class CacheManager:
                 logger.warning("Routing cache count failed; skipping semantic tier", exc_info=True)
                 entry_count = 0
             if entry_count > 0:
+                query_entry_id = make_routing_entry_id(query_text, language=language)
                 try:
                     engine = await get_embedding_engine()
                     query_embedding = await engine.embed(query_text)
@@ -359,6 +424,8 @@ class CacheManager:
                         self._routing_cache.lookup_semantic,
                         query_embedding,
                         language=language,
+                        embedding_model=_engine_model_id(engine),
+                        exclude_ids=self._suppressed_neighbours(query_entry_id),
                     )
                 except Exception:
                     logger.warning("Routing semantic lookup failed; falling back to classification", exc_info=True)
@@ -372,35 +439,59 @@ class CacheManager:
                     )
                     return RoutingSkipOutcome(
                         kind="semantic_hit",
-                        entry_id=sem_id or "",
+                        entry_id=make_semantic_entry_token(query_entry_id, sem_id) if sem_id else "",
                         agent_id=sem_entry.agent_id,
                         condensed_task=query_text,
                         similarity=sem_similarity,
                         language=sem_entry.language,
                         entity_ids=sem_entry.entity_ids or [],
                         lookup_ms=(time.perf_counter() - t0) * 1000,
+                        source_entry_id=sem_id or "",
                     )
 
         track_cache_event_background(tier="routing", hit_type="miss")
         return None
 
-    def _schedule_semantic_backfill(self, entry_id: str | None, query_text: str) -> None:
-        """Schedule a background embedding backfill for an entry lacking one."""
+    def _schedule_semantic_backfill(
+        self,
+        entry_id: str | None,
+        query_text: str,
+        embedding_model: str | None = None,
+    ) -> None:
+        """Schedule a background embedding backfill for an entry lacking a current one."""
         if not entry_id or not self._routing_cache.semantic_available():
             return
         if entry_id in self._backfill_inflight:
             return
         self._backfill_inflight.add(entry_id)
-        spawn(self._backfill_routing_embedding(entry_id, query_text), name="routing-embedding-backfill")
+        spawn(
+            self._backfill_routing_embedding(entry_id, query_text, embedding_model),
+            name="routing-embedding-backfill",
+        )
 
-    async def _backfill_routing_embedding(self, entry_id: str, query_text: str) -> None:
-        """Embed an existing routing entry's query text and store the vector."""
+    async def _backfill_routing_embedding(
+        self,
+        entry_id: str,
+        query_text: str,
+        embedding_model: str | None = None,
+    ) -> None:
+        """Embed an existing routing entry's query text and store the vector.
+
+        Re-embeds when the entry has no vector or its vector came from a
+        different embedding model than the current engine's.
+        """
         try:
-            if await asyncio.to_thread(self._routing_cache.has_embedding, entry_id):
-                return
             engine = await get_embedding_engine()
+            model_id = _engine_model_id(engine)
+            if embedding_model == model_id and await asyncio.to_thread(self._routing_cache.has_embedding, entry_id):
+                return
             embedding = await engine.embed(query_text)
-            await asyncio.to_thread(self._routing_cache.store_embedding, entry_id, embedding)
+            await asyncio.to_thread(
+                self._routing_cache.store_embedding,
+                entry_id,
+                embedding,
+                model_id=model_id,
+            )
         except Exception:
             logger.debug("Routing embedding backfill failed for %s", entry_id, exc_info=True)
         finally:
@@ -421,9 +512,12 @@ class CacheManager:
         a single LLM call.
 
         When rewriting is disabled, or the rewrite fails or returns nothing,
-        the stored mediated ``response_text`` (the speech the user heard when
-        the entry was cached) is returned instead. A failed attempt leaves
-        ``rewrite_applied`` False and sets ``rewrite_failed``.
+        the stored ``response_text`` is returned. The store path guarantees it
+        carries no per-turn additions (calendar reminder, closing question):
+        it is the mediated speech only when the caching turn asserted it had
+        none, else the base agent speech. The caller appends the current
+        turn's reminder itself. A failed attempt leaves ``rewrite_applied``
+        False and sets ``rewrite_failed``.
         """
         fallback_text = result.response_text or result.original_response_text or ""
         if not self._rewrite_agent or not self._rewrite_enabled:
@@ -463,6 +557,7 @@ class CacheManager:
         language: str = "en",
         entity_ids: list[str] | None = None,
         embedding: list[float] | None = None,
+        embedding_model: str | None = None,
     ) -> None:
         """Store a routing decision after dispatch or read-only handling."""
         entry = RoutingCacheEntry(
@@ -471,6 +566,7 @@ class CacheManager:
             agent_id=agent_id,
             confidence=confidence,
             entity_ids=list(entity_ids or []),
+            embedding_model=embedding_model if embedding else None,
         )
         self._routing_cache.store(entry, embedding=embedding)
 
@@ -508,10 +604,12 @@ class CacheManager:
         to an exact-only entry -- the routing cache keeps working.
         """
         embedding: list[float] | None = None
+        embedding_model: str | None = None
         if self._routing_cache.semantic_available():
             try:
                 engine = await get_embedding_engine()
                 embedding = await engine.embed(query_text)
+                embedding_model = _engine_model_id(engine)
             except Exception:
                 logger.warning("Routing embedding compute failed; storing without embedding", exc_info=True)
         await asyncio.to_thread(
@@ -522,6 +620,7 @@ class CacheManager:
             language=language,
             entity_ids=entity_ids,
             embedding=embedding,
+            embedding_model=embedding_model,
         )
 
     async def store_routing_only_async(
@@ -547,11 +646,41 @@ class CacheManager:
     async def store_action_async(self, entry: ActionCacheEntry) -> None:
         await asyncio.to_thread(self.store_action, entry)
 
-    def invalidate_action(self, entry_id: str) -> None:
-        self._action_cache.invalidate_by_entry_id(entry_id)
+    def invalidate_action(self, entry_id: str, *, expected_created_at: str | None = None) -> bool:
+        """Delete an action row; with ``expected_created_at`` only while it is unchanged.
+
+        Background maintenance passes the ``created_at`` of its snapshot so a
+        row re-stored by a live turn after the snapshot is kept.
+        """
+        if expected_created_at is not None:
+            return self._action_cache.invalidate_if_unchanged(entry_id, expected_created_at=expected_created_at)
+        return self._action_cache.invalidate_by_entry_id(entry_id)
 
     def invalidate_routing(self, entry_id: str) -> None:
+        """Invalidate a served routing entry.
+
+        Exact-hit handles delete the row. A semantic-hit token never deletes
+        the neighbour row it borrowed (that row may route its own wording
+        correctly); the neighbour is suppressed for the failing query text
+        instead, so the next identical query re-classifies live.
+        """
+        parsed = parse_semantic_entry_token(entry_id)
+        if parsed is not None:
+            self._suppress_semantic_neighbour(*parsed)
+            return
         self._routing_cache.invalidate_by_entry_id(entry_id)
+
+    def _suppress_semantic_neighbour(self, query_entry_id: str, neighbour_entry_id: str) -> None:
+        with self._semantic_suppressions_lock:
+            neighbours = self._semantic_suppressions.setdefault(query_entry_id, set())
+            neighbours.add(neighbour_entry_id)
+            self._semantic_suppressions.move_to_end(query_entry_id)
+            while len(self._semantic_suppressions) > _MAX_SEMANTIC_SUPPRESSIONS:
+                self._semantic_suppressions.popitem(last=False)
+
+    def _suppressed_neighbours(self, query_entry_id: str) -> frozenset[str]:
+        with self._semantic_suppressions_lock:
+            return frozenset(self._semantic_suppressions.get(query_entry_id, ()))
 
     async def invalidate_by_entity_id(self, entity_ids) -> dict[str, int]:
         unique_ids = [str(entity_id) for entity_id in dict.fromkeys(entity_ids or []) if entity_id]
@@ -601,11 +730,15 @@ class CacheManager:
         self._action_cache.flush_pending()
 
     def get_stats(self) -> dict[str, Any]:
-        """Return combined stats for both tiers."""
+        """Return combined stats for both tiers (blocking COUNT queries)."""
         return {
             "routing": self._routing_cache.get_stats(),
             "action": self._action_cache.get_stats(),
         }
+
+    async def get_stats_async(self) -> dict[str, Any]:
+        """``get_stats`` off the event loop (Directive 9)."""
+        return await asyncio.to_thread(self.get_stats)
 
     async def purge_readonly_entries(self) -> int:
         """Purge legacy read-only rows that should now live in routing cache."""
@@ -615,6 +748,27 @@ class CacheManager:
         """Yield action-cache entries, paginating through the underlying store."""
         return self._action_cache.iterate_entries(page_size=page_size)
 
-    async def update_action_entry(self, entry: ActionCacheEntry) -> None:
-        """Store a corrected action-cache entry (upserts by deterministic entry_id)."""
-        await self.store_action_async(entry)
+    async def update_action_entry(self, entry: ActionCacheEntry) -> bool:
+        """Persist validator results for a snapshot entry (compare-and-swap).
+
+        Only ``response_text``, ``original_response_text`` and
+        ``validated_at`` are written, and only while the row still exists
+        with the snapshot's ``created_at``. A row deleted meanwhile is never
+        resurrected, and a row re-stored by a live turn is never reverted to
+        the stale snapshot. Returns True when the row was updated.
+        """
+        entry_id = self._action_cache.make_entry_id(entry.query_text, language=entry.language)
+        patch = {
+            "response_text": entry.response_text,
+            "original_response_text": entry.original_response_text or "",
+            "validated_at": entry.validated_at or "",
+        }
+        updated = await asyncio.to_thread(
+            self._action_cache.patch_if_unchanged,
+            entry_id,
+            expected_created_at=entry.created_at,
+            patch=patch,
+        )
+        if not updated:
+            logger.debug("Skipped stale validator update for action entry %s", entry_id)
+        return updated

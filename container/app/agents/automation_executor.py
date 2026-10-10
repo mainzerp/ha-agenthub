@@ -1,8 +1,17 @@
-"""Automation-specific action execution via HA automation services."""
+"""Automation-specific action execution via HA automation services.
+
+enable/disable/trigger execute immediately. create/update/delete never
+write on the first turn: the change is validated (entities against the
+index and automation-agent visibility, services against an allow-list),
+stored as a pending proposal (see ``automation_confirmation``) and only
+applied after the user confirms on a later turn. Updates are a merge/patch
+of the config fetched from HA, never an LLM-invented full replacement.
+"""
 
 from __future__ import annotations
 
 import asyncio
+import copy
 import logging
 import re
 import uuid
@@ -15,6 +24,7 @@ from app.agents.action_executor import (
     build_verified_speech,
     call_service_with_verification,
 )
+from app.agents.automation_confirmation import PendingAutomationChange, confirmation_store
 from app.analytics.tracer import _optional_span
 from app.entity.deterministic_resolver import resolve_entity_deterministic_first
 from app.entity.visibility import entity_is_visible
@@ -119,6 +129,7 @@ async def execute_automation_action(
     entity_matcher: Any,
     agent_id: str | None = None,
     span_collector=None,
+    conversation_id: str | None = None,
 ) -> dict:
     """Resolve an entity, call an automation HA service, and verify the result.
 
@@ -128,6 +139,8 @@ async def execute_automation_action(
         entity_index: EntityIndex instance.
         entity_matcher: EntityMatcher instance.
         agent_id: Optional agent identifier for entity matching context.
+        conversation_id: Key for the pending-confirmation state of
+            create/update/delete; without it those actions are refused.
 
     Returns:
         dict with "success", "entity_id", "new_state", and "speech".
@@ -135,7 +148,7 @@ async def execute_automation_action(
     action_name = action.get("action", "").lower()
     entity_query = action.get("entity", "")
 
-    # Config CRUD actions (no HA service call)
+    # Config CRUD actions (no HA service call; writes only after confirmation)
     if action_name in ("create_automation", "update_automation", "delete_automation", "get_automation_config"):
         return await _handle_automation_config_action(
             action_name,
@@ -146,6 +159,7 @@ async def execute_automation_action(
             entity_matcher,
             agent_id,
             span_collector=span_collector,
+            conversation_id=conversation_id,
         )
 
     # Read-only actions (no service call)
@@ -426,6 +440,256 @@ async def _handle_automation_read_action(
     return {"success": False, "entity_id": "", "new_state": None, "speech": f"Unknown read action: {action_name}"}
 
 
+# ---------------------------------------------------------------------------
+# Automation config changes: validate -> propose -> confirm -> write
+# ---------------------------------------------------------------------------
+
+# Service domains an LLM-built automation may call. ``None`` allows every
+# service of the domain; a set restricts it. Anything else (homeassistant,
+# shell_command, python_script, rest_command, hassio, recorder, ...) is
+# rejected. Security-sensitive domains only allow the "safer" direction.
+_SERVICE_ALLOWLIST: dict[str, frozenset[str] | None] = {
+    "light": None,
+    "switch": None,
+    "fan": None,
+    "cover": None,
+    "climate": None,
+    "humidifier": None,
+    "water_heater": None,
+    "media_player": None,
+    "remote": None,
+    "vacuum": None,
+    "lawn_mower": None,
+    "valve": None,
+    "siren": None,
+    "script": None,
+    "notify": None,
+    "tts": None,
+    "persistent_notification": None,
+    "input_boolean": None,
+    "input_number": None,
+    "input_select": None,
+    "input_text": None,
+    "input_datetime": None,
+    "input_button": None,
+    "button": None,
+    "number": None,
+    "select": None,
+    "counter": None,
+    "timer": None,
+    "todo": None,
+    # scene.apply/scene.create take entity maps outside ``entity_id``.
+    "scene": frozenset({"turn_on"}),
+    "lock": frozenset({"lock"}),
+    "alarm_control_panel": frozenset(
+        {"alarm_arm_home", "alarm_arm_away", "alarm_arm_night", "alarm_arm_vacation", "alarm_arm_custom_bypass"}
+    ),
+    "automation": frozenset({"turn_on", "turn_off", "trigger"}),
+}
+_SCRIPT_GENERIC_SERVICES: frozenset[str] = frozenset({"turn_on", "turn_off", "toggle"})
+# Target forms that bypass per-entity visibility checks.
+_UNSUPPORTED_TARGET_KEYS: frozenset[str] = frozenset({"device_id", "area_id", "floor_id", "label_id"})
+_ENTITY_KEYS: frozenset[str] = frozenset({"entity_id", "media_player_entity_id"})
+_ENTITY_STRING_KEYS: frozenset[str] = frozenset({"scene", "zone"})
+_TEMPLATE_MARKERS: tuple[str, ...] = ("{{", "{%")
+
+_SECTION_ALIASES: dict[str, str] = {
+    "trigger": "triggers",
+    "triggers": "triggers",
+    "condition": "conditions",
+    "conditions": "conditions",
+    "action": "actions",
+    "actions": "actions",
+}
+_LEGACY_SECTION_KEY: dict[str, str] = {"triggers": "trigger", "conditions": "condition", "actions": "action"}
+_SCALAR_KEYS: frozenset[str] = frozenset({"alias", "description", "mode", "max", "max_exceeded"})
+
+_SAVE_QUESTION = "Shall I save this?"
+_DELETE_QUESTION = "Shall I delete it?"
+
+
+def _cfg_result(success: bool, speech: str, entity_id: str | None = "", **extra: Any) -> dict:
+    """Config-action result. ``entity_id`` defaults to "" so a validation
+    failure is not rewritten into an entity-not-found clarification."""
+    result: dict[str, Any] = {
+        "success": success,
+        "entity_id": entity_id,
+        "new_state": None,
+        "speech": speech,
+        "cacheable": False,
+    }
+    result.update(extra)
+    return result
+
+
+def _section(config: dict[str, Any], canonical: str) -> list[Any]:
+    value = config.get(canonical)
+    if value is None:
+        value = config.get(_LEGACY_SECTION_KEY[canonical])
+    if value is None:
+        return []
+    return value if isinstance(value, list) else [value]
+
+
+def _section_key(config: dict[str, Any], canonical: str) -> str:
+    """Key the existing config uses for a section (legacy singular or plural)."""
+    legacy = _LEGACY_SECTION_KEY[canonical]
+    if legacy in config and canonical not in config:
+        return legacy
+    return canonical
+
+
+def _has_template(value: str) -> bool:
+    return any(marker in value for marker in _TEMPLATE_MARKERS)
+
+
+def _collect_references(config: dict[str, Any]) -> tuple[set[str], list[str], list[str]]:
+    """Collect entity ids, service names and structural problems from a config.
+
+    Services are only collected from the actions section (including nested
+    choose/if/sequence/parallel/repeat blocks).
+    """
+    entities: set[str] = set()
+    services: list[str] = []
+    problems: list[str] = []
+
+    def add_problem(text: str) -> None:
+        if text not in problems:
+            problems.append(text)
+
+    def add_entities(value: Any) -> None:
+        values = value if isinstance(value, list) else [value]
+        for raw in values:
+            if not isinstance(raw, str):
+                add_problem("entity_id values must be plain entity ids")
+                continue
+            if _has_template(raw):
+                add_problem("templated entity_id values are not supported")
+                continue
+            for part in raw.split(","):
+                entity_id = part.strip().lower()
+                if not entity_id:
+                    continue
+                if entity_id in ("all", "none") or "." not in entity_id:
+                    add_problem(f"entity_id '{entity_id}' is not supported, name the entities explicitly")
+                    continue
+                entities.add(entity_id)
+
+    def add_service(value: str) -> None:
+        if _has_template(value):
+            add_problem("templated service names are not supported")
+            return
+        name = value.strip().lower()
+        if "." not in name:
+            add_problem(f"invalid service '{value}'")
+            return
+        services.append(name)
+
+    def visit(node: Any, in_actions: bool) -> None:
+        if isinstance(node, list):
+            for item in node:
+                visit(item, in_actions)
+            return
+        if not isinstance(node, dict):
+            return
+        for key, value in node.items():
+            if key in _UNSUPPORTED_TARGET_KEYS:
+                if value:
+                    add_problem(f"'{key}' targets are not supported, name the entities instead")
+                continue
+            if key in _ENTITY_KEYS:
+                add_entities(value)
+                continue
+            if key in _ENTITY_STRING_KEYS and isinstance(value, str) and "." in value:
+                add_entities(value)
+                continue
+            if in_actions and key in ("service", "action") and isinstance(value, str):
+                add_service(value)
+                continue
+            if in_actions and key == "service_template":
+                add_problem("templated service names are not supported")
+                continue
+            visit(value, in_actions)
+
+    for key, value in config.items():
+        canonical = _SECTION_ALIASES.get(key)
+        visit(value, canonical == "actions")
+    return entities, services, problems
+
+
+def _service_allowed(service: str) -> bool:
+    domain, _, name = service.partition(".")
+    if domain not in _SERVICE_ALLOWLIST:
+        return False
+    allowed = _SERVICE_ALLOWLIST[domain]
+    return allowed is None or name in allowed
+
+
+async def _entity_allowed(entity_id: str, entity_index: Any, agent_id: str | None) -> bool:
+    if entity_index is None:
+        return False
+    validated = await _validate_direct_entity_id(
+        entity_id,
+        lambda eid: "." in eid,
+        agent_id=agent_id or "automation-agent",
+        entity_index=entity_index,
+    )
+    return validated == entity_id
+
+
+async def _validate_automation_config(config: dict[str, Any], entity_index: Any, agent_id: str | None) -> list[str]:
+    """Fail-closed validation of every referenced entity and service.
+
+    Returns human-readable problems; empty means the config may be proposed.
+    """
+    entities, services, problems = _collect_references(config)
+    rejected_services = sorted({s for s in services if not _service_allowed(s)})
+    for service in services:
+        domain, _, name = service.partition(".")
+        if domain == "script" and name not in _SCRIPT_GENERIC_SERVICES:
+            # ``script.<name>`` runs that script: validate it like an entity.
+            entities.add(f"script.{name}")
+    rejected_entities = [eid for eid in sorted(entities) if not await _entity_allowed(eid, entity_index, agent_id)]
+    messages = list(problems)
+    if rejected_entities:
+        messages.append("unknown or not permitted entities: " + ", ".join(rejected_entities))
+    if rejected_services:
+        messages.append("services not permitted: " + ", ".join(rejected_services))
+    return messages
+
+
+def _describe_config(config: dict[str, Any]) -> str:
+    triggers = _section(config, "triggers")
+    conditions = _section(config, "conditions")
+    actions = _section(config, "actions")
+    entities, services, _ = _collect_references(config)
+    text = f"{len(triggers)} trigger(s), {len(conditions)} condition(s), {len(actions)} action(s)"
+    if services:
+        text += f"; calls {', '.join(sorted(set(services)))}"
+    if entities:
+        text += f"; uses {', '.join(sorted(entities))}"
+    return text
+
+
+def _rejection(problems: list[str], verb: str) -> dict:
+    return _cfg_result(False, f"I cannot {verb} this automation: " + "; ".join(problems) + ".")
+
+
+def _proposal_result(change: PendingAutomationChange, conversation_id: str) -> dict:
+    confirmation_store.put(conversation_id, change)
+    return _cfg_result(
+        True,
+        f"{change.summary} {change.question}",
+        change.entity_id or "",
+        voice_followup=True,
+        metadata={"pending_confirmation": change.kind},
+    )
+
+
+def _no_confirmation_channel() -> dict:
+    return _cfg_result(False, "Automation changes need a confirmation step, which is not available for this request.")
+
+
 async def _handle_automation_config_action(
     action_name: str,
     action: dict,
@@ -435,29 +699,8 @@ async def _handle_automation_config_action(
     entity_matcher: Any,
     agent_id: str | None,
     span_collector=None,
+    conversation_id: str | None = None,
 ) -> dict:
-    if action_name == "create_automation":
-        return await _create_automation(action, entity_query, ha_client)
-    if action_name == "update_automation":
-        return await _update_automation(
-            action,
-            entity_query,
-            ha_client,
-            entity_index,
-            entity_matcher,
-            agent_id,
-            span_collector=span_collector,
-        )
-    if action_name == "delete_automation":
-        return await _delete_automation(
-            entity_query,
-            ha_client,
-            entity_index,
-            entity_matcher,
-            agent_id,
-            span_collector=span_collector,
-            action=action,
-        )
     if action_name == "get_automation_config":
         return await _get_automation_config(
             entity_query,
@@ -468,37 +711,153 @@ async def _handle_automation_config_action(
             span_collector=span_collector,
             action=action,
         )
-    return {"success": False, "entity_id": "", "new_state": None, "speech": f"Unknown config action: {action_name}"}
+    if not conversation_id:
+        return _no_confirmation_channel()
+    if action_name == "create_automation":
+        return await _propose_create(action, entity_query, entity_index, agent_id, conversation_id)
+    if action_name == "update_automation":
+        return await _propose_update(
+            action,
+            entity_query,
+            ha_client,
+            entity_index,
+            entity_matcher,
+            agent_id,
+            conversation_id,
+            span_collector=span_collector,
+        )
+    if action_name == "delete_automation":
+        return await _propose_delete(
+            action,
+            entity_query,
+            ha_client,
+            entity_index,
+            entity_matcher,
+            agent_id,
+            conversation_id,
+            span_collector=span_collector,
+        )
+    return _cfg_result(False, f"Unknown config action: {action_name}")
 
 
-async def _create_automation(action: dict, entity_query: str, ha_client: Any) -> dict:
+async def _propose_create(
+    action: dict,
+    entity_query: str,
+    entity_index: Any,
+    agent_id: str | None,
+    conversation_id: str,
+) -> dict:
     params = action.get("parameters") or {}
-    config = params.get("config") or {}
-    if not isinstance(config, dict):
-        return {"success": False, "entity_id": None, "new_state": None, "speech": "Invalid automation configuration."}
-    alias = config.get("alias") or entity_query or "AgentHub Automation"
+    config = params.get("config")
+    if not isinstance(config, dict) or not config:
+        return _cfg_result(False, "Invalid automation configuration.")
+    config = copy.deepcopy(config)
+    config.pop("id", None)
+    alias = str(config.get("alias") or entity_query or "AgentHub Automation").strip()
     config["alias"] = alias
-    try:
-        automation_id = await _ensure_unique_automation_id(ha_client, alias)
-        await ha_client.save_automation_config(automation_id, config)
-        return {
-            "success": True,
-            "entity_id": automation_id,
-            "new_state": None,
-            "speech": f"Done, automation '{alias}' has been created.",
-        }
-    except Exception as exc:
-        logger.error("Failed to create automation: %s", exc, exc_info=True)
-        return {"success": False, "entity_id": None, "new_state": None, "speech": f"Failed to create automation: {exc}"}
+    if not _section(config, "triggers") or not _section(config, "actions"):
+        return _cfg_result(False, "An automation needs at least one trigger and one action.")
+
+    problems = await _validate_automation_config(config, entity_index, agent_id)
+    if problems:
+        return _rejection(problems, "create")
+
+    change = PendingAutomationChange(
+        kind="create",
+        alias=alias,
+        summary=f"New automation '{alias}': {_describe_config(config)}.",
+        question=_SAVE_QUESTION,
+        config=config,
+        agent_id=agent_id or "automation-agent",
+    )
+    return _proposal_result(change, conversation_id)
 
 
-async def _update_automation(
+def _extract_patch(params: dict[str, Any]) -> tuple[dict[str, Any], dict[str, list[Any]], list[str]]:
+    """Split update parameters into ``set`` (replace a key) and ``add`` (append to a section).
+
+    ``config`` is accepted for compatibility and treated like ``set``: each
+    provided top-level key replaces only that key of the existing config.
+    """
+    set_map: dict[str, Any] = {}
+    add_map: dict[str, list[Any]] = {}
+    ignored: list[str] = []
+    for source_key in ("config", "set"):
+        source = params.get(source_key)
+        if not isinstance(source, dict):
+            continue
+        for key, value in source.items():
+            canonical = _SECTION_ALIASES.get(key)
+            if canonical:
+                set_map[canonical] = value if isinstance(value, list) else [value]
+            elif key in _SCALAR_KEYS:
+                set_map[key] = value
+            elif key != "id":
+                ignored.append(key)
+    add = params.get("add")
+    if isinstance(add, dict):
+        for key, value in add.items():
+            canonical = _SECTION_ALIASES.get(key)
+            if not canonical:
+                ignored.append(key)
+                continue
+            items = value if isinstance(value, list) else [value]
+            add_map.setdefault(canonical, []).extend(items)
+    return set_map, add_map, ignored
+
+
+def _apply_patch(existing: dict[str, Any], set_map: dict[str, Any], add_map: dict[str, list[Any]]) -> dict[str, Any]:
+    merged = copy.deepcopy(existing)
+    for key, value in set_map.items():
+        if key in _LEGACY_SECTION_KEY:
+            target = _section_key(merged, key)
+            other = _LEGACY_SECTION_KEY[key] if target == key else key
+            merged.pop(other, None)
+            merged[target] = copy.deepcopy(value)
+        else:
+            merged[key] = value
+    for key, items in add_map.items():
+        target = _section_key(merged, key)
+        merged[target] = _section(merged, key) + copy.deepcopy(items)
+    if "id" in existing:
+        merged["id"] = existing["id"]
+    return merged
+
+
+def _describe_patch(set_map: dict[str, Any], add_map: dict[str, list[Any]]) -> str:
+    parts: list[str] = []
+    for key, value in set_map.items():
+        if key in _LEGACY_SECTION_KEY:
+            parts.append(f"replace {key} with {len(value)} item(s)")
+        else:
+            parts.append(f"set {key} to '{value}'")
+    for key, items in add_map.items():
+        parts.append(f"add {len(items)} {key[:-1] if len(items) == 1 else key}")
+    entities, services, _ = _collect_references(_patch_config(set_map, add_map))
+    text = ", ".join(parts)
+    if services:
+        text += f"; calls {', '.join(sorted(set(services)))}"
+    if entities:
+        text += f"; uses {', '.join(sorted(entities))}"
+    return text
+
+
+def _patch_config(set_map: dict[str, Any], add_map: dict[str, list[Any]]) -> dict[str, Any]:
+    """The new parts of an update, shaped as a config for validation."""
+    patch: dict[str, Any] = {k: v for k, v in set_map.items() if k in _LEGACY_SECTION_KEY}
+    for key, items in add_map.items():
+        patch[key] = list(patch.get(key, [])) + list(items)
+    return patch
+
+
+async def _propose_update(
     action: dict,
     entity_query: str,
     ha_client: Any,
     entity_index: Any,
     entity_matcher: Any,
     agent_id: str | None,
+    conversation_id: str,
     span_collector=None,
 ) -> dict:
     resolution = await _resolve_automation_entity(
@@ -516,50 +875,60 @@ async def _update_automation(
     friendly_name = resolution["friendly_name"]
     config_id = await _resolve_config_id_from_entity(entity_id, ha_client)
     if not config_id:
-        return {
-            "success": False,
-            "entity_id": entity_id,
-            "new_state": None,
-            "speech": f"Could not find an editable configuration for '{friendly_name}'.",
-        }
-    params = action.get("parameters") or {}
-    config = params.get("config") or {}
-    if not isinstance(config, dict):
-        return {
-            "success": False,
-            "entity_id": entity_id,
-            "new_state": None,
-            "speech": "Invalid automation configuration.",
-        }
-    if not config.get("alias"):
-        config["alias"] = friendly_name
+        return _cfg_result(False, f"Could not find an editable configuration for '{friendly_name}'.", entity_id)
+
+    set_map, add_map, ignored = _extract_patch(action.get("parameters") or {})
+    if not set_map and not add_map:
+        return _cfg_result(False, f"No changes were specified for '{friendly_name}'.", entity_id)
+
     try:
-        await ha_client.save_automation_config(config_id, config)
-        return {
-            "success": True,
-            "entity_id": entity_id,
-            "new_state": None,
-            "speech": f"Done, automation '{friendly_name}' has been updated.",
-        }
+        existing = await ha_client.get_automation_config(config_id)
+    except asyncio.CancelledError:
+        raise
     except Exception as exc:
-        logger.error("Failed to update automation %s: %s", config_id, exc, exc_info=True)
-        return {
-            "success": False,
-            "entity_id": entity_id,
-            "new_state": None,
-            "speech": f"Failed to update automation: {exc}",
-        }
+        logger.error("Failed to read automation config %s", config_id, exc_info=True)
+        return _cfg_result(False, f"Failed to read the current automation: {exc}", entity_id)
+    if not isinstance(existing, dict) or not existing:
+        return _cfg_result(False, f"Could not retrieve the configuration of '{friendly_name}'.", entity_id)
+
+    merged = _apply_patch(existing, set_map, add_map)
+    if merged == existing:
+        return _cfg_result(False, f"That would not change '{friendly_name}'.", entity_id)
+    if any(key in set_map and not set_map[key] for key in ("triggers", "actions")):
+        return _cfg_result(False, "An automation needs at least one trigger and one action.", entity_id)
+
+    patch_config = _patch_config(set_map, add_map)
+    problems = await _validate_automation_config(patch_config, entity_index, agent_id)
+    if problems:
+        return _rejection(problems, "update")
+
+    summary = f"Update '{friendly_name}': {_describe_patch(set_map, add_map)}."
+    if ignored:
+        summary += f" Ignored unsupported fields: {', '.join(sorted(set(ignored)))}."
+    change = PendingAutomationChange(
+        kind="update",
+        alias=str(merged.get("alias") or friendly_name),
+        summary=summary,
+        question=_SAVE_QUESTION,
+        config=merged,
+        config_id=config_id,
+        entity_id=entity_id,
+        base_config=existing,
+        patch=patch_config,
+        agent_id=agent_id or "automation-agent",
+    )
+    return _proposal_result(change, conversation_id)
 
 
-async def _delete_automation(
+async def _propose_delete(
+    action: dict,
     entity_query: str,
     ha_client: Any,
     entity_index: Any,
     entity_matcher: Any,
     agent_id: str | None,
+    conversation_id: str,
     span_collector=None,
-    *,
-    action: dict | None = None,
 ) -> dict:
     resolution = await _resolve_automation_entity(
         entity_query,
@@ -576,28 +945,76 @@ async def _delete_automation(
     friendly_name = resolution["friendly_name"]
     config_id = await _resolve_config_id_from_entity(entity_id, ha_client)
     if not config_id:
-        return {
-            "success": False,
-            "entity_id": entity_id,
-            "new_state": None,
-            "speech": f"Could not find an editable configuration for '{friendly_name}'.",
-        }
-    try:
-        await ha_client.delete_automation_config(config_id)
-        return {
-            "success": True,
-            "entity_id": entity_id,
-            "new_state": None,
-            "speech": f"Done, automation '{friendly_name}' has been deleted.",
-        }
-    except Exception as exc:
-        logger.error("Failed to delete automation %s: %s", config_id, exc, exc_info=True)
-        return {
-            "success": False,
-            "entity_id": entity_id,
-            "new_state": None,
-            "speech": f"Failed to delete automation: {exc}",
-        }
+        return _cfg_result(False, f"Could not find an editable configuration for '{friendly_name}'.", entity_id)
+    change = PendingAutomationChange(
+        kind="delete",
+        alias=friendly_name,
+        summary=f"This permanently deletes the automation '{friendly_name}'.",
+        question=_DELETE_QUESTION,
+        config_id=config_id,
+        entity_id=entity_id,
+        agent_id=agent_id or "automation-agent",
+    )
+    return _proposal_result(change, conversation_id)
+
+
+async def apply_pending_automation_change(
+    change: PendingAutomationChange,
+    ha_client: Any,
+    entity_index: Any,
+    *,
+    agent_id: str | None = None,
+) -> dict:
+    """Write a confirmed change to Home Assistant (called only after a confirmation)."""
+    if ha_client is None:
+        return _cfg_result(False, "The smart home connection is currently unavailable.", change.entity_id)
+
+    if change.kind == "create":
+        config = change.config or {}
+        problems = await _validate_automation_config(config, entity_index, agent_id)
+        if problems:
+            return _rejection(problems, "create")
+        try:
+            automation_id = await _ensure_unique_automation_id(ha_client, change.alias)
+            await ha_client.save_automation_config(automation_id, config)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.error("Failed to create automation: %s", exc, exc_info=True)
+            return _cfg_result(False, f"Failed to create automation: {exc}", "")
+        return _cfg_result(True, f"Done, automation '{change.alias}' has been created.", automation_id)
+
+    if change.kind == "update":
+        problems = await _validate_automation_config(change.patch, entity_index, agent_id)
+        if problems:
+            return _rejection(problems, "update")
+        try:
+            current = await ha_client.get_automation_config(change.config_id)
+            if current != change.base_config:
+                return _cfg_result(
+                    False,
+                    f"The automation '{change.alias}' changed in the meantime, so I did not save. Please ask again.",
+                    change.entity_id,
+                )
+            await ha_client.save_automation_config(change.config_id, change.config)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.error("Failed to update automation %s: %s", change.config_id, exc, exc_info=True)
+            return _cfg_result(False, f"Failed to update automation: {exc}", change.entity_id)
+        return _cfg_result(True, f"Done, automation '{change.alias}' has been updated.", change.entity_id)
+
+    if change.kind == "delete":
+        try:
+            await ha_client.delete_automation_config(change.config_id)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.error("Failed to delete automation %s: %s", change.config_id, exc, exc_info=True)
+            return _cfg_result(False, f"Failed to delete automation: {exc}", change.entity_id)
+        return _cfg_result(True, f"Done, automation '{change.alias}' has been deleted.", change.entity_id)
+
+    return _cfg_result(False, f"Unknown automation change: {change.kind}", change.entity_id)
 
 
 async def _get_automation_config(
@@ -667,6 +1084,8 @@ async def _get_automation_config(
             "entity_id": entity_id,
             "new_state": None,
             "speech": speech,
+            # Read of live config: never replayed from the action cache.
+            "cacheable": False,
             "metadata": {**resolution_metadata, "config": config},
         }
     except Exception as exc:

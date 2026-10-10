@@ -101,6 +101,27 @@ class TestSendAgent:
             {"message": "test content", "title": "HA-AgentHub"},
         )
 
+    @patch("app.agents.send.SendDeviceMappingRepository")
+    async def test_notify_content_cannot_inject_ha_templates(self, mock_repo, monkeypatch):
+        """Legacy notify renders ``message`` as a template: delivered content must stay literal."""
+        agent, ha_client = self._make_send_agent()
+        mock_repo.find_by_name = AsyncMock(
+            return_value={
+                "display_name": "Laura Handy",
+                "device_type": "notify",
+                "ha_service_target": "mobile_app_lauras_iphone",
+            }
+        )
+        monkeypatch.setattr(
+            agent,
+            "_format_content",
+            AsyncMock(return_value="Code {{ states('lock.front_door') }} {% for s in states %}x{% endfor %} {#c#}"),
+        )
+        await agent.handle_task(_make_task(description=f"send to Laura Handy{_CONTENT_SEPARATOR}x"))
+        message = ha_client.call_service.await_args.args[3]["message"]
+        assert "{{" not in message and "{%" not in message and "{#" not in message
+        assert "states('lock.front_door')" in message
+
     @patch("app.agents.send.SettingsRepository")
     @patch("app.agents.send.SendDeviceMappingRepository")
     async def test_handle_task_tts(self, mock_repo, mock_settings, monkeypatch):

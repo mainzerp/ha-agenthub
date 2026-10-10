@@ -13,14 +13,20 @@ import aiohttp
 
 from app.db.repository import SettingsRepository
 from app.ha_client.auth import get_ha_token
+from app.util.tasks import spawn
 
 logger = logging.getLogger(__name__)
 
 BASE_DELAY = 1.0
 MAX_DELAY = 60.0
 MAX_JITTER = 1.0
+# Liveness is owned by aiohttp's heartbeat: it sends a PING every
+# HEARTBEAT_INTERVAL seconds and, when no PONG arrives within half of it,
+# closes the socket and feeds an ERROR message into ``receive()``. PONG
+# frames are consumed inside aiohttp, so a receive-level idle timeout
+# cannot see them and would force reconnects on quiet instances; the
+# receive loop therefore waits without its own idle timeout.
 HEARTBEAT_INTERVAL = 15.0
-IDLE_TIMEOUT = 2 * HEARTBEAT_INTERVAL
 # P3-2: bound the auth handshake receives. Without this, a half-open
 # socket that accepted ``ws_connect`` but never sends the
 # ``auth_required`` / ``auth_ok`` frames blocks ``connect()`` (and
@@ -64,6 +70,9 @@ class HAWebSocketClient:
         # PENDING-RESP: track in-flight command/result pairs for
         # request-response style WebSocket calls (e.g. entity_registry).
         self._pending_responses: dict[int, asyncio.Future[dict]] = {}
+        # Callbacks run (as background tasks) after a successful REconnect,
+        # so consumers can resync state missed while the socket was down.
+        self._reconnect_listeners: list[Callable[[], Any]] = []
 
     def is_connected(self) -> bool:
         """Return True if the WebSocket connection is active and running."""
@@ -231,6 +240,8 @@ class HAWebSocketClient:
                         # loop instead of connecting a second time (which would
                         # leak the first session and HA connection).
                         connected = await self._reconnect_loop()
+                        if connected:
+                            self._notify_reconnected()
                         continue
                 try:
                     await self._receive_loop()
@@ -240,6 +251,8 @@ class HAWebSocketClient:
                 if self._running:
                     await self._close_session()
                     connected = await self._reconnect_loop()
+                    if connected:
+                        self._notify_reconnected()
         finally:
             # A connect() that completed after a concurrent disconnect() may
             # leave a live socket behind; tear it down on exit.
@@ -300,15 +313,12 @@ class HAWebSocketClient:
 
     async def _receive_loop(self) -> None:
         while self._running and self._ws and not self._ws.closed:
+            # No idle timeout here: a dead connection surfaces as an ERROR /
+            # CLOSED message from aiohttp's heartbeat (see HEARTBEAT_INTERVAL).
             try:
-                msg = await asyncio.wait_for(self._ws.receive(), timeout=IDLE_TIMEOUT)
-            except asyncio.CancelledError:
-                raise
+                msg = await self._ws.receive()
             except TimeoutError:
-                self._logger.warning(
-                    "HA WebSocket idle for >%.0fs, forcing reconnect",
-                    IDLE_TIMEOUT,
-                )
+                self._logger.warning("HA WebSocket receive timed out, forcing reconnect")
                 break
             self._ws_last_active = time.monotonic()
             if msg.type == aiohttp.WSMsgType.TEXT:
@@ -347,6 +357,8 @@ class HAWebSocketClient:
                 aiohttp.WSMsgType.CLOSED,
                 aiohttp.WSMsgType.ERROR,
             ):
+                if msg.type == aiohttp.WSMsgType.ERROR:
+                    self._logger.warning("HA WebSocket connection lost (%s); reconnecting", msg.data)
                 break
 
     async def subscribe_events(self, event_type: str | None = None) -> int:
@@ -445,6 +457,26 @@ class HAWebSocketClient:
         if not isinstance(result_data, dict):
             return None
         return result_data.get("response", result_data)
+
+    def on_reconnect(self, callback: Callable[[], Any]) -> None:
+        """Register a callback invoked after every successful reconnect.
+
+        Events emitted by HA while the socket was down are lost, so
+        consumers (e.g. the entity index) resync from REST here. The
+        callback runs as a background task: ``run()`` must reach the
+        receive loop before any ``send_command`` reply can be delivered.
+        """
+        self._reconnect_listeners.append(callback)
+
+    def _notify_reconnected(self) -> None:
+        """Schedule all reconnect callbacks without blocking the receive loop."""
+        for callback in list(self._reconnect_listeners):
+            try:
+                result = callback()
+                if asyncio.iscoroutine(result):
+                    spawn(result, name="ha-ws-reconnect-callback")
+            except Exception:
+                self._logger.error("Reconnect callback error", exc_info=True)
 
     def on_event(self, event_type: str, callback: Callable) -> None:
         if event_type not in self._listeners:

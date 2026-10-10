@@ -61,25 +61,30 @@ def _set_entity_index_pending_status(entity_index: EntityIndex, *, state: str, t
     }
 
 
-async def _gather_ha_lookups(ha_client: HARestClient) -> tuple[dict, dict, dict, dict]:
+async def _gather_ha_lookups(ha_client: HARestClient, previous: dict | None = None) -> tuple[dict, dict, dict, dict]:
     """Fetch area, alias, device, and entity-area lookups from HA in parallel.
 
-    Each individual fetch is wrapped so a partial outage degrades to
-    empty enrichment instead of failing the entire entity sync.
+    Each individual fetch is wrapped so a partial outage degrades instead
+    of failing the entire entity sync. A fetch that raises falls back to
+    the matching lookup in ``previous`` (the last published
+    ``app.state.entity_lookups``) rather than an empty dict, so one failed
+    registry call never wipes area / alias / device enrichment. The REST
+    client itself already returns its last-good lookup on a failed render.
     """
+    previous = previous or {}
 
-    async def _safe(coro_factory):
+    async def _safe(coro_factory, previous_key: str):
         try:
             return await coro_factory()
         except Exception:
-            logger.debug("HA registry lookup failed", exc_info=True)
-            return None
+            logger.warning("HA registry lookup %s failed; keeping previous lookup", previous_key, exc_info=True)
+            return previous.get(previous_key)
 
     area_lookup, alias_lookup, device_lookup, area_id_lookup = await asyncio.gather(
-        _safe(ha_client.get_area_registry),
-        _safe(ha_client.get_entity_aliases),
-        _safe(ha_client.get_device_names),
-        _safe(ha_client.get_entity_areas),
+        _safe(ha_client.get_area_registry, "area"),
+        _safe(ha_client.get_entity_aliases, "alias"),
+        _safe(ha_client.get_device_names, "device"),
+        _safe(ha_client.get_entity_areas, "area_id"),
     )
     return (
         area_lookup or {},
@@ -87,6 +92,48 @@ async def _gather_ha_lookups(ha_client: HARestClient) -> tuple[dict, dict, dict,
         device_lookup or {},
         area_id_lookup or {},
     )
+
+
+def _previous_lookups(app: FastAPI) -> dict:
+    lookups = getattr(app.state, "entity_lookups", None)
+    return lookups if isinstance(lookups, dict) else {}
+
+
+def _set_area_assignment_status(
+    entity_index: EntityIndex | None, ha_client: HARestClient, area_id_lookup: dict
+) -> None:
+    """Publish whether HA area assignments are known on the entity index.
+
+    Unknown means the entity-area registry lookup has never succeeded (the
+    REST client has no last-good data) and nothing was published before.
+    Visibility then fails closed for area-less entities under
+    ``area_exclude`` rules instead of treating ``area=None`` as "no area".
+    """
+    if entity_index is None:
+        return
+    known = True
+    if not area_id_lookup:
+        probe = getattr(ha_client, "has_registry_data", None)
+        if callable(probe):
+            try:
+                known = bool(probe("entity_areas"))
+            except Exception:
+                known = True
+    if getattr(entity_index, "area_assignments_known", True) != known:
+        logger.warning("HA area assignments known=%s (entity-area registry lookup)", known)
+    entity_index.area_assignments_known = known
+
+
+def _snapshot_generation(entity_index: EntityIndex) -> int | None:
+    """Read the index mutation generation before fetching an HA snapshot."""
+    getter = getattr(entity_index, "mutation_generation", None)
+    if not callable(getter):
+        return None
+    try:
+        value = getter()
+    except Exception:
+        return None
+    return value if isinstance(value, int) else None
 
 
 def _store_entity_lookups(
@@ -140,6 +187,19 @@ def _is_dimension_error(exc: BaseException) -> bool:
     return "dimension" in msg or "dimensionality" in msg or "vec0" in msg
 
 
+async def _reload_alias_resolver(app: FastAPI) -> None:
+    """Reload the shared ``AliasResolver`` cache from the DB (best effort)."""
+    from app.entity.aliases import AliasResolver
+
+    resolver = getattr(app.state, "alias_resolver", None)
+    if not isinstance(resolver, AliasResolver):
+        return
+    try:
+        await resolver.reload()
+    except Exception:
+        logger.warning("Alias resolver reload after user alias load failed", exc_info=True)
+
+
 async def _wait_for_ws_connection(app: FastAPI, timeout: float = 8.0) -> bool:
     """Poll ``app.state.ws_client`` until it reports connected or *timeout* expires.
 
@@ -160,11 +220,15 @@ async def _prime_entity_index(app: FastAPI, ha_client: HARestClient, entity_inde
 
     _t0 = _time.monotonic()
     try:
+        snapshot_generation = _snapshot_generation(entity_index)
         states = await ha_client.get_states()
         _t1 = _time.monotonic()
         logger.info("Entity index prime: HA states fetched in %.1fs (%d entities)", _t1 - _t0, len(states))
-        area_lookup, alias_lookup, device_lookup, area_id_lookup = await _gather_ha_lookups(ha_client)
+        area_lookup, alias_lookup, device_lookup, area_id_lookup = await _gather_ha_lookups(
+            ha_client, _previous_lookups(app)
+        )
         _store_entity_lookups(app, area_lookup, alias_lookup, device_lookup, area_id_lookup)
+        _set_area_assignment_status(entity_index, ha_client, area_id_lookup)
         hidden_ids = await ha_client.get_hidden_entity_ids()
         app.state.hidden_entity_ids = hidden_ids
         entities = parse_ha_states(
@@ -237,7 +301,7 @@ async def _prime_entity_index(app: FastAPI, ha_client: HARestClient, entity_inde
 
         if existing_count > 0 and not force_rebuild:
             _set_entity_index_pending_status(entity_index, state="syncing", total=len(entities))
-            result = await entity_index.sync_async(entities)
+            result = await entity_index.sync_async(entities, snapshot_generation=snapshot_generation)
             logger.info(
                 "Entity index synced in background (existing=%d): +%d ~%d -%d =%d",
                 existing_count,
@@ -249,7 +313,7 @@ async def _prime_entity_index(app: FastAPI, ha_client: HARestClient, entity_inde
         else:
             _set_entity_index_pending_status(entity_index, state="building", total=len(entities))
             try:
-                await entity_index.populate_async(entities)
+                await entity_index.populate_async(entities, snapshot_generation=snapshot_generation)
             except Exception as exc:
                 if not _is_dimension_error(exc):
                     raise
@@ -269,7 +333,7 @@ async def _prime_entity_index(app: FastAPI, ha_client: HARestClient, entity_inde
                     )
                     raise
                 try:
-                    await entity_index.populate_async(entities)
+                    await entity_index.populate_async(entities, snapshot_generation=snapshot_generation)
                 except Exception:
                     logger.error(
                         "Entity index populate retry after collection drop also "
@@ -297,9 +361,14 @@ async def _prime_entity_index(app: FastAPI, ha_client: HARestClient, entity_inde
         try:
             from app.entity.user_aliases import load_user_aliases
 
-            await load_user_aliases()
+            loaded = await load_user_aliases()
         except Exception:
+            loaded = 0
             logger.debug("User alias load failed", exc_info=True)
+        # The AliasResolver cache was filled in bootstrap phase 1, before the
+        # YAML aliases above were written to the DB: reload so they resolve.
+        if loaded:
+            await _reload_alias_resolver(app)
         try:
             _t_end = _time.monotonic()
             logger.info("Entity index prime complete (total: %.1fs)", _t_end - _t0)
@@ -330,10 +399,17 @@ async def build_entity_snapshot(app: FastAPI, ha_client: HARestClient) -> list[E
     apply the same enrichment (areas/aliases/devices) and hidden-entity
     filtering. Publishes the fresh lookups and ``hidden_entity_ids`` on
     ``app.state`` as a side effect.
+
+    Callers that sync the result into the index read
+    ``entity_index.mutation_generation()`` BEFORE calling this and pass it
+    as ``snapshot_generation`` so newer WebSocket updates survive the sync.
     """
     states = await ha_client.get_states()
-    area_lookup, alias_lookup, device_lookup, area_id_lookup = await _gather_ha_lookups(ha_client)
+    area_lookup, alias_lookup, device_lookup, area_id_lookup = await _gather_ha_lookups(
+        ha_client, _previous_lookups(app)
+    )
     _store_entity_lookups(app, area_lookup, alias_lookup, device_lookup, area_id_lookup)
+    _set_area_assignment_status(getattr(app.state, "entity_index", None), ha_client, area_id_lookup)
     hidden_ids = await ha_client.get_hidden_entity_ids()
     app.state.hidden_entity_ids = hidden_ids
     return parse_ha_states(
@@ -364,22 +440,34 @@ async def _periodic_entity_sync(app: FastAPI) -> None:
         await asyncio.sleep(interval_minutes * 60)
 
         try:
-            ha_client = app.state.ha_client
-            entity_index = app.state.entity_index
-            if not ha_client or not entity_index:
-                continue
-
-            entities = await build_entity_snapshot(app, ha_client)
-            result = await entity_index.sync_async(entities)
-            logger.info(
-                "Periodic entity sync: +%d ~%d -%d =%d",
-                result["added"],
-                result["updated"],
-                result["removed"],
-                result["unchanged"],
-            )
+            await resync_entity_index(app, reason="periodic")
         except Exception:
             logger.warning("Periodic entity sync failed", exc_info=True)
+
+
+async def resync_entity_index(app: FastAPI, *, reason: str) -> dict | None:
+    """Full entity-index resync from a fresh HA snapshot.
+
+    Reads the index mutation generation before fetching the snapshot so
+    WebSocket updates applied meanwhile are not undone. Returns the sync
+    counts, or ``None`` when the HA client / index is not available.
+    """
+    ha_client = getattr(app.state, "ha_client", None)
+    entity_index = getattr(app.state, "entity_index", None)
+    if not ha_client or not entity_index:
+        return None
+    snapshot_generation = _snapshot_generation(entity_index)
+    entities = await build_entity_snapshot(app, ha_client)
+    result = await entity_index.sync_async(entities, snapshot_generation=snapshot_generation)
+    logger.info(
+        "Entity sync (%s): +%d ~%d -%d =%d",
+        reason,
+        result["added"],
+        result["updated"],
+        result["removed"],
+        result["unchanged"],
+    )
+    return result
 
 
 def _has_relevant_changes(data: dict, changes: dict) -> bool:
@@ -465,8 +553,11 @@ async def _refresh_registry_entities(
     if not entity_ids:
         return
 
-    area_lookup, alias_lookup, device_lookup, area_id_lookup = await _gather_ha_lookups(ha_client)
+    area_lookup, alias_lookup, device_lookup, area_id_lookup = await _gather_ha_lookups(
+        ha_client, _previous_lookups(app)
+    )
     _store_entity_lookups(app, area_lookup, alias_lookup, device_lookup, area_id_lookup)
+    _set_area_assignment_status(entity_index, ha_client, area_id_lookup)
     hidden_ids = await ha_client.get_hidden_entity_ids()
     app.state.hidden_entity_ids = hidden_ids
 
@@ -586,16 +677,21 @@ async def setup_entity_observers(
                 )
             return resolved_entity_ids
 
+        # Every registry handler drops the 5-minute registry cache first:
+        # area and device renames otherwise re-ingest stale area / device
+        # names from the cached lookups.
         async def on_entity_registry_updated(event: dict) -> None:
             ha_client.clear_area_registry_cache()
             resolved_entity_ids = await _invalidate_registry_event(event)
             await _refresh_registry_entities(app, ha_client, entity_index, resolved_entity_ids)
 
         async def on_device_registry_updated(event: dict) -> None:
+            ha_client.clear_area_registry_cache()
             resolved_entity_ids = await _invalidate_registry_event(event)
             await _refresh_registry_entities(app, ha_client, entity_index, resolved_entity_ids)
 
         async def on_area_registry_updated(event: dict) -> None:
+            ha_client.clear_area_registry_cache()
             resolved_entity_ids = await _invalidate_registry_event(event)
             await _refresh_registry_entities(app, ha_client, entity_index, resolved_entity_ids)
 
@@ -619,6 +715,25 @@ async def setup_entity_observers(
         ws_client.on_event("entity_registry_updated", _schedule_registry_refresh(on_entity_registry_updated))
         ws_client.on_event("device_registry_updated", _schedule_registry_refresh(on_device_registry_updated))
         ws_client.on_event("area_registry_updated", _schedule_registry_refresh(on_area_registry_updated))
+
+        # Events emitted while the WS was down (deletes, renames, hidden
+        # flags) are lost: resync the whole index after each reconnect.
+        # The WS client runs this as a background task; overlapping
+        # reconnects share one in-flight resync.
+        reconnect_resync_task: asyncio.Task | None = None
+
+        async def _resync_after_reconnect() -> None:
+            ha_client.clear_area_registry_cache()
+            async with registry_refresh_lock:
+                await resync_entity_index(app, reason="ws_reconnect")
+
+        def on_ws_reconnected() -> None:
+            nonlocal reconnect_resync_task
+            if reconnect_resync_task is not None and not reconnect_resync_task.done():
+                return
+            reconnect_resync_task = spawn(_resync_after_reconnect(), name="ha-ws-reconnect-resync")
+
+        ws_client.on_reconnect(on_ws_reconnected)
 
         app.state.ws_client = ws_client
         spawn_background(app, ws_client.run(), "ws_task")
@@ -649,6 +764,7 @@ async def setup_entity_observers(
                 logger.info("Deferred hidden-entity sync: hidden_ids=%d", len(hidden_ids))
                 if hidden_ids:
                     app.state.hidden_entity_ids = hidden_ids
+                    snapshot_generation = _snapshot_generation(entity_index)
                     states = await ha_client.get_states()
                     lookups = getattr(app.state, "entity_lookups", None) or {}
                     entities = parse_ha_states(
@@ -659,7 +775,7 @@ async def setup_entity_observers(
                         area_id_lookup=lookups.get("area_id") or {},
                         hidden_ids=hidden_ids,
                     )
-                    result = await entity_index.sync_async(entities)
+                    result = await entity_index.sync_async(entities, snapshot_generation=snapshot_generation)
                     logger.info(
                         "Deferred hidden-entity re-sync: +%d ~%d -%d =%d (hidden=%d)",
                         result["added"],

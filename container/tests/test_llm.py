@@ -551,15 +551,19 @@ class TestSanitizeToolName:
 
         assert _sanitize_tool_name("web_search<|channel|>commentary", {"web_search"}) == "web_search"
 
-    def test_strips_garbage_after_valid_name(self):
+    def test_garbage_suffix_is_not_repaired_to_a_prefix_tool(self):
+        """A prefix match is a DIFFERENT tool ("delete.all" -> "delete"): never executed."""
         from app.llm.client import _sanitize_tool_name
 
-        assert _sanitize_tool_name("web_search!extra", {"web_search"}) == "web_search"
+        assert _sanitize_tool_name("web_search!extra", {"web_search"}) is None
+        assert _sanitize_tool_name("delete.all", {"delete"}) is None
 
-    def test_fuzzy_match_typo(self):
+    def test_fuzzy_match_is_not_remapped(self):
+        """#132: a near-miss name must not be remapped to another valid tool."""
         from app.llm.client import _sanitize_tool_name
 
-        assert _sanitize_tool_name("web_seach", {"web_search", "wikipedia_search"}) == "web_search"
+        assert _sanitize_tool_name("web_seach", {"web_search", "wikipedia_search"}) is None
+        assert _sanitize_tool_name("turn_off_lights", {"turn_on_lights"}) is None
 
     def test_returns_none_when_unrepairable(self):
         from app.llm.client import _sanitize_tool_name
@@ -697,7 +701,10 @@ class TestCompleteWithTools:
         result = await complete_with_tools(
             "general-agent",
             [{"role": "user", "content": "test"}],
-            tools=[{"type": "function", "function": {"name": "tool_a", "parameters": {}}}],
+            tools=[
+                {"type": "function", "function": {"name": "tool_a", "parameters": {}}},
+                {"type": "function", "function": {"name": "tool_b", "parameters": {}}},
+            ],
             tool_executor=tool_executor,
         )
         assert result == "done"

@@ -343,6 +343,7 @@ class TestRestartRecovery:
         sched, gateway = _make_scheduler()
         try:
             await sched.start()
+            await sched.wait_for_overdue_processing()
             row = await ScheduledTimersRepository.get("overdue-id")
             assert row["state"] == "fired"
             gateway.dispatch.assert_awaited_once()
@@ -613,7 +614,7 @@ class TestRecurringRecovery:
             logical_name="Recurring Wake",
             kind="alarm",
             created_at=now - 3600,
-            fires_at=now - 60,
+            fires_at=now - 10,
             duration_seconds=300,
             origin_device_id="device-777",
             origin_area="bedroom",
@@ -634,6 +635,7 @@ class TestRecurringRecovery:
         sched, gateway = _make_scheduler()
         try:
             await sched.start()
+            await sched.wait_for_overdue_processing()
 
             original = await ScheduledTimersRepository.get("overdue-recurring-id")
             assert original and original["state"] == "fired"
@@ -789,6 +791,7 @@ class TestSchedulerRegressions:
         gateway.dispatch.side_effect = ValueError("dispatch exploded")
         try:
             await sched.start()
+            await sched.wait_for_overdue_processing()
             row = await ScheduledTimersRepository.get("overdue-fail-id")
             assert row["state"] == "fired"
         finally:

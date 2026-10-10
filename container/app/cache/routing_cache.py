@@ -14,7 +14,7 @@ from app.cache._base_cache import (
     _store_method,
     make_text_id,
 )
-from app.cache.sqlite_cache_store import COLLECTION_ROUTING_CACHE, SqliteCacheStore
+from app.cache.sqlite_cache_store import COLLECTION_ROUTING_CACHE, ROUTING_EMBEDDING_MODEL_KEY, SqliteCacheStore
 from app.defaults import CACHE_DEFAULTS
 from app.models.cache import RoutingCacheEntry
 
@@ -124,6 +124,8 @@ class RoutingCache(_BaseCache[RoutingCacheEntry]):
         query_embedding: list[float],
         *,
         language: str = "en",
+        embedding_model: str | None = None,
+        exclude_ids: frozenset[str] | set[str] | None = None,
     ) -> tuple[str | None, RoutingCacheEntry | None, float | None]:
         """Semantic (k-NN cosine) routing lookup over stored query embeddings.
 
@@ -134,6 +136,13 @@ class RoutingCache(_BaseCache[RoutingCacheEntry]):
         text. Candidates are post-filtered by language (embeddings are
         multilingual, so a German query must not hit an English entry) and
         by the configured cosine-similarity threshold.
+
+        When ``embedding_model`` is given, a candidate whose vector was
+        produced by a different model is unusable (vectors of different
+        models are not comparable, even at the same dimension): its vec row is
+        dropped and the candidate skipped; the entry is re-embedded lazily on
+        its next exact hit. ``exclude_ids`` skips neighbours that already
+        misrouted this exact query (see ``CacheManager.invalidate_routing``).
 
         Returns ``(entry_id, entry, similarity)`` on hit, else ``(None, None, None)``.
         """
@@ -148,31 +157,62 @@ class RoutingCache(_BaseCache[RoutingCacheEntry]):
         except Exception:
             logger.warning("Routing semantic search failed", exc_info=True)
             return None, None, None
-        for entry_id, distance in candidates:
-            similarity = 1.0 - float(distance)
-            if similarity < self._semantic_threshold:
-                # k-NN results are ordered by ascending distance.
-                break
-            row = self._store.get(
-                self._collection_name,
-                ids=[entry_id],
-                include=["metadatas", "documents"],
-            )
-            row_ids = row.get("ids") or []
-            if not row_ids:
-                continue  # stale vec row whose routing entry is gone
-            meta = _extract_single(row.get("metadatas")) or {}
-            if _normalize_language(meta.get("language")) != lang:
-                continue
-            entry = self._hydrate_hit(
-                entry_id,
-                _extract_single(row.get("documents")),
-                meta,
-                similarity=similarity,
-            )
-            if entry is not None:
-                return entry_id, entry, similarity
-        return None, None, None
+        stale_vectors: list[str] = []
+        try:
+            for entry_id, distance in candidates:
+                similarity = 1.0 - float(distance)
+                if similarity < self._semantic_threshold:
+                    # k-NN results are ordered by ascending distance.
+                    break
+                if exclude_ids and entry_id in exclude_ids:
+                    continue
+                hit = self._semantic_candidate(entry_id, similarity, lang, embedding_model, stale_vectors)
+                if hit is not None:
+                    return entry_id, hit, similarity
+            return None, None, None
+        finally:
+            if stale_vectors:
+                self._drop_stale_vectors(stale_vectors)
+
+    def _semantic_candidate(
+        self,
+        entry_id: str,
+        similarity: float,
+        lang: str,
+        embedding_model: str | None,
+        stale_vectors: list[str],
+    ) -> RoutingCacheEntry | None:
+        """Hydrate one k-NN candidate, or None when it is gone, foreign-language, or stale."""
+        row = self._store.get(
+            self._collection_name,
+            ids=[entry_id],
+            include=["metadatas", "documents"],
+        )
+        row_ids = row.get("ids") or []
+        if not row_ids:
+            return None  # stale vec row whose routing entry is gone
+        meta = _extract_single(row.get("metadatas")) or {}
+        if embedding_model and meta.get(ROUTING_EMBEDDING_MODEL_KEY) != embedding_model:
+            stale_vectors.append(entry_id)
+            return None
+        if _normalize_language(meta.get("language")) != lang:
+            return None
+        return self._hydrate_hit(
+            entry_id,
+            _extract_single(row.get("documents")),
+            meta,
+            similarity=similarity,
+        )
+
+    def _drop_stale_vectors(self, entry_ids: list[str]) -> None:
+        dropper = _store_method(self._store, "drop_routing_embeddings")
+        if dropper is None:
+            return
+        try:
+            dropper(entry_ids)
+            logger.info("Dropped %d routing vectors from a different embedding model", len(entry_ids))
+        except Exception:
+            logger.warning("Failed to drop stale routing vectors", exc_info=True)
 
     def get_stats(self) -> dict[str, object]:
         stats = super().get_stats()
@@ -204,11 +244,13 @@ class RoutingCache(_BaseCache[RoutingCacheEntry]):
             )
         super().store(entry, embedding=embedding)
 
-    def store_embedding(self, entry_id: str, embedding: list[float]) -> bool:
+    def store_embedding(self, entry_id: str, embedding: list[float], *, model_id: str | None = None) -> bool:
         """Store (or refresh) the embedding for an existing entry.
 
         Used by the lazy backfill path: entries stored before the semantic
-        tier existed get their embedding on the next exact-hash hit.
+        tier existed, or whose vector came from a different embedding model,
+        get their embedding on the next exact-hash hit. ``model_id`` tags the
+        entry with the producing model.
         """
         if not embedding:
             return False
@@ -216,6 +258,8 @@ class RoutingCache(_BaseCache[RoutingCacheEntry]):
         if writer is None:
             return False
         try:
+            if model_id:
+                return bool(writer(entry_id, embedding, model_id=model_id))
             return bool(writer(entry_id, embedding))
         except Exception:
             logger.warning("Failed to store routing embedding for %s", entry_id, exc_info=True)
@@ -249,6 +293,7 @@ class RoutingCache(_BaseCache[RoutingCacheEntry]):
             "last_accessed": last_accessed,
             "hit_count": str(entry.hit_count),
             "schema_version": str(_ROUTING_CACHE_SCHEMA_VERSION),
+            ROUTING_EMBEDDING_MODEL_KEY: entry.embedding_model or "",
         }
 
     def _deserialize_entry(self, document: str, metadata: dict, *, similarity: float) -> RoutingCacheEntry | None:
@@ -268,4 +313,5 @@ class RoutingCache(_BaseCache[RoutingCacheEntry]):
             last_accessed=metadata.get("last_accessed") or None,
             hit_count=self._coerce_int(metadata.get("hit_count"), 0),
             schema_version=schema_version,
+            embedding_model=metadata.get(ROUTING_EMBEDDING_MODEL_KEY) or None,
         )

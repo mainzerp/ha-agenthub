@@ -78,6 +78,20 @@ _SEND_SPEECH: dict[str, dict[str, str]] = {
 }
 
 
+_TEMPLATE_OPENERS_RE = re.compile(r"\{(?=[{%#])")
+
+
+def neutralize_ha_template(text: str) -> str:
+    """Break Jinja delimiters so HA renders user/LLM content literally.
+
+    The legacy ``notify.*`` services treat ``message`` as a template, so
+    delivered content containing ``{{ ... }}`` / ``{% ... %}`` would be
+    evaluated by Home Assistant (reading arbitrary entity states).
+    Inserting a space after the opening brace keeps the text readable.
+    """
+    return _TEMPLATE_OPENERS_RE.sub("{ ", text or "")
+
+
 def localized_send_speech(message_id: str, language: str | None, **values: str) -> str:
     """Return the send-flow speech for ``message_id`` in ``language`` (English fallback)."""
     lang_key = "de" if (language or "en").lower().startswith("de") else "en"
@@ -262,7 +276,7 @@ class SendAgent(BaseAgent):
             "notify",
             service_target,
             None,
-            {"message": content, "title": "HA-AgentHub"},
+            {"message": neutralize_ha_template(content), "title": "HA-AgentHub"},
         )
         logger.info("Notify sent to %s", service_target)
 

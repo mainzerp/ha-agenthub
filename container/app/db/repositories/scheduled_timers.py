@@ -70,9 +70,12 @@ class ScheduledTimersRepository:
         logical_name: str | None = None,
         area: str | None = None,
         kinds: set[str] | frozenset[str] | None = None,
+        states: set[str] | frozenset[str] | None = None,
     ) -> list[dict]:
-        clauses = ["state = 'pending'"]
-        params: list[Any] = []
+        """List rows filtered by name/area/kind. ``states`` defaults to pending only."""
+        wanted_states = sorted(states) if states else ["pending"]
+        clauses = [f"state IN ({','.join('?' for _ in wanted_states)})"]
+        params: list[Any] = list(wanted_states)
         if kinds:
             placeholders = ",".join("?" for _ in kinds)
             clauses.append(f"kind IN ({placeholders})")
@@ -104,12 +107,43 @@ class ScheduledTimersRepository:
             )
 
     @staticmethod
+    async def mark_expired(id_: str, expired_at: int) -> None:
+        """Mark a row as expired: it was overdue at startup and did not fire."""
+        async with get_db_write() as db:
+            await db.execute(
+                "UPDATE scheduled_timers SET state = 'expired', fired_at = ? WHERE id = ?",
+                (int(expired_at), id_),
+            )
+
+    @staticmethod
     async def mark_cancelled(id_: str, cancelled_at: int) -> None:
         async with get_db_write() as db:
             await db.execute(
-                "UPDATE scheduled_timers SET state = 'cancelled', cancelled_at = ? WHERE id = ? AND state = 'pending'",
+                "UPDATE scheduled_timers SET state = 'cancelled', cancelled_at = ? "
+                "WHERE id = ? AND state IN ('pending', 'paused')",
                 (int(cancelled_at), id_),
             )
+
+    @staticmethod
+    async def mark_paused(id_: str, payload_json: str) -> bool:
+        """Move a pending row to ``paused``; the payload carries the remaining seconds."""
+        async with get_db_write() as db:
+            cursor = await db.execute(
+                "UPDATE scheduled_timers SET state = 'paused', payload_json = ? WHERE id = ? AND state = 'pending'",
+                (payload_json, id_),
+            )
+            return cursor.rowcount > 0
+
+    @staticmethod
+    async def mark_resumed(id_: str, *, fires_at: int, payload_json: str) -> bool:
+        """Move a paused row back to ``pending`` with a new deadline."""
+        async with get_db_write() as db:
+            cursor = await db.execute(
+                "UPDATE scheduled_timers SET state = 'pending', fires_at = ?, payload_json = ? "
+                "WHERE id = ? AND state = 'paused'",
+                (int(fires_at), payload_json, id_),
+            )
+            return cursor.rowcount > 0
 
     @staticmethod
     async def cancel_by_logical_name(logical_name: str, cancelled_at: int) -> int:

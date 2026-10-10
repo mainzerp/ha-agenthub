@@ -13,6 +13,21 @@ from app.models.agent import BackgroundEvent, TaskContext
 from app.security.sanitization import USER_INPUT_END, USER_INPUT_START
 
 
+@pytest.fixture(autouse=True)
+def _all_targets_visible():
+    """Announcement targets are visibility-checked; these tests cover targeting order only."""
+    with patch.object(nd, "entity_is_visible", new=AsyncMock(return_value=True)):
+        yield
+
+
+def _german_rewrite_agent() -> SimpleNamespace:
+    async def _rewrite(text: str, language: str = "en", **_kwargs) -> str:
+        assert language == "de"
+        return {"The timer has finished": "Der Timer ist abgelaufen"}.get(text, text)
+
+    return SimpleNamespace(rewrite=AsyncMock(side_effect=_rewrite))
+
+
 class _FakeResp:
     def __init__(self, text: str, status_code: int = 200) -> None:
         self.text = text
@@ -418,6 +433,7 @@ async def test_timer_notification_language_prefers_event_metadata() -> None:
         ),
         patch.object(nd.SettingsRepository, "get_value", new=AsyncMock(return_value="en")),
         patch.object(nd, "_generate_tts_message", new=AsyncMock(return_value=None)),
+        patch.object(nd, "_get_rewrite_agent", return_value=_german_rewrite_agent()),
         patch.object(nd, "_notify_persistent", new=AsyncMock()) as notify_persistent,
     ):
         metadata = SimpleNamespace(
@@ -451,6 +467,7 @@ async def test_timer_notification_language_auto_uses_ha_user_language() -> None:
         ),
         patch.object(nd.SettingsRepository, "get_value", new=AsyncMock(return_value="auto")),
         patch.object(nd, "_generate_tts_message", new=AsyncMock(return_value=None)),
+        patch.object(nd, "_get_rewrite_agent", return_value=_german_rewrite_agent()),
         patch.object(nd, "_notify_persistent", new=AsyncMock()) as notify_persistent,
     ):
         metadata = SimpleNamespace(

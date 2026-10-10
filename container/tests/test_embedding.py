@@ -201,14 +201,22 @@ def _fake_sentence_transformers(factory) -> dict[str, types.ModuleType]:
     return {"sentence_transformers": sentence_transformers_module, "huggingface_hub": huggingface_hub_module}
 
 
+def _reset_engine_singleton(monkeypatch, *, cooldown: float = 30.0) -> None:
+    monkeypatch.setattr(embedding_module, "_engine", None)
+    monkeypatch.setattr(embedding_module, "_engine_init_task", None)
+    monkeypatch.setattr(embedding_module, "_engine_init_failed_at", None)
+    monkeypatch.setattr(embedding_module, "_engine_init_error", None)
+    monkeypatch.setattr(embedding_module, "_ENGINE_INIT_RETRY_COOLDOWN_S", cooldown)
+
+
 class TestGetEmbeddingEngineSingleton:
     """The singleton is published only after initialize() completed."""
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("failure", [RuntimeError("settings read failed"), asyncio.CancelledError()])
     async def test_failed_initialize_does_not_publish_singleton_and_retries(self, monkeypatch, failure):
-        monkeypatch.setattr(embedding_module, "_engine", None)
-        monkeypatch.setattr(embedding_module, "_engine_init_lock", asyncio.Lock())
+        # Cooldown 0: this test covers publish/retry, not the failure backoff.
+        _reset_engine_singleton(monkeypatch, cooldown=0.0)
         calls = 0
 
         async def _initialize(self):
@@ -231,6 +239,90 @@ class TestGetEmbeddingEngineSingleton:
         assert engine._model_name == "all-MiniLM-L6-v2"
         assert await get_embedding_engine() is engine
         assert calls == 2
+
+    @pytest.mark.asyncio
+    async def test_failed_initialize_backs_off_before_retrying(self, monkeypatch):
+        """#132: a failed init must not be re-run on every miss/store."""
+        _reset_engine_singleton(monkeypatch, cooldown=30.0)
+        calls = 0
+
+        async def _initialize(self):
+            nonlocal calls
+            calls += 1
+            raise RuntimeError("model download failed")
+
+        monkeypatch.setattr(EmbeddingEngine, "initialize", _initialize)
+
+        with pytest.raises(RuntimeError, match="model download failed"):
+            await get_embedding_engine()
+        for _ in range(5):
+            with pytest.raises(embedding_module.EmbeddingEngineUnavailableError):
+                await get_embedding_engine()
+        assert calls == 1
+
+        # Once the cooldown has elapsed, the next caller retries.
+        monkeypatch.setattr(embedding_module, "_engine_init_failed_at", time.monotonic() - 31.0)
+        with pytest.raises(RuntimeError, match="model download failed"):
+            await get_embedding_engine()
+        assert calls == 2
+
+    @pytest.mark.asyncio
+    async def test_cancelled_caller_does_not_abandon_or_duplicate_init(self, monkeypatch):
+        """#132: cancelling a waiting caller must not start a second, parallel model load."""
+        _reset_engine_singleton(monkeypatch)
+        calls = 0
+        release = asyncio.Event()
+
+        async def _initialize(self):
+            nonlocal calls
+            calls += 1
+            await release.wait()
+            self._provider = "local"
+            self._model_name = "all-MiniLM-L6-v2"
+
+        monkeypatch.setattr(EmbeddingEngine, "initialize", _initialize)
+
+        first = asyncio.create_task(get_embedding_engine())
+        await asyncio.sleep(0)
+        first.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await first
+
+        second = asyncio.create_task(get_embedding_engine())
+        await asyncio.sleep(0)
+        release.set()
+        engine = await second
+
+        assert calls == 1
+        assert embedding_module._engine is engine
+        assert engine.model_id == "local:all-MiniLM-L6-v2"
+
+
+class TestEmbeddingCacheThreadSafety:
+    def test_concurrent_get_set_from_threads(self):
+        """#132: the LRU is mutated from the loop and from worker threads."""
+        cache = embedding_module._EmbeddingCache(maxsize=16, ttl=300.0)
+        errors: list[BaseException] = []
+        barrier = threading.Barrier(8)
+
+        def _worker(worker_id: int) -> None:
+            try:
+                barrier.wait()
+                for i in range(2000):
+                    text = f"t-{(worker_id * 7 + i) % 64}"
+                    cache.set("local", "m", text, [float(i)])
+                    cache.get("local", "m", text)
+            except BaseException as exc:  # pragma: no cover - failure path
+                errors.append(exc)
+
+        threads = [threading.Thread(target=_worker, args=(n,)) for n in range(8)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=30)
+
+        assert not errors
+        assert len(cache._cache) <= 16
 
 
 class TestLocalModelLoading:

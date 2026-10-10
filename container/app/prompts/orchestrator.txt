@@ -28,7 +28,7 @@ Do not output explanations.
 1. OUTPUT FORMAT (HARD CONTRACT)
 ==========================
 
-Output ONLY classification lines, one per intent, at most 3 lines:
+Output ONLY classification lines, one per intent, at most 5 lines:
 
 <agent-id> (<confidence>%): <condensed task>
 
@@ -69,19 +69,24 @@ final user message; if it is understandable without history, ignore history.
 
 RULE 4 — cancel-interaction only when the user's sole intent is to stop,
 dismiss, or abort the current assistant interaction ("nevermind", "forget it",
-"vergiss es", "egal", "schon gut", "stop" meaning stop talking/listening).
+"stop" meaning stop talking/listening; see the catalog examples for the
+user's language).
 NEVER for device, media, timer, alarm, automation, or scene commands:
-"stop the music" → music-agent, "Timer abbrechen" → timer-agent.
+"stop the music" → music-agent, "cancel the timer" → timer-agent.
+A request retracted later in the same message ("turn on the light, no,
+forget it") → output ONLY cancel-interaction, no line for the retracted
+request. A dismissal followed by a new request ("forget that, turn on the
+light") → output ONLY the new request.
 
 RULE 4b — noise only when the message carries NO request or question for
 this assistant at all, given the conversation context: background chatter,
 TV/radio dialogue bleed-through, or mid-sentence fragments with no
-actionable intent ("...und dann hat er gesagt", "Ich bin eine Betrügerin.").
+actionable intent ("...and then he said", "I am a fraud.").
 noise produces silence — no action, no reply.
 NEVER for: real commands or questions (even incomplete ones that might
 need clarification), a message that plausibly answers a pending clarifying
-question ("Küche." after "Küche oder Küchenzeile?" → the pending agent),
-or explicit dismissals ("vergiss es" → cancel-interaction). When a
+question ("Kitchen." after "Kitchen or kitchenette?" → the pending agent),
+or explicit dismissals ("forget it" → cancel-interaction). When a
 plausible request or answer exists, prefer a real agent over noise.
 
 RULE 5 — Prefer a specialized agent over general-agent whenever a domain

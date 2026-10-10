@@ -33,6 +33,12 @@ failure call ``requeue_failed``.
 from __future__ import annotations
 
 import threading
+from collections import OrderedDict
+
+# Upper bound for remembered per-key invalidations. A store only needs the
+# marks issued while it was in flight (milliseconds on a worker thread), so a
+# bounded window is enough and keeps memory flat.
+_MAX_KEY_INVALIDATIONS = 4096
 
 
 class _CacheState:
@@ -44,6 +50,11 @@ class _CacheState:
         self._hit_since_flush: int = 0
         self._pending_updates: dict[str, tuple[str, dict]] = {}
         self._invalidation_generation: int = 0
+        # Per-key invalidation marks: entry_id -> sequence number at which the
+        # row was deleted. A single-row invalidation must only abort an
+        # in-flight store of THAT row, not every store of the tier.
+        self._key_sequence: int = 0
+        self._key_invalidations: OrderedDict[str, int] = OrderedDict()
 
     # --- store-path helpers -------------------------------------------------
 
@@ -63,6 +74,19 @@ class _CacheState:
     def matches_generation(self, generation: int) -> bool:
         with self._lock:
             return generation == self._invalidation_generation
+
+    def store_token(self) -> tuple[int, int]:
+        """Capture the tier generation and per-key sequence before a store."""
+        with self._lock:
+            return self._invalidation_generation, self._key_sequence
+
+    def store_token_valid(self, token: tuple[int, int], entry_id: str) -> bool:
+        """True when neither a tier flush nor an invalidation of ``entry_id`` ran since ``token``."""
+        generation, sequence = token
+        with self._lock:
+            if generation != self._invalidation_generation:
+                return False
+            return self._key_invalidations.get(entry_id, 0) <= sequence
 
     # --- hit-path helpers ---------------------------------------------------
 
@@ -112,6 +136,23 @@ class _CacheState:
             self._invalidation_generation += 1
             self._pending_updates.clear()
             self._hit_since_flush = 0
+
+    def invalidate_key(self, entry_id: str) -> None:
+        """Single-row invalidation: mark only ``entry_id`` and drop its queued hit update.
+
+        Unlike :meth:`invalidate` this neither bumps the tier-wide generation
+        (which would abort unrelated in-flight stores) nor drops the queued
+        hit counts of other entries.
+        """
+        with self._lock:
+            self._key_sequence += 1
+            self._key_invalidations[entry_id] = self._key_sequence
+            self._key_invalidations.move_to_end(entry_id)
+            while len(self._key_invalidations) > _MAX_KEY_INVALIDATIONS:
+                self._key_invalidations.popitem(last=False)
+            removed = self._pending_updates.pop(entry_id, None)
+            if removed is not None and self._hit_since_flush > 0:
+                self._hit_since_flush -= 1
 
     def discard_pending(self, entry_id: str) -> None:
         """Drop a queued metadata update for one entry, if present."""

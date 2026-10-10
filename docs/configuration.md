@@ -72,7 +72,7 @@ The export and import API surface uses the `action` tier name.
 | `embedding.external_model` | (empty) | string | External model (e.g., `openai/text-embedding-3-small`) |
 | `embedding.dimension` | `768` | int | Embedding vector dimension |
 
-Changing the embedding model requires a container restart; the entity index, routing cache, and session memory are re-embedded automatically.
+Changing the embedding model requires a container restart; the entity index and session memory are re-embedded automatically. Routing-cache vectors are tagged with the model that produced them: vectors from a previous model are dropped when the semantic tier encounters them, and each entry is re-embedded on its next exact hit. A failed embedding-engine initialization is retried after a 30 s cooldown; until then embedding callers fail fast (the routing cache degrades to exact-hash only).
 
 ### Session Memory Settings
 
@@ -146,7 +146,7 @@ relevant route before tuning.
 | Key | Default | Type | Description |
 |-----|---------|------|-------------|
 | `a2a.default_timeout` | `10` | int | Default agent timeout in seconds. Seeded database default is `10`; code fallback if the DB setting is absent is `5`. |
-| `a2a.max_iterations` | `3` | int | Max iterations per agent to prevent loops |
+| `a2a.max_iterations` | `3` | int | Reserved; not read at runtime (no effect) |
 | `a2a.max_dispatch_timeout` | `60` | int | Hard upper bound (seconds) on a single A2A dispatch, regardless of per-agent overrides. |
 | `agent.dispatch_timeout.<agent_id>` | (unset) | int | Per-agent dispatch timeout override; falls back to the agent's `AgentCard.timeout_sec` and then to `a2a.default_timeout`. Capped by `a2a.max_dispatch_timeout`. |
 
@@ -196,7 +196,9 @@ Managed via `GET/PUT /api/admin/personality/config` and the dashboard
 | Key | Default | Type | Description |
 |-----|---------|------|-------------|
 | `home.timezone` | (empty) | string | Override timezone for time/date references in agent prompts. Empty falls back to HA's configured timezone. |
-| `home.location_name` | (empty) | string | Friendly home name surfaced in prompts and the personality pipeline. |
+| `home.location_name` | (empty) | string | Friendly home name surfaced in prompts and the personality pipeline. Empty falls back to HA's configured location name. |
+
+Precedence per field: a non-empty override always wins over HA `/api/config`; without an override the HA value is used, then the last value fetched from HA, then `UTC` / empty. The resolved home context is cached for 1 hour after a successful HA fetch and retried after 60 seconds when HA was unreachable. Override changes apply on the next refresh.
 
 ### General Settings
 
@@ -215,8 +217,8 @@ Each agent has per-agent settings stored in the `agent_configs` table:
 |-------|---------|-------------|
 | `enabled` | `1` | Whether the agent is active |
 | `model` | Varies per agent | LLM model identifier (e.g., `groq/llama-3.1-8b-instant`, `openrouter/openai/gpt-4o-mini`) |
-| `timeout` | `5` | Maximum response time in seconds |
-| `max_iterations` | `3` | Maximum processing iterations |
+| `timeout` | `5` | Per-call LLM provider timeout in seconds. Non-domain agents retry once after a timeout when the dispatch budget still allows it; domain agents never retry a timed-out call |
+| `max_iterations` | `3` | Maximum LLM-to-tool rounds in an MCP tool-calling loop (general and custom agents); afterwards the agent is forced to answer without tools |
 | `temperature` | `0.2` | LLM sampling temperature |
 | `max_tokens` | `1024` | Maximum tokens per LLM response |
 | `reasoning_effort` | (empty); `none` for `rewrite-agent` | Reasoning-effort hint: empty (dashboard "Default") sends no parameter; `none`, `low`, `medium`, or `high` is sent as `reasoning_effort` with `drop_params=True`, so litellm drops it for models it does not list as reasoning-capable. Reasoning models that do not accept the value (for example `none` on gpt-oss or gpt-5) can reject the call. |
@@ -264,6 +266,25 @@ The orchestrator uses a lower temperature (0.3) for consistent intent classifica
 | `wake_briefing.timeout_seconds` | `10` | int | Total budget for composing a wake briefing before falling back |
 | `wake_briefing.composer_prompt` | (see seeded default) | string | System prompt for the wake-briefing composer LLM |
 
+### Home Assistant helper alarms
+
+The alarm monitor rings an `input_datetime` helper (with a time part) only
+when the helper carries the HA label named by `alarm_monitor.label` AND is
+visible to `timer-agent`. Unlabeled helpers are ignored; when helpers exist
+but none carries the label, a warning is logged once after startup.
+
+| Key | Default | Type | Description |
+|-----|---------|------|-------------|
+| `alarm_monitor.label` | `agenthub_alarm` | string | HA label id or name that opts a helper in as an alarm. Letters, digits, `_`, `-`, and spaces only. Empty disables helper alarms. |
+
+Notification targets for timers and alarms (assist satellites and media
+players found through the origin device or the origin room) must be visible
+to `timer-agent`. Deferred device actions (`delayed_action`, sleep timers)
+are checked against the visibility rules of the agent that owns the target
+domain (for example `light-agent` for `light.*`, `security-agent` for
+`lock.*`), and only argument-free services on a per-domain allow-list can be
+scheduled; unlocking and disarming are never schedulable.
+
 Internal helper agents (`filler-agent`, `rewrite-agent`,
 `mediation`, `notification-dispatcher`, `cancel-speech`,
 `language-detect`, `sanitize`, `alarm-monitor`)
@@ -276,7 +297,7 @@ configuration.
 | Key | Default | Type | Description |
 |-----|---------|------|-------------|
 | `calendar.reminder_injection.enabled` | `true` | bool | Enable proactive calendar reminder injection into orchestrator responses |
-| `calendar.reminder_injection.offsets` | `[1440, 60, 15]` | json | Reminder offset markers in minutes |
+| `calendar.reminder_injection.offsets` | `[1440, 60, 15]` | json | Reminder offset markers in minutes; per event only the closest applicable offset fires, once |
 | `calendar.reminder_injection.lookahead_hours` | `24` | int | How many hours ahead to look for upcoming calendar events |
 
 ## Custom Agents
@@ -305,7 +326,9 @@ Entity visibility for custom agents applies to entity-resolution helpers
 and HA-facing action paths that a custom agent uses through AgentHub's
 container runtime. LLM-only prompt text is not an entity access-control
 boundary by itself, and MCP tools must still be treated as trusted
-in-process capabilities scoped by their own tool behavior.
+in-process capabilities scoped by their own tool behavior: tool calls
+that name a hidden `entity_id` are rejected, but name- or area-based
+tool arguments are not mapped to entities (see the MCP section below).
 
 ## Entity Matching Configuration
 
@@ -316,7 +339,7 @@ Entity matching signal weights are stored in the `entity_matching_config` table 
 - **Phonetic matching** -- Soundex/Metaphone for sound-alike names
 - **Alias lookup** -- Exact match from the aliases table
 
-Aliases are managed in the `aliases` table and can be created/deleted from the admin dashboard. Example: alias "nightstand lamp" resolves to `light.bedroom_nightstand`.
+Aliases are managed in the `aliases` table and can be created/deleted from the admin dashboard. Example: alias "nightstand lamp" resolves to `light.bedroom_nightstand`. Optional user aliases from `/data/entity_aliases.yaml` are written to the same table during the entity-index prime, and the alias cache is reloaded afterwards. A query that equals an alias (after the shared folding) is an exact deterministic match; visibility rules and the executor's allowed domains still apply.
 
 ## Cache Configuration
 
@@ -342,6 +365,14 @@ MCP (Model Context Protocol) servers are managed through the admin dashboard or 
 - **Timeout**: Connection timeout in seconds (default: 30)
 
 MCP tools are discovered automatically after connection and can be assigned to specific agents.
+
+Tool-calling runtime limits (`app/agents/tool_calling.py`, `app/llm/client.py`):
+
+- **Exact tool names only:** a tool call is executed only when its name matches an assigned tool exactly (a leaked `<|...|>` control-token suffix is stripped). Unknown or misspelled names are never remapped to another tool; the LLM receives an error listing the valid names.
+- **Round limit:** the agent's `max_iterations` config bounds the LLM-to-tool rounds.
+- **Whole-loop deadline:** the loop is bounded by the agent's dispatch budget (`agent.dispatch_timeout.<agent_id>`, else the agent card's `timeout_sec`, capped by `a2a.max_dispatch_timeout`, minus 0.5 s). Provider timeouts and tool calls are clamped to the remaining budget, one second is reserved for the final answer, and the loop forces the final answer when less than one second remains.
+- **Result size:** each tool result is truncated to 8000 characters before it is fed back to the LLM.
+- **Entity visibility guard:** before a tool runs, every entity-id-shaped token in its arguments that exists in the entity index is checked against the agent's visibility rules; a reference to a hidden entity rejects the call. See [plugin-development.md](plugin-development.md) for the limits of this guard.
 
 ## Security Configuration
 

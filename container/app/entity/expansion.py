@@ -128,6 +128,10 @@ class QueryExpansionService:
                     return cached
 
                 expansions = await self._call_llm(norm, lang_key, (index_language or "").strip().lower())
+                if expansions is None:
+                    # LLM unavailable / failed / unparsable: never cache a
+                    # failure as "no synonyms" -- the next miss retries.
+                    return []
                 try:
                     await self._cache.put(norm, lang_key, expansions)
                 except Exception:
@@ -157,12 +161,18 @@ class QueryExpansionService:
         self._prompt_template = await load_query_expansion_prompt_template_async(self._prompt_path)
         return self._prompt_template
 
-    async def _call_llm(self, token: str, source_language: str, index_language: str) -> list[str]:
+    async def _call_llm(self, token: str, source_language: str, index_language: str) -> list[str] | None:
+        """Ask the LLM for expansions.
+
+        Returns the validated list (possibly empty: a real "no synonyms"
+        answer, cacheable) or ``None`` on any failure (no LLM, no prompt,
+        call error, empty or unparsable reply), which must not be cached.
+        """
         if self._llm_call is None:
-            return []
+            return None
         template = await self._get_prompt_template()
         if template is None:
-            return []
+            return None
         prompt_token = wrap_user_input(token)
         prompt = (
             template.replace("{token}", prompt_token)
@@ -171,11 +181,13 @@ class QueryExpansionService:
         )
         try:
             raw = await self._llm_call(prompt)
+        except asyncio.CancelledError:
+            raise
         except Exception:
             logger.debug("LLM expansion call failed", exc_info=True)
-            return []
+            return None
         if not raw:
-            return []
+            return None
         text = raw.strip()
         # Strip markdown fences if present.
         if text.startswith("```"):
@@ -184,5 +196,8 @@ class QueryExpansionService:
         try:
             data = json.loads(text)
         except Exception:
-            return []
-        return _validate_expansions(data.get("expansions") if isinstance(data, dict) else None)
+            logger.debug("LLM expansion reply is not valid JSON", exc_info=True)
+            return None
+        if not isinstance(data, dict):
+            return None
+        return _validate_expansions(data.get("expansions"))

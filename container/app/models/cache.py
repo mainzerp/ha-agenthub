@@ -48,6 +48,10 @@ class ActionCacheEntry(BaseModel):
     rewrite_applied: bool = False
     rewrite_latency_ms: float | None = None
     validated_at: str | None = None
+    # True when the turn depended on conversation context (a follow-up answer
+    # or an anaphoric reference resolved through last_entities). Such turns
+    # are never stored; the flag lets replay reject any row that carries it.
+    context_dependent: bool = False
 
 
 class RoutingCacheEntry(BaseModel):
@@ -62,3 +66,6 @@ class RoutingCacheEntry(BaseModel):
     last_accessed: str | None = None
     hit_count: int = 0
     schema_version: int = 6
+    # "<provider>:<model>" of the embedding engine that produced the entry's
+    # semantic-tier vector; None for entries stored without a vector.
+    embedding_model: str | None = None
