@@ -53,11 +53,22 @@ class TestWsAdvanced:
             assert trace2 is not None and len(trace2) == 16
             assert trace1 != trace2
 
-    async def test_ws_rate_limit_returns_error(self, light_scenario_app, _reset_rate_limit_store):
+    async def test_ws_rate_limit_returns_error(self, light_scenario_app, _reset_rate_limit_store, monkeypatch):
         """Exceed 20 burst messages; expect rate-limit error JSON."""
         from fastapi.testclient import TestClient
 
         from app.api.routes import conversation as conv_routes
+        from app.middleware.rate_limit import WsMessageRateLimiter
+
+        # The test talks in lockstep (send, then receive), so with the real
+        # 10/s refill a slow round trip (>= 100 ms under load) refills the
+        # bucket as fast as it drains and the limit is never reached. A
+        # zero-refill bucket makes the 21st message the first rejection.
+        monkeypatch.setattr(
+            conv_routes,
+            "WsMessageRateLimiter",
+            lambda rate, burst: WsMessageRateLimiter(rate=0.0, burst=burst),
+        )
 
         old_dispatcher = conv_routes._dispatcher
 
@@ -75,17 +86,19 @@ class TestWsAdvanced:
                         "/ws/conversation",
                         headers={"Authorization": "Bearer test-api-key"},
                     ) as ws:
-                        for _ in range(100):
+                        for sent in range(1, 101):
                             ws.send_json({"text": "x"})
                             msg = ws.receive_json()
                             if msg.get("error") == "Rate limit exceeded":
-                                return msg
+                                return sent, msg
                 finally:
                     conv_routes._dispatcher = old_dispatcher
             return None
 
-        result = await asyncio.to_thread(_flood)
-        assert result is not None
+        flood = await asyncio.to_thread(_flood)
+        assert flood is not None
+        sent, result = flood
+        assert sent == 21
         assert result.get("error") == "Rate limit exceeded"
         assert "retry_after_ms" in result
         # M-1: the rejection is a terminal frame so the HA read loop ends.
