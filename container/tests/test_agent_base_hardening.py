@@ -660,6 +660,14 @@ class TestEntityNotFoundPrompt:
     def test_prompt_is_preloaded(self):
         assert "entity_not_found" in _KNOWN_PROMPT_NAMES
 
+    def test_every_prompt_file_is_preloaded(self):
+        """#132: every shipped prompt (e.g. timer_announcement) is warmed at startup."""
+        from app.agents.base import _PROMPTS_DIR
+
+        shipped = {path.stem for path in _PROMPTS_DIR.glob("*.txt")}
+        assert "timer_announcement" in shipped
+        assert shipped <= set(_KNOWN_PROMPT_NAMES)
+
     async def test_prompt_load_failure_falls_back_to_template(self):
         agent = _light_agent()
         agent._call_llm = AsyncMock(return_value="unused")
