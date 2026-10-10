@@ -213,7 +213,6 @@ async def test_read_only_action_stores_routing_only_entry():
     orch._cache_manager = MagicMock()
     orch._cache_manager.store_routing_async = AsyncMock()
     orch._cache_manager.store_action_async = AsyncMock()
-    orch._legacy_pipeline_enabled = MagicMock(return_value=False)
     orch._get_bool_setting = AsyncMock(return_value=True)
     orch._cache_orchestrator = CacheOrchestrator(cache_manager=orch._cache_manager)
     orch._cache_orchestrator._get_bool_setting_impl = AsyncMock(return_value=True)
@@ -247,7 +246,6 @@ async def test_conversational_answer_without_action_is_not_stored():
     orch._cache_manager = MagicMock()
     orch._cache_manager.store_routing_async = AsyncMock()
     orch._cache_manager.store_action_async = AsyncMock()
-    orch._legacy_pipeline_enabled = MagicMock(return_value=False)
     orch._get_bool_setting = AsyncMock(return_value=True)
     orch._cache_orchestrator = CacheOrchestrator(cache_manager=orch._cache_manager)
     orch._cache_orchestrator._get_bool_setting_impl = AsyncMock(return_value=True)
@@ -274,7 +272,6 @@ async def test_multi_agent_merge_does_not_store_routing():
     orch._cache_manager = MagicMock()
     orch._cache_manager.store_routing_async = AsyncMock()
     orch._cache_manager.store_action_async = AsyncMock()
-    orch._legacy_pipeline_enabled = MagicMock(return_value=False)
     orch._get_bool_setting = AsyncMock(return_value=True)
     orch._cache_orchestrator = CacheOrchestrator(cache_manager=orch._cache_manager)
     orch._cache_orchestrator._get_bool_setting_impl = AsyncMock(return_value=True)
@@ -349,7 +346,6 @@ async def test_conditional_action_is_not_stored():
     orch._cache_manager = MagicMock()
     orch._cache_manager.store_routing_async = AsyncMock()
     orch._cache_manager.store_action_async = AsyncMock()
-    orch._legacy_pipeline_enabled = MagicMock(return_value=False)
     orch._get_bool_setting = AsyncMock(return_value=True)
     orch._cache_orchestrator = CacheOrchestrator(cache_manager=orch._cache_manager)
     orch._cache_orchestrator._get_bool_setting_impl = AsyncMock(return_value=True)
@@ -420,7 +416,6 @@ async def test_conditional_action_in_service_data_is_not_stored():
     orch._cache_manager = MagicMock()
     orch._cache_manager.store_routing_async = AsyncMock()
     orch._cache_manager.store_action_async = AsyncMock()
-    orch._legacy_pipeline_enabled = MagicMock(return_value=False)
     orch._get_bool_setting = AsyncMock(return_value=True)
     orch._cache_orchestrator = CacheOrchestrator(cache_manager=orch._cache_manager)
     orch._cache_orchestrator._get_bool_setting_impl = AsyncMock(return_value=True)
@@ -597,7 +592,6 @@ async def test_store_after_dispatch_stores_routing_without_entity_candidates():
     orch._cache_manager = MagicMock()
     orch._cache_manager.store_routing_async = AsyncMock()
     orch._cache_manager.store_action_async = AsyncMock()
-    orch._legacy_pipeline_enabled = MagicMock(return_value=False)
     orch._get_bool_setting = AsyncMock(return_value=True)
     orch._cache_orchestrator = CacheOrchestrator(cache_manager=orch._cache_manager)
     orch._cache_orchestrator._get_bool_setting_impl = AsyncMock(return_value=True)
@@ -622,10 +616,10 @@ async def test_store_after_dispatch_stores_routing_without_entity_candidates():
 
 
 @pytest.mark.asyncio
-async def test_served_routing_entry_invalidated_when_cached_agent_turn_fails():
-    """R-B: a routing-cached turn whose agent resolved no entity (pool
-    count 0 / failed action) invalidates the served entry at
-    finalization."""
+async def test_served_routing_entry_kept_when_cached_agent_asks_clarification():
+    """R-B: a routing-cached turn that ends in the agent's clarifying question
+    passes ``clarifying_question=True`` -- the routing was right, so the
+    served entry is not invalidated (the call is a no-op)."""
     orch = _make_orchestrator(MagicMock())
     orch._store_turn = AsyncMock()
     orch._store_after_dispatch = AsyncMock(return_value=(False, False))
@@ -651,7 +645,7 @@ async def test_served_routing_entry_invalidated_when_cached_agent_turn_fails():
     )
 
     orch._cache_orchestrator.invalidate_served_routing.assert_awaited_once_with(
-        "route-poisoned", reason="cached_agent_turn_failed"
+        "route-poisoned", reason="cached_agent_turn_failed", clarifying_question=True
     )
 
 
@@ -686,9 +680,9 @@ async def test_served_routing_entry_kept_when_cached_agent_turn_succeeds():
 
 
 @pytest.mark.asyncio
-async def test_served_routing_entry_invalidated_when_no_action_executed():
-    """R-B: action_executed=None on a routing-cached turn also counts as a
-    failed turn and invalidates the served entry."""
+async def test_served_routing_entry_unresolved_clarification_is_not_a_failure():
+    """R-B: action_executed=None with an agent clarifying question is flagged
+    as a clarification, not as a failed turn."""
     orch = _make_orchestrator(MagicMock())
     orch._store_turn = AsyncMock()
     orch._store_after_dispatch = AsyncMock(return_value=(False, False))
@@ -714,7 +708,7 @@ async def test_served_routing_entry_invalidated_when_no_action_executed():
     )
 
     orch._cache_orchestrator.invalidate_served_routing.assert_awaited_once_with(
-        "route-unresolved", reason="cached_agent_turn_failed"
+        "route-unresolved", reason="cached_agent_turn_failed", clarifying_question=True
     )
 
 
@@ -750,7 +744,7 @@ async def test_poisoned_turn_does_not_restore_routing_entry():
     )
 
     orch._cache_orchestrator.invalidate_served_routing.assert_awaited_once_with(
-        "route-poisoned", reason="cached_agent_turn_failed"
+        "route-poisoned", reason="cached_agent_turn_failed", clarifying_question=False
     )
     orch._store_after_dispatch.assert_not_awaited()
 
@@ -785,6 +779,116 @@ async def test_successful_served_turn_still_stores_cache():
 
     orch._cache_orchestrator.invalidate_served_routing.assert_not_awaited()
     orch._store_after_dispatch.assert_awaited_once()
+
+
+async def _finalize_success(orch, *, reminder_applied, mediated_followup=False):
+    await orch._finalize_post_mediation(
+        task=_make_task("schalte das licht in der kueche ein"),
+        user_text="schalte das licht in der kueche ein",
+        target_agent="light-agent",
+        confidence=1.0,
+        condensed_task="Turn on kitchen light",
+        mediated_speech="Erledigt, das Kuechenlicht ist an.",
+        original_speech="Done, the kitchen light is on.",
+        action_executed={"action": "turn_on", "entity_id": "light.kitchen", "success": True},
+        has_error=False,
+        span_collector=None,
+        conversation_id="conv-routing-cache",
+        language="de",
+        turns=[],
+        classifications=[("light-agent", "Turn on kitchen light", 1.0)],
+        voice_followup_requested=False,
+        mediated_followup=mediated_followup,
+        reminder_applied=reminder_applied,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("reminder_applied", "mediated_followup", "expected"),
+    [(False, False, False), (True, False, True), (False, True, True), (None, False, None)],
+)
+async def test_finalize_flags_turn_additions(reminder_applied, mediated_followup, expected):
+    """#132: mediated speech without reminder or organic follow-up question is
+    flagged addition-free (the cache keeps the localized text as rewrite
+    fallback); a reminder or follow-up marks additions; unknown stays unknown."""
+    orch = _make_orchestrator(MagicMock())
+    orch._store_turn = AsyncMock()
+    orch._store_after_dispatch = AsyncMock(return_value=(True, False))
+
+    await _finalize_success(orch, reminder_applied=reminder_applied, mediated_followup=mediated_followup)
+
+    assert orch._store_after_dispatch.await_args.kwargs["speech_has_turn_additions"] is expected
+
+
+def _store_kwargs(task: IngressTask, **overrides):
+    kwargs = {
+        "user_text": task.description,
+        "language": "de",
+        "target_agent": "light-agent",
+        "condensed_task": "Turn on kitchen light",
+        "confidence": 1.0,
+        "speech": "Erledigt, das Kuechenlicht ist an.",
+        "original_response_text": "Done, the kitchen light is on.",
+        "action_executed": {"action": "turn_on", "entity_id": "light.kitchen", "success": True},
+        "has_error": False,
+        "task": task,
+    }
+    kwargs.update(overrides)
+    return kwargs
+
+
+def _storing_cache_orchestrator() -> tuple[CacheOrchestrator, MagicMock]:
+    cache_manager = MagicMock()
+    cache_manager.store_action_async = AsyncMock()
+    cache_manager.store_routing_async = AsyncMock()
+    co = CacheOrchestrator(cache_manager=cache_manager)
+    co._get_bool_setting_impl = AsyncMock(return_value=True)
+    return co, cache_manager
+
+
+@pytest.mark.asyncio
+async def test_store_after_dispatch_keeps_localized_fallback():
+    """#132: without turn additions the stored replay fallback is the mediated
+    (localized) speech, not the English agent template."""
+    co, cache_manager = _storing_cache_orchestrator()
+    task = _make_task("schalte das licht in der kueche ein")
+
+    stored = await co.store_after_dispatch(**_store_kwargs(task, speech_has_turn_additions=False))
+
+    assert stored == (True, False)
+    entry = cache_manager.store_action_async.await_args.args[0]
+    assert entry.response_text == "Erledigt, das Kuechenlicht ist an."
+    assert entry.original_response_text == "Done, the kitchen light is on."
+
+
+@pytest.mark.asyncio
+async def test_background_turn_stores_no_cache_row():
+    """#132: background-sourced turns (wake briefings) never write cache rows."""
+    co, cache_manager = _storing_cache_orchestrator()
+    task = _make_task("top news today. Return 3 concise headlines.")
+    task.context.source = "background"
+
+    stored = await co.store_after_dispatch(**_store_kwargs(task))
+
+    assert stored == (False, False)
+    cache_manager.store_action_async.assert_not_awaited()
+    cache_manager.store_routing_async.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_background_turn_is_not_stored_as_conversation_turn():
+    """#132: the store_turn funnel drops background turns (no history, no DB
+    row, no session-memory indexing)."""
+    from app.agents.conversation_manager import ConversationManager
+
+    manager = ConversationManager()
+    with patch("app.agents.conversation_manager.ConversationRepository") as repo:
+        repo.insert = AsyncMock(return_value=1)
+        await manager.store_turn("conv-bg", "briefing prompt", "Good morning.", source="background")
+
+    repo.insert.assert_not_awaited()
+    assert "conv-bg" not in manager._conversations
 
 
 class TestRoutingCachePersistence:

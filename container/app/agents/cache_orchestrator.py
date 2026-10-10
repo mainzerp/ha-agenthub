@@ -9,7 +9,6 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
-import os
 import time
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
@@ -146,10 +145,6 @@ class CacheOrchestrator:
     @property
     def cache_manager(self) -> CacheManager | None:
         return self._cache_manager
-
-    @staticmethod
-    def legacy_pipeline_enabled() -> bool:
-        return os.environ.get("ORCHESTRATOR_LEGACY_PIPELINE") == "1"
 
     @staticmethod
     def bool_setting_default(default: bool) -> str:
@@ -488,8 +483,14 @@ class CacheOrchestrator:
         the stored replay fallback; otherwise (``True`` or unknown) the base
         agent speech is stored so a later replay never repeats a stale
         reminder or question.
+
+        Background turns (``source="background"``, e.g. wake briefings) never
+        store a cache row: their synthetic prompts are not user phrasings.
         """
         if merged_multi_agent or not self._cache_manager or not speech or has_error:
+            return False, False
+        task_context = getattr(task, "context", None) if task is not None else None
+        if getattr(task_context, "source", None) == "background":
             return False, False
         if not await self._get_bool_setting_impl("cache.enabled", True):
             return False, False
