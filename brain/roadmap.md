@@ -33,7 +33,8 @@ Live pipeline in board format — headings are columns, cards are
   `localize_message` when no personality mediation runs (streaming holds
   the final chunk). `speech_source` in agent metadata and spans. Prompts:
   light, climate, cover, vacuum, security, media, music, automation,
-  scene; timer/lists/calendar unchanged. Uncommitted on main.
+  scene; timer/lists/calendar unchanged. Branch fix/agent-speech-language,
+  commit 3a5cb41, PR #148; not released yet.
   Passed: ruff check/format clean; container suite (combined state with
   the rewrite card) green, see VERSION.md Recent Changes.
   Needs user verification after deploying: "Licht auf 50%" -> German
@@ -47,7 +48,8 @@ Live pipeline in board format — headings are columns, cards are
   ends with `Rephrase in <language>:` and rewrite.txt puts the language rule
   first; `/api/admin/rewrite/config` reads/writes the rewrite-agent's agent
   config; dead `rewrite.model`/`rewrite.temperature` dropped (migration 47).
-  Found in live trace 8a2d684b41ed4ebc. Uncommitted on main.
+  Found in live trace 8a2d684b41ed4ebc. Branch fix/agent-speech-language,
+  commit 8587c05, PR #148; not released yet.
   Passed: ruff check/format clean; container suite 4079 passed, 1 skipped.
   Needs user verification: review the diff; confirm PATCH classification
   for the settings removal; after deploying, German cache hits answer in
