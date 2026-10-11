@@ -25,6 +25,33 @@ Live pipeline in board format — headings are columns, cards are
 
 ## Testing
 
+- Pipeline review 2026-10-10: fix all findings (#132) · priority: P1 · area: core
+  Outcome: every finding of the end-to-end pipeline review fixed or skipped
+  with reason. PRs #133-#141 and #143 merged; issue #132 closed. Shipped in
+  v3.0.0 (PR #142, https://github.com/mainzerp/ha-agenthub/releases/tag/v3.0.0).
+  Passed: container suite 3980 passed (1 skipped), bridge 163 passed, ruff
+  clean; release pipeline (quality, security, docker, Trivy, release) green;
+  local scripts/ci.py --no-trivy green before #143.
+  Needs user verification on live after deploying 3.0.0: (1) only if HA
+  helper alarms are used: label them `agenthub_alarm`, set a helper time ->
+  it rings (otherwise set `alarm_monitor.label` empty); (2) timer
+  ends -> announcement on the origin satellite; (3) "Weck mich morgen um 7"
+  -> alarm listed for tomorrow 07:00; (4) "Licht auf 50%" on a lit lamp ->
+  brightness changes; (5) two same-named lamps -> clarification question,
+  answer "die in der Kueche" -> correct lamp; (6) voice automation create ->
+  confirmation question (automation-agent needs device-domain include rules);
+  (7) a German error path speaks German.
+  Follow-up shipped in v3.0.1 (PRs #144, #145, release #146,
+  https://github.com/mainzerp/ha-agenthub/releases/tag/v3.0.1): per-action
+  `entity_actions`/`entity_free_actions` declarations; empty recall forbids
+  only device actions; timer, lists and calendar accept an empty entity
+  (calendar few-shots previously failed to parse); clarifying questions reach
+  the user. Pre-existing since v1.51.0 (live trace ee04c7d717754dfe).
+  Passed: container 4069, bridge 163, ci.py --no-trivy, release pipeline.
+  Needs user verification on live: "Stell einen Timer auf 5 Minuten",
+  "Timer abbrechen" (one running timer), "Was steht heute im Kalender",
+  "Welche Lichter gibt es" -> all answer without "could not understand".
+
 - Embedding engine init race + flaky scenario tests · priority: P1 · area: embedding
   Outcome: `get_embedding_engine` publishes the singleton only after a
   successful init; the local model loads off the event loop under a lock;
@@ -158,3 +185,9 @@ Live pipeline in board format — headings are columns, cards are
 - AI-powered automation suggestions · priority: idea · area: agents
 - Natural-language dashboard creation · priority: idea · area: dashboard
 - Security-agent sentinel mode (deferred — needs trigger contract + UI) · priority: P3 · area: agents
+- Dashboard JS/CSS linting via standalone Biome pre-commit hook · priority: idea · area: dashboard
+  Scope: `container/app/dashboard/static/` minus `vendor/` (3 JS files ~750
+  lines, 24 CSS files ~2,800 lines); no package.json, no agent rule files.
+  Inline `<script>` in Jinja2 templates (~3,250 lines) stays uncovered.
+  Must keep CSS variable names stable (docs/style-guide.md). Ultracite
+  rejected 2026-10-10: Node toolchain + writes TS/React rules into AGENTS.md.
