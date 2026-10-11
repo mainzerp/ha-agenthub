@@ -32,8 +32,9 @@ Live pipeline in board format — headings are columns, cards are
   Passed: container suite 3980 passed (1 skipped), bridge 163 passed, ruff
   clean; release pipeline (quality, security, docker, Trivy, release) green;
   local scripts/ci.py --no-trivy green before #143.
-  Needs user verification on live after deploying 3.0.0: (1) label alarm
-  helpers `agenthub_alarm` in HA, set a helper time -> it rings; (2) timer
+  Needs user verification on live after deploying 3.0.0: (1) only if HA
+  helper alarms are used: label them `agenthub_alarm`, set a helper time ->
+  it rings (otherwise set `alarm_monitor.label` empty); (2) timer
   ends -> announcement on the origin satellite; (3) "Weck mich morgen um 7"
   -> alarm listed for tomorrow 07:00; (4) "Licht auf 50%" on a lit lamp ->
   brightness changes; (5) two same-named lamps -> clarification question,
