@@ -1528,6 +1528,40 @@ class TestRewriteAgentReasoningEffortDefault:
         assert len(other) == 1
         assert len(schema_versions) == 1
 
+    async def test_seed_rewrite_agent_temperature(self, db_repository):
+        async with aiosqlite.connect(str(db_repository)) as db:
+            row = await (
+                await db.execute("SELECT temperature FROM agent_configs WHERE agent_id = 'rewrite-agent'")
+            ).fetchone()
+
+        assert row[0] == 0.5
+
+    @pytest.mark.parametrize(("before", "after"), [(0.8, 0.5), (0.3, 0.3)])
+    async def test_migration_v48_lowers_default_rewrite_temperature(self, db_repository, before, after):
+        from app.db.schema import _run_migrations
+
+        async with aiosqlite.connect(str(db_repository)) as db:
+            await db.execute(
+                "UPDATE agent_configs SET temperature = ? WHERE agent_id = 'rewrite-agent'",
+                (before,),
+            )
+            await db.execute("DELETE FROM schema_version WHERE version >= 48")
+            await db.commit()
+
+            await _run_migrations(db)
+            await _run_migrations(db)
+            await db.commit()
+
+            row = await (
+                await db.execute("SELECT temperature FROM agent_configs WHERE agent_id = 'rewrite-agent'")
+            ).fetchone()
+            schema_versions = await (
+                await db.execute("SELECT version FROM schema_version WHERE version = 48")
+            ).fetchall()
+
+        assert row[0] == after
+        assert len(schema_versions) == 1
+
     async def test_seed_without_column_then_migrations_set_none(self, tmp_path):
         # Databases older than migration 11 lack the column when the seed runs;
         # the seed must not fail and the migrations must apply the default.

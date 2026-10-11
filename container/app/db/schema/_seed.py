@@ -570,7 +570,7 @@ async def _seed_defaults(db: aiosqlite.Connection) -> None:
             512,
             "Send content to devices via notification or TTS",
         ),
-        ("rewrite-agent", 0, "groq/llama-3.1-8b-instant", 2, 1, 0.8, 1024, "Cached response phrasing variation"),
+        ("rewrite-agent", 0, "groq/llama-3.1-8b-instant", 2, 1, 0.5, 1024, "Cached response phrasing variation"),
         ("filler-agent", 1, None, 3, 1, 0.7, 1024, "Interim filler TTS phrase generation"),
     ]
 

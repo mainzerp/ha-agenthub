@@ -221,7 +221,7 @@ class TestRewriteConfig:
             resp = await client.get("/api/admin/rewrite/config")
 
         assert resp.status_code == 200
-        assert resp.json() == {"model": "groq/llama-3.1-8b-instant", "temperature": 0.8}
+        assert resp.json() == {"model": "groq/llama-3.1-8b-instant", "temperature": 0.5}
 
     async def test_put_rewrite_config_updates_only_provided_fields(self, db_repository):
         app = _build_app()
