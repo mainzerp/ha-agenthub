@@ -963,7 +963,7 @@ class TestMigrationV2:
         orchestrator = await AgentConfigRepository.get("orchestrator")
         assert orchestrator["temperature"] == 0.3
         rewrite = await AgentConfigRepository.get("rewrite-agent")
-        assert rewrite["temperature"] == 0.8
+        assert rewrite["temperature"] == 0.5
 
     async def test_migration_v2_skips_user_modified_temperatures(self, db_repository):
         """Migration should not overwrite user-customized temperature values."""
