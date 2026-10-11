@@ -1,18 +1,26 @@
 # Version
 
-**Current Version:** 3.0.1
+**Current Version:** 3.1.0
 
 ## Recent Changes
 
-(tracking changes since 3.0.1)
-
-- Cache: the rewrite span records the target `language` it asked for; the rewrite user message ends with `Rephrase in <language>:` and `rewrite.txt` puts the output-language rule first, so small models stop echoing the cached English template on German cache hits (live trace 8a2d684b41ed4ebc).
-- Dashboard API: `GET/PUT /api/admin/rewrite/config` read and write the rewrite-agent's per-agent LLM config (same response shape; GET returns 404 if that agent row is missing). The dead `rewrite.model` / `rewrite.temperature` settings are no longer seeded and migration 47 deletes them; the rewrite call never read them.
-- Rewrite agent: default temperature lowered from 0.8 to 0.5 (seed; migration 48 updates rows still on 0.8, an explicit admin choice is kept).
-- Agents: device-agent action blocks carry an optional `confirmation` sentence (user language, completed state plus requested values). It replaces the English executor template only when the action's verification reached the target state, the action is not a toggle, and every number matches the action parameters, entity or device name; otherwise the template or hedge stays. Prompts for light, climate, cover, vacuum, security, media, music, automation and scene document the field and drop the discarded prose after the JSON block. `metadata.speech_source` (`confirmation` / `template` / `mixed` / `llm`) and the `ha_action` / `return` spans record which text was spoken.
-- Orchestrator: template or mixed speech in a non-English turn without personality mediation is localized via `localize_message` (streaming holds the single final chunk back and sends the localized text in the terminal frame); English, confirmation and LLM speech relay unchanged.
+(tracking changes since 3.1.0)
 
 ## Version History
+
+### 3.1.0 (MINOR) -- agents answer in the user's language
+
+(PR #148: commits 8587c05, 3a5cb41, 92d9824, 915886c)
+
+- Agents: device-agent action blocks carry an optional `confirmation` sentence (user language, completed state plus requested values). It replaces the English executor template only when the action's verification reached the target state, the action is not a toggle, and every number matches the action parameters, entity or device name (digits-only comparison); sensitive parameter values reject it. Otherwise the template or hedge stays. Prompts for light, climate, cover, vacuum, security, media, music, automation and scene document the field and drop the discarded prose after the JSON block (3a5cb41).
+- Traces: `metadata.speech_source` (`confirmation` / `template` / `mixed` / `llm`) and the `ha_action` / `return` spans record which text was spoken; `ha_action` also records the redacted `confirmation` and `confirmation_rejected_reason` (3a5cb41).
+- Orchestrator: template or mixed speech in a non-English turn without personality mediation is localized via `localize_message`; streaming holds the single final chunk back and sends the localized text in the terminal frame. English, confirmation and LLM speech relay unchanged (3a5cb41).
+- Cache: the rewrite user message ends with `Rephrase in <language>:`, `rewrite.txt` puts the output-language rule first, and the rewrite span records the requested `language`; cache entries now store the confirmation, so replays rephrase instead of translate (live trace 8a2d684b41ed4ebc) (8587c05, 3a5cb41).
+- Dashboard API: `GET/PUT /api/admin/rewrite/config` read and write the rewrite-agent's per-agent LLM config (same shape; GET returns 404 if that agent row is missing). Removed: the never-read `rewrite.model` / `rewrite.temperature` settings (no longer seeded; migration 47 deletes them) (8587c05).
+- Rewrite agent: default temperature lowered from 0.8 to 0.5 (seed; migration 48 updates rows still on 0.8, an explicit admin choice is kept) (92d9824, 915886c).
+- Docs: architecture (confirmation contract, template localization), api-reference and configuration (rewrite config source), `new-agent` skill (`confirmation` field) (8587c05, 3a5cb41).
+- Verification: 4170 container tests passed (1 skipped, 9 xfailed, 3 xpassed), 163 integration tests passed; Ruff lint and format, bandit, pip-audit and the coverage gate (84.33%) passed in a local `scripts/ci.py --no-trivy` run; the local docker build did not run (Docker daemon not available), so docker build, smoke test and Trivy are covered by the release pipeline.
+- Behavior change (no action needed): non-English users hear device replies in their language even without a personality; migrations 47 and 48 run automatically.
 
 ### 3.0.1 (PATCH) -- entity-free actions and timer/calendar parsing
 
