@@ -34,9 +34,11 @@ Live pipeline in board format — headings are columns, cards are
   the final chunk). `speech_source` in agent metadata and spans. Prompts:
   light, climate, cover, vacuum, security, media, music, automation,
   scene; timer/lists/calendar unchanged. Branch fix/agent-speech-language,
-  commit 3a5cb41, PR #148; not released yet.
-  Passed: ruff check/format clean; container suite (combined state with
-  the rewrite card) green, see VERSION.md Recent Changes.
+  commit 3a5cb41, PR #148. Shipped in v3.1.0 (release PR #149,
+  https://github.com/mainzerp/ha-agenthub/releases/tag/v3.1.0).
+  Passed: ruff check/format clean; container suite 4170 passed, bridge
+  163 passed; ci.py --no-trivy green except local docker (no daemon);
+  release pipeline (quality, security, docker, Trivy, release) green.
   Needs user verification after deploying: "Licht auf 50%" -> German
   sentence naming 50 %, `ha_action` span `speech_source=confirmation`;
   "Licht umschalten" -> template path (`toggle`); with personality the
@@ -49,7 +51,8 @@ Live pipeline in board format — headings are columns, cards are
   first; `/api/admin/rewrite/config` reads/writes the rewrite-agent's agent
   config; dead `rewrite.model`/`rewrite.temperature` dropped (migration 47).
   Found in live trace 8a2d684b41ed4ebc. Branch fix/agent-speech-language,
-  commit 8587c05, PR #148; not released yet.
+  commit 8587c05, PR #148; default temperature 0.5 (migration 48).
+  Shipped in v3.1.0 (release PR #149, https://github.com/mainzerp/ha-agenthub/releases/tag/v3.1.0).
   Passed: ruff check/format clean; container suite 4079 passed, 1 skipped.
   Needs user verification: review the diff; confirm PATCH classification
   for the settings removal; after deploying, German cache hits answer in
