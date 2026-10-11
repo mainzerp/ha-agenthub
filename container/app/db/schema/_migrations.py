@@ -995,6 +995,18 @@ async def _migrate_to_46(db: aiosqlite.Connection) -> None:
     await db.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (46)")
 
 
+async def _migrate_to_47(db: aiosqlite.Connection) -> None:
+    # Migration 47: drop the dead ``rewrite.model`` / ``rewrite.temperature``
+    # settings. The rewrite call always used the rewrite-agent's per-agent
+    # LLM config, and GET/PUT /api/admin/rewrite/config now read and write
+    # that config too, so the rows have no reader left.
+    await db.executemany(
+        "DELETE FROM settings WHERE key = ?",
+        [("rewrite.model",), ("rewrite.temperature",)],
+    )
+    await db.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (47)")
+
+
 # Ordered registry of (version, migration_callable). Each migration records
 # its own version marker. Applied in ascending order for versions greater
 # than the current schema version.
@@ -1044,6 +1056,7 @@ MIGRATIONS: list[tuple[int, Callable[[aiosqlite.Connection], Awaitable[None]]]] 
     (44, _migrate_to_44),
     (45, _migrate_to_45),
     (46, _migrate_to_46),
+    (47, _migrate_to_47),
 ]
 
 

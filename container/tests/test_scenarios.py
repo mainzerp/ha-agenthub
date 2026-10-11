@@ -89,8 +89,6 @@ class TestScenarioTypes:
             side_effect=lambda k, d=None: {
                 "language": "auto",
                 "personality.prompt": "",
-                "rewrite.model": "groq/llama-3.1-8b-instant",
-                "rewrite.temperature": "0.3",
             }.get(k, d)
         )
         orch, _dispatcher, *_ = self._make_orchestrator()

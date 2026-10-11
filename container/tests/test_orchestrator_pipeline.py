@@ -176,8 +176,6 @@ async def test_streaming_mediation_buffers_tokens_until_terminal_frame(mock_comp
         side_effect=lambda k, d=None: {
             "personality.prompt": "You are a friendly assistant.",
             "orchestrator.mediation_streaming_enabled": "false",
-            "rewrite.model": "groq/llama-3.1-8b-instant",
-            "rewrite.temperature": "0.3",
         }.get(k, d)
     )
     orch._calendar_injector = MagicMock()

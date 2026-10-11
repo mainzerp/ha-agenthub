@@ -370,6 +370,9 @@ class CacheOrchestrator:
         if self._cache_manager:
             async with _optional_span(span_collector, "rewrite", agent_id="rewrite-agent") as rw_span:
                 speech = await self._cache_manager.apply_rewrite(hit, user_text=user_text, reminder_text=reminder_text)
+                if hit.rewrite_applied or hit.rewrite_failed:
+                    # Target language handed to the rewrite agent (cache entry language).
+                    rw_span["metadata"]["language"] = getattr(hit, "language", None) or "en"
                 if hit.rewrite_applied:
                     rw_span["metadata"]["original_text"] = hit.original_response_text or ""
                     rw_span["metadata"]["rewritten_text"] = speech

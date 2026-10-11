@@ -397,9 +397,6 @@ async def _seed_defaults(db: aiosqlite.Connection) -> None:
             "memory",
             "Maximum turns copied from a matched previous session on continuation",
         ),
-        # Rewrite agent settings
-        ("rewrite.model", "groq/llama-3.1-8b-instant", "string", "rewrite", "LLM model for rewrite agent"),
-        ("rewrite.temperature", "0.8", "float", "rewrite", "Temperature for rewrite agent"),
         # Personality settings
         ("personality.prompt", "", "string", "personality", "Personality system prompt for response mediation"),
         # Communication settings

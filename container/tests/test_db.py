@@ -1490,6 +1490,44 @@ class TestRewriteAgentReasoningEffortDefault:
 
         assert row[0] == "low"
 
+    async def test_seed_omits_dead_rewrite_settings(self, db_repository):
+        async with aiosqlite.connect(str(db_repository)) as db:
+            rows = await (
+                await db.execute("SELECT key FROM settings WHERE key IN ('rewrite.model', 'rewrite.temperature')")
+            ).fetchall()
+
+        assert rows == []
+
+    async def test_migration_v47_deletes_dead_rewrite_settings(self, db_repository):
+        from app.db.schema import _run_migrations
+
+        async with aiosqlite.connect(str(db_repository)) as db:
+            await db.executemany(
+                "INSERT OR REPLACE INTO settings (key, value, value_type, category, description) VALUES (?, ?, ?, ?, ?)",
+                [
+                    ("rewrite.model", "groq/llama-3.1-8b-instant", "string", "rewrite", "legacy"),
+                    ("rewrite.temperature", "0.8", "float", "rewrite", "legacy"),
+                ],
+            )
+            await db.execute("DELETE FROM schema_version WHERE version >= 47")
+            await db.commit()
+
+            await _run_migrations(db)
+            await _run_migrations(db)
+            await db.commit()
+
+            rows = await (
+                await db.execute("SELECT key FROM settings WHERE key IN ('rewrite.model', 'rewrite.temperature')")
+            ).fetchall()
+            other = await (await db.execute("SELECT key FROM settings WHERE key = 'personality.prompt'")).fetchall()
+            schema_versions = await (
+                await db.execute("SELECT version FROM schema_version WHERE version = 47")
+            ).fetchall()
+
+        assert rows == []
+        assert len(other) == 1
+        assert len(schema_versions) == 1
+
     async def test_seed_without_column_then_migrations_set_none(self, tmp_path):
         # Databases older than migration 11 lack the column when the seed runs;
         # the seed must not fail and the migrations must apply the default.

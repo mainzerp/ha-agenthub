@@ -781,14 +781,13 @@ Auth: admin session.
 
 | Method | Path | Purpose |
 |--------|------|---------|
-| GET | `/api/admin/rewrite/config` | Read the legacy `rewrite.model` / `rewrite.temperature` settings. |
-| PUT | `/api/admin/rewrite/config` | Update the legacy `rewrite.model` / `rewrite.temperature` settings. |
+| GET | `/api/admin/rewrite/config` | Read `model` and `temperature` from the `rewrite-agent` agent configuration (`{"model": str, "temperature": float}`; 404 if the agent row is missing). |
+| PUT | `/api/admin/rewrite/config` | Update `model` and/or `temperature` in the `rewrite-agent` agent configuration; omitted fields are unchanged. Returns `{"status": "ok"}`. |
 
-Auth: admin session. These keys are stored only; the rewrite call does
-not read them. The rewrite agent runs on every action-cache hit and takes
-model, timeout, temperature, `max_tokens`, and `reasoning_effort` from its
-`rewrite-agent` agent configuration (`PUT /api/admin/agents/rewrite-agent`);
-see [Configuration](configuration.md#rewrite-agent-settings).
+Auth: admin session. Both endpoints are a narrow view of
+`GET/PUT /api/admin/agents/rewrite-agent`, which also covers timeout,
+`max_tokens`, and `reasoning_effort`. The rewrite agent runs on every
+action-cache hit; see [Configuration](configuration.md#rewrite-agent-settings).
 
 ## Admin -- Personality
 

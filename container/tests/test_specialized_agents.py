@@ -2460,8 +2460,25 @@ class TestRewriteAgent:
         assert "User asked:" in messages[1]["content"]
         assert "Keller einschalten" in messages[1]["content"]
         assert "Agent responded:" in messages[1]["content"]
-        assert "Rephrase:" in messages[1]["content"]
+        assert messages[1]["content"].endswith("Rephrase in German (Deutsch):")
         assert "Rephrase in de:" not in messages[1]["content"]
+
+    @patch("app.agents.rewrite.SettingsRepository.get_value", new_callable=AsyncMock, return_value="")
+    @patch("app.llm.client.complete", new_callable=AsyncMock, return_value="Rephrased text.")
+    async def test_rewrite_user_message_repeats_target_language(self, mock_complete, mock_settings):
+        agent = RewriteAgent()
+        await agent.rewrite("Done, kitchen light is on.", language="de-DE", reminder_text="Dentist at 3 PM.")
+        messages = mock_complete.call_args[0][1]
+        assert "Reminder to weave in: Dentist at 3 PM.\n\nRephrase in German (Deutsch):" in messages[1]["content"]
+
+    @patch("app.agents.rewrite.SettingsRepository.get_value", new_callable=AsyncMock, return_value="")
+    @patch("app.llm.client.complete", new_callable=AsyncMock, return_value="Rephrased text.")
+    async def test_rewrite_user_message_defaults_to_english(self, mock_complete, mock_settings):
+        agent = RewriteAgent()
+        await agent.rewrite("Done, kitchen light is on.")
+        messages = mock_complete.call_args[0][1]
+        assert "\n\nRephrase in English:" in messages[1]["content"]
+        assert "You MUST respond in English." in messages[0]["content"]
 
     @patch("app.agents.rewrite.SettingsRepository.get_value", new_callable=AsyncMock, return_value="")
     @patch("app.llm.client.complete", new_callable=AsyncMock, return_value="Rephrased text.")

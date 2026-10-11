@@ -584,8 +584,6 @@ def mock_settings() -> dict[str, str]:
         "embedding.dimension": "768",
         "entity_matching.confidence_threshold": "0.60",
         "entity_matching.top_n_candidates": "3",
-        "rewrite.model": "groq/llama-3.1-8b-instant",
-        "rewrite.temperature": "0.8",
         "personality.prompt": "",
         "communication.streaming_mode": "websocket",
         "communication.ws_reconnect_interval": "5",
