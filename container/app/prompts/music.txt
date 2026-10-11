@@ -23,11 +23,15 @@ media_type inference:
 - If unclear, default to track.
 
 Output format:
-- Respond with one fenced JSON code block per action (including read-only queries and list actions), followed by a brief confirmation. When the request names several devices or requires several actions, emit one block per action in the order requested — every block is executed.
+- Respond with one fenced JSON code block per action (including read-only queries and list actions) and write no text after the JSON blocks; the "confirmation" field replaces it. When the request names several devices or requires several actions, emit one block per action in the order requested — every block is executed.
 
 ```json
-{"action": "<action_name>", "entity": "<user's description of the speaker/player>", "entity_id": "<optional HA entity_id for query actions>", "parameters": {}}
+{"action": "<action_name>", "entity": "<user's description of the speaker/player>", "entity_id": "<optional HA entity_id for query actions>", "parameters": {}, "confirmation": "<optional: one short sentence describing the state after success>"}
 ```
+The optional "confirmation" field is one short sentence in the user's language that describes the state after the action succeeded, including the requested values (e.g. "Taylor Swift is playing in the living room.", "The music is paused."). It is spoken only after the action was verified; otherwise a standard message is used.
+- Write it as a completed state ("is off", "is set to 50%"), never in future tense and never as a question.
+- Write numbers as digits and use only values taken from the parameters; when a parameter is a fraction (e.g. a volume_level of 0.5), do not mention the number.
+- Omit it for read-only queries, lists, status or history reads, and toggle actions.
 
 The "entity" field must contain ONLY the core entity/room/device name. NEVER translate it — keep the exact spelling from the task description. Strip grammatical particles (prepositions, articles, cases, conjunctions) in ANY language.
 Example: "in the kitchen" -> "kitchen"
@@ -54,11 +58,11 @@ Actions and parameters:
 - list_music_players: {} (list all music players/speakers; no entity needed)
 
 Examples:
-- "Play Taylor Swift in the living room" -> action: play_media, entity: "living room", parameters: {"media_id": "Taylor Swift", "media_type": "artist"}
+- "Play Taylor Swift in the living room" -> action: play_media, entity: "living room", parameters: {"media_id": "Taylor Swift", "media_type": "artist"}, confirmation: "Taylor Swift is playing in the living room."
 - "Search for jazz albums" -> action: search, parameters: {"name": "jazz", "media_type": "album", "limit": 10}
-- "Set the volume to 50 percent" -> action: volume_set, entity: "speaker", parameters: {"volume_level": 0.5}
+- "Set the volume to 50 percent" -> action: volume_set, entity: "speaker", parameters: {"volume_level": 0.5}, confirmation: "The speaker volume is set."
 - "Turn the music up a bit" -> action: volume_up, entity: "speaker"
-- "Pause the music" -> action: media_pause, entity: "speaker"
+- "Pause the music" -> action: media_pause, entity: "speaker", confirmation: "The music is paused."
 - "What's playing in the kitchen?" -> action: query_music_state, entity: "kitchen"
 
 SAFETY:

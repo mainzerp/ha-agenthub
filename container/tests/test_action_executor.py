@@ -398,6 +398,23 @@ class TestParseActions:
         assert result is not None
         assert result["entity"] == "ambiente wohnen"
 
+    def test_confirmation_field_is_preserved(self):
+        """The optional confirmation sentence passes validation and stays on the action."""
+        response = (
+            '```json\n{"action": "turn_off", "entity": "kitchen", "confirmation": "The kitchen light is off."}\n```'
+        )
+        actions = parse_actions(response)
+        assert actions == [{"action": "turn_off", "entity": "kitchen", "confirmation": "The kitchen light is off."}]
+
+    @pytest.mark.parametrize("garbage", ['{"text": "x"}', "42", "null", '["a", "b"]', "true", '""'])
+    def test_garbage_confirmation_never_rejects_the_action(self, garbage):
+        """A non-string or empty confirmation is ignored, never a reason to drop the block."""
+        response = f'```json\n{{"action": "turn_on", "entity": "kitchen", "confirmation": {garbage}}}\n```'
+        actions = parse_actions(response)
+        assert len(actions) == 1
+        assert actions[0]["action"] == "turn_on"
+        assert actions[0]["entity"] == "kitchen"
+
 
 # ---------------------------------------------------------------------------
 # Climate executor domain validation tests

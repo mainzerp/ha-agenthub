@@ -29,6 +29,7 @@ from app.agents import (
 )
 from app.agents.action_executor import (
     _MAX_ACTIONS_PER_TURN,
+    VERIFY_REACHED,
     VERIFY_UNVERIFIED,
     find_rejected_action_objects,
     parse_actions,
@@ -66,7 +67,7 @@ from app.models.agent import (
     TaskContext,
     TaskResult,
 )
-from app.security.redaction import redact_sensitive_text, redact_sensitive_values
+from app.security.redaction import REDACTED, is_sensitive_key, redact_sensitive_text, redact_sensitive_values
 
 logger = logging.getLogger(__name__)
 
@@ -152,6 +153,139 @@ def _invalid_action_speech(
     )
     templates = _INVALID_ACTION_TARGET_SPEECH if missing_target else _INVALID_ACTION_SPEECH
     return templates.get(lang, templates["en"])
+
+
+# Agent confirmation sentence: an action block may carry an optional
+# ``confirmation`` -- one short sentence in the user's language describing the
+# target state after success. The LLM writes it BEFORE execution, so it is
+# spoken only when the executor verified the target state (``reached``) and
+# the sentence passes ``_plausible_confirmation``; otherwise the executor's
+# template / hedge speech stays. ``speech_source`` records which one was
+# spoken (``TaskResult.metadata["speech_source"]``).
+SPEECH_SOURCE_CONFIRMATION = "confirmation"
+SPEECH_SOURCE_TEMPLATE = "template"
+SPEECH_SOURCE_LLM = "llm"
+SPEECH_SOURCE_MIXED = "mixed"
+
+_CONFIRMATION_MAX_CHARS = 160
+_CONFIRMATION_TRACE_MAX_CHARS = 200
+# A confirmation is one declarative sentence: no question, no markup, no links.
+_CONFIRMATION_FORBIDDEN = ("?", "{", "}", "`", "[", "]", "\n", "\r")
+_NUMBER_GROUP_RE = re.compile(r"\d+(?:[.,]\d+)*")
+# Top-level action keys that are not values the confirmation may quote.
+_CONFIRMATION_IGNORED_KEYS = frozenset({"action", "confirmation", "condition"})
+
+
+def _number_digits(text: str) -> str:
+    """Digits-only form of a number group ("4.000" -> "4000", "50,5" -> "505")."""
+    return text.replace(".", "").replace(",", "")
+
+
+def _number_forms(value: Any) -> set[str]:
+    """Digits-only forms of every number group inside ``value``."""
+    forms = {_number_digits(group) for group in _NUMBER_GROUP_RE.findall(str(value))}
+    if isinstance(value, float) and value.is_integer():
+        forms.add(str(int(value)))
+    return forms
+
+
+def _collect_action_values(action: dict) -> tuple[list[Any], list[str]]:
+    """Split an action's leaf values into quotable values and secret values.
+
+    Walks the top-level keys (``entity``, ``entity_id``, ``parameters``, ...)
+    and flattens nested dicts and lists. Values under a sensitive key
+    (``is_sensitive_key``: code, pin, password, ...) are secrets.
+    """
+    allowed: list[Any] = []
+    secrets: list[str] = []
+
+    def _walk(value: Any, secret: bool) -> None:
+        if isinstance(value, dict):
+            for key, item in value.items():
+                _walk(item, secret or is_sensitive_key(key))
+        elif isinstance(value, (list, tuple)):
+            for item in value:
+                _walk(item, secret)
+        elif value is None or isinstance(value, bool):
+            return
+        elif secret:
+            text = str(value).strip()
+            if text:
+                secrets.append(text)
+        elif isinstance(value, (int, float, str)):
+            allowed.append(value)
+
+    for key, value in action.items():
+        if key not in _CONFIRMATION_IGNORED_KEYS:
+            _walk(value, is_sensitive_key(key))
+    return allowed, secrets
+
+
+def _plausible_confirmation(raw: Any, action: dict, friendly_name: str | None) -> tuple[str | None, str | None]:
+    """Validate an LLM confirmation sentence against the executed action.
+
+    Returns ``(sentence, None)`` when it may be spoken, else
+    ``(None, reason)`` with a short rejection code (``invalid_text``,
+    ``too_long``, ``sensitive``, ``number_mismatch``). Every number in the
+    sentence must equal (digits only) a value the action carried or the
+    device name, so the LLM cannot claim a value it did not request.
+    """
+    if not isinstance(raw, str):
+        return None, "invalid_text"
+    if any(marker in raw for marker in _CONFIRMATION_FORBIDDEN) or "http" in raw.lower():
+        return None, "invalid_text"
+    text = sanitize_untrusted_text(raw, 0)
+    if not text:
+        return None, "invalid_text"
+    if len(text) > _CONFIRMATION_MAX_CHARS:
+        return None, "too_long"
+    allowed, secrets = _collect_action_values(action)
+    groups = [_number_digits(group) for group in _NUMBER_GROUP_RE.findall(text)]
+    lowered = text.casefold()
+    for secret in secrets:
+        if secret.casefold() in lowered:
+            return None, "sensitive"
+        if _NUMBER_GROUP_RE.fullmatch(secret) and _number_digits(secret) in groups:
+            return None, "sensitive"
+    if groups:
+        allowed_forms: set[str] = set()
+        for value in [*allowed, friendly_name]:
+            if value is not None:
+                allowed_forms |= _number_forms(value)
+        if any(group not in allowed_forms for group in groups):
+            return None, "number_mismatch"
+    return text, None
+
+
+def _trace_confirmation(raw: Any, action: dict) -> str:
+    """Bounded, redacted confirmation text for the ``ha_action`` span."""
+    text = sanitize_untrusted_text(raw, _CONFIRMATION_TRACE_MAX_CHARS)
+    _allowed, secrets = _collect_action_values(action)
+    for secret in secrets:
+        text = text.replace(secret, REDACTED)
+    return redact_sensitive_text(text)
+
+
+def _relevant_verify_records(result: dict, verify_records: list[dict]) -> list[dict]:
+    """Verification records of the result's entity (all records when it has none)."""
+    entity_id = result.get("entity_id")
+    return [rec for rec in verify_records if not entity_id or rec.get("entity_id") == entity_id]
+
+
+def _merge_speech_sources(sources: list[str]) -> str:
+    """One ``speech_source`` for several spoken parts (``mixed`` when they differ)."""
+    unique = set(sources)
+    if not unique:
+        return SPEECH_SOURCE_TEMPLATE
+    if len(unique) == 1:
+        return unique.pop()
+    return SPEECH_SOURCE_MIXED
+
+
+def _with_speech_source(result: TaskResult, source: str) -> TaskResult:
+    """Record ``speech_source`` on a TaskResult's metadata (in place)."""
+    result.metadata["speech_source"] = source
+    return result
 
 
 # ENTITY_RES_REDESIGN Phase 7 (ambiguity follow-up MVP): when the top-1/top-2
@@ -571,13 +705,19 @@ class ActionableAgent(BaseAgent):
                         span_collector=span_collector,
                     )
                     result = self._apply_verification_outcome(action, result, verify_records)
+                    result, confirmation_rejected = await self._apply_confirmation(action, result, verify_records)
                     span["metadata"]["action"] = action.get("action")
                     span["metadata"]["entity"] = action.get("entity")
                     span["metadata"]["success"] = result.get("success")
                     span["metadata"]["action_params"] = redact_sensitive_values(
-                        {k: v for k, v in action.items() if k not in ("action", "entity")}
+                        {k: v for k, v in action.items() if k not in ("action", "entity", "confirmation")}
                     )
                     span["metadata"]["result_speech"] = (result.get("speech") or "")[:500]
+                    span["metadata"]["speech_source"] = result["speech_source"]
+                    if action.get("confirmation") is not None:
+                        span["metadata"]["confirmation"] = _trace_confirmation(action.get("confirmation"), action)
+                    if confirmation_rejected:
+                        span["metadata"]["confirmation_rejected_reason"] = confirmation_rejected
                     if verify_records:
                         span["metadata"]["verify_outcome"] = verify_records[-1]["outcome"]
             else:
@@ -590,6 +730,7 @@ class ActionableAgent(BaseAgent):
                     span_collector=span_collector,
                 )
                 result = self._apply_verification_outcome(action, result, verify_records)
+                result, _rejected = await self._apply_confirmation(action, result, verify_records)
         finally:
             reset_verify_records(records_token)
 
@@ -609,9 +750,13 @@ class ActionableAgent(BaseAgent):
             and not resolution_path.endswith("_ambiguous")
         ):
             entity_query = action.get("entity", "")
+            speech = await self._generate_not_found_speech(entity_query, task, span_collector)
+            language = (task.context.language if task.context else None) or "en"
+            deterministic = speech == _not_found_speech(entity_query, language)
             result = {
                 **result,
-                "speech": await self._generate_not_found_speech(entity_query, task, span_collector),
+                "speech": speech,
+                "speech_source": SPEECH_SOURCE_TEMPLATE if deterministic else SPEECH_SOURCE_LLM,
             }
         return result
 
@@ -630,7 +775,7 @@ class ActionableAgent(BaseAgent):
         if not result.get("success") or not verify_records:
             return result
         entity_id = result.get("entity_id")
-        relevant = [rec for rec in verify_records if not entity_id or rec.get("entity_id") == entity_id]
+        relevant = _relevant_verify_records(result, verify_records)
         last = relevant[-1] if relevant else None
         # Only actions with a deterministic target are hedged: toggles and
         # attribute-only actions (fan speed, volume) often change no state.
@@ -645,6 +790,76 @@ class ActionableAgent(BaseAgent):
             "cacheable": False,
             "metadata": metadata,
         }
+
+    @staticmethod
+    def _confirmation_gate(action: dict, result: dict, verify_records: list[dict]) -> str | None:
+        """Rejection code when the execution state forbids a confirmation, else ``None``.
+
+        A confirmation is spoken only for a successful, state-changing,
+        non-toggle action whose last verification record for the result's
+        entity reached the target state.
+        """
+        if (
+            not result.get("success")
+            or result.get("noop")
+            or result.get("error")
+            or result.get("directive")
+            or result.get("voice_followup")
+        ):
+            return "not_success"
+        # A toggle's target state is unknown when the LLM writes the sentence.
+        if "toggle" in str(action.get("action") or "").lower():
+            return "toggle"
+        relevant = _relevant_verify_records(result, verify_records)
+        if not relevant:
+            return "no_record"
+        if relevant[-1].get("outcome") != VERIFY_REACHED:
+            return "not_reached"
+        return None
+
+    async def _confirmation_friendly_name(self, action: dict, result: dict) -> str | None:
+        """Device name a confirmation may quote: resolver metadata, index entry, or the LLM label."""
+        metadata = result.get("metadata") or {}
+        name = metadata.get("top_friendly_name") or metadata.get("friendly_name")
+        if isinstance(name, str) and name:
+            return name
+        entity_id = result.get("entity_id")
+        getter = getattr(self._entity_index, "get_by_id_async", None) if self._entity_index is not None else None
+        if entity_id and getter is not None:
+            try:
+                entry = getter(entity_id)
+                entry = await entry if _inspect.isawaitable(entry) else None
+                name = getattr(entry, "friendly_name", None)
+                if isinstance(name, str) and name:
+                    return name
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.debug("Friendly-name lookup for confirmation failed: %s", entity_id, exc_info=True)
+        entity = action.get("entity")
+        return entity if isinstance(entity, str) and entity else None
+
+    async def _apply_confirmation(
+        self, action: dict, result: dict, verify_records: list[dict]
+    ) -> tuple[dict, str | None]:
+        """Speak the action's ``confirmation`` sentence when execution was verified.
+
+        Returns ``(result, rejected_reason)``. The result always carries
+        ``speech_source`` (``confirmation`` when substituted, else
+        ``template``); ``rejected_reason`` is set only when a confirmation was
+        present but not spoken.
+        """
+        raw = action.get("confirmation")
+        if raw is None or (isinstance(raw, str) and not raw.strip()):
+            return {**result, "speech_source": SPEECH_SOURCE_TEMPLATE}, None
+        reason = self._confirmation_gate(action, result, verify_records)
+        text: str | None = None
+        if reason is None:
+            friendly_name = await self._confirmation_friendly_name(action, result)
+            text, reason = _plausible_confirmation(raw, action, friendly_name)
+        if reason is not None or not text:
+            return {**result, "speech_source": SPEECH_SOURCE_TEMPLATE}, reason or "invalid_text"
+        return {**result, "speech": text, "speech_source": SPEECH_SOURCE_CONFIRMATION}, None
 
     @staticmethod
     def _action_executed_from_result(
@@ -761,7 +976,10 @@ class ActionableAgent(BaseAgent):
                     speech=result.get("speech", ""),
                     directive=result.get("directive"),
                     reason=result.get("reason"),
-                    metadata=result.get("metadata") or {},
+                    metadata={
+                        **(result.get("metadata") or {}),
+                        "speech_source": result.get("speech_source", SPEECH_SOURCE_TEMPLATE),
+                    },
                     voice_followup=bool(result.get("voice_followup")),
                 )
 
@@ -791,6 +1009,11 @@ class ActionableAgent(BaseAgent):
 
         metadata = dict(results[0].get("metadata") or {})
         speech = " ".join(s for result in results if (s := (result.get("speech") or "").strip()))
+        speech_sources = [
+            result.get("speech_source", SPEECH_SOURCE_TEMPLATE)
+            for result in results
+            if (result.get("speech") or "").strip()
+        ]
         if dropped_actions:
             metadata["actions_dropped"] = dropped_actions
             not_done = (
@@ -798,6 +1021,8 @@ class ActionableAgent(BaseAgent):
                 f"{dropped_actions} more {'was' if dropped_actions == 1 else 'were'} not executed."
             )
             speech = f"{speech} {not_done}" if speech else not_done
+            speech_sources.append(SPEECH_SOURCE_TEMPLATE)
+        metadata["speech_source"] = _merge_speech_sources(speech_sources)
         _t5 = time.perf_counter()
         logger.info(
             "dispatch_timing agent=%s pre_entities=%.1fms entities=%.1fms llm_parse=%.1fms ha_action=%.1fms post_action=%.1fms total=%.1fms",
@@ -838,7 +1063,11 @@ class ActionableAgent(BaseAgent):
         clarification = self._parse_miss_clarification(task, response)
         if clarification is not None:
             return clarification
-        return TaskResult(speech=strip_json_blocks(response), voice_followup=False)
+        return TaskResult(
+            speech=strip_json_blocks(response),
+            voice_followup=False,
+            metadata={"speech_source": SPEECH_SOURCE_LLM},
+        )
 
     def _parse_miss_clarification(self, task: DispatchTask, response: str) -> TaskResult | None:
         """Clarifying answer for a parse miss, or ``None`` when there is none.
@@ -866,11 +1095,11 @@ class ActionableAgent(BaseAgent):
             return TaskResult(
                 speech=_invalid_action_speech(rejected, language, self._entity_actions),
                 voice_followup=True,
-                metadata={"parse_miss": "invalid_action"},
+                metadata={"parse_miss": "invalid_action", "speech_source": SPEECH_SOURCE_TEMPLATE},
             )
         speech = strip_json_blocks(response)
         if speech.rstrip().endswith("?"):
-            return TaskResult(speech=speech, voice_followup=True)
+            return TaskResult(speech=speech, voice_followup=True, metadata={"speech_source": SPEECH_SOURCE_LLM})
         return None
 
     async def handle_task(self, task: DispatchTask) -> TaskResult:
@@ -897,9 +1126,12 @@ class ActionableAgent(BaseAgent):
                 raise
             except Exception:
                 logger.exception("Unhandled failure in %s", self.agent_card.agent_id)
-                return self._error_result(
-                    AgentErrorCode.INTERNAL,
-                    "Sorry, something went wrong while handling that request.",
+                return _with_speech_source(
+                    self._error_result(
+                        AgentErrorCode.INTERNAL,
+                        "Sorry, something went wrong while handling that request.",
+                    ),
+                    SPEECH_SOURCE_TEMPLATE,
                 )
         finally:
             reset_request_candidate_ids(candidate_ids_token)
@@ -933,7 +1165,8 @@ class ActionableAgent(BaseAgent):
                 f"Respond in {language}.\n"
                 f"Copy entity, device, room, and scene names verbatim from the user's message.\n"
                 f"NEVER translate entity names to English, regardless of what language the few-shot examples use.\n"
-                f"If a few-shot example uses a different language than the user, copy the example's STRUCTURE but keep the USER's original entity names unchanged."
+                f"If a few-shot example uses a different language than the user, copy the example's STRUCTURE but keep the USER's original entity names unchanged.\n"
+                f'Write the "confirmation" field of every JSON action block in {language_code_to_name(language)}.'
             )
             system_prompt = f"{system_prompt}\n\n{lang_directive}"
 
@@ -1039,18 +1272,24 @@ class ActionableAgent(BaseAgent):
             raise
         except Exception as e:
             logger.error("LLM call failed for %s: %s", agent_id, str(e)[:200])
-            return self._error_result(
-                AgentErrorCode.LLM_ERROR,
-                "The language model could not complete this request. Please try again.",
+            return _with_speech_source(
+                self._error_result(
+                    AgentErrorCode.LLM_ERROR,
+                    "The language model could not complete this request. Please try again.",
+                ),
+                SPEECH_SOURCE_TEMPLATE,
             )
 
         _t3 = time.perf_counter()
 
         if not response:
             logger.warning("LLM returned empty response for %s task: %s", agent_id, task.description[:100])
-            return self._error_result(
-                AgentErrorCode.LLM_EMPTY_RESPONSE,
-                "The language model did not return a response. Please try again.",
+            return _with_speech_source(
+                self._error_result(
+                    AgentErrorCode.LLM_EMPTY_RESPONSE,
+                    "The language model did not return a response. Please try again.",
+                ),
+                SPEECH_SOURCE_TEMPLATE,
             )
 
         actions = parse_actions(response)
@@ -1092,7 +1331,13 @@ class ActionableAgent(BaseAgent):
                 is_not_found = not result.get("success") and result.get("entity_id") is None and not result.get("error")
                 followup_question = is_not_found and (is_ambiguous or final_speech.rstrip().endswith("?"))
 
-                metadata = result.get("metadata") or {}
+                # speech_source contract: the orchestrator reads
+                # metadata["speech_source"] ("confirmation" / "template" / "llm").
+                # An empty speech falls back to ``_default_result_speech`` (template).
+                speech_source = (
+                    result.get("speech_source", SPEECH_SOURCE_TEMPLATE) if final_speech else SPEECH_SOURCE_TEMPLATE
+                )
+                metadata = {**(result.get("metadata") or {}), "speech_source": speech_source}
                 _t5 = time.perf_counter()
                 logger.info(
                     "dispatch_timing agent=%s pre_entities=%.1fms entities=%.1fms llm_parse=%.1fms ha_action=%.1fms post_action=%.1fms total=%.1fms",
@@ -1134,9 +1379,12 @@ class ActionableAgent(BaseAgent):
             except Exception:
                 logger.exception("Action execution failed for %s action=%s", agent_id, redact_sensitive_values(action))
                 entity = action.get("entity", "the device")
-                return self._error_result(
-                    AgentErrorCode.ACTION_FAILED,
-                    f"Sorry, I could not execute the action on {entity}.",
+                return _with_speech_source(
+                    self._error_result(
+                        AgentErrorCode.ACTION_FAILED,
+                        f"Sorry, I could not execute the action on {entity}.",
+                    ),
+                    SPEECH_SOURCE_TEMPLATE,
                 )
 
         # Path B: Action but no HA client
@@ -1146,10 +1394,13 @@ class ActionableAgent(BaseAgent):
                 "Action parsed but ha_client is None for %s: %s", agent_id, redact_sensitive_values(first_action)
             )
             entity = first_action.get("entity", "the device")
-            return self._error_result(
-                AgentErrorCode.HA_UNAVAILABLE,
-                f"I understood the request for {entity}, but the smart home connection is currently unavailable.",
-                recoverable=False,
+            return _with_speech_source(
+                self._error_result(
+                    AgentErrorCode.HA_UNAVAILABLE,
+                    f"I understood the request for {entity}, but the smart home connection is currently unavailable.",
+                    recoverable=False,
+                ),
+                SPEECH_SOURCE_TEMPLATE,
             )
 
         # Path C: No action (informational)

@@ -54,6 +54,9 @@ class DispatchResult:
     directive_reason: str | None = None
     failed_agents: list[tuple[str, str]] = field(default_factory=list)
     agent_responses: list[tuple[str, str, bool]] = field(default_factory=list)
+    # ``metadata["speech_source"]`` of a single-agent result ("confirmation",
+    # "template", "mixed", "llm"); None when the agent did not report it.
+    speech_source: str | None = None
 
 
 class PipelineDirector:

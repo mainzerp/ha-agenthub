@@ -734,8 +734,6 @@ class TestOrchestratorAgent:
         mock_settings.get_value = AsyncMock(
             side_effect=lambda k, d=None: {
                 "personality.prompt": "You are Lucia, a friendly assistant.",
-                "rewrite.model": "groq/llama-3.1-8b-instant",
-                "rewrite.temperature": "0.3",
             }.get(k, d)
         )
         mock_complete.return_value = "Hey there! The light is now on."
@@ -822,8 +820,6 @@ class TestOrchestratorAgent:
         mock_settings.get_value = AsyncMock(
             side_effect=lambda k, d=None: {
                 "personality.prompt": "",
-                "rewrite.model": "groq/llama-3.1-8b-instant",
-                "rewrite.temperature": "0.3",
             }.get(k, d)
         )
 
@@ -858,8 +854,6 @@ class TestOrchestratorAgent:
         mock_settings.get_value = AsyncMock(
             side_effect=lambda k, d=None: {
                 "personality.prompt": "",
-                "rewrite.model": "groq/llama-3.1-8b-instant",
-                "rewrite.temperature": "0.3",
             }.get(k, d)
         )
         orch._default_timeout = 0.001
@@ -897,8 +891,6 @@ class TestOrchestratorAgent:
         mock_settings.get_value = AsyncMock(
             side_effect=lambda k, d=None: {
                 "personality.prompt": "",
-                "rewrite.model": "groq/llama-3.1-8b-instant",
-                "rewrite.temperature": "0.3",
             }.get(k, d)
         )
         r1 = MagicMock(error=None, result={"speech": "On."})
@@ -1117,6 +1109,7 @@ class TestOrchestratorAgent:
         assert rw_span["metadata"]["rewritten_text"] == "Rewritten."
         assert rw_span["metadata"]["latency_ms"] == 42.5
         assert rw_span["metadata"]["success"] is True
+        assert rw_span["metadata"]["language"] == "en"
         # Verify order: cache_lookup before rewrite before return
         assert span_names.index("cache_lookup") < span_names.index("rewrite") < span_names.index("return")
 
@@ -1154,6 +1147,7 @@ class TestOrchestratorAgent:
         assert "rewritten_text" not in rw_span.get("metadata", {})
         assert "latency_ms" not in rw_span.get("metadata", {})
         assert "success" not in rw_span.get("metadata", {})
+        assert "language" not in rw_span.get("metadata", {})
 
     async def _run_action_hit_with_real_rewrite(self, mock_settings, llm_kwargs):
         """Run an action hit through the real CacheManager.apply_rewrite and RewriteAgent."""
@@ -1174,6 +1168,7 @@ class TestOrchestratorAgent:
                 replay_result={"success": True},
                 similarity=0.99,
                 original_response_text="Done, the light is now on.",
+                language="de",
             )
         )
         mock_settings.get_value = AsyncMock(return_value="")
@@ -1184,13 +1179,13 @@ class TestOrchestratorAgent:
         with (
             patch("app.analytics.tracer.create_trace_summary", new_callable=AsyncMock),
             patch("app.agents.rewrite.SettingsRepository.get_value", new_callable=AsyncMock, return_value=""),
-            patch.object(RewriteAgent, "_call_llm", new_callable=AsyncMock, **llm_kwargs),
+            patch.object(RewriteAgent, "_call_llm", new_callable=AsyncMock, **llm_kwargs) as mock_llm,
             patch("app.cache.cache_manager.track_rewrite", new_callable=AsyncMock) as mock_track_rewrite,
         ):
             result = await orch.handle_task(task)
         rw_span = next(s for s in collector._spans if s["span_name"] == "rewrite")
         ret_span = next(s for s in collector._spans if s["span_name"] == "return")
-        return result, rw_span, ret_span, mock_track_rewrite
+        return result, rw_span, ret_span, mock_track_rewrite, mock_llm
 
     @patch("app.agents.orchestrator.SettingsRepository")
     @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
@@ -1198,13 +1193,14 @@ class TestOrchestratorAgent:
         self, mock_track, mock_settings
     ):
         """A failed rewrite serves the cached mediated text and is visible as failed in the trace."""
-        result, rw_span, ret_span, mock_track_rewrite = await self._run_action_hit_with_real_rewrite(
+        result, rw_span, ret_span, mock_track_rewrite, _ = await self._run_action_hit_with_real_rewrite(
             mock_settings, {"side_effect": RuntimeError("model_not_found")}
         )
         assert result["speech"] == "Das Licht ist jetzt an."
         assert rw_span["status"] == "error"
         assert rw_span["metadata"]["success"] is False
         assert rw_span["metadata"]["fallback"] == "cached_response"
+        assert rw_span["metadata"]["language"] == "de"
         assert rw_span["metadata"]["original_text"] == "Done, the light is now on."
         assert rw_span["metadata"]["latency_ms"] is not None
         assert "rewritten_text" not in rw_span["metadata"]
@@ -1216,13 +1212,16 @@ class TestOrchestratorAgent:
     @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
     async def test_handle_task_action_hit_real_rewrite_success(self, mock_track, mock_settings):
         """A successful rewrite is served and recorded as a successful, mediated rewrite."""
-        result, rw_span, ret_span, mock_track_rewrite = await self._run_action_hit_with_real_rewrite(
+        result, rw_span, ret_span, mock_track_rewrite, mock_llm = await self._run_action_hit_with_real_rewrite(
             mock_settings, {"return_value": "Erledigt, das Licht leuchtet jetzt."}
         )
         assert result["speech"] == "Erledigt, das Licht leuchtet jetzt."
         assert rw_span["status"] == "ok"
         assert rw_span["metadata"]["success"] is True
         assert rw_span["metadata"]["rewritten_text"] == "Erledigt, das Licht leuchtet jetzt."
+        assert rw_span["metadata"]["language"] == "de"
+        user_message = mock_llm.await_args.args[0][1]["content"]
+        assert user_message.endswith("Rephrase in German (Deutsch):")
         assert ret_span["metadata"]["mediated"] is True
         assert mock_track_rewrite.await_args.kwargs["success"] is True
 
@@ -1643,8 +1642,6 @@ class TestOrchestratorAgent:
         mock_settings.get_value = AsyncMock(
             side_effect=lambda k, d=None: {
                 "personality.prompt": "",
-                "rewrite.model": "groq/llama-3.1-8b-instant",
-                "rewrite.temperature": "0.3",
             }.get(k, d)
         )
 
@@ -1687,8 +1684,6 @@ class TestOrchestratorAgent:
         mock_settings.get_value = AsyncMock(
             side_effect=lambda k, d=None: {
                 "personality.prompt": "",
-                "rewrite.model": "groq/llama-3.1-8b-instant",
-                "rewrite.temperature": "0.3",
             }.get(k, d)
         )
 
@@ -1843,8 +1838,6 @@ class TestMergeResponsesActionStatus:
         mock_settings.get_value = AsyncMock(
             side_effect=lambda k, d=None: {
                 "personality.prompt": "",
-                "rewrite.model": "groq/llama-3.1-8b-instant",
-                "rewrite.temperature": "0.3",
             }.get(k, d)
         )
         mock_complete.return_value = "Merged result."
@@ -2572,8 +2565,6 @@ class TestStreamMediatedSpeech:
             side_effect=lambda k, d=None: {
                 "personality.prompt": "You are a friendly assistant.",
                 "orchestrator.mediation_streaming_enabled": "false",
-                "rewrite.model": "groq/llama-3.1-8b-instant",
-                "rewrite.temperature": "0.3",
             }.get(k, d)
         )
         orch._calendar_injector = MagicMock()
@@ -3676,8 +3667,6 @@ class TestOrchestratorPhase3Gaps:
         mock_settings.get_value = AsyncMock(
             side_effect=lambda k, d=None: {
                 "personality.prompt": "",
-                "rewrite.model": "groq/llama-3.1-8b-instant",
-                "rewrite.temperature": "0.3",
             }.get(k, d)
         )
         mock_complete.return_value = "Merged with reminder."
@@ -3833,3 +3822,265 @@ class TestOrchestratorPhase3Gaps:
         task = _make_task("do a custom thing")
         result = await orch.handle_task(task)
         assert result["routed_to"] == "custom-1"
+
+
+# ---------------------------------------------------------------------------
+# English executor-template speech localization (no personality mediation)
+# ---------------------------------------------------------------------------
+
+_TEMPLATE_SPEECH = "Done, Kitchen is now off."
+_LOCALIZED_SPEECH = "Erledigt, Kueche ist jetzt aus."
+
+
+def _settings_lookup(language: str, personality: str = ""):
+    values = {"language": language, "personality.prompt": personality}
+    return lambda k, d=None: values.get(k, "")
+
+
+class TestTemplateSpeechLocalization:
+    """``metadata["speech_source"]`` in {template, mixed} localizes the agent
+    speech into the turn language when no personality mediation runs."""
+
+    @pytest.fixture(autouse=True)
+    def _mock_conversation_repo(self):
+        with (
+            patch("app.agents.conversation_manager.ConversationRepository") as mock_repo,
+            patch("app.agents.conversation_manager.get_memory_service", return_value=None),
+        ):
+            mock_repo.insert = AsyncMock(return_value=1)
+            yield mock_repo
+
+    def _make_orchestrator(self, dispatch_result=None):
+        dispatcher = AsyncMock()
+        registry = AsyncMock()
+        cache_manager = MagicMock()
+        cache_manager.process = AsyncMock(return_value=MagicMock(hit_type="miss", agent_id=None, similarity=0.5))
+        cache_manager.apply_rewrite = AsyncMock()
+        cache_manager.try_replay_action = AsyncMock(return_value=None)
+        cache_manager.try_routing_skip = AsyncMock(return_value=None)
+        cache_manager.store_response = MagicMock()
+
+        async def _store_routing_async(*args, **kwargs):
+            return cache_manager.store_routing(*args, **kwargs)
+
+        async def _store_action_async(entry):
+            return cache_manager.store_response(entry)
+
+        cache_manager.store_routing_async = _store_routing_async
+        cache_manager.store_action_async = _store_action_async
+        dispatcher.dispatch = AsyncMock(return_value=dispatch_result or {"speech": "Done!"})
+        registry.list_agents = AsyncMock(
+            return_value=[
+                AgentCard(agent_id="light-agent", name="Light Agent", description="", skills=["light"]),
+                AgentCard(agent_id="general-agent", name="General Agent", description="", skills=["general"]),
+            ]
+        )
+        orchestrator = OrchestratorAgent(dispatcher=dispatcher, registry=registry, cache_manager=cache_manager)
+        return orchestrator, dispatcher, cache_manager
+
+    @staticmethod
+    def _template_result(speech_source: str = "template") -> dict:
+        return {
+            "speech": _TEMPLATE_SPEECH,
+            "action_executed": {"action": "turn_off", "entity_id": "light.kitchen", "success": True},
+            "metadata": {"speech_source": speech_source},
+        }
+
+    # --- non-streaming ---
+
+    @pytest.mark.parametrize("speech_source", ["template", "mixed"])
+    @patch("app.agents.orchestrator.SettingsRepository")
+    @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
+    @patch("app.llm.client.complete", new_callable=AsyncMock)
+    async def test_template_speech_localized_without_personality(
+        self, mock_complete, mock_track, mock_settings, speech_source
+    ):
+        mock_settings.get_value = AsyncMock(side_effect=_settings_lookup("de"))
+        orch, _, cache_manager = self._make_orchestrator(self._template_result(speech_source))
+        orch._mediation.localize_message = AsyncMock(return_value=_LOCALIZED_SPEECH)
+        mock_complete.return_value = "light-agent (95%): turn off kitchen light"
+
+        result = await orch.handle_task(_make_task("schalte die kueche aus"))
+
+        assert result["speech"] == _LOCALIZED_SPEECH
+        orch._mediation.localize_message.assert_awaited_once()
+        assert orch._mediation.localize_message.await_args.args[:2] == (_TEMPLATE_SPEECH, "de")
+        # Cache: the localized speech is the replay fallback and the English
+        # template stays the pre-mediation original (same as mediated text).
+        cache_manager.store_response.assert_called_once()
+        entry = cache_manager.store_response.call_args.args[0]
+        assert entry.response_text == _LOCALIZED_SPEECH
+        assert entry.original_response_text == _TEMPLATE_SPEECH
+
+    @pytest.mark.parametrize("speech_source", ["confirmation", "llm", None])
+    @patch("app.agents.orchestrator.SettingsRepository")
+    @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
+    @patch("app.llm.client.complete", new_callable=AsyncMock)
+    async def test_non_template_speech_not_localized(self, mock_complete, mock_track, mock_settings, speech_source):
+        mock_settings.get_value = AsyncMock(side_effect=_settings_lookup("de"))
+        dispatch_result = self._template_result(speech_source or "template")
+        if speech_source is None:
+            dispatch_result.pop("metadata")
+        else:
+            dispatch_result["speech"] = "Erledigt, die Kueche ist aus."
+        orch, *_ = self._make_orchestrator(dispatch_result)
+        orch._mediation.localize_message = AsyncMock(return_value="unused")
+        mock_complete.return_value = "light-agent (95%): turn off kitchen light"
+
+        result = await orch.handle_task(_make_task("schalte die kueche aus"))
+
+        assert result["speech"] == dispatch_result["speech"]
+        orch._mediation.localize_message.assert_not_awaited()
+
+    @patch("app.agents.orchestrator.SettingsRepository")
+    @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
+    @patch("app.llm.client.complete", new_callable=AsyncMock)
+    async def test_english_turn_template_not_localized(self, mock_complete, mock_track, mock_settings):
+        mock_settings.get_value = AsyncMock(side_effect=_settings_lookup("en"))
+        orch, *_ = self._make_orchestrator(self._template_result())
+        orch._mediation.localize_message = AsyncMock(return_value="unused")
+        mock_complete.return_value = "light-agent (95%): turn off kitchen light"
+
+        result = await orch.handle_task(_make_task("turn off the kitchen"))
+
+        assert result["speech"] == _TEMPLATE_SPEECH
+        orch._mediation.localize_message.assert_not_awaited()
+
+    @patch("app.agents.orchestrator.SettingsRepository")
+    @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
+    @patch("app.llm.client.complete", new_callable=AsyncMock)
+    async def test_personality_mediation_path_unchanged(self, mock_complete, mock_track, mock_settings):
+        mock_settings.get_value = AsyncMock(side_effect=_settings_lookup("de", personality="You are friendly."))
+        orch, *_ = self._make_orchestrator(self._template_result())
+        orch._mediation.localize_message = AsyncMock(return_value="unused")
+        mock_complete.side_effect = [
+            "light-agent (95%): turn off kitchen light",
+            "Klar, die Kueche ist jetzt aus!",
+        ]
+
+        result = await orch.handle_task(_make_task("schalte die kueche aus"))
+
+        assert result["speech"] == "Klar, die Kueche ist jetzt aus!"
+        orch._mediation.localize_message.assert_not_awaited()
+
+    @patch("app.agents.orchestrator.SettingsRepository")
+    @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
+    @patch("app.llm.client.complete", new_callable=AsyncMock)
+    async def test_localize_failure_keeps_original_speech(self, mock_complete, mock_track, mock_settings):
+        mock_settings.get_value = AsyncMock(side_effect=_settings_lookup("de"))
+        orch, *_ = self._make_orchestrator(self._template_result())
+        mock_complete.side_effect = [
+            "light-agent (95%): turn off kitchen light",
+            RuntimeError("llm down"),
+        ]
+
+        result = await orch.handle_task(_make_task("schalte die kueche aus"))
+
+        assert result["speech"] == _TEMPLATE_SPEECH
+        assert result.get("error") is None
+
+    @patch("app.agents.orchestrator.SettingsRepository")
+    async def test_return_span_records_speech_source(self, mock_settings):
+        from app.analytics.tracer import SpanCollector
+
+        mock_settings.get_value = AsyncMock(side_effect=_settings_lookup("de"))
+        orch, *_ = self._make_orchestrator()
+        orch._mediation.localize_message = AsyncMock(return_value=_LOCALIZED_SPEECH)
+        orch._create_trace = AsyncMock()
+        collector = SpanCollector("trace-speech-source")
+
+        speech, _ = await orch._finalize_single_agent_response(
+            task=_make_task("schalte die kueche aus"),
+            user_text="schalte die kueche aus",
+            target_agent="light-agent",
+            confidence=0.95,
+            condensed_task="turn off kitchen light",
+            speech=_TEMPLATE_SPEECH,
+            action_executed=None,
+            has_error=False,
+            span_collector=collector,
+            conversation_id="conv-span",
+            language="de",
+            turns=[],
+            classifications=[("light-agent", "turn off kitchen light", 0.95)],
+            voice_followup_requested=False,
+            speech_source="template",
+            localize_speech=True,
+        )
+
+        assert speech == _LOCALIZED_SPEECH
+        ret_spans = [s for s in collector._spans if s["span_name"] == "return"]
+        assert len(ret_spans) == 1
+        assert ret_spans[0]["metadata"]["speech_source"] == "template"
+        assert ret_spans[0]["metadata"]["speech_localized"] is True
+
+    # --- streaming ---
+
+    async def _stream(self, orch, dispatcher, speech: str, speech_source: str | None) -> list[dict]:
+        async def mock_stream(request):
+            chunk = {"token": speech, "done": True}
+            if speech_source is not None:
+                chunk["metadata"] = {"speech_source": speech_source}
+            yield chunk
+
+        dispatcher.dispatch_stream = mock_stream
+        task = _make_task("schalte die kueche aus")
+        task.conversation_id = "conv-template-stream"
+        return [c async for c in orch.handle_task_stream(task)]
+
+    @patch("app.agents.orchestrator.SettingsRepository")
+    @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
+    @patch("app.llm.client.complete", new_callable=AsyncMock)
+    async def test_stream_template_chunk_held_back_and_localized(self, mock_complete, mock_track, mock_settings):
+        mock_settings.get_value = AsyncMock(side_effect=_settings_lookup("de"))
+        orch, dispatcher, _ = self._make_orchestrator()
+        orch._mediation.localize_message = AsyncMock(return_value=_LOCALIZED_SPEECH)
+        mock_complete.return_value = "light-agent (95%): turn off kitchen light"
+
+        chunks = await self._stream(orch, dispatcher, _TEMPLATE_SPEECH, "template")
+
+        relayed = [c for c in chunks if not c["done"] and c.get("token")]
+        assert relayed == []
+        final = [c for c in chunks if c["done"]]
+        assert len(final) == 1
+        assert final[0].get("mediated_speech") == _LOCALIZED_SPEECH
+        orch._mediation.localize_message.assert_awaited_once()
+
+    @pytest.mark.parametrize(("language", "speech_source"), [("de", "confirmation"), ("de", None), ("en", "template")])
+    @patch("app.agents.orchestrator.SettingsRepository")
+    @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
+    @patch("app.llm.client.complete", new_callable=AsyncMock)
+    async def test_stream_chunk_relayed_when_no_localization_needed(
+        self, mock_complete, mock_track, mock_settings, language, speech_source
+    ):
+        mock_settings.get_value = AsyncMock(side_effect=_settings_lookup(language))
+        orch, dispatcher, _ = self._make_orchestrator()
+        orch._mediation.localize_message = AsyncMock(return_value="unused")
+        mock_complete.return_value = "light-agent (95%): turn off kitchen light"
+
+        chunks = await self._stream(orch, dispatcher, _TEMPLATE_SPEECH, speech_source)
+
+        relayed = [c for c in chunks if not c["done"] and c.get("token")]
+        assert [c["token"] for c in relayed] == [_TEMPLATE_SPEECH]
+        final = [c for c in chunks if c["done"]]
+        assert len(final) == 1
+        assert final[0].get("mediated_speech") is None
+        orch._mediation.localize_message.assert_not_awaited()
+
+    @patch("app.agents.orchestrator.SettingsRepository")
+    @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
+    @patch("app.llm.client.complete", new_callable=AsyncMock)
+    async def test_stream_localize_failure_speaks_original(self, mock_complete, mock_track, mock_settings):
+        mock_settings.get_value = AsyncMock(side_effect=_settings_lookup("de"))
+        orch, dispatcher, _ = self._make_orchestrator()
+        mock_complete.side_effect = [
+            "light-agent (95%): turn off kitchen light",
+            RuntimeError("llm down"),
+        ]
+
+        chunks = await self._stream(orch, dispatcher, _TEMPLATE_SPEECH, "template")
+
+        final = [c for c in chunks if c["done"]]
+        assert len(final) == 1
+        assert final[0].get("mediated_speech") == _TEMPLATE_SPEECH
+        assert final[0].get("error") is None

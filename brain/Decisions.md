@@ -222,3 +222,44 @@ prompts live in `container/app/prompts/`, `ctx.agent_registry` not
   a single send-agent line with inline content. Rationale: no classifier
   output-contract change; the verbatim instruction fixes dictation at the
   cost of one content LLM call.
+
+## 2026-10-11 — rewrite language and rewrite config source
+
+- **The rewrite user message repeats the target language** (`Rephrase in
+  German (Deutsch):`) and the rewrite span records `language`. Rationale:
+  live trace 8a2d684b41ed4ebc spoke the cached English template on a German
+  cache hit; the language was only in the system prompt, and the trace could
+  not show which language was requested.
+- **The rewrite-agent's per-agent LLM config is the only rewrite config.**
+  `GET/PUT /api/admin/rewrite/config` keep their shape but read/write that
+  config; `rewrite.model` / `rewrite.temperature` are dropped (seed removed,
+  migration 47 deletes rows). Proposed as PATCH (not yet confirmed by the
+  user): no runtime reader ever existed and the API contract is unchanged. Rationale: two config sources
+  where only one is used misled live debugging.
+- **Executor speech stays a deterministic English template; language comes
+  from mediation/rewrite.** Rationale: the agent LLM writes before the action
+  runs, so only the executor knows the verified outcome. Open follow-ups:
+  replay from the stored mediated `response_text` instead of the English
+  original, and include requested parameters (brightness, color) in the
+  template.
+
+## 2026-10-11 — device-agent confirmation sentence
+
+- **Action blocks carry an optional `confirmation`** (one sentence in the
+  user's language, completed state + requested values). It replaces the
+  executor template only when the action's verification record is `reached`,
+  the action is not a toggle, and every number in the sentence (digits-only
+  comparison, so "4.000" and "50,5" match) appears in the parameters, entity
+  or friendly name; sensitive parameter values reject it. Rationale: the
+  agent LLM writes before execution, so the sentence is only trusted once the
+  executor confirms the target state; the gate keeps "never claim what was
+  not observed".
+- **Attributes are not re-verified.** "50 %" is checked against the sent
+  parameter, not the observed brightness. Actions without an expected state
+  (set_temperature, scene, volume) qualify when the service call succeeded and
+  verification reached; toggle never does.
+- **No prose after the JSON block**; the field replaces it.
+- **Template speech is localized without personality** (`speech_source`
+  template/mixed, non-English turn) via `localize_message`; with a personality
+  mediation already translates. Rationale: German users without personality
+  heard English templates.
