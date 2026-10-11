@@ -4,6 +4,42 @@ Decision rationale, so decisions stay made. Newest first. Binding architecture
 rules live in `docs/project/prime-directives.md` — this file records choices,
 not copies of rules.
 
+## 2026-10-10 — Pipeline review fixes: delivery and behavior choices (#132)
+
+- **Delivery:** one public tracking issue (#132) with a checklist; one branch
+  and PR per theme (T1-T8). Security-adjacent findings are worded neutrally in
+  the public issue (repo is public; vulnerabilities belong in advisories).
+- **AlarmMonitor is opt-in via an HA label** (default `agenthub_alarm`) plus
+  timer-agent visibility. Rationale: any `input_datetime` timestamp helper
+  fired as an alarm. Breaking: existing alarm helpers must be labelled.
+- **Voice automation create/update/delete require confirmation** (summary +
+  "save?" follow-up), update merges into the fetched config, referenced
+  entities are validated against visibility. Enable/disable/trigger stay
+  unconfirmed.
+- **Overdue rows after restart:** delayed device actions >5 min overdue are
+  dropped and logged; overdue timers/alarms are reported once as missed;
+  processing runs in the background so startup never blocks.
+- **Localization of canned error/fallback text goes through mediation** (LLM),
+  not static tables; English stays the last-resort fallback.
+- **timer-agent default visibility re-includes `input_datetime` and
+  `assist_satellite`** (new migration + seed). Rationale: AlarmMonitor and
+  announcement targets now check timer-agent visibility; migration 29 had
+  removed `input_datetime` as dead, so default installs would lose alarms and
+  satellite announcements. The label stays the only user action.
+- **Release 3.0.0 (MAJOR)** for the review fixes: user action is required
+  (alarm label opt-in), so SemVer per AGENTS.md mandates MAJOR.
+
+## 2026-10-10 — No Ultracite; JS/CSS linting only as a standalone Biome idea
+
+- **Ultracite rejected.** Rationale: it lints JS/TS/CSS only (no Python), its
+  `init` adds the repo's first Node toolchain (`package.json`, lockfile, CI
+  Node step) and writes a generic TS/React rules block into `AGENTS.md` plus
+  `.claude/CLAUDE.md` and a hook, which conflicts with one-rule-one-owner and
+  the Jinja2/HTMX stack. Reachable code would be ~750 lines of first-party JS
+  and ~2,800 lines of CSS; the larger inline template JS stays uncovered.
+- **Lighter option parked in the Idea Bank:** a standalone Biome binary as a
+  pre-commit hook scoped to `container/app/dashboard/static/` minus `vendor/`.
+
 ## 2026-10-06 — Streamed mediation fallback is decided by emitted text
 
 - **Fallback depends on text that reached the client**, not on raw tokens:
