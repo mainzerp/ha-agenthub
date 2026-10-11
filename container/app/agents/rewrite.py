@@ -60,14 +60,17 @@ class RewriteAgent(BaseAgent):
             personality = ""
         personality_text = personality.strip() if personality else ""
         system_prompt = system_prompt.replace("{personality}", personality_text)
-        system_prompt = system_prompt.replace("{language}", language_code_to_name(language)).strip()
+        language_name = language_code_to_name(language)
+        system_prompt = system_prompt.replace("{language}", language_name).strip()
         if user_text:
             user_content = f"User asked:\n{self._wrap_user_input(user_text)}\nAgent responded: {cached_text}"
         else:
             user_content = f"Agent responded: {cached_text}"
         if reminder_text:
             user_content += f"\nReminder to weave in: {reminder_text}"
-        user_content += "\n\nRephrase:"
+        # Repeat the target language next to the text: small models tend to
+        # keep the input language when it is only stated in the system prompt.
+        user_content += f"\n\nRephrase in {language_name}:"
         messages = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_content},

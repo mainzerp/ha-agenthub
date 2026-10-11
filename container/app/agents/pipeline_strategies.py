@@ -16,6 +16,7 @@ from app.agents.classification_engine import ClassificationEngine
 from app.agents.compound_utterance import looks_compound
 from app.agents.conversation_manager import ConversationManager, extract_resolved_entities
 from app.agents.dispatch_manager import DispatchManager, canned_error_code
+from app.agents.mediation import TEMPLATE_SPEECH_SOURCES, speech_source_of
 from app.agents.sanitize import strip_markdown
 from app.agents.task_pipeline import CacheReplayResult, DispatchResult
 from app.cache.cache_manager import CacheManager
@@ -345,6 +346,7 @@ class DefaultDispatchStrategy(DispatchStrategy):
                 agent_voice_followup=agent_voice_followup,
                 directive=directive,
                 directive_reason=directive_reason,
+                speech_source=speech_source_of((result or {}).get("metadata")),
             )
 
         # Multi-agent dispatch
@@ -592,6 +594,8 @@ class DefaultFinalizationStrategy(FinalizationStrategy):
                 used_origin_context=used_origin_context,
                 routing_entry_id=routing_entry_id,
                 canned_code=canned_error_code(agent_error),
+                speech_source=dispatch_result.speech_source,
+                localize_speech=dispatch_result.speech_source in TEMPLATE_SPEECH_SOURCES,
             )
 
         response = {

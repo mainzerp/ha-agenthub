@@ -360,6 +360,112 @@ class TestVerificationOutcome:
 
 
 # ---------------------------------------------------------------------------
+# Agent confirmation sentence: spoken only after verified execution
+# ---------------------------------------------------------------------------
+
+
+def _verifying_execute(domain: str, service: str, entity_id: str, expected_state: str, speech: str):
+    async def fake_execute(action, ha_client, *_args, **_kwargs):
+        await call_service_with_verification(
+            ha_client,
+            domain,
+            service,
+            entity_id,
+            expected_state=expected_state,
+            ws_timeout=0.01,
+            poll_interval=0.01,
+            poll_max=0.01,
+        )
+        return {"success": True, "entity_id": entity_id, "new_state": expected_state, "speech": speech}
+
+    return fake_execute
+
+
+class TestConfirmationSentence:
+    async def test_reached_speaks_the_confirmation_and_traces_it(self):
+        ha_client = SimpleNamespace(
+            call_service=AsyncMock(return_value=[{"entity_id": "light.kitchen", "state": "off"}])
+        )
+        agent = _light_agent(ha_client=ha_client)
+        agent._call_llm = AsyncMock(
+            return_value=(
+                '```json\n{"action": "turn_off", "entity": "Kueche", "confirmation": "Das Kuechenlicht ist aus."}\n```'
+            )
+        )
+        agent._do_execute = _verifying_execute("light", "turn_off", "light.kitchen", "off", "Done, turned off.")
+        spans = _RecordingSpans()
+        task = _task("turn off the kitchen", language="de")
+        task.span_collector = spans
+        result = await agent.handle_task(task)
+        assert result.speech == "Das Kuechenlicht ist aus."
+        assert result.metadata["speech_source"] == "confirmation"
+        assert result.action_executed.cacheable is True
+        span = dict(spans.spans)["ha_action"]
+        assert span["speech_source"] == "confirmation"
+        assert span["confirmation"] == "Das Kuechenlicht ist aus."
+        assert "confirmation_rejected_reason" not in span
+        assert "confirmation" not in span["action_params"]
+
+    async def test_unverified_keeps_the_hedge(self):
+        ha_client = SimpleNamespace(
+            call_service=AsyncMock(return_value=[]),
+            get_state=AsyncMock(return_value={"state": "on"}),
+        )
+        agent = _light_agent(ha_client=ha_client)
+        agent._call_llm = AsyncMock(
+            return_value=(
+                '```json\n{"action": "turn_off", "entity": "Kitchen", "confirmation": "The kitchen light is off."}\n```'
+            )
+        )
+        agent._do_execute = _verifying_execute("light", "turn_off", "light.kitchen", "off", "Done, turned off.")
+        spans = _RecordingSpans()
+        task = _task("turn off the kitchen")
+        task.span_collector = spans
+        result = await agent.handle_task(task)
+        assert result.speech == "I sent the command to Kitchen, but it has not confirmed the new state yet."
+        assert result.metadata["speech_source"] == "template"
+        span = dict(spans.spans)["ha_action"]
+        assert span["speech_source"] == "template"
+        assert span["confirmation_rejected_reason"] == "not_reached"
+
+    async def test_in_progress_keeps_the_template(self):
+        ha_client = SimpleNamespace(
+            call_service=AsyncMock(return_value=[{"entity_id": "lock.front", "state": "locking"}])
+        )
+        agent = _light_agent(ha_client=ha_client)
+        agent._call_llm = AsyncMock(
+            return_value='```json\n{"action": "lock", "entity": "front door", "confirmation": "The door is locked."}\n```'
+        )
+        agent._do_execute = _verifying_execute("lock", "lock", "lock.front", "locked", "Locking the front door.")
+        result = await agent.handle_task(_task("lock the front door"))
+        assert result.speech == "Locking the front door."
+        assert result.metadata["speech_source"] == "template"
+
+    async def test_sensitive_code_in_confirmation_is_rejected_and_redacted(self):
+        ha_client = SimpleNamespace(
+            call_service=AsyncMock(return_value=[{"entity_id": "lock.front", "state": "unlocked"}])
+        )
+        agent = _light_agent(ha_client=ha_client)
+        agent._call_llm = AsyncMock(
+            return_value=(
+                '```json\n{"action": "unlock", "entity": "front door", "parameters": {"code": "2468"}, '
+                '"confirmation": "The front door is unlocked with code 2468."}\n```'
+            )
+        )
+        agent._do_execute = _verifying_execute("lock", "unlock", "lock.front", "unlocked", "Done, unlocked.")
+        spans = _RecordingSpans()
+        task = _task("unlock the front door with 2468")
+        task.span_collector = spans
+        result = await agent.handle_task(task)
+        assert result.speech == "Done, unlocked."
+        assert result.metadata["speech_source"] == "template"
+        span = dict(spans.spans)["ha_action"]
+        assert span["confirmation_rejected_reason"] == "sensitive"
+        assert "2468" not in str(span)
+        assert REDACTED in span["confirmation"]
+
+
+# ---------------------------------------------------------------------------
 # Item 3: invalid action objects never speak the surrounding prose
 # ---------------------------------------------------------------------------
 

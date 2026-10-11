@@ -2025,3 +2025,343 @@ class TestLastEntitiesContext:
 
         system_msg = mock_llm.call_args.args[0][0]["content"]
         assert "Recently controlled entities" not in system_msg
+
+
+# ---------------------------------------------------------------------------
+# Agent confirmation sentence (action JSON "confirmation" field)
+# ---------------------------------------------------------------------------
+
+
+def _record(entity_id: str, outcome: str, expected_state: str | None = "on") -> dict:
+    return {"entity_id": entity_id, "outcome": outcome, "expected_state": expected_state, "observed_state": None}
+
+
+def _recording_execute(results: dict[str, tuple[dict, list[dict]]]):
+    """Fake ``_do_execute``: appends verification records, returns a canned result per entity label."""
+    from app.agents.action_executor import _request_verify_records
+
+    async def fake_execute(action, *_args, **_kwargs):
+        result, records = results[action["entity"]]
+        collector = _request_verify_records.get()
+        if collector is not None:
+            collector.extend(records)
+        return dict(result)
+
+    return fake_execute
+
+
+class TestPlausibleConfirmation:
+    def _check(self, text, action, friendly_name="Kitchen Light"):
+        from app.agents.actionable import _plausible_confirmation
+
+        return _plausible_confirmation(text, action, friendly_name)
+
+    def test_plain_sentence_passes(self):
+        assert self._check("The kitchen light is off.", {"action": "turn_off", "entity": "kitchen"}) == (
+            "The kitchen light is off.",
+            None,
+        )
+
+    def test_whitespace_is_flattened(self):
+        text, reason = self._check("  The light   is off.  ", {"action": "turn_off", "entity": "kitchen"})
+        assert (text, reason) == ("The light is off.", None)
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "Is the light off?",
+            "The light is {off}.",
+            "The light is `off`.",
+            "See http://example.com",
+            "The light is [off].",
+            "The light\nis off.",
+            "",
+            "   ",
+        ],
+    )
+    def test_invalid_text_rejected(self, text):
+        assert self._check(text, {"action": "turn_off", "entity": "kitchen"}) == (None, "invalid_text")
+
+    def test_non_string_rejected(self):
+        assert self._check(42, {"action": "turn_off", "entity": "kitchen"}) == (None, "invalid_text")
+
+    def test_too_long_rejected(self):
+        assert self._check("a" * 161, {"action": "turn_off", "entity": "kitchen"}) == (None, "too_long")
+        assert self._check("a" * 160, {"action": "turn_off", "entity": "kitchen"})[1] is None
+
+    def test_number_not_in_parameters_rejected(self):
+        action = {"action": "turn_on", "entity": "kitchen", "parameters": {"brightness_pct": 50}}
+        assert self._check("The kitchen light is at 60%.", action) == (None, "number_mismatch")
+        assert self._check("The kitchen light is at 50%.", action)[1] is None
+
+    def test_number_without_parameters_rejected(self):
+        assert self._check("The light is at 50%.", {"action": "turn_on", "entity": "kitchen"}) == (
+            None,
+            "number_mismatch",
+        )
+
+    def test_thousands_separator_normalized(self):
+        action = {"action": "turn_on", "entity": "kitchen", "parameters": {"color_temp_kelvin": 4000}}
+        assert self._check("Das Licht hat jetzt 4.000 Kelvin.", action)[1] is None
+        assert self._check("The light is at 4,000 kelvin.", action)[1] is None
+
+    def test_decimal_comma_normalized(self):
+        action = {"action": "set_temperature", "entity": "thermostat", "parameters": {"temperature": 50.5}}
+        assert self._check("Das Thermostat steht auf 50,5 Grad.", action)[1] is None
+        assert self._check("The thermostat is set to 50.5 degrees.", action)[1] is None
+
+    def test_integral_float_matches_integer(self):
+        action = {"action": "set_temperature", "entity": "thermostat", "parameters": {"temperature": 21.0}}
+        assert self._check("The thermostat is set to 21 degrees.", action)[1] is None
+
+    def test_numbers_from_entity_and_friendly_name_allowed(self):
+        action = {"action": "turn_off", "entity": "light 2", "parameters": {}}
+        assert self._check("Light 2 is off.", action, friendly_name=None)[1] is None
+        assert self._check("Office 3 is off.", {"action": "turn_off", "entity": "office"}, "Office 3")[1] is None
+
+    def test_list_parameters_flattened(self):
+        action = {"action": "turn_on", "entity": "lamp", "parameters": {"rgb_color": [255, 0, 0]}}
+        assert self._check("The lamp color is 255, 0, 0.", action)[1] is None
+
+    def test_sensitive_value_rejected(self):
+        action = {"action": "alarm_disarm", "entity": "alarm", "parameters": {"code": "1234"}}
+        assert self._check("The alarm is disarmed with 1234.", action) == (None, "sensitive")
+        assert self._check("The alarm is disarmed with 1.234.", action) == (None, "sensitive")
+        assert self._check("The alarm is disarmed.", action)[1] is None
+
+    def test_sensitive_value_is_not_an_allowed_number(self):
+        action = {"action": "unlock", "entity": "door", "parameters": {"code": "9999", "pin_code": "77"}}
+        assert self._check("The door is unlocked with 77.", action) == (None, "sensitive")
+
+
+_CONFIRM_ACTION = {"action": "turn_off", "entity": "kitchen", "confirmation": "The kitchen light is off."}
+_CONFIRM_RESULT = {"success": True, "entity_id": "light.kitchen", "speech": "Done, Kitchen is now off."}
+
+
+class TestApplyConfirmation:
+    _ACTION = _CONFIRM_ACTION
+    _RESULT = _CONFIRM_RESULT
+
+    async def _apply(self, action=None, result=None, records=None):
+        agent = LightAgent()
+        agent._entity_index = None
+        return await agent._apply_confirmation(
+            action or self._ACTION,
+            result or self._RESULT,
+            records if records is not None else [_record("light.kitchen", "reached", "off")],
+        )
+
+    async def test_reached_substitutes(self):
+        result, reason = await self._apply()
+        assert result["speech"] == "The kitchen light is off."
+        assert result["speech_source"] == "confirmation"
+        assert reason is None
+
+    async def test_missing_confirmation_is_template_without_reason(self):
+        result, reason = await self._apply(action={"action": "turn_off", "entity": "kitchen"})
+        assert result["speech"] == self._RESULT["speech"]
+        assert result["speech_source"] == "template"
+        assert reason is None
+
+    @pytest.mark.parametrize("outcome", ["unverified", "in_progress", "mismatch", "error"])
+    async def test_non_reached_keeps_template(self, outcome):
+        result, rejected = await self._apply(records=[_record("light.kitchen", outcome, "off")])
+        assert result["speech"] == self._RESULT["speech"]
+        assert result["speech_source"] == "template"
+        assert rejected == "not_reached"
+
+    async def test_no_record_keeps_template(self):
+        result, rejected = await self._apply(records=[])
+        assert result["speech_source"] == "template"
+        assert rejected == "no_record"
+
+    async def test_record_of_other_entity_does_not_count(self):
+        result, rejected = await self._apply(records=[_record("light.other", "reached", "off")])
+        assert result["speech_source"] == "template"
+        assert rejected == "no_record"
+
+    async def test_last_record_decides(self):
+        records = [_record("light.kitchen", "reached", "off"), _record("light.kitchen", "unverified", "off")]
+        _result, rejected = await self._apply(records=records)
+        assert rejected == "not_reached"
+
+    @pytest.mark.parametrize(
+        "flags",
+        [
+            {"success": False},
+            {"noop": True},
+            {"error": {"code": "action_failed", "message": "x"}},
+            {"directive": "delegate_native_plain_timer"},
+            {"voice_followup": True},
+        ],
+    )
+    async def test_failure_flags_keep_template(self, flags):
+        result, rejected = await self._apply(result={**self._RESULT, **flags})
+        assert result["speech"] == self._RESULT["speech"]
+        assert result["speech_source"] == "template"
+        assert rejected == "not_success"
+
+    async def test_toggle_keeps_template(self):
+        action = {"action": "toggle", "entity": "kitchen", "confirmation": "The kitchen light is on."}
+        result, rejected = await self._apply(action=action)
+        assert result["speech_source"] == "template"
+        assert rejected == "toggle"
+
+    async def test_number_mismatch_keeps_template(self):
+        action = {
+            "action": "turn_on",
+            "entity": "kitchen",
+            "parameters": {"brightness_pct": 50},
+            "confirmation": "The kitchen light is at 80%.",
+        }
+        result, rejected = await self._apply(action=action, records=[_record("light.kitchen", "reached", "on")])
+        assert result["speech"] == self._RESULT["speech"]
+        assert rejected == "number_mismatch"
+
+    async def test_friendly_name_from_entity_index(self):
+        agent = LightAgent()
+        index = MagicMock()
+        index.get_by_id_async = AsyncMock(return_value=DummyEntry("light.kitchen", "Kitchen 2"))
+        agent._entity_index = index
+        action = {"action": "turn_off", "entity": "kitchen", "confirmation": "Kitchen 2 is off."}
+        result, rejected = await agent._apply_confirmation(
+            action, self._RESULT, [_record("light.kitchen", "reached", "off")]
+        )
+        assert rejected is None
+        assert result["speech"] == "Kitchen 2 is off."
+        index.get_by_id_async.assert_awaited_once_with("light.kitchen")
+
+
+class TestConfirmationSpeechSource:
+    async def _run(self, agent, llm_response, results):
+        task = make_dispatch_task(description="do it")
+        with (
+            patch.object(agent, "_load_prompt_async", new_callable=AsyncMock, return_value="You are a light agent."),
+            patch.object(agent, "_call_llm", new_callable=AsyncMock, return_value=llm_response),
+            patch.object(agent, "_do_execute", new=_recording_execute(results)),
+        ):
+            agent._ha_client = AsyncMock()
+            agent._entity_index = None
+            agent._entity_matcher = None
+            return await agent.handle_task(task)
+
+    async def test_single_action_metadata_carries_confirmation_source(self):
+        result = await self._run(
+            LightAgent(),
+            '```json\n{"action": "turn_on", "entity": "a", "parameters": {"brightness_pct": 40}, '
+            '"confirmation": "Light A is at 40%."}\n```',
+            {
+                "a": (
+                    {"success": True, "entity_id": "light.a", "speech": "Done, A is now on."},
+                    [_record("light.a", "reached")],
+                )
+            },
+        )
+        assert result.speech == "Light A is at 40%."
+        assert result.metadata["speech_source"] == "confirmation"
+
+    async def test_single_action_without_confirmation_is_template(self):
+        result = await self._run(
+            LightAgent(),
+            '```json\n{"action": "turn_on", "entity": "a"}\n```',
+            {"a": ({"success": True, "entity_id": "light.a", "speech": "Done."}, [_record("light.a", "reached")])},
+        )
+        assert result.speech == "Done."
+        assert result.metadata["speech_source"] == "template"
+
+    async def test_multi_action_mixed_sources(self):
+        response = (
+            '```json\n{"action": "turn_on", "entity": "a", "confirmation": "Light A is on."}\n```\n'
+            '```json\n{"action": "turn_on", "entity": "b", "confirmation": "Light B is on."}\n```'
+        )
+        result = await self._run(
+            LightAgent(),
+            response,
+            {
+                "a": ({"success": True, "entity_id": "light.a", "speech": "Done, A."}, [_record("light.a", "reached")]),
+                "b": (
+                    {"success": True, "entity_id": "light.b", "speech": "Done, B."},
+                    [_record("light.b", "unverified")],
+                ),
+            },
+        )
+        assert result.speech.startswith("Light A is on. ")
+        assert "Light B is on." not in result.speech
+        assert result.metadata["speech_source"] == "mixed"
+
+    async def test_multi_action_all_confirmed(self):
+        response = (
+            '```json\n{"action": "turn_on", "entity": "a", "confirmation": "Light A is on."}\n```\n'
+            '```json\n{"action": "turn_on", "entity": "b", "confirmation": "Light B is on."}\n```'
+        )
+        result = await self._run(
+            LightAgent(),
+            response,
+            {
+                "a": ({"success": True, "entity_id": "light.a", "speech": "Done, A."}, [_record("light.a", "reached")]),
+                "b": ({"success": True, "entity_id": "light.b", "speech": "Done, B."}, [_record("light.b", "reached")]),
+            },
+        )
+        assert result.speech == "Light A is on. Light B is on."
+        assert result.metadata["speech_source"] == "confirmation"
+
+    async def test_parse_miss_prose_is_llm_source(self):
+        result = await self._run(LightAgent(), "All lights are off right now.", {})
+        assert result.metadata["speech_source"] == "llm"
+
+    async def test_parse_miss_question_is_llm_source(self):
+        result = await self._run(LightAgent(), "Which light do you mean?", {})
+        assert result.voice_followup is True
+        assert result.metadata["speech_source"] == "llm"
+
+    async def test_stream_final_chunk_carries_speech_source(self):
+        agent = LightAgent()
+        task = make_dispatch_task(description="do it")
+        results = {
+            "a": ({"success": True, "entity_id": "light.a", "speech": "Done, A."}, [_record("light.a", "reached")]),
+        }
+        with (
+            patch.object(agent, "_load_prompt_async", new_callable=AsyncMock, return_value="You are a light agent."),
+            patch.object(
+                agent,
+                "_call_llm",
+                new_callable=AsyncMock,
+                return_value='{"action": "turn_on", "entity": "a", "confirmation": "Light A is on."}',
+            ),
+            patch.object(agent, "_do_execute", new=_recording_execute(results)),
+        ):
+            agent._ha_client = AsyncMock()
+            agent._entity_index = None
+            agent._entity_matcher = None
+            chunks = [chunk async for chunk in agent.handle_task_stream(task)]
+        assert chunks[-1]["done"] is True
+        assert chunks[-1]["token"] == "Light A is on."
+        assert chunks[-1]["metadata"]["speech_source"] == "confirmation"
+
+    async def test_language_directive_names_confirmation_language(self):
+        agent = LightAgent()
+        task = make_dispatch_task(description="Mach das Licht an", context=TaskContext(language="de"))
+        with (
+            patch.object(agent, "_load_prompt_async", new_callable=AsyncMock, return_value="You are a light agent."),
+            patch.object(agent, "_call_llm", new_callable=AsyncMock, return_value="Hello there!") as mock_llm,
+        ):
+            agent._entity_index = None
+            agent._ha_client = None
+            agent._entity_matcher = None
+            await agent.handle_task(task)
+        system_msg = mock_llm.call_args.args[0][0]["content"]
+        assert 'Write the "confirmation" field of every JSON action block in German' in system_msg
+
+
+@pytest.mark.parametrize(
+    "prompt_name", ["light", "climate", "cover", "vacuum", "security", "media", "music", "automation", "scene"]
+)
+def test_device_prompts_document_the_confirmation_field(prompt_name):
+    from pathlib import Path
+
+    prompt = (Path(__file__).resolve().parents[2] / "app" / "prompts" / f"{prompt_name}.txt").read_text(
+        encoding="utf-8"
+    )
+    assert '"confirmation"' in prompt
+    assert "followed by a brief confirmation" not in prompt
+    assert "write no text after the JSON blocks" in prompt

@@ -6,6 +6,12 @@
 
 (tracking changes since 3.0.1)
 
+- Cache: the rewrite span records the target `language` it asked for; the rewrite user message ends with `Rephrase in <language>:` and `rewrite.txt` puts the output-language rule first, so small models stop echoing the cached English template on German cache hits (live trace 8a2d684b41ed4ebc).
+- Dashboard API: `GET/PUT /api/admin/rewrite/config` read and write the rewrite-agent's per-agent LLM config (same response shape; GET returns 404 if that agent row is missing). The dead `rewrite.model` / `rewrite.temperature` settings are no longer seeded and migration 47 deletes them; the rewrite call never read them.
+- Rewrite agent: default temperature lowered from 0.8 to 0.5 (seed; migration 48 updates rows still on 0.8, an explicit admin choice is kept).
+- Agents: device-agent action blocks carry an optional `confirmation` sentence (user language, completed state plus requested values). It replaces the English executor template only when the action's verification reached the target state, the action is not a toggle, and every number matches the action parameters, entity or device name; otherwise the template or hedge stays. Prompts for light, climate, cover, vacuum, security, media, music, automation and scene document the field and drop the discarded prose after the JSON block. `metadata.speech_source` (`confirmation` / `template` / `mixed` / `llm`) and the `ha_action` / `return` spans record which text was spoken.
+- Orchestrator: template or mixed speech in a non-English turn without personality mediation is localized via `localize_message` (streaming holds the single final chunk back and sends the localized text in the terminal frame); English, confirmation and LLM speech relay unchanged.
+
 ## Version History
 
 ### 3.0.1 (PATCH) -- entity-free actions and timer/calendar parsing

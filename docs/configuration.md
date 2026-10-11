@@ -119,10 +119,11 @@ that entry) is returned unchanged. The trace marks the `rewrite` span as
 failed (`success: false`, `fallback: cached_response`) and rewrite
 analytics count the call as a failure.
 
-| Key | Default | Type | Description |
-|-----|---------|------|-------------|
-| `rewrite.model` | `groq/llama-3.1-8b-instant` | string | Legacy key. Read and written only by `GET/PUT /api/admin/rewrite/config`; not used by the rewrite call and not shown in the dashboard. |
-| `rewrite.temperature` | `0.8` | float | Legacy key. Same as `rewrite.model`: stored only, not used by the rewrite call. |
+There are no `rewrite.*` settings keys. `GET/PUT /api/admin/rewrite/config`
+reads and writes the model and temperature of that same `rewrite-agent`
+agent configuration. The former `rewrite.model` / `rewrite.temperature`
+settings were never used by the rewrite call; schema migration 47 deletes
+them.
 
 > **Recommendation:** Use `llama-3.1-8b-instant` for fast, low-cost rewrite passes.
 

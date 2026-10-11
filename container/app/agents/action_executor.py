@@ -9,7 +9,7 @@ import logging
 import re
 from typing import Any
 
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError, field_validator
 
 from app.db.repositories.settings import _settings_float
 from app.entity.deterministic_resolver import (
@@ -485,6 +485,10 @@ class ActionPayload(BaseModel):
       * Extra keys are preserved (``model_config["extra"] = "allow"``)
         so legacy fields like ``parameters`` flow through to the
         downstream service-data builder unchanged.
+      * ``confirmation`` is the optional LLM-written sentence describing the
+        target state after success (spoken only after verified execution,
+        see ``ActionableAgent._apply_confirmation``). It is advisory: a
+        non-string value validates as ``None`` and never rejects the block.
     """
 
     model_config = {"extra": "allow"}
@@ -494,6 +498,12 @@ class ActionPayload(BaseModel):
     entity_id: str | None = None
     parameters: dict[str, Any] = Field(default_factory=dict)
     condition: ActionCondition | None = None
+    confirmation: str | None = None
+
+    @field_validator("confirmation", mode="before")
+    @classmethod
+    def _ignore_invalid_confirmation(cls, value: Any) -> str | None:
+        return value if isinstance(value, str) else None
 
 
 def _validate_action_dict(candidate: Any) -> dict | None:

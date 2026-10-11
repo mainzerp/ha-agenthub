@@ -188,23 +188,91 @@ class TestGetAdminPersons:
 
 
 @pytest.mark.asyncio
-class TestGetRewriteConfig:
-    async def test_get_rewrite_config_returns_defaults(self, db_repository):
+class TestRewriteConfig:
+    async def test_get_rewrite_config_reads_rewrite_agent_config(self, db_repository):
         app = _build_app()
         with patch(
-            "app.api.routes.dashboard_api.SettingsRepository.get_value",
+            "app.api.routes.dashboard_api.AgentConfigRepository.get",
             new_callable=AsyncMock,
-            side_effect=lambda key, default="": {"rewrite.model": "gpt-4o", "rewrite.temperature": "0.5"}.get(
-                key, default
-            ),
-        ):
+            return_value={"agent_id": "rewrite-agent", "model": "gpt-4o", "temperature": 0.5},
+        ) as mock_get:
             async for client in _client_for(app):
                 resp = await client.get("/api/admin/rewrite/config")
 
         assert resp.status_code == 200
-        data = resp.json()
-        assert data["model"] == "gpt-4o"
-        assert data["temperature"] == 0.5
+        assert resp.json() == {"model": "gpt-4o", "temperature": 0.5}
+        mock_get.assert_awaited_once_with("rewrite-agent")
+
+    async def test_get_rewrite_config_returns_404_without_agent_row(self, db_repository):
+        app = _build_app()
+        with patch(
+            "app.api.routes.dashboard_api.AgentConfigRepository.get",
+            new_callable=AsyncMock,
+            return_value=None,
+        ):
+            async for client in _client_for(app):
+                resp = await client.get("/api/admin/rewrite/config")
+
+        assert resp.status_code == 404
+
+    async def test_get_rewrite_config_against_seeded_db(self, db_repository):
+        app = _build_app()
+        async for client in _client_for(app):
+            resp = await client.get("/api/admin/rewrite/config")
+
+        assert resp.status_code == 200
+        assert resp.json() == {"model": "groq/llama-3.1-8b-instant", "temperature": 0.5}
+
+    async def test_put_rewrite_config_updates_only_provided_fields(self, db_repository):
+        app = _build_app()
+        with patch(
+            "app.api.routes.dashboard_api.AgentConfigRepository.upsert",
+            new_callable=AsyncMock,
+        ) as mock_upsert:
+            async for client in _client_for(app):
+                resp = await client.put("/api/admin/rewrite/config", json={"temperature": 0.4})
+
+        assert resp.status_code == 200
+        assert resp.json() == {"status": "ok"}
+        mock_upsert.assert_awaited_once_with("rewrite-agent", temperature=0.4)
+
+    async def test_put_rewrite_config_without_fields_is_noop(self, db_repository):
+        app = _build_app()
+        with patch(
+            "app.api.routes.dashboard_api.AgentConfigRepository.upsert",
+            new_callable=AsyncMock,
+        ) as mock_upsert:
+            async for client in _client_for(app):
+                resp = await client.put("/api/admin/rewrite/config", json={})
+
+        assert resp.status_code == 200
+        assert resp.json() == {"status": "ok"}
+        mock_upsert.assert_not_awaited()
+
+    async def test_put_rewrite_config_rejects_invalid_temperature(self, db_repository):
+        app = _build_app()
+        async for client in _client_for(app):
+            resp = await client.put("/api/admin/rewrite/config", json={"temperature": "hot"})
+
+        assert resp.status_code == 422
+
+    async def test_put_rewrite_config_round_trips_through_agent_config(self, db_repository):
+        from app.db.repository import AgentConfigRepository, SettingsRepository
+
+        app = _build_app()
+        async for client in _client_for(app):
+            put_resp = await client.put(
+                "/api/admin/rewrite/config",
+                json={"model": "openai/gpt-4o-mini", "temperature": 0.3},
+            )
+            get_resp = await client.get("/api/admin/rewrite/config")
+
+        assert put_resp.status_code == 200
+        assert get_resp.json() == {"model": "openai/gpt-4o-mini", "temperature": 0.3}
+        config = await AgentConfigRepository.get("rewrite-agent")
+        assert config["model"] == "openai/gpt-4o-mini"
+        assert config["temperature"] == 0.3
+        assert await SettingsRepository.get_value("rewrite.model") is None
 
 
 @pytest.mark.asyncio

@@ -35,10 +35,14 @@ from app.agents.dispatch_manager import (
 from app.agents.filler_coordinator import FillerCoordinator
 from app.agents.language_detect import detect_user_language, warm_up_language_detector
 from app.agents.mediation import (
+    TEMPLATE_SPEECH_SOURCES,
     MediationService,
     MediationStreamError,
     StreamedSpeechFilter,
     _strip_followup_tag,
+    is_english_language,
+    needs_template_localization,
+    speech_source_of,
 )
 from app.agents.prompt_builder import contains_no_content_sentinel
 from app.agents.sanitize import strip_markdown, strip_markdown_markers, strip_parenthetical_asides
@@ -290,6 +294,11 @@ class StreamingContext:
     # P0 first-frame latency: True once at least one agent token was relayed
     # downstream as a non-terminal chunk (mediation inactive for the turn).
     relayed_tokens: bool = False
+    # ``metadata["speech_source"]`` from the agent's terminal chunk.
+    speech_source: str | None = None
+    # True when the terminal chunk's English template speech was held back
+    # from the token relay so finalization can localize it first.
+    speech_held_for_localization: bool = False
 
     def __post_init__(self) -> None:
         pass
@@ -1527,6 +1536,8 @@ class OrchestratorAgent(BaseAgent):
         mediation_inputs: tuple[str | None, bool] | None = None,
         skip_mediation_llm: bool = False,
         canned_code: str | None = None,
+        speech_source: str | None = None,
+        localize_speech: bool = False,
     ) -> tuple[str, bool]:
         """Run the shared single-agent / sequential-send finalization
         block: open the ``return`` span, mediate the agent speech,
@@ -1557,6 +1568,10 @@ class OrchestratorAgent(BaseAgent):
         ``canned_code`` marks an English orchestrator-generated failure line:
         when no personality mediation runs, it is localized into the turn
         language through the mediation LLM (English if that call fails).
+        ``speech_source`` is the agent's ``metadata["speech_source"]`` (trace
+        only). ``localize_speech`` marks agent speech that is an English
+        executor template: in a non-English turn without personality
+        mediation it is localized the same way (original speech on failure).
         """
         if routed_to is None:
             routed_to = target_agent
@@ -1566,6 +1581,8 @@ class OrchestratorAgent(BaseAgent):
         async with _optional_span(span_collector, "return", agent_id="orchestrator") as ret_span:
             ret_span["metadata"]["from_agent"] = routed_to
             ret_span["metadata"]["agent_response"] = speech
+            if speech_source:
+                ret_span["metadata"]["speech_source"] = speech_source
 
             if mediation_inputs is not None:
                 # Precomputed by the caller (streaming path probes the
@@ -1603,8 +1620,20 @@ class OrchestratorAgent(BaseAgent):
                 # No mediation path -- append reminder directly as fallback
                 separator = " " if speech and speech[-1] in ".!?" else ". "
                 speech = f"{speech}{separator}{reminder_text}" if speech else reminder_text
-            if canned_code and not should_mediate:
+            # English executor-template speech: personality mediation already
+            # renders the turn language; a reminder-only mediation does not.
+            # A stalled mediation provider (skip_mediation_llm) gets no call.
+            localize_template = (
+                localize_speech
+                and not canned_code
+                and not skip_mediation_llm
+                and not (should_mediate and personality.strip())
+                and not is_english_language(language)
+            )
+            if (canned_code and not should_mediate) or localize_template:
                 speech = await self._mediation.localize_message(speech, language, span_collector=span_collector)
+                if localize_template:
+                    ret_span["metadata"]["speech_localized"] = speech != original_speech
 
             return await self._finalize_post_mediation(
                 task=task,
@@ -2351,12 +2380,20 @@ class OrchestratorAgent(BaseAgent):
             if done and chunk_result.get("directive"):
                 sc.stream_directive = chunk_result["directive"]
                 sc.stream_reason = chunk_result.get("reason")
+            if done:
+                sc.speech_source = speech_source_of(chunk_result.get("metadata"))
             await _ensure_relay_decided()
             if not relay_state["enabled"] or not token:
                 return None
             # Directive turns speak through their own terminal frame, and
             # errored turns fall back to the buffered terminal speech.
             if sc.stream_directive or sc.stream_error:
+                return None
+            if done and not sc.relayed_tokens and needs_template_localization(sc.speech_source, language):
+                # English executor template in a non-English turn: hold the
+                # one-shot answer back; finalization localizes it and sends
+                # it as the terminal frame's mediated_speech.
+                sc.speech_held_for_localization = True
                 return None
             sc.relayed_tokens = True
             return {"token": token, "done": False, "conversation_id": conversation_id}
@@ -2548,6 +2585,8 @@ class OrchestratorAgent(BaseAgent):
                 span["metadata"]["filler_sent"] = True
             if sc.relayed_tokens:
                 span["metadata"]["agent_tokens_relayed"] = True
+            if sc.speech_held_for_localization:
+                span["metadata"]["speech_held_for_localization"] = True
         # Kept to record the mediation outcome below; spans are sanitized
         # and flushed only after the turn's stream has finished.
         dispatch_span = span
@@ -2874,6 +2913,11 @@ class OrchestratorAgent(BaseAgent):
                 mediation_inputs=(reminder_text, allow_organic_followup),
                 skip_mediation_llm=mediation_fallback == "stall_timeout",
                 canned_code=canned_code,
+                speech_source=sc.speech_source,
+                # Relayed tokens were already spoken and cannot be replaced.
+                localize_speech=(
+                    not recovered and not sc.relayed_tokens and sc.speech_source in TEMPLATE_SPEECH_SOURCES
+                ),
             )
 
         # Yield final done chunk; mediated_speech is only included when tokens

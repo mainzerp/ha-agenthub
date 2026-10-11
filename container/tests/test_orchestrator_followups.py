@@ -43,7 +43,11 @@ from app.agents.dispatch_manager import (  # noqa: E402
     _CANNED_ACTION_UNCONFIRMED_SPEECH,
     _CANNED_TIMEOUT_SPEECH,
 )
-from app.agents.mediation import MediationService  # noqa: E402
+from app.agents.mediation import (  # noqa: E402
+    MediationService,
+    needs_template_localization,
+    speech_source_of,
+)
 from app.agents.orchestrator import OrchestratorAgent, PipelinePreludeResult  # noqa: E402
 from app.agents.pipeline_strategies import DefaultFinalizationStrategy  # noqa: E402
 from app.agents.task_pipeline import DispatchResult  # noqa: E402
@@ -498,6 +502,22 @@ class TestLocalization:
         speech, followup = await service.merge_responses([], "mach alles", failed_agents=["light-agent"], language="de")
         assert speech == "Leider sind alle Agenten fehlgeschlagen."
         assert followup is False
+
+    @pytest.mark.parametrize(
+        ("metadata", "language", "expected"),
+        [
+            ({"speech_source": "template"}, "de", True),
+            ({"speech_source": "mixed"}, "de-DE", True),
+            ({"speech_source": "confirmation"}, "de", False),
+            ({"speech_source": "llm"}, "de", False),
+            ({"speech_source": "template"}, "en", False),
+            ({"speech_source": "template"}, None, False),
+            ({}, "de", False),
+            (None, "de", False),
+        ],
+    )
+    def test_template_speech_localization_decision(self, metadata, language, expected):
+        assert needs_template_localization(speech_source_of(metadata), language) is expected
 
     @patch("app.agents.orchestrator.SettingsRepository")
     @patch("app.llm.client.complete", new_callable=AsyncMock)

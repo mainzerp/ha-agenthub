@@ -56,6 +56,25 @@ def is_english_language(language: str | None) -> bool:
     return primary in ("", "en")
 
 
+# ``metadata["speech_source"]`` values of a domain-agent result whose speech
+# is (at least partly) an English executor template rather than LLM text
+# already written in the user's language.
+TEMPLATE_SPEECH_SOURCES = frozenset({"template", "mixed"})
+
+
+def speech_source_of(metadata: Any) -> str | None:
+    """Return ``metadata["speech_source"]`` of an agent result, or ``None``."""
+    if not isinstance(metadata, dict):
+        return None
+    source = metadata.get("speech_source")
+    return source if isinstance(source, str) and source else None
+
+
+def needs_template_localization(speech_source: str | None, language: str | None) -> bool:
+    """True when agent speech is an English executor template in a non-English turn."""
+    return speech_source in TEMPLATE_SPEECH_SOURCES and not is_english_language(language)
+
+
 class MediationStreamError(Exception):
     """Raised when the mediation LLM stream fails (M-10).
 

@@ -597,38 +597,39 @@ async def get_extended_health(request: Request) -> dict[str, Any]:
 
 
 # --- Rewrite config ---
+#
+# Thin view over the rewrite-agent's per-agent LLM config (the same row the
+# dashboard agent editor reads and writes via /agents/{agent_id}). Kept for
+# API compatibility; the rewrite call reads only the agent config.
+
+_REWRITE_AGENT_ID = "rewrite-agent"
 
 
 @router.get("/rewrite/config")
 async def get_rewrite_config() -> dict[str, Any]:
-    """Get current rewrite agent settings."""
-    model = await SettingsRepository.get_value("rewrite.model", "")
-    temperature = await SettingsRepository.get_value("rewrite.temperature", "0.7")
+    """Get the rewrite-agent model and temperature from its agent config."""
+    config = await AgentConfigRepository.get(_REWRITE_AGENT_ID)
+    if config is None:
+        raise_api_error("Agent not found", status_code=404)
     return {
-        "model": model or "",
-        "temperature": float(temperature or "0.7"),
+        "model": config.get("model") or "",
+        "temperature": float(config.get("temperature") or 0.0),
     }
 
 
 @router.put("/rewrite/config")
 async def update_rewrite_config(payload: RewriteConfigUpdate) -> dict[str, Any]:
-    """Update rewrite agent settings."""
-    if payload.model is not None:
-        await SettingsRepository.set(
-            "rewrite.model",
-            payload.model,
-            "string",
-            "rewrite",
-            "Rewrite LLM model",
-        )
-    if payload.temperature is not None:
-        await SettingsRepository.set(
-            "rewrite.temperature",
-            str(payload.temperature),
-            "float",
-            "rewrite",
-            "Rewrite temperature",
-        )
+    """Update the rewrite-agent model and/or temperature in its agent config."""
+    updates = payload.model_dump(exclude_none=True)
+    if not updates:
+        return {"status": "ok"}
+    try:
+        # upsert invalidates the agent-config cache, so the next rewrite
+        # call picks up the change (same path as an agent-editor save).
+        await AgentConfigRepository.upsert(_REWRITE_AGENT_ID, **updates)
+    except Exception:
+        logger.exception("Failed to update agent config for %s", _REWRITE_AGENT_ID)
+        raise_api_error("Failed to update agent", status_code=500)
     return {"status": "ok"}
 
 
