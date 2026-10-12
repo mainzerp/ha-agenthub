@@ -69,6 +69,20 @@ ENV HF_HOME=/data/hf_cache
 ARG EMBEDDING_MODEL=intfloat/multilingual-e5-base
 RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('${EMBEDDING_MODEL}')"
 
+# Pre-download the speaker-identification model (CAM++ English VoxCeleb,
+# 16 kHz) with a checksum check. Keep in sync with MODEL_URL / MODEL_SHA256
+# in app/voice/model.py; the app falls back to a one-time download into
+# /data/models/speaker when this file is missing.
+ARG SPEAKER_MODEL_URL=https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/3dspeaker_speech_campplus_sv_en_voxceleb_16k.onnx
+ARG SPEAKER_MODEL_SHA256=357a834f702b80161e5b981182c038e18553c1f2ca752ed6cec2052365d4129b
+RUN mkdir -p /opt/models/speaker \
+    && python -c "import hashlib, sys, urllib.request; \
+p = '/opt/models/speaker/3dspeaker_speech_campplus_sv_en_voxceleb_16k.onnx'; \
+urllib.request.urlretrieve('${SPEAKER_MODEL_URL}', p); \
+digest = hashlib.sha256(open(p, 'rb').read()).hexdigest(); \
+sys.exit(0 if digest == '${SPEAKER_MODEL_SHA256}' else 'speaker model checksum mismatch')" \
+    && chmod -R a+rX /opt/models
+
 EXPOSE 8080
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \

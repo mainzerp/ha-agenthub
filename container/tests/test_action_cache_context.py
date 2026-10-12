@@ -24,7 +24,7 @@ from app.cache.cache_manager import (
 )
 from app.cache.cache_validator import ActionCacheValidator
 from app.cache.sqlite_cache_store import COLLECTION_ACTION_CACHE, COLLECTION_ROUTING_CACHE, SqliteCacheStore
-from app.models.agent import IngressTask, LastEntity, TaskContext
+from app.models.agent import IngressTask, LastEntity, SpeakerContext, TaskContext
 from app.models.cache import ActionCacheEntry, CachedAction
 from tests.helpers import make_action_cache_entry, make_entity_index_entry
 
@@ -130,6 +130,20 @@ class TestContextDependentTurnsNotStored:
         )
 
         assert result == (False, False)
+        cm.store_routing_async.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_speaker_identified_turn_is_not_stored(self):
+        co, cm = _cache_orchestrator()
+        task = IngressTask(
+            description="turn off the kitchen light",
+            context=TaskContext(speaker=SpeakerContext(status="identified", profile_id=1, name="Anna", score=0.9)),
+        )
+
+        result = await _store(co, task, speech="Done, Anna.", original_response_text="Done, Anna.")
+
+        assert result == (False, False)
+        cm.store_action_async.assert_not_called()
         cm.store_routing_async.assert_not_called()
 
     @pytest.mark.asyncio

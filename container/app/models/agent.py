@@ -155,6 +155,20 @@ class LastEntity(BaseModel):
     turn_index: int = 0
 
 
+class SpeakerContext(BaseModel):
+    """Speaker recognized by voice for an Assist turn.
+
+    Context only: an unverified voice match never changes ``user_id``,
+    entity visibility or any authorization decision.
+    """
+
+    status: str
+    profile_id: int | None = None
+    name: str | None = None
+    ha_user_id: str | None = None
+    score: float | None = None
+
+
 class TaskContext(BaseModel):
     """Context propagated with an agent task."""
 
@@ -195,6 +209,9 @@ class TaskContext(BaseModel):
     # read-only context for classification and agents.
     pending_question: str | None = None
     is_followup: bool = False
+    # Speaker identification: set by the orchestrator prelude only for an
+    # identified voice match. Prompt context only -- never authorization.
+    speaker: SpeakerContext | None = None
 
 
 class ExecutedCommand(BaseModel):

@@ -1023,6 +1023,33 @@ async def _migrate_to_48(db: aiosqlite.Connection) -> None:
     await db.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (48)")
 
 
+async def _migrate_to_49(db: aiosqlite.Connection) -> None:
+    # Migration 49: voice profiles and enrollment samples for speaker
+    # identification. Samples cascade with their profile.
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS voice_profiles (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL UNIQUE,
+            ha_user_id TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+    """)
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS voice_samples (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            profile_id INTEGER NOT NULL REFERENCES voice_profiles(id) ON DELETE CASCADE,
+            embedding BLOB NOT NULL,
+            dim INTEGER NOT NULL,
+            model TEXT NOT NULL,
+            duration_s REAL,
+            created_at TEXT NOT NULL
+        )
+    """)
+    await db.execute("CREATE INDEX IF NOT EXISTS idx_voice_samples_profile_model ON voice_samples(profile_id, model)")
+    await db.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (49)")
+
+
 # Ordered registry of (version, migration_callable). Each migration records
 # its own version marker. Applied in ascending order for versions greater
 # than the current schema version.
@@ -1074,6 +1101,7 @@ MIGRATIONS: list[tuple[int, Callable[[aiosqlite.Connection], Awaitable[None]]]] 
     (46, _migrate_to_46),
     (47, _migrate_to_47),
     (48, _migrate_to_48),
+    (49, _migrate_to_49),
 ]
 
 

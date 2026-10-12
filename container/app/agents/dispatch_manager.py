@@ -188,6 +188,8 @@ class DispatchManager:
             # Follow-up signal: pending-question state attached by the prelude.
             context.pending_question = incoming_context.pending_question
             context.is_followup = incoming_context.is_followup
+            # Speaker identification: prompt context only, never auth.
+            context.speaker = incoming_context.speaker
             # Phase 6: carry anaphora recency hints onto the dispatch envelope.
             context.last_entities = list(incoming_context.last_entities)
         if resolved_language:

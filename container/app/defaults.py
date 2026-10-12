@@ -39,3 +39,23 @@ MEMORY_DEFAULTS: dict[str, object] = {
     "memory.max_snippet_chars": 300,
     "memory.max_continuation_turns": 5,
 }
+
+VOICE_DEFAULTS: dict[str, object] = {
+    "voice.speaker_id.enabled": False,
+    "voice.speaker_id.threshold": 0.55,
+    "voice.speaker_id.margin": 0.05,
+    "voice.speaker_id.min_duration_s": 1.5,
+    "voice.speaker_id.min_enroll_duration_s": 2.0,
+    "voice.speaker_id.wait_ms": 500,
+    "voice.speaker_id.num_threads": 2,
+}
+
+# Inclusive (min, max) bounds enforced by the settings API for numeric voice settings.
+VOICE_SETTING_RANGES: dict[str, tuple[float, float]] = {
+    "voice.speaker_id.threshold": (0.0, 1.0),
+    "voice.speaker_id.margin": (0.0, 1.0),
+    "voice.speaker_id.min_duration_s": (0.0, 30.0),
+    "voice.speaker_id.min_enroll_duration_s": (0.5, 30.0),
+    "voice.speaker_id.wait_ms": (0, 3000),
+    "voice.speaker_id.num_threads": (1, 8),
+}

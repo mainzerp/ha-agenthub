@@ -75,6 +75,9 @@ from ._timers import (
 from ._timers import (
     router as _timers_router,
 )
+from ._voice import (
+    router as _voice_router,
+)
 
 router = APIRouter(
     prefix="/api/admin",
@@ -88,6 +91,7 @@ router.include_router(_ha_connection_router)
 router.include_router(_timers_router)
 router.include_router(_agents_router)
 router.include_router(_misc_router)
+router.include_router(_voice_router)
 
 __all__ = [
     "API_KEY_SECRET_NAME",
