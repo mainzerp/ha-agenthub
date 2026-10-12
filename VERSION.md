@@ -4,7 +4,13 @@
 
 ## Recent Changes
 
-(tracking changes since 3.2.0)
+(tracking changes since 3.2.0; branch fix/voice-timing (uncommitted))
+
+- Voice: speaker identification measures its timing. `compute_ms` (embedding plus profile matching) and `latency_ms` (from `audio_end` until the result is available to the conversation; enrollment turns end at analysis, not at the sample commit) are reported in the `/ws/voice` result frame, the stored result, the `recent` entries of `GET /api/admin/voice/status`, the `speaker_id` trace span and the "Voice turn processed" log line; both are `null` when no embedding was computed.
+- Dashboard: the Voice Profiles recent results show **Compute** and **Latency** columns.
+- Fix(voice): a changed `voice.speaker_id.num_threads` no longer reloads the speaker model inside a voice turn; the loaded extractor keeps serving while a background reload (also started by the settings write) swaps in the new one, and a failed reload keeps the old one.
+- Fix(voice): the speaker lookup no longer gives up after `wait_ms` counted from its start while classification is still running; it waits in the background until dispatch, where the turn blocks at most the rest of the `wait_ms` budget. A result that arrives before dispatch is always attached (live trace 3e6238c0a4804f8d: `timeout` although the result arrived about 100 ms before dispatch). The `speaker_id` span adds `lookup_ms`; `waited_ms` is the time blocked at dispatch.
+- Agents: the `Speaker: "<name>" (recognized by voice, unverified)` prompt line is opt-in per agent class (`_receives_speaker_context`); only the general and timer agents get it. Device/domain agents (security included), lists, calendar and custom/plugin agents no longer see it, so a voice match never reads like authorization. `TaskContext.speaker` stays attached for every agent.
 
 ## Version History
 

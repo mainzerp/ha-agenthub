@@ -268,7 +268,7 @@ The **Open WebUI Users** section lists users seen through the OpenAI-compatible 
 
 ### Voice Profiles
 
-The **Voice Profiles** page at `/dashboard/voice-profiles` recognizes who is speaking in an Assist voice turn and tells the agents the speaker's name (for example for "my calendar" or a personal greeting). It holds the speaker-identification settings, the profiles with their sample counts, enrollment, and the recent results. The feature is off by default.
+The **Voice Profiles** page at `/dashboard/voice-profiles` recognizes who is speaking in an Assist voice turn and tells the general agent and the timer agent the speaker's name (for example for a personal greeting or a reminder label). Device, security, lists, calendar and custom agents never see the name. It holds the speaker-identification settings, the profiles with their sample counts, enrollment, and the recent results. The feature is off by default.
 
 Setup:
 
@@ -276,7 +276,7 @@ Setup:
 2. **Assist pipeline** -- in **Settings > Voice assistants**, select **HA-AgentHub STT** as speech-to-text for each pipeline that should identify speakers. Transcription is still done by the wrapped entity; it keeps working when the container is down.
 3. **Enable** -- turn on speaker identification on the Voice Profiles page (`voice.speaker_id.enabled`). The engine status should change to `ready`.
 4. **Enroll** -- create a profile per person (optionally linked to a Home Assistant user id) and start enrollment. The next voice turns (default 5, within 5 minutes) of at least `voice.speaker_id.min_enroll_duration_s` (default 2 s) become samples for that profile. Only the enrolled person should speak during enrollment: every voice turn on every satellite counts. Enroll on each satellite the person uses, since microphones differ. Enrollment can only be started while speaker identification is enabled (step 3); otherwise the **Enroll** button is disabled. Enrollment turns are not identified. A turn only counts once speech-to-text returned a non-empty transcript; failed or empty recognitions are discarded.
-5. **Calibrate** -- use the recent results (score, margin, and the nearest profile for `unknown` turns) to adjust `voice.speaker_id.threshold` and `voice.speaker_id.margin` on this page. Raise them if the wrong person is recognized; lower them or add samples if a known person stays `unknown`.
+5. **Calibrate** -- use the recent results (score, margin, and the nearest profile for `unknown` turns) to adjust `voice.speaker_id.threshold` and `voice.speaker_id.margin` on this page. Raise them if the wrong person is recognized; lower them or add samples if a known person stays `unknown`. **Compute** is the time the embedding and matching took; **Latency** runs from the end of the audio until the result was ready for the conversation ("-" when nothing was computed).
 
 Limits:
 

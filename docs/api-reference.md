@@ -204,8 +204,19 @@ turn arriving before it is `ready` reports `unavailable` (reason
 **Server -> client:** exactly one result frame, then a normal close (`1000`):
 
 ```json
-{"type": "result", "status": "identified", "profile_id": 1, "name": "Alex", "ha_user_id": null, "score": 0.71, "margin": 0.18, "duration_s": 2.4, "reason": null}
+{"type": "result", "status": "identified", "profile_id": 1, "name": "Alex", "ha_user_id": null, "score": 0.71, "margin": 0.18, "duration_s": 2.4, "reason": null, "compute_ms": 41.7, "latency_ms": 43.2}
 ```
+
+Timing fields (milliseconds, 0.1 ms resolution; `null` when no embedding
+was computed, e.g. `disabled`, `too_short`, `no_profiles`,
+`unsupported_audio`, `unavailable`):
+
+- `compute_ms` -- wall time of the embedding plus profile matching (no
+  engine warm-up; an engine that is not ready reports `unavailable`).
+- `latency_ms` -- from receipt of `audio_end` (or the `end` frame,
+  disconnect or idle timeout that triggered the analysis) until the result
+  is available to the waiting conversation. For enrollment turns it ends
+  at analysis completion; storing the sample at `end` is not included.
 
 | Status | Meaning |
 |--------|---------|
@@ -803,7 +814,7 @@ Auth: admin session.
 
 | Method | Path | Purpose |
 |--------|------|---------|
-| GET | `/api/admin/voice/status` | `enabled`, `engine` (`ready`/`loading`/`unavailable`), `engine_error`, `model`, armed `enrollment` (`profile_id`, `name`, `remaining`, `expires_at`) or `null`, and `recent` (last 20 results, newest first: `timestamp`, `status`, `profile_id`, `name`, `score`, `margin`, `duration_s`; for `unknown` turns `name` is the nearest profile; `unsupported_audio` turns are included, `disabled` turns are not). Starts an engine warm-up when enabled. |
+| GET | `/api/admin/voice/status` | `enabled`, `engine` (`ready`/`loading`/`unavailable`), `engine_error`, `model`, armed `enrollment` (`profile_id`, `name`, `remaining`, `expires_at`) or `null`, and `recent` (last 20 results, newest first: `timestamp`, `status`, `profile_id`, `name`, `score`, `margin`, `duration_s`, `compute_ms`, `latency_ms` (see `/ws/voice`); for `unknown` turns `name` is the nearest profile; `unsupported_audio` turns are included, `disabled` turns are not). Starts an engine warm-up when enabled. |
 | GET | `/api/admin/voice/profiles` | List profiles (`id`, `name`, `ha_user_id`, `created_at`, `updated_at`, `sample_count` for the current model). |
 | POST | `/api/admin/voice/profiles` | Create `{"name", "ha_user_id"?}` (201). Name max 64 chars, unique (409 on conflict); `ha_user_id` max 128 chars. |
 | PATCH | `/api/admin/voice/profiles/{profile_id}` | Update `name` and/or `ha_user_id` (400 when empty body, 404, 409). |
