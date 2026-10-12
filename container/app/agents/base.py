@@ -235,6 +235,12 @@ class BaseAgent(ABC):
     handle_task_stream() for token-level streaming support.
     """
 
+    # Opt-in for the ``Speaker:`` prompt line (voice speaker identification).
+    # Off by default: device, security, lists, calendar and plugin agents never
+    # see it, so an unverified voice match never reads like authorization.
+    # ``TaskContext.speaker`` itself is attached for every agent.
+    _receives_speaker_context: bool = False
+
     def __init__(
         self,
         ha_client=None,
@@ -361,12 +367,13 @@ class BaseAgent(ABC):
         )
 
     @staticmethod
-    def _build_time_location_context(context: TaskContext | None) -> str:
+    def _build_time_location_context(context: TaskContext | None, *, include_speaker: bool = False) -> str:
         """Build a short context block for local time, location, satellite area and speaker.
 
         The satellite area line (where the user is speaking from) lets every
         agent resolve "here" / "this room"; it is emitted even when no local
-        time is known.
+        time is known. The speaker line is added only with
+        ``include_speaker`` (callers pass ``self._receives_speaker_context``).
         """
         if not context:
             return ""
@@ -385,7 +392,7 @@ class BaseAgent(ABC):
             )
         # Speaker identification is an unverified voice match: personalization
         # context only, never a basis for authorization.
-        speaker = context.speaker
+        speaker = context.speaker if include_speaker else None
         speaker_name = sanitize_untrusted_text(speaker.name, UNTRUSTED_NAME_MAX_CHARS) if speaker else ""
         if speaker_name:
             parts.append(f'Speaker: "{speaker_name}" (recognized by voice, unverified)')

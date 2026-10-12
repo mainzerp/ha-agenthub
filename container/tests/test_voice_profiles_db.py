@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import aiosqlite
 import httpx
@@ -262,6 +263,7 @@ class TestSpeakerIdServiceProcessTurn:
         result = await service.process_turn(_pcm(1.0), 16000, _config())
         assert result["status"] == "too_short"
         assert result["duration_s"] == pytest.approx(1.0)
+        assert result["compute_ms"] is None and result["latency_ms"] is None
 
     async def test_identified_and_unknown(self, db_repository):
         anna = await VoiceProfileRepository.create_profile("Anna", "user-anna")
@@ -278,16 +280,19 @@ class TestSpeakerIdServiceProcessTurn:
         assert identified["profile_id"] == anna["id"]
         assert identified["name"] == "Anna" and identified["ha_user_id"] == "user-anna"
         assert identified["score"] > 0.9 and identified["margin"] > 0.5
+        assert identified["compute_ms"] >= 0 and identified["latency_ms"] >= identified["compute_ms"]
 
         unknown = await service.process_turn(_pcm(2.0), 16000, _config())
         assert unknown["status"] == "unknown"
         assert unknown["profile_id"] is None and unknown["name"] is None
         assert unknown["score"] is not None
+        assert unknown["compute_ms"] >= 0 and unknown["latency_ms"] >= 0
 
         recent = service.store.recent()
         assert [r["status"] for r in recent] == ["unknown", "identified"]
         # Calibration aid: nearest candidate shown for unknown turns.
         assert recent[0]["name"] in ("Anna", "Ben")
+        assert all(r["compute_ms"] is not None and r["latency_ms"] is not None for r in recent)
 
     async def test_engine_unavailable(self, db_repository):
         profile = await VoiceProfileRepository.create_profile("Anna")
@@ -340,12 +345,18 @@ class TestSpeakerIdServiceProcessTurn:
         profile = await VoiceProfileRepository.create_profile("Anna")
         service = SpeakerIdService(engine=FakeEngine([[1, 0]]))
         service.enrollment.arm(profile["id"], "Anna", samples=2, timeout_s=60)
-        analysis = await service.analyze_turn(_pcm(2.5), 16000, _config())
+        analysis = await service.analyze_turn(_pcm(2.5), 16000, _config(), received_at=time.perf_counter())
         assert analysis.pending is not None
+        assert analysis.pending.compute_ms >= 0 and analysis.pending.latency_ms >= analysis.pending.compute_ms
+        assert analysis.result["compute_ms"] == analysis.pending.compute_ms
         assert await VoiceProfileRepository.count_samples(profile["id"], _MODEL) == 0
         assert service.enrollment.current()["remaining"] == 2
         committed = await service.commit_enrollment(analysis.pending)
         assert committed["status"] == "enrolled_sample"
+        # Timing covers the analysis, not the commit.
+        assert committed["compute_ms"] == analysis.pending.compute_ms
+        assert committed["latency_ms"] == analysis.pending.latency_ms
+        assert service.store.recent()[0]["latency_ms"] == analysis.pending.latency_ms
         assert await VoiceProfileRepository.count_samples(profile["id"], _MODEL) == 1
         assert service.enrollment.current()["remaining"] == 1
 
@@ -456,13 +467,23 @@ class TestVoiceAdminApi:
         assert armed.status_code == 200
         assert armed.json()["enrollment"]["remaining"] == 3
 
-        service.store.record_recent({"status": "unknown", "score": 0.3, "margin": 0.1, "duration_s": 2.0})
+        service.store.record_recent(
+            {
+                "status": "unknown",
+                "score": 0.3,
+                "margin": 0.1,
+                "duration_s": 2.0,
+                "compute_ms": 12.3,
+                "latency_ms": 15.0,
+            }
+        )
         status = (await client.get("/api/admin/voice/status")).json()
         assert status["enabled"] is True
         assert status["engine"] == "ready"
         assert status["model"] == _MODEL
         assert status["enrollment"]["profile_id"] == pid and status["enrollment"]["name"] == "Anna"
         assert status["recent"][0]["status"] == "unknown"
+        assert status["recent"][0]["compute_ms"] == 12.3 and status["recent"][0]["latency_ms"] == 15.0
 
         # Deleting the armed profile disarms enrollment.
         await client.delete(f"/api/admin/voice/profiles/{pid}")
@@ -486,6 +507,29 @@ class TestVoiceAdminApi:
         assert bad.status_code == 400
         grouped = (await client.get("/api/admin/settings")).json()["settings"]
         assert len(grouped["voice"]) == 7
+
+    async def test_num_threads_write_schedules_background_reload(self, admin_client):
+        client, service = admin_client
+        with patch.object(service, "schedule_reload") as reload:
+            # Disabled feature: nothing to reload.
+            await client.put("/api/admin/settings", json={"items": {"voice.speaker_id.num_threads": "3"}})
+            reload.assert_not_called()
+            await SettingsRepository.set("voice.speaker_id.enabled", "true")
+            ok = await client.put("/api/admin/settings", json={"items": {"voice.speaker_id.num_threads": "4"}})
+            assert ok.status_code == 200
+            reload.assert_called_once_with(4)
+
+    def test_service_reload_delegates_to_ready_engine(self):
+        engine = FakeEngine()
+        engine.schedule_reload = MagicMock(return_value=True)
+        service = SpeakerIdService(engine=engine)
+        service.schedule_reload(4)
+        engine.schedule_reload.assert_called_once_with(4)
+        engine.status = "unavailable"
+        with patch.object(service, "schedule_warm_up") as warm_up:
+            service.schedule_reload(3)
+        warm_up.assert_called_once()
+        engine.schedule_reload.assert_called_once()
 
     async def test_enabling_via_settings_api_schedules_warm_up(self, admin_client):
         client, service = admin_client

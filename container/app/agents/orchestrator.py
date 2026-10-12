@@ -67,7 +67,7 @@ from app.models.agent import (
     source_allows_filler,
     source_allows_voice_followup,
 )
-from app.voice import attach_speaker_to_task, discard_pending_speaker, has_pending_speaker
+from app.voice import PendingSpeakerLookup, discard_pending_speaker, start_speaker_lookup
 
 logger = logging.getLogger(__name__)
 
@@ -128,13 +128,10 @@ async def _cancel_filler_future(filler_future: asyncio.Task | None) -> None:
         filler_future.exception()
 
 
-async def _cancel_speaker_task(speaker_task: asyncio.Task | None) -> None:
-    """Cancel an unfinished speaker-lookup task when the prelude exits early."""
-    if speaker_task is None or speaker_task.done():
-        return
-    speaker_task.cancel()
-    with contextlib.suppress(asyncio.CancelledError):
-        await speaker_task
+async def _cancel_speaker_lookup(speaker_lookup: PendingSpeakerLookup | None) -> None:
+    """Cancel an unfinished speaker lookup when the prelude exits early."""
+    if speaker_lookup is not None:
+        await speaker_lookup.cancel()
 
 
 def _consume_memory_task_result(memory_task: asyncio.Task, state: dict[str, Any] | None = None) -> None:
@@ -1136,13 +1133,12 @@ class OrchestratorAgent(BaseAgent):
         # Cache miss: pay language detection and the (single) turn prefetch.
         conversation_id, detected_language, lang_turns = await self._pipeline_resolve_conversation_and_language(task)
 
-        # Speaker identification: consume the voice-turn result for this
-        # conversation (bounded wait while it is still computed) concurrently
-        # with memory search and classification. Context only -- user_id and
+        # Speaker identification: the lookup for this conversation's
+        # voice-turn result runs concurrently with memory search and
+        # classification and is joined before dispatch (blocking at most the
+        # rest of voice.speaker_id.wait_ms). Context only -- user_id and
         # entity visibility are never touched.
-        speaker_task: asyncio.Task | None = None
-        if task.context is not None and has_pending_speaker(conversation_id):
-            speaker_task = asyncio.create_task(attach_speaker_to_task(task, conversation_id, span_collector))
+        speaker_lookup = start_speaker_lookup(task, conversation_id, span_collector)
 
         used_origin_context = bool(task and task.context and (task.context.area_id or task.context.device_id))
 
@@ -1204,7 +1200,7 @@ class OrchestratorAgent(BaseAgent):
                 pending_question=task.context.pending_question if task.context else None,
             )
         except _RecoverableClassificationError as exc:
-            await _cancel_speaker_task(speaker_task)
+            await _cancel_speaker_lookup(speaker_lookup)
             # Never abandon the detached memory overlap task: read-only,
             # safe to cancel.
             # Cancelling it makes the span task's shield await raise
@@ -1250,12 +1246,16 @@ class OrchestratorAgent(BaseAgent):
                 },
             )
         except BaseException:
-            await _cancel_speaker_task(speaker_task)
+            await _cancel_speaker_lookup(speaker_lookup)
             raise
 
-        await _resolve_memory_context(task, memory_task, memory_service, span_state=memory_span_state)
-        if speaker_task is not None:
-            await speaker_task
+        try:
+            await _resolve_memory_context(task, memory_task, memory_service, span_state=memory_span_state)
+        except BaseException:
+            await _cancel_speaker_lookup(speaker_lookup)
+            raise
+        if speaker_lookup is not None:
+            await speaker_lookup.join()
         self._drop_stale_followup_context(task, conversation_id, classifications)
 
         logger.debug(

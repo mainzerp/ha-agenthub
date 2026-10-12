@@ -3,7 +3,9 @@
 The extractor is loaded on first use (model download included when the
 image does not ship it) and every inference runs in a worker thread via
 ``asyncio.to_thread`` -- never on the event loop. ``sherpa_onnx`` is an
-optional import: without it the engine reports ``unavailable``.
+optional import: without it the engine reports ``unavailable``. A changed
+thread count never reloads inline: the loaded extractor keeps serving while
+a background reload swaps in the new one.
 """
 
 from __future__ import annotations
@@ -18,6 +20,7 @@ from typing import Any, Literal
 
 import numpy as np
 
+from app.util.tasks import spawn
 from app.voice.audio import pcm_s16le_to_float32
 from app.voice.model import MODEL_ID, ensure_model_path
 
@@ -78,6 +81,10 @@ class SpeakerEngine:
         self._loading = False
         self._failed_at: float | None = None
         self._last_error: str | None = None
+        self._reload_task: asyncio.Task[Any] | None = None
+        self._reload_threads: int | None = None
+        # (num_threads, monotonic time) of the last failed background reload.
+        self._reload_failed: tuple[int, float] | None = None
 
     @property
     def model_id(self) -> str:
@@ -122,29 +129,64 @@ class SpeakerEngine:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
+                error = str(exc) or type(exc).__name__
+                if self._extractor is not None:
+                    # Reload with another thread count failed: keep serving with the loaded one.
+                    self._reload_failed = (num_threads, time.monotonic())
+                    logger.warning(
+                        "Speaker-embedding engine reload (threads=%d) failed; keeping threads=%s: %s",
+                        num_threads,
+                        self._num_threads,
+                        error,
+                    )
+                    return True
                 self._failed_at = time.monotonic()
-                self._last_error = str(exc) or type(exc).__name__
+                self._last_error = error
                 logger.warning("Speaker-embedding engine unavailable: %s", self._last_error)
-                # A previously loaded extractor (other thread count) stays usable.
-                return self._extractor is not None
+                return False
             finally:
                 self._loading = False
-            with self._compute_lock:
-                self._extractor = extractor
-                self._num_threads = num_threads
+            # Atomic swap without blocking the event loop on ``_compute_lock``:
+            # an inference in progress holds its own reference and finishes on
+            # the old extractor; the next one picks up the new extractor.
+            self._extractor = extractor
+            self._num_threads = num_threads
             self._failed_at = None
             self._last_error = None
+            self._reload_failed = None
             logger.info("Speaker-embedding engine ready (model=%s, threads=%d)", self._model_id, num_threads)
             return True
+
+    def schedule_reload(self, num_threads: int) -> bool:
+        """Reload a loaded extractor with ``num_threads`` in the background.
+
+        The loaded extractor keeps serving until the new one is swapped in; a
+        failed reload keeps it (retried after the failure backoff). Returns
+        True when a reload was started.
+        """
+        if self._extractor is None or self._num_threads == num_threads:
+            return False
+        if self._reload_task is not None and not self._reload_task.done() and self._reload_threads == num_threads:
+            return False
+        failed = self._reload_failed
+        if failed is not None and failed[0] == num_threads and time.monotonic() - failed[1] < _LOAD_FAILURE_BACKOFF_S:
+            return False
+        self._reload_threads = num_threads
+        self._reload_task = spawn(self.ensure_ready(num_threads), name="speaker_engine_reload")
+        return True
 
     async def embed(self, pcm: bytes, sample_rate: int, *, num_threads: int = 2) -> np.ndarray:
         """Compute the speaker embedding of a mono s16le buffer.
 
         Raises :class:`SpeakerEngineUnavailableError` when the extractor cannot
-        be loaded.
+        be loaded. A loaded extractor with another thread count is used as is
+        while :meth:`schedule_reload` applies ``num_threads`` in the background.
         """
-        if not await self.ensure_ready(num_threads):
-            raise SpeakerEngineUnavailableError(self._last_error or "Speaker-embedding engine unavailable")
+        if self._extractor is None:
+            if not await self.ensure_ready(num_threads):
+                raise SpeakerEngineUnavailableError(self._last_error or "Speaker-embedding engine unavailable")
+        elif self._num_threads != num_threads:
+            self.schedule_reload(num_threads)
         return await asyncio.to_thread(self._compute, pcm, sample_rate)
 
     def _compute(self, pcm: bytes, sample_rate: int) -> np.ndarray:

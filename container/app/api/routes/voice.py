@@ -10,7 +10,11 @@ One connection per voice turn. Protocol (JSON text frames + binary frames):
   turn (the STT produced a non-empty transcript), or ``{"type": "abort"}``
   discards it. A legacy ``transcript`` string is tolerated, never required.
 - server -> ``{"type": "result", "status": ..., "profile_id", "name", "ha_user_id",
-  "score", "margin", "duration_s", "reason"}`` exactly once, then a normal close
+  "score", "margin", "duration_s", "reason", "compute_ms", "latency_ms"}`` exactly
+  once, then a normal close. ``compute_ms`` (embedding plus matching) and
+  ``latency_ms`` (``audio_end`` -- or the frame/disconnect that triggered the
+  analysis -- until the result is available to the conversation) are null
+  when no embedding was computed.
 
 A status known at ``start`` (``disabled``, ``unsupported_audio``, or
 ``error`` with reason ``no_conversation_id`` / ``invalid_conversation_id``)
@@ -29,6 +33,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import time
 from typing import Any
 
 from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
@@ -158,6 +163,10 @@ def _transcript_chars(data: dict[str, Any]) -> int | None:
     return None
 
 
+def _format_ms(value: Any) -> str:
+    return f"{value:.1f}ms" if isinstance(value, (int, float)) else "-"
+
+
 class VoiceTurnSession:
     """State machine for one ``/ws/voice`` connection (one voice turn)."""
 
@@ -175,6 +184,8 @@ class VoiceTurnSession:
         self._resolved = False
         self._config: VoiceConfig | None = None
         self._processing: asyncio.Task[dict[str, Any]] | None = None
+        # ``time.perf_counter()`` when the analysis was triggered (latency_ms origin).
+        self._received_at: float | None = None
         self._pending_enrollment: PendingEnrollment | None = None
         self._transcript_chars: int | None = None
 
@@ -326,6 +337,8 @@ class VoiceTurnSession:
                 profile_id=pending.profile_id,
                 name=pending.name,
                 reason="enrollment_unconfirmed",
+                compute_ms=pending.compute_ms,
+                latency_ms=pending.latency_ms,
             )
         if send_result:
             await self._send_result(result)
@@ -342,26 +355,33 @@ class VoiceTurnSession:
     def _start_processing(self) -> None:
         if self._processing is not None or self._token is None:
             return
+        self._received_at = time.perf_counter()
         pcm = self._buffer.finish()
         self._processing = asyncio.create_task(self._process(pcm))
 
     async def _process(self, pcm: bytes) -> dict[str, Any]:
         assert self._config is not None
         try:
-            analysis = await self._service.analyze_turn(pcm, SUPPORTED_SAMPLE_RATE, self._config)
+            analysis = await self._service.analyze_turn(
+                pcm, SUPPORTED_SAMPLE_RATE, self._config, received_at=self._received_at
+            )
         except Exception:
             logger.warning("Speaker identification failed", exc_info=True)
             result = make_result(STATUS_ERROR, reason="processing_failed")
         else:
             result = analysis.result
             self._pending_enrollment = analysis.pending
+        # No await between the end of the analysis and ``resolve``: ``latency_ms``
+        # is the time until a waiting conversation can see the result.
         if self._conversation_id is not None and self._token is not None:
             self._service.store.resolve(self._conversation_id, self._token, result)
             self._resolved = True
         logger.info(
-            "Voice turn processed: status=%s duration=%.2fs conversation=%s",
+            "Voice turn processed: status=%s duration=%.2fs compute=%s latency=%s conversation=%s",
             result.get("status"),
             result.get("duration_s") or 0.0,
+            _format_ms(result.get("compute_ms")),
+            _format_ms(result.get("latency_ms")),
             self._conversation_id,
         )
         if self._transcript_chars is not None:

@@ -58,6 +58,9 @@ def _memory_date_label(epoch: Any) -> str:
 class GeneralAgent(BaseAgent):
     """Handles general Q&A and unroutable requests. No HA service calls."""
 
+    # Personalized answers ("good morning, Anna") use the voice-matched speaker.
+    _receives_speaker_context = True
+
     def __init__(self, ha_client=None, entity_index=None, mcp_tool_manager=None):
         super().__init__(ha_client=ha_client, entity_index=entity_index)
         self._mcp_tool_manager = mcp_tool_manager
@@ -83,7 +86,9 @@ class GeneralAgent(BaseAgent):
         system_prompt = PromptBuilder.build(
             await self._load_prompt_async("general"),
             language=task.context.language if task.context else None,
-            time_location=self._build_time_location_context(task.context),
+            time_location=self._build_time_location_context(
+                task.context, include_speaker=self._receives_speaker_context
+            ),
             sequential_send=bool(task.context and task.context.sequential_send),
         )
         # Session memory: appended AFTER the byte-stable static head
