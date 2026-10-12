@@ -31,8 +31,10 @@ Live pipeline in board format — headings are columns, cards are
   container (`container/app/voice/`, CAM++ via sherpa-onnx 1.13.8, migration
   49) matches enrolled profiles and attaches `TaskContext.speaker` (context
   only; speaker turns skip the action/routing cache). Dashboard page
-  `/dashboard/voice-profiles`. Branch feat/voice-speaker-id, uncommitted.
+  `/dashboard/voice-profiles`. PR #151; shipped in v3.2.0 (release PR #152,
+  https://github.com/mainzerp/ha-agenthub/releases/tag/v3.2.0).
   Passed: ruff clean; container suite 4304 passed (after review fixes);
+  PR and release pipeline (quality, security, docker, Trivy, release) green;
   bridge 213 passed; ci.py --no-trivy green incl. docker build + smoke and
   sherpa_onnx/model check in the image (run before the review fixes, which
   did not touch Dockerfile/requirements); independent review findings fixed.
@@ -235,6 +237,10 @@ Live pipeline in board format — headings are columns, cards are
 
 ## Idea Bank
 
+- Voice speaker as soft identity for personalization · priority: P2 · area: voice
+  When HA sends no `user_id` (satellites), use `speaker.ha_user_id` for memory,
+  calendar and preferences only; visibility and authorization stay on the real
+  HA `user_id`. Needs a prime-directives review first.
 - Distributed HTTP-based A2A transport · priority: P3 · area: a2a
 - Supervisor add-on packaging with managed ingress · priority: P3 · area: packaging
 - Plugin marketplace / discovery UI · priority: P3 · area: plugins
