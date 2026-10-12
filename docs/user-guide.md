@@ -35,7 +35,7 @@ After setup, the dashboard is available at `/dashboard/`. The left sidebar is or
 |-------|---------|-------|
 | **Operate** | Day-to-day monitoring and testing | Overview, Chat, System Health, Analytics, Traces, Logs |
 | **Configure** | Agent and runtime configuration | Agents, Custom Agents, Personality, Entity Index, MCP Servers, Plugins |
-| **Domain Data** | Home Assistant entity mappings and schedules | Send Devices, Timers, Calendar, Persons |
+| **Domain Data** | Home Assistant entity mappings, schedules and voice profiles | Send Devices, Timers, Calendar, Persons, Voice Profiles |
 | **Performance** | Cache inspection and tuning | Cache |
 | **System** | Advanced runtime settings | Settings |
 
@@ -265,6 +265,26 @@ Calendar behavior in conversation:
 The **Persons** page at `/dashboard/persons` maps Home Assistant person entities. This mapping helps agents resolve references to people ("tell John", "when Sarah gets home") by linking the person name to the corresponding HA `person.*` entity.
 
 The **Open WebUI Users** section lists users seen through the OpenAI-compatible API (name, email, shortened external id, last seen). Pick a person in **Mapped Person** to run that user's chats as the person's Home Assistant user; the change is saved immediately. Only persons linked to a Home Assistant user appear in the list; **Not mapped** clears the mapping. **Delete** forgets the user until their next request. The persons table shows the Open WebUI users mapped to each person. Setup: [Deployment -- Open WebUI](deployment.md#open-webui).
+
+### Voice Profiles
+
+The **Voice Profiles** page at `/dashboard/voice-profiles` recognizes who is speaking in an Assist voice turn and tells the agents the speaker's name (for example for "my calendar" or a personal greeting). It holds the speaker-identification settings, the profiles with their sample counts, enrollment, and the recent results. The feature is off by default.
+
+Setup:
+
+1. **Integration options** -- in Home Assistant open **Settings > Devices & services > HA-AgentHub > Configure** and pick the speech-to-text entity to wrap in **Speaker identification STT entity** (for example Home Assistant Cloud or a Wyoming STT). This adds the **HA-AgentHub STT** entity. Requires the current bridge version from HACS.
+2. **Assist pipeline** -- in **Settings > Voice assistants**, select **HA-AgentHub STT** as speech-to-text for each pipeline that should identify speakers. Transcription is still done by the wrapped entity; it keeps working when the container is down.
+3. **Enable** -- turn on speaker identification on the Voice Profiles page (`voice.speaker_id.enabled`). The engine status should change to `ready`.
+4. **Enroll** -- create a profile per person (optionally linked to a Home Assistant user id) and start enrollment. The next voice turns (default 5, within 5 minutes) of at least `voice.speaker_id.min_enroll_duration_s` (default 2 s) become samples for that profile. Only the enrolled person should speak during enrollment: every voice turn on every satellite counts. Enroll on each satellite the person uses, since microphones differ. Enrollment can only be started while speaker identification is enabled (step 3); otherwise the **Enroll** button is disabled. Enrollment turns are not identified. A turn only counts once speech-to-text returned a non-empty transcript; failed or empty recognitions are discarded.
+5. **Calibrate** -- use the recent results (score, margin, and the nearest profile for `unknown` turns) to adjust `voice.speaker_id.threshold` and `voice.speaker_id.margin` on this page. Raise them if the wrong person is recognized; lower them or add samples if a known person stays `unknown`.
+
+Limits:
+
+- Short commands ("lights off") are often below `voice.speaker_id.min_duration_s` (default 1.5 s) and report `too_short`; no speaker is attached then.
+- A voice match is unverified context only. It never changes the Home Assistant user, entity visibility, or what a request is allowed to do. Do not use it as a security check.
+- Only 16 kHz, 16-bit mono PCM audio is analyzed; other pipeline formats skip identification.
+
+Privacy: voice embeddings are biometric data. They are stored only in the local AgentHub database (no audio is kept), and deleting a profile or resetting its samples removes them. Get the consent of every household member before enrolling them.
 
 ## Performance
 

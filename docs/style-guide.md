@@ -417,7 +417,7 @@ The sidebar is data-driven from `app.dashboard.nav_config.NAV_GROUPS`. Five coll
 
 1. **Operate** — Overview, Chat, System Health, Analytics, Traces
 2. **Configure** — Agents, Custom Agents, Personality, Entity Index, MCP Servers, Plugins
-3. **Domain Data** — Send Devices, Timers, Calendar, Persons
+3. **Domain Data** — Send Devices, Timers, Calendar, Persons, Voice Profiles
 4. **Performance** — Cache
 5. **System** — Settings
 

@@ -25,6 +25,27 @@ Live pipeline in board format — headings are columns, cards are
 
 ## Testing
 
+- Voice speaker identification (3.2.0) · priority: P1 · area: voice
+  Outcome: bridge STT entity "HA-AgentHub STT" (`stt.py`, `voice_tee.py`)
+  wraps a user-selected STT entity and tees 16 kHz PCM over `/ws/voice`;
+  container (`container/app/voice/`, CAM++ via sherpa-onnx 1.13.8, migration
+  49) matches enrolled profiles and attaches `TaskContext.speaker` (context
+  only; speaker turns skip the action/routing cache). Dashboard page
+  `/dashboard/voice-profiles`. Branch feat/voice-speaker-id, uncommitted.
+  Passed: ruff clean; container suite 4304 passed (after review fixes);
+  bridge 213 passed; ci.py --no-trivy green incl. docker build + smoke and
+  sherpa_onnx/model check in the image (run before the review fixes, which
+  did not touch Dockerfile/requirements); independent review findings fixed.
+  Needs user verification: review the diff; deploy container + HACS bridge;
+  integration options -> select the STT entity to wrap; Assist pipeline ->
+  speech-to-text "HA-AgentHub STT"; enable in Voice Profiles, enroll ~5
+  samples per person per satellite; a voice turn >= 1.5 s shows the
+  `speaker_id` span and the speaker in the trace; calibrate threshold with
+  recent results. Open: CAM++ is English-VoxCeleb trained (German accuracy
+  unmeasured); not yet seen in a browser.
+  Later: own STT in the container (3.3.0), server-side wake word with custom
+  satellite firmware (3.4.0).
+
 - Agent confirmation sentence + template localization · priority: P1 · area: agents
   Outcome: device-agent action blocks carry an optional `confirmation`
   (user language, target state + values), spoken only when verification

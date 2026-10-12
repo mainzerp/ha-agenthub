@@ -163,6 +163,75 @@ Turn contract (also for SSE):
 - At most 5 concurrent sockets per client IP; an over-limit connect is
   rejected before the handshake completes (HTTP 403).
 
+### WS /ws/voice
+
+Voice-turn audio for speaker identification, streamed by the bridge STT
+wrapper (`custom_components/ha_agenthub/voice_tee.py`). One socket per
+voice turn; the result is context only for the conversation turn with
+the same `conversation_id` and never authenticates a user. Not traced at
+connection level: the result appears as the `speaker_id` span of that
+conversation turn.
+
+**Auth:** Bearer token via `Authorization` header (close `4001` when
+missing or invalid). Disallowed `Origin` closes with `1008`.
+
+**Limits:** at most 8 concurrent sockets per client IP (over-limit connect
+rejected before the handshake, HTTP 403); text frames up to 4096 bytes;
+`conversation_id` up to 64 characters; audio buffered up to 30 s (excess
+ignored); a socket idle for 30 s is finalized with the audio received so
+far and closed.
+
+**Client -> server (in order):**
+
+1. `{"type": "start", "conversation_id": "<HA chat session id>", "language": "en", "sample_rate": 16000, "bit_rate": 16, "channels": 1, "codec": "pcm", "format": "wav"}`
+   (`format` may be `wav`, `raw`, or `pcm`).
+2. Binary frames: PCM s16le mono; a leading RIFF/WAV header is skipped.
+3. Optional `{"type": "audio_end"}`: start computing the embedding now.
+4. `{"type": "end", "transcript_chars": <int>}` confirms the turn, or
+   `{"type": "abort"}` discards it. The bridge sends `end` only when the
+   inner STT returned `success` with a non-empty transcript, and only the
+   transcript length (never the text), so the frame stays far below the
+   4096-byte limit. `transcript_chars` is optional; a legacy
+   `transcript` string is tolerated but never required.
+
+While enrollment is armed, the embedding may be computed at `audio_end`,
+but the sample is stored (and counted) only when `end` arrives; `abort`,
+disconnect or idle timeout before `end` discard it. Identification starts
+at `audio_end` regardless. The voice path never waits for the engine: a
+turn arriving before it is `ready` reports `unavailable` (reason
+`engine_not_ready`) and schedules a background warm-up.
+
+**Server -> client:** exactly one result frame, then a normal close (`1000`):
+
+```json
+{"type": "result", "status": "identified", "profile_id": 1, "name": "Alex", "ha_user_id": null, "score": 0.71, "margin": 0.18, "duration_s": 2.4, "reason": null}
+```
+
+| Status | Meaning |
+|--------|---------|
+| `identified` | Best profile reached `voice.speaker_id.threshold` and `voice.speaker_id.margin` |
+| `unknown` | No profile qualified (`score`/`margin` still reported) |
+| `too_short` | Turn shorter than `voice.speaker_id.min_duration_s` (or `min_enroll_duration_s` while enrolling) |
+| `no_profiles` | No profile has samples for the current model |
+| `enrolled_sample` | Enrollment was armed; the confirmed turn was stored as a sample |
+| `disabled` | `voice.speaker_id.enabled` is off (sent right after `start`) |
+| `unsupported_audio` | Format other than 16 kHz / 16-bit / mono / PCM (sent right after `start`) |
+| `unavailable` | Embedding engine not loaded (still loading, missing model or dependency); reason `engine_not_ready` while a warm-up is pending |
+| `error` | See `reason` |
+
+`error` reasons: `no_conversation_id`, `invalid_conversation_id` (sent
+right after `start`), `aborted`, `idle_timeout`, `processing_failed`,
+`embedding_failed`, `profiles_unavailable`, `sample_not_stored`,
+`enrollment_not_armed` (enrollment cancelled or expired before `end`),
+`enrollment_unconfirmed` (idle timeout before `end` while enrolling),
+`no_session`. Protocol violations (`start_required`, `duplicate_start`,
+`invalid_message`, `message_too_large`) send an `error` result and close
+with `1008`. A result decided at `start` is sent immediately; the server
+then drains frames until `end`/`abort`/disconnect.
+
+Server side: `container/app/api/routes/voice.py`, `container/app/voice/`
+(tests: `container/tests/test_voice_ws.py`, `test_voice_core.py`).
+
 ---
 
 ## OpenAI-compatible API
@@ -729,6 +798,24 @@ Auth: admin session. See also `/api/admin/agents` (above) and
 | DELETE | `/api/admin/timers/{timer_id}` | Delete a timer. |
 
 Auth: admin session.
+
+## Admin -- Voice profiles
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET | `/api/admin/voice/status` | `enabled`, `engine` (`ready`/`loading`/`unavailable`), `engine_error`, `model`, armed `enrollment` (`profile_id`, `name`, `remaining`, `expires_at`) or `null`, and `recent` (last 20 results, newest first: `timestamp`, `status`, `profile_id`, `name`, `score`, `margin`, `duration_s`; for `unknown` turns `name` is the nearest profile; `unsupported_audio` turns are included, `disabled` turns are not). Starts an engine warm-up when enabled. |
+| GET | `/api/admin/voice/profiles` | List profiles (`id`, `name`, `ha_user_id`, `created_at`, `updated_at`, `sample_count` for the current model). |
+| POST | `/api/admin/voice/profiles` | Create `{"name", "ha_user_id"?}` (201). Name max 64 chars, unique (409 on conflict); `ha_user_id` max 128 chars. |
+| PATCH | `/api/admin/voice/profiles/{profile_id}` | Update `name` and/or `ha_user_id` (400 when empty body, 404, 409). |
+| DELETE | `/api/admin/voice/profiles/{profile_id}` | Delete a profile and its samples; disarms its enrollment. |
+| DELETE | `/api/admin/voice/profiles/{profile_id}/samples` | Delete all samples of a profile (all models); returns `deleted`. |
+| POST | `/api/admin/voice/profiles/{profile_id}/enroll` | Arm enrollment, body optional: `samples` (`1-20`, default `5`), `timeout_s` (`30-1800`, default `300`). The next voice turns of at least `voice.speaker_id.min_enroll_duration_s` become samples (any speaker, any satellite) until the count is reached or the timeout expires. One armed profile at a time; arming replaces the previous one. In memory only. 404 for an unknown profile; 409 `Speaker identification is disabled` while `voice.speaker_id.enabled` is off (nothing is armed). |
+| DELETE | `/api/admin/voice/enroll` | Cancel the armed enrollment; returns `cancelled`. |
+
+Auth: admin session. Settings live under `voice.speaker_id.*`
+([configuration](configuration.md#voice--speaker-identification-settings)).
+Samples are only collected while `voice.speaker_id.enabled` is on (the
+voice socket answers `disabled` otherwise).
 
 ## Admin -- Calendar
 

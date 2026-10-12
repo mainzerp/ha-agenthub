@@ -102,6 +102,7 @@ Current runtime notes:
 | LLM integration | litellm | Provider abstraction for local and hosted LLMs |
 | Local embeddings | `intfloat/multilingual-e5-base` | Seeded default local embedding model |
 | Vector storage | sqlite-vec (SQLite) | Entity index, routing cache semantic tier, and session memory embeddings; routing and action caches moved to SQLite in v1.37.0 |
+| Speaker identification | sherpa-onnx (CAM++ speaker embeddings, CPU) | Optional, disabled by default; model baked into the image |
 | Structured data | SQLite + aiosqlite | Settings, secrets, traces, analytics, users, history, custom agents |
 | Agent protocol | A2A over JSON-RPC 2.0 envelopes | Current transport is in-process |
 | Entity matching | rapidfuzz, pyphonetics, embedding search, optional LLM expansion | Deterministic resolution runs before hybrid fallback |
@@ -113,7 +114,7 @@ Current runtime notes:
 
 | Component | Current Technology | Notes |
 | --- | --- | --- |
-| Integration runtime | Home Assistant Python integration | Registers a conversation entity |
+| Integration runtime | Home Assistant Python integration | Registers a conversation entity and, when `stt_entity_id` is set, an STT wrapper entity |
 | Network client | aiohttp | Persistent WebSocket plus REST fallback |
 | Authentication | Container API key | Stored in the config entry and revalidated in options flow |
 | Response delivery | Home Assistant conversation response plus filler TTS | Streams text and can play interim filler speech |
@@ -132,7 +133,8 @@ The runtime is async end to end. Conversation streaming, agent dispatch, Home As
 
 - Conversation entrypoints expose WebSocket, SSE, and REST conversation routes.
 - An OpenAI-compatible chat-completions API (`GET /v1/models`, `POST /v1/chat/completions`, trace source `openai`) lets Open WebUI chat with the orchestrator; Open WebUI background tasks are stubbed without dispatch, and Open WebUI users are mapped to Home Assistant users on the Persons page (`external_user_mappings`).
-- Admin APIs cover setup, cache inspection and flushing, traces, analytics, entity index operations, MCP management, plugins, send-device mappings, external user mappings, and settings.
+- Admin APIs cover setup, cache inspection and flushing, traces, analytics, entity index operations, MCP management, plugins, send-device mappings, external user mappings, voice profiles, and settings.
+- `WS /ws/voice` receives teed voice-turn audio from the bridge for speaker identification; a recognized speaker is prompt context only and never changes `user_id`, entity visibility, or authorization.
 - The dashboard currently routes to overview, login, agent configuration, system health, chat testing, personality, cache, entity index, analytics, traces, MCP servers, custom agents, timers, plugins, send devices, and unified settings pages.
 
 #### Orchestrator
@@ -163,7 +165,7 @@ The cache manager exposes a routing cache and a public action cache. Internal co
 
 #### Dashboard and Operations
 
-The current admin surface is operational, not aspirational. It includes setup and login flows, cache tooling, analytics, traces, entity-index management, timers and alarms, MCP server management, custom-agent controls, plugin management, send-device mappings, and unified advanced settings.
+The current admin surface is operational, not aspirational. It includes setup and login flows, cache tooling, analytics, traces, entity-index management, timers and alarms, MCP server management, custom-agent controls, plugin management, send-device mappings, voice profiles (speaker enrollment and calibration), and unified advanced settings.
 
 Visual conventions for the admin surface are documented in `docs/style-guide.md`.
 
@@ -183,6 +185,7 @@ The Home Assistant integration remains a thin bridge, but it does more than a bl
 - plays filler speech through Home Assistant TTS when the container emits filler tokens
 - trusts backend markdown sanitization when advertised and falls back to local stripping otherwise
 - migrates legacy config-entry titles from `Agent Assist` to `HA-AgentHub`
+- optionally wraps a user-selected STT entity ("HA-AgentHub STT"), passing audio and transcript through unchanged and teeing a best-effort audio copy to the container for speaker identification; STT never depends on the container
 
 The integration does not resolve entities, classify intent, or execute Home Assistant services on behalf of agents.
 
@@ -475,6 +478,7 @@ Current runtime settings are organized around these surfaces:
 - home context and entity-index sync behavior
 - MCP server registration and tool assignment
 - plugin enablement and plugin-specific configuration
+- speaker identification (`voice.speaker_id.*`)
 
 Selected seeded defaults that materially shape behavior:
 
@@ -537,6 +541,6 @@ Entity-index maintenance is currently described by startup priming, Home Assista
 
 ## Roadmap / Not Yet Implemented
 
-Planned and not-yet-implemented work is tracked in [TODO.md](TODO.md).
+Planned and not-yet-implemented work is tracked in [TODO.md](../../TODO.md).
 
 This document stays focused on current shipped behavior.

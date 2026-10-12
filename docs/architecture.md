@@ -5,7 +5,7 @@
 HA-AgentHub is a two-component system for natural language smart home control:
 
 1. **Docker Container** -- The AI backend running FastAPI with multi-agent orchestration, a two-tier cache, hybrid entity matching, MCP tool integration, and a plugin system.
-2. **HA Custom Integration** -- A Home Assistant bridge (`custom_components/ha_agenthub/`) that forwards most turns to the container and streams responses back to Home Assistant's conversation system.
+2. **HA Custom Integration** -- A Home Assistant bridge (`custom_components/ha_agenthub/`) that forwards most turns to the container and streams responses back to Home Assistant's conversation system. Optionally it adds an STT wrapper entity that tees voice-turn audio to the container for speaker identification.
 
 A second, optional ingress is the **OpenAI-compatible API** (`GET /v1/models`, `POST /v1/chat/completions`) for chat clients such as Open WebUI. It converts each chat turn into the same orchestrator A2A request as `POST /api/conversation` (trace source `openai`), answers Open WebUI background tasks with stubs without dispatching, and maps Open WebUI users to Home Assistant users via `external_user_mappings`.
 
@@ -312,6 +312,56 @@ would silently break session continuity).
   Raw container error strings are never spoken; they are logged with the
   trace id.
 
+### Speaker Identification (Voice Turns)
+
+Optional; off by default (`voice.speaker_id.enabled`). Flow:
+
+1. The Assist pipeline uses the bridge's **HA-AgentHub STT** entity
+   (`custom_components/ha_agenthub/stt.py`, created when the integration
+   option `stt_entity_id` is set). It forwards the audio stream to the
+   selected inner STT entity and returns its transcript unchanged.
+2. For 16-bit mono PCM turns with a chat session, `voice_tee.py` copies
+   each chunk into a bounded buffer and a background task streams it to
+   the container's `WS /ws/voice`, keyed by the HA chat-session id
+   (`chat_session.current_session`), followed by `end` with the
+   transcript length when the inner STT succeeded with a non-empty
+   transcript, otherwise `abort`. Connect failures, overflow (the turn
+   is aborted) and timeouts are swallowed: STT never waits for or
+   depends on the container.
+3. The container registers the `conversation_id` in an in-memory turn
+   store (`app/voice/turn_store.py`: single-use entries, 120 s TTL, 256
+   entries, newest session per id wins) at `start`, computes a CAM++
+   speaker embedding with sherpa-onnx in a worker thread
+   (`app/voice/speaker_engine.py`), and cosine-matches it against
+   per-profile centroids (mean of L2-normalized samples of the current
+   model). `identified` needs score >= `threshold` and a lead of
+   `margin` over the second-best profile.
+4. The conversation turn for the same `conversation_id` (the bridge sends
+   the same chat-session id) consumes the entry in the orchestrator
+   prelude, concurrently with memory search and classification, waiting
+   at most `voice.speaker_id.wait_ms`. Only `identified` attaches
+   `TaskContext.speaker`; agents then get the prompt line
+   `Speaker: "<name>" (recognized by voice, unverified)` (name sanitized
+   as untrusted text). Every consumed entry records a `speaker_id` trace
+   span (`status`, `profile_id`, `score`, `margin`, `duration_s`,
+   `waited_ms`, `speaker_name` when identified). An action-cache replay
+   discards the entry. A turn with an attached speaker is treated as
+   context-dependent and writes no action-cache or routing-cache row, so
+   a personalised reply is never replayed to another speaker.
+
+Rules:
+
+- The speaker is context only: it never sets `user_id`, never changes
+  entity visibility and never authorizes anything.
+- While enrollment is armed (`app/voice/enrollment.py`, in memory, one
+  profile at a time), qualifying turns are stored as samples instead of
+  being identified -- only after the bridge confirms the turn with `end`
+  (successful, non-empty transcript); `abort` or a disconnect discards it.
+- The voice path never waits for a model load: while the engine is not
+  `ready`, turns report `unavailable` and a background warm-up starts.
+- `/ws/voice` writes no connection-level trace; no audio is stored, only
+  embeddings of enrollment samples.
+
 ### Mediation Streaming
 
 When `orchestrator.mediation_streaming_enabled` is `true` (default) and
@@ -495,6 +545,7 @@ By default, a weighted matcher score above 0.60 returns a confident match. Below
 
 - **SQLite** -- Primary store for all structured data: settings, agent configs, custom agents, aliases, MCP servers, secrets (Fernet-encrypted), admin accounts (bcrypt-hashed), setup state, conversations, analytics, and trace spans.
 - **sqlite-vec** -- Vector store for entity index embeddings, the routing cache semantic tier, and session memory turn embeddings. Entity index and routing cache embeddings live in dedicated SQLite databases; session memory uses its own `session_memory.db`. Persisted to disk under `/data`.
+- **Voice profiles** -- `voice_profiles` (name, optional `ha_user_id`) and `voice_samples` (float32 embedding BLOB, `dim`, `model`, `duration_s`) in the primary SQLite store (migration 49). Samples are tagged with the embedding model and only same-model samples form a centroid. The speaker model ships in the image at `/opt/models/speaker/`; fallback download to `<db dir>/models/speaker/`.
 - **Cache DB** -- Routing and action cache entries (documents, metadata, and the semantic embeddings of the routing tier) live in `cache.db` under `CHROMADB_PERSIST_DIR` (default `/data/chromadb/cache.db`), separate from the primary SQLite store.
 
 ## Plugin Architecture
