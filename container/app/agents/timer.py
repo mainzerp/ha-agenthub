@@ -42,6 +42,8 @@ class TimerAgent(ActionableAgent):
     """Controls timers and reminders via HA REST API."""
 
     _clarify_on_not_found = False
+    # Timer and reminder labels may name the voice-matched speaker.
+    _receives_speaker_context = True
 
     async def _do_execute(self, action, ha_client, entity_index, entity_matcher, *, agent_id, span_collector=None):
         # FLOW-CTX-1 (0.18.6): the current task/context is exposed via

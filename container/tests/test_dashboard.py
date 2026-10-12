@@ -1092,6 +1092,9 @@ class TestVoiceProfilesPage:
         assert '@click="openEnroll(p)" :disabled="!status.enabled"' in html
         assert "Enable speaker identification to enroll" in html
         assert ':disabled="submitting || !status.enabled"' in html
+        # Recent results show identification timing.
+        assert 'x-text="fmtMs(r.compute_ms)"' in html
+        assert 'x-text="fmtMs(r.latency_ms)"' in html
 
     async def test_sidebar_contains_voice_profiles_entry(self, dashboard_client: httpx.AsyncClient):
         resp = await dashboard_client.get("/dashboard/persons")
@@ -1143,6 +1146,9 @@ def test_voice_profiles_page_script_behavior():
             const page = voiceProfilesPage();
             assert.equal(page.fmt2(0.5), '0.50');
             assert.equal(page.fmt2(null), '-');
+            assert.equal(page.fmtMs(12.34), '12.3 ms');
+            assert.equal(page.fmtMs(0), '0.0 ms');
+            assert.equal(page.fmtMs(null), '-');
             page.now = Date.parse('2026-01-01T00:00:00Z');
             assert.equal(page.countdown('2026-01-01T00:02:05Z'), '2:05');
             assert.equal(page.countdown('2025-12-31T23:59:00Z'), '0:00');

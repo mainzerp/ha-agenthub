@@ -144,6 +144,8 @@ class SpeakerTurnStore:
                 "score": result.get("score"),
                 "margin": result.get("margin"),
                 "duration_s": result.get("duration_s"),
+                "compute_ms": result.get("compute_ms"),
+                "latency_ms": result.get("latency_ms"),
             }
         )
 

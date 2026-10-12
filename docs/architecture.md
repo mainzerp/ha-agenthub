@@ -335,24 +335,37 @@ Optional; off by default (`voice.speaker_id.enabled`). Flow:
    (`app/voice/speaker_engine.py`), and cosine-matches it against
    per-profile centroids (mean of L2-normalized samples of the current
    model). `identified` needs score >= `threshold` and a lead of
-   `margin` over the second-best profile.
+   `margin` over the second-best profile. A voice turn never waits for a
+   model (re)load: a changed `num_threads` is applied by a background
+   reload while the loaded extractor keeps serving (kept on failure).
 4. The conversation turn for the same `conversation_id` (the bridge sends
-   the same chat-session id) consumes the entry in the orchestrator
-   prelude, concurrently with memory search and classification, waiting
-   at most `voice.speaker_id.wait_ms`. Only `identified` attaches
-   `TaskContext.speaker`; agents then get the prompt line
+   the same chat-session id) starts a speaker lookup in the orchestrator
+   prelude (`PendingSpeakerLookup`), concurrently with memory search and
+   classification. The lookup waits for the result in the background
+   (hard cap 5 s); at dispatch the turn uses a finished lookup at once,
+   otherwise blocks at most the rest of `voice.speaker_id.wait_ms`
+   (counted from the lookup start) and then cancels it (`timeout`).
+   Only `identified` attaches `TaskContext.speaker` (for every agent);
+   only agents that opt in with `_receives_speaker_context = True`
+   (`GeneralAgent`, `TimerAgent`) get the prompt line
    `Speaker: "<name>" (recognized by voice, unverified)` (name sanitized
-   as untrusted text). Every consumed entry records a `speaker_id` trace
-   span (`status`, `profile_id`, `score`, `margin`, `duration_s`,
-   `waited_ms`, `speaker_name` when identified). An action-cache replay
-   discards the entry. A turn with an attached speaker is treated as
+   as untrusted text). Device/domain agents (security included), lists,
+   calendar and custom/plugin agents never see it. Every consumed entry records a
+   `speaker_id` trace span at dispatch (`status`, `profile_id`, `score`,
+   `margin`, `duration_s`, `waited_ms` = time blocked at dispatch,
+   `lookup_ms` = lookup start to result, `compute_ms`, `latency_ms`,
+   `speaker_name` when identified). An early prelude exit cancels the
+   lookup and removes the entry. An action-cache replay discards the
+   entry. A turn with an attached speaker is treated as
    context-dependent and writes no action-cache or routing-cache row, so
    a personalised reply is never replayed to another speaker.
 
 Rules:
 
 - The speaker is context only: it never sets `user_id`, never changes
-  entity visibility and never authorizes anything.
+  entity visibility and never authorizes anything. The prompt line is
+  opt-in per agent class so a voice match never reads like authorization
+  to an action agent's LLM.
 - While enrollment is armed (`app/voice/enrollment.py`, in memory, one
   profile at a time), qualifying turns are stored as samples instead of
   being identified -- only after the bridge confirms the turn with `end`

@@ -1171,7 +1171,7 @@ class ActionableAgent(BaseAgent):
             system_prompt = f"{system_prompt}\n\n{lang_directive}"
 
         # Inject time/location context (append: data, not constraint rule)
-        time_location = self._build_time_location_context(task.context)
+        time_location = self._build_time_location_context(task.context, include_speaker=self._receives_speaker_context)
         if time_location:
             system_prompt += f"\n\n{time_location}"
 

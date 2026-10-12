@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import struct
+import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import numpy as np
@@ -167,7 +169,10 @@ class TestVoiceWsProtocol:
             "margin",
             "duration_s",
             "reason",
+            "compute_ms",
+            "latency_ms",
         }
+        assert result["compute_ms"] >= 0 and result["latency_ms"] >= result["compute_ms"]
         # WAV header stripped, audio after audio_end ignored.
         assert service.engine.pcm_lengths == [64000]
         ws.close.assert_awaited_with(code=1000)
@@ -180,6 +185,7 @@ class TestVoiceWsProtocol:
         ws = _make_ws([_start(), _binary(_pcm(2.0)), _text({"type": "end"})])
         await voice_routes.ws_voice(ws)
         assert [r["status"] for r in _results(ws)] == ["disabled"]
+        assert _results(ws)[0]["compute_ms"] is None and _results(ws)[0]["latency_ms"] is None
         assert not service.store.has("conv-1")
         assert service.engine.pcm_lengths == []
         # A disabled feature is not a diagnosis event: the ring buffer stays empty.
@@ -189,9 +195,11 @@ class TestVoiceWsProtocol:
         ws = _make_ws([_start(sample_rate=8000), _binary(_pcm(2.0)), _text({"type": "end"})])
         await voice_routes.ws_voice(ws)
         assert [r["status"] for r in _results(ws)] == ["unsupported_audio"]
+        assert _results(ws)[0]["compute_ms"] is None and _results(ws)[0]["latency_ms"] is None
         assert not service.store.has("conv-1")
         # Recorded so the dashboard shows the pipeline sends an unusable format.
         assert [r["status"] for r in service.store.recent()] == ["unsupported_audio"]
+        assert service.store.recent()[0]["compute_ms"] is None
         assert service.engine.pcm_lengths == []
 
     @pytest.mark.parametrize("overrides", [{"channels": 2}, {"bit_rate": 32}, {"codec": "opus"}, {"format": "ogg"}])
@@ -216,7 +224,44 @@ class TestVoiceWsProtocol:
         ws = _make_ws([_start(), _binary(_pcm(1.0)), _text({"type": "end"})])
         await voice_routes.ws_voice(ws)
         assert _results(ws)[0]["status"] == "too_short"
-        assert (await service.store.pop("conv-1", 0)).result["status"] == "too_short"
+        assert _results(ws)[0]["compute_ms"] is None and _results(ws)[0]["latency_ms"] is None
+        stored = (await service.store.pop("conv-1", 0)).result
+        assert stored["status"] == "too_short"
+        assert stored["compute_ms"] is None and stored["latency_ms"] is None
+        assert service.store.recent()[0]["latency_ms"] is None
+
+    async def test_timing_is_measured_and_exposed(self, service, enabled, monkeypatch, caplog):
+        # Deterministic clock: profile loading takes 2 ms, the embedding 12.3 ms.
+        clock = [1000.0]
+        monkeypatch.setattr(time, "perf_counter", lambda: clock[0])
+
+        class _SlowCentroids(_FakeCentroids):
+            async def get(self, model: str):
+                clock[0] += 0.002
+                return self.centroids
+
+        engine_embed = service.engine.embed
+
+        async def _slow_embed(pcm, sample_rate, *, num_threads=2):
+            clock[0] += 0.0123
+            return await engine_embed(pcm, sample_rate, num_threads=num_threads)
+
+        service.centroids = _SlowCentroids()
+        monkeypatch.setattr(service.engine, "embed", _slow_embed)
+        ws = _make_ws([_start(), _binary(_pcm(2.0)), _text({"type": "audio_end"}), _text({"type": "end"})])
+        with caplog.at_level(logging.INFO, logger=voice_routes.__name__):
+            await voice_routes.ws_voice(ws)
+
+        result = _results(ws)[0]
+        assert result["status"] == "identified"
+        # compute: embedding + matching only; latency: from audio_end incl. profile loading.
+        assert result["compute_ms"] == pytest.approx(12.3)
+        assert result["latency_ms"] == pytest.approx(14.3)
+        stored = (await service.store.pop("conv-1", 0)).result
+        assert stored["compute_ms"] == result["compute_ms"] and stored["latency_ms"] == result["latency_ms"]
+        recent = service.store.recent()[0]
+        assert recent["compute_ms"] == result["compute_ms"] and recent["latency_ms"] == result["latency_ms"]
+        assert "compute=12.3ms latency=14.3ms" in caplog.text
 
     async def test_abort_discards_entry(self, service, enabled):
         ws = _make_ws([_start(), _binary(_pcm(2.0)), _text({"type": "abort"})])
@@ -364,7 +409,9 @@ class TestVoiceWsEnrollmentConfirmation:
         assert service.enrollment.current()["remaining"] == 1
         result = _results(ws)[0]
         assert result["status"] == "enrolled_sample" and result["profile_id"] == 1
+        assert result["compute_ms"] >= 0 and result["latency_ms"] >= result["compute_ms"]
         assert [r["status"] for r in service.store.recent()] == ["enrolled_sample"]
+        assert service.store.recent()[0]["latency_ms"] == result["latency_ms"]
 
     async def test_abort_discards_pending_sample(self, service, enabled):
         service.enrollment.arm(1, "Anna", samples=2, timeout_s=60)

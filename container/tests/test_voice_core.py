@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import struct
+import threading
 from pathlib import Path
 
 import numpy as np
@@ -268,7 +269,24 @@ class TestTurnStore:
         assert len(recent) == 3
         assert recent[0]["score"] == 0.4
         assert "embedding" not in recent[0]
-        assert set(recent[0]) == {"timestamp", "status", "profile_id", "name", "score", "margin", "duration_s"}
+        assert set(recent[0]) == {
+            "timestamp",
+            "status",
+            "profile_id",
+            "name",
+            "score",
+            "margin",
+            "duration_s",
+            "compute_ms",
+            "latency_ms",
+        }
+        assert recent[0]["compute_ms"] is None and recent[0]["latency_ms"] is None
+
+    def test_recent_keeps_timing(self):
+        store = SpeakerTurnStore()
+        store.record_recent({"status": "identified", "compute_ms": 12.3, "latency_ms": 15.0})
+        entry = store.recent()[0]
+        assert entry["compute_ms"] == 12.3 and entry["latency_ms"] == 15.0
 
 
 # ---------------------------------------------------------------------------
@@ -388,3 +406,67 @@ class TestSpeakerEngine:
         engine = SpeakerEngine(extractor_factory=lambda p, t: _FakeExtractor(), model_path_resolver=failing_resolver)
         assert not await engine.ensure_ready()
         assert engine.status == "unavailable"
+
+
+class _TaggedExtractor(_FakeExtractor):
+    def __init__(self, tag: float) -> None:
+        self.tag = tag
+
+    def compute(self, stream):
+        assert stream.finished
+        return [self.tag, 0.0, 0.0]
+
+
+class TestSpeakerEngineThreadChange:
+    """A changed ``num_threads`` never reloads inside a voice turn."""
+
+    async def test_turn_uses_loaded_extractor_while_reload_runs_in_background(self):
+        calls: list[int] = []
+        gate = threading.Event()
+
+        def factory(path, threads):
+            calls.append(threads)
+            if threads == 4:
+                assert gate.wait(5.0)
+            return _TaggedExtractor(float(threads))
+
+        engine = SpeakerEngine(extractor_factory=factory, model_path_resolver=_fake_model_path)
+        assert (await engine.embed(b"\x00\x00", 16000, num_threads=2)).tolist()[0] == 2.0
+
+        # Changed thread count: served at once by the loaded extractor (the reload is blocked).
+        vector = await asyncio.wait_for(engine.embed(b"\x00\x00", 16000, num_threads=4), 1.0)
+        assert vector.tolist()[0] == 2.0
+        assert engine.status == "ready"
+        reload_task = engine._reload_task
+        assert reload_task is not None and not reload_task.done()
+        # A second turn does not start another reload for the same count.
+        assert engine.schedule_reload(4) is False
+
+        gate.set()
+        assert await asyncio.wait_for(reload_task, 5.0) is True
+        assert (await engine.embed(b"\x00\x00", 16000, num_threads=4)).tolist()[0] == 4.0
+        assert calls == [2, 4]
+
+    async def test_failed_reload_keeps_loaded_extractor(self):
+        calls: list[int] = []
+
+        def factory(path, threads):
+            calls.append(threads)
+            if threads == 4:
+                raise RuntimeError("load failed")
+            return _TaggedExtractor(float(threads))
+
+        engine = SpeakerEngine(extractor_factory=factory, model_path_resolver=_fake_model_path)
+        await engine.embed(b"\x00\x00", 16000, num_threads=2)
+        assert (await engine.embed(b"\x00\x00", 16000, num_threads=4)).tolist()[0] == 2.0
+        await asyncio.wait_for(engine._reload_task, 5.0)
+
+        assert engine.status == "ready" and engine.last_error is None
+        assert (await engine.embed(b"\x00\x00", 16000, num_threads=4)).tolist()[0] == 2.0
+        # Backoff: no immediate retry for the failed thread count.
+        assert engine.schedule_reload(4) is False
+        assert calls == [2, 4]
+
+    def test_schedule_reload_noop_without_loaded_extractor(self):
+        engine = SpeakerEngine(extractor_factory=lambda path, threads: _FakeExtractor())
+        assert engine.schedule_reload(4) is False

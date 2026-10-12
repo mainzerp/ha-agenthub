@@ -1,6 +1,7 @@
 """Voice speaker identification (sherpa-onnx CAM++ embeddings, context only)."""
 
 from app.voice.service import (  # noqa: F401
+    PendingSpeakerLookup,
     SpeakerIdService,
     attach_speaker_to_task,
     discard_pending_speaker,
@@ -8,4 +9,5 @@ from app.voice.service import (  # noqa: F401
     has_pending_speaker,
     load_voice_config,
     set_speaker_service,
+    start_speaker_lookup,
 )

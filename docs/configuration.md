@@ -212,8 +212,8 @@ Identifies the speaker of Assist voice turns teed in by the bridge STT wrapper (
 | `voice.speaker_id.margin` | `0.05` | float | Minimum score gap (`0.0-1.0`) between the best and second-best profile (second-best counts as `0` with one profile) |
 | `voice.speaker_id.min_duration_s` | `1.5` | float | Minimum voice-turn length in seconds for identification (`0-30`); shorter turns report `too_short` |
 | `voice.speaker_id.min_enroll_duration_s` | `2.0` | float | Minimum voice-turn length in seconds for an enrollment sample (`0.5-30`) |
-| `voice.speaker_id.wait_ms` | `500` | int | Bounded wait (`0-3000` ms) of the conversation turn for a speaker result still being computed; runs concurrently with memory search and classification |
-| `voice.speaker_id.num_threads` | `2` | int | CPU threads for the speaker-embedding model (`1-8`) |
+| `voice.speaker_id.wait_ms` | `500` | int | Wait budget (`0-3000` ms) of the conversation turn for a speaker result, counted from the start of the lookup (which runs concurrently with memory search and classification). A result that arrives before dispatch is always used; at dispatch the turn blocks at most the rest of the budget |
+| `voice.speaker_id.num_threads` | `2` | int | CPU threads for the speaker-embedding model (`1-8`). A change reloads the model in the background; voice turns keep using the loaded model until the new one is ready |
 
 ### General Settings
 

@@ -204,6 +204,8 @@
                         <th class="text-right">Score</th>
                         <th class="text-right">Margin</th>
                         <th class="text-right">Duration</th>
+                        <th class="text-right" title="Embedding plus profile matching">Compute</th>
+                        <th class="text-right" title="From the end of audio until the result was available">Latency</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -215,6 +217,8 @@
                             <td class="text-right tabular-nums" x-text="fmt2(r.score)"></td>
                             <td class="text-right tabular-nums" x-text="fmt2(r.margin)"></td>
                             <td class="text-right tabular-nums text-nowrap" x-text="r.duration_s == null ? '-' : Number(r.duration_s).toFixed(1) + ' s'"></td>
+                            <td class="text-right tabular-nums text-nowrap" x-text="fmtMs(r.compute_ms)"></td>
+                            <td class="text-right tabular-nums text-nowrap" x-text="fmtMs(r.latency_ms)"></td>
                         </tr>
                     </template>
                 </tbody>
@@ -597,6 +601,12 @@ function voiceProfilesPage() {
             var d = new Date(ts);
             if (Number.isNaN(d.getTime())) return ts;
             return d.toLocaleString();
+        },
+
+        fmtMs(value) {
+            if (value === null || value === undefined || value === '') return '-';
+            var n = Number(value);
+            return Number.isNaN(n) ? '-' : n.toFixed(1) + ' ms';
         },
 
         fmt2(value) {
