@@ -286,6 +286,15 @@ async def persons_page(
     return _render_dashboard(request, "persons.html")
 
 
+@router.get("/voice-profiles", response_class=HTMLResponse)
+async def voice_profiles_page(
+    request: Request,
+    _session: dict = Depends(require_admin_session_redirect),
+):
+    """Voice profiles, enrollment and speaker-identification calibration page."""
+    return _render_dashboard(request, "voice_profiles.html")
+
+
 @router.get("/settings", response_class=HTMLResponse)
 async def settings_page(
     request: Request,
