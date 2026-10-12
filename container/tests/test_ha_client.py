@@ -560,15 +560,17 @@ class TestHAConfigFlow:
         sys.modules["homeassistant.const"].CONF_API_KEY = "api_key"
         sys.modules["homeassistant.const"].CONF_NAME = "name"
         sys.modules["homeassistant.const"].CONF_NAME = "name"
-        sys.modules["homeassistant.const"].Platform = type("Platform", (), {"CONVERSATION": "conversation"})
+        sys.modules["homeassistant.const"].Platform = type(
+            "Platform", (), {"CONVERSATION": "conversation", "STT": "stt"}
+        )
         sys.modules["homeassistant.core"].HomeAssistant = type("HomeAssistant", (), {})
         sys.modules["homeassistant.helpers.selector"].TextSelector = _FakeTextSelector
         sys.modules["homeassistant.helpers.selector"].TextSelectorConfig = _FakeTextSelectorConfig
         sys.modules["homeassistant.helpers.selector"].TextSelectorType = _FakeTextSelectorType
         sys.modules["homeassistant.helpers"].selector = sys.modules["homeassistant.helpers.selector"]
         sys.modules["voluptuous"].Schema = _FakeSchema
-        sys.modules["voluptuous"].Required = lambda schema, default=None: _FakeMarker(schema, default)
-        sys.modules["voluptuous"].Optional = lambda schema, default=None: _FakeMarker(schema, default)
+        sys.modules["voluptuous"].Required = lambda schema, default=None, **_kwargs: _FakeMarker(schema, default)
+        sys.modules["voluptuous"].Optional = lambda schema, default=None, **_kwargs: _FakeMarker(schema, default)
 
         yield
 
@@ -1299,7 +1301,9 @@ class TestHAConfigEntryLifecycle:
         sys.modules["homeassistant.const"].CONF_URL = "url"
         sys.modules["homeassistant.const"].CONF_API_KEY = "api_key"
         sys.modules["homeassistant.const"].CONF_NAME = "name"
-        sys.modules["homeassistant.const"].Platform = type("Platform", (), {"CONVERSATION": "conversation"})
+        sys.modules["homeassistant.const"].Platform = type(
+            "Platform", (), {"CONVERSATION": "conversation", "STT": "stt"}
+        )
 
         yield
 

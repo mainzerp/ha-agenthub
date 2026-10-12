@@ -25,7 +25,8 @@ _LEGACY_ENTRY_TITLES = frozenset({"Agent Assist"})
 
 logger = logging.getLogger(__name__)
 
-PLATFORMS: list[Platform] = [Platform.CONVERSATION]
+# The STT platform only adds an entity when the ``stt_entity_id`` option is set.
+PLATFORMS: list[Platform] = [Platform.CONVERSATION, Platform.STT]
 
 
 def _normalize_url(url: str) -> str:

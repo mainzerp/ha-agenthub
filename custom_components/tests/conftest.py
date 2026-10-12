@@ -1,4 +1,7 @@
 import sys
+from contextvars import ContextVar
+from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
 from types import ModuleType
 from unittest.mock import MagicMock
@@ -80,6 +83,87 @@ class _FakeSelectSelector:
         self.config = config
 
 
+class _FakeEntitySelectorConfig(dict):
+    """Mirrors HA's TypedDict config: a plain dict of the keyword arguments."""
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+
+
+class _FakeEntitySelector:
+    def __init__(self, config=None):
+        self.config = config
+
+
+class _FakeAudioCodecs(str, Enum):
+    PCM = "pcm"
+    OPUS = "opus"
+
+
+class _FakeAudioFormats(str, Enum):
+    WAV = "wav"
+    OGG = "ogg"
+
+
+class _FakeSpeechResultState(str, Enum):
+    SUCCESS = "success"
+    ERROR = "error"
+
+
+@dataclass
+class _FakeSpeechMetadata:
+    language: str
+    format: str
+    codec: str
+    bit_rate: int
+    sample_rate: int
+    channel: int
+
+
+@dataclass
+class _FakeSpeechResult:
+    text: str | None
+    result: _FakeSpeechResultState
+
+
+class _FakeSpeechToTextEntity:
+    """Minimal stand-in for HA's SpeechToTextEntity / Entity base."""
+
+    hass = None
+    entity_id = None
+
+    @property
+    def available(self):
+        return True
+
+    def check_metadata(self, metadata):
+        # Same exact-membership semantics as HA core.
+        return not (
+            metadata.language not in self.supported_languages
+            or metadata.format not in self.supported_formats
+            or metadata.codec not in self.supported_codecs
+            or metadata.bit_rate not in self.supported_bit_rates
+            or metadata.sample_rate not in self.supported_sample_rates
+            or metadata.channel not in self.supported_channels
+        )
+
+    def async_on_remove(self, func):
+        self.__dict__.setdefault("_on_remove", []).append(func)
+
+    def async_write_ha_state(self):
+        self.__dict__["state_writes"] = self.__dict__.get("state_writes", 0) + 1
+
+    async def async_added_to_hass(self):
+        return None
+
+    async def async_will_remove_from_hass(self):
+        return None
+
+
+def _fake_async_get_speech_to_text_entity(hass, entity_id):
+    return None
+
+
 class _MockConversationEntityFeature:
     CONTROL = "control"
 
@@ -122,10 +206,16 @@ def _mock_homeassistant_deps():
         "homeassistant.const": {
             "CONF_URL": "url",
             "CONF_API_KEY": "api_key",
-            "Platform": type("Platform", (), {"CONVERSATION": "conversation"}),
+            "Platform": type(
+                "Platform", (), {"CONVERSATION": "conversation", "STT": "stt"}
+            ),
             "MATCH_ALL": "*",
         },
-        "homeassistant.core": {"HomeAssistant": MagicMock},
+        "homeassistant.core": {
+            "HomeAssistant": MagicMock,
+            "Event": MagicMock,
+            "callback": lambda func: func,
+        },
         "homeassistant.exceptions": {
             "HomeAssistantError": Exception,
             "ConfigEntryError": type("ConfigEntryError", (Exception,), {}),
@@ -134,15 +224,36 @@ def _mock_homeassistant_deps():
         "homeassistant.helpers.aiohttp_client": {
             "async_get_clientsession": MagicMock,
         },
+        "homeassistant.helpers.chat_session": {
+            "current_session": ContextVar("current_session", default=None),
+        },
+        "homeassistant.helpers.event": {
+            "async_track_state_change_event": MagicMock(),
+        },
+        "homeassistant.helpers.start": {"async_at_started": MagicMock()},
         "homeassistant.helpers.selector": {
             "TextSelector": _FakeTextSelector,
             "TextSelectorConfig": _FakeTextSelectorConfig,
             "TextSelectorType": _FakeTextSelectorType,
             "SelectSelector": _FakeSelectSelector,
             "SelectSelectorConfig": _FakeSelectSelectorConfig,
+            "EntitySelector": _FakeEntitySelector,
+            "EntitySelectorConfig": _FakeEntitySelectorConfig,
         },
         "homeassistant.components": {},
         "homeassistant.components.assist_pipeline": {},
+        "homeassistant.components.stt": {
+            "AudioBitRates": int,
+            "AudioChannels": int,
+            "AudioCodecs": _FakeAudioCodecs,
+            "AudioFormats": _FakeAudioFormats,
+            "AudioSampleRates": int,
+            "SpeechMetadata": _FakeSpeechMetadata,
+            "SpeechResult": _FakeSpeechResult,
+            "SpeechResultState": _FakeSpeechResultState,
+            "SpeechToTextEntity": _FakeSpeechToTextEntity,
+            "async_get_speech_to_text_entity": _fake_async_get_speech_to_text_entity,
+        },
         "homeassistant.components.conversation": {
             "ConversationEntity": _MockConversationEntity,
             "ConversationEntityFeature": _MockConversationEntityFeature,
@@ -157,6 +268,7 @@ def _mock_homeassistant_deps():
         },
         "homeassistant.helpers.entity_registry": {
             "EVENT_ENTITY_REGISTRY_UPDATED": "entity_registry_updated",
+            "async_get": MagicMock(),
         },
         "homeassistant.helpers.intent": {"IntentResponse": MagicMock},
         "homeassistant.helpers.entity_platform": {

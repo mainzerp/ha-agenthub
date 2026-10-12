@@ -65,3 +65,30 @@ SHIP_LOGS_BATCH_SIZE = 100
 SHIP_LOGS_FLUSH_INTERVAL = 5.0
 SHIP_LOGS_MAX_MESSAGE = 2000
 SHIP_LOGS_MAX_BACKOFF = 60.0
+
+# Optional STT wrapper entity for speaker identification. The wrapper
+# forwards audio unchanged to the selected inner STT entity and tees a
+# best-effort copy to the container's voice WebSocket.
+CONF_STT_ENTITY_ID = "stt_entity_id"
+STT_UNIQUE_ID_SUFFIX = "_stt"
+VOICE_WS_PATH = "/ws/voice"
+# Audio chunks buffered per turn while the container socket is slow or still
+# connecting; further chunks are dropped (and the turn is aborted) instead of
+# blocking the STT stream.
+VOICE_TEE_QUEUE_MAX = 512
+VOICE_TEE_CONNECT_TIMEOUT = 2.0
+# Bounds the wait for the container's result frame and the socket close.
+VOICE_TEE_RESULT_TIMEOUT = 2.0
+# Hard cap for one tee session, including the wait for the STT outcome.
+VOICE_TEE_MAX_DURATION = 120.0
+# At most one "container unreachable" warning per interval; debug otherwise.
+VOICE_TEE_WARN_INTERVAL = 300.0
+# Mirrors the container's ``start`` frame limit for ``conversation_id``.
+VOICE_TEE_MAX_CONVERSATION_ID = 64
+# The container only accepts 16 kHz audio; other rates pass through untouched.
+VOICE_TEE_SAMPLE_RATE = 16000
+
+
+def stt_unique_id(entry_id: str) -> str:
+    """Return the unique_id of the STT wrapper entity for a config entry."""
+    return f"{entry_id}{STT_UNIQUE_ID_SUFFIX}"

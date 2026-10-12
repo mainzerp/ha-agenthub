@@ -33,7 +33,11 @@
           "api_key": "API Key",
           "ws_receive_timeout": "Response timeout (seconds)",
           "ship_logs": "Ship logs to container",
-          "ship_logs_level": "Shipped log level"
+          "ship_logs_level": "Shipped log level",
+          "stt_entity_id": "Speaker identification STT entity"
+        },
+        "data_description": {
+          "stt_entity_id": "Optional. Speech-to-text entity that the HA-AgentHub STT entity wraps. Audio is passed through unchanged and copied to the container for speaker identification. Select the HA-AgentHub STT entity in your Assist pipeline. Leave empty to disable."
         }
       }
     },
@@ -42,7 +46,8 @@
       "invalid_auth": "Invalid API key. Check the key and try again.",
       "invalid_url": "Invalid URL. Must start with http:// or https://.",
       "invalid_timeout": "Invalid timeout. Enter a positive number of seconds.",
-      "already_configured": "This container is already configured."
+      "already_configured": "This container is already configured.",
+      "invalid_stt_entity": "Select a speech-to-text entity other than the HA-AgentHub STT entity itself."
     }
   }
 }
