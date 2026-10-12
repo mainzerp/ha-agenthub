@@ -3,7 +3,7 @@
 import aiosqlite
 
 from app.db.schema import _column_exists
-from app.defaults import CACHE_DEFAULTS, DEFAULT_LOCAL_EMBEDDING_MODEL, MEMORY_DEFAULTS
+from app.defaults import CACHE_DEFAULTS, DEFAULT_LOCAL_EMBEDDING_MODEL, MEMORY_DEFAULTS, VOICE_DEFAULTS
 
 
 async def _seed_defaults(db: aiosqlite.Connection) -> None:
@@ -396,6 +396,56 @@ async def _seed_defaults(db: aiosqlite.Connection) -> None:
             "int",
             "memory",
             "Maximum turns copied from a matched previous session on continuation",
+        ),
+        # Voice speaker identification settings
+        (
+            "voice.speaker_id.enabled",
+            "true" if VOICE_DEFAULTS["voice.speaker_id.enabled"] else "false",
+            "bool",
+            "voice",
+            "Identify the speaker of Assist voice turns from enrolled voice profiles (context only, never auth)",
+        ),
+        (
+            "voice.speaker_id.threshold",
+            str(VOICE_DEFAULTS["voice.speaker_id.threshold"]),
+            "float",
+            "voice",
+            "Minimum cosine similarity (0.0-1.0) for a speaker match",
+        ),
+        (
+            "voice.speaker_id.margin",
+            str(VOICE_DEFAULTS["voice.speaker_id.margin"]),
+            "float",
+            "voice",
+            "Minimum score gap (0.0-1.0) between the best and second-best profile",
+        ),
+        (
+            "voice.speaker_id.min_duration_s",
+            str(VOICE_DEFAULTS["voice.speaker_id.min_duration_s"]),
+            "float",
+            "voice",
+            "Minimum voice-turn length in seconds for identification",
+        ),
+        (
+            "voice.speaker_id.min_enroll_duration_s",
+            str(VOICE_DEFAULTS["voice.speaker_id.min_enroll_duration_s"]),
+            "float",
+            "voice",
+            "Minimum voice-turn length in seconds for an enrollment sample",
+        ),
+        (
+            "voice.speaker_id.wait_ms",
+            str(VOICE_DEFAULTS["voice.speaker_id.wait_ms"]),
+            "int",
+            "voice",
+            "Milliseconds a conversation turn waits for a pending speaker result (max 3000)",
+        ),
+        (
+            "voice.speaker_id.num_threads",
+            str(VOICE_DEFAULTS["voice.speaker_id.num_threads"]),
+            "int",
+            "voice",
+            "CPU threads for the speaker-embedding model (1-8)",
         ),
         # Personality settings
         ("personality.prompt", "", "string", "personality", "Personality system prompt for response mediation"),

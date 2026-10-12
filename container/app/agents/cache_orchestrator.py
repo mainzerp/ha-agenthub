@@ -643,15 +643,20 @@ class CacheOrchestrator:
         """True when the turn's outcome depended on conversation context.
 
         Signals: the turn answered a pending clarifying question
-        (``is_followup`` / ``pending_question``), or an executed entity is one
-        of the anaphora hints offered via ``last_entities``. The second test is
-        deliberately conservative: an entity named explicitly that also
-        happens to be a recent referent is not stored either.
+        (``is_followup`` / ``pending_question``), a speaker was recognized by
+        voice (the agent saw the speaker's name, so its reply may be
+        personalised and must never be replayed to another speaker), or an
+        executed entity is one of the anaphora hints offered via
+        ``last_entities``. The last test is deliberately conservative: an
+        entity named explicitly that also happens to be a recent referent is
+        not stored either.
         """
         context = getattr(task, "context", None) if task is not None else None
         if context is None:
             return False
         if getattr(context, "is_followup", False) or getattr(context, "pending_question", None):
+            return True
+        if getattr(context, "speaker", None) is not None:
             return True
         last_entities = getattr(context, "last_entities", None) or []
         hinted = {str(getattr(le, "entity_id", "") or "").strip().lower() for le in last_entities}

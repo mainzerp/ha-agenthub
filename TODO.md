@@ -31,7 +31,7 @@ This page tracks planned or not-yet-implemented work for HA-AgentHub.
 ## Weaker / Speculative Ideas
 
 - [ ] live activity view for orchestration flow and agent health
-- [ ] exploratory local voice runtime with wake word, speech input, and speaker-aware routing
+- [ ] exploratory local voice runtime with server-side wake word and an own STT engine (speaker identification exists via the STT wrapper)
 
 ## Potential Extensions (Research-Based)
 
@@ -58,7 +58,7 @@ Items prefixed with `DONE` are already implemented in the current codebase and a
 ### Voice & Accessibility
 
 - [ ] **Wake-word + local speech pipeline**: Integrate open-source wake-word detection (e.g., openWakeWord, Porcupine) and on-device STT/TTS so the system can operate without cloud voice services.
-- [ ] **Speaker-aware routing**: Identify which person is speaking (via voice fingerprint or satellite microphone location) and route to the appropriate user profile and memory context.
+- [ ] **Speaker-aware routing**: Speaker identification by voice fingerprint exists (voice profiles; the name is unverified prompt context only). Remaining: use the recognized speaker for per-person memory context and preferences, with an explicit trust model before it influences anything beyond prompt context.
 - [ ] **Multilingual UI and prompts**: Localize system prompts, UI labels, and speech patterns beyond the current per-request language placeholder. Support for 15+ languages with auto-detection of the Home Assistant instance language.
 
 ### Operations & Observability

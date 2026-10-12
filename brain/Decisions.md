@@ -263,3 +263,28 @@ prompts live in `container/app/prompts/`, `ctx.agent_registry` not
   template/mixed, non-English turn) via `localize_message`; with a personality
   mediation already translates. Rationale: German users without personality
   heard English templates.
+
+## 2026-10-12 — voice: speaker identification via a bridge STT wrapper
+
+- **The HA Assist pipeline stays; satellites keep their stock firmware.** The
+  bridge adds an STT entity that forwards the audio stream to a user-selected
+  STT entity and tees a copy to the container. Rationale: no firmware forks
+  (Satellite1 and XVF3800 stock YAML hardcode on-device wake word), STT keeps
+  working when the container is down, and only documented STT entity APIs are
+  used. Rejected: satellites streaming directly to the container (Tater-style
+  custom firmware) and a Wyoming server as the first step (lucia-style; HA
+  Cloud STT is not reachable via Wyoming).
+- **Correlation key is the pipeline's `conversation_id`**, read in the wrapper
+  from `chat_session.current_session`; the conversation agent receives the
+  same id. Fallback: no speaker. The context var is an HA helper internal, not
+  a documented API.
+- **A speaker is context, never authorization.** It does not override the HA
+  `user_id` and does not change entity visibility. Rationale: voice matching
+  is spoofable and short commands (under ~1.5 s) identify poorly; those turns
+  report `unknown`/`too_short` instead of guessing.
+- **Embeddings run in the container with sherpa-onnx (CAM++ VoxCeleb ONNX,
+  Apache 2.0), downloaded at runtime; profiles stay in the local DB.**
+  Rationale: no torch, CPU-only host, biometric data never leaves the house.
+- **Sequence:** 3.2.0 speaker ID; 3.3.0 own German STT (Parakeet v3) behind the
+  same wrapper; 3.4.0 server-side wake word (needs custom satellite YAML, no
+  German sherpa-onnx KWS model exists; Vosk phrase list is the candidate).

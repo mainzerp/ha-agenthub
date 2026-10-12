@@ -1,0 +1,625 @@
+{% extends "dashboard_base.html" %}
+
+{% block page_title %}Voice Profiles{% endblock %}
+{% block page_css %}<link rel="stylesheet" href="{{ static_url(request, '/dashboard/static/css/pages/voice_profiles.css') }}">{% endblock %}
+{% block header_title %}Voice Profiles{% endblock %}
+
+{% block page_content %}
+<div x-data="voiceProfilesPage()" x-init="init()">
+    <div x-show="error" class="alert alert-error mb-md cursor-pointer" x-text="error" @click="error = null"></div>
+
+    <div class="page-header">
+        <div class="page-header-text">
+            <p class="page-subtitle">Speaker identification for Assist voice turns. Enroll household members so agents know who is speaking.</p>
+        </div>
+        <div class="page-actions btn-group">
+            <button class="btn btn-sm btn-secondary" @click="refresh()" :disabled="loading">
+                <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+                Refresh
+            </button>
+        </div>
+    </div>
+
+    <!-- Active enrollment banner -->
+    <template x-if="status.enrollment">
+        <div class="alert alert-info voice-enroll-banner" role="status" aria-live="polite">
+            <div class="voice-enroll-text">
+                <strong>Enrollment active for <span x-text="status.enrollment.name"></span></strong>
+                <span class="voice-enroll-meta">
+                    <span x-text="status.enrollment.remaining + ' sample' + (status.enrollment.remaining === 1 ? '' : 's') + ' remaining'"></span>
+                    <span>&middot;</span>
+                    <span class="tabular-nums" x-text="'expires in ' + countdown(status.enrollment.expires_at)"></span>
+                </span>
+                <span class="text-sm">Speak a few commands of 2 seconds or longer to a satellite.</span>
+                <span x-show="!status.enabled" class="text-sm text-danger">Speaker identification is disabled, so no samples will be collected.</span>
+            </div>
+            <button class="btn btn-sm btn-secondary" @click="cancelEnrollment()">Cancel</button>
+        </div>
+    </template>
+
+    <div x-show="statusLoaded && !status.enabled" class="alert alert-warning mb-md">
+        Speaker identification is disabled. Enable it to enroll profiles; no speaker is identified until it is enabled.
+    </div>
+
+    <!-- Status and settings -->
+    <div class="card mb-lg">
+        <div class="flex-between flex-wrap mb-md">
+            <h3 class="card-title m-0">Status and Settings</h3>
+            <label class="voice-enable-toggle">
+                <span class="text-sm">Speaker identification</span>
+                <span class="toggle">
+                    <input type="checkbox" aria-label="Enable speaker identification" :checked="!!s['voice.speaker_id.enabled']" :disabled="savingEnabled || !settingsLoaded" @change="toggleEnabled($event.target.checked)">
+                    <span class="toggle-slider"></span>
+                </span>
+            </label>
+        </div>
+
+        <dl class="voice-status-grid">
+            <div>
+                <dt class="form-label">Engine</dt>
+                <dd>
+                    <span class="badge" :class="engineBadge(status.engine)" x-text="status.engine || 'unknown'"></span>
+                </dd>
+            </div>
+            <div>
+                <dt class="form-label">Model</dt>
+                <dd><code class="mono text-xs break-all" x-text="status.model || '-'"></code></dd>
+            </div>
+            <div class="col-span-full" x-show="status.engine_error">
+                <dt class="form-label">Engine error</dt>
+                <dd class="text-danger text-sm break-all" x-text="status.engine_error"></dd>
+            </div>
+        </dl>
+
+        <form class="mt-md" @submit.prevent="saveSettings()">
+            <div class="form-grid">
+                <div class="form-group">
+                    <label class="form-label" for="voice-threshold">Match threshold (0-1)</label>
+                    <input id="voice-threshold" type="number" class="form-input" min="0" max="1" step="0.01" x-model.number="s['voice.speaker_id.threshold']">
+                    <p class="form-hint">Minimum similarity score for a speaker match.</p>
+                </div>
+                <div class="form-group">
+                    <label class="form-label" for="voice-margin">Margin (0-1)</label>
+                    <input id="voice-margin" type="number" class="form-input" min="0" max="1" step="0.01" x-model.number="s['voice.speaker_id.margin']">
+                    <p class="form-hint">Minimum score gap between the best and the second-best profile.</p>
+                </div>
+                <div class="form-group">
+                    <label class="form-label" for="voice-min-duration">Min. turn duration (s)</label>
+                    <input id="voice-min-duration" type="number" class="form-input" min="0" max="30" step="0.1" x-model.number="s['voice.speaker_id.min_duration_s']">
+                    <p class="form-hint">Shorter voice turns are not identified.</p>
+                </div>
+                <div class="form-group">
+                    <label class="form-label" for="voice-min-enroll-duration">Min. enrollment sample duration (s)</label>
+                    <input id="voice-min-enroll-duration" type="number" class="form-input" min="0.5" max="30" step="0.1" x-model.number="s['voice.speaker_id.min_enroll_duration_s']">
+                    <p class="form-hint">Shorter voice turns are not stored as samples.</p>
+                </div>
+                <div class="form-group">
+                    <label class="form-label" for="voice-wait-ms">Max. wait (ms, 0-3000)</label>
+                    <input id="voice-wait-ms" type="number" class="form-input" min="0" max="3000" step="50" x-model.number="s['voice.speaker_id.wait_ms']">
+                    <p class="form-hint">How long a conversation turn waits for a pending speaker result.</p>
+                </div>
+                <div class="form-group">
+                    <label class="form-label" for="voice-num-threads">CPU threads (1-8)</label>
+                    <input id="voice-num-threads" type="number" class="form-input" min="1" max="8" step="1" x-model.number="s['voice.speaker_id.num_threads']">
+                    <p class="form-hint">Threads used by the speaker-embedding model.</p>
+                </div>
+            </div>
+            <div class="form-actions mt-md">
+                <button type="submit" class="btn btn-primary" :disabled="savingSettings || !settingsLoaded">Save Settings</button>
+            </div>
+        </form>
+
+        <ul class="voice-help text-sm text-muted mt-md">
+            <li>Identification only runs when the HA-AgentHub integration options select an STT entity to wrap and the Assist pipeline uses "HA-AgentHub STT" as its speech-to-text engine.</li>
+            <li>Voice identity is context only. It personalizes answers but never authorizes actions.</li>
+            <li>Voice embeddings are computed and stored locally in the container.</li>
+        </ul>
+    </div>
+
+    <!-- Add profile -->
+    <div class="card mb-lg">
+        <h3 class="card-title mb-md">Add Voice Profile</h3>
+        <form @submit.prevent="createProfile()">
+            <div class="form-row items-end">
+                <div class="form-group flex-1 min-w-180">
+                    <label class="form-label" for="voice-new-name">Name</label>
+                    <input id="voice-new-name" type="text" class="form-input" maxlength="64" x-model="newProfile.name" placeholder="e.g. Laura" required>
+                </div>
+                <div class="form-group flex-1 min-w-180">
+                    <label class="form-label" :for="mappablePersons.length ? 'voice-new-user-select' : 'voice-new-user-text'">Linked HA user</label>
+                    <select id="voice-new-user-select" class="form-input" x-show="mappablePersons.length" x-model="newProfile.ha_user_id">
+                        <option value="">Not linked</option>
+                        <template x-for="p in mappablePersons" :key="p.entity_id">
+                            <option :value="p.user_id" x-text="p.friendly_name || p.entity_id"></option>
+                        </template>
+                    </select>
+                    <input id="voice-new-user-text" type="text" class="form-input" x-show="!mappablePersons.length" maxlength="128" x-model="newProfile.ha_user_id" placeholder="HA user id (optional)">
+                </div>
+                <div class="form-group">
+                    <button type="submit" class="btn btn-primary" :disabled="creating">Add Profile</button>
+                </div>
+            </div>
+        </form>
+    </div>
+
+    <!-- Profiles table -->
+    <div class="card mb-lg">
+        <h3 class="card-title mb-md">Voice Profiles</h3>
+        <div class="table-container" x-show="profiles.length > 0">
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>Name</th>
+                        <th>Linked HA User</th>
+                        <th>Samples</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <template x-for="p in profiles" :key="p.id">
+                        <tr>
+                            <td class="fw-600" x-text="p.name"></td>
+                            <td>
+                                <span x-show="p.ha_user_id" class="badge badge-teal" :title="p.ha_user_id" x-text="userLabel(p.ha_user_id)"></span>
+                                <span x-show="!p.ha_user_id" class="text-muted text-xs">-</span>
+                            </td>
+                            <td class="tabular-nums">
+                                <span x-text="p.sample_count"></span>
+                                <span x-show="!p.sample_count" class="badge badge-yellow ml-xs">not enrolled</span>
+                            </td>
+                            <td>
+                                <div class="voice-row-actions">
+                                    <span :title="status.enabled ? null : 'Enable speaker identification to enroll'">
+                                        <button class="btn btn-sm btn-primary" @click="openEnroll(p)" :disabled="!status.enabled">Enroll</button>
+                                    </span>
+                                    <button class="btn btn-sm btn-secondary" @click="openEdit(p)">Edit</button>
+                                    <button class="btn btn-sm btn-secondary" @click="resetSamples(p)" :disabled="!p.sample_count">Reset samples</button>
+                                    <button class="btn btn-sm btn-danger" @click="deleteProfile(p)">Delete</button>
+                                </div>
+                            </td>
+                        </tr>
+                    </template>
+                </tbody>
+            </table>
+        </div>
+        <template x-if="!loading && profiles.length === 0">
+            <div class="empty-state">
+                <p>No voice profiles yet.</p>
+                <p class="text-muted text-sm">Add a profile above, then enroll it by speaking to a satellite.</p>
+            </div>
+        </template>
+    </div>
+
+    <!-- Recent results -->
+    <div class="card">
+        <h3 class="card-title mb-sm">Recent Results</h3>
+        <p class="text-muted text-sm mb-md">The last 20 identification results (no audio is kept). Compare the scores of correct matches with the scores other people get to tune the threshold and margin.</p>
+        <div class="table-container" x-show="(status.recent || []).length > 0">
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>Time</th>
+                        <th>Status</th>
+                        <th>Name</th>
+                        <th class="text-right">Score</th>
+                        <th class="text-right">Margin</th>
+                        <th class="text-right">Duration</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <template x-for="(r, idx) in (status.recent || [])" :key="(r.timestamp || '') + ':' + idx">
+                        <tr>
+                            <td class="text-xs text-nowrap" :title="r.timestamp" x-text="formatTime(r.timestamp)"></td>
+                            <td><span class="badge" :class="resultBadge(r.status)" x-text="r.status || '-'"></span></td>
+                            <td x-text="r.name || '-'"></td>
+                            <td class="text-right tabular-nums" x-text="fmt2(r.score)"></td>
+                            <td class="text-right tabular-nums" x-text="fmt2(r.margin)"></td>
+                            <td class="text-right tabular-nums text-nowrap" x-text="r.duration_s == null ? '-' : Number(r.duration_s).toFixed(1) + ' s'"></td>
+                        </tr>
+                    </template>
+                </tbody>
+            </table>
+        </div>
+        <template x-if="(status.recent || []).length === 0">
+            <div class="empty-state">
+                <p>No voice turns seen yet.</p>
+            </div>
+        </template>
+    </div>
+
+    <!-- Enroll modal -->
+    <div x-show="enrollTarget" x-cloak class="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="voice-enroll-modal-title" @click.self="enrollTarget = null" @keydown.escape.window="enrollTarget = null">
+        <form class="card modal-card" @submit.prevent="submitEnroll()">
+            <h3 id="voice-enroll-modal-title" class="mt-0" x-text="'Enroll ' + (enrollTarget ? enrollTarget.name : '')"></h3>
+            <p class="text-sm text-muted">The next voice turns from any satellite are stored as samples for this profile. Only one enrollment can be active at a time.</p>
+            <div class="form-group">
+                <label class="form-label" for="voice-enroll-samples">Number of samples (1-20)</label>
+                <input id="voice-enroll-samples" type="number" class="form-input" min="1" max="20" step="1" x-model.number="enrollForm.samples" required>
+            </div>
+            <div class="form-group">
+                <label class="form-label" for="voice-enroll-timeout">Timeout (seconds, 30-1800)</label>
+                <input id="voice-enroll-timeout" type="number" class="form-input" min="30" max="1800" step="1" x-model.number="enrollForm.timeout_s" required>
+            </div>
+            <p x-show="!status.enabled" class="text-danger text-sm">Speaker identification is disabled; enable it to start an enrollment.</p>
+            <div class="flex gap-sm justify-end mt-md">
+                <button type="button" class="btn btn-sm btn-secondary" @click="enrollTarget = null">Cancel</button>
+                <button type="submit" class="btn btn-sm btn-primary" :disabled="submitting || !status.enabled">Start Enrollment</button>
+            </div>
+        </form>
+    </div>
+
+    <!-- Edit modal -->
+    <div x-show="editTarget" x-cloak class="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="voice-edit-modal-title" @click.self="editTarget = null" @keydown.escape.window="editTarget = null">
+        <form class="card modal-card" @submit.prevent="submitEdit()">
+            <h3 id="voice-edit-modal-title" class="mt-0">Edit Voice Profile</h3>
+            <div class="form-group">
+                <label class="form-label" for="voice-edit-name">Name</label>
+                <input id="voice-edit-name" type="text" class="form-input" maxlength="64" x-model="editForm.name" required>
+            </div>
+            <div class="form-group">
+                <label class="form-label" :for="mappablePersons.length ? 'voice-edit-user-select' : 'voice-edit-user-text'">Linked HA user</label>
+                <select id="voice-edit-user-select" class="form-input" x-show="mappablePersons.length" x-model="editForm.ha_user_id">
+                    <option value="">Not linked</option>
+                    <template x-if="editForm.ha_user_id && !isKnownUserId(editForm.ha_user_id)">
+                        <option :value="editForm.ha_user_id" x-text="'Unknown user (' + shortId(editForm.ha_user_id) + ')'"></option>
+                    </template>
+                    <template x-for="p in mappablePersons" :key="p.entity_id">
+                        <option :value="p.user_id" :selected="editForm.ha_user_id === p.user_id" x-text="p.friendly_name || p.entity_id"></option>
+                    </template>
+                </select>
+                <input id="voice-edit-user-text" type="text" class="form-input" x-show="!mappablePersons.length" maxlength="128" x-model="editForm.ha_user_id" placeholder="HA user id (optional)">
+            </div>
+            <div class="flex gap-sm justify-end mt-md">
+                <button type="button" class="btn btn-sm btn-secondary" @click="editTarget = null">Cancel</button>
+                <button type="submit" class="btn btn-sm btn-primary" :disabled="submitting">Save</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<script>
+var VOICE_SETTING_PREFIX = 'voice.speaker_id.';
+var VOICE_POLL_ACTIVE_MS = 2000;
+var VOICE_POLL_IDLE_MS = 10000;
+
+function voiceProfilesPage() {
+    return {
+        loading: false,
+        error: null,
+        status: { enabled: false, engine: null, engine_error: null, model: null, enrollment: null, recent: [] },
+        statusLoaded: false,
+        statusLoading: false,
+        lastStatusAt: 0,
+        profiles: [],
+        persons: [],
+        s: {},
+        settingsLoaded: false,
+        savingSettings: false,
+        savingEnabled: false,
+        creating: false,
+        submitting: false,
+        newProfile: { name: '', ha_user_id: '' },
+        enrollTarget: null,
+        enrollForm: { samples: 5, timeout_s: 300 },
+        editTarget: null,
+        editForm: { name: '', ha_user_id: '' },
+        now: Date.now(),
+        refreshInterval: null,
+
+        async init() {
+            await this.refresh();
+            // One-second tick drives the countdown; status polls every 2 s while
+            // an enrollment is armed and every 10 s otherwise.
+            this.refreshInterval = setInterval(() => this.tick(), 1000);
+        },
+
+        destroy() {
+            if (this.refreshInterval) {
+                clearInterval(this.refreshInterval);
+                this.refreshInterval = null;
+            }
+        },
+
+        tick() {
+            this.now = Date.now();
+            var period = this.status.enrollment ? VOICE_POLL_ACTIVE_MS : VOICE_POLL_IDLE_MS;
+            if (!this.statusLoading && this.now - this.lastStatusAt >= period) {
+                this.loadStatus();
+            }
+        },
+
+        async refresh() {
+            this.loading = true;
+            await Promise.all([this.loadStatus(), this.loadProfiles(), this.loadPersons(), this.loadSettings()]);
+            this.loading = false;
+        },
+
+        async loadStatus() {
+            this.statusLoading = true;
+            try {
+                var previous = this.status.enrollment;
+                var data = await window.dashboardApi.json('/api/admin/voice/status');
+                this.status = data;
+                this.statusLoaded = true;
+                var current = data.enrollment;
+                var changed = (!!previous !== !!current)
+                    || (previous && current && (previous.remaining !== current.remaining || previous.profile_id !== current.profile_id));
+                if (changed) {
+                    await this.loadProfiles();
+                    if (previous && !current) {
+                        window.toast('Enrollment for ' + previous.name + ' finished', 'info');
+                    }
+                }
+            } catch (e) {
+                if (e.code === 'auth_expired') return;
+                this.error = e.detail || 'Failed to load voice status';
+            } finally {
+                this.lastStatusAt = Date.now();
+                this.statusLoading = false;
+            }
+        },
+
+        async loadProfiles() {
+            try {
+                this.profiles = await window.dashboardApi.json('/api/admin/voice/profiles') || [];
+            } catch (e) {
+                if (e.code === 'auth_expired') return;
+                this.error = e.detail || 'Failed to load voice profiles';
+            }
+        },
+
+        async loadPersons() {
+            this.persons = await window.dashboardApi.safeJson('/api/admin/persons') || [];
+        },
+
+        async loadSettings() {
+            try {
+                var data = await window.dashboardApi.json('/api/admin/settings');
+                var flat = {};
+                for (var cat in data.settings) {
+                    for (var item of data.settings[cat]) {
+                        if (!item.key.startsWith(VOICE_SETTING_PREFIX)) continue;
+                        var val = item.value;
+                        if (item.value_type === 'int') val = parseInt(val, 10);
+                        else if (item.value_type === 'float') val = parseFloat(val);
+                        else if (item.value_type === 'bool') val = val === 'true';
+                        flat[item.key] = val;
+                    }
+                }
+                this.s = flat;
+                this.settingsLoaded = true;
+            } catch (e) {
+                if (e.code === 'auth_expired') return;
+                this.error = e.detail || 'Failed to load voice settings';
+            }
+        },
+
+        async putSettings(items) {
+            await window.dashboardApi.request('/api/admin/settings', {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ items: items }),
+            });
+        },
+
+        async toggleEnabled(checked) {
+            this.savingEnabled = true;
+            var previous = !!this.s['voice.speaker_id.enabled'];
+            this.s['voice.speaker_id.enabled'] = checked;
+            try {
+                await this.putSettings({ 'voice.speaker_id.enabled': checked });
+                window.toast(checked ? 'Speaker identification enabled' : 'Speaker identification disabled', 'success');
+                await this.loadStatus();
+            } catch (e) {
+                this.s['voice.speaker_id.enabled'] = previous;
+                if (e.code === 'auth_expired') return;
+                window.toast(e.detail || 'Failed to save setting', 'error');
+            } finally {
+                this.savingEnabled = false;
+            }
+        },
+
+        async saveSettings() {
+            var items = {};
+            for (var key in this.s) {
+                if (key === 'voice.speaker_id.enabled') continue;
+                var value = this.s[key];
+                if (value === '' || value === null || Number.isNaN(value)) {
+                    window.toast('Please fill in every voice setting', 'error');
+                    return;
+                }
+                items[key] = value;
+            }
+            if (!Object.keys(items).length) return;
+            this.savingSettings = true;
+            try {
+                await this.putSettings(items);
+                window.toast('Voice settings saved', 'success');
+            } catch (e) {
+                if (e.code === 'auth_expired') return;
+                window.toast(e.detail || 'Failed to save voice settings', 'error');
+            } finally {
+                this.savingSettings = false;
+            }
+        },
+
+        get mappablePersons() {
+            return this.persons.filter(p => p.user_id);
+        },
+
+        isKnownUserId(userId) {
+            return this.mappablePersons.some(p => p.user_id === userId);
+        },
+
+        userLabel(userId) {
+            var person = this.mappablePersons.find(p => p.user_id === userId);
+            return person ? (person.friendly_name || person.entity_id) : this.shortId(userId);
+        },
+
+        shortId(id) {
+            if (!id) return '-';
+            return id.length > 12 ? id.slice(0, 8) + '...' : id;
+        },
+
+        async createProfile() {
+            var name = (this.newProfile.name || '').trim();
+            if (!name) {
+                window.toast('Name is required', 'error');
+                return;
+            }
+            this.creating = true;
+            try {
+                await window.dashboardApi.json('/api/admin/voice/profiles', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name: name, ha_user_id: (this.newProfile.ha_user_id || '').trim() || null }),
+                });
+                window.toast('Voice profile created', 'success');
+                this.newProfile = { name: '', ha_user_id: '' };
+                await this.loadProfiles();
+            } catch (e) {
+                if (e.code === 'auth_expired') return;
+                window.toast(e.detail || 'Failed to create voice profile', 'error');
+            } finally {
+                this.creating = false;
+            }
+        },
+
+        openEdit(p) {
+            this.editForm = { name: p.name, ha_user_id: p.ha_user_id || '' };
+            this.editTarget = p;
+        },
+
+        async submitEdit() {
+            if (!this.editTarget) return;
+            var name = (this.editForm.name || '').trim();
+            if (!name) {
+                window.toast('Name is required', 'error');
+                return;
+            }
+            this.submitting = true;
+            try {
+                await window.dashboardApi.json('/api/admin/voice/profiles/' + this.editTarget.id, {
+                    method: 'PATCH',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name: name, ha_user_id: (this.editForm.ha_user_id || '').trim() || null }),
+                });
+                window.toast('Voice profile updated', 'success');
+                this.editTarget = null;
+                await Promise.all([this.loadProfiles(), this.loadStatus()]);
+            } catch (e) {
+                if (e.code === 'auth_expired') return;
+                window.toast(e.detail || 'Failed to update voice profile', 'error');
+            } finally {
+                this.submitting = false;
+            }
+        },
+
+        openEnroll(p) {
+            this.enrollForm = { samples: 5, timeout_s: 300 };
+            this.enrollTarget = p;
+        },
+
+        async submitEnroll() {
+            if (!this.enrollTarget) return;
+            var samples = parseInt(this.enrollForm.samples, 10);
+            var timeout = parseInt(this.enrollForm.timeout_s, 10);
+            if (!(samples >= 1 && samples <= 20) || !(timeout >= 30 && timeout <= 1800)) {
+                window.toast('Samples must be 1-20 and timeout 30-1800 seconds', 'error');
+                return;
+            }
+            if (this.status.enrollment && !confirm('Another enrollment is active. Replace it?')) return;
+            this.submitting = true;
+            try {
+                await window.dashboardApi.json('/api/admin/voice/profiles/' + this.enrollTarget.id + '/enroll', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ samples: samples, timeout_s: timeout }),
+                });
+                window.toast('Enrollment started for ' + this.enrollTarget.name, 'success');
+                this.enrollTarget = null;
+                await this.loadStatus();
+            } catch (e) {
+                if (e.code === 'auth_expired') return;
+                window.toast(e.detail || 'Failed to start enrollment', 'error');
+            } finally {
+                this.submitting = false;
+            }
+        },
+
+        async cancelEnrollment() {
+            try {
+                await window.dashboardApi.request('/api/admin/voice/enroll', { method: 'DELETE' });
+                window.toast('Enrollment cancelled', 'success');
+                this.status.enrollment = null;
+                await Promise.all([this.loadStatus(), this.loadProfiles()]);
+            } catch (e) {
+                if (e.code === 'auth_expired') return;
+                window.toast(e.detail || 'Failed to cancel enrollment', 'error');
+            }
+        },
+
+        async resetSamples(p) {
+            if (!confirm('Delete all voice samples of ' + p.name + '? The profile stays and can be enrolled again.')) return;
+            try {
+                await window.dashboardApi.request('/api/admin/voice/profiles/' + p.id + '/samples', { method: 'DELETE' });
+                window.toast('Samples deleted', 'success');
+                await this.loadProfiles();
+            } catch (e) {
+                if (e.code === 'auth_expired') return;
+                window.toast(e.detail || 'Failed to delete samples', 'error');
+            }
+        },
+
+        async deleteProfile(p) {
+            if (!confirm('Delete the voice profile ' + p.name + ' and all of its samples?')) return;
+            try {
+                await window.dashboardApi.request('/api/admin/voice/profiles/' + p.id, { method: 'DELETE' });
+                window.toast('Voice profile deleted', 'success');
+                await Promise.all([this.loadProfiles(), this.loadStatus()]);
+            } catch (e) {
+                if (e.code === 'auth_expired') return;
+                window.toast(e.detail || 'Failed to delete voice profile', 'error');
+            }
+        },
+
+        countdown(expiresAt) {
+            var target = Date.parse(expiresAt);
+            if (Number.isNaN(target)) return '-';
+            var seconds = Math.max(0, Math.round((target - this.now) / 1000));
+            var minutes = Math.floor(seconds / 60);
+            var rest = seconds % 60;
+            return minutes + ':' + String(rest).padStart(2, '0');
+        },
+
+        formatTime(ts) {
+            if (!ts) return '-';
+            var d = new Date(ts);
+            if (Number.isNaN(d.getTime())) return ts;
+            return d.toLocaleString();
+        },
+
+        fmt2(value) {
+            if (value === null || value === undefined || value === '') return '-';
+            var n = Number(value);
+            return Number.isNaN(n) ? '-' : n.toFixed(2);
+        },
+
+        engineBadge(engine) {
+            if (engine === 'ready') return 'badge-green';
+            if (engine === 'loading') return 'badge-yellow';
+            if (engine === 'unavailable') return 'badge-red';
+            return 'badge-muted';
+        },
+
+        resultBadge(status) {
+            if (status === 'identified') return 'badge-green';
+            if (status === 'enrolled_sample') return 'badge-blue';
+            if (status === 'unknown') return 'badge-yellow';
+            if (status === 'error' || status === 'unavailable' || status === 'unsupported_audio') return 'badge-red';
+            return 'badge-muted';
+        },
+    };
+}
+</script>
+{% endblock %}

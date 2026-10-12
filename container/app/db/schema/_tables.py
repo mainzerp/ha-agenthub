@@ -384,3 +384,27 @@ async def _create_tables(db: aiosqlite.Connection) -> None:
             PRIMARY KEY (source, external_user_id)
         )
     """)
+
+    # Voice profiles for speaker identification and their enrollment
+    # samples (float32 embedding bytes). Also created by migration v49; both
+    # paths use IF NOT EXISTS and are safe to re-run.
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS voice_profiles (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL UNIQUE,
+            ha_user_id TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+    """)
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS voice_samples (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            profile_id INTEGER NOT NULL REFERENCES voice_profiles(id) ON DELETE CASCADE,
+            embedding BLOB NOT NULL,
+            dim INTEGER NOT NULL,
+            model TEXT NOT NULL,
+            duration_s REAL,
+            created_at TEXT NOT NULL
+        )
+    """)

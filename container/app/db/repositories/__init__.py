@@ -37,3 +37,4 @@ from app.db.repositories.secrets import SecretsRepository  # noqa: F401
 from app.db.repositories.send_device_mapping import SendDeviceMappingRepository  # noqa: F401
 from app.db.repositories.settings import SettingsRepository, _settings_float, _settings_int  # noqa: F401
 from app.db.repositories.trace import TraceSpanRepository, TraceSummaryRepository  # noqa: F401
+from app.db.repositories.voice import VoiceProfileRepository  # noqa: F401

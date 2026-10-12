@@ -13,6 +13,7 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, field_validator
 
 from app.db.repository import SettingsRepository
+from app.defaults import VOICE_SETTING_RANGES
 
 from ._shared import _bool_from_setting
 
@@ -126,6 +127,15 @@ def _validate_setting_value(key: str, value: str, value_type: str) -> None:
             status_code=400,
             detail=f"Invalid value for '{key}': expected one of {', '.join(allowed)}",
         )
+
+    bounds = VOICE_SETTING_RANGES.get(key)
+    if bounds is not None and value_type in ("int", "float"):
+        low, high = bounds
+        if not low <= float(value) <= high:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid value for '{key}': expected a value between {low} and {high}",
+            )
 
 
 async def _load_wake_briefing_settings() -> dict[str, Any]:

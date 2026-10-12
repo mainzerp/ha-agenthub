@@ -67,6 +67,7 @@ from app.models.agent import (
     source_allows_filler,
     source_allows_voice_followup,
 )
+from app.voice import attach_speaker_to_task, discard_pending_speaker, has_pending_speaker
 
 logger = logging.getLogger(__name__)
 
@@ -125,6 +126,15 @@ async def _cancel_filler_future(filler_future: asyncio.Task | None) -> None:
             await filler_future
     elif not filler_future.cancelled():
         filler_future.exception()
+
+
+async def _cancel_speaker_task(speaker_task: asyncio.Task | None) -> None:
+    """Cancel an unfinished speaker-lookup task when the prelude exits early."""
+    if speaker_task is None or speaker_task.done():
+        return
+    speaker_task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await speaker_task
 
 
 def _consume_memory_task_result(memory_task: asyncio.Task, state: dict[str, Any] | None = None) -> None:
@@ -687,6 +697,8 @@ class OrchestratorAgent(BaseAgent):
                 # Follow-up signal: pending-question state attached by the prelude.
                 pending_question=incoming_context.pending_question if incoming_context else None,
                 is_followup=incoming_context.is_followup if incoming_context else False,
+                # Speaker identification: prompt context only, never auth.
+                speaker=incoming_context.speaker if incoming_context else None,
                 # Phase 6: anaphora recency hints ride the content leg like
                 # the rest of the conversation context.
                 last_entities=list(incoming_context.last_entities) if incoming_context else [],
@@ -1094,6 +1106,9 @@ class OrchestratorAgent(BaseAgent):
             skip_lookup=pre_classified is not None or pending_question_active,
         )
         if cache_replay.action_replay is not None:
+            # A replayed action needs no speaker context; drop the voice-turn
+            # entry so it can never attach to a later turn.
+            discard_pending_speaker(conversation_id)
             replay = await self._finalize_action_replay_hit(
                 cache_replay.action_replay,
                 conversation_id,
@@ -1120,6 +1135,14 @@ class OrchestratorAgent(BaseAgent):
 
         # Cache miss: pay language detection and the (single) turn prefetch.
         conversation_id, detected_language, lang_turns = await self._pipeline_resolve_conversation_and_language(task)
+
+        # Speaker identification: consume the voice-turn result for this
+        # conversation (bounded wait while it is still computed) concurrently
+        # with memory search and classification. Context only -- user_id and
+        # entity visibility are never touched.
+        speaker_task: asyncio.Task | None = None
+        if task.context is not None and has_pending_speaker(conversation_id):
+            speaker_task = asyncio.create_task(attach_speaker_to_task(task, conversation_id, span_collector))
 
         used_origin_context = bool(task and task.context and (task.context.area_id or task.context.device_id))
 
@@ -1181,6 +1204,7 @@ class OrchestratorAgent(BaseAgent):
                 pending_question=task.context.pending_question if task.context else None,
             )
         except _RecoverableClassificationError as exc:
+            await _cancel_speaker_task(speaker_task)
             # Never abandon the detached memory overlap task: read-only,
             # safe to cancel.
             # Cancelling it makes the span task's shield await raise
@@ -1225,8 +1249,13 @@ class OrchestratorAgent(BaseAgent):
                     },
                 },
             )
+        except BaseException:
+            await _cancel_speaker_task(speaker_task)
+            raise
 
         await _resolve_memory_context(task, memory_task, memory_service, span_state=memory_span_state)
+        if speaker_task is not None:
+            await speaker_task
         self._drop_stale_followup_context(task, conversation_id, classifications)
 
         logger.debug(
@@ -2272,6 +2301,8 @@ class OrchestratorAgent(BaseAgent):
             # Follow-up signal: pending-question state attached by the prelude.
             context.pending_question = task.context.pending_question
             context.is_followup = task.context.is_followup
+            # Speaker identification: prompt context only, never auth.
+            context.speaker = task.context.speaker
             # Phase 6: anaphora recency hints populated in the prelude.
             context.last_entities = list(task.context.last_entities)
         if self._ha_client:

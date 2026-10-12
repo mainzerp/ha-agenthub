@@ -1,0 +1,61 @@
+/* Page-specific styles for voice_profiles */
+
+.voice-enroll-banner {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-4);
+}
+
+.voice-enroll-text {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+    min-width: 0;
+}
+
+.voice-enroll-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-2);
+    color: var(--color-cloud);
+}
+
+.voice-enable-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-3);
+    cursor: pointer;
+    color: var(--color-mist);
+}
+
+.voice-status-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(min(100%, 220px), 1fr));
+    gap: var(--space-3) var(--space-4);
+    margin: 0;
+}
+
+.voice-status-grid dd {
+    margin: 0;
+    min-width: 0;
+}
+
+.voice-help {
+    margin-bottom: 0;
+    padding-left: var(--space-5);
+    line-height: 1.5;
+}
+
+.voice-row-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-2);
+}
+
+@media (max-width: 640px) {
+    .voice-enroll-banner {
+        flex-direction: column;
+        align-items: flex-start;
+    }
+}

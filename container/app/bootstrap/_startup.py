@@ -28,6 +28,7 @@ from app.api.routes import conversation as conversation_routes
 from app.api.routes import dashboard_api as dashboard_api_routes
 from app.api.routes import openai_compat as openai_compat_routes
 from app.api.routes.conversation import reset_active_ws_connections
+from app.api.routes.voice import reset_active_voice_connections
 from app.bootstrap._logging import _configure_logging, start_log_buffer_guard
 from app.config import settings
 from app.db.repository import SettingsRepository, SetupStateRepository
@@ -44,6 +45,7 @@ async def setup_application(app: FastAPI) -> None:
     _configure_logging()
     logger.info("Starting ha-agenthub container")
     reset_active_ws_connections()
+    reset_active_voice_connections()
     await init_db()
 
     from app.security.encryption import get_fernet, is_fernet_key_present

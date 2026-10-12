@@ -17,8 +17,11 @@ from homeassistant.config_entries import (
 )
 from homeassistant.const import CONF_API_KEY, CONF_URL
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.selector import (
+    EntitySelector,
+    EntitySelectorConfig,
     SelectSelector,
     SelectSelectorConfig,
     TextSelector,
@@ -30,6 +33,7 @@ from .const import (
     CONF_NAME,
     CONF_SHIP_LOGS,
     CONF_SHIP_LOGS_LEVEL,
+    CONF_STT_ENTITY_ID,
     CONF_WS_RECEIVE_TIMEOUT,
     DEFAULT_CONTAINER_URL,
     DEFAULT_SHIP_LOGS,
@@ -41,6 +45,7 @@ from .const import (
     SHIP_LOGS_LEVELS,
     parse_positive_timeout,
     resolve_ws_receive_timeout,
+    stt_unique_id,
 )
 
 logger = logging.getLogger(__name__)
@@ -86,7 +91,25 @@ def _build_user_schema() -> vol.Schema:
     )
 
 
-def _build_options_schema(current: dict[str, Any]) -> vol.Schema:
+def _own_stt_entity_id(hass: HomeAssistant, entry: ConfigEntry) -> str | None:
+    """Return the entity_id of this entry's STT wrapper entity, if registered."""
+    entity_id = er.async_get(hass).async_get_entity_id(
+        "stt", DOMAIN, stt_unique_id(entry.entry_id)
+    )
+    return entity_id if isinstance(entity_id, str) and entity_id else None
+
+
+def _validate_stt_entity_id(stt_entity_id: str, own_entity_id: str | None) -> bool:
+    """Accept an stt entity other than the wrapper itself (no recursion)."""
+    if not stt_entity_id:
+        return True
+    domain, _, object_id = stt_entity_id.partition(".")
+    return domain == "stt" and bool(object_id) and stt_entity_id != own_entity_id
+
+
+def _build_options_schema(
+    current: dict[str, Any], own_stt_entity_id: str | None = None
+) -> vol.Schema:
     return vol.Schema(
         {
             vol.Optional(CONF_NAME, default=current.get(CONF_NAME, "")): TextSelector(),
@@ -109,6 +132,17 @@ def _build_options_schema(current: dict[str, Any]) -> vol.Schema:
                 default=current.get(CONF_SHIP_LOGS_LEVEL, DEFAULT_SHIP_LOGS_LEVEL),
             ): SelectSelector(
                 SelectSelectorConfig(options=SHIP_LOGS_LEVELS, mode="dropdown")
+            ),
+            # suggested_value (not default) so the field can be cleared to
+            # disable the STT wrapper entity.
+            vol.Optional(
+                CONF_STT_ENTITY_ID,
+                description={"suggested_value": current.get(CONF_STT_ENTITY_ID)},
+            ): EntitySelector(
+                EntitySelectorConfig(
+                    domain="stt",
+                    exclude_entities=[own_stt_entity_id] if own_stt_entity_id else [],
+                )
             ),
         }
     )
@@ -252,6 +286,7 @@ class HaAgentHubOptionsFlow(OptionsFlow):
             **(self._entry.data or {}),
             **(self._entry.options or {}),
         }
+        own_stt_entity_id = _own_stt_entity_id(self.hass, self._entry)
 
         if user_input is not None:
             try:
@@ -267,8 +302,14 @@ class HaAgentHubOptionsFlow(OptionsFlow):
                 ws_receive_timeout = parse_positive_timeout(raw_timeout)
                 if ws_receive_timeout is None and not timeout_provided:
                     ws_receive_timeout = float(DEFAULT_WS_RECEIVE_TIMEOUT)
+                # The frontend omits a cleared optional field, so a missing
+                # key means "disabled" and does not fall back to the stored
+                # value.
+                stt_entity_id = str(user_input.get(CONF_STT_ENTITY_ID) or "").strip()
                 if ws_receive_timeout is None:
                     errors[CONF_WS_RECEIVE_TIMEOUT] = "invalid_timeout"
+                elif not _validate_stt_entity_id(stt_entity_id, own_stt_entity_id):
+                    errors[CONF_STT_ENTITY_ID] = "invalid_stt_entity"
                 else:
                     ship_logs = bool(
                         user_input.get(
@@ -320,22 +361,27 @@ class HaAgentHubOptionsFlow(OptionsFlow):
                             if errors:
                                 return self.async_show_form(
                                     step_id="init",
-                                    data_schema=_build_options_schema(current),
+                                    data_schema=_build_options_schema(
+                                        current, own_stt_entity_id
+                                    ),
                                     errors=errors,
                                 )
                         self.hass.config_entries.async_update_entry(
                             self._entry, **entry_updates
                         )
-                        return self.async_create_entry(
-                            data={
-                                CONF_WS_RECEIVE_TIMEOUT: ws_receive_timeout,
-                                CONF_SHIP_LOGS: ship_logs,
-                                CONF_SHIP_LOGS_LEVEL: ship_logs_level,
-                            }
-                        )
+                        # The flow manager replaces entry.options with this
+                        # dict: every option key must be written here.
+                        options: dict[str, Any] = {
+                            CONF_WS_RECEIVE_TIMEOUT: ws_receive_timeout,
+                            CONF_SHIP_LOGS: ship_logs,
+                            CONF_SHIP_LOGS_LEVEL: ship_logs_level,
+                        }
+                        if stt_entity_id:
+                            options[CONF_STT_ENTITY_ID] = stt_entity_id
+                        return self.async_create_entry(data=options)
 
         return self.async_show_form(
             step_id="init",
-            data_schema=_build_options_schema(current),
+            data_schema=_build_options_schema(current, own_stt_entity_id),
             errors=errors,
         )

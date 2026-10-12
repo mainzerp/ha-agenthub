@@ -48,6 +48,7 @@ async def _initialize_setup_dependent_services(app: FastAPI, *, source: str) -> 
     from app.bootstrap._mcp import setup_mcp
     from app.bootstrap._memory import setup_memory
     from app.bootstrap._monitors import setup_monitors
+    from app.bootstrap._voice import setup_voice
 
     # Phase 1: HA client, embedding engine, vector store, HomeContext, AliasResolver, preload
     vector_store, cache_store, ha_client, alias_resolver = await setup_ha_client(app, source)
@@ -67,6 +68,9 @@ async def _initialize_setup_dependent_services(app: FastAPI, *, source: str) -> 
 
     # Phase 5b: Session memory service + startup backfill (no-op when disabled)
     await setup_memory(app)
+
+    # Phase 5c: Speaker-identification engine warm-up (no-op when disabled)
+    await setup_voice()
 
     # Phase 6: MCP servers (depends on mcp_registry, mcp_tool_manager)
     await setup_mcp(app, source)

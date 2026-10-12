@@ -39,3 +39,4 @@ async def _create_indexes(db: aiosqlite.Connection) -> None:
     await db.execute(
         "CREATE INDEX IF NOT EXISTS idx_external_user_mappings_ha_user ON external_user_mappings(ha_user_id)"
     )
+    await db.execute("CREATE INDEX IF NOT EXISTS idx_voice_samples_profile_model ON voice_samples(profile_id, model)")

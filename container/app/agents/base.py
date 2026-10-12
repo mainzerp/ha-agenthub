@@ -362,7 +362,7 @@ class BaseAgent(ABC):
 
     @staticmethod
     def _build_time_location_context(context: TaskContext | None) -> str:
-        """Build a short context block for local time, location and satellite area.
+        """Build a short context block for local time, location, satellite area and speaker.
 
         The satellite area line (where the user is speaking from) lets every
         agent resolve "here" / "this room"; it is emitted even when no local
@@ -383,6 +383,12 @@ class BaseAgent(ABC):
                 f'User is speaking from area: "{area_name}" ("here" or "this room" refers to this area '
                 "unless the user names another one)"
             )
+        # Speaker identification is an unverified voice match: personalization
+        # context only, never a basis for authorization.
+        speaker = context.speaker
+        speaker_name = sanitize_untrusted_text(speaker.name, UNTRUSTED_NAME_MAX_CHARS) if speaker else ""
+        if speaker_name:
+            parts.append(f'Speaker: "{speaker_name}" (recognized by voice, unverified)')
         return "\n".join(parts)
 
     async def _resolve_dispatch_budget_sec(self) -> float | None:

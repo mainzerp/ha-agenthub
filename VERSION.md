@@ -4,7 +4,17 @@
 
 ## Recent Changes
 
-(tracking changes since 3.1.0)
+(tracking changes since 3.1.0; branch feat/voice-speaker-id (uncommitted))
+
+- Voice: optional speaker identification for Assist voice turns, disabled by default (`voice.speaker_id.*` settings: `enabled`, `threshold` 0.55, `margin` 0.05, `min_duration_s` 1.5, `min_enroll_duration_s` 2.0, `wait_ms` 500, `num_threads` 2; numeric ranges enforced by the settings API). sherpa-onnx CAM++ embeddings run in a worker thread and are cosine-matched against per-profile centroids.
+- Integration: new STT platform ("HA-AgentHub STT") wrapping the STT entity chosen in the new option `stt_entity_id`; audio and transcript pass through unchanged, and a best-effort audio copy is teed to the container keyed by the HA chat-session id. STT never depends on the container. Manifest adds the `stt` dependency.
+- API: `WS /ws/voice` (one socket per voice turn, max 8 per IP, one `result` frame) and admin endpoints `/api/admin/voice/status`, `/profiles` CRUD, `/profiles/{id}/samples`, `/profiles/{id}/enroll`, `/enroll`.
+- Orchestrator: an `identified` result is attached as `TaskContext.speaker` (bounded wait, concurrent with memory search and classification) and agents see `Speaker: "<name>" (recognized by voice, unverified)`; never changes `user_id`, entity visibility or authorization. New `speaker_id` trace span; `/ws/voice` writes no connection-level trace.
+- Database: migration 49 adds `voice_profiles` and `voice_samples` (embeddings tagged with the model id).
+- Dashboard: "Voice Profiles" page (Domain Data) for settings, profiles, enrollment and recent results.
+- Dependencies and image: new `sherpa-onnx==1.13.8`; the Docker image pre-downloads the CAM++ model to `/opt/models/speaker/` with a SHA-256 check, with a verified runtime fallback download to `<db dir>/models/speaker/`.
+- Docs: configuration, api-reference, architecture, user guide (Voice Profiles setup and privacy), deployment, troubleshooting, project definition, README, TODO.
+- Behavior change (no action needed): nothing changes until the feature is enabled and the STT wrapper is selected in an Assist pipeline; the bridge must be updated through HACS to use it. Migration 49 runs automatically.
 
 ## Version History
 

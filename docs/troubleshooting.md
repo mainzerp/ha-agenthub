@@ -203,6 +203,19 @@ docker compose restart ha-agenthub
 - An answer reached the wrong agent: check the trace's `classify.parse_and_sanitize` span. `followup_pinned_to` is set when the classifier marked the turn as an answer (`[ANSWER]`) and the turn was pinned to the asking agent; without it the turn was classified as a new request. Askers recorded as a comma-joined multi-agent tag are never pinned.
 - The answer turn timed out or failed with a canned line: the pending question is re-armed, so answering again within the 300 s window still reaches the asking agent.
 
+## Speaker Not Recognized
+
+Check the **Voice Profiles** page (engine status, recent results) and the turn's `speaker_id` trace span. Setup steps: [User Guide -- Voice Profiles](user-guide.md#voice-profiles).
+
+- **No `speaker_id` span and no recent result:** the audio was not analyzed. Check that `voice.speaker_id.enabled` is on, the Assist pipeline uses **HA-AgentHub STT** (not the wrapped entity directly), `stt_entity_id` is set in the integration options, and the bridge is updated. The bridge skips the turn when the pipeline audio is not 16 kHz, 16-bit mono PCM or the turn has no HA chat session (`conversation_id`); enable debug logging for `custom_components.ha_agenthub` to see the reason. A rate-limited warning "cannot reach the HA-AgentHub container" means `/ws/voice` is not reachable (proxy without WebSocket support for `/ws/`).
+- **Recent result `unsupported_audio`:** a client streamed audio other than 16 kHz, 16-bit mono PCM; the container cannot use it.
+- **Recent result present but no span:** the turn was an action-cache replay (the speaker entry is discarded), or the conversation request arrived more than 120 s after the audio, or under a different `conversation_id`.
+- **Span status `timeout`:** the embedding was not ready within `voice.speaker_id.wait_ms`; raise it (max 3000) or `voice.speaker_id.num_threads`.
+- **Status `unavailable` / engine not `ready`:** the speaker model or `sherpa-onnx` could not be loaded; `engine_error` on the page names the cause. Images built without the model download it once into `/data/models/speaker/` and need GitHub access; after a failed load the engine retries after 60 s.
+- **Status `no_profiles`:** no profile has samples for the current model; enroll first.
+- **Always `unknown`:** compare the score of the nearest profile in the recent results with `voice.speaker_id.threshold` / `margin`, lower them carefully, and enroll more samples per person on each satellite.
+- **Mostly `too_short`:** commands are shorter than `voice.speaker_id.min_duration_s`; identification needs longer phrases.
+
 ## My Alarm Helper No Longer Rings
 
 **Symptoms:** An HA `input_datetime` helper used as an alarm stays silent. The log shows `AlarmMonitor: ... none carries the HA label 'agenthub_alarm'`.

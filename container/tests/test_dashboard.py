@@ -1062,3 +1062,118 @@ def test_overview_charts_preserve_counts_on_refresh():
         assert.deepEqual(page.agentDistChart.data.datasets[0].data, []);
         """,
     )
+
+
+# ===================================================================
+# Voice profiles page
+# ===================================================================
+
+
+@pytest.mark.integration
+class TestVoiceProfilesPage:
+    async def test_voice_profiles_page_requires_auth(self, no_session_client: httpx.AsyncClient):
+        resp = await no_session_client.get("/dashboard/voice-profiles")
+        assert resp.status_code == 303
+        assert "/dashboard/login" in resp.headers.get("location", "")
+
+    async def test_voice_profiles_page_renders(self, dashboard_client: httpx.AsyncClient):
+        resp = await dashboard_client.get("/dashboard/voice-profiles")
+        assert resp.status_code == 200
+        assert "text/html" in resp.headers.get("content-type", "")
+        html = resp.text
+        assert 'x-data="voiceProfilesPage()"' in html
+        assert "/dashboard/static/css/pages/voice_profiles.css" in html
+        assert "window.dashboardApi.json('/api/admin/voice/status')" in html
+        assert "Speak a few commands of 2 seconds or longer to a satellite." in html
+        assert "HA-AgentHub STT" in html
+        assert "clearInterval(this.refreshInterval)" in html
+        assert 'aria-labelledby="voice-enroll-modal-title"' in html
+        # Enrollment is blocked in the UI while the feature is disabled.
+        assert '@click="openEnroll(p)" :disabled="!status.enabled"' in html
+        assert "Enable speaker identification to enroll" in html
+        assert ':disabled="submitting || !status.enabled"' in html
+
+    async def test_sidebar_contains_voice_profiles_entry(self, dashboard_client: httpx.AsyncClient):
+        resp = await dashboard_client.get("/dashboard/persons")
+        html = resp.text
+        assert 'href="/dashboard/voice-profiles"' in html
+        assert "Voice Profiles" in html
+        persons_idx = html.find('href="/dashboard/persons"')
+        voice_idx = html.find('href="/dashboard/voice-profiles"')
+        assert -1 < persons_idx < voice_idx
+
+    def test_nav_config_places_voice_profiles_in_domain_data(self):
+        from app.dashboard.nav_config import NAV_GROUPS
+
+        domain = next(group for group in NAV_GROUPS if group["key"] == "domain_data")
+        keys = [item["key"] for item in domain["items"]]
+        assert "voice_profiles" in keys
+        assert keys.index("voice_profiles") == keys.index("persons") + 1
+
+
+def test_voice_profiles_page_script_behavior():
+    _run_dashboard_script(
+        "voice_profiles.html",
+        r"""
+        const assert = require('node:assert/strict');
+        (async () => {
+            const calls = [];
+            const toasts = [];
+            let status = {enabled: true, engine: 'ready', enrollment: null, recent: []};
+            let profileLoads = 0;
+            global.window = {
+                toast: (message, kind) => { toasts.push({message, kind}); },
+                dashboardApi: {
+                    json: async (url, options) => {
+                        calls.push({url, options});
+                        if (url === '/api/admin/voice/status') return status;
+                        if (url === '/api/admin/voice/profiles') { profileLoads += 1; return []; }
+                        if (url.endsWith('/enroll')) {
+                            const err = new Error('Speaker identification is disabled');
+                            err.status = 409;
+                            err.detail = 'Speaker identification is disabled';
+                            throw err;
+                        }
+                        return {};
+                    },
+                    request: async (url, options) => { calls.push({url, options}); },
+                    safeJson: async () => [],
+                },
+            };
+            const page = voiceProfilesPage();
+            assert.equal(page.fmt2(0.5), '0.50');
+            assert.equal(page.fmt2(null), '-');
+            page.now = Date.parse('2026-01-01T00:00:00Z');
+            assert.equal(page.countdown('2026-01-01T00:02:05Z'), '2:05');
+            assert.equal(page.countdown('2025-12-31T23:59:00Z'), '0:00');
+            assert.equal(page.engineBadge('loading'), 'badge-yellow');
+            assert.equal(page.resultBadge('identified'), 'badge-green');
+
+            // Enrollment start and progress reload profiles (sample counts).
+            await page.loadStatus();
+            assert.equal(profileLoads, 0);
+            status = {...status, enrollment: {profile_id: 1, name: 'Laura', remaining: 3, expires_at: '2026-01-01T00:05:00Z'}};
+            await page.loadStatus();
+            assert.equal(profileLoads, 1);
+            await page.loadStatus();
+            assert.equal(profileLoads, 1);
+            status = {...status, enrollment: null};
+            await page.loadStatus();
+            assert.equal(profileLoads, 2);
+
+            // Numeric settings are saved together; the enable toggle is saved on its own.
+            page.s = {'voice.speaker_id.enabled': true, 'voice.speaker_id.threshold': 0.6};
+            await page.saveSettings();
+            const put = calls.find(c => c.url === '/api/admin/settings');
+            assert.deepEqual(JSON.parse(put.options.body), {items: {'voice.speaker_id.threshold': 0.6}});
+
+            // A rejected enrollment (409: feature disabled) surfaces the API detail as an error toast.
+            page.enrollTarget = {id: 7, name: 'Laura'};
+            page.enrollForm = {samples: 3, timeout_s: 120};
+            await page.submitEnroll();
+            assert.deepEqual(toasts.at(-1), {message: 'Speaker identification is disabled', kind: 'error'});
+            assert.equal(page.enrollTarget.id, 7);
+            assert.equal(page.submitting, false);
+        })().catch(err => { console.error(err); process.exit(1); });
+        """,
+    )

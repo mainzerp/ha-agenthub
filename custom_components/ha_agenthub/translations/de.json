@@ -33,7 +33,11 @@
           "api_key": "API-Schlüssel",
           "ws_receive_timeout": "Antwort-Timeout (Sekunden)",
           "ship_logs": "Logs an Container senden",
-          "ship_logs_level": "Log-Level für Versand"
+          "ship_logs_level": "Log-Level für Versand",
+          "stt_entity_id": "STT-Entität für Sprechererkennung"
+        },
+        "data_description": {
+          "stt_entity_id": "Optional. Speech-to-Text-Entität, die von der HA-AgentHub-STT-Entität umschlossen wird. Audio wird unverändert durchgereicht und zur Sprechererkennung an den Container kopiert. In der Assist-Pipeline die HA-AgentHub-STT-Entität auswählen. Leer lassen zum Deaktivieren."
         }
       }
     },
@@ -42,7 +46,8 @@
       "invalid_auth": "Ungültiger API-Schlüssel. Bitte prüfen und erneut versuchen.",
       "invalid_url": "Ungültige URL. Muss mit http:// oder https:// beginnen.",
       "invalid_timeout": "Ungültiges Timeout. Bitte eine positive Zahl in Sekunden eingeben.",
-      "already_configured": "Diese URL ist bereits konfiguriert."
+      "already_configured": "Diese URL ist bereits konfiguriert.",
+      "invalid_stt_entity": "Bitte eine andere Speech-to-Text-Entität als die HA-AgentHub-STT-Entität selbst wählen."
     }
   }
 }

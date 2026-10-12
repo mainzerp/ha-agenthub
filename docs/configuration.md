@@ -201,6 +201,20 @@ Managed via `GET/PUT /api/admin/personality/config` and the dashboard
 
 Precedence per field: a non-empty override always wins over HA `/api/config`; without an override the HA value is used, then the last value fetched from HA, then `UTC` / empty. The resolved home context is cached for 1 hour after a successful HA fetch and retried after 60 seconds when HA was unreachable. Override changes apply on the next refresh.
 
+### Voice / Speaker Identification Settings
+
+Identifies the speaker of Assist voice turns teed in by the bridge STT wrapper (integration option `stt_entity_id`, see [Home Assistant Integration Options](#home-assistant-integration-options)). A recognized speaker is prompt context only: it never changes `user_id`, entity visibility, or authorization. Edited on the dashboard **Voice Profiles** page or via `PUT /api/admin/settings`; numeric values outside the listed ranges are rejected by the settings API and clamped at runtime.
+
+| Key | Default | Type | Description |
+|-----|---------|------|-------------|
+| `voice.speaker_id.enabled` | `false` | bool | Master toggle. When off, `/ws/voice` answers `disabled` and no enrollment sample is stored. Switching it on (any settings write, e.g. the Voice Profiles page or `PUT /api/admin/settings`) and starting the container while it is on warm up the embedding engine in the background; voice turns arriving before the engine is ready report `unavailable` instead of waiting. |
+| `voice.speaker_id.threshold` | `0.55` | float | Minimum cosine similarity (`0.0-1.0`) between the turn embedding and a profile centroid |
+| `voice.speaker_id.margin` | `0.05` | float | Minimum score gap (`0.0-1.0`) between the best and second-best profile (second-best counts as `0` with one profile) |
+| `voice.speaker_id.min_duration_s` | `1.5` | float | Minimum voice-turn length in seconds for identification (`0-30`); shorter turns report `too_short` |
+| `voice.speaker_id.min_enroll_duration_s` | `2.0` | float | Minimum voice-turn length in seconds for an enrollment sample (`0.5-30`) |
+| `voice.speaker_id.wait_ms` | `500` | int | Bounded wait (`0-3000` ms) of the conversation turn for a speaker result still being computed; runs concurrently with memory search and classification |
+| `voice.speaker_id.num_threads` | `2` | int | CPU threads for the speaker-embedding model (`1-8`) |
+
 ### General Settings
 
 | Key | Default | Type | Description |
@@ -402,6 +416,7 @@ These options live in the HA integration's options dialog (Settings -> Devices &
 | `ship_logs` | `false` | Ship the integration's own log records (`custom_components.ha_agenthub` package logger) to the container's log buffer via `POST /api/logs/ingest`, batched every 5 seconds. |
 | `ship_logs_level` | `DEBUG` | Minimum level for shipped records: `DEBUG`, `INFO`, `WARNING`, or `ERROR`. Gated by a handler-level filter only; the HA logger's own level still applies, so records below the effective HA log level never reach the shipper. |
 | `ws_receive_timeout` | `120` | Response timeout in seconds (UI label "Response timeout"): bounds each bridge WebSocket receive wait and the whole REST fallback request. The options flow accepts finite positive numbers, including decimals. `0`, negative values, booleans, nonnumeric values, `NaN`, and infinities are rejected. Invalid legacy stored values use the default at runtime. |
+| `stt_entity_id` | (empty) | STT entity wrapped by the "HA-AgentHub STT" entity (UI label "Speaker identification STT entity"), e.g. Home Assistant Cloud or a Wyoming STT. When set, the bridge adds the wrapper entity; it mirrors the inner entity's capabilities, passes audio and transcript through unchanged, and tees a best-effort copy of 16-bit mono PCM audio to the container's `/ws/voice`. The wrapper itself is rejected. Clearing the field removes the wrapper entity. |
 
 Notes:
 

@@ -33,7 +33,9 @@ def _mock_homeassistant_deps():
         "homeassistant.const": {
             "CONF_URL": "url",
             "CONF_API_KEY": "api_key",
-            "Platform": type("Platform", (), {"CONVERSATION": "conversation"}),
+            "Platform": type(
+                "Platform", (), {"CONVERSATION": "conversation", "STT": "stt"}
+            ),
             "MATCH_ALL": "*",
         },
         "homeassistant.core": {"HomeAssistant": MagicMock},

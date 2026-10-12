@@ -80,6 +80,7 @@ Key points:
 - `start_period: 120s` accommodates the local embedding model warm-up
   and entity-index priming on first start.
 - `HF_HUB_OFFLINE=1` disables Hugging Face network calls so the embedding model loads strictly from local weights. The default embedding model (`intfloat/multilingual-e5-base`) is baked into the image at build time and additionally cached in the `/data` volume, which makes the image roughly 1.1 GB larger. The compose default is `0` (online). Set to `1` for air-gapped installs.
+- The speaker-identification model (sherpa-onnx CAM++, `3dspeaker_speech_campplus_sv_en_voxceleb_16k.onnx`, about 30 MB) is baked into the image at `/opt/models/speaker/` with a SHA-256 check (build args `SPEAKER_MODEL_URL` / `SPEAKER_MODEL_SHA256`, kept in sync with `app/voice/model.py`). When it is missing (custom builds, dev), enabling the feature downloads it once from GitHub into `<db dir>/models/speaker/` (default `/data/models/speaker/`), verified by size and SHA-256. Air-gapped installs need the image copy. The feature uses no extra port.
 - Only infrastructure environment variables are set here. All other
   configuration (HA connection, LLM keys, agent settings) is done
   through the setup wizard and stored in SQLite.
@@ -211,6 +212,7 @@ Review your configuration and complete the setup. The container initializes all 
 2. Search for "HA-AgentHub".
 3. Enter the container URL (e.g., `http://<docker-host>:8080`) and the API key from setup step 3.
 4. The integration registers as a conversation agent. You can select it as the default assistant in Settings > Voice Assistants.
+5. Optional, speaker identification: set **Speaker identification STT entity** (`stt_entity_id`) in the integration options and select the resulting **HA-AgentHub STT** entity as speech-to-text in the Assist pipeline. Requires a bridge version that ships `stt.py` (update through HACS together with the container). See [User Guide -- Voice Profiles](user-guide.md#voice-profiles).
 
 The options flow re-uses the same form. Leaving the API key field
 **blank** in the options dialog keeps the previously stored key; only
@@ -288,7 +290,7 @@ Home Assistant must be able to reach the container on the configured port (defau
 If placing the container behind a reverse proxy (e.g., Nginx, Caddy, Traefik):
 
 - Proxy to `http://localhost:8080`
-- WebSocket support is required for streaming (`/ws/conversation`)
+- WebSocket support is required for streaming (`/ws/conversation`) and speaker identification (`/ws/voice`)
 - Forward the `Authorization` header for API key authentication
 
 ## Updating

@@ -140,11 +140,16 @@ class TracingMiddleware:
         connection finally closes. Instead, the route handler mints a
         fresh ``SpanCollector`` per inbound message and flushes it
         synchronously, and this middleware only exposes ``source`` and
-        a ``ws_per_turn`` marker on scope state. Other WS paths keep
+        a ``ws_per_turn`` marker on scope state. ``/ws/voice`` (one
+        short audio socket per voice turn) is not traced at connection
+        level either: its result is traced as the ``speaker_id`` span of
+        the conversation turn, and a trace row per audio socket would only
+        duplicate every voice turn in the trace list. Other WS paths keep
         the legacy per-connection trace behaviour."""
         path = scope.get("path", "")
         per_turn_route = path.startswith("/ws/conversation")
-        if per_turn_route:
+        voice_route = path.startswith("/ws/voice")
+        if per_turn_route or voice_route:
             source: str = "ha"
         elif path.startswith("/api/admin/chat"):
             source = "chat"
@@ -154,6 +159,13 @@ class TracingMiddleware:
         state = scope.setdefault("state", {})
         state["source"] = source
         state["ws_per_turn"] = per_turn_route
+
+        if voice_route:
+            state.pop("trace_id", None)
+            state.pop("span_collector", None)
+            state.pop("root_span_id", None)
+            await self.app(scope, receive, send)
+            return
 
         if per_turn_route:
             # The route owns the trace boundary; do not create a

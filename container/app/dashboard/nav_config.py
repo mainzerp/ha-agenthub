@@ -38,6 +38,12 @@ NAV_GROUPS = [
             {"key": "timers", "label": "Timers", "href": "/dashboard/timers", "icon_id": "clock"},
             {"key": "calendar", "label": "Calendar", "href": "/dashboard/calendar", "icon_id": "calendar"},
             {"key": "persons", "label": "Persons", "href": "/dashboard/persons", "icon_id": "user"},
+            {
+                "key": "voice_profiles",
+                "label": "Voice Profiles",
+                "href": "/dashboard/voice-profiles",
+                "icon_id": "mic",
+            },
         ],
     },
     {

@@ -31,6 +31,7 @@ from app.db.repositories import (  # noqa: F401
     SetupStateRepository,
     TraceSpanRepository,
     TraceSummaryRepository,
+    VoiceProfileRepository,
     _normalize_device_name,
     _now,
     _phonetic_key,
