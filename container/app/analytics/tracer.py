@@ -19,6 +19,7 @@ from typing import Any, Literal
 from urllib.parse import parse_qsl, quote, urlsplit, urlunsplit
 
 from app.db.repository import TraceSpanRepository, TraceSummaryRepository
+from app.security.redaction import redact_sensitive_text
 
 logger = logging.getLogger(__name__)
 
@@ -285,6 +286,82 @@ def sanitize_trace_metadata(metadata: dict[str, Any] | None) -> dict[str, Any]:
     return sanitized if isinstance(sanitized, dict) else {"value": sanitized}
 
 
+_ERROR_MESSAGE_MAX_CHARS = 300
+# Bound the regex work on pathological exception texts before redaction.
+_ERROR_MESSAGE_RAW_MAX_CHARS = 4000
+
+
+def _exception_type_name(exc: BaseException) -> str:
+    """Return ``<top-level package>.<class>`` (bare class name for builtins).
+
+    Examples: ``litellm.RateLimitError``, ``httpx.ReadTimeout``,
+    ``app.LLMError``, ``TimeoutError``.
+    """
+    cls = type(exc)
+    module = getattr(cls, "__module__", "") or ""
+    top_level = module.split(".", 1)[0]
+    if not top_level or top_level == "builtins":
+        return cls.__qualname__
+    return f"{top_level}.{cls.__qualname__}"
+
+
+def _exception_http_status(exc: BaseException) -> int | None:
+    """Return the HTTP status carried by ``exc`` (``status_code`` or ``response.status_code``)."""
+    candidates: list[Any] = [getattr(exc, "status_code", None)]
+    try:
+        response = getattr(exc, "response", None)
+    except Exception:
+        response = None
+    if response is not None:
+        candidates.append(getattr(response, "status_code", None))
+    for candidate in candidates:
+        if isinstance(candidate, int) and not isinstance(candidate, bool) and 100 <= candidate <= 599:
+            return candidate
+    return None
+
+
+def _sanitize_error_message(exc: BaseException) -> str:
+    """Return a single-line, secret-redacted, truncated ``str(exc)``."""
+    try:
+        raw = str(exc)
+    except Exception:
+        return ""
+    single_line = " ".join(raw[:_ERROR_MESSAGE_RAW_MAX_CHARS].split())
+    if not single_line:
+        return ""
+    redacted = redact_sensitive_text(single_line)
+    sanitized = sanitize_trace_value(redacted, key="error_message")
+    text = sanitized if isinstance(sanitized, str) else str(sanitized)
+    if len(text) > _ERROR_MESSAGE_MAX_CHARS:
+        text = text[: _ERROR_MESSAGE_MAX_CHARS - 3].rstrip() + "..."
+    return text
+
+
+def record_span_error(span: Any, exc: BaseException) -> None:
+    """Store sanitized exception detail on a span's metadata.
+
+    Sets ``error_type``, ``error_message`` and ``error_status`` (when the
+    exception carries an HTTP status). Keys a caller already set explicitly
+    are never overwritten. Best-effort: failures are logged, never raised.
+    """
+    try:
+        metadata = span.get("metadata")
+        if not isinstance(metadata, dict):
+            metadata = {}
+            span["metadata"] = metadata
+        metadata.setdefault("error_type", _exception_type_name(exc))
+        if "error_message" not in metadata:
+            message = _sanitize_error_message(exc)
+            if message:
+                metadata["error_message"] = message
+        if "error_status" not in metadata:
+            status = _exception_http_status(exc)
+            if status is not None:
+                metadata["error_status"] = status
+    except Exception:
+        logger.debug("Failed to record error detail on span", exc_info=True)
+
+
 # Parent-span tracking per async context (Q-8). A ContextVar is the
 # correct mechanism for nested spans under ``asyncio.gather`` so parallel
 # branches don't see each other's parents via a shared list.
@@ -361,8 +438,9 @@ class SpanCollector:
         t0 = time.perf_counter()
         try:
             yield span
-        except Exception:
+        except Exception as exc:
             span["status"] = "error"
+            record_span_error(span, exc)
             raise
         finally:
             _current_parent.reset(token)

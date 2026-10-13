@@ -1139,6 +1139,25 @@ class ActionableAgent(BaseAgent):
             _current_task_var.reset(task_token)
             _current_task_context_var.reset(context_token)
 
+    async def _llm_call_deadline(self, task_started: float) -> float | None:
+        """Absolute ``time.monotonic()`` deadline for the domain LLM call, or None.
+
+        Derived from the agent's dispatch budget minus the time this task has
+        already spent (``task_started`` is a ``time.perf_counter()`` mark).
+        None when no budget is resolvable; the LLM call then runs unbounded.
+        """
+        try:
+            budget = await self._resolve_dispatch_budget_sec()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.debug("Dispatch budget unavailable for %s", self.agent_card.agent_id, exc_info=True)
+            return None
+        if not isinstance(budget, int | float) or isinstance(budget, bool) or budget <= 0:
+            return None
+        elapsed = max(0.0, time.perf_counter() - task_started)
+        return time.monotonic() + float(budget) - elapsed
+
     async def _handle_task_inner(self, task: DispatchTask) -> TaskResult:
         _t0 = time.perf_counter()
         # Pre-initialize the dispatch-timing marks: a failing candidate
@@ -1259,15 +1278,23 @@ class ActionableAgent(BaseAgent):
         # No LLM timeout retry for domain agents: a retried call (timeout +
         # backoff + full second attempt) plus the HA action can outlive the
         # A2A dispatch timeout, so the orchestrator would fall back after
-        # the action already ran.
+        # the action already ran. Transient provider errors (rate limit,
+        # overload, 5xx) are still retried once inside the LLM client -- they
+        # fail before any action is parsed or executed -- but only while the
+        # dispatch-budget deadline leaves room for another attempt (without a
+        # known budget: only after a fast failure).
+        llm_kwargs: dict[str, Any] = {"retry_on_timeout": False}
+        llm_deadline = await self._llm_call_deadline(_t0)
+        if llm_deadline is not None:
+            llm_kwargs["deadline"] = llm_deadline
         try:
             if span_collector:
                 async with span_collector.start_span("llm_call", agent_id=agent_id) as span:
-                    response = await self._call_llm(messages, span_collector=span_collector, retry_on_timeout=False)
+                    response = await self._call_llm(messages, span_collector=span_collector, **llm_kwargs)
                     span["metadata"]["model"] = agent_id
                     span["metadata"]["llm_response"] = redact_sensitive_text(response[:500] if response else "")
             else:
-                response = await self._call_llm(messages, retry_on_timeout=False)
+                response = await self._call_llm(messages, **llm_kwargs)
         except asyncio.CancelledError:
             raise
         except Exception as e:

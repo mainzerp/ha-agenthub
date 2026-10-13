@@ -4,6 +4,28 @@ Decision rationale, so decisions stay made. Newest first. Binding architecture
 rules live in `docs/project/prime-directives.md` — this file records choices,
 not copies of rules.
 
+## 2026-10-13 — LLM provider resilience after trace 4c94d170dd51471e
+
+- **Transient provider errors are retried once in the LLM client**, detected
+  by exception class and HTTP status (429/5xx/connection), never by message
+  text. It is independent of `retry_on_timeout`, so domain agents retry too.
+  Rationale: Cerebras "high traffic" failed one light-agent call in 175 ms
+  while the next call 6 ms later succeeded. The LLM call runs before any
+  action is parsed, so a retry cannot double-execute. Streams retry only
+  before the first token. Domain agents bound the call (retry included) by
+  the remaining dispatch budget so a retry never outlives the orchestrator
+  fallback; without a deadline only fast failures (<1 s) are retried.
+- **No settings knob for the retry** (module constants). Rationale: the client
+  reads no settings today; one retry with ~0.3-0.5 s backoff is a safe default.
+- **Orchestrator-level re-dispatch on `llm_error` not added.** The client retry
+  covers the observed failure; revisit if errors outlast one backoff.
+- **Failed spans store error type/message/status** (redacted, 300 chars), so a
+  trace explains itself without logs.
+- **WARNING+ logs persist to `$LOG_DIR/warnings.jsonl`** (rotating file, not a
+  DB table) and are restored into the in-memory buffer at startup. Rationale:
+  no migration, writes off the event loop via a queue thread, existing log
+  API and skills work unchanged after a restart.
+
 ## 2026-10-10 — Pipeline review fixes: delivery and behavior choices (#132)
 
 - **Delivery:** one public tracking issue (#132) with a checklist; one branch

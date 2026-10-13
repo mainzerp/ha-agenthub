@@ -52,8 +52,13 @@ Navigate to `http://<host>:8080/setup/step/2` and use the "Test Connection" butt
 
 - Invalid API key: Re-enter the key in the setup wizard (step 4) or update via the admin dashboard.
 - Provider outage: Check the provider's status page (OpenRouter, Groq, Ollama).
-- Rate limiting: Reduce request frequency or switch to a different provider/model.
+- Rate limiting or provider overload (for example Cerebras "We're experiencing high traffic right now! Please try again soon."): the container retries such errors once when the time budget allows it ([Architecture](architecture.md#dispatch-failures-and-timeouts)); an `llm_error` reply means the retry failed too or was skipped. Reduce request frequency or switch to a different provider/model.
 - Ollama not running: If using Ollama, verify the Ollama service is running and accessible at the configured URL.
+
+**Find the provider error:**
+
+- Log: `Transient LLM provider error for agent=<id> model=<model>: <Class> status=<code>; retry 1/1 in X.XXs` (WARNING) marks a retried call; a following error log for the same agent means the retry failed as well. `Transient LLM provider error <Class>(<status>) not retried: <reason>` (WARNING) means the retry was skipped (slow failure without a deadline, `Retry-After` over 2 s, or no deadline budget left). Authentication, bad-request, context-window and content-policy errors are never retried.
+- Trace: open the turn on the Traces page and select the span marked "Error" (usually `llm_provider_call` or `llm_call`). The Metadata section opens automatically for error spans and highlights `error_type`, `error_message` and `error_status` (e.g. `litellm.RateLimitError`, `429`). A retried `llm_provider_call` span also shows `retry_count` and `retried_error`.
 
 **Test LLM connectivity:**
 
@@ -169,7 +174,14 @@ docker compose restart ha-agenthub
 
 **Symptoms:** The Logs page in the admin dashboard is empty or shows only old entries.
 
-**Fix:** The remote logs endpoint reads from an in-memory ring buffer. Restarting the container clears the buffer. In addition, persistent rotating file logs are written to `LOG_DIR/app.log` (default `/data/logs/app.log`) and survive container restarts; use `docker exec` or copy that file for post-restart debugging. To adjust logger levels at runtime, use the admin dashboard Logs page or call `POST /api/admin/logs/levels` with the desired logger name and level (`DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`).
+**Fix:** The remote logs endpoint reads from an in-memory ring buffer. A container restart keeps only WARNING and above:
+
+- WARNING+ entries (container and shipped HA records) are appended to `$LOG_DIR/warnings.jsonl` (default `/data/logs`) by a background writer; the file rotates at 5 MB (`.1`, `.2`, about 15 MB in total).
+- At startup the newest 2000 entries are restored into the buffer with their original timestamps and `"restored": true`, so pre-restart warnings and errors show in the Logs page and `GET /api/admin/logs`.
+- Startup warnings: `Skipped N unreadable line(s) while restoring persisted logs` (corrupt lines ignored) and `Persistent warning log disabled: could not open ...` (check that `LOG_DIR` is writable). `Persistent warning log dropped N entries (queue full)` at shutdown means a log burst overflowed the 10000-entry write queue.
+- Lower levels are lost on restart; read them from `$LOG_DIR/app.log` (rotating, survives restarts) via `docker exec` or by copying the file.
+
+To adjust logger levels at runtime, use the admin dashboard Logs page or call `POST /api/admin/logs/levels` with the desired logger name and level (`DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`).
 
 ## Multilingual Orchestrator Behavior
 
@@ -293,7 +305,7 @@ Logs include timestamp, level, logger name, and message.
 - Is `ship_logs_level` set low enough? The level gate is on the shipper handler only -- the HA logger's own level still applies, so records below the effective HA log level never reach the shipper.
 - Is the container reachable from HA and the API key correct? A 401 from `/api/logs/ingest` triggers the integration's reauth flow; other failures drop the batch silently (drop-and-count with exponential backoff, no requeue).
 - When filtering the admin logs view by level, use the uppercase canonical levels (`DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`).
-- The log buffer is in-memory only: a container restart loses all previously shipped HA logs.
+- A container restart keeps only shipped records at WARNING and above (see [Remote Logs Not Visible](#remote-logs-not-visible)).
 
 ## Empty WebSocket Responses on HA Voice
 

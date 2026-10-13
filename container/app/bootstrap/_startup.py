@@ -29,7 +29,7 @@ from app.api.routes import dashboard_api as dashboard_api_routes
 from app.api.routes import openai_compat as openai_compat_routes
 from app.api.routes.conversation import reset_active_ws_connections
 from app.api.routes.voice import reset_active_voice_connections
-from app.bootstrap._logging import _configure_logging, start_log_buffer_guard
+from app.bootstrap._logging import _configure_logging, start_log_buffer_guard, start_log_persistence
 from app.config import settings
 from app.db.repository import SettingsRepository, SetupStateRepository
 from app.db.schema import init_db
@@ -43,6 +43,9 @@ logger = logging.getLogger(__name__)
 async def setup_application(app: FastAPI) -> None:
     """Run the full application startup sequence (behavior preserved)."""
     _configure_logging()
+    # Restore pre-restart WARNING+ entries into the log buffer and persist new
+    # ones from here on (file I/O runs in worker threads).
+    await start_log_persistence()
     logger.info("Starting ha-agenthub container")
     reset_active_ws_connections()
     reset_active_voice_connections()

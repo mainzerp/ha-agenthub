@@ -128,7 +128,7 @@ The **Logs** page at `/dashboard/logs` shows the recent in-memory ring buffer of
 - Change the root log level or any per-logger level at runtime without restarting the container.
 - Search and paginate through the buffer.
 
-**Note:** The in-memory buffer is cleared when the container restarts. For historical log analysis, use the persistent file logs or your log-shipping stack.
+**Note:** After a container restart only WARNING and higher entries come back (restored from `LOG_DIR`/warnings.jsonl, marked `restored`); lower levels are lost from the buffer. For full history, use `LOG_DIR`/app.log or your log-shipping stack.
 
 ## Configure
 

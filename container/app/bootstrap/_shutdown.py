@@ -32,7 +32,23 @@ logger = logging.getLogger(__name__)
 
 
 async def teardown(app: FastAPI) -> None:
-    """Run the full application shutdown sequence (order preserved)."""
+    """Run the full application shutdown sequence (order preserved).
+
+    Log persistence is stopped last, in a ``finally`` block, so queued
+    WARNING+ entries (including the error that aborted teardown, if any) are
+    flushed to disk even when a teardown step raises. The exception still
+    propagates.
+    """
+    from app.bootstrap._logging import stop_log_persistence
+
+    try:
+        await _teardown_steps(app)
+    finally:
+        await stop_log_persistence()
+
+
+async def _teardown_steps(app: FastAPI) -> None:
+    """Ordered shutdown steps; see the module docstring for the ordering contract."""
     logger.info("Shutting down ha-agenthub container")
 
     # Plugin shutdown (isolated -- errors must not block remaining cleanup)

@@ -145,9 +145,12 @@ class TestBaseAgent:
             return func(*args, **kwargs)
 
         try:
-            with patch(
-                "app.agents.base.asyncio.to_thread", new=AsyncMock(side_effect=fake_to_thread)
-            ) as mock_to_thread:
+            # The dispatch-budget settings lookup (LLM deadline) touches the DB
+            # layer, which may use to_thread itself; it is not under test here.
+            with (
+                patch.object(agent, "_resolve_dispatch_budget_sec", new=AsyncMock(return_value=None)),
+                patch("app.agents.base.asyncio.to_thread", new=AsyncMock(side_effect=fake_to_thread)) as mock_to_thread,
+            ):
                 await agent.handle_task(_make_task("turn on the kitchen light"))
         finally:
             _prompt_cache.clear()
