@@ -303,7 +303,7 @@ Returns one model:
 
 ### POST /api/logs/ingest
 
-Accept a batch of log records shipped by the HA integration (opt-in `ship_logs` option). Records are appended to the in-memory log buffer with a `source: "ha"` marker and are visible via `GET /api/admin/logs`.
+Accept a batch of log records shipped by the HA integration (opt-in `ship_logs` option). Records are appended to the in-memory log buffer with a `source: "ha"` marker and are visible via `GET /api/admin/logs`; WARNING and above are also persisted and restored after a container restart.
 
 **Auth:** Bearer token
 
@@ -1115,6 +1115,11 @@ Export the filtered traces as CSV. Shares the identical `search`, `agent`, `labe
 
 Get all spans for a specific trace (for Gantt visualization).
 
+Error and retry metadata (added keys only; the payload shape is unchanged):
+
+- A span that exited with an exception has `status: "error"` and metadata `error_type` (top-level package plus class, e.g. `litellm.RateLimitError`; builtins bare, e.g. `TimeoutError`), `error_message` (single line, secret-redacted and trace-sanitized, max 300 characters, omitted when empty) and `error_status` (integer HTTP status, only when the exception carries one). Keys the caller already set are not overwritten. Cache rewrite-failure spans do not carry these keys yet.
+- An `llm_provider_call` span that retried a transient provider error carries `retry_count` (retries made) and `retried_error` (`ClassName(status)`, e.g. `RateLimitError(429)`).
+
 ---
 
 ## Admin -- Logs
@@ -1124,6 +1129,8 @@ Get all spans for a specific trace (for Gantt visualization).
 List recent log entries with optional filtering and pagination.
 
 Entries shipped by the HA integration via `POST /api/logs/ingest` carry a `source: "ha"` marker (and optional `trace_id` / `conversation_id` context keys); locally captured entries have no `source` key.
+
+Entries restored at startup from the persisted warning log (WARNING and above from before the restart, local and shipped) keep their original timestamps and carry `"restored": true`.
 
 **Query parameters:**
 - `level` -- Minimum level: `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`

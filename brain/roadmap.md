@@ -25,6 +25,23 @@ Live pipeline in board format — headings are columns, cards are
 
 ## Testing
 
+- LLM provider resilience: transient retry, span error detail, persisted logs · priority: P1 · area: llm
+  Outcome: a transient provider error (Cerebras "high traffic", 429/5xx,
+  connection reset) is retried once before any action runs; failed spans
+  carry error type/message/status; WARNING+ logs survive a container
+  restart. Trigger: live trace 4c94d170dd51471e (light-agent LLM error,
+  evidence lost on restart). Branch fix/llm-provider-resilience.
+  Passed: ci.py full gate green (container 4430 passed, coverage 85.04%;
+  bridge 213 passed; ruff, bandit, pip-audit, docker build + smoke, Trivy);
+  independent review findings fixed (retry bounded by dispatch budget, no
+  retry without deadline after a >1 s failure, litellm APIConnectionError
+  only with network cause, Retry-After > 2 s means no retry, metrics per
+  successful attempt, teardown always flushes the log file).
+  Needs user verification: review the diff; deploy; after a restart the
+  Logs page shows earlier WARNING/ERROR entries marked restored; on the next
+  provider error the failed span shows error_type/error_message/error_status
+  and a retry shows retry_count on llm_provider_call.
+
 - Voice personalization (3.3.0) · priority: P1 · area: voice
   Outcome: when HA sends no `user_id` (satellites), an identified speaker's
   linked HA user personalizes memory (search, indexing, scoped continuation

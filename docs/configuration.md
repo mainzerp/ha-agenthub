@@ -15,7 +15,7 @@ These are the only settings that use environment variables. All other configurat
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `LOG_LEVEL` | `INFO` | Logging level (`DEBUG`, `INFO`, `WARNING`, `ERROR`). |
-| `LOG_DIR` | `/data/logs` | Directory for persistent rotating file logs. |
+| `LOG_DIR` | `/data/logs` | Directory for the persistent rotating file logs: `app.log` (container log records) and `warnings.jsonl` (WARNING+ log-buffer entries, restored into the buffer at startup). |
 | `CHROMADB_PERSIST_DIR` | `/data/chromadb` | Legacy path used by sqlite-vec entity-index data. |
 | `SQLITE_DB_PATH` | `/data/agent_assist.db` | SQLite database file path. |
 | `FERNET_KEY_PATH` | `/data/.fernet_key` | Path to the Fernet encryption key. Backup target. |
@@ -232,7 +232,7 @@ Each agent has per-agent settings stored in the `agent_configs` table:
 |-------|---------|-------------|
 | `enabled` | `1` | Whether the agent is active |
 | `model` | Varies per agent | LLM model identifier (e.g., `groq/llama-3.1-8b-instant`, `openrouter/openai/gpt-4o-mini`) |
-| `timeout` | `5` | Per-call LLM provider timeout in seconds. Non-domain agents retry once after a timeout when the dispatch budget still allows it; domain agents never retry a timed-out call |
+| `timeout` | `5` | Per-call LLM provider timeout in seconds. Non-domain agents retry once after a timeout when the dispatch budget still allows it; domain agents never retry a timed-out call. Transient provider errors (rate limit, overload, 5xx) are retried once on every agent when the call's time budget allows it, without a setting ([Architecture](architecture.md#dispatch-failures-and-timeouts)) |
 | `max_iterations` | `3` | Maximum LLM-to-tool rounds in an MCP tool-calling loop (general and custom agents); afterwards the agent is forced to answer without tools |
 | `temperature` | `0.2` | LLM sampling temperature |
 | `max_tokens` | `1024` | Maximum tokens per LLM response |
@@ -421,4 +421,4 @@ These options live in the HA integration's options dialog (Settings -> Devices &
 Notes:
 
 - Log content is shipped **as-is**; secret scrubbing is the shipper's responsibility (the container does not redact ingested records). Only the integration's own package logger is captured.
-- Shipped logs are **in-memory only** in the container's log buffer and are lost on container restart.
+- Shipped logs live in the container's in-memory log buffer; only WARNING and above survive a container restart (persisted to `$LOG_DIR/warnings.jsonl`, see [Troubleshooting](troubleshooting.md#remote-logs-not-visible)).

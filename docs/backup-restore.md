@@ -18,6 +18,13 @@ the SQLite filename did not change in the container rename, so
 `/data/agent_assist.db` is still the right path inside the
 container regardless of which compose file you used to start it.
 
+Optional (included in a volume backup, safe to exclude or delete):
+
+| File | Description | Impact of Loss |
+|------|-------------|----------------|
+| `/data/logs/app.log*` | Rotating container log file (`LOG_DIR`) | Pre-restart log history gone |
+| `/data/logs/warnings.jsonl*` | Persisted WARNING+ log-buffer entries (`.1`, `.2` rotations, about 15 MB max), restored into the Logs page at startup | Pre-restart warnings and errors no longer shown after a restart |
+
 ## Backup Procedure
 
 ### Option 1: Volume Backup

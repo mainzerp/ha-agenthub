@@ -123,7 +123,7 @@ Domain-agent result rules (`app/agents/actionable.py`, `app/agents/action_execut
 - **Satellite area:** keyword recall ranks entities in the satellite's area (`TaskContext.area_id`) first among equal scores, keeps them recallable in large domains, and does not flag a tie as ambiguous when exactly one tied candidate is in that area. Every agent prompt receives the satellite area name as context for "here" / "this room".
 - **Untrusted prompt data:** entity friendly names and states, last-entity names, the pending clarifying question and stored memory text are flattened, length-bounded and wrapped in `[UNTRUSTED_DATA_START]` / `[UNTRUSTED_DATA_END]` before they enter a system prompt.
 - **Secret redaction:** alarm/lock codes, PINs, passwords and tokens in action parameters are redacted (`app/security/redaction.py`) before they reach trace spans, the stored raw LLM response and logs. The service call still receives them verbatim.
-- **LLM timeouts:** domain agents call the LLM with `retry_on_timeout=False`, so a provider timeout returns `llm_error` at once instead of a retry that would outlive the dispatch budget after the HA action ran.
+- **LLM timeouts:** domain agents call the LLM with `retry_on_timeout=False`, so a provider timeout returns `llm_error` at once instead of a retry that would outlive the dispatch budget after the HA action ran. The call gets a deadline from the remaining dispatch budget (`agent.dispatch_timeout.<agent_id>`, else the card `timeout_sec`, capped by `a2a.max_dispatch_timeout`, minus 0.5 s, at least 1 s; minus the time the task already spent), which also clamps the provider timeout; without a resolvable budget the call is unbounded. Transient provider errors are still retried once within that deadline (see [LLM provider errors](#dispatch-failures-and-timeouts)); they fail before any action is parsed or executed.
 
 For eligible plain timer start/cancel turns, the timer-agent may instead return a delegation directive, which the HA integration honors by calling Home Assistant's built-in conversation agent once.
 
@@ -205,6 +205,36 @@ agent `timeout_sec`, capped by `a2a.max_dispatch_timeout`). Streaming
 dispatches enforce it on the reads of the agent stream, never across a
 frame handed to the client.
 
+- **LLM provider errors:** every LLM client path (`app/llm/client.py`:
+  `complete`, `complete_stream`, `complete_with_tools`,
+  `complete_with_tools_stream`) retries a transient provider error once
+  after about 0.3-0.5 s, independent of `retry_on_timeout`.
+  - Transient: litellm `RateLimitError`, `ServiceUnavailableError`,
+    `InternalServerError`, `BadGatewayError`, the openai
+    `RateLimitError`/`InternalServerError`, network failures (httpx
+    network and protocol errors, aiohttp connection errors, openai
+    `APIConnectionError`), and any other error with status 429, 500, 502,
+    503, 504 or 529. litellm `APIConnectionError` (its catch-all for
+    unmapped errors, status hardcoded to 500) is transient only when its
+    `__cause__`/`__context__` chain holds such a network failure; its
+    status alone does not count. Permanent errors (authentication,
+    permission, bad request, not found, context window, content policy,
+    budget) fail at once; timeouts keep the `retry_on_timeout` policy.
+  - Budget: with a call deadline the retry needs at least 1 s left after
+    the backoff, and the retried attempt's provider timeout is clamped to
+    the remaining budget. Without a deadline only a fast failure (attempt
+    under 1 s) is retried. A `Retry-After` hint up to 2 s raises the
+    backoff to the hint; a longer hint means no retry.
+  - Streamed calls (mediation included) retry only before the first
+    content token.
+  - Observability: each retry logs a WARNING `Transient LLM provider
+    error for agent=... model=...: <Class> status=<code>; retry 1/1 in
+    X.XXs`; a skipped retry logs `Transient LLM provider error
+    <Class>(<status>) not retried: <reason>`. The `llm_provider_call` span
+    records `retry_count` and `retried_error`; its latency, TTFT, TPS and
+    the token-usage record describe the successful attempt only.
+  - Limits are module constants (`_LLM_TRANSIENT_*`), not settings. When
+    both attempts fail the agent returns its `llm_error` fallback.
 - **Fallback:** a dispatch that times out, raises, or (streaming) ends
   with an error frame before any text is re-sent once to `general-agent`
   as a non-streaming task; if that fails too, the turn speaks a canned
