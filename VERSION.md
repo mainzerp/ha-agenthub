@@ -1,12 +1,23 @@
 # Version
 
-**Current Version:** 3.3.0
+**Current Version:** 3.3.1
 
 ## Recent Changes
 
-(tracking changes since 3.3.0)
+(tracking changes since 3.3.1)
 
 ## Version History
+
+### 3.3.1 (PATCH) -- LLM provider resilience
+
+(commits b6a6661, ff98f59, b500e18, 15809e3)
+
+- LLM: transient provider errors (rate limit, overload, 5xx, dropped connection; status 429/500/502/503/504/529) are retried once after about 0.3-0.5 s on every LLM client path, including domain agents whose timeout retry stays disabled. litellm `APIConnectionError` counts only when caused by a real network error. Domain agents now pass a deadline from the remaining dispatch budget, which also clamps the provider timeout. A retry needs 1 s of deadline left after the backoff; without a deadline only a fast failure (under 1 s) is retried; `Retry-After` up to 2 s raises the backoff, a longer one skips the retry. Permanent errors fail at once, timeouts keep `retry_on_timeout`, streamed calls retry only before the first token. Logged as `Transient LLM provider error ...` (retry or `not retried: <reason>`); the `llm_provider_call` span records `retry_count` and `retried_error`, and its latency/TTFT/TPS and token usage describe the successful attempt. Trigger: live trace 4c94d170dd51471e (a Cerebras "high traffic" provider error ended the turn in `llm_error`). (b6a6661)
+- Trace: a span that exits with an exception records `error_type`, `error_message` (redacted, single line, max 300 characters) and `error_status`; the trace detail page opens the Metadata section for error spans and highlights all `error_*` keys. Payload shape unchanged. Known gap: cache rewrite-failure spans carry no error detail yet. (ff98f59)
+- Logs: WARNING+ log-buffer entries (container and shipped HA records) are persisted to `$LOG_DIR/warnings.jsonl` (rotating 5 MB x 3) by a background writer, and the newest 2000 are restored at startup with `"restored": true`, so `GET /api/admin/logs` and the Logs page show pre-restart warnings and errors. No new setting. (b500e18)
+- Docs: architecture (retry rules), troubleshooting, configuration, API reference, backup/restore and user guide updated. (15809e3)
+- Behavior change (no action needed): a domain agent's LLM call (including its retry) is now bounded by the remaining dispatch budget, so the provider timeout can be shorter than the agent `timeout` when `agent.dispatch_timeout.<agent_id>` is lower; `/data/logs/warnings.jsonl*` (up to about 15 MB) is a new runtime file on the data volume, safe to delete.
+- Verification: `scripts/ci.py` full gate passed: 4430 container tests passed (1 skipped, 9 xfailed, 3 xpassed, coverage 85.04%), 213 integration tests passed, Ruff, bandit, pip-audit, Docker build and smoke test, Trivy. An independent review's findings (retry not bounded by the dispatch budget, litellm catch-all connection error, long `Retry-After`, metrics including the failed attempt, teardown flush) were fixed before release. Not yet verified live.
 
 ### 3.3.0 (MINOR) -- voice personalization
 
