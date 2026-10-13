@@ -288,3 +288,19 @@ prompts live in `container/app/prompts/`, `ctx.agent_registry` not
 - **Sequence:** 3.2.0 speaker ID; 3.3.0 own German STT (Parakeet v3) behind the
   same wrapper; 3.4.0 server-side wake word (needs custom satellite YAML, no
   German sherpa-onnx KWS model exists; Vosk phrase list is the candidate).
+
+## 2026-10-13 — voice personalization identity
+
+- **Personalization identity = request `user_id`, else the identified
+  speaker's linked HA user.** Used only for memory, calendar user/reminders,
+  send sender name and mediation; never for visibility, authorization, audit
+  (`conversations.user_id`) or `TaskContext.user_id`. Rationale: satellite
+  turns carry no HA user, so personal features were unusable by voice.
+- **Accepted risk:** a misidentified or replayed voice gets the linked
+  person's memory and calendar read out. Mitigation: documented; leave a
+  profile unlinked to opt out; spoken self-identification wins for calendars;
+  a conflicting HA user overrides the voice.
+- **Speaker prompt line only for general and timer agents** (user decision);
+  security/device agents never see it so a voice match cannot read as
+  authorization. Rationale for 3.2.1: wait for the speaker until dispatch, not
+  a fixed budget, after live trace 3e6238c0a4804f8d lost a late result.

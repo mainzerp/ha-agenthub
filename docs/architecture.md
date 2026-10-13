@@ -360,12 +360,57 @@ Optional; off by default (`voice.speaker_id.enabled`). Flow:
    context-dependent and writes no action-cache or routing-cache row, so
    a personalised reply is never replayed to another speaker.
 
+Personalization identity (`app/agents/personalization.py`):
+`personalization_user_id(context)` returns the request's `user_id`
+(source `ha`), else the `ha_user_id` linked to an identified speaker
+(source `voice`), else none. An identified speaker linked to a
+different HA user than the request's `user_id` is ignored entirely
+(`identified_speaker`): no name, sender, prompt line or mediation line,
+so all personalization follows the request user. It selects whose data
+shapes a reply:
+
+- **Session memory** -- the search and `index_turn` use it. When the
+  request has no `user_id` and a speaker lookup is pending, the memory
+  search starts once the lookup resolves
+  (`PendingSpeakerLookup.wait_ha_user_id`, bounded by the same
+  `wait_ms` budget that dispatch waits for anyway); otherwise it starts
+  at once as before. `conversations.user_id` stays the request user
+  (audit); `store_turn(memory_user_id=...)` carries the memory identity.
+  One conversation id (a shared satellite) can hold turns of several
+  people, so the continuation turns copied from the top match are
+  filtered by `memory.scope` like the matches themselves.
+- **Calendar** -- the calendar agent and reminder injection resolve the
+  calendar user mapping from it (person entity with that `user_id`), so
+  a recognized speaker gets their default calendars and reminders.
+  Order for source `ha`: request user, spoken self-identification
+  ("this is X"), default user. For source `voice` the spoken
+  self-identification wins over the unverified voice match. Calendar
+  visibility filtering is unchanged.
+- **Send agent** -- the sanitized speaker name fills `{sender_name}` in
+  `prompts/send.txt` (the message is written from the sender's
+  perspective; TTS adds a short attribution) and the notify title
+  becomes "Message from <name>" (localized; `HA-AgentHub` when unknown).
+- **Mediation** -- single-agent mediation (blocking and streamed) and the
+  multi-agent merge add the line `Speaker (recognized by voice,
+  unverified): "<name>"` to the user content, so personality replies may
+  address the speaker by name.
+
+Trace: the root span carries `identity_source` (`ha` | `voice` | `none`,
+refined after the speaker join); the `memory_retrieval` span records the
+identity source of its search.
+
+Action-cache replays are not personalized: the voice entry is discarded,
+no speaker is attached, reminders resolve from the request user (else
+the spoken self-identification or the default calendar user), and the
+turn is indexed under the request user (anonymous without one).
+
 Rules:
 
 - The speaker is context only: it never sets `user_id`, never changes
   entity visibility and never authorizes anything. The prompt line is
   opt-in per agent class so a voice match never reads like authorization
-  to an action agent's LLM.
+  to an action agent's LLM. The personalization identity is never used
+  for visibility, authorization or audit records.
 - While enrollment is armed (`app/voice/enrollment.py`, in memory, one
   profile at a time), qualifying turns are stored as samples instead of
   being identified -- only after the bridge confirms the turn with `end`
@@ -514,8 +559,8 @@ Routing entries are invalidated when the served agent turn fails. Action rows ar
 Session memory gives the General Agent semantic recall of past conversations ("we talked about X yesterday").
 
 - **Component** -- `MemoryService` (orchestrator-owned, no LLM call at query time) with `MemoryRepository` (relational metadata in the main DB) and a dedicated `SessionMemoryVectorStore` (sqlite-vec sidecar DB `session_memory.db`).
-- **Write path** -- `ConversationManager.store_turn` embeds each stored turn (raw text from `conversations`) fire-and-forget; per-turn vectors go to the vec store, session rollup metadata to `memory_sessions`/`memory_turns` (deterministic digest summary, no LLM summarization).
-- **Read path** -- on cache-missed requests the orchestrator runs the memory search as a parallel prelude task (overlapped with classification). Matches are grouped per session (the current session is excluded -- its turns are already in the live context -- and sessions whose best-matched text duplicates a higher-ranked session are dropped), filtered by `memory.similarity_threshold` and `memory.scope` (per-user or global; rows without a user form an anonymous bucket), and attached to `TaskContext.memory_context`.
+- **Write path** -- `ConversationManager.store_turn` embeds each stored turn (raw text from `conversations`) fire-and-forget under the turn's personalization identity (request user, else a voice-identified speaker's linked HA user; see [Speaker Identification](#speaker-identification-voice-turns)); per-turn vectors go to the vec store, session rollup metadata to `memory_sessions`/`memory_turns` (deterministic digest summary, no LLM summarization).
+- **Read path** -- on cache-missed requests the orchestrator runs the memory search as a parallel prelude task (overlapped with classification). Matches are grouped per session (the current session is excluded -- its turns are already in the live context -- and sessions whose best-matched text duplicates a higher-ranked session are dropped), filtered by `memory.similarity_threshold` and `memory.scope` (per-user or global, keyed by the personalization identity; rows without a user form an anonymous bucket), and attached to `TaskContext.memory_context`.
 - **Injection** -- the General Agent appends matches to its system prompt (after the byte-stable static head) as score-annotated context: recall questions about past conversations are answered from this content; otherwise it is background only, never a basis for actions. For the top cross-session match, up to `memory.max_continuation_turns` turn pairs of the old session are copied into the context; the old session is never modified or reactivated.
 - **Wait modes** -- `blocking` (default, waits up to `memory.wait_timeout_ms`; `best_effort` rarely lands a match with cached routing or fast LLM providers) or `best_effort` (zero added latency).
 - **Lifecycle** -- unlimited retention by design; on embedding-model change the vec table is reset and turns are lazily re-embedded by a startup backfill. Cache-hit (replayed) requests receive no memory lookup and pay no embed cost.
