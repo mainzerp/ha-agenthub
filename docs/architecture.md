@@ -404,7 +404,14 @@ Optional; off by default (`voice.speaker_id.enabled`). Flow:
    anchor the enrollment on one unchecked first sample. Too little speech is
    `rejected_too_short`. Rejected samples are not stored, do not count
    toward the requested sample count and are recorded on the armed
-   enrollment (`rejected`, `last_rejection`). Every result carries the
+   enrollment (`rejected`, `last_rejection`). When the sample that
+   reaches the target count is committed and the profile has at least
+   four current-model samples, the session's worst sample by
+   leave-one-out score (`find_session_outlier`) is deleted when it is
+   below `enroll_min_similarity`, and the session stays armed for one
+   more sample (original expiry; at most three replacements per
+   session, `replaced`, `last_replaced`). Only samples of the current
+   session are candidates. Every result carries the
    diagnostics `speech_s`, `vad`, `scores` (all profiles, best first)
    and, for `identified`, `second_name` / `second_score`. A rejection is
    carried like a pending sample and counted only when `end` confirms

@@ -6,6 +6,9 @@
 
 (tracking changes since 3.5.1)
 
+- Voice: enrollment defaults 10 samples within 600 s (were 5 within 300 s; ranges unchanged `1-20` / `30-1800`) for the admin API body (`DEFAULT_ENROLL_SAMPLES`, `DEFAULT_ENROLL_TIMEOUT_S`) and the dashboard enroll dialog.
+- Voice: end-of-session outlier replacement. When the sample that reaches an enrollment's target count is committed (on `end`) and the profile has at least 4 current-model samples, the session sample with the lowest leave-one-out score (`find_session_outlier`, cosine to the centroid of the profile's other samples) is deleted when it is below `voice.speaker_id.enroll_min_similarity`, and the enrollment stays armed for one more sample (original expiry). At most 3 replacements per session (`MAX_OUTLIER_REPLACEMENTS`), only samples of the current session are candidates. The armed enrollment exposes `replaced` and `last_replaced` (`sample_id`, `score`, `at`); the dashboard banner shows "N outlier(s) replaced - keep speaking"; completion is logged at INFO with the replaced count. Closes the gap where a poor second sample was never re-checked by the guard (live: one sample at leave-one-out 0.317 among samples at 0.60-0.79).
+
 ## Version History
 
 ### 3.5.1 (PATCH) -- keep inner pauses, relax the enrollment anchor

@@ -242,6 +242,39 @@ def sample_diagnostics(
     return results
 
 
+# Current-model samples a profile needs before a session outlier is replaced.
+MIN_SAMPLES_FOR_OUTLIER_REVIEW = 4
+
+
+def find_session_outlier(
+    samples: list[dict[str, Any]],
+    session_sample_ids: list[int] | set[int],
+    min_similarity: float,
+) -> tuple[int, float] | None:
+    """The worst sample of an enrollment session when it is an outlier (CPU work: run in a worker thread).
+
+    ``samples`` are the profile's sample rows of the current model. Only
+    ids in ``session_sample_ids`` are candidates; older samples only shape
+    the leave-one-out centroids. Returns ``(sample_id, loo_score)`` of the
+    session sample with the lowest ``loo_score`` (see
+    :func:`sample_diagnostics`) when that score is below ``min_similarity``
+    and the profile has at least ``MIN_SAMPLES_FOR_OUTLIER_REVIEW`` valid
+    samples, else None.
+    """
+    diagnostics = sample_diagnostics(samples, [])
+    if len(diagnostics) < MIN_SAMPLES_FOR_OUTLIER_REVIEW:
+        return None
+    session = set(session_sample_ids)
+    candidates = [item for item in diagnostics if item["id"] in session and item["loo_score"] is not None]
+    if not candidates:
+        return None
+    worst = min(candidates, key=lambda item: item["loo_score"])
+    score = float(worst["loo_score"])
+    if score >= min_similarity:
+        return None
+    return int(worst["id"]), score
+
+
 class ProfileCentroidCache:
     """Caches per-model centroids loaded from the repository."""
 

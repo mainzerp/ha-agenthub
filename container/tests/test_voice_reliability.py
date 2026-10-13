@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -18,12 +19,15 @@ from app.defaults import VOICE_DEFAULTS
 from app.models.agent import TaskContext
 from app.voice import model as voice_model
 from app.voice import service as voice_service
+from app.voice.enrollment import MAX_OUTLIER_REPLACEMENTS
 from app.voice.profiles import (
+    MIN_SAMPLES_FOR_OUTLIER_REVIEW,
     REJECTED_INCONSISTENT,
     REJECTED_OTHER_SPEAKER,
     ProfileCentroid,
     build_centroids,
     check_enrollment_sample,
+    find_session_outlier,
     l2_normalize,
     sample_diagnostics,
 )
@@ -458,6 +462,160 @@ class TestEnrollmentGuardService:
         assert engine.pcm_lengths == []
         armed = service.enrollment.current()
         assert armed["remaining"] == 2 and armed["last_rejection"]["reason"] == "rejected_too_short"
+
+
+# ---------------------------------------------------------------------------
+# Session outlier replacement
+# ---------------------------------------------------------------------------
+
+# A poor second sample (cosine ~0.29 to the first) passes the guard, which
+# checks consistency only from the third sample on.
+_GOOD_A = _unit(1, 0, 0)
+_POOR = _unit(0.3, 0, 1)
+_GOOD_B = _unit(1, 0.1, 0)
+_GOOD_C = _unit(1, 0, 0.1)
+_GOOD_D = _unit(1, 0.05, 0.05)
+
+
+async def _enroll(service: SpeakerIdService, count: int, **config) -> list[dict]:
+    return [await service.process_turn(_pcm(2.5), _RATE, _config(**config)) for _ in range(count)]
+
+
+class TestFindSessionOutlier:
+    def _rows(self, *vectors: tuple[float, ...]) -> list[dict]:
+        return [{"id": i + 1, "embedding": _vec(*v), "dim": len(v)} for i, v in enumerate(vectors)]
+
+    def test_worst_session_sample_below_threshold(self):
+        rows = self._rows((1, 0, 0), (0.3, 0, 1), (1, 0.1, 0), (1, 0, 0.1))
+        outlier = find_session_outlier(rows, [1, 2, 3, 4], 0.45)
+        assert outlier is not None and outlier[0] == 2 and outlier[1] < 0.45
+
+    def test_needs_four_samples(self):
+        rows = self._rows((1, 0, 0), (0.3, 0, 1), (1, 0.1, 0))
+        assert MIN_SAMPLES_FOR_OUTLIER_REVIEW == 4
+        assert find_session_outlier(rows, [1, 2, 3], 0.45) is None
+
+    def test_only_session_samples_are_candidates(self):
+        rows = self._rows((0.3, 0, 1), (1, 0, 0), (1, 0.1, 0), (1, 0, 0.1))
+        assert find_session_outlier(rows, [2, 3, 4], 0.45) is None
+        assert find_session_outlier(rows, [1, 2, 3, 4], 0.45)[0] == 1
+
+    def test_no_outlier_above_threshold(self):
+        rows = self._rows((1, 0, 0), (1, 0.1, 0), (1, 0, 0.1), (1, 0.05, 0.05))
+        assert find_session_outlier(rows, [1, 2, 3, 4], 0.45) is None
+
+
+class TestSessionOutlierReplacement:
+    async def test_poor_sample_replaced_on_commit_and_session_completes(self, admin_client, caplog):
+        client, service = admin_client
+        anna = await VoiceProfileRepository.create_profile("Anna")
+        service.engine.vectors = [_GOOD_A, _POOR, _GOOD_B, _GOOD_C, _GOOD_D]
+        armed = service.enrollment.arm(anna["id"], "Anna", samples=4, timeout_s=60)
+        results = await _enroll(service, 3)
+        assert [r["status"] for r in results] == ["enrolled_sample"] * 3
+        poor_id = (await VoiceProfileRepository.list_samples(anna["id"]))[1]["id"]
+
+        # The review runs only when the target-reaching sample is committed (``end``).
+        analysis = await service.analyze_turn(_pcm(2.5), _RATE, _config())
+        assert analysis.pending is not None
+        assert await VoiceProfileRepository.count_samples(anna["id"], _MODEL) == 3
+        assert service.enrollment.current()["remaining"] == 1
+        with caplog.at_level(logging.INFO, logger=voice_service.__name__):
+            committed = await service.commit_enrollment(analysis.pending)
+        assert committed["status"] == "enrolled_sample"
+        ids = [row["id"] for row in await VoiceProfileRepository.list_samples(anna["id"])]
+        assert len(ids) == 3 and poor_id not in ids
+        # The centroid cache no longer contains the outlier.
+        (centroid,) = await service.centroids.get(_MODEL)
+        assert centroid.sample_count == 3
+
+        enrollment = (await client.get("/api/admin/voice/status")).json()["enrollment"]
+        assert enrollment["remaining"] == 1 and enrollment["collected"] == 3
+        assert enrollment["replaced"] == 1
+        last = enrollment["last_replaced"]
+        assert last["sample_id"] == poor_id and last["score"] < 0.45 and last["at"]
+        assert enrollment["expires_at"] == armed["expires_at"]
+        assert f"Replaced voice enrollment outlier sample {poor_id}" in caplog.text
+
+        with caplog.at_level(logging.INFO, logger=voice_service.__name__):
+            (last_sample,) = await _enroll(service, 1)
+        assert last_sample["status"] == "enrolled_sample"
+        assert service.enrollment.current() is None
+        assert await VoiceProfileRepository.count_samples(anna["id"], _MODEL) == 4
+        expected = f"Voice enrollment complete for profile {anna['id']}: 4 samples stored, 1 outliers replaced"
+        assert expected in caplog.text
+
+    async def test_no_replacement_below_four_samples(self, db_repository):
+        anna = await VoiceProfileRepository.create_profile("Anna")
+        service = SpeakerIdService(engine=FakeEngine([_GOOD_A, _POOR, _GOOD_B]), vad=FakeVad(2.0))
+        service.enrollment.arm(anna["id"], "Anna", samples=3, timeout_s=60)
+        results = await _enroll(service, 3)
+        assert [r["status"] for r in results] == ["enrolled_sample"] * 3
+        assert service.enrollment.current() is None
+        assert await VoiceProfileRepository.count_samples(anna["id"], _MODEL) == 3
+
+    async def test_older_poor_sample_is_never_removed(self, db_repository):
+        anna = await VoiceProfileRepository.create_profile("Anna")
+        old_poor = await VoiceProfileRepository.add_sample(anna["id"], _vec(*_POOR), 3, _MODEL, 2.0, 1.8)
+        await VoiceProfileRepository.add_sample(anna["id"], _vec(*_GOOD_A), 3, _MODEL, 2.0, 1.8)
+        await VoiceProfileRepository.add_sample(anna["id"], _vec(*_GOOD_B), 3, _MODEL, 2.0, 1.8)
+        service = SpeakerIdService(engine=FakeEngine([_GOOD_C, _GOOD_D]), vad=FakeVad(2.0))
+        service.enrollment.arm(anna["id"], "Anna", samples=2, timeout_s=60)
+        results = await _enroll(service, 2)
+        assert [r["status"] for r in results] == ["enrolled_sample"] * 2
+        assert service.enrollment.current() is None
+        rows = await VoiceProfileRepository.list_samples(anna["id"])
+        assert len(rows) == 5 and old_poor in [row["id"] for row in rows]
+
+    async def test_at_most_three_replacements(self, db_repository, monkeypatch):
+        anna = await VoiceProfileRepository.create_profile("Anna")
+        for vector in (_GOOD_A, _GOOD_B, _GOOD_C):
+            await VoiceProfileRepository.add_sample(anna["id"], _vec(*vector), 3, _MODEL, 2.0, 1.8)
+
+        def newest_is_outlier(samples, session_ids, min_similarity):
+            assert min_similarity == pytest.approx(0.45)
+            return (max(session_ids), 0.1)
+
+        monkeypatch.setattr(voice_service, "find_session_outlier", newest_is_outlier)
+        service = SpeakerIdService(engine=FakeEngine([_GOOD_D] * 6), vad=FakeVad(2.0))
+        service.enrollment.arm(anna["id"], "Anna", samples=2, timeout_s=60)
+        await _enroll(service, 2)
+        for replaced in (1, 2, 3):
+            armed = service.enrollment.current()
+            assert armed is not None and armed["replaced"] == replaced and armed["remaining"] == 1
+            await _enroll(service, 1)
+        # Cap reached: the session completes with the samples it has.
+        assert MAX_OUTLIER_REPLACEMENTS == 3
+        assert service.enrollment.current() is None
+        assert await VoiceProfileRepository.count_samples(anna["id"], _MODEL) == 5
+        assert len(service.engine.vectors) == 1
+
+    async def test_replacement_keeps_original_expiry(self, db_repository, monkeypatch):
+        from app.voice import enrollment as enrollment_module
+
+        now = [100.0]
+        monkeypatch.setattr(enrollment_module.time, "monotonic", lambda: now[0])
+        anna = await VoiceProfileRepository.create_profile("Anna")
+        service = SpeakerIdService(engine=FakeEngine([_GOOD_A, _POOR, _GOOD_B, _GOOD_C, _GOOD_D]), vad=FakeVad(2.0))
+        armed = service.enrollment.arm(anna["id"], "Anna", samples=4, timeout_s=60)
+        await _enroll(service, 4)
+        current = service.enrollment.current()
+        assert current["replaced"] == 1 and current["expires_at"] == armed["expires_at"]
+        now[0] += 61
+        assert service.enrollment.current() is None
+        # Expired: the next turn is identified, not enrolled.
+        (turn,) = await _enroll(service, 1)
+        assert turn["status"] != "enrolled_sample"
+        assert await VoiceProfileRepository.count_samples(anna["id"], _MODEL) == 3
+
+    async def test_failed_review_completes_the_session(self, db_repository, monkeypatch):
+        anna = await VoiceProfileRepository.create_profile("Anna")
+        service = SpeakerIdService(engine=FakeEngine([_GOOD_A, _POOR, _GOOD_B, _GOOD_C]), vad=FakeVad(2.0))
+        service.enrollment.arm(anna["id"], "Anna", samples=4, timeout_s=60)
+        monkeypatch.setattr(VoiceProfileRepository, "delete_sample", AsyncMock(side_effect=RuntimeError("db locked")))
+        await _enroll(service, 4)
+        assert service.enrollment.current() is None
+        assert await VoiceProfileRepository.count_samples(anna["id"], _MODEL) == 4
 
 
 # ---------------------------------------------------------------------------

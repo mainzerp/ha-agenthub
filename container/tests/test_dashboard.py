@@ -1109,6 +1109,10 @@ class TestVoiceProfilesPage:
         # Only an open sample list is reloaded, also after the enrollment ended.
         assert "var target = current || previous;" in html and "entry && entry.open" in html
         assert "r.status !== 'unknown'" in html
+        # Enrollment defaults (10 samples, 600 s) and the outlier-replacement note.
+        assert "var VOICE_ENROLL_DEFAULTS = { samples: 10, timeout_s: 600 };" in html
+        assert "samples: 5, timeout_s: 300" not in html
+        assert 'x-text="replacedLabel(status.enrollment)"' in html
 
     async def test_sidebar_contains_voice_profiles_entry(self, dashboard_client: httpx.AsyncClient):
         resp = await dashboard_client.get("/dashboard/persons")
@@ -1177,9 +1181,23 @@ def test_voice_profiles_page_script_behavior():
             assert.equal(profileLoads, 1);
             await page.loadStatus();
             assert.equal(profileLoads, 1);
-            status = {...status, enrollment: null};
+            // A replaced outlier keeps ``remaining`` but deletes a sample: reload the profiles.
+            status = {...status, enrollment: {...status.enrollment, replaced: 1, last_replaced: {sample_id: 4, score: 0.31}}};
             await page.loadStatus();
             assert.equal(profileLoads, 2);
+            assert.equal(page.replacedLabel(status.enrollment), '1 outlier replaced - keep speaking');
+            assert.equal(page.replacedLabel({replaced: 2}), '2 outliers replaced - keep speaking');
+            assert.equal(page.replacedLabel({replaced: 0}), '');
+            status = {...status, enrollment: null};
+            await page.loadStatus();
+            assert.equal(profileLoads, 3);
+
+            // The enroll dialog starts with the defaults (10 samples, 600 s).
+            assert.deepEqual(page.enrollForm, {samples: 10, timeout_s: 600});
+            page.enrollForm = {samples: 2, timeout_s: 30};
+            page.openEnroll({id: 7, name: 'Laura'});
+            assert.deepEqual(page.enrollForm, {samples: 10, timeout_s: 600});
+            page.enrollTarget = null;
 
             // Numeric settings are saved together; the enable toggle is saved on its own.
             page.s = {'voice.speaker_id.enabled': true, 'voice.speaker_id.threshold': 0.6};
