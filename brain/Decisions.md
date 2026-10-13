@@ -352,13 +352,16 @@ prompts live in `container/app/prompts/`, `ctx.agent_registry` not
 ## 2026-10-13 — voice: speaker ID reliability before model changes
 
 - **Fix input quality and enrollment before touching the model.** Silero VAD
-  (sherpa-onnx) trims enrollment and identification audio to speech; the
-  duration minimums count speech seconds. Rationale: live turns scored the
+  (sherpa-onnx) trims only the outer silence (first to last speech, 0.2 s
+  padding; inner pauses stay, corrected in 3.5.1 after joining spans
+  destabilized same-speaker embeddings); the duration minimums count
+  speech seconds. Rationale: live turns scored the
   other profile 0.57-0.75; silence and room noise are shared by both
   speakers and pull embeddings together.
-- **Enrollment rejects samples that do not fit** (below
-  `enroll_min_similarity` against the own centroid, or closer to another
-  profile); single samples can be deleted. Rationale: enrollment takes any
+- **Enrollment rejects samples that do not fit:** closer to another profile
+  from the first sample on; below `enroll_min_similarity` against the own
+  centroid only from the third sample on (3.5.1: a single unchecked first
+  sample must not anchor the session); single samples can be deleted. Rationale: enrollment takes any
   voice on any satellite, and one wrong sample shifts the centroid.
 - **Default margin 0.12** (live set to 0.15 on 2026-10-13); a migration moves
   only values still at the old defaults. Rationale: a wrong answer is worse

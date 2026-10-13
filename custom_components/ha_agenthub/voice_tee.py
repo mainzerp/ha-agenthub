@@ -164,6 +164,8 @@ class VoiceTee:
                         ws = await self._session.ws_connect(
                             self._ws_url,
                             headers={"Authorization": f"Bearer {self._api_key}"},
+                            # PCM barely compresses; never zlib it on HA's event loop.
+                            compress=0,
                         )
                 except asyncio.CancelledError:
                     raise

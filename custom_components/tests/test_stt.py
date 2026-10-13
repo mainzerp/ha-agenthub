@@ -233,6 +233,8 @@ class TestAudioPassThrough:
         url, kwargs = session.connect_calls[0]
         assert url == "wss://container.local:8080/ws/voice"
         assert kwargs["headers"] == {"Authorization": "Bearer secret"}
+        # PCM frames are never zlib-compressed on HA's event loop.
+        assert kwargs["compress"] == 0
         ws = session.ws
         assert ws.frames[0] == (
             "json",
@@ -714,6 +716,22 @@ class TestMirroring:
         assert entity.supported_bit_rates == []
         assert entity.supported_sample_rates == []
         assert entity.supported_channels == []
+        # Never None: HA's pipeline runs ``asdict()`` on it.
+        assert entity.audio_processing is _stt().DEFAULT_AUDIO_PROCESSING
+
+    def test_inner_without_audio_processing_uses_the_default(self, stop_patches):
+        inner = _make_inner()
+        inner.audio_processing = None
+        entity, _entry, patches = _make_entity(inner)
+        stop_patches.append(patches)
+
+        assert entity.audio_processing is _stt().DEFAULT_AUDIO_PROCESSING
+
+    def test_older_core_without_default_returns_none(self, stop_patches, monkeypatch):
+        monkeypatch.delattr(_stt(), "DEFAULT_AUDIO_PROCESSING")
+        entity, _entry, patches = _make_entity(None)
+        stop_patches.append(patches)
+
         assert entity.audio_processing is None
 
     def test_stt_component_not_loaded_is_unavailable(self, stop_patches):

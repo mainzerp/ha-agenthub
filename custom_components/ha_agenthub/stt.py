@@ -214,11 +214,18 @@ class HaAgentHubSttEntity(stt.SpeechToTextEntity):
     @property
     def audio_processing(self) -> Any:
         """Mirror the inner entity's audio processing needs (HA cores that
-        define it use ``requires_external_vad`` to decide pipeline VAD)."""
+        define it use ``requires_external_vad`` to decide pipeline VAD).
+
+        Never None on cores that define it: the pipeline runs ``asdict()`` on
+        the value, so a missing inner entity (or one without a value) falls
+        back to HA's ``DEFAULT_AUDIO_PROCESSING``. Older cores have neither
+        the constant nor the property and never read it.
+        """
         inner = self._inner()
-        if inner is not None and hasattr(inner, "audio_processing"):
-            return inner.audio_processing
-        return getattr(super(), "audio_processing", None)
+        value = getattr(inner, "audio_processing", None) if inner is not None else None
+        if value is None:
+            value = getattr(stt, "DEFAULT_AUDIO_PROCESSING", None)
+        return value
 
     # -- Lifecycle ---------------------------------------------------------
 

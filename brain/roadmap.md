@@ -23,6 +23,16 @@ Live pipeline in board format — headings are columns, cards are
 
 ## In Progress
 
+- Voice 3.5.1: keep inner pauses, relax enrollment anchor · priority: P1 · area: voice
+  Outcome: enrollment via headset works; same-speaker samples score
+  consistently. Cause: 3.5.0 joined VAD spans and cut inner pauses (offline
+  test: 14/72 errors vs 7/72 with outer trim + 0.2 s padding); the
+  inconsistent-sample rule anchored on one unchecked first sample. Also
+  bridge hardening (audio_processing fallback, ws compress=0). STT latency
+  checked: no bridge overhead (cloud direct 2.70 s vs bridge 2.64 s for
+  equal sentences; the stage includes listening). Branch fix/voice-vad-trim.
+  Next step: implement + tests + offline re-check.
+
 ## Testing
 
 - Voice speaker identification reliability (Patric/Laura confusion) · priority: P1 · area: voice
@@ -33,12 +43,14 @@ Live pipeline in board format — headings are columns, cards are
   after end); per-sample list with leave-one-out score, pre-VAD flag and
   delete; all-profile scores, runner-up, speech_s and vad flag in
   diagnostics; default margin 0.12 (migration 51; live set to 0.15).
-  Trigger: live analysis 2026-10-13 (other profile 0.57-0.75). Branch
-  feat/voice-id-reliability.
+  Trigger: live analysis 2026-10-13 (other profile 0.57-0.75). PR #160;
+  shipped in v3.5.0 (release PR #161,
+  https://github.com/mainzerp/ha-agenthub/releases/tag/v3.5.0).
   Passed: ruff clean; container suite 4576 passed, 3 skipped; bridge 213
   passed; real sherpa VAD integration test 2 passed (synthetic signal);
   independent review findings fixed. Not verified: Docker build (runs in
-  ci.py before release), real speech recordings, dashboard in a browser.
+  real voices (VAD checked in the image on German TTS: 9.68 s in, 4.77 s
+  speech out), dashboard in a browser.
   Needs user verification after deploying: reset both profiles and enroll
   each person alone with varied sentences; the sample list shows high
   leave-one-out and low other-profile scores; recent results show both
@@ -54,8 +66,9 @@ Live pipeline in board format — headings are columns, cards are
   renamed "Conversation history"; trace list shows/searches the user name
   (trace_summary user_name, user_name_source, identity_source; migration
   50); CSV export adds User. HA cache hits get the name from a warm person
-  map without waiting; voice-only cache hits stay unnamed. PR #159
-  (merged), not released yet.
+  map without waiting; voice-only cache hits stay unnamed. PR #159;
+  shipped in v3.5.0 (release PR #161,
+  https://github.com/mainzerp/ha-agenthub/releases/tag/v3.5.0).
   Passed: ruff check/format clean; container suite 4527 passed, 1 skipped;
   independent review findings (name vs source badge, cache-hit names,
   snippet redaction order, owui id redaction, attached flag) fixed.

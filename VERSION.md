@@ -1,12 +1,22 @@
 # Version
 
-**Current Version:** 3.5.0
+**Current Version:** 3.5.1
 
 ## Recent Changes
 
-(tracking changes since 3.5.0)
+(tracking changes since 3.5.1)
 
 ## Version History
+
+### 3.5.1 (PATCH) -- keep inner pauses, relax the enrollment anchor
+
+(commit 1a20f94)
+
+- Voice: silence trimming before speaker embedding cuts only the outer silence. The embedded region runs from the first to the last detected speech, padded by 0.2 s on each side (`_EDGE_PAD_S`, clamped to the buffer); pauses inside the utterance are kept. 3.5.0 joined the speech segments, which removed inner pauses and destabilized same-speaker embeddings (live: same speaker and headset, cosine 0.14-0.38 between samples, every later enrollment sample rejected). Offline CAM++/Silero experiment, 72 leave-one-out centroid trials: joined segments 14 errors, whole buffer 10, new region 7. `speech_s` still counts detected speech only (summed segments), so the duration rules are unchanged; `SpeechTrim.embedded_s` carries the embedded duration internally.
+- Voice: the enrollment guard's `rejected_inconsistent` rule (own score below `voice.speaker_id.enroll_min_similarity`) applies only once the profile has at least two accepted samples of the current model, comparing against their centroid; a single poor first sample no longer blocks a whole enrollment session. The other-speaker rules (lead over the closest other profile below `margin * 0.5`, first sample identified as another profile) still apply from the first sample on. `ProfileCentroid` carries `sample_count`.
+- Bridge: the STT wrapper's `audio_processing` falls back to HA's `stt.DEFAULT_AUDIO_PROCESSING` instead of `None` when the inner entity is missing or reports none (HA's pipeline runs `asdict()` on it). The voice tee connects with `compress=0`, so PCM frames are not zlib-compressed on HA's event loop.
+- Action required after upgrading: reset the samples of every voice profile and enroll it again (Voice Profiles page, **Reset samples**, then **Enroll**). Samples enrolled with 3.5.0 were embedded with the inner pauses removed and do not match turns embedded by the new trimming.
+- Verification: `scripts/ci.py` full gate passed: 4583 container tests (4 skipped, 9 xfailed, 3 xpassed, coverage 85.33%), 215 integration tests, Ruff, bandit, pip-audit, Docker build and smoke test, Trivy. Real Silero VAD tests pass inside the image; a German TTS command padded with 4 s of silence and noise yields 4.77 s of speech and a 5.17 s embedded region (inner pauses kept). Not yet verified live.
 
 ### 3.5.0 (MINOR) -- trace identity, loaded memories, speaker ID reliability
 
