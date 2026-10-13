@@ -1,10 +1,16 @@
 # Version
 
-**Current Version:** 3.4.0
+**Current Version:** 3.5.0
 
 ## Recent Changes
 
-(tracking changes since 3.4.0)
+(tracking changes since 3.5.0)
+
+## Version History
+
+### 3.5.0 (MINOR) -- trace identity, loaded memories, speaker ID reliability
+
+(PR #159: commits 509c424, ac915a5; PR #160: commit 672d5e9)
 
 - Trace: the `speaker_id` span records the matched profile's linked HA user (`speaker_ha_user_id`); it, `user_id`, `search_user_id`, `conversation_id` and `matched_conversation_id` are kept verbatim by the trace sanitizer (API-key and bearer patterns still redact). The trace detail API adds `identity_source`, `user_name`, `user_name_source` and a `speaker` object (status, name, profile, score, margin, duration, linked HA user).
 - Trace: `trace_summary` gains nullable `user_name`, `user_name_source` and `identity_source` columns (migration 50). On the cache-miss path they are filled at finalize with the resolved requester (HA person name, else identified voice speaker), the name's own source and the personalization source. Action-cache replays take the HA person name only from an already cached person map (`PersonDirectory.lookup_cached`, never waits; a cold map starts a background refresh); voice-only replays get no name. The trace list shows and searches the user name; the CSV export adds a `User` column.
@@ -16,8 +22,8 @@
 - Voice diagnostics: every result, the recent results (`/api/admin/voice/status`) and the `speaker_id` span carry `scores` (every profile, best first), `speech_s`, `vad` (and `duration_s`, the raw turn), and for `identified` results `second_name` / `second_score`. An `unknown` result no longer names the nearest profile; the dashboard shows it in a separate, muted "Nearest candidate" column. The status API adds `vad`, `vad_state` and `vad_error`. An empty speech buffer is never embedded (`too_short` / `no_speech`, also with `min_duration_s` 0). An opt-in test (`tests/test_voice_vad_integration.py`, runs when sherpa-onnx and the model are present) checks the real detector.
 - Settings: defaults `voice.speaker_id.margin` 0.05 -> 0.12, `min_duration_s` 1.5 -> 1.0 (speech), `min_enroll_duration_s` 2.0 -> 1.5 (speech). Migration 51 updates stored values only where they still equal the old defaults and seeds `enroll_min_similarity`.
 - Action required after upgrading: reset the samples of every voice profile and enroll it again (Voice Profiles page, **Reset samples**, then **Enroll**). Samples enrolled before this change embed the whole turn including silence (`speech_s` NULL, flagged pre-VAD) and keep the silence bias that made speakers look alike. Behavior change: short commands with less than 1.0 s of detected speech now report `too_short` instead of guessing a speaker.
-
-## Version History
+- Test: two no-wait personalization tests use a 2 s wait budget with a 1 s bound; the 150 ms bound failed in isolation from cold-start overhead. (ac915a5)
+- Verification: `scripts/ci.py` full gate passed: 4576 container tests (3 skipped, 9 xfailed, 3 xpassed, coverage 85.31%), 213 integration tests, Ruff, bandit, pip-audit, Docker build (both speaker models checksum-verified) and smoke test, Trivy. In the built image the Silero VAD loads and trims a German TTS command padded with 4 s of silence and noise (9.68 s in, 4.77 s speech out). Independent reviews of both PRs; all findings fixed before release. Not yet verified live.
 
 ### 3.4.0 (MINOR) -- requesting person for text turns
 
