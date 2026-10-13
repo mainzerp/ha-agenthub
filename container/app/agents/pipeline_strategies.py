@@ -17,6 +17,7 @@ from app.agents.compound_utterance import looks_compound
 from app.agents.conversation_manager import ConversationManager, extract_resolved_entities
 from app.agents.dispatch_manager import DispatchManager, canned_error_code
 from app.agents.mediation import TEMPLATE_SPEECH_SOURCES, speech_source_of
+from app.agents.personalization import personalization_user_id, speaker_display_name
 from app.agents.sanitize import strip_markdown
 from app.agents.task_pipeline import CacheReplayResult, DispatchResult
 from app.cache.cache_manager import CacheManager
@@ -509,7 +510,8 @@ class DefaultFinalizationStrategy(FinalizationStrategy):
                                 utterance=task.description if task else None,
                                 device_id=task.context.device_id if task.context else None,
                                 area_id=task.context.area_id if task.context else None,
-                                user_id=task.context.user_id if task.context else None,
+                                user_id=personalization_user_id(task.context)[0],
+                                identity_source=personalization_user_id(task.context)[1],
                                 language=language or "en",
                             )
                         except Exception:
@@ -523,6 +525,7 @@ class DefaultFinalizationStrategy(FinalizationStrategy):
                         failed_agents=unreachable or None,
                         language=language,
                         skipped_tasks=skipped_tasks or None,
+                        speaker_name=speaker_display_name(task.context if task else None) or None,
                     )
 
                 ret_span["metadata"]["agent_response"] = speech
@@ -553,6 +556,7 @@ class DefaultFinalizationStrategy(FinalizationStrategy):
                     user_id=task.context.user_id if task and task.context else None,
                     language=language,
                     source=task.context.source if task and task.context else None,
+                    memory_user_id=personalization_user_id(task.context if task else None)[0],
                 )
                 if span_collector:
                     await self._create_trace(

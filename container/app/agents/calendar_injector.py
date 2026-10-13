@@ -89,6 +89,7 @@ class CalendarReminderInjector:
         area_id: str | None = None,
         user_id: str | None = None,
         language: str = "en",
+        identity_source: str = "ha",
     ) -> str | None:
         """Return reminder text for this turn, or None.
 
@@ -96,7 +97,7 @@ class CalendarReminderInjector:
         break the user's turn, whichever pipeline path calls it.
         """
         try:
-            return await self._inject_reminders(utterance, device_id, area_id, user_id, language)
+            return await self._inject_reminders(utterance, device_id, area_id, user_id, language, identity_source)
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -110,12 +111,15 @@ class CalendarReminderInjector:
         area_id: str | None,
         user_id: str | None,
         language: str,
+        identity_source: str = "ha",
     ) -> str | None:
         enabled = await SettingsRepository.get_value("calendar.reminder_injection.enabled", "true")
         if str(enabled).lower() != "true":
             return None
 
-        user = await self._user_resolver.resolve_user(utterance, device_id, area_id, user_id=user_id)
+        user = await self._user_resolver.resolve_user(
+            utterance, device_id, area_id, user_id=user_id, identity_source=identity_source
+        )
         if user:
             calendar_ids = json.loads(user.get("calendar_entity_ids_json") or "[]")
             offsets = _parse_offsets(json.loads(user.get("reminder_offsets_json") or json.dumps(_DEFAULT_OFFSETS)))

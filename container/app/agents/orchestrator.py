@@ -44,6 +44,7 @@ from app.agents.mediation import (
     needs_template_localization,
     speech_source_of,
 )
+from app.agents.personalization import personalization_user_id, speaker_display_name
 from app.agents.prompt_builder import contains_no_content_sentinel
 from app.agents.sanitize import strip_markdown, strip_markdown_markers, strip_parenthetical_asides
 from app.agents.task_pipeline import PipelineDirector
@@ -182,6 +183,27 @@ async def _trace_memory_retrieval(
                 span["metadata"]["matched_conversation_id"] = str(conversation_id)
         await state["resolved"].wait()
         span["metadata"].update(state["metadata"])
+
+
+async def _search_memory_after_speaker(
+    memory_service: Any,
+    user_text: str,
+    conversation_id: str | None,
+    speaker_lookup: PendingSpeakerLookup,
+    span_state: dict[str, Any] | None = None,
+) -> Any:
+    """Session-memory search for an anonymous request with a pending speaker lookup.
+
+    Waits for the speaker result (bounded by the lookup's own ``wait_ms``
+    budget, which dispatch waits for anyway) so a voice-identified speaker
+    linked to a Home Assistant user searches their own memory bucket; else
+    the anonymous bucket. Personalization only: ``task.context.user_id`` is
+    never changed.
+    """
+    voice_user_id = await speaker_lookup.wait_ha_user_id()
+    if voice_user_id and span_state is not None:
+        span_state["metadata"]["identity_source"] = "voice"
+    return await memory_service.search(user_text, voice_user_id, current_conversation_id=conversation_id)
 
 
 async def _resolve_memory_context(
@@ -1058,6 +1080,9 @@ class OrchestratorAgent(BaseAgent):
             # Request context on the root span: the (mapped) HA user id, or
             # None, so user mapping is verifiable from any trace.
             record_request_attribute(span_collector, "user_id", task.context.user_id)
+            # Personalization identity source ("ha" | "voice" | "none");
+            # refined after the speaker join on the cache-miss path.
+            record_request_attribute(span_collector, "identity_source", personalization_user_id(task.context)[1])
 
         if self._is_background_turn(task):
             result = await self._handle_background_turn(task)
@@ -1161,14 +1186,20 @@ class OrchestratorAgent(BaseAgent):
         memory_span_task: asyncio.Task | None = None
         memory_service = get_memory_service()
         if memory_service is not None and await memory_service.is_enabled():
-            memory_task = asyncio.create_task(
-                memory_service.search(
-                    user_text,
-                    task.context.user_id if task.context else None,
-                    current_conversation_id=conversation_id,
+            # Personalization identity for the memory bucket: the request's HA
+            # user, else (when a speaker lookup is pending) the HA user linked
+            # to a voice-identified speaker, resolved before the search.
+            memory_user_id, identity_source = personalization_user_id(task.context)
+            memory_span_state = {"resolved": asyncio.Event(), "metadata": {"identity_source": identity_source}}
+            if memory_user_id is None and speaker_lookup is not None:
+                memory_search = _search_memory_after_speaker(
+                    memory_service, user_text, conversation_id, speaker_lookup, memory_span_state
                 )
-            )
-            memory_span_state = {"resolved": asyncio.Event(), "metadata": {}}
+            else:
+                memory_search = memory_service.search(
+                    user_text, memory_user_id, current_conversation_id=conversation_id
+                )
+            memory_task = asyncio.create_task(memory_search)
             memory_span_task = asyncio.create_task(
                 _trace_memory_retrieval(memory_task, span_collector, memory_span_state)
             )
@@ -1256,6 +1287,8 @@ class OrchestratorAgent(BaseAgent):
             raise
         if speaker_lookup is not None:
             await speaker_lookup.join()
+            if task.context is not None:
+                record_request_attribute(span_collector, "identity_source", personalization_user_id(task.context)[1])
         self._drop_stale_followup_context(task, conversation_id, classifications)
 
         logger.debug(
@@ -1371,7 +1404,8 @@ class OrchestratorAgent(BaseAgent):
                     utterance=task.description,
                     device_id=task.context.device_id if task.context else None,
                     area_id=task.context.area_id if task.context else None,
-                    user_id=task.context.user_id if task.context else None,
+                    user_id=personalization_user_id(task.context)[0],
+                    identity_source=personalization_user_id(task.context)[1],
                     language=(task.context.language if task.context else language) or language,
                 )
             except asyncio.CancelledError:
@@ -1522,6 +1556,7 @@ class OrchestratorAgent(BaseAgent):
             user_id=task.context.user_id if task.context else None,
             language=language,
             source=source,
+            memory_user_id=personalization_user_id(task.context)[0],
         )
         if span_collector:
             await self._create_trace(
@@ -1644,6 +1679,7 @@ class OrchestratorAgent(BaseAgent):
                     span_collector=span_collector,
                     reminder_text=reminder_text,
                     allow_organic_followup=allow_organic_followup,
+                    speaker_name=speaker_display_name(task.context) or None,
                 )
             elif reminder_text:
                 # No mediation path -- append reminder directly as fallback
@@ -1929,6 +1965,7 @@ class OrchestratorAgent(BaseAgent):
                 user_id=task.context.user_id if task.context else None,
                 language=detected_language,
                 source=task.context.source if task.context else None,
+                memory_user_id=personalization_user_id(task.context)[0],
             )
             if span_collector:
                 await self._create_trace(
@@ -2065,6 +2102,7 @@ class OrchestratorAgent(BaseAgent):
                     user_id=task.context.user_id if task.context else None,
                     language=detected_language,
                     source=task.context.source if task.context else None,
+                    memory_user_id=personalization_user_id(task.context)[0],
                 )
                 if span_collector:
                     clf = classifications
@@ -2663,6 +2701,7 @@ class OrchestratorAgent(BaseAgent):
                 user_id=task.context.user_id if task.context else None,
                 language=language,
                 source=task.context.source if task.context else None,
+                memory_user_id=personalization_user_id(task.context)[0],
             )
             if span_collector:
                 await self._create_trace(
@@ -2812,6 +2851,7 @@ class OrchestratorAgent(BaseAgent):
                 span_collector=span_collector,
                 reminder_text=reminder_text,
                 allow_organic_followup=allow_organic_followup,
+                speaker_name=speaker_display_name(task.context) or None,
             )
             try:
                 while True:
@@ -3110,6 +3150,7 @@ class OrchestratorAgent(BaseAgent):
         user_id: str | None = None,
         language: str | None = None,
         source: str | None = None,
+        memory_user_id: str | None = None,
     ) -> None:
         await self._conversation_manager.store_turn(
             conversation_id,
@@ -3120,6 +3161,7 @@ class OrchestratorAgent(BaseAgent):
             user_id=user_id,
             language=language,
             source=source,
+            memory_user_id=memory_user_id,
         )
 
     def _evict_stale_conversations(self) -> None:
@@ -3135,6 +3177,7 @@ class OrchestratorAgent(BaseAgent):
         *,
         language: str | None = None,
         skipped_tasks: list[str] | None = None,
+        speaker_name: str | None = None,
     ) -> tuple[str, bool]:
         """Merge multiple agent responses into a single natural answer.
 
@@ -3150,6 +3193,7 @@ class OrchestratorAgent(BaseAgent):
             failed_agents=failed_agents,
             language=language,
             skipped_tasks=skipped_tasks,
+            speaker_name=speaker_name,
         )
 
     @staticmethod
@@ -3171,6 +3215,7 @@ class OrchestratorAgent(BaseAgent):
         span_collector=None,
         reminder_text: str | None = None,
         allow_organic_followup: bool = False,
+        speaker_name: str | None = None,
     ) -> tuple[str, bool]:
         """Optionally mediate the domain agent response with personality.
 
@@ -3192,6 +3237,7 @@ class OrchestratorAgent(BaseAgent):
             span_collector=span_collector,
             reminder_text=reminder_text,
             allow_organic_followup=allow_organic_followup,
+            speaker_name=speaker_name,
         )
 
     async def _mediate_response_stream(
@@ -3203,6 +3249,7 @@ class OrchestratorAgent(BaseAgent):
         span_collector=None,
         reminder_text: str | None = None,
         allow_organic_followup: bool = False,
+        speaker_name: str | None = None,
     ) -> AsyncGenerator[str, None]:
         """Streaming variant of _mediate_response.
 
@@ -3222,6 +3269,7 @@ class OrchestratorAgent(BaseAgent):
                 span_collector=span_collector,
                 reminder_text=reminder_text,
                 allow_organic_followup=allow_organic_followup,
+                speaker_name=speaker_name,
             )
         ) as mediation_stream:
             async for token in mediation_stream:

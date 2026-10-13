@@ -268,9 +268,9 @@ class TestSearch:
             ),
             get_session_turns=AsyncMock(
                 return_value=[
-                    {"user_text": "u1", "response_text": "a1"},
-                    {"user_text": "u2", "response_text": "a2"},
-                    {"user_text": "u3", "response_text": "a3"},
+                    {"user_id": "user-1", "user_text": "u1", "response_text": "a1"},
+                    {"user_id": "user-1", "user_text": "u2", "response_text": "a2"},
+                    {"user_id": "user-1", "user_text": "u3", "response_text": "a3"},
                 ]
             ),
         )
@@ -283,6 +283,42 @@ class TestSearch:
             {"user_text": "u3", "response_text": "a3"},
         ]
         repo.get_session_turns.assert_awaited_once_with("conv-old")
+
+    @pytest.mark.parametrize(
+        ("scope", "caller", "expected"),
+        [
+            pytest.param("user", "ha-anna", ["anna-1", "anna-2"], id="user-anna"),
+            pytest.param("user", "ha-bob", ["bob-1"], id="user-bob"),
+            pytest.param("user", None, ["anon-1"], id="user-anonymous"),
+            pytest.param("global", "ha-anna", ["anna-1", "anon-1", "bob-1", "anna-2"], id="global"),
+        ],
+    )
+    async def test_continuation_turns_respect_scope_in_mixed_session(
+        self, monkeypatch, service, store, scope, caller, expected
+    ):
+        # One satellite conversation id can hold turns of several voice-identified
+        # people and anonymous turns: a match copies only the caller's allowed turns.
+        _patch_settings(monkeypatch, {"memory.max_continuation_turns": "10", "memory.scope": scope})
+        _patch_engine(monkeypatch, _FakeEngine(_basis_vec(0)))
+        store.store_embedding(1, _basis_vec(0))
+        owner = {"ha-anna": "ha-anna", "ha-bob": "ha-bob", None: None}[caller]
+        _patch_repo(
+            monkeypatch,
+            count_turns=AsyncMock(return_value=4),
+            get_turns_by_ids=AsyncMock(return_value=[_turn_row(1, 10, "conv-satellite", owner)]),
+            get_session_turns=AsyncMock(
+                return_value=[
+                    {"user_id": "ha-anna", "user_text": "anna-1", "response_text": "r"},
+                    {"user_id": None, "user_text": "anon-1", "response_text": "r"},
+                    {"user_id": "ha-bob", "user_text": "bob-1", "response_text": "r"},
+                    {"user_id": "ha-anna", "user_text": "anna-2", "response_text": "r"},
+                ]
+            ),
+        )
+
+        matches = await service.search("query", caller, current_conversation_id="conv-current")
+        assert len(matches) == 1
+        assert [t["user_text"] for t in matches[0].continuation_turns] == expected
 
     async def test_current_session_excluded_from_matches(self, monkeypatch, service, store):
         # The current session's own turns are already in the live conversation

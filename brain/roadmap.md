@@ -25,6 +25,23 @@ Live pipeline in board format — headings are columns, cards are
 
 ## Testing
 
+- Voice personalization (3.3.0) · priority: P1 · area: voice
+  Outcome: when HA sends no `user_id` (satellites), an identified speaker's
+  linked HA user personalizes memory (search, indexing, scoped continuation
+  turns), calendar user and reminders; send agent writes as the sender
+  ("Message from <name>"); mediation may address the speaker. `user_id`,
+  audit, visibility and authorization unchanged; a conflicting HA user wins.
+  Speaker prompt line only for general and timer agents (3.2.1). Branch
+  feat/voice-personalization.
+  Passed: container suite 4372 passed, bridge 213 passed, ruff clean;
+  independent review findings (continuation-memory leak, calendar order,
+  conflict rule, privacy docs) fixed.
+  Needs user verification after deploying: on a satellite ask "Kannst du mir
+  sagen, wer gerade mit dir spricht?" -> name; "Was steht heute in meinem
+  Kalender?" -> your calendar; "Merk dir, dass ich ..." then recall on the
+  same satellite; trace root span `identity_source=voice`; Voice Profiles
+  recent results show compute/latency.
+
 - Voice speaker identification (3.2.0) · priority: P1 · area: voice
   Outcome: bridge STT entity "HA-AgentHub STT" (`stt.py`, `voice_tee.py`)
   wraps a user-selected STT entity and tees 16 kHz PCM over `/ws/voice`;
@@ -32,7 +49,8 @@ Live pipeline in board format — headings are columns, cards are
   49) matches enrolled profiles and attaches `TaskContext.speaker` (context
   only; speaker turns skip the action/routing cache). Dashboard page
   `/dashboard/voice-profiles`. PR #151; shipped in v3.2.0 (release PR #152,
-  https://github.com/mainzerp/ha-agenthub/releases/tag/v3.2.0).
+  https://github.com/mainzerp/ha-agenthub/releases/tag/v3.2.0); timing,
+  late-result fix and prompt allowlist in v3.2.1 (PR #154).
   Passed: ruff clean; container suite 4304 passed (after review fixes);
   PR and release pipeline (quality, security, docker, Trivy, release) green;
   bridge 213 passed; ci.py --no-trivy green incl. docker build + smoke and
@@ -237,10 +255,6 @@ Live pipeline in board format — headings are columns, cards are
 
 ## Idea Bank
 
-- Voice speaker as soft identity for personalization · priority: P2 · area: voice
-  When HA sends no `user_id` (satellites), use `speaker.ha_user_id` for memory,
-  calendar and preferences only; visibility and authorization stay on the real
-  HA `user_id`. Needs a prime-directives review first.
 - Distributed HTTP-based A2A transport · priority: P3 · area: a2a
 - Supervisor add-on packaging with managed ingress · priority: P3 · area: packaging
 - Plugin marketplace / discovery UI · priority: P3 · area: plugins

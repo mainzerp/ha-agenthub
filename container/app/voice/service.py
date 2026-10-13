@@ -529,6 +529,34 @@ class PendingSpeakerLookup:
         with contextlib.suppress(asyncio.CancelledError, Exception):
             await self._lookup
 
+    async def wait_ha_user_id(self) -> str | None:
+        """Peek at the result for personalization without attaching or tracing it.
+
+        Waits at most the remaining ``wait_ms`` budget (the bound :meth:`join`
+        uses anyway), never cancels the lookup and returns the linked Home
+        Assistant user id of an ``identified`` result, else None. Used to
+        start the session-memory search under the voice identity; :meth:`join`
+        still owns attaching ``task.context.speaker``. Never raises
+        (cancellation excepted).
+        """
+        try:
+            if not self._lookup.done():
+                budget = self._budget_s()
+                if budget > 0:
+                    await asyncio.wait({self._lookup}, timeout=budget)
+            if not self._lookup.done() or self._lookup.cancelled():
+                return None
+            lookup = self._lookup.result()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            return None
+        result = (lookup.result if lookup is not None else None) or {}
+        if result.get("status") != STATUS_IDENTIFIED:
+            return None
+        ha_user_id = result.get("ha_user_id")
+        return str(ha_user_id) if ha_user_id else None
+
     async def join(self) -> None:
         """Wait for the result (at most the remaining budget) and attach it to ``task.context``.
 

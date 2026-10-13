@@ -210,6 +210,12 @@ class MemoryService:
                 # read-only into the injected context.
                 if rank == 0 and max_continuation > 0 and row["conversation_id"] != current_conversation_id:
                     session_turns = await MemoryRepository.get_session_turns(row["conversation_id"])
+                    # One conversation id (e.g. a shared satellite) can hold
+                    # turns indexed under different people and anonymous
+                    # turns: copy only the turns this caller may see.
+                    session_turns = [
+                        turn for turn in session_turns if self._scope_allows(scope, turn.get("user_id"), user_id)
+                    ]
                     continuation_turns = [
                         {
                             "user_text": str(turn.get("user_text") or ""),

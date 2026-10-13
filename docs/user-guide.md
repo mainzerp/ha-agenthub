@@ -268,21 +268,29 @@ The **Open WebUI Users** section lists users seen through the OpenAI-compatible 
 
 ### Voice Profiles
 
-The **Voice Profiles** page at `/dashboard/voice-profiles` recognizes who is speaking in an Assist voice turn and tells the general agent and the timer agent the speaker's name (for example for a personal greeting or a reminder label). Device, security, lists, calendar and custom agents never see the name. It holds the speaker-identification settings, the profiles with their sample counts, enrollment, and the recent results. The feature is off by default.
+The **Voice Profiles** page at `/dashboard/voice-profiles` recognizes who is speaking in an Assist voice turn and personalizes the reply for that person. It holds the speaker-identification settings, the profiles with their sample counts, enrollment, and the recent results. The feature is off by default.
+
+What a recognized speaker personalizes:
+
+- **Name** -- the general agent and the timer agent know the speaker's name (for example for a personal greeting or a reminder label); with a personality configured, the reply may address the speaker by name. Device, security, lists, calendar and custom agents never see the name.
+- **Sent messages** -- "send Anna a message: I am running late" is written from the speaker's perspective; a phone notification is titled "Message from <name>", a satellite announcement names the sender.
+- **Memory and calendars** (profile linked to a Home Assistant user, see step 4) -- when the request itself carries no Home Assistant user (typical for satellites), the speaker's linked user selects their session memory and their calendar user mapping: their default calendars and reminders. Calendars follow the existing calendar user mapping of the Home Assistant person that belongs to that user (Calendar page). A request that already carries a Home Assistant user keeps using that user; if the speaker's profile is linked to a different user, the speaker is ignored for that turn (no name either). Saying "this is <name>" still selects that person's calendars. Replayed cached answers are not personalized.
 
 Setup:
 
 1. **Integration options** -- in Home Assistant open **Settings > Devices & services > HA-AgentHub > Configure** and pick the speech-to-text entity to wrap in **Speaker identification STT entity** (for example Home Assistant Cloud or a Wyoming STT). This adds the **HA-AgentHub STT** entity. Requires the current bridge version from HACS.
 2. **Assist pipeline** -- in **Settings > Voice assistants**, select **HA-AgentHub STT** as speech-to-text for each pipeline that should identify speakers. Transcription is still done by the wrapped entity; it keeps working when the container is down.
 3. **Enable** -- turn on speaker identification on the Voice Profiles page (`voice.speaker_id.enabled`). The engine status should change to `ready`.
-4. **Enroll** -- create a profile per person (optionally linked to a Home Assistant user id) and start enrollment. The next voice turns (default 5, within 5 minutes) of at least `voice.speaker_id.min_enroll_duration_s` (default 2 s) become samples for that profile. Only the enrolled person should speak during enrollment: every voice turn on every satellite counts. Enroll on each satellite the person uses, since microphones differ. Enrollment can only be started while speaker identification is enabled (step 3); otherwise the **Enroll** button is disabled. Enrollment turns are not identified. A turn only counts once speech-to-text returned a non-empty transcript; failed or empty recognitions are discarded.
+4. **Enroll** -- create a profile per person (optionally linked to a Home Assistant user id; link it to enable memory and calendar personalization) and start enrollment. The next voice turns (default 5, within 5 minutes) of at least `voice.speaker_id.min_enroll_duration_s` (default 2 s) become samples for that profile. Only the enrolled person should speak during enrollment: every voice turn on every satellite counts. Enroll on each satellite the person uses, since microphones differ. Enrollment can only be started while speaker identification is enabled (step 3); otherwise the **Enroll** button is disabled. Enrollment turns are not identified. A turn only counts once speech-to-text returned a non-empty transcript; failed or empty recognitions are discarded.
 5. **Calibrate** -- use the recent results (score, margin, and the nearest profile for `unknown` turns) to adjust `voice.speaker_id.threshold` and `voice.speaker_id.margin` on this page. Raise them if the wrong person is recognized; lower them or add samples if a known person stays `unknown`. **Compute** is the time the embedding and matching took; **Latency** runs from the end of the audio until the result was ready for the conversation ("-" when nothing was computed).
 
 Limits:
 
 - Short commands ("lights off") are often below `voice.speaker_id.min_duration_s` (default 1.5 s) and report `too_short`; no speaker is attached then.
-- A voice match is unverified context only. It never changes the Home Assistant user, entity visibility, or what a request is allowed to do. Do not use it as a security check.
+- A voice match is unverified context only. It never changes the Home Assistant user, entity visibility, or what a request is allowed to do; personalization only picks whose memory, calendars and name shape the reply. Do not use it as a security check.
 - Only 16 kHz, 16-bit mono PCM audio is analyzed; other pipeline formats skip identification.
+
+Risk of linking a profile: a voice match is not proof of identity. A misidentified speaker (a similar voice) or a spoofed one (a recording played to the satellite) gets the linked person's session memory and calendar events and reminders, read out on a shared speaker. The link to a Home Assistant user is what enables memory and calendar personalization; leave a profile unlinked if that is unacceptable (name and sender personalization still work).
 
 Privacy: voice embeddings are biometric data. They are stored only in the local AgentHub database (no audio is kept), and deleting a profile or resetting its samples removes them. Get the consent of every household member before enrolling them.
 

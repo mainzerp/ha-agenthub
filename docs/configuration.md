@@ -84,8 +84,8 @@ embedding cost.
 | Key | Default | Type | Description |
 |-----|---------|------|-------------|
 | `memory.enabled` | `true` | bool | Master toggle for session memory lookup (read path) and turn indexing (write path) |
-| `memory.scope` | `user` | string | Match visibility: `user` (per-user) or `global`. Rows without a user form an anonymous bucket: visible in global scope and to anonymous requests in per-user scope. |
-| `memory.wait_mode` | `blocking` | string | `blocking` = wait up to `memory.wait_timeout_ms` for the lookup (default; with cached routing or fast LLM providers `best_effort` rarely finishes in time); `best_effort` = zero added latency (matches used only if the lookup finished during classification) |
+| `memory.scope` | `user` | string | Match visibility: `user` (per-user) or `global`. Rows without a user form an anonymous bucket: visible in global scope and to anonymous requests in per-user scope. The user is the request's Home Assistant user, else the user linked to a voice-identified speaker. |
+| `memory.wait_mode` | `blocking` | string | `blocking` = wait up to `memory.wait_timeout_ms` for the lookup (default; with cached routing or fast LLM providers `best_effort` rarely finishes in time); `best_effort` = zero added latency (matches used only if the lookup finished during classification). An anonymous voice turn with speaker identification on starts its search only after the speaker result (to search the speaker's memory), so with `best_effort` it often finishes too late and the turn gets no memory |
 | `memory.wait_timeout_ms` | `800` | int | Timeout in milliseconds for blocking memory lookups |
 | `memory.similarity_threshold` | `0.85` | float | Minimum cosine similarity for a session memory match. Deliberately below the routing cache threshold (0.92): injected context is not executed, so recall matters more. Matches are injected with visible similarity scores; the General Agent answers recall questions from them but never executes actions based on them. |
 | `memory.max_matches` | `3` | int | Maximum number of past sessions injected as context |
@@ -203,7 +203,7 @@ Precedence per field: a non-empty override always wins over HA `/api/config`; wi
 
 ### Voice / Speaker Identification Settings
 
-Identifies the speaker of Assist voice turns teed in by the bridge STT wrapper (integration option `stt_entity_id`, see [Home Assistant Integration Options](#home-assistant-integration-options)). A recognized speaker is prompt context only: it never changes `user_id`, entity visibility, or authorization. Edited on the dashboard **Voice Profiles** page or via `PUT /api/admin/settings`; numeric values outside the listed ranges are rejected by the settings API and clamped at runtime.
+Identifies the speaker of Assist voice turns teed in by the bridge STT wrapper (integration option `stt_entity_id`, see [Home Assistant Integration Options](#home-assistant-integration-options)). A recognized speaker is personalization context only (name, sender of sent messages and, when the profile is linked to a Home Assistant user and the request carries none, session memory and calendar user mapping): it never changes `user_id`, entity visibility, or authorization. A misidentified or spoofed voice (similar voice, recording) of a linked profile gets that person's memory and calendar data read out on a shared speaker; the profile's link to a Home Assistant user is what enables this, so leave the profile unlinked if that is unacceptable. Edited on the dashboard **Voice Profiles** page or via `PUT /api/admin/settings`; numeric values outside the listed ranges are rejected by the settings API and clamped at runtime.
 
 | Key | Default | Type | Description |
 |-----|---------|------|-------------|

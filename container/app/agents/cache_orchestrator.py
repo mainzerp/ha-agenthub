@@ -15,6 +15,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from app.agents.conversation_manager import extract_resolved_entities
+from app.agents.personalization import personalization_user_id
 from app.analytics.collector import track_cache_event_background, track_request_background
 from app.analytics.tracer import _optional_span
 from app.cache.cache_manager import ActionReplayOutcome, ActionReplayRejected, CacheManager, RoutingSkipOutcome
@@ -359,7 +360,8 @@ class CacheOrchestrator:
                         utterance=task.description if task else None,
                         device_id=task_context.device_id if task_context else None,
                         area_id=task_context.area_id if task_context else None,
-                        user_id=task_context.user_id if task_context else None,
+                        user_id=personalization_user_id(task_context)[0],
+                        identity_source=personalization_user_id(task_context)[1],
                         language=(task_context.language if task_context else "en") or "en",
                     )
                     cal_span["metadata"]["reminder_injected"] = bool(reminder_text)
@@ -416,6 +418,7 @@ class CacheOrchestrator:
                     user_id=task_context.user_id if task_context else None,
                     language=task_context.language if task_context else None,
                     source=task_context.source if task_context else None,
+                    memory_user_id=personalization_user_id(task_context)[0],
                 )
 
         vf_effective = False

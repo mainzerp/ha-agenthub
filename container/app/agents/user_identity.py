@@ -29,9 +29,23 @@ class UserIdentityResolver:
         device_id: str | None = None,
         area_id: str | None = None,
         user_id: str | None = None,
+        identity_source: str = "ha",
     ) -> dict[str, Any] | None:
-        # 1. Try HA user_id -> person entity -> mapping
-        if user_id:
+        """Resolve the calendar user mapping for this turn.
+
+        Callers pass the personalization identity as ``user_id`` and its
+        ``identity_source`` (see
+        :func:`app.agents.personalization.personalization_user_id`): the
+        request's Home Assistant user (``"ha"``), else the HA user linked to
+        a voice-identified speaker (``"voice"``). A request user wins over a
+        spoken self-identification; an unverified voice match does not, so
+        for ``"voice"`` the spoken name is tried first. Calendar visibility
+        filtering is unaffected.
+        """
+        voice_identity = identity_source == "voice"
+
+        # 1. Try HA user_id -> person entity -> mapping (request user only)
+        if user_id and not voice_identity:
             user = await self._resolve_by_user_id(user_id)
             if user:
                 return user
@@ -44,13 +58,19 @@ class UserIdentityResolver:
                 if user:
                     return user
 
-        # 3. Try device-based resolution (future extension)
+        # 3. Voice-identified speaker's HA user -> person entity -> mapping
+        if user_id and voice_identity:
+            user = await self._resolve_by_user_id(user_id)
+            if user:
+                return user
+
+        # 4. Try device-based resolution (future extension)
         if device_id:
             user = await self._resolve_by_device(device_id)
             if user:
                 return user
 
-        # 4. Fallback to default user
+        # 5. Fallback to default user
         return await CalendarUserMappingRepository.find_default_user()
 
     async def _resolve_by_user_id(self, user_id: str) -> dict[str, Any] | None:

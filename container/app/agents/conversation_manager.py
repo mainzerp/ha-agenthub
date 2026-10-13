@@ -196,8 +196,15 @@ class ConversationManager:
         user_id: str | None = None,
         language: str | None = None,
         source: str | None = None,
+        memory_user_id: str | None = None,
     ) -> None:
         """Store a conversation turn, keeping the configured number of exchanges.
+
+        ``user_id`` is the real request user and is persisted as the audit
+        column ``conversations.user_id``. ``memory_user_id`` is the
+        personalization identity used only for the session-memory bucket
+        (see :func:`app.agents.personalization.personalization_user_id`);
+        it defaults to ``user_id``.
 
         ``resolved_entities`` (ENTITY_RES_REDESIGN Phase 6): entities that
         were resolved and acted on this turn (success path only), as
@@ -270,7 +277,7 @@ class ConversationManager:
                         memory.index_turn(
                             conversation_id=conversation_id,
                             conversation_row_id=conversation_row_id,
-                            user_id=user_id,
+                            user_id=memory_user_id or user_id,
                             user_text=user_text,
                             response_text=assistant_text,
                             language=language,
