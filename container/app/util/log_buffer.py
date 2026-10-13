@@ -2,21 +2,94 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import traceback
 from collections import deque
+from collections.abc import Callable, Iterable
 from datetime import UTC, datetime
 from threading import Lock
 from typing import Any
 
+_MIN_TS = datetime.min.replace(tzinfo=UTC)
+
+
+def _entry_key(entry: dict[str, Any]) -> tuple[Any, ...]:
+    """Identity of an entry for de-duplicating restored records."""
+    return (
+        entry.get("timestamp"),
+        entry.get("level"),
+        entry.get("name"),
+        entry.get("message"),
+        entry.get("source"),
+    )
+
+
+def _entry_sort_key(entry: dict[str, Any]) -> datetime:
+    try:
+        ts = datetime.fromisoformat(entry["timestamp"])
+    except (KeyError, TypeError, ValueError):
+        return _MIN_TS
+    return ts if ts.tzinfo is not None else ts.replace(tzinfo=UTC)
+
 
 class LogBuffer:
-    """Thread-safe ring buffer for log entries."""
+    """Thread-safe ring buffer for log entries.
+
+    An optional persist sink (see :mod:`app.util.log_persist`) receives every
+    entry at or above its minimum level. The sink must only enqueue; it is
+    called on the logging thread, which may be the event loop.
+    """
 
     def __init__(self, capacity: int = 10000) -> None:
         self._capacity = capacity
         self._buffer: deque[dict[str, Any]] = deque(maxlen=capacity)
         self._lock = Lock()
+        self._persist_sink: Callable[[dict[str, Any]], None] | None = None
+        self._persist_min_level = logging.WARNING
+
+    def set_persist_sink(
+        self,
+        sink: Callable[[dict[str, Any]], None] | None,
+        min_level: int = logging.WARNING,
+    ) -> None:
+        """Attach (or detach with ``None``) a non-blocking persistence sink."""
+        self._persist_sink = sink
+        self._persist_min_level = min_level
+
+    def _maybe_persist(self, levelno: Any, entry: dict[str, Any]) -> None:
+        sink = self._persist_sink
+        if sink is None or not isinstance(levelno, int) or levelno < self._persist_min_level:
+            return
+        # Persistence must never break logging.
+        with contextlib.suppress(Exception):
+            sink(entry)
+
+    def restore_entries(self, entries: Iterable[dict[str, Any]]) -> int:
+        """Merge previously persisted entries into the buffer.
+
+        Entries already present (same timestamp, level, logger, message and
+        source) are skipped, so repeated restores do not duplicate. The merged
+        buffer is ordered by timestamp and trimmed to capacity, keeping the
+        newest. Restored entries are not re-sent to the persist sink. Returns
+        the number of entries added.
+        """
+        with self._lock:
+            current = list(self._buffer)
+            seen = {_entry_key(e) for e in current}
+            new: list[dict[str, Any]] = []
+            for entry in entries:
+                key = _entry_key(entry)
+                if key in seen:
+                    continue
+                seen.add(key)
+                new.append({**entry, "restored": True})
+            if not new:
+                return 0
+            merged = new + current
+            merged.sort(key=_entry_sort_key)
+            self._buffer = deque(merged[-self._capacity :], maxlen=self._capacity)
+            return len(new)
 
     def add(self, record: logging.LogRecord) -> None:
         """Store a formatted log record."""
@@ -33,11 +106,13 @@ class LogBuffer:
             entry["exception"] = "".join(traceback.format_exception(*record.exc_info))
         with self._lock:
             self._buffer.append(entry)
+        self._maybe_persist(record.levelno, entry)
 
     def add_entry(self, entry: dict[str, Any]) -> None:
         """Append a pre-built entry dict (used by the log-ingest API)."""
         with self._lock:
             self._buffer.append(entry)
+        self._maybe_persist(logging.getLevelName(str(entry.get("level", ""))), entry)
 
     def get_entries(
         self,

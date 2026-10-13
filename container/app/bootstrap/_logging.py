@@ -8,6 +8,9 @@ Owns:
   library displaced it and restores the configured root level.
 * :func:`start_log_buffer_guard` -- re-ensures the handler at end of startup
   and starts the periodic re-attach guard task.
+* :func:`start_log_persistence` / :func:`stop_log_persistence` -- persist
+  WARNING+ buffer entries to ``$LOG_DIR/warnings.jsonl`` and restore them into
+  the buffer at startup (see :mod:`app.util.log_persist`).
 
 ``_configure_logging`` and ``_ensure_log_buffer_handler`` are re-exported from
 :mod:`app.main` (via ``__all__``) so existing callers and the unit tests that
@@ -49,11 +52,19 @@ from typing import TYPE_CHECKING
 from app.bootstrap._tasks import spawn_background
 from app.config import settings
 from app.util.log_buffer import LogBuffer, LogBufferHandler, get_log_buffer, set_log_buffer
+from app.util.log_persist import PERSIST_FILENAME, RESTORE_LIMIT, LogPersister
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
 
 logger = logging.getLogger(__name__)
+
+_log_persister: LogPersister | None = None
+
+
+def _log_dir() -> str:
+    """Return the log directory (``LOG_DIR`` env, default ``/data/logs``)."""
+    return os.environ.get("LOG_DIR", "/data/logs")
 
 
 def _ensure_log_buffer_handler() -> None:
@@ -96,7 +107,7 @@ def _configure_logging() -> None:
         root.addHandler(stream_handler)
 
     # Add RotatingFileHandler for persistent logs.
-    log_dir = os.environ.get("LOG_DIR", "/data/logs")
+    log_dir = _log_dir()
     os.makedirs(log_dir, exist_ok=True)
     file_handler = RotatingFileHandler(
         os.path.join(log_dir, "app.log"),
@@ -124,3 +135,57 @@ def start_log_buffer_guard(app: FastAPI) -> None:
             _ensure_log_buffer_handler()
 
     spawn_background(app, _log_buffer_guard(), "log_buffer_guard")
+
+
+async def start_log_persistence(log_dir: str | None = None) -> LogPersister | None:
+    """Restore persisted WARNING+ entries and start persisting new ones.
+
+    The sink is attached before the file is read so entries logged during the
+    restore are queued (not lost) and only written after the read completes,
+    which keeps them from being restored twice. All file I/O runs in a worker
+    thread. Failures are logged and never abort startup.
+    """
+    global _log_persister
+    if _log_persister is not None:
+        return _log_persister
+
+    log_buffer = get_log_buffer()
+    if log_buffer is None:
+        _ensure_log_buffer_handler()
+        log_buffer = get_log_buffer()
+    if log_buffer is None:
+        return None
+
+    persister = LogPersister(os.path.join(log_dir or _log_dir(), PERSIST_FILENAME))
+    log_buffer.set_persist_sink(persister.submit, persister.min_level)
+    try:
+        entries, skipped = await asyncio.to_thread(persister.load_recent, RESTORE_LIMIT)
+        restored = log_buffer.restore_entries(entries)
+        await asyncio.to_thread(persister.start)
+    except Exception:
+        log_buffer.set_persist_sink(None)
+        logger.warning("Persistent warning log disabled: could not open %s", persister.path, exc_info=True)
+        return None
+
+    _log_persister = persister
+    if skipped:
+        logger.warning("Skipped %d unreadable line(s) while restoring persisted logs from %s", skipped, persister.path)
+    logger.info("Restored %d persisted WARNING+ log entries from %s", restored, persister.path)
+    return persister
+
+
+async def stop_log_persistence() -> None:
+    """Detach the persist sink, flush queued entries and stop the writer thread."""
+    global _log_persister
+    persister, _log_persister = _log_persister, None
+    if persister is None:
+        return
+    log_buffer = get_log_buffer()
+    if log_buffer is not None:
+        log_buffer.set_persist_sink(None)
+    try:
+        await asyncio.to_thread(persister.stop)
+    except Exception:
+        logger.warning("Failed to stop persistent warning log writer", exc_info=True)
+    if persister.dropped:
+        logger.warning("Persistent warning log dropped %d entries (queue full)", persister.dropped)
