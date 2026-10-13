@@ -23,17 +23,26 @@ Live pipeline in board format — headings are columns, cards are
 
 ## In Progress
 
-- Voice speaker identification confuses Patric and Laura · priority: P1 · area: voice
-  Outcome: the two enrolled speakers are told apart reliably or a turn
-  reports unknown instead of the wrong person. Analysis 2026-10-13: the
-  other profile scores 0.57-0.75 on every two-profile turn (margin 0.05 is
-  the only guard); likely causes: unguarded enrollment (any voice on any
-  satellite), silence embedded with speech (no VAD), loose margin.
-  Proposed: VAD trimming with a speech-seconds minimum, enrollment sample
-  guard and per-sample delete, all-profile scores in diagnostics, default margin
-  0.12; user re-enrolls both profiles alone. Blocked on user go-ahead.
-
 ## Testing
+
+- Voice speaker identification reliability (Patric/Laura confusion) · priority: P1 · area: voice
+  Outcome: the two enrolled speakers are told apart or a turn reports
+  unknown. Silero VAD (sherpa-onnx) trims enrollment and identification
+  audio; minimums count speech seconds (1.0 / 1.5 s); enrollment guard
+  rejects inconsistent, other-speaker and near-tie samples (counted only
+  after end); per-sample list with leave-one-out score, pre-VAD flag and
+  delete; all-profile scores, runner-up, speech_s and vad flag in
+  diagnostics; default margin 0.12 (migration 51; live set to 0.15).
+  Trigger: live analysis 2026-10-13 (other profile 0.57-0.75). Branch
+  feat/voice-id-reliability.
+  Passed: ruff clean; container suite 4576 passed, 3 skipped; bridge 213
+  passed; real sherpa VAD integration test 2 passed (synthetic signal);
+  independent review findings fixed. Not verified: Docker build (runs in
+  ci.py before release), real speech recordings, dashboard in a browser.
+  Needs user verification after deploying: reset both profiles and enroll
+  each person alone with varied sentences; the sample list shows high
+  leave-one-out and low other-profile scores; recent results show both
+  profile scores with a clear gap; confusions stop or become unknown.
 
 - Trace: identity block, loaded memories, user in trace list · priority: P1 · area: trace
   Outcome: trace detail header shows the identified name with its own
@@ -45,8 +54,8 @@ Live pipeline in board format — headings are columns, cards are
   renamed "Conversation history"; trace list shows/searches the user name
   (trace_summary user_name, user_name_source, identity_source; migration
   50); CSV export adds User. HA cache hits get the name from a warm person
-  map without waiting; voice-only cache hits stay unnamed. Branch
-  feat/trace-identity-memory, not committed.
+  map without waiting; voice-only cache hits stay unnamed. PR #159
+  (merged), not released yet.
   Passed: ruff check/format clean; container suite 4527 passed, 1 skipped;
   independent review findings (name vs source badge, cache-hit names,
   snippet redaction order, owui id redaction, attached flag) fixed.

@@ -22,9 +22,17 @@ from app.models.agent import SpeakerContext
 from app.util.tasks import spawn
 from app.voice.audio import pcm_duration_s
 from app.voice.enrollment import EnrollmentState
-from app.voice.profiles import ProfileCentroidCache, match_embedding
+from app.voice.profiles import (
+    REJECTED_TOO_SHORT,
+    ProfileCentroidCache,
+    ProfileScore,
+    check_enrollment_sample,
+    match_embedding,
+    scores_payload,
+)
 from app.voice.speaker_engine import SpeakerEngine, SpeakerEngineUnavailableError
 from app.voice.turn_store import SpeakerLookup, SpeakerTurnStore
+from app.voice.vad import SpeechTrim, VoiceActivityTrimmer
 
 logger = logging.getLogger(__name__)
 
@@ -37,12 +45,14 @@ STATUS_DISABLED = "disabled"
 STATUS_UNAVAILABLE = "unavailable"
 STATUS_UNSUPPORTED_AUDIO = "unsupported_audio"
 STATUS_ENROLLED_SAMPLE = "enrolled_sample"
+STATUS_REJECTED_SAMPLE = "rejected_sample"
 STATUS_ERROR = "error"
 
 # Hard upper bound for a background speaker lookup. The turn itself never
 # blocks longer than ``voice.speaker_id.wait_ms`` (see PendingSpeakerLookup).
 LOOKUP_HARD_CAP_S = 5.0
 _DEFAULT_WAIT_MS = int(VOICE_DEFAULTS["voice.speaker_id.wait_ms"])  # type: ignore[call-overload]
+_DEFAULT_ENROLL_MIN_SIMILARITY = float(VOICE_DEFAULTS["voice.speaker_id.enroll_min_similarity"])  # type: ignore[arg-type]
 
 
 @dataclass(frozen=True)
@@ -54,6 +64,7 @@ class VoiceConfig:
     min_enroll_duration_s: float
     wait_ms: int
     num_threads: int
+    enroll_min_similarity: float = _DEFAULT_ENROLL_MIN_SIMILARITY
 
 
 @dataclass(frozen=True)
@@ -67,6 +78,11 @@ class PendingEnrollment:
     duration_s: float
     compute_ms: float | None = None
     latency_ms: float | None = None
+    # Speech seconds after voice-activity trimming (None when the VAD did not run).
+    speech_s: float | None = None
+    vad: bool | None = None
+    # Diagnostic result fields (speech, VAD flag, scores) carried to the commit.
+    diagnostics: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -74,11 +90,16 @@ class TurnAnalysis:
     """Outcome of :meth:`SpeakerIdService.analyze_turn`.
 
     ``pending`` is set for an enrollment turn whose sample still awaits
-    confirmation (:meth:`SpeakerIdService.commit_enrollment`).
+    confirmation (:meth:`SpeakerIdService.commit_enrollment`); ``rejection``
+    for an enrollment turn whose sample was rejected -- it is counted and
+    shown only once the turn is confirmed
+    (:meth:`SpeakerIdService.commit_rejection`), an aborted turn records
+    nothing.
     """
 
     result: dict[str, Any]
     pending: PendingEnrollment | None = None
+    rejection: dict[str, Any] | None = None
 
 
 def _clamp(key: str, value: float) -> float:
@@ -130,6 +151,7 @@ async def load_voice_config() -> VoiceConfig:
         min_enroll_duration_s=await _read_float("voice.speaker_id.min_enroll_duration_s"),
         wait_ms=await _read_int("voice.speaker_id.wait_ms"),
         num_threads=await _read_int("voice.speaker_id.num_threads"),
+        enroll_min_similarity=await _read_float("voice.speaker_id.enroll_min_similarity"),
     )
 
 
@@ -145,12 +167,23 @@ def make_result(
     reason: str | None = None,
     compute_ms: float | None = None,
     latency_ms: float | None = None,
+    speech_s: float | None = None,
+    vad: bool | None = None,
+    scores: list[dict[str, Any]] | None = None,
+    second_name: str | None = None,
+    second_score: float | None = None,
 ) -> dict[str, Any]:
     """Build the canonical speaker-identification result dict.
 
-    ``compute_ms`` is the wall time of the embedding plus profile matching;
-    ``latency_ms`` runs from the analysis trigger (``audio_end``) until the
-    result is available. Both are None when no embedding was computed.
+    ``compute_ms`` is the wall time of voice-activity trimming, embedding and
+    profile matching; ``latency_ms`` runs from the analysis trigger
+    (``audio_end``) until the result is available. Both are None when
+    nothing was computed. ``duration_s`` is the raw turn length,
+    ``speech_s`` the speech kept by the VAD (``vad`` False: the whole turn
+    was used; None: not analysed). ``scores`` lists every profile's score
+    (best first) and ``second_name``/``second_score`` the runner-up. ``name``
+    is set only for an identified speaker or the enrollment target, never
+    for an ``unknown`` turn.
     """
     return {
         "status": status,
@@ -160,9 +193,28 @@ def make_result(
         "score": score,
         "margin": margin,
         "duration_s": round(float(duration_s), 3),
+        "speech_s": speech_s,
+        "vad": vad,
+        "scores": scores,
+        "second_name": second_name,
+        "second_score": second_score,
         "reason": reason,
         "compute_ms": compute_ms,
         "latency_ms": latency_ms,
+    }
+
+
+def _trim_fields(trim: SpeechTrim) -> dict[str, Any]:
+    return {"speech_s": trim.speech_s, "vad": trim.vad}
+
+
+def _score_fields(ranked: tuple[ProfileScore, ...], *, identified: bool = False) -> dict[str, Any]:
+    """``scores`` for every analysed turn; the runner-up only next to an identified speaker."""
+    second = ranked[1] if identified and len(ranked) > 1 else None
+    return {
+        "scores": scores_payload(ranked),
+        "second_name": second.profile.name if second is not None else None,
+        "second_score": round(second.score, 4) if second is not None else None,
     }
 
 
@@ -181,26 +233,41 @@ class SpeakerIdService:
         store: SpeakerTurnStore | None = None,
         enrollment: EnrollmentState | None = None,
         centroids: ProfileCentroidCache | None = None,
+        vad: VoiceActivityTrimmer | Any | None = None,
     ) -> None:
         self.engine = engine if engine is not None else SpeakerEngine()
         self.store = store if store is not None else SpeakerTurnStore()
         self.enrollment = enrollment if enrollment is not None else EnrollmentState()
         self.centroids = centroids if centroids is not None else ProfileCentroidCache()
+        self.vad = vad if vad is not None else VoiceActivityTrimmer()
 
     def invalidate_profiles(self) -> None:
         self.centroids.invalidate()
 
     async def warm_up(self, num_threads: int | None = None) -> bool:
-        """Load the engine (downloading the model when missing). Never raises."""
+        """Load the engine and the VAD (downloading models when missing). Never raises.
+
+        Returns the engine readiness; a missing VAD only means whole turns
+        are embedded.
+        """
         threads = num_threads if num_threads is not None else await _read_int("voice.speaker_id.num_threads")
         try:
-            return bool(await self.engine.ensure_ready(threads))
+            ready = bool(await self.engine.ensure_ready(threads))
         except Exception:
             logger.warning("Speaker-embedding engine warm-up failed", exc_info=True)
-            return False
+            ready = False
+        try:
+            await self.vad.ensure_ready()
+        except Exception:
+            logger.warning("Voice-activity detector warm-up failed", exc_info=True)
+        return ready
 
     def schedule_warm_up(self) -> None:
-        """Start a background warm-up unless the engine is ready or loading."""
+        """Start background warm-ups for the VAD and, unless ready or loading, the engine."""
+        try:
+            self.vad.schedule_warm_up()
+        except Exception:
+            logger.debug("Voice-activity detector warm-up could not be scheduled", exc_info=True)
         if self.engine.status in ("ready", "loading"):
             return
         spawn(self.warm_up(), name="speaker_engine_warm_up")
@@ -226,6 +293,8 @@ class SpeakerIdService:
         analysis = await self.analyze_turn(pcm, sample_rate, config, received_at=time.perf_counter())
         if analysis.pending is not None:
             return await self.commit_enrollment(analysis.pending)
+        if analysis.rejection is not None:
+            return self.commit_rejection(analysis.rejection)
         return analysis.result
 
     async def analyze_turn(
@@ -248,18 +317,18 @@ class SpeakerIdService:
         if armed is not None:
             result, pending = await self._prepare_enrollment(pcm, sample_rate, duration, armed, config)
             _set_latency(result, received_at)
-            if pending is None:
-                self.store.record_recent(result)
-            else:
+            if pending is not None:
                 pending = replace(pending, latency_ms=result["latency_ms"])
-            return TurnAnalysis(result=result, pending=pending)
-        result, candidate = await self._identify(pcm, sample_rate, duration, config)
+                return TurnAnalysis(result=result, pending=pending)
+            reason = result.get("reason")
+            if isinstance(reason, str) and reason.startswith("rejected_"):
+                # Counted and shown only when the turn is confirmed (``commit_rejection``).
+                return TurnAnalysis(result=result, rejection=dict(result))
+            self.store.record_recent(result)
+            return TurnAnalysis(result=result)
+        result = await self._identify(pcm, sample_rate, duration, config)
         _set_latency(result, received_at)
-        recent = dict(result)
-        if candidate is not None and recent.get("name") is None:
-            # Calibration aid: show the nearest profile for unknown turns.
-            recent["name"] = candidate
-        self.store.record_recent(recent)
+        self.store.record_recent(result)
         return TurnAnalysis(result=result)
 
     def _engine_ready_or_warm_up(self) -> bool:
@@ -273,49 +342,62 @@ class SpeakerIdService:
         self.schedule_warm_up()
         return False
 
-    async def _identify(
-        self, pcm: bytes, sample_rate: int, duration: float, config: VoiceConfig
-    ) -> tuple[dict[str, Any], str | None]:
+    async def _identify(self, pcm: bytes, sample_rate: int, duration: float, config: VoiceConfig) -> dict[str, Any]:
         if duration < config.min_duration_s:
-            return make_result(STATUS_TOO_SHORT, duration_s=duration), None
+            # Speech can never exceed the raw length: skip VAD and embedding.
+            return make_result(STATUS_TOO_SHORT, duration_s=duration)
         try:
             centroids = await self.centroids.get(self.engine.model_id)
         except Exception:
             logger.warning("Loading voice profiles failed", exc_info=True)
-            return make_result(STATUS_ERROR, duration_s=duration, reason="profiles_unavailable"), None
+            return make_result(STATUS_ERROR, duration_s=duration, reason="profiles_unavailable")
         if not centroids:
-            return make_result(STATUS_NO_PROFILES, duration_s=duration), None
+            return make_result(STATUS_NO_PROFILES, duration_s=duration)
         if not self._engine_ready_or_warm_up():
-            return make_result(STATUS_UNAVAILABLE, duration_s=duration, reason="engine_not_ready"), None
+            return make_result(STATUS_UNAVAILABLE, duration_s=duration, reason="engine_not_ready")
         started_at = time.perf_counter()
+        trim = await self.vad.trim(pcm, sample_rate)
+        trimmed = _trim_fields(trim)
+        if trim.speech_s <= 0 or not trim.pcm or trim.speech_s < config.min_duration_s:
+            # Never embed an empty buffer, even with ``min_duration_s`` 0.
+            reason = "no_speech" if trim.speech_s <= 0 or not trim.pcm else None
+            return make_result(
+                STATUS_TOO_SHORT, duration_s=duration, reason=reason, compute_ms=elapsed_ms(started_at), **trimmed
+            )
         try:
-            embedding = await self.engine.embed(pcm, sample_rate, num_threads=config.num_threads)
+            embedding = await self.engine.embed(trim.pcm, sample_rate, num_threads=config.num_threads)
         except SpeakerEngineUnavailableError:
-            return make_result(STATUS_UNAVAILABLE, duration_s=duration), None
+            return make_result(STATUS_UNAVAILABLE, duration_s=duration, **trimmed)
         except Exception:
             logger.warning("Speaker embedding failed", exc_info=True)
-            return make_result(STATUS_ERROR, duration_s=duration, reason="embedding_failed"), None
+            return make_result(STATUS_ERROR, duration_s=duration, reason="embedding_failed", **trimmed)
         match = match_embedding(embedding, centroids, threshold=config.threshold, margin=config.margin)
         compute_ms = elapsed_ms(started_at)
-        candidate = match.best.name if match.best is not None else None
-        if match.identified and match.best is not None:
-            return (
-                make_result(
-                    STATUS_IDENTIFIED,
-                    duration_s=duration,
-                    profile_id=match.best.profile_id,
-                    name=match.best.name,
-                    ha_user_id=match.best.ha_user_id,
-                    score=match.score,
-                    margin=match.margin,
-                    compute_ms=compute_ms,
-                ),
-                candidate,
+        identified = match.identified and match.best is not None
+        scored = _score_fields(match.ranked, identified=identified)
+        if identified and match.best is not None:
+            return make_result(
+                STATUS_IDENTIFIED,
+                duration_s=duration,
+                profile_id=match.best.profile_id,
+                name=match.best.name,
+                ha_user_id=match.best.ha_user_id,
+                score=match.score,
+                margin=match.margin,
+                compute_ms=compute_ms,
+                **trimmed,
+                **scored,
             )
-        result = make_result(
-            STATUS_UNKNOWN, duration_s=duration, score=match.score, margin=match.margin, compute_ms=compute_ms
+        # Unknown: no name. The nearest profile is only listed in ``scores``.
+        return make_result(
+            STATUS_UNKNOWN,
+            duration_s=duration,
+            score=match.score,
+            margin=match.margin,
+            compute_ms=compute_ms,
+            **trimmed,
+            **scored,
         )
-        return result, candidate
 
     async def _prepare_enrollment(
         self,
@@ -325,24 +407,76 @@ class SpeakerIdService:
         armed: dict[str, Any],
         config: VoiceConfig,
     ) -> tuple[dict[str, Any], PendingEnrollment | None]:
+        """Embed an enrollment turn and run the sample guard (nothing is stored here).
+
+        A sample is rejected when it has too little speech
+        (``rejected_too_short``) or does not fit the profile (see
+        :func:`app.voice.profiles.check_enrollment_sample`). Rejected
+        samples never count toward the requested sample count.
+        """
         profile_id = int(armed["profile_id"])
         name = armed.get("name")
+        target: dict[str, Any] = {"profile_id": profile_id, "name": name}
         if duration < config.min_enroll_duration_s:
-            return make_result(STATUS_TOO_SHORT, duration_s=duration, profile_id=profile_id, name=name), None
+            return make_result(STATUS_TOO_SHORT, duration_s=duration, reason=REJECTED_TOO_SHORT, **target), None
         if not self._engine_ready_or_warm_up():
-            result = make_result(
-                STATUS_UNAVAILABLE, duration_s=duration, profile_id=profile_id, name=name, reason="engine_not_ready"
-            )
+            result = make_result(STATUS_UNAVAILABLE, duration_s=duration, reason="engine_not_ready", **target)
+            return result, None
+        if getattr(self.vad, "state", "ready") == "pending":
+            # Never store a whole-turn sample while silence trimming is about to
+            # become available; a permanently unavailable VAD (``failed``) still
+            # enrolls, the sample is stored with ``speech_s`` NULL (pre-VAD).
+            with contextlib.suppress(Exception):
+                self.vad.schedule_warm_up()
+            result = make_result(STATUS_UNAVAILABLE, duration_s=duration, reason="vad_not_ready", **target)
             return result, None
         started_at = time.perf_counter()
+        trim = await self.vad.trim(pcm, sample_rate)
+        trimmed = _trim_fields(trim)
+        if trim.speech_s <= 0 or not trim.pcm or trim.speech_s < config.min_enroll_duration_s:
+            result = make_result(
+                STATUS_TOO_SHORT,
+                duration_s=duration,
+                reason=REJECTED_TOO_SHORT,
+                compute_ms=elapsed_ms(started_at),
+                **target,
+                **trimmed,
+            )
+            return result, None
         try:
-            embedding = await self.engine.embed(pcm, sample_rate, num_threads=config.num_threads)
+            embedding = await self.engine.embed(trim.pcm, sample_rate, num_threads=config.num_threads)
         except SpeakerEngineUnavailableError:
-            return make_result(STATUS_UNAVAILABLE, duration_s=duration, profile_id=profile_id, name=name), None
+            return make_result(STATUS_UNAVAILABLE, duration_s=duration, **target, **trimmed), None
         except Exception:
             logger.warning("Speaker embedding failed during enrollment", exc_info=True)
+            result = make_result(STATUS_ERROR, duration_s=duration, reason="embedding_failed", **target, **trimmed)
+            return result, None
+        try:
+            centroids = await self.centroids.get(self.engine.model_id)
+        except Exception:
+            # Without the profiles the guard cannot run: never store an unchecked sample.
+            logger.warning("Loading voice profiles for the enrollment guard failed", exc_info=True)
+            result = make_result(STATUS_ERROR, duration_s=duration, reason="profiles_unavailable", **target, **trimmed)
+            return result, None
+        check = check_enrollment_sample(
+            embedding,
+            profile_id,
+            centroids,
+            threshold=config.threshold,
+            margin=config.margin,
+            min_similarity=config.enroll_min_similarity,
+        )
+        compute_ms = elapsed_ms(started_at)
+        diagnostics: dict[str, Any] = {**trimmed, **_score_fields(check.ranked), "score": check.own_score}
+        if check.reason is not None:
+            logger.info("Rejected voice enrollment sample for profile %s: %s", profile_id, check.reason)
             result = make_result(
-                STATUS_ERROR, duration_s=duration, profile_id=profile_id, name=name, reason="embedding_failed"
+                STATUS_REJECTED_SAMPLE,
+                duration_s=duration,
+                reason=check.reason,
+                compute_ms=compute_ms,
+                **target,
+                **diagnostics,
             )
             return result, None
         pending = PendingEnrollment(
@@ -351,17 +485,29 @@ class SpeakerIdService:
             vector=embedding.astype("float32", copy=False).reshape(-1),
             model_id=self.engine.model_id,
             duration_s=round(duration, 3),
-            compute_ms=elapsed_ms(started_at),
+            compute_ms=compute_ms,
+            speech_s=trim.speech_s if trim.vad else None,
+            vad=trim.vad,
+            diagnostics=diagnostics,
         )
         # Provisional result: the sample is stored only by ``commit_enrollment``.
         result = make_result(
             STATUS_ENROLLED_SAMPLE,
             duration_s=duration,
-            profile_id=profile_id,
-            name=name,
-            compute_ms=pending.compute_ms,
+            compute_ms=compute_ms,
+            **target,
+            **diagnostics,
         )
         return result, pending
+
+    def commit_rejection(self, rejection: dict[str, Any]) -> dict[str, Any]:
+        """Record a rejected enrollment sample of a confirmed turn (recent results and enrollment counters)."""
+        profile_id = rejection.get("profile_id")
+        reason = rejection.get("reason")
+        if profile_id is not None and isinstance(reason, str):
+            self.enrollment.record_rejection(int(profile_id), reason)
+        self.store.record_recent(rejection)
+        return rejection
 
     async def commit_enrollment(self, pending: PendingEnrollment) -> dict[str, Any]:
         """Store a confirmed enrollment sample and count it against the armed enrollment."""
@@ -370,6 +516,7 @@ class SpeakerIdService:
         duration = pending.duration_s
         # Timing covers the analysis at ``audio_end``, not this commit.
         timing = {"compute_ms": pending.compute_ms, "latency_ms": pending.latency_ms}
+        diagnostics = dict(pending.diagnostics or {})
         armed = self.enrollment.current()
         if armed is None or int(armed["profile_id"]) != profile_id:
             # Cancelled, expired or re-armed for another profile meanwhile.
@@ -391,6 +538,7 @@ class SpeakerIdService:
                 int(vector.size),
                 pending.model_id,
                 duration,
+                pending.speech_s,
             )
         except Exception:
             # The armed profile may have been deleted meanwhile.
@@ -409,7 +557,9 @@ class SpeakerIdService:
         self.centroids.invalidate()
         remaining = self.enrollment.record_sample(profile_id)
         logger.info("Stored voice enrollment sample for profile %s (%d remaining)", profile_id, remaining)
-        result = make_result(STATUS_ENROLLED_SAMPLE, duration_s=duration, profile_id=profile_id, name=name, **timing)
+        result = make_result(
+            STATUS_ENROLLED_SAMPLE, duration_s=duration, profile_id=profile_id, name=name, **timing, **diagnostics
+        )
         self.store.record_recent(result)
         return result
 
@@ -606,6 +756,11 @@ class PendingSpeakerLookup:
             "score": result.get("score"),
             "margin": result.get("margin"),
             "duration_s": result.get("duration_s"),
+            "speech_s": result.get("speech_s"),
+            "vad": result.get("vad"),
+            "scores": result.get("scores"),
+            "second_name": result.get("second_name"),
+            "second_score": result.get("second_score"),
             "waited_ms": waited_ms,
             "lookup_ms": self._lookup_ms,
             "compute_ms": result.get("compute_ms"),

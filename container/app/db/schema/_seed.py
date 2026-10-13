@@ -424,14 +424,21 @@ async def _seed_defaults(db: aiosqlite.Connection) -> None:
             str(VOICE_DEFAULTS["voice.speaker_id.min_duration_s"]),
             "float",
             "voice",
-            "Minimum voice-turn length in seconds for identification",
+            "Minimum seconds of detected speech for identification",
         ),
         (
             "voice.speaker_id.min_enroll_duration_s",
             str(VOICE_DEFAULTS["voice.speaker_id.min_enroll_duration_s"]),
             "float",
             "voice",
-            "Minimum voice-turn length in seconds for an enrollment sample",
+            "Minimum seconds of detected speech for an enrollment sample",
+        ),
+        (
+            "voice.speaker_id.enroll_min_similarity",
+            str(VOICE_DEFAULTS["voice.speaker_id.enroll_min_similarity"]),
+            "float",
+            "voice",
+            "Minimum cosine similarity (0.0-1.0) of a new enrollment sample to the profile's existing samples",
         ),
         (
             "voice.speaker_id.wait_ms",

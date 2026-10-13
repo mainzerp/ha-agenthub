@@ -173,6 +173,28 @@ async def _clear_hot_path_caches():
 
 
 @pytest.fixture(autouse=True)
+def _no_vad_model_download():
+    """Never download or load the Silero VAD model in tests.
+
+    A ``SpeakerIdService`` built without an injected ``vad`` uses the real
+    ``VoiceActivityTrimmer``, whose background warm-up would fetch the model
+    when sherpa-onnx is installed (CI). Reporting sherpa-onnx as missing and
+    failing the resolver makes that trimmer deterministically ``failed`` in
+    every environment, so turns embed the whole buffer (``vad=False``).
+    """
+    from app.voice import vad as vad_module
+
+    async def _unavailable():
+        raise vad_module.VadUnavailableError("VAD model download disabled in tests")
+
+    with (
+        patch.object(vad_module.voice_model, "ensure_vad_model_path", _unavailable),
+        patch.object(vad_module, "sherpa_available", lambda: False),
+    ):
+        yield
+
+
+@pytest.fixture(autouse=True)
 def _clear_visibility_rules_cache():
     """Clear the in-memory visibility rules cache between tests."""
     from app.entity.visibility import invalidate_visibility_rules_cache

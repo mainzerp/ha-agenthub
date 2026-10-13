@@ -360,14 +360,49 @@ Optional; off by default (`voice.speaker_id.enabled`). Flow:
    depends on the container.
 3. The container registers the `conversation_id` in an in-memory turn
    store (`app/voice/turn_store.py`: single-use entries, 120 s TTL, 256
-   entries, newest session per id wins) at `start`, computes a CAM++
-   speaker embedding with sherpa-onnx in a worker thread
-   (`app/voice/speaker_engine.py`), and cosine-matches it against
+   entries, newest session per id wins) at `start`. At analysis it
+   first trims the turn to its speech with the sherpa-onnx Silero VAD
+   (`app/voice/vad.py`, worker thread; the speech segments are
+   concatenated), so silence and pauses never shape the embedding. The
+   duration rules (`min_duration_s`, `min_enroll_duration_s`) apply to
+   these speech seconds. When the VAD is not loaded yet or fails, the
+   whole buffer is used and the result says `vad=false` (also for audio
+   that is not 16 kHz); an empty speech buffer is never embedded
+   (`too_short` / `no_speech`). A data-directory VAD model that fails to
+   load is deleted so the next attempt re-downloads it. VAD never fails
+   or delays a turn. It then computes a CAM++ speaker embedding of the
+   speech with sherpa-onnx in a worker thread
+   (`app/voice/speaker_engine.py`) and cosine-matches it against
    per-profile centroids (mean of L2-normalized samples of the current
    model). `identified` needs score >= `threshold` and a lead of
-   `margin` over the second-best profile. A voice turn never waits for a
-   model (re)load: a changed `num_threads` is applied by a background
-   reload while the loaded extractor keeps serving (kept on failure).
+   `margin` over the second-best profile; otherwise the result is
+   `unknown` and names no one. Both models (`app/voice/model.py`) ship in
+   the image under `/opt/models/speaker` or are downloaded once into
+   `/data/models/speaker` (size and SHA-256 verified). A voice turn never
+   waits for a model (re)load: a changed `num_threads` is applied by a
+   background reload while the loaded extractor keeps serving (kept on
+   failure).
+   While an enrollment is armed, the speech embedding passes a sample
+   guard (`check_enrollment_sample` in `app/voice/profiles.py`) before it
+   may be stored: with existing samples it is rejected when its own
+   score does not lead the closest other profile by at least
+   `margin * 0.5` -- including another profile scoring higher
+   (`rejected_other_speaker`) -- or the own score is below
+   `enroll_min_similarity`
+   (`rejected_inconsistent`); a profile's first sample is rejected when
+   it would be identified as another profile. Too little speech is
+   `rejected_too_short`. Rejected samples are not stored, do not count
+   toward the requested sample count and are recorded on the armed
+   enrollment (`rejected`, `last_rejection`). Every result carries the
+   diagnostics `speech_s`, `vad`, `scores` (all profiles, best first)
+   and, for `identified`, `second_name` / `second_score`. A rejection is
+   carried like a pending sample and counted only when `end` confirms
+   the turn. While the VAD is `pending` (not started or loading) an
+   enrollment turn answers `unavailable` / `vad_not_ready`; when it
+   `failed`, samples are stored untrimmed with `speech_s` NULL
+   (flagged pre-VAD). The dashboard ring buffer
+   (`SpeakerTurnStore.record_recent`) keeps them, without audio or
+   embeddings.
 4. The conversation turn for the same `conversation_id` (the bridge sends
    the same chat-session id) starts a speaker lookup in the orchestrator
    prelude (`PendingSpeakerLookup`), concurrently with memory search and
@@ -384,7 +419,8 @@ Optional; off by default (`voice.speaker_id.enabled`). Flow:
    Requesting person below). Device/domain agents (security included),
    lists, calendar and custom/plugin agents never see either line. Every consumed entry records a
    `speaker_id` trace span at dispatch (`status`, `profile_id`, `score`,
-   `margin`, `duration_s`, `waited_ms` = time blocked at dispatch,
+   `margin`, `duration_s` (raw turn), `speech_s`, `vad`, `scores`,
+   `second_name`, `second_score`, `waited_ms` = time blocked at dispatch,
    `lookup_ms` = lookup start to result, `compute_ms`, `latency_ms`,
    `speaker_name` and the profile's linked `speaker_ha_user_id` when
    identified). An early prelude exit cancels the

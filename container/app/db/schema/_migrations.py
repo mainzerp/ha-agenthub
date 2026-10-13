@@ -1061,6 +1061,50 @@ async def _migrate_to_50(db: aiosqlite.Connection) -> None:
     await db.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (50)")
 
 
+# Voice speaker-ID defaults changed in migration 51: (key, old default, new
+# default). Only values still on the old default are updated.
+_VOICE_DEFAULT_UPDATES_51: tuple[tuple[str, float, str], ...] = (
+    ("voice.speaker_id.margin", 0.05, "0.12"),
+    ("voice.speaker_id.min_duration_s", 1.5, "1.0"),
+    ("voice.speaker_id.min_enroll_duration_s", 2.0, "1.5"),
+)
+
+
+async def _migrate_to_51(db: aiosqlite.Connection) -> None:
+    # Migration 51: speaker-identification reliability. Adds the speech
+    # seconds (after voice-activity trimming) to voice samples, moves the
+    # voice defaults that live traces proved too permissive (margin 0.05 let
+    # two enrolled speakers swap; durations now count speech, not silence)
+    # and seeds the enrollment consistency guard. A value an admin changed
+    # away from the old default is preserved. Idempotent: the column is
+    # guarded, the updates only match old defaults, the seed is INSERT OR
+    # IGNORE.
+    if not await _column_exists(db, "voice_samples", "speech_s"):
+        await db.execute("ALTER TABLE voice_samples ADD COLUMN speech_s REAL")
+    for key, old_default, new_value in _VOICE_DEFAULT_UPDATES_51:
+        cursor = await db.execute("SELECT value FROM settings WHERE key = ?", (key,))
+        row = await cursor.fetchone()
+        if row is None:
+            continue
+        try:
+            current = float(row[0])
+        except (TypeError, ValueError):
+            continue
+        if abs(current - old_default) < 1e-9:
+            await db.execute("UPDATE settings SET value = ? WHERE key = ?", (new_value, key))
+    await db.execute(
+        "INSERT OR IGNORE INTO settings (key, value, value_type, category, description) VALUES (?, ?, ?, ?, ?)",
+        (
+            "voice.speaker_id.enroll_min_similarity",
+            "0.45",
+            "float",
+            "voice",
+            "Minimum cosine similarity (0.0-1.0) of a new enrollment sample to the profile's existing samples",
+        ),
+    )
+    await db.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (51)")
+
+
 # Ordered registry of (version, migration_callable). Each migration records
 # its own version marker. Applied in ascending order for versions greater
 # than the current schema version.
@@ -1114,6 +1158,7 @@ MIGRATIONS: list[tuple[int, Callable[[aiosqlite.Connection], Awaitable[None]]]] 
     (48, _migrate_to_48),
     (49, _migrate_to_49),
     (50, _migrate_to_50),
+    (51, _migrate_to_51),
 ]
 
 

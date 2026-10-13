@@ -10,11 +10,15 @@ One connection per voice turn. Protocol (JSON text frames + binary frames):
   turn (the STT produced a non-empty transcript), or ``{"type": "abort"}``
   discards it. A legacy ``transcript`` string is tolerated, never required.
 - server -> ``{"type": "result", "status": ..., "profile_id", "name", "ha_user_id",
-  "score", "margin", "duration_s", "reason", "compute_ms", "latency_ms"}`` exactly
-  once, then a normal close. ``compute_ms`` (embedding plus matching) and
-  ``latency_ms`` (``audio_end`` -- or the frame/disconnect that triggered the
-  analysis -- until the result is available to the conversation) are null
-  when no embedding was computed.
+  "score", "margin", "duration_s", "speech_s", "vad", "scores", "second_name",
+  "second_score", "reason", "compute_ms", "latency_ms"}`` exactly once, then a
+  normal close. ``compute_ms`` (voice-activity trimming, embedding and
+  matching) and ``latency_ms`` (``audio_end`` -- or the frame/disconnect that
+  triggered the analysis -- until the result is available to the
+  conversation) are null when nothing was computed. ``speech_s`` is the
+  speech the VAD kept (``vad`` false: the whole turn was embedded),
+  ``scores`` every profile's score (best first). ``name`` is null for
+  ``unknown``.
 
 A status known at ``start`` (``disabled``, ``unsupported_audio``, or
 ``error`` with reason ``no_conversation_id`` / ``invalid_conversation_id``)
@@ -23,8 +27,9 @@ disconnect and closes. The result is CONTEXT ONLY for the conversation turn
 with the same ``conversation_id`` -- it never authenticates a user.
 
 While an enrollment is armed, the embedding may be computed at
-``audio_end``, but the sample is stored only after ``end``; ``abort``,
-disconnect or idle timeout before ``end`` discard it.
+``audio_end``, but the sample is stored -- or a rejected sample counted --
+only after ``end``; ``abort``, disconnect or idle timeout before ``end``
+discard it.
 """
 
 from __future__ import annotations
@@ -167,6 +172,10 @@ def _format_ms(value: Any) -> str:
     return f"{value:.1f}ms" if isinstance(value, (int, float)) else "-"
 
 
+def _format_s(value: Any) -> str:
+    return f"{value:.2f}s" if isinstance(value, (int, float)) else "-"
+
+
 class VoiceTurnSession:
     """State machine for one ``/ws/voice`` connection (one voice turn)."""
 
@@ -187,6 +196,8 @@ class VoiceTurnSession:
         # ``time.perf_counter()`` when the analysis was triggered (latency_ms origin).
         self._received_at: float | None = None
         self._pending_enrollment: PendingEnrollment | None = None
+        # A rejected enrollment sample, recorded only when ``end`` confirms the turn.
+        self._pending_rejection: dict[str, Any] | None = None
         self._transcript_chars: int | None = None
 
     async def run(self) -> None:
@@ -304,6 +315,11 @@ class VoiceTurnSession:
             except Exception:
                 logger.warning("Storing the voice enrollment sample failed", exc_info=True)
                 result = make_result(STATUS_ERROR, profile_id=pending.profile_id, reason="sample_not_stored")
+        rejection = self._pending_rejection
+        if rejection is not None:
+            # ``end`` confirms the turn: only now does the rejection count and show.
+            self._pending_rejection = None
+            result = self._service.commit_rejection(rejection)
         await self._send_result(result)
         await self._close()
 
@@ -326,6 +342,8 @@ class VoiceTurnSession:
             return
         self._audio_ended = True
         result = await self._await_result()
+        # An unconfirmed turn never counts as a rejected sample either.
+        self._pending_rejection = None
         pending = self._pending_enrollment
         if pending is not None:
             # An unconfirmed turn never becomes an enrollment sample.
@@ -371,15 +389,20 @@ class VoiceTurnSession:
         else:
             result = analysis.result
             self._pending_enrollment = analysis.pending
+            self._pending_rejection = analysis.rejection
         # No await between the end of the analysis and ``resolve``: ``latency_ms``
         # is the time until a waiting conversation can see the result.
         if self._conversation_id is not None and self._token is not None:
             self._service.store.resolve(self._conversation_id, self._token, result)
             self._resolved = True
         logger.info(
-            "Voice turn processed: status=%s duration=%.2fs compute=%s latency=%s conversation=%s",
+            "Voice turn processed: status=%s reason=%s duration=%.2fs speech=%s vad=%s compute=%s latency=%s "
+            "conversation=%s",
             result.get("status"),
+            result.get("reason") or "-",
             result.get("duration_s") or 0.0,
+            _format_s(result.get("speech_s")),
+            result.get("vad"),
             _format_ms(result.get("compute_ms")),
             _format_ms(result.get("latency_ms")),
             self._conversation_id,
@@ -400,6 +423,7 @@ class VoiceTurnSession:
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await self._processing
         self._pending_enrollment = None
+        self._pending_rejection = None
         if self._conversation_id is not None and self._token is not None:
             self._service.store.discard(self._conversation_id, self._token)
             self._resolved = True

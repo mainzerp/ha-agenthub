@@ -83,6 +83,19 @@ digest = hashlib.sha256(open(p, 'rb').read()).hexdigest(); \
 sys.exit(0 if digest == '${SPEAKER_MODEL_SHA256}' else 'speaker model checksum mismatch')" \
     && chmod -R a+rX /opt/models
 
+# Pre-download the Silero voice-activity detector that trims silence before
+# speaker embedding. Keep in sync with VAD_MODEL_URL / VAD_MODEL_SHA256 in
+# app/voice/model.py; the app falls back to a one-time download into
+# /data/models/speaker (and to untrimmed audio) when this file is missing.
+ARG VAD_MODEL_URL=https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx
+ARG VAD_MODEL_SHA256=9e2449e1087496d8d4caba907f23e0bd3f78d91fa552479bb9c23ac09cbb1fd6
+RUN python -c "import hashlib, sys, urllib.request; \
+p = '/opt/models/speaker/silero_vad.onnx'; \
+urllib.request.urlretrieve('${VAD_MODEL_URL}', p); \
+digest = hashlib.sha256(open(p, 'rb').read()).hexdigest(); \
+sys.exit(0 if digest == '${VAD_MODEL_SHA256}' else 'VAD model checksum mismatch')" \
+    && chmod -R a+rX /opt/models
+
 EXPOSE 8080
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \

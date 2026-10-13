@@ -43,9 +43,10 @@ MEMORY_DEFAULTS: dict[str, object] = {
 VOICE_DEFAULTS: dict[str, object] = {
     "voice.speaker_id.enabled": False,
     "voice.speaker_id.threshold": 0.55,
-    "voice.speaker_id.margin": 0.05,
-    "voice.speaker_id.min_duration_s": 1.5,
-    "voice.speaker_id.min_enroll_duration_s": 2.0,
+    "voice.speaker_id.margin": 0.12,
+    "voice.speaker_id.min_duration_s": 1.0,
+    "voice.speaker_id.min_enroll_duration_s": 1.5,
+    "voice.speaker_id.enroll_min_similarity": 0.45,
     "voice.speaker_id.wait_ms": 500,
     "voice.speaker_id.num_threads": 2,
 }
@@ -56,6 +57,7 @@ VOICE_SETTING_RANGES: dict[str, tuple[float, float]] = {
     "voice.speaker_id.margin": (0.0, 1.0),
     "voice.speaker_id.min_duration_s": (0.0, 30.0),
     "voice.speaker_id.min_enroll_duration_s": (0.5, 30.0),
+    "voice.speaker_id.enroll_min_similarity": (0.0, 1.0),
     "voice.speaker_id.wait_ms": (0, 3000),
     "voice.speaker_id.num_threads": (1, 8),
 }

@@ -1,8 +1,11 @@
 """Armed voice-profile enrollment (in-memory, one profile at a time).
 
-While armed, each finished voice turn long enough becomes an enrollment
-sample for the armed profile instead of being identified. Enrollment
-disarms itself when the target sample count is reached or it expires.
+While armed, each finished voice turn becomes an enrollment candidate for
+the armed profile instead of being identified. Only accepted samples count;
+rejected ones (too little speech, another speaker, inconsistent voice) are
+counted separately with the last rejection reason for the dashboard.
+Enrollment disarms itself when the target sample count is reached or it
+expires.
 """
 
 from __future__ import annotations
@@ -28,6 +31,8 @@ class _Armed:
     collected: int
     expires_monotonic: float
     expires_at: str
+    rejected: int = 0
+    last_rejection: dict[str, Any] | None = None
 
 
 class EnrollmentState:
@@ -75,6 +80,9 @@ class EnrollmentState:
             "profile_id": armed.profile_id,
             "name": armed.name,
             "remaining": max(0, armed.target - armed.collected),
+            "collected": armed.collected,
+            "rejected": armed.rejected,
+            "last_rejection": dict(armed.last_rejection) if armed.last_rejection else None,
             "expires_at": armed.expires_at,
         }
 
@@ -88,6 +96,14 @@ class EnrollmentState:
         if remaining == 0:
             self._armed = None
         return remaining
+
+    def record_rejection(self, profile_id: int, reason: str) -> None:
+        """Count one rejected sample (it never counts toward the target)."""
+        armed = self._armed
+        if armed is None or armed.profile_id != profile_id:
+            return
+        armed.rejected += 1
+        armed.last_rejection = {"reason": reason, "at": datetime.now(UTC).isoformat()}
 
     def rename(self, profile_id: int, name: str) -> None:
         """Update the label of the armed enrollment after a profile rename."""

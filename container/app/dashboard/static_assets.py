@@ -3,7 +3,7 @@
 from app import __version__ as _app_version
 
 # Build counter: bump this whenever static files change significantly.
-_STATIC_BUILD = "19"
+_STATIC_BUILD = "20"
 
 static_version = f"{_app_version}.{_STATIC_BUILD}"
 

@@ -195,7 +195,8 @@ far and closed.
    `transcript` string is tolerated but never required.
 
 While enrollment is armed, the embedding may be computed at `audio_end`,
-but the sample is stored (and counted) only when `end` arrives; `abort`,
+but the sample is stored (and counted) -- or a rejected sample counted
+and recorded -- only when `end` arrives; `abort`,
 disconnect or idle timeout before `end` discard it. Identification starts
 at `audio_end` regardless. The voice path never waits for the engine: a
 turn arriving before it is `ready` reports `unavailable` (reason
@@ -204,15 +205,31 @@ turn arriving before it is `ready` reports `unavailable` (reason
 **Server -> client:** exactly one result frame, then a normal close (`1000`):
 
 ```json
-{"type": "result", "status": "identified", "profile_id": 1, "name": "Alex", "ha_user_id": null, "score": 0.71, "margin": 0.18, "duration_s": 2.4, "reason": null, "compute_ms": 41.7, "latency_ms": 43.2}
+{"type": "result", "status": "identified", "profile_id": 1, "name": "Alex", "ha_user_id": null, "score": 0.71, "margin": 0.18, "duration_s": 2.4, "speech_s": 1.62, "vad": true, "scores": [{"name": "Alex", "score": 0.71}, {"name": "Sam", "score": 0.53}], "second_name": "Sam", "second_score": 0.53, "reason": null, "compute_ms": 41.7, "latency_ms": 43.2}
 ```
 
-Timing fields (milliseconds, 0.1 ms resolution; `null` when no embedding
-was computed, e.g. `disabled`, `too_short`, `no_profiles`,
-`unsupported_audio`, `unavailable`):
+Diagnostic fields (`null` when the turn was not analysed):
 
-- `compute_ms` -- wall time of the embedding plus profile matching (no
-  engine warm-up; an engine that is not ready reports `unavailable`).
+- `duration_s` -- raw turn length; `speech_s` -- seconds of detected
+  speech that were embedded; `vad` -- `true` when voice-activity
+  detection trimmed the turn, `false` when the whole turn was used (VAD
+  not loaded or failed).
+- `scores` -- every profile's cosine score, best first
+  (`[{"name", "score"}]`); `second_name` / `second_score` -- the
+  runner-up, set only for `identified` (otherwise `null`; see `scores`).
+  An empty speech buffer is never embedded (`too_short`, reason
+  `no_speech`); audio other than 16 kHz is not trimmed (`vad` false). `margin` is the best score minus the runner-up.
+- `name` / `profile_id` / `ha_user_id` are set only for `identified` (and
+  the enrollment target while enrolling); an `unknown` result names no
+  one, its nearest profile is `scores[0]`.
+
+Timing fields (milliseconds, 0.1 ms resolution; `null` when nothing was
+computed, e.g. `disabled`, `no_profiles`, `unsupported_audio`,
+`unavailable`, or a turn shorter than the minimum before any analysis):
+
+- `compute_ms` -- wall time of voice-activity detection, embedding and
+  profile matching (no engine warm-up; an engine that is not ready
+  reports `unavailable`).
 - `latency_ms` -- from receipt of `audio_end` (or the `end` frame,
   disconnect or idle timeout that triggered the analysis) until the result
   is available to the waiting conversation. For enrollment turns it ends
@@ -222,12 +239,13 @@ was computed, e.g. `disabled`, `too_short`, `no_profiles`,
 |--------|---------|
 | `identified` | Best profile reached `voice.speaker_id.threshold` and `voice.speaker_id.margin` |
 | `unknown` | No profile qualified (`score`/`margin` still reported) |
-| `too_short` | Turn shorter than `voice.speaker_id.min_duration_s` (or `min_enroll_duration_s` while enrolling) |
+| `too_short` | Less detected speech than `voice.speaker_id.min_duration_s` (reason `no_speech` when the VAD found none), or than `min_enroll_duration_s` while enrolling (reason `rejected_too_short`) |
 | `no_profiles` | No profile has samples for the current model |
-| `enrolled_sample` | Enrollment was armed; the confirmed turn was stored as a sample |
+| `enrolled_sample` | Enrollment was armed; the confirmed turn was stored as a sample (`score` = similarity to the profile's centroid, `null` for its first sample) |
+| `rejected_sample` | Enrollment was armed; the sample guard rejected the turn (reason `rejected_other_speaker`: lead over the closest other profile below `margin * 0.5`, or a first sample identified as another profile; `rejected_inconsistent`: own score below `enroll_min_similarity`); nothing is stored and the sample does not count. Recorded in the recent results and enrollment counters only after `end` |
 | `disabled` | `voice.speaker_id.enabled` is off (sent right after `start`) |
 | `unsupported_audio` | Format other than 16 kHz / 16-bit / mono / PCM (sent right after `start`) |
-| `unavailable` | Embedding engine not loaded (still loading, missing model or dependency); reason `engine_not_ready` while a warm-up is pending |
+| `unavailable` | Embedding engine not loaded (still loading, missing model or dependency); reason `engine_not_ready` while a warm-up is pending. While enrolling, reason `vad_not_ready` while the voice-activity detector is still loading (nothing is stored) |
 | `error` | See `reason` |
 
 `error` reasons: `no_conversation_id`, `invalid_conversation_id` (sent
@@ -814,13 +832,15 @@ Auth: admin session.
 
 | Method | Path | Purpose |
 |--------|------|---------|
-| GET | `/api/admin/voice/status` | `enabled`, `engine` (`ready`/`loading`/`unavailable`), `engine_error`, `model`, armed `enrollment` (`profile_id`, `name`, `remaining`, `expires_at`) or `null`, and `recent` (last 20 results, newest first: `timestamp`, `status`, `profile_id`, `name`, `score`, `margin`, `duration_s`, `compute_ms`, `latency_ms` (see `/ws/voice`); for `unknown` turns `name` is the nearest profile; `unsupported_audio` turns are included, `disabled` turns are not). Starts an engine warm-up when enabled. |
+| GET | `/api/admin/voice/status` | `enabled`, `engine` (`ready`/`loading`/`unavailable`), `engine_error`, `model`, `vad` (voice-activity detector state, same values), `vad_state` (`ready`, `pending` = not started or loading, `failed` = load failed or sherpa-onnx missing) and `vad_error`, armed `enrollment` (`profile_id`, `name`, `remaining`, `collected`, `rejected`, `last_rejection` (`reason`, `at`) or `null`, `expires_at`) or `null`, and `recent` (last 20 results, newest first: `timestamp`, `status`, `profile_id`, `name`, `score`, `margin`, `second_name`, `second_score`, `scores`, `duration_s`, `speech_s`, `vad`, `reason`, `compute_ms`, `latency_ms` (see `/ws/voice`); `name` is `null` for `unknown` turns, the nearest profile is `scores[0]`; `unsupported_audio` turns are included, `disabled` turns are not). Starts an engine and VAD warm-up when enabled. |
 | GET | `/api/admin/voice/profiles` | List profiles (`id`, `name`, `ha_user_id`, `created_at`, `updated_at`, `sample_count` for the current model). |
 | POST | `/api/admin/voice/profiles` | Create `{"name", "ha_user_id"?}` (201). Name max 64 chars, unique (409 on conflict); `ha_user_id` max 128 chars. |
 | PATCH | `/api/admin/voice/profiles/{profile_id}` | Update `name` and/or `ha_user_id` (400 when empty body, 404, 409). |
 | DELETE | `/api/admin/voice/profiles/{profile_id}` | Delete a profile and its samples; disarms its enrollment. |
+| GET | `/api/admin/voice/profiles/{profile_id}/samples` | A profile's samples, oldest first: `{"profile_id", "model", "samples": [...]}` with `id`, `created_at`, `model`, `current_model`, `duration_s` (raw turn), `speech_s` (detected speech; `null` when stored without VAD), `loo_score` (cosine to the centroid of the profile's other current-model samples; `null` with a single sample), `best_other_name` / `best_other_score` (closest other profile), `pre_vad` (`true` when stored without silence trimming, `speech_s` NULL; re-enroll recommended). Scores are `null` for samples of another model. No embeddings are returned. 404 for an unknown profile. |
 | DELETE | `/api/admin/voice/profiles/{profile_id}/samples` | Delete all samples of a profile (all models); returns `deleted`. |
-| POST | `/api/admin/voice/profiles/{profile_id}/enroll` | Arm enrollment, body optional: `samples` (`1-20`, default `5`), `timeout_s` (`30-1800`, default `300`). The next voice turns of at least `voice.speaker_id.min_enroll_duration_s` become samples (any speaker, any satellite) until the count is reached or the timeout expires. One armed profile at a time; arming replaces the previous one. In memory only. 404 for an unknown profile; 409 `Speaker identification is disabled` while `voice.speaker_id.enabled` is off (nothing is armed). |
+| DELETE | `/api/admin/voice/profiles/{profile_id}/samples/{sample_id}` | Delete one sample of the profile; returns `{"ok": true}`. 404 when the profile or the sample (of that profile) does not exist. |
+| POST | `/api/admin/voice/profiles/{profile_id}/enroll` | Arm enrollment, body optional: `samples` (`1-20`, default `5`), `timeout_s` (`30-1800`, default `300`). The next voice turns (any speaker, any satellite) are sample candidates until the count of accepted samples is reached or the timeout expires; candidates with too little speech or failing the sample guard are rejected and do not count (see `rejected_sample` under `/ws/voice`). One armed profile at a time; arming replaces the previous one. In memory only. 404 for an unknown profile; 409 `Speaker identification is disabled` while `voice.speaker_id.enabled` is off (nothing is armed). |
 | DELETE | `/api/admin/voice/enroll` | Cancel the armed enrollment; returns `cancelled`. |
 
 Auth: admin session. Settings live under `voice.speaker_id.*`
