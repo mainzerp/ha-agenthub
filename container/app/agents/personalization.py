@@ -2,8 +2,8 @@
 
 The personalization identity selects *whose* data shapes a response: the
 session-memory bucket, the calendar user mapping (default calendars and
-reminders), the sender name of a sent message and the speaker hint for
-mediation. It is never used for entity visibility, authorization or audit:
+reminders), the sender name of a sent message and the speaker / user hint
+for mediation and the agent prompt. It is never used for entity visibility, authorization or audit:
 ``TaskContext.user_id`` stays the real request user and is never mutated.
 """
 
@@ -12,6 +12,7 @@ from __future__ import annotations
 from typing import Any, Literal
 
 IdentitySource = Literal["ha", "voice", "none"]
+RequesterSource = Literal["ha", "voice"]
 
 # Mirrors ``app.voice.service.STATUS_IDENTIFIED`` (kept local so this helper
 # stays import-light for agents that never touch the voice package).
@@ -71,3 +72,49 @@ def speaker_display_name(context: Any) -> str:
     from app.agents.base import UNTRUSTED_NAME_MAX_CHARS, sanitize_untrusted_text
 
     return sanitize_untrusted_text(getattr(speaker, "name", None), UNTRUSTED_NAME_MAX_CHARS)
+
+
+def requester_identity(context: Any) -> tuple[str, RequesterSource] | None:
+    """Sanitized display name of the requesting person and its source, or None.
+
+    * ``(name, "ha")`` when the request's Home Assistant user resolved to a
+      ``person.*`` entity with a name (``context.requester_name``, set by the
+      orchestrator prelude). The HA user wins over any voice match.
+    * ``(name, "voice")`` otherwise, for an identified voice speaker (see
+      :func:`speaker_display_name`; a speaker linked to a different HA user
+      than the request user is ignored).
+    * ``None`` when neither is known.
+
+    Wording only (prompt line, mediation, send sender name) -- never use it
+    for visibility, authorization or audit.
+    """
+    if context is None:
+        return None
+    # Lazy import: app.agents.base imports this module.
+    from app.agents.base import UNTRUSTED_NAME_MAX_CHARS, sanitize_untrusted_text
+
+    ha_name = sanitize_untrusted_text(getattr(context, "requester_name", None), UNTRUSTED_NAME_MAX_CHARS)
+    if ha_name:
+        return ha_name, "ha"
+    voice_name = speaker_display_name(context)
+    if voice_name:
+        return voice_name, "voice"
+    return None
+
+
+def requester_display_name(context: Any) -> str:
+    """Display name from :func:`requester_identity` ("" when unknown)."""
+    identity = requester_identity(context)
+    return identity[0] if identity else ""
+
+
+def mediation_speaker_kwargs(context: Any) -> dict[str, Any]:
+    """``speaker_name`` / ``speaker_source`` mediation kwargs for the requesting person.
+
+    Both are None when nobody is known; ``speaker_source`` is ``"ha"`` or
+    ``"voice"`` (see :func:`requester_identity`).
+    """
+    identity = requester_identity(context)
+    if identity is None:
+        return {"speaker_name": None, "speaker_source": None}
+    return {"speaker_name": identity[0], "speaker_source": identity[1]}

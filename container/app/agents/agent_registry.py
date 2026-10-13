@@ -165,6 +165,21 @@ class CachedAgentRegistry:
     # Agent card / known-agent helpers
     # ------------------------------------------------------------------
 
+    async def receives_speaker_context(self, agent_id: str) -> bool:
+        """True when ``agent_id`` gets the requester / speaker prompt line.
+
+        Delegates to the underlying registry (``_receives_speaker_context``
+        of the registered handler). Any failure or unknown agent is False.
+        """
+        probe = getattr(self._registry, "receives_speaker_context", None)
+        if probe is None:
+            return False
+        try:
+            return (await probe(agent_id)) is True
+        except Exception:
+            logger.debug("Registry receives_speaker_context failed for %s", agent_id, exc_info=True)
+            return False
+
     async def get_agent_card(self, agent_id: str) -> AgentCard | None:
         """Fetch a single agent card, using the TTL cache."""
         cached = self._agent_card_cache.get(agent_id)

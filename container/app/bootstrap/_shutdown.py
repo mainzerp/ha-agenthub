@@ -146,6 +146,13 @@ async def _teardown_steps(app: FastAPI) -> None:
         mcp_tool_manager.invalidate_all()
     if mcp_registry:
         await mcp_registry.disconnect_all()
+    # Stop in-flight person-directory refreshes before the HA client closes.
+    from app.ha_client.persons import get_person_directory
+
+    try:
+        await get_person_directory().aclose()
+    except Exception:
+        logger.warning("Person directory close failed", exc_info=True)
     if ha_client:
         await ha_client.close()
     close_vector_store()

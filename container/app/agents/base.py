@@ -9,7 +9,7 @@ from abc import ABC, abstractmethod
 from collections.abc import AsyncGenerator, Iterable
 from pathlib import Path
 
-from app.agents.personalization import identified_speaker
+from app.agents.personalization import requester_identity
 from app.models.agent import (
     AgentCard,
     AgentError,
@@ -236,9 +236,10 @@ class BaseAgent(ABC):
     handle_task_stream() for token-level streaming support.
     """
 
-    # Opt-in for the ``Speaker:`` prompt line (voice speaker identification).
-    # Off by default: device, security, lists, calendar and plugin agents never
-    # see it, so an unverified voice match never reads like authorization.
+    # Opt-in for the requester prompt line (``User:`` for the request's HA
+    # user, ``Speaker:`` for a voice match). Off by default: device, security,
+    # lists, calendar and plugin agents never see it, so a name never reads
+    # like authorization.
     # ``TaskContext.speaker`` itself is attached for every agent.
     _receives_speaker_context: bool = False
 
@@ -369,11 +370,11 @@ class BaseAgent(ABC):
 
     @staticmethod
     def _build_time_location_context(context: TaskContext | None, *, include_speaker: bool = False) -> str:
-        """Build a short context block for local time, location, satellite area and speaker.
+        """Build a short context block for local time, location, satellite area and requester.
 
         The satellite area line (where the user is speaking from) lets every
         agent resolve "here" / "this room"; it is emitted even when no local
-        time is known. The speaker line is added only with
+        time is known. The requester (user / speaker) line is added only with
         ``include_speaker`` (callers pass ``self._receives_speaker_context``).
         """
         if not context:
@@ -391,14 +392,17 @@ class BaseAgent(ABC):
                 f'User is speaking from area: "{area_name}" ("here" or "this room" refers to this area '
                 "unless the user names another one)"
             )
-        # Speaker identification is an unverified voice match: personalization
-        # context only, never a basis for authorization.
-        # A speaker linked to a different HA user than the request user is
-        # ignored (personalization follows the request user).
-        speaker = identified_speaker(context) if include_speaker else None
-        speaker_name = sanitize_untrusted_text(speaker.name, UNTRUSTED_NAME_MAX_CHARS) if speaker else ""
-        if speaker_name:
-            parts.append(f'Speaker: "{speaker_name}" (recognized by voice, unverified)')
+        # Requesting person: the request's HA user (person.* name) wins, else
+        # an identified voice speaker (unverified match). Personalization
+        # context only, never a basis for authorization. A speaker linked to
+        # a different HA user than the request user is ignored.
+        requester = requester_identity(context) if include_speaker else None
+        if requester is not None:
+            requester_name, requester_source = requester
+            if requester_source == "ha":
+                parts.append(f'User: "{requester_name}" (the Home Assistant user making this request)')
+            else:
+                parts.append(f'Speaker: "{requester_name}" (recognized by voice, unverified)')
         return "\n".join(parts)
 
     async def _resolve_dispatch_budget_sec(self) -> float | None:

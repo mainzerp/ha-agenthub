@@ -299,13 +299,18 @@ async def list_traces(
     }
 
 
-def _root_span_user_id(spans: list[dict[str, Any]]) -> str | None:
-    """Request ``user_id`` recorded on the root span metadata (None if absent)."""
+def _root_span_attribute(spans: list[dict[str, Any]], key: str) -> Any | None:
+    """Request attribute ``key`` recorded on the root span metadata (None if absent)."""
     for span in spans:
         meta = span.get("metadata")
-        if span.get("parent_span") is None and isinstance(meta, dict) and meta.get("user_id"):
-            return meta["user_id"]
+        if span.get("parent_span") is None and isinstance(meta, dict) and meta.get(key):
+            return meta[key]
     return None
+
+
+def _root_span_user_id(spans: list[dict[str, Any]]) -> str | None:
+    """Request ``user_id`` recorded on the root span metadata (None if absent)."""
+    return _root_span_attribute(spans, "user_id")
 
 
 @router.get("/{trace_id}")
@@ -763,6 +768,9 @@ async def get_trace_detail(trace_id: str):
         "area_name": summary.get("area_name"),
         "voice_followup": summary.get("voice_followup"),
         "user_id": _root_span_user_id(spans),
+        # Requesting person resolved from the HA user (person.* entity, name).
+        "requester_person": _root_span_attribute(spans, "requester_person"),
+        "requester_name": _root_span_attribute(spans, "requester_name"),
         "spans": spans,
         "agent_executions": agent_executions,
         "agent_communication": agent_communication,

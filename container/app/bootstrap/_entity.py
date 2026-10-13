@@ -14,6 +14,7 @@ from app.db.repository import SettingsRepository
 from app.defaults import DEFAULT_LOCAL_EMBEDDING_MODEL
 from app.entity.index import EntityIndex
 from app.entity.ingest import parse_ha_states, state_to_entity_index_entry
+from app.ha_client.persons import PERSON_ENTITY_PREFIX, get_person_directory, person_identity_changed
 from app.util.tasks import spawn
 
 if TYPE_CHECKING:
@@ -635,6 +636,10 @@ async def setup_entity_observers(
             old_state = data.get("old_state")
             entity_id = data.get("entity_id", "")
 
+            # Person name / linked HA user changed: drop the requester-name cache.
+            if entity_id.startswith(PERSON_ENTITY_PREFIX) and person_identity_changed(old_state, new_state):
+                get_person_directory().invalidate()
+
             hidden_ids: set[str] = getattr(app.state, "hidden_entity_ids", None) or set()
             if entity_id in hidden_ids:
                 if old_state is not None:
@@ -724,6 +729,7 @@ async def setup_entity_observers(
 
         async def _resync_after_reconnect() -> None:
             ha_client.clear_area_registry_cache()
+            get_person_directory().invalidate()
             async with registry_refresh_lock:
                 await resync_entity_index(app, reason="ws_reconnect")
 

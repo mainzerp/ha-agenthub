@@ -25,12 +25,35 @@ Live pipeline in board format — headings are columns, cards are
 
 ## Testing
 
+- Text turns: resolve the HA user to a person name · priority: P1 · area: conversation
+  Outcome: a typed Companion App turn ("Wer bin ich?") knows the person's
+  name: request `user_id` -> `person.*` friendly name (cached, stale while
+  revalidating, invalidated on person change/reconnect, 1.5 s join) feeds
+  the requester prompt line (agents with `_receives_speaker_context`),
+  mediation and send sender; HA user wins over a voice match. Cache:
+  never stores mediated speech (failed/disabled rewrite replays the raw
+  agent speech); agents with the prompt line write routing rows only.
+  Trace: `requester_person`,
+  `requester_name`. Trigger: live trace 6c9ce78dc644401a. PR #157,
+  branch feat/ha-user-person-name; not released yet.
+  Passed: ruff check/format clean; tests/test_requester_person.py 65
+  passed; cache tests 337 passed; container suite 4494 passed, 1 skipped;
+  independent review findings fixed, then cache rule simplified per user
+  decision (see Decisions 2026-10-13). Not run: ci.py,
+  bridge tests (bridge untouched); trace detail page not seen in a browser.
+  Needs user verification: review the diff; deploy; Companion App text
+  "Wer bin ich?" -> your name; trace root shows requester_person/_name;
+  ask the same as another HA user -> their name, never the previous one;
+  a cached light command still answers in German (rewrite) and the cache
+  row shows the raw agent speech.
+
 - LLM provider resilience: transient retry, span error detail, persisted logs · priority: P1 · area: llm
   Outcome: a transient provider error (Cerebras "high traffic", 429/5xx,
   connection reset) is retried once before any action runs; failed spans
   carry error type/message/status; WARNING+ logs survive a container
   restart. Trigger: live trace 4c94d170dd51471e (light-agent LLM error,
-  evidence lost on restart). Branch fix/llm-provider-resilience.
+  evidence lost on restart). PR #156; shipped in v3.3.1
+  (https://github.com/mainzerp/ha-agenthub/releases/tag/v3.3.1).
   Passed: ci.py full gate green (container 4430 passed, coverage 85.04%;
   bridge 213 passed; ruff, bandit, pip-audit, docker build + smoke, Trivy);
   independent review findings fixed (retry bounded by dispatch budget, no

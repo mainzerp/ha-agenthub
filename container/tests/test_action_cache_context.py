@@ -206,7 +206,7 @@ class TestStoredReplyText:
         assert entry.original_response_text == "Done, the kitchen light is now off."
 
     @pytest.mark.asyncio
-    async def test_mediated_speech_without_additions_is_kept(self):
+    async def test_mediated_speech_is_never_stored(self):
         co, cm = _cache_orchestrator()
         task = IngressTask(description="turn off the kitchen light", context=TaskContext())
 
@@ -215,11 +215,11 @@ class TestStoredReplyText:
             task,
             speech="Kuechenlicht ist aus.",
             original_response_text="Done, the kitchen light is now off.",
-            speech_has_turn_additions=False,
         )
 
         entry: ActionCacheEntry = cm.store_action_async.await_args.args[0]
-        assert entry.response_text == "Kuechenlicht ist aus."
+        assert entry.response_text == "Done, the kitchen light is now off."
+        assert entry.original_response_text == "Done, the kitchen light is now off."
 
 
 # ---------------------------------------------------------------------------

@@ -42,7 +42,8 @@ class TimerAgent(ActionableAgent):
     """Controls timers and reminders via HA REST API."""
 
     _clarify_on_not_found = False
-    # Timer and reminder labels may name the voice-matched speaker.
+    # Timer and reminder labels may name the requesting person (HA user or
+    # voice-matched speaker).
     _receives_speaker_context = True
 
     async def _do_execute(self, action, ha_client, entity_index, entity_matcher, *, agent_id, span_collector=None):

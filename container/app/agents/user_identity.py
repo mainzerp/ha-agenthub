@@ -10,6 +10,7 @@ import re
 from typing import Any
 
 from app.db.repository import CalendarUserMappingRepository
+from app.ha_client.persons import find_person_by_user_id
 
 _SELF_IDENTIFICATION_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"(?:ich\s+bin|das\s+ist|mein\s+name\s+ist|ich\s+heisse)\s+(.{1,40})", re.IGNORECASE),
@@ -82,18 +83,11 @@ class UserIdentityResolver:
         except Exception:
             return None
 
-        # Find person entity with matching user_id
-        person_entity_id = None
-        for state in states:
-            eid = state.get("entity_id", "")
-            if eid.startswith("person."):
-                attrs = state.get("attributes", {})
-                if attrs.get("user_id") == user_id:
-                    person_entity_id = eid
-                    break
-
-        if not person_entity_id:
+        # Find person entity with matching user_id (shared matcher)
+        person = find_person_by_user_id(states, user_id)
+        if person is None:
             return None
+        person_entity_id = person.entity_id
 
         # Find mapping by person_entity_id
         rows = await CalendarUserMappingRepository.list_all()

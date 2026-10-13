@@ -58,7 +58,8 @@ def _memory_date_label(epoch: Any) -> str:
 class GeneralAgent(BaseAgent):
     """Handles general Q&A and unroutable requests. No HA service calls."""
 
-    # Personalized answers ("good morning, Anna") use the voice-matched speaker.
+    # Personalized answers ("good morning, Anna") use the requesting person:
+    # the HA user's person name, else the voice-matched speaker.
     _receives_speaker_context = True
 
     def __init__(self, ha_client=None, entity_index=None, mcp_tool_manager=None):

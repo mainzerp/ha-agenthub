@@ -17,7 +17,7 @@ from app.agents.compound_utterance import looks_compound
 from app.agents.conversation_manager import ConversationManager, extract_resolved_entities
 from app.agents.dispatch_manager import DispatchManager, canned_error_code
 from app.agents.mediation import TEMPLATE_SPEECH_SOURCES, speech_source_of
-from app.agents.personalization import personalization_user_id, speaker_display_name
+from app.agents.personalization import mediation_speaker_kwargs, personalization_user_id
 from app.agents.sanitize import strip_markdown
 from app.agents.task_pipeline import CacheReplayResult, DispatchResult
 from app.cache.cache_manager import CacheManager
@@ -525,7 +525,7 @@ class DefaultFinalizationStrategy(FinalizationStrategy):
                         failed_agents=unreachable or None,
                         language=language,
                         skipped_tasks=skipped_tasks or None,
-                        speaker_name=speaker_display_name(task.context if task else None) or None,
+                        **mediation_speaker_kwargs(task.context if task else None),
                     )
 
                 ret_span["metadata"]["agent_response"] = speech

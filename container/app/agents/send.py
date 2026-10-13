@@ -9,7 +9,7 @@ import httpx
 
 from app.agents.base import BaseAgent, _render_prompt_template
 from app.agents.decorator import agent
-from app.agents.personalization import speaker_display_name
+from app.agents.personalization import requester_display_name
 from app.analytics.tracer import _optional_span
 from app.db.repository import SendDeviceMappingRepository, SettingsRepository
 from app.models.agent import (
@@ -77,7 +77,7 @@ _SEND_SPEECH: dict[str, dict[str, str]] = {
         "en": "I could not prepare the content to send.",
         "de": "Ich konnte den Inhalt zum Senden nicht vorbereiten.",
     },
-    # Notification title when the sender was recognized by voice.
+    # Notification title when the sender is known (HA user or voice match).
     "notify_title_from": {
         "en": "Message from {name}",
         "de": "Nachricht von {name}",
@@ -158,9 +158,10 @@ class SendAgent(BaseAgent):
                 localized_send_speech("no_mapping", language),
             )
 
-        # Sender: the voice-identified speaker (unverified, wording only),
-        # "" when unknown.
-        sender_name = speaker_display_name(task.context)
+        # Sender: the requesting person -- the request's HA user (person.*
+        # name), else the voice-identified speaker (unverified) -- wording
+        # only, "" when unknown.
+        sender_name = requester_display_name(task.context)
 
         # Format content for channel (optional LLM call)
         formatted_content = await self._format_content(
@@ -252,9 +253,9 @@ class SendAgent(BaseAgent):
     ) -> str:
         """Optionally format content via LLM for the delivery channel.
 
-        ``sender_name`` is the sanitized name of the voice-identified sender
-        ("" when unknown); the prompt writes the message from their
-        perspective.
+        ``sender_name`` is the sanitized name of the requesting person (the
+        request's HA user, else the voice-identified speaker; "" when
+        unknown); the prompt writes the message from their perspective.
         """
         try:
             prompt_template = await self._load_prompt_async("send")
