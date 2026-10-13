@@ -1,12 +1,29 @@
 # Version
 
-**Current Version:** 3.2.1
+**Current Version:** 3.3.0
 
 ## Recent Changes
 
-(tracking changes since 3.2.1)
+(tracking changes since 3.3.0)
 
 ## Version History
+
+### 3.3.0 (MINOR) -- voice personalization
+
+(PR #155: commits 5165c0e, e821ef1)
+
+- Voice: personalization identity for voice turns (`app/agents/personalization.py`): the request's `user_id`, else the Home Assistant user linked to an identified speaker. Never used for visibility, authorization or audit; `TaskContext.user_id` and `conversations.user_id` stay the request user. (5165c0e)
+- Memory: session-memory search and indexing use the personalization identity. An anonymous voice turn with a pending speaker lookup starts the memory search once the lookup resolves (bounded by `voice.speaker_id.wait_ms`); other turns are unchanged. `store_turn` takes `memory_user_id`. (5165c0e)
+- Calendar: the calendar agent and reminder injection resolve the calendar user mapping from the personalization identity, so a recognized speaker gets their default calendars and reminders. (5165c0e)
+- Send agent: the recognized speaker is the sender: `{sender_name}` in `prompts/send.txt` (message written from the sender's perspective, TTS names the sender) and the notify title "Message from <name>" (localized; `HA-AgentHub` when unknown). (5165c0e)
+- Mediation: personality mediation (blocking and streamed) and the multi-agent merge add an unverified speaker line so replies may address the speaker by name. (5165c0e)
+- Trace: the root span and the `memory_retrieval` span record `identity_source` (`ha` | `voice` | `none`). (5165c0e)
+- Fix(memory): continuation turns copied from the top memory match are filtered by `memory.scope`, so a shared conversation id (satellite) never leaks another person's or anonymous turns into the prompt. (5165c0e)
+- Calendar: for a voice identity, a spoken self-identification ("this is X") wins over the voice match; a request user keeps the previous order. (5165c0e)
+- Voice: an identified speaker linked to a different HA user than the request user is ignored (no name, sender, prompt or mediation line); personalization follows the request user. (5165c0e)
+- Docs: risk of linking a voice profile to an HA user (misidentified or replayed voice gets that person's memory and calendar data), non-personalized action-cache replays, and `best_effort` memory loss on anonymous voice turns. (e821ef1)
+- Verification: 4372 container tests passed (1 skipped, 9 xfailed, 3 xpassed), 213 integration tests passed; Ruff lint and format passed; an independent review's findings (continuation-memory leak across people, calendar resolution order, conflicting HA user, privacy docs, test gaps) were fixed before release. Not yet verified live against Home Assistant.
+- Behavior change (no action needed): on satellites, a recognized speaker whose voice profile is linked to an HA user now gets that user's memory and calendar. Leave a profile unlinked to keep the previous behavior.
 
 ### 3.2.1 (PATCH) -- speaker timing and late-result fix
 
