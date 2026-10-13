@@ -5,6 +5,7 @@ import logging
 from app.agents.actionable import ActionableAgent
 from app.agents.calendar_executor import ENTITY_ACTIONS, ENTITY_FREE_ACTIONS, execute_calendar_action
 from app.agents.decorator import agent
+from app.agents.personalization import personalization_user_id
 from app.agents.user_identity import UserIdentityResolver
 from app.models.agent import AgentCard, AgentErrorCode, DispatchTask, TaskResult
 
@@ -46,11 +47,13 @@ class CalendarAgent(ActionableAgent):
         current_task = self._get_current_task()
 
         resolver = UserIdentityResolver(ha_client=ha_client)
+        identity_user_id, identity_source = personalization_user_id(ctx)
         user = await resolver.resolve_user(
             getattr(current_task, "description", None) if current_task else None,
             device_id=device_id,
             area_id=area_id,
-            user_id=ctx.user_id if ctx else None,
+            user_id=identity_user_id,
+            identity_source=identity_source,
         )
         default_calendar_ids = None
         if user:

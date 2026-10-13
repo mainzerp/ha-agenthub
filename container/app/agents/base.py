@@ -9,6 +9,7 @@ from abc import ABC, abstractmethod
 from collections.abc import AsyncGenerator, Iterable
 from pathlib import Path
 
+from app.agents.personalization import identified_speaker
 from app.models.agent import (
     AgentCard,
     AgentError,
@@ -392,7 +393,9 @@ class BaseAgent(ABC):
             )
         # Speaker identification is an unverified voice match: personalization
         # context only, never a basis for authorization.
-        speaker = context.speaker if include_speaker else None
+        # A speaker linked to a different HA user than the request user is
+        # ignored (personalization follows the request user).
+        speaker = identified_speaker(context) if include_speaker else None
         speaker_name = sanitize_untrusted_text(speaker.name, UNTRUSTED_NAME_MAX_CHARS) if speaker else ""
         if speaker_name:
             parts.append(f'Speaker: "{speaker_name}" (recognized by voice, unverified)')

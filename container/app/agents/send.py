@@ -9,6 +9,7 @@ import httpx
 
 from app.agents.base import BaseAgent, _render_prompt_template
 from app.agents.decorator import agent
+from app.agents.personalization import speaker_display_name
 from app.analytics.tracer import _optional_span
 from app.db.repository import SendDeviceMappingRepository, SettingsRepository
 from app.models.agent import (
@@ -76,7 +77,15 @@ _SEND_SPEECH: dict[str, dict[str, str]] = {
         "en": "I could not prepare the content to send.",
         "de": "Ich konnte den Inhalt zum Senden nicht vorbereiten.",
     },
+    # Notification title when the sender was recognized by voice.
+    "notify_title_from": {
+        "en": "Message from {name}",
+        "de": "Nachricht von {name}",
+    },
 }
+
+# Notification title when the sender is unknown.
+_DEFAULT_NOTIFY_TITLE = "HA-AgentHub"
 
 
 def localized_send_speech(message_id: str, language: str | None, **values: str) -> str:
@@ -149,12 +158,17 @@ class SendAgent(BaseAgent):
                 localized_send_speech("no_mapping", language),
             )
 
+        # Sender: the voice-identified speaker (unverified, wording only),
+        # "" when unknown.
+        sender_name = speaker_display_name(task.context)
+
         # Format content for channel (optional LLM call)
         formatted_content = await self._format_content(
             content.strip(),
             mapping["device_type"],
             mapping["display_name"],
             span_collector=span_collector,
+            sender_name=sender_name,
         )
 
         # Deliver
@@ -170,7 +184,12 @@ class SendAgent(BaseAgent):
         try:
             if device_type == "notify":
                 async with _optional_span(span_collector, "ha_call", agent_id="send-agent") as span:
-                    await self._deliver_notify(mapping["ha_service_target"], formatted_content)
+                    title = (
+                        localized_send_speech("notify_title_from", language, name=sender_name)
+                        if sender_name
+                        else _DEFAULT_NOTIFY_TITLE
+                    )
+                    await self._deliver_notify(mapping["ha_service_target"], formatted_content, title=title)
                     span["metadata"]["service"] = "notify"
                     span["metadata"]["target"] = mapping["ha_service_target"]
             else:
@@ -229,8 +248,14 @@ class SendAgent(BaseAgent):
         delivery_type: str,
         target_name: str,
         span_collector=None,
+        sender_name: str = "",
     ) -> str:
-        """Optionally format content via LLM for the delivery channel."""
+        """Optionally format content via LLM for the delivery channel.
+
+        ``sender_name`` is the sanitized name of the voice-identified sender
+        ("" when unknown); the prompt writes the message from their
+        perspective.
+        """
         try:
             prompt_template = await self._load_prompt_async("send")
             wrapped_content = self._wrap_user_input(content)
@@ -238,6 +263,7 @@ class SendAgent(BaseAgent):
                 prompt_template,
                 delivery_type=delivery_type,
                 target_name=target_name,
+                sender_name=sender_name,
                 content=wrapped_content,
             )
             messages = [
@@ -257,13 +283,13 @@ class SendAgent(BaseAgent):
             logger.warning("LLM formatting failed, using raw content", exc_info=True)
         return content
 
-    async def _deliver_notify(self, service_target: str, content: str) -> None:
+    async def _deliver_notify(self, service_target: str, content: str, title: str = _DEFAULT_NOTIFY_TITLE) -> None:
         """Send via HA notify.* service (smartphone push)."""
         await self._ha_client.call_service(
             "notify",
             service_target,
             None,
-            {"message": neutralize_ha_template(content), "title": "HA-AgentHub"},
+            {"message": neutralize_ha_template(content), "title": neutralize_ha_template(title)},
         )
         logger.info("Notify sent to %s", service_target)
 

@@ -195,7 +195,9 @@ _SPEAKER_LINE = 'Speaker: "Anna" (recognized by voice, unverified)'
 def _speaker_context() -> TaskContext:
     return TaskContext(
         user_id="ha-owner",
-        speaker=SpeakerContext(status="identified", profile_id=1, name="Anna", ha_user_id="ha-anna", score=0.8),
+        # Profile not linked to an HA user: a speaker linked to a different HA
+        # user than the request user is ignored (see test_voice_personalization).
+        speaker=SpeakerContext(status="identified", profile_id=1, name="Anna", ha_user_id=None, score=0.8),
     )
 
 
