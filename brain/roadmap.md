@@ -35,6 +35,14 @@ Live pipeline in board format — headings are columns, cards are
 
 ## Testing
 
+- Filler spoken before the answer (HA 60-char TTS threshold) · priority: P1 · area: voice
+  Outcome: the filler is spoken while the agent still works, not with the
+  final answer. Cause: HA's assist pipeline starts streaming TTS only after
+  >60 chars of assistant text; fillers are 14-55 chars. Fix: bridge pads
+  the filler delta with trailing spaces (conversation.py
+  `_TTS_STREAM_START_CHARS`); final speech unchanged. Bridge tests pass.
+  Verify: voice turn on a slow agent (filler enabled) - filler audio starts
+  before the answer; HA debug shows tts_start_streaming early.
 - Voice speaker identification reliability (Patric/Laura confusion) · priority: P1 · area: voice
   Outcome: the two enrolled speakers are told apart or a turn reports
   unknown. Silero VAD (sherpa-onnx) trims enrollment and identification
