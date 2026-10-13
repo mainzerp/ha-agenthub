@@ -373,3 +373,178 @@ class TestAgentExecutionsPreludeSpans:
             executions = resp.json()["agent_executions"]
             names = {e["span_name"] for e in executions}
             assert {"memory_retrieval", "entity_resolution"} <= names
+
+
+@pytest.mark.asyncio
+class TestTraceIdentity:
+    """Trace detail exposes identity_source and the speaker outcome; list carries user_name."""
+
+    _HA_USER = "0123456789abcdef0123456789abcdef"
+    _VOICE_USER = "fedcba9876543210fedcba9876543210"
+
+    @staticmethod
+    async def _seed(trace_id: str, root_metadata: dict, speaker_metadata: dict | None, **summary) -> None:
+        """Record spans through a SpanCollector so the flush sanitizer runs."""
+        from app.analytics.tracer import SpanCollector, create_trace_summary
+
+        await create_trace_summary(
+            trace_id,
+            f"conv-{trace_id}",
+            "hello",
+            "Hi.",
+            "general-agent",
+            0.9,
+            5.0,
+            "hello",
+            ["orchestrator"],
+            "ha",
+            **summary,
+        )
+        collector = SpanCollector(trace_id, source="ha")
+        for key, value in root_metadata.items():
+            collector.set_request_attribute(key, value)
+        now = datetime.now(UTC).isoformat()
+        collector.record_root_span(
+            {
+                "span_id": "root0000000a",
+                "trace_id": trace_id,
+                "span_name": "conversation",
+                "agent_id": None,
+                "parent_span": None,
+                "start_time": now,
+                "end_time": now,
+                "duration_ms": 10.0,
+                "status": "ok",
+                "metadata": {},
+            }
+        )
+        if speaker_metadata is not None:
+            async with collector.start_span("speaker_id", agent_id="orchestrator", parent_span="root0000000a") as span:
+                span["metadata"].update(speaker_metadata)
+        await collector.flush()
+
+    async def test_voice_only_turn(self, db_repository):
+        await self._seed(
+            "t-voice",
+            {"user_id": None, "identity_source": "voice"},
+            {
+                "status": "identified",
+                "profile_id": 3,
+                "score": 0.82,
+                "margin": 0.2,
+                "duration_s": 2.1,
+                "waited_ms": 4.0,
+                "speaker_name": "Ben",
+                "speaker_ha_user_id": self._VOICE_USER,
+            },
+            user_name="Ben",
+            user_name_source="voice",
+            identity_source="voice",
+        )
+        async for client in _client_for(_build_app()):
+            body = (await client.get("/api/admin/traces/t-voice")).json()
+            assert body["identity_source"] == "voice"
+            assert body["user_id"] is None
+            assert body["user_name"] == "Ben"
+            assert body["user_name_source"] == "voice"
+            assert body["speaker"] == {
+                "status": "identified",
+                "speaker_name": "Ben",
+                "profile_id": 3,
+                "score": 0.82,
+                "margin": 0.2,
+                "duration_s": 2.1,
+                "speaker_ha_user_id": self._VOICE_USER,
+            }
+            rows = (await client.get("/api/admin/traces")).json()["traces"]
+            row = next(r for r in rows if r["trace_id"] == "t-voice")
+            assert row["user_name"] == "Ben" and row["identity_source"] == "voice"
+            assert row["user_name_source"] == "voice"
+
+    async def test_csv_export_user_column(self, db_repository):
+        await self._seed("t-csv-ha", {"identity_source": "ha"}, None, user_name="Anna", user_name_source="ha")
+        await self._seed("t-csv-none", {"identity_source": "none"}, None)
+        async for client in _client_for(_build_app()):
+            resp = await client.get("/api/admin/traces/export")
+            assert resp.status_code == 200
+            rows = list(csv.reader(io.StringIO(resp.text)))
+            header = rows[0]
+            assert header[-1] == "User"
+            by_trace = {row[header.index("Trace ID")]: row for row in rows[1:]}
+            assert by_trace["t-csv-ha"][-1] == "Anna"
+            assert by_trace["t-csv-none"][-1] == ""
+
+    async def test_ha_only_turn(self, db_repository):
+        await self._seed(
+            "t-ha",
+            {
+                "user_id": self._HA_USER,
+                "identity_source": "ha",
+                "requester_person": "person.anna",
+                "requester_name": "Anna",
+            },
+            None,
+            user_name="Anna",
+            identity_source="ha",
+        )
+        async for client in _client_for(_build_app()):
+            body = (await client.get("/api/admin/traces/t-ha")).json()
+            assert body["identity_source"] == "ha"
+            assert body["user_id"] == self._HA_USER
+            assert body["requester_name"] == "Anna"
+            assert body["requester_person"] == "person.anna"
+            assert body["speaker"] is None
+            resp = await client.get("/api/admin/traces", params={"search": "Anna"})
+            assert [r["trace_id"] for r in resp.json()["traces"]] == ["t-ha"]
+
+    async def test_no_identity(self, db_repository):
+        await self._seed(
+            "t-none",
+            {"user_id": None, "identity_source": "none"},
+            {"status": "unknown", "profile_id": None, "score": 0.3, "margin": 0.01, "duration_s": 1.9},
+            identity_source="none",
+        )
+        async for client in _client_for(_build_app()):
+            body = (await client.get("/api/admin/traces/t-none")).json()
+            assert body["identity_source"] == "none"
+            assert body["user_id"] is None and body["user_name"] is None
+            assert body["speaker"]["status"] == "unknown"
+            assert body["speaker"]["speaker_name"] is None
+            assert body["speaker"]["speaker_ha_user_id"] is None
+
+    async def test_memory_span_payload_exposes_memories(self, db_repository):
+        from app.analytics.tracer import SpanCollector
+
+        await self._seed("t-mem", {"identity_source": "ha"}, None, identity_source="ha")
+        collector = SpanCollector("t-mem", source="ha")
+        async with collector.start_span("memory_retrieval", agent_id="orchestrator") as span:
+            span["metadata"].update(
+                {
+                    "match_count": 1,
+                    "top_similarity": 0.91,
+                    "matches_attached": True,
+                    "scope": "user",
+                    "search_user_id": self._HA_USER,
+                    "memories": [
+                        {
+                            "conversation_id": "conv-old",
+                            "session_id": 7,
+                            "turn_id": 41,
+                            "similarity": 0.91,
+                            "last_turn_at": 1754400000,
+                            "snippet": "what about the timers",
+                            "continuation_count": 2,
+                            "attached": True,
+                        }
+                    ],
+                }
+            )
+        await collector.flush()
+        async for client in _client_for(_build_app()):
+            body = (await client.get("/api/admin/traces/t-mem")).json()
+            span = next(s for s in body["spans"] if s["span_name"] == "memory_retrieval")
+            assert span["metadata"]["search_user_id"] == self._HA_USER
+            assert span["metadata"]["memories"][0]["turn_id"] == 41
+            assert span["metadata"]["memories"][0]["snippet"] == "what about the timers"
+            execution = next(e for e in body["agent_executions"] if e["span_name"] == "memory_retrieval")
+            assert execution["response"] == "1 session match(es), top sim 0.91, attached [scope user]"

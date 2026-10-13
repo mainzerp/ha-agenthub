@@ -80,8 +80,10 @@ _SAFE_METADATA_KEYS = {
 
 # Opaque identifier keys kept verbatim: a Home Assistant user id is a 32-char
 # hex string that ``_LONG_TOKEN_RE`` would otherwise redact as a token, which
-# would make the user mapping impossible to check from a trace.
-_VERBATIM_ID_KEYS = {"user-id"}
+# would make the user mapping impossible to check from a trace. Conversation
+# ids (e.g. ``owui-<hex>``) stay verbatim so trace session links resolve.
+# Keys are in ``_normalize_key`` form (underscores become hyphens).
+_VERBATIM_ID_KEYS = {"user-id", "speaker-ha-user-id", "search-user-id", "conversation-id", "matched-conversation-id"}
 _VERBATIM_ID_VALUE_RE = re.compile(r"^[A-Za-z0-9_.:@-]{1,128}$")
 
 _SENSITIVE_QUERY_MARKERS = (*_SENSITIVE_KEY_MARKERS, "code", "key", "auth")
@@ -568,12 +570,21 @@ async def create_trace_summary(
     area_name: str | None = None,
     voice_followup: bool | None = None,
     cache_hit_type: str | None = None,
+    user_name: str | None = None,
+    identity_source: str | None = None,
+    user_name_source: str | None = None,
 ) -> None:
     """Create a trace_summary record. Fire-and-forget.
 
     FLOW-CTX-1 (0.18.6): ``device_*``/``area_*`` identify which
     satellite originated the trace. They default to ``None`` so
     existing call sites (tests, unauthenticated REST) stay valid.
+
+    ``user_name`` is the resolved requesting person (HA person name, else
+    an identified voice speaker), ``user_name_source`` where that name came
+    from (``ha`` | ``voice``) and ``identity_source`` the personalization
+    source (``ha`` | ``voice`` | ``none``: whose memory / calendar was
+    used). Display only.
     """
     try:
         summary_agent_instructions = agent_instructions or {routing_agent: condensed_task}
@@ -604,6 +615,9 @@ async def create_trace_summary(
                 "area_name": area_name,
                 "voice_followup": voice_followup,
                 "cache_hit_type": cache_hit_type,
+                "user_name": sanitize_trace_value(user_name, key="user_name") if user_name else None,
+                "identity_source": identity_source,
+                "user_name_source": user_name_source if user_name else None,
             }
         )
     except Exception:

@@ -1089,7 +1089,7 @@ List recent traces with pagination and filters.
 
 **Query parameters:**
 - `page`, `per_page` -- Pagination
-- `search` -- Substring match against `user_input` OR `conversation_id` (LIKE, case-insensitive for ASCII; `%`/`_` act as wildcards)
+- `search` -- Substring match against `user_input`, `conversation_id` OR `user_name` (LIKE, case-insensitive for ASCII; `%`/`_` act as wildcards)
 - `agent` -- Exact `routing_agent` match
 - `label` -- Exact label match
 - `from`, `to` -- Optional bounds on `created_at` (UTC calendar days for date-only values)
@@ -1104,16 +1104,51 @@ return whatever text ordering yields. Date-only filters therefore mean UTC calen
 days and may differ from the browser-local timestamps shown in the UI. The trace
 detail page's conversation links use this same `search` parameter.
 
+Each trace row also carries `user_name` (resolved requesting person: the
+Home Assistant person name, else an identified voice speaker's name; `null`
+when unknown or for traces recorded before schema migration 50),
+`user_name_source` (where that name came from: `ha` | `voice`; `null` without a
+name) and `identity_source` (personalization source -- whose memory and
+calendar were used: `ha` | `voice` | `none`; `null` for older rows). The two
+sources can differ: a Home Assistant user without a `person.*` entity who is
+also identified by voice is named by voice but personalized as the HA user.
+Action-cache replays get a name only from an already cached person map (HA
+users); voice-only replays carry no name.
+
 ### GET /api/admin/traces/export
 
 Export the filtered traces as CSV. Shares the identical `search`, `agent`, `label`,
 `from`, and `to` filter contract and validation with `GET /api/admin/traces`
 (see above), including HTTP 422 for invalid date-only bounds. Export is capped at
-10,000 rows (newest first); list pagination applies before that cap.
+10,000 rows (newest first); list pagination applies before that cap. The last CSV
+column, `User`, holds `user_name`.
 
 ### GET /api/admin/traces/{trace_id}
 
 Get all spans for a specific trace (for Gantt visualization).
+
+Identity fields (top level, all nullable):
+
+- `user_id` -- the request's Home Assistant user id (root span attribute).
+- `requester_person`, `requester_name` -- the `person.*` entity and name linked to `user_id`.
+- `identity_source` -- personalization identity source `ha` | `voice` | `none` (root span attribute, else the summary row).
+- `user_name`, `user_name_source` -- resolved requesting person and the name's source, stored on the summary row (see the list endpoint).
+- `speaker` -- outcome of the first `speaker_id` span, or `null` when the turn had no speaker lookup: `status`, `speaker_name`, `profile_id`, `score`, `margin`, `duration_s`, `speaker_ha_user_id` (the matched profile's linked HA user; only for `identified`).
+
+Session memory: the `memory_retrieval` span metadata carries `scope` (effective
+`memory.scope`), `search_user_id` (personalization user id the search used, `null`
+for the anonymous bucket) and, when the search matched, `memories` -- one entry per
+match (at most 10): `conversation_id`, `session_id`, `turn_id`, `similarity`
+(4 decimals), `last_turn_at` (epoch seconds), `snippet` (matched user text, single
+line, at most 150 characters, trace-sanitized), `continuation_count` (copied turn
+pairs) and `attached` (`true` only when the matches were placed in the task
+context; `false` when the search timed out, was abandoned or the turn had no task
+context). Snippets are redacted on the full matched text before truncation.
+
+Trace redaction keeps these id keys verbatim (string of at most 128 characters
+from `[A-Za-z0-9_.:@-]` that matches neither the API-key nor the bearer-token
+pattern): `user_id`, `speaker_ha_user_id`, `search_user_id`, `conversation_id`,
+`matched_conversation_id`. Other values are redacted as usual.
 
 Error and retry metadata (added keys only; the payload shape is unchanged):
 

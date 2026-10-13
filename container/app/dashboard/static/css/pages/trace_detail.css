@@ -57,3 +57,15 @@
 .trace-id input { width: 100%; }
 
 .trace-conversation > .card, .trace-workbench > .card { margin-top: 0; }
+
+/* Identity group in the request summary bar. */
+.trace-identity-name { display: inline-flex; align-items: center; flex-wrap: wrap; gap: .375rem; }
+.trace-identity-details { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: .125rem .5rem; margin: .375rem 0 0; font-size: .75rem; }
+.trace-identity-details > div { display: contents; }
+.trace-identity-details dt { color: var(--color-mist); }
+.trace-identity-details dd { margin: 0; color: var(--color-cloud); overflow-wrap: anywhere; }
+
+/* Loaded session memories in the span inspector. */
+.memory-entry { border-left: 2px solid var(--accent); padding: .5rem .75rem; margin: .5rem 0; background: var(--bg-abyss); }
+.memory-entry-head { display: flex; align-items: center; flex-wrap: wrap; gap: .5rem; }
+.memory-entry pre { font-size: .75rem; }

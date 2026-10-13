@@ -684,8 +684,8 @@ class TestTraceSummaryRepository:
             assert sql == "WHERE created_at >= ? AND created_at <= ?"
             assert params == [value, value]
         sql, params = _build_trace_predicates(search="needle", date_to="2026-09-17")
-        assert sql == "WHERE (user_input LIKE ? OR conversation_id LIKE ?) AND created_at < ?"
-        assert params == ["%needle%", "%needle%", "2026-09-18"]
+        assert sql == "WHERE (user_input LIKE ? OR conversation_id LIKE ? OR user_name LIKE ?) AND created_at < ?"
+        assert params == ["%needle%", "%needle%", "%needle%", "2026-09-18"]
         params.append(10000)
         assert _build_trace_predicates(search="needle", date_to="2026-09-17")[1] == params[:-1]
         assert _build_trace_predicates() == ("", [])

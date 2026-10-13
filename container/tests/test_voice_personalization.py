@@ -201,7 +201,7 @@ class TestMemoryPersonalization:
         loop = asyncio.get_running_loop()
         search_calls: list[tuple[float, str | None]] = []
 
-        async def _search(text, user, current_conversation_id=None):
+        async def _search(text, user, current_conversation_id=None, search_info=None):
             search_calls.append((loop.time(), user))
             return []
 

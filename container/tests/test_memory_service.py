@@ -455,3 +455,23 @@ class TestBackfill:
 
         await service.backfill()
         assert engine.embed_calls == []
+
+
+class TestSearchTraceInfo:
+    async def test_match_carries_turn_id_and_search_info_gets_scope(self, monkeypatch, service, store):
+        _patch_settings(monkeypatch, {"memory.scope": "global"})
+        _patch_engine(monkeypatch, _FakeEngine(_basis_vec(0)))
+        store.store_embedding(5, _basis_vec(0))
+        _patch_repo(
+            monkeypatch,
+            count_turns=AsyncMock(return_value=1),
+            get_turns_by_ids=AsyncMock(return_value=[_turn_row(5, 10, "conv-a", "user-1")]),
+        )
+
+        info: dict = {}
+        matches = await service.search("query", "user-1", search_info=info)
+        assert [m.turn_id for m in matches] == [5]
+        assert info == {"scope": "global"}
+
+        # Callers without search_info keep working unchanged.
+        assert [m.turn_id for m in await service.search("query", "user-1")] == [5]

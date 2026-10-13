@@ -43,8 +43,8 @@ def _build_trace_predicates(
     conditions: list[str] = []
     params: list[Any] = []
     if search:
-        conditions.append("(user_input LIKE ? OR conversation_id LIKE ?)")
-        params.extend([f"%{search}%", f"%{search}%"])
+        conditions.append("(user_input LIKE ? OR conversation_id LIKE ? OR user_name LIKE ?)")
+        params.extend([f"%{search}%", f"%{search}%", f"%{search}%"])
     if agent:
         conditions.append("routing_agent = ?")
         params.append(agent)
@@ -185,8 +185,9 @@ class TraceSummaryRepository:
                 "agents, total_duration_ms, label, source, routing_agent, "
                 "routing_confidence, routing_duration_ms, routing_reasoning, "
                 "agent_instructions, conversation_turns, "
-                "device_id, area_id, device_name, area_name, voice_followup, cache_hit_type) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "device_id, area_id, device_name, area_name, voice_followup, cache_hit_type, "
+                "user_name, identity_source, user_name_source) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     data.get("trace_id"),
                     data.get("conversation_id"),
@@ -208,6 +209,9 @@ class TraceSummaryRepository:
                     data.get("area_name"),
                     data.get("voice_followup"),
                     data.get("cache_hit_type"),
+                    data.get("user_name"),
+                    data.get("identity_source"),
+                    data.get("user_name_source"),
                 ),
             )
 
