@@ -34,8 +34,8 @@ Live pipeline in board format — headings are columns, cards are
   never stores mediated speech (failed/disabled rewrite replays the raw
   agent speech); agents with the prompt line write routing rows only.
   Trace: `requester_person`,
-  `requester_name`. Trigger: live trace 6c9ce78dc644401a. Branch
-  feat/ha-user-person-name, not committed.
+  `requester_name`. Trigger: live trace 6c9ce78dc644401a. PR #157,
+  branch feat/ha-user-person-name; not released yet.
   Passed: ruff check/format clean; tests/test_requester_person.py 65
   passed; cache tests 337 passed; container suite 4494 passed, 1 skipped;
   independent review findings fixed, then cache rule simplified per user
