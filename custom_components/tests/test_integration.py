@@ -1742,11 +1742,12 @@ class TestDeltaStreaming(_WsStreamTestBase):
             self._make_user_input(), chat_log, ws
         )
 
-        # The filler (markdown-stripped) opens the assistant message.
-        assert chat_log.deltas[0] == {
-            "role": "assistant",
-            "content": "Einen Moment. ",
-        }
+        # The filler (markdown-stripped) opens the assistant message, padded
+        # past HA's 60-char streaming threshold so TTS speaks it right away.
+        filler_delta = chat_log.deltas[0]
+        assert filler_delta["role"] == "assistant"
+        assert filler_delta["content"].rstrip() == "Einen Moment."
+        assert len(filler_delta["content"]) > 60
         assert chat_log.deltas[1] == {"content": "Welches Licht meintest du?"}
         # Result speech = filler preamble + answer, matching the chat log.
         speech = result.response.async_set_speech.call_args.args[0]

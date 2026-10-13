@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -494,8 +495,13 @@ class TestVoiceAdminApi:
         assert (await client.get("/api/admin/voice/status")).json()["enrollment"] is None
 
         pid2 = (await client.post("/api/admin/voice/profiles", json={"name": "Ben"})).json()["id"]
-        await client.post(f"/api/admin/voice/profiles/{pid2}/enroll")
-        assert service.enrollment.current()["remaining"] == 5
+        default_armed = await client.post(f"/api/admin/voice/profiles/{pid2}/enroll")
+        # Default body: 10 samples within 600 s.
+        enrollment = default_armed.json()["enrollment"]
+        assert service.enrollment.current()["remaining"] == 10
+        assert enrollment["remaining"] == 10 and enrollment["replaced"] == 0 and enrollment["last_replaced"] is None
+        expires_in = datetime.fromisoformat(enrollment["expires_at"]) - datetime.now(UTC)
+        assert 590 < expires_in.total_seconds() <= 600
         cancelled = await client.delete("/api/admin/voice/enroll")
         assert cancelled.json() == {"ok": True, "cancelled": True}
 

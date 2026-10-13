@@ -78,6 +78,12 @@ _WS_INGRESS_ERROR_MESSAGES: dict[str, str] = {
 # doubles of ``aiohttp.WSMsgType`` that define only some members still work.
 _WS_CLOSE_TYPE_NAMES = ("CLOSE", "CLOSING", "CLOSED", "ERROR")
 
+# HA's assist pipeline starts streaming TTS only once more than
+# STREAM_RESPONSE_CHARS (60) characters of assistant text have arrived
+# (homeassistant/components/assist_pipeline). The filler preamble is padded to
+# this length so it is spoken while the agent is still working.
+_TTS_STREAM_START_CHARS = 61
+
 
 def _is_ws_close_message(msg_type: Any) -> bool:
     """Return True for a close/closing/closed/error WebSocket message type."""
@@ -990,7 +996,15 @@ class HaAgentHubConversationEntity(
                                 "ha-agenthub: filler preamble filler_chars=%d",
                                 len(stripped_filler),
                             )
-                            yield {"role": "assistant", "content": box["filler"]}
+                            # HA's pipeline buffers streamed text until more
+                            # than STREAM_RESPONSE_CHARS (60) characters have
+                            # arrived; a short filler alone would wait for the
+                            # answer. Whitespace padding counts toward that
+                            # threshold but is not spoken.
+                            yield {
+                                "role": "assistant",
+                                "content": box["filler"].ljust(_TTS_STREAM_START_CHARS),
+                            }
                             message_open = True
                         continue
 

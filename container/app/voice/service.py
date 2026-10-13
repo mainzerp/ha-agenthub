@@ -27,6 +27,7 @@ from app.voice.profiles import (
     ProfileCentroidCache,
     ProfileScore,
     check_enrollment_sample,
+    find_session_outlier,
     match_embedding,
     scores_payload,
 )
@@ -83,6 +84,8 @@ class PendingEnrollment:
     vad: bool | None = None
     # Diagnostic result fields (speech, VAD flag, scores) carried to the commit.
     diagnostics: dict[str, Any] | None = None
+    # ``voice.speaker_id.enroll_min_similarity`` of the analysis (session outlier review at the commit).
+    enroll_min_similarity: float = _DEFAULT_ENROLL_MIN_SIMILARITY
 
 
 @dataclass(frozen=True)
@@ -240,6 +243,8 @@ class SpeakerIdService:
         self.enrollment = enrollment if enrollment is not None else EnrollmentState()
         self.centroids = centroids if centroids is not None else ProfileCentroidCache()
         self.vad = vad if vad is not None else VoiceActivityTrimmer()
+        # Serialises enrollment commits so the outlier review of a session never interleaves.
+        self._enroll_lock = asyncio.Lock()
 
     def invalidate_profiles(self) -> None:
         self.centroids.invalidate()
@@ -489,6 +494,7 @@ class SpeakerIdService:
             speech_s=trim.speech_s if trim.vad else None,
             vad=trim.vad,
             diagnostics=diagnostics,
+            enroll_min_similarity=config.enroll_min_similarity,
         )
         # Provisional result: the sample is stored only by ``commit_enrollment``.
         result = make_result(
@@ -510,7 +516,16 @@ class SpeakerIdService:
         return rejection
 
     async def commit_enrollment(self, pending: PendingEnrollment) -> dict[str, Any]:
-        """Store a confirmed enrollment sample and count it against the armed enrollment."""
+        """Store a confirmed enrollment sample and count it against the armed enrollment.
+
+        The sample that reaches the target count triggers the session outlier
+        review (:meth:`_review_session`): the worst sample of this session may
+        be replaced, keeping the session armed for one more sample.
+        """
+        async with self._enroll_lock:
+            return await self._commit_enrollment(pending)
+
+    async def _commit_enrollment(self, pending: PendingEnrollment) -> dict[str, Any]:
         profile_id = pending.profile_id
         name = pending.name
         duration = pending.duration_s
@@ -532,7 +547,7 @@ class SpeakerIdService:
             return result
         vector = pending.vector
         try:
-            await VoiceProfileRepository.add_sample(
+            sample_id = await VoiceProfileRepository.add_sample(
                 profile_id,
                 vector.tobytes(),
                 int(vector.size),
@@ -555,13 +570,60 @@ class SpeakerIdService:
             self.store.record_recent(result)
             return result
         self.centroids.invalidate()
-        remaining = self.enrollment.record_sample(profile_id)
+        remaining = self.enrollment.record_sample(profile_id, sample_id, finish=False)
         logger.info("Stored voice enrollment sample for profile %s (%d remaining)", profile_id, remaining)
+        if remaining == 0:
+            await self._review_session(profile_id, pending.model_id, pending.enroll_min_similarity)
         result = make_result(
             STATUS_ENROLLED_SAMPLE, duration_s=duration, profile_id=profile_id, name=name, **timing, **diagnostics
         )
         self.store.record_recent(result)
         return result
+
+    async def _review_session(self, profile_id: int, model_id: str, min_similarity: float) -> None:
+        """Replace the worst sample of a session that reached its target, or complete the session.
+
+        Candidates are only the samples stored in this session; the profile
+        needs at least ``MIN_SAMPLES_FOR_OUTLIER_REVIEW`` current-model
+        samples. A session sample whose leave-one-out score is below
+        ``min_similarity`` is deleted and the session stays armed (original
+        expiry) for one more sample, at most ``MAX_OUTLIER_REPLACEMENTS``
+        times. Never raises: a failed review completes the session.
+        """
+        outlier: tuple[int, float] | None = None
+        session_ids = self.enrollment.session_samples(profile_id)
+        if session_ids and self.enrollment.replacements_left(profile_id) > 0:
+            try:
+                rows = await VoiceProfileRepository.list_samples(profile_id)
+                current = [row for row in rows if row.get("model") == model_id]
+                outlier = await asyncio.to_thread(find_session_outlier, current, session_ids, min_similarity)
+                if outlier is not None and not await VoiceProfileRepository.delete_sample(profile_id, outlier[0]):
+                    outlier = None
+            except Exception:
+                logger.warning("Voice enrollment outlier review failed for profile %s", profile_id, exc_info=True)
+                outlier = None
+        if outlier is not None:
+            sample_id, score = outlier
+            self.centroids.invalidate()
+            if self.enrollment.replace_sample(profile_id, sample_id, score):
+                logger.info(
+                    "Replaced voice enrollment outlier sample %s for profile %s (leave-one-out %.4f < %.2f)",
+                    sample_id,
+                    profile_id,
+                    score,
+                    min_similarity,
+                )
+                return
+            # Expired or cancelled during the review: the outlier stays deleted.
+            logger.info("Deleted voice enrollment outlier sample %s for profile %s", sample_id, profile_id)
+        finished = self.enrollment.finish(profile_id)
+        if finished is not None:
+            logger.info(
+                "Voice enrollment complete for profile %s: %d samples stored, %d outliers replaced",
+                profile_id,
+                finished["collected"],
+                finished["replaced"],
+            )
 
 
 def _set_latency(result: dict[str, Any], received_at: float | None) -> None:

@@ -310,6 +310,40 @@ class TestEnrollmentState:
         assert state.record_sample(7) == 0
         assert state.current() is None
 
+    def test_defaults(self):
+        from app.voice.enrollment import DEFAULT_ENROLL_SAMPLES, DEFAULT_ENROLL_TIMEOUT_S
+
+        assert (DEFAULT_ENROLL_SAMPLES, DEFAULT_ENROLL_TIMEOUT_S) == (10, 600)
+        armed = EnrollmentState().arm(1, "Anna")
+        assert armed["remaining"] == 10 and armed["replaced"] == 0 and armed["last_replaced"] is None
+
+    def test_outlier_replacement_bookkeeping(self):
+        from app.voice.enrollment import MAX_OUTLIER_REPLACEMENTS
+
+        state = EnrollmentState()
+        armed = state.arm(7, "Anna", samples=2, timeout_s=60)
+        assert state.record_sample(7, 11, finish=False) == 1
+        assert state.record_sample(7, 12, finish=False) == 0
+        # Target reached but not finished: still armed for the outlier review.
+        assert state.current()["remaining"] == 0
+        assert state.session_samples(7) == [11, 12]
+        assert not state.replace_sample(7, 99, 0.2)  # not a sample of this session
+        assert state.replace_sample(7, 11, 0.2)
+        current = state.current()
+        assert current["remaining"] == 1 and current["collected"] == 1 and current["replaced"] == 1
+        assert current["last_replaced"]["sample_id"] == 11 and current["last_replaced"]["score"] == 0.2
+        assert current["expires_at"] == armed["expires_at"]
+        assert state.finish(7) is None  # still needs a sample
+        for sample_id in range(13, 12 + MAX_OUTLIER_REPLACEMENTS):
+            state.record_sample(7, sample_id, finish=False)
+            assert state.replace_sample(7, sample_id, 0.1)
+        assert state.replacements_left(7) == 0
+        state.record_sample(7, 20, finish=False)
+        assert not state.replace_sample(7, 20, 0.1)
+        finished = state.finish(7)
+        assert finished["replaced"] == MAX_OUTLIER_REPLACEMENTS and finished["collected"] == 2
+        assert state.current() is None
+
     def test_expiry(self, monkeypatch):
         from app.voice import enrollment as enrollment_module
 
