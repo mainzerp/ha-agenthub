@@ -235,10 +235,19 @@ Check the **Voice Profiles** page (engine status, recent results) and the turn's
 Symptom: person A is identified as person B (or the other way round), or most turns of both are `unknown` because the margin is small.
 
 - **Compare all scores:** the **All scores** column of the recent results (and `scores` on the `speaker_id` span) shows every profile's score per turn. When the wrong profile regularly scores within about 0.1 of the right one, the profiles are not separable yet; the default `voice.speaker_id.margin` of 0.12 reports such turns as `unknown` instead of guessing.
-- **After an upgrade:** samples enrolled before silence trimming (flagged **pre-VAD** in the sample list) embed the silence of the whole turn. Reset and re-enroll every profile.
+- **After an upgrade:** samples enrolled before silence trimming (flagged **pre-VAD** in the sample list) embed the silence of the whole turn, and samples enrolled with 3.5.0 were embedded with the pauses inside the sentence removed. Reset and re-enroll every profile.
 - **Check the samples:** open **Samples** on both profiles. Samples with a low **Own fit** or a **Closest other** score above the own fit were usually recorded while someone else spoke (enrollment takes every voice turn of every satellite) or from noise. Delete them one by one.
-- **Re-enroll alone:** if many samples are bad, **Reset samples** and enroll again, one person at a time with nobody else talking, using varied sentences with at least 1.5 s of speech. The enrollment guard rejects samples that do not clearly sound like this profile rather than another enrolled one (lead below half of `voice.speaker_id.margin`, `rejected_other_speaker`) or do not match the profile (`rejected_inconsistent`); frequent rejections during enrollment mean the wrong person is speaking or the microphone picks up others.
+- **Re-enroll alone:** if many samples are bad, **Reset samples** and enroll again, one person at a time with nobody else talking, using varied sentences with at least 1.5 s of speech. The enrollment guard rejects samples that do not clearly sound like this profile rather than another enrolled one (lead below half of `voice.speaker_id.margin`, `rejected_other_speaker`) or, from the third sample on, do not match the profile's accepted samples (`rejected_inconsistent`); frequent rejections during enrollment mean the wrong person is speaking or the microphone picks up others (see [Speakers Rejected During Enrollment](#speakers-rejected-during-enrollment)).
 - **Then tune:** raise `voice.speaker_id.margin` if confusions remain; raise `voice.speaker_id.threshold` only if unknown voices are identified as a profile.
+
+## Speakers Rejected During Enrollment
+
+Symptom: while one person enrolls alone, most samples are rejected (`rejected_inconsistent` or `rejected_other_speaker` in the enrollment banner and recent results) and the enrollment times out.
+
+- **Samples from 3.5.0:** 3.5.0 embedded only the joined speech segments, cutting the pauses inside a sentence; that made embeddings of the same speaker unstable (same speaker and headset scored 0.14-0.38 between samples) and later samples failed the guard. The trimming now cuts only the silence before and after the speech. Reset the samples of every profile and enroll again after this update.
+- **Poor first sample:** `rejected_inconsistent` applies only once two samples were accepted and compares against their centroid; a bad first sample no longer blocks the session. If the profile's samples still disagree, delete the sample with the lowest **Own fit** in the sample list or reset the profile.
+- **`rejected_other_speaker`:** the sample does not lead the closest other profile by at least half of `voice.speaker_id.margin`. Make sure nobody else talks, check that the other profile was not enrolled with this person's voice, and enroll on the satellite the person uses.
+- **`rejected_too_short`:** less detected speech than `voice.speaker_id.min_enroll_duration_s`; pauses and the silence around the command do not count. Speak longer sentences.
 
 ## My Alarm Helper No Longer Rings
 

@@ -361,11 +361,15 @@ Optional; off by default (`voice.speaker_id.enabled`). Flow:
 3. The container registers the `conversation_id` in an in-memory turn
    store (`app/voice/turn_store.py`: single-use entries, 120 s TTL, 256
    entries, newest session per id wins) at `start`. At analysis it
-   first trims the turn to its speech with the sherpa-onnx Silero VAD
-   (`app/voice/vad.py`, worker thread; the speech segments are
-   concatenated), so silence and pauses never shape the embedding. The
-   duration rules (`min_duration_s`, `min_enroll_duration_s`) apply to
-   these speech seconds. When the VAD is not loaded yet or fails, the
+   first trims the outer silence of the turn with the sherpa-onnx Silero
+   VAD (`app/voice/vad.py`, worker thread): the embedded region runs from
+   the first to the last detected speech, padded by 0.2 s on each side
+   (clamped to the buffer), so leading and trailing silence never shapes
+   the embedding. Pauses inside the utterance are kept: joining the speech
+   segments destabilized same-speaker embeddings. The duration rules
+   (`min_duration_s`, `min_enroll_duration_s`) apply to the detected
+   speech seconds (`speech_s`, the summed speech segments without pauses
+   or padding). When the VAD is not loaded yet or fails, the
    whole buffer is used and the result says `vad=false` (also for audio
    that is not 16 kHz); an empty speech buffer is never embedded
    (`too_short` / `no_speech`). A data-directory VAD model that fails to
@@ -387,10 +391,13 @@ Optional; off by default (`voice.speaker_id.enabled`). Flow:
    may be stored: with existing samples it is rejected when its own
    score does not lead the closest other profile by at least
    `margin * 0.5` -- including another profile scoring higher
-   (`rejected_other_speaker`) -- or the own score is below
-   `enroll_min_similarity`
-   (`rejected_inconsistent`); a profile's first sample is rejected when
-   it would be identified as another profile. Too little speech is
+   (`rejected_other_speaker`); a profile's first sample is rejected when
+   it would be identified as another profile. Once the profile has at
+   least two accepted samples of the current model (from the third
+   sample on), a sample whose score against the centroid of all accepted
+   samples is below `enroll_min_similarity` is rejected
+   (`rejected_inconsistent`); against a single sample this rule would
+   anchor the enrollment on one unchecked first sample. Too little speech is
    `rejected_too_short`. Rejected samples are not stored, do not count
    toward the requested sample count and are recorded on the armed
    enrollment (`rejected`, `last_rejection`). Every result carries the

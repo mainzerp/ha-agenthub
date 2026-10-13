@@ -126,6 +126,13 @@ class _FakeSpeechResult:
     result: _FakeSpeechResultState
 
 
+@dataclass(frozen=True)
+class _FakeSpeechAudioProcessing:
+    requires_external_vad: bool
+    prefers_auto_gain_enabled: bool
+    prefers_noise_reduction_enabled: bool
+
+
 class _FakeSpeechToTextEntity:
     """Minimal stand-in for HA's SpeechToTextEntity / Entity base."""
 
@@ -248,6 +255,11 @@ def _mock_homeassistant_deps():
             "AudioCodecs": _FakeAudioCodecs,
             "AudioFormats": _FakeAudioFormats,
             "AudioSampleRates": int,
+            "DEFAULT_AUDIO_PROCESSING": _FakeSpeechAudioProcessing(
+                requires_external_vad=True,
+                prefers_auto_gain_enabled=True,
+                prefers_noise_reduction_enabled=True,
+            ),
             "SpeechMetadata": _FakeSpeechMetadata,
             "SpeechResult": _FakeSpeechResult,
             "SpeechResultState": _FakeSpeechResultState,

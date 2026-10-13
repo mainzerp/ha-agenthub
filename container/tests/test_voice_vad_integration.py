@@ -70,3 +70,24 @@ def test_flush_emits_a_trailing_segment(detect):
     spans = detect(wave)
     assert spans, "trailing speech was not flushed"
     assert spans[-1][0] + spans[-1][1] > len(wave) - 0.3 * _RATE
+
+
+async def test_trimmer_keeps_inner_pauses(detect):
+    from unittest.mock import AsyncMock
+
+    from app.voice.vad import VoiceActivityTrimmer
+
+    silence = np.zeros(_RATE, dtype=np.float32)
+    pause = np.zeros(int(0.8 * _RATE), dtype=np.float32)
+    wave = np.concatenate([silence, _voiced(1.0), pause, _voiced(1.0), silence])
+    pcm = (wave * 32767).astype("<i2").tobytes()
+    trimmer = VoiceActivityTrimmer(
+        detector_factory=lambda path: detect, model_path_resolver=AsyncMock(return_value=Path("m"))
+    )
+    assert await trimmer.ensure_ready()
+    trim = await trimmer.trim(pcm, _RATE)
+    assert trim.vad is True and trim.embedded_s is not None
+    # Both bursts and the 0.8 s pause between them are embedded; most of the outer silence is not.
+    assert trim.embedded_s > 2.5
+    assert trim.embedded_s < len(wave) / _RATE - 1.0
+    assert trim.speech_s < trim.embedded_s

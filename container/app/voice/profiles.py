@@ -27,6 +27,8 @@ class ProfileCentroid:
     name: str
     ha_user_id: str | None
     centroid: np.ndarray
+    # Accepted samples (of the current model) behind ``centroid``.
+    sample_count: int = 1
 
 
 @dataclass(frozen=True)
@@ -84,7 +86,7 @@ def build_centroids(rows: list[dict[str, Any]]) -> list[ProfileCentroid]:
     for pid, vectors in grouped.items():
         mean = np.mean(np.stack(vectors), axis=0)
         name, ha_user_id = meta[pid]
-        centroids.append(ProfileCentroid(pid, name, ha_user_id, l2_normalize(mean)))
+        centroids.append(ProfileCentroid(pid, name, ha_user_id, l2_normalize(mean), sample_count=len(vectors)))
     return centroids
 
 
@@ -138,6 +140,9 @@ REJECTED_OTHER_SPEAKER = "rejected_other_speaker"
 REJECTED_INCONSISTENT = "rejected_inconsistent"
 REJECTED_TOO_SHORT = "rejected_too_short"
 
+# Accepted samples a profile needs before ``rejected_inconsistent`` applies.
+MIN_SAMPLES_FOR_CONSISTENCY = 2
+
 
 @dataclass(frozen=True)
 class EnrollmentCheck:
@@ -162,11 +167,16 @@ def check_enrollment_sample(
     With existing samples (the profile has a centroid): reject when the
     sample does not lead the closest other profile by at least half the
     identification ``margin`` -- which includes scoring higher against
-    another profile (``rejected_other_speaker``) -- or when its cosine to
-    the own centroid is below ``min_similarity`` (``rejected_inconsistent``).
-    First sample:
-    reject when it would be identified as another profile under the normal
-    threshold and margin rule (``rejected_other_speaker``).
+    another profile (``rejected_other_speaker``). First sample: reject when
+    it would be identified as another profile under the normal threshold
+    and margin rule (``rejected_other_speaker``).
+
+    The own-consistency rule (``rejected_inconsistent``: cosine to the own
+    centroid below ``min_similarity``) applies only once the profile has at
+    least ``MIN_SAMPLES_FOR_CONSISTENCY`` accepted samples, i.e. from the
+    third sample on. Against a single sample it would anchor the whole
+    enrollment on one unchecked first sample: a poor first sample would
+    reject every later one.
     """
     ranked = tuple(score_profiles(embedding, centroids))
     own = next((item for item in ranked if item.profile.profile_id == profile_id), None)
@@ -181,7 +191,7 @@ def check_enrollment_sample(
     elif others and (others[0].score > own.score or own.score - others[0].score < margin * 0.5):
         # A near-tie sample would pull the two centroids together.
         reason = REJECTED_OTHER_SPEAKER
-    elif own.score < min_similarity:
+    elif own.profile.sample_count >= MIN_SAMPLES_FOR_CONSISTENCY and own.score < min_similarity:
         reason = REJECTED_INCONSISTENT
     own_score = round(own.score, 4) if own is not None else None
     return EnrollmentCheck(reason=reason, own_score=own_score, ranked=ranked)

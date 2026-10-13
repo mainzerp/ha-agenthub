@@ -22,12 +22,20 @@ from app.voice.profiles import (
     REJECTED_INCONSISTENT,
     REJECTED_OTHER_SPEAKER,
     ProfileCentroid,
+    build_centroids,
     check_enrollment_sample,
     l2_normalize,
     sample_diagnostics,
 )
 from app.voice.service import SpeakerIdService, VoiceConfig, attach_speaker_to_task
-from app.voice.vad import SpeechTrim, VoiceActivityTrimmer, concat_spans, untrimmed
+from app.voice.vad import (
+    _EDGE_PAD_S,
+    SpeechTrim,
+    VoiceActivityTrimmer,
+    speech_region,
+    speech_sample_count,
+    untrimmed,
+)
 from tests.conftest import build_integration_test_app
 from tests.helpers import make_ingress_task, shutdown_aiosqlite
 
@@ -121,7 +129,8 @@ def _reset_voice_service():
 
 
 class TestVoiceActivityTrimmer:
-    async def test_speech_segments_are_concatenated_and_measured(self):
+    async def test_outer_silence_is_trimmed_and_inner_pauses_kept(self):
+        # Speech 0.50-0.75 s and 2.00-2.50 s of a 3 s buffer: the 1.25 s pause between them stays.
         pcm = np.arange(3 * _RATE, dtype="<i2").tobytes()
         spans = [(_RATE // 2, _RATE // 4), (2 * _RATE, _RATE // 2)]
         seen: list[int] = []
@@ -137,16 +146,52 @@ class TestVoiceActivityTrimmer:
         assert await trimmer.ensure_ready() is True
         assert trimmer.status == "ready"
         trim = await trimmer.trim(pcm, _RATE)
+        pad = int(_EDGE_PAD_S * _RATE)
         assert trim.vad is True
+        # ``speech_s`` measures the detected speech only; ``embedded_s`` the padded region.
         assert trim.speech_s == pytest.approx(0.75)
-        assert trim.pcm == concat_spans(pcm, spans)
-        samples = np.frombuffer(trim.pcm, dtype="<i2")
-        assert samples[0] == _RATE // 2 and samples[_RATE // 4] == 2 * _RATE
+        assert trim.embedded_s == pytest.approx(2.0 + 2 * _EDGE_PAD_S)
+        # One contiguous slice: every sample of the inner pause is embedded.
+        assert trim.pcm == pcm[(_RATE // 2 - pad) * 2 : (int(2.5 * _RATE) + pad) * 2]
         assert seen == [3 * _RATE]
 
-    def test_concat_spans_clamps_to_the_buffer(self):
-        pcm = np.arange(10, dtype="<i2").tobytes()
-        assert np.frombuffer(concat_spans(pcm, [(8, 5), (-3, 2), (20, 4)]), dtype="<i2").tolist() == [8, 9, 0, 1]
+    async def test_single_span_is_padded(self):
+        pcm = np.arange(2 * _RATE, dtype="<i2").tobytes()
+        trimmer = VoiceActivityTrimmer(
+            detector_factory=lambda path: lambda wf: [(_RATE // 2, _RATE)],
+            model_path_resolver=AsyncMock(return_value=Path("m")),
+        )
+        assert await trimmer.ensure_ready()
+        trim = await trimmer.trim(pcm, _RATE)
+        assert trim.speech_s == pytest.approx(1.0)
+        assert trim.embedded_s == pytest.approx(1.0 + 2 * _EDGE_PAD_S)
+        pad = int(_EDGE_PAD_S * _RATE)
+        assert trim.pcm == pcm[(_RATE // 2 - pad) * 2 : (_RATE // 2 + _RATE + pad) * 2]
+
+    async def test_padding_is_clamped_to_the_buffer(self):
+        # Speech touches both buffer edges: no padding is possible, the whole buffer is embedded.
+        pcm = np.arange(2 * _RATE, dtype="<i2").tobytes()
+        trimmer = VoiceActivityTrimmer(
+            detector_factory=lambda path: lambda wf: [(0, _RATE // 2), (_RATE, _RATE)],
+            model_path_resolver=AsyncMock(return_value=Path("m")),
+        )
+        assert await trimmer.ensure_ready()
+        trim = await trimmer.trim(pcm, _RATE)
+        assert trim.pcm == pcm
+        assert trim.speech_s == pytest.approx(1.5) and trim.embedded_s == pytest.approx(2.0)
+
+    def test_speech_region_clamps_and_spans_the_outer_speech(self):
+        pcm = np.arange(20, dtype="<i2").tobytes()
+        region = speech_region(pcm, [(12, 2), (-3, 5), (30, 4), (5, 1)], pad_samples=1)
+        # First span start 0 (clamped), last span end 14, padded by 1; the out-of-range span is ignored.
+        assert np.frombuffer(region, dtype="<i2").tolist() == list(range(15))
+        assert speech_region(pcm, [], pad_samples=3) == b""
+        assert speech_region(pcm, [(25, 4)], pad_samples=3) == b""
+
+    def test_speech_sample_count_counts_overlaps_once(self):
+        assert speech_sample_count([(0, 4), (2, 4), (10, 2)], 20) == 8
+        assert speech_sample_count([(18, 5), (-2, 3)], 20) == 3
+        assert speech_sample_count([], 20) == 0
 
     async def test_not_ready_falls_back_to_the_whole_buffer_and_warms_up(self):
         trimmer = VoiceActivityTrimmer(detector_factory=lambda path: lambda wf: [])
@@ -183,7 +228,7 @@ class TestVoiceActivityTrimmer:
         )
         assert await trimmer.ensure_ready()
         trim = await trimmer.trim(_pcm(2.0), _RATE)
-        assert trim.vad is True and trim.speech_s == 0.0 and trim.pcm == b""
+        assert trim.vad is True and trim.speech_s == 0.0 and trim.pcm == b"" and trim.embedded_s == 0.0
 
 
 class TestServiceUsesVad:
@@ -241,8 +286,8 @@ class TestServiceUsesVad:
 # ---------------------------------------------------------------------------
 
 
-def _centroid(pid: int, name: str, *values: float) -> ProfileCentroid:
-    return ProfileCentroid(pid, name, None, l2_normalize(np.array(values, dtype=np.float32)))
+def _centroid(pid: int, name: str, *values: float, samples: int = 1) -> ProfileCentroid:
+    return ProfileCentroid(pid, name, None, l2_normalize(np.array(values, dtype=np.float32)), sample_count=samples)
 
 
 class TestCheckEnrollmentSample:
@@ -269,16 +314,48 @@ class TestCheckEnrollmentSample:
         )
         assert check.reason == REJECTED_OTHER_SPEAKER
 
-    def test_inconsistent_rejected(self):
+    def test_inconsistent_rejected_from_the_third_sample_on(self):
         check = check_enrollment_sample(
             np.array([0.4, 0.0, 1.0]),
             1,
-            [_centroid(1, "Anna", 1, 0, 0), _centroid(2, "Ben", 0, 1, 0)],
+            [_centroid(1, "Anna", 1, 0, 0, samples=2), _centroid(2, "Ben", 0, 1, 0)],
             threshold=0.55,
             margin=0.12,
             min_similarity=0.45,
         )
         assert check.reason == REJECTED_INCONSISTENT and check.own_score < 0.45
+
+    def test_inconsistent_second_sample_accepted(self):
+        # One accepted sample is no reliable anchor: the consistency rule waits for two.
+        check = check_enrollment_sample(
+            np.array([0.4, 0.0, 1.0]),
+            1,
+            [_centroid(1, "Anna", 1, 0, 0, samples=1), _centroid(2, "Ben", 0, 1, 0)],
+            threshold=0.55,
+            margin=0.12,
+            min_similarity=0.45,
+        )
+        assert check.reason is None and check.own_score < 0.45
+
+    def test_other_speaker_rule_applies_to_the_second_sample(self):
+        check = check_enrollment_sample(
+            np.array([0.3, 1.0, 0.0]),
+            1,
+            [_centroid(1, "Anna", 1, 0, 0, samples=1), _centroid(2, "Ben", 0, 1, 0)],
+            threshold=0.55,
+            margin=0.12,
+            min_similarity=0.45,
+        )
+        assert check.reason == REJECTED_OTHER_SPEAKER
+
+    def test_build_centroids_counts_samples(self):
+        rows = [
+            {"profile_id": 1, "name": "Anna", "embedding": _vec(1, 0), "dim": 2},
+            {"profile_id": 1, "name": "Anna", "embedding": _vec(0.9, 0.1), "dim": 2},
+            {"profile_id": 2, "name": "Ben", "embedding": _vec(0, 1), "dim": 2},
+        ]
+        counts = {c.profile_id: c.sample_count for c in build_centroids(rows)}
+        assert counts == {1: 2, 2: 1}
 
     def test_first_sample_rejected_when_identified_as_someone_else(self):
         centroids = [_centroid(2, "Ben", 0, 1, 0), _centroid(3, "Cleo", 0, 0, 1)]
@@ -301,7 +378,9 @@ class TestEnrollmentGuardService:
     async def test_rejected_samples_do_not_count(self, db_repository):
         anna = await VoiceProfileRepository.create_profile("Anna")
         ben = await VoiceProfileRepository.create_profile("Ben")
+        # Two accepted samples: the consistency rule applies.
         await VoiceProfileRepository.add_sample(anna["id"], _vec(1, 0, 0), 3, _MODEL, 2.0, 1.8)
+        await VoiceProfileRepository.add_sample(anna["id"], _vec(1, 0.05, 0), 3, _MODEL, 2.0, 1.8)
         await VoiceProfileRepository.add_sample(ben["id"], _vec(0, 1, 0), 3, _MODEL, 2.0, 1.8)
         engine = FakeEngine([_unit(0.2, 1, 0), _unit(0.3, 0, 1), _unit(1, 0.1, 0)])
         service = SpeakerIdService(engine=engine, vad=FakeVad(2.0))
@@ -317,18 +396,41 @@ class TestEnrollmentGuardService:
         armed = service.enrollment.current()
         assert armed["remaining"] == 1 and armed["rejected"] == 2
         assert armed["last_rejection"]["reason"] == "rejected_inconsistent"
-        assert await VoiceProfileRepository.count_samples(anna["id"], _MODEL) == 1
+        assert await VoiceProfileRepository.count_samples(anna["id"], _MODEL) == 2
 
         accepted = await service.process_turn(_pcm(2.5), _RATE, _config())
         assert accepted["status"] == "enrolled_sample" and accepted["score"] > 0.9
         assert accepted["speech_s"] == pytest.approx(2.0) and accepted["vad"] is True
         assert service.enrollment.current() is None
         rows = await VoiceProfileRepository.list_samples(anna["id"])
-        assert len(rows) == 2 and rows[-1]["speech_s"] == pytest.approx(2.0)
+        assert len(rows) == 3 and rows[-1]["speech_s"] == pytest.approx(2.0)
 
         recent = service.store.recent()
         assert [r["status"] for r in recent] == ["enrolled_sample", "rejected_sample", "rejected_sample"]
         assert recent[1]["reason"] == "rejected_inconsistent"
+
+    async def test_consistency_rule_waits_for_two_accepted_samples(self, db_repository):
+        """A poor first sample must not block the session: the 2nd sample is never ``rejected_inconsistent``."""
+        anna = await VoiceProfileRepository.create_profile("Anna")
+        ben = await VoiceProfileRepository.create_profile("Ben")
+        await VoiceProfileRepository.add_sample(ben["id"], _vec(0, 1, 0), 3, _MODEL, 2.0, 1.8)
+        engine = FakeEngine([_unit(1, 0, 0), _unit(0.4, 0, 1), _unit(0.5, 0, -0.3), _unit(1, 0.1, 0.3)])
+        service = SpeakerIdService(engine=engine, vad=FakeVad(2.0))
+        service.enrollment.arm(anna["id"], "Anna", samples=3, timeout_s=60)
+
+        first = await service.process_turn(_pcm(2.5), _RATE, _config())
+        assert first["status"] == "enrolled_sample"
+        # Cosine ~0.37 to the single first sample (below 0.45): accepted, only one sample to compare with.
+        second = await service.process_turn(_pcm(2.5), _RATE, _config())
+        assert second["status"] == "enrolled_sample" and second["score"] < 0.45
+        # Cosine ~0.42 to the centroid of the two accepted samples: rejected.
+        third = await service.process_turn(_pcm(2.5), _RATE, _config())
+        assert third["status"] == "rejected_sample" and third["reason"] == "rejected_inconsistent"
+        assert await VoiceProfileRepository.count_samples(anna["id"], _MODEL) == 2
+        fourth = await service.process_turn(_pcm(2.5), _RATE, _config())
+        assert fourth["status"] == "enrolled_sample"
+        assert service.enrollment.current() is None
+        assert await VoiceProfileRepository.count_samples(anna["id"], _MODEL) == 3
 
     async def test_first_sample_of_new_profile_identified_as_other_is_rejected(self, db_repository):
         ben = await VoiceProfileRepository.create_profile("Ben")

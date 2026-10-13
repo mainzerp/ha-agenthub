@@ -211,7 +211,8 @@ turn arriving before it is `ready` reports `unavailable` (reason
 Diagnostic fields (`null` when the turn was not analysed):
 
 - `duration_s` -- raw turn length; `speech_s` -- seconds of detected
-  speech that were embedded; `vad` -- `true` when voice-activity
+  speech (summed speech segments; the embedded audio runs from the first
+  to the last speech, padded by 0.2 s, pauses included); `vad` -- `true` when voice-activity
   detection trimmed the turn, `false` when the whole turn was used (VAD
   not loaded or failed).
 - `scores` -- every profile's cosine score, best first
@@ -242,7 +243,7 @@ computed, e.g. `disabled`, `no_profiles`, `unsupported_audio`,
 | `too_short` | Less detected speech than `voice.speaker_id.min_duration_s` (reason `no_speech` when the VAD found none), or than `min_enroll_duration_s` while enrolling (reason `rejected_too_short`) |
 | `no_profiles` | No profile has samples for the current model |
 | `enrolled_sample` | Enrollment was armed; the confirmed turn was stored as a sample (`score` = similarity to the profile's centroid, `null` for its first sample) |
-| `rejected_sample` | Enrollment was armed; the sample guard rejected the turn (reason `rejected_other_speaker`: lead over the closest other profile below `margin * 0.5`, or a first sample identified as another profile; `rejected_inconsistent`: own score below `enroll_min_similarity`); nothing is stored and the sample does not count. Recorded in the recent results and enrollment counters only after `end` |
+| `rejected_sample` | Enrollment was armed; the sample guard rejected the turn (reason `rejected_other_speaker`: lead over the closest other profile below `margin * 0.5`, or a first sample identified as another profile; `rejected_inconsistent`: own score below `enroll_min_similarity`, once the profile has at least two accepted samples); nothing is stored and the sample does not count. Recorded in the recent results and enrollment counters only after `end` |
 | `disabled` | `voice.speaker_id.enabled` is off (sent right after `start`) |
 | `unsupported_audio` | Format other than 16 kHz / 16-bit / mono / PCM (sent right after `start`) |
 | `unavailable` | Embedding engine not loaded (still loading, missing model or dependency); reason `engine_not_ready` while a warm-up is pending. While enrolling, reason `vad_not_ready` while the voice-activity detector is still loading (nothing is stored) |

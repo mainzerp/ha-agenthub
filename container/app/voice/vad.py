@@ -1,9 +1,12 @@
 """Voice-activity trimming before speaker embedding (sherpa-onnx Silero VAD).
 
-Only the detected speech of a voice turn is embedded, for identification and
-enrollment alike: leading and trailing silence and pauses would otherwise
+Only the outer silence of a voice turn is cut off before embedding, for
+identification and enrollment alike: the embedded region runs from the start
+of the first detected speech span to the end of the last one, padded by
+``_EDGE_PAD_S`` on each side. Leading and trailing silence would otherwise
 pull every embedding towards the same "room noise" direction and make
-different speakers look alike.
+different speakers look alike; pauses inside the utterance are kept (see
+``_EDGE_PAD_S`` for why).
 
 The detector loads lazily in the background (model download included when
 the image does not ship it) and every detection runs in a worker thread via
@@ -40,11 +43,22 @@ VadState = Literal["ready", "pending", "failed"]
 # After a failed load, warm-ups are skipped for this long before a retry.
 _LOAD_FAILURE_BACKOFF_S = 60.0
 
-# Silero parameters: short pauses between words are dropped, speech bursts
-# shorter than ``_MIN_SPEECH_S`` (clicks, breaths) are ignored.
+# Silero parameters: pauses shorter than ``_MIN_SILENCE_S`` do not split a
+# speech span, speech bursts shorter than ``_MIN_SPEECH_S`` (clicks, breaths)
+# are ignored.
 _SPEECH_THRESHOLD = 0.5
 _MIN_SILENCE_S = 0.25
 _MIN_SPEECH_S = 0.25
+
+# Padding kept around the speech region (seconds, clamped to the buffer).
+# Only the outer silence is trimmed: an offline experiment with the CAM++
+# engine and Silero VAD showed that cutting the pauses inside an utterance
+# (joining the speech spans) destabilises same-speaker embeddings -- removing
+# a 0.2-0.4 s pause could turn a clip's embedding almost orthogonal. Over 72
+# leave-one-out centroid trials, joined spans misidentified 14, the whole
+# buffer 10, and this padded first-to-last-speech region 7 (no padding: 13;
+# the hand-cut true speech region: 5).
+_EDGE_PAD_S = 0.2
 
 # ``(start_sample, sample_count)`` spans of detected speech.
 SpeechSpans = list[tuple[int, int]]
@@ -81,31 +95,65 @@ def _discard_data_copy(model_path: Path) -> None:
 class SpeechTrim:
     """Audio to embed for one voice turn.
 
-    ``pcm`` holds only the detected speech when ``vad`` is True and the
-    whole buffer otherwise; ``speech_s`` is its duration in seconds.
+    With ``vad`` True, ``pcm`` is the speech region (first speech start to
+    last speech end, padded by ``_EDGE_PAD_S``, inner pauses included) and
+    empty when no speech was detected; otherwise it is the whole buffer.
+    ``speech_s`` is the detected speech in seconds (the summed span lengths,
+    so the minimum-duration rules measure real speech, not pauses or
+    padding); ``embedded_s`` is the duration of ``pcm``. Without VAD both
+    are the whole-buffer duration.
     """
 
     pcm: bytes
     speech_s: float
     vad: bool
+    embedded_s: float | None = None
 
 
 def untrimmed(pcm: bytes, sample_rate: int) -> SpeechTrim:
     """The fallback trim: the whole buffer, ``vad=False``."""
-    seconds = len(pcm) / (BYTES_PER_SAMPLE * sample_rate) if sample_rate > 0 else 0.0
-    return SpeechTrim(pcm=pcm, speech_s=round(seconds, 3), vad=False)
+    seconds = round(len(pcm) / (BYTES_PER_SAMPLE * sample_rate), 3) if sample_rate > 0 else 0.0
+    return SpeechTrim(pcm=pcm, speech_s=seconds, vad=False, embedded_s=seconds)
 
 
-def concat_spans(pcm: bytes, spans: SpeechSpans) -> bytes:
-    """Concatenate the s16le samples covered by ``spans`` (clamped to the buffer)."""
-    total = len(pcm) // BYTES_PER_SAMPLE
-    parts: list[bytes] = []
+def _clamped_spans(spans: SpeechSpans, total: int) -> list[tuple[int, int]]:
+    """``(begin, end)`` sample ranges of ``spans`` clamped to ``total`` samples, sorted, empty ones dropped."""
+    ranges: list[tuple[int, int]] = []
     for start, count in spans:
         begin = max(0, int(start))
-        end = min(total, begin + max(0, int(count)))
+        end = min(total, int(start) + max(0, int(count)))
         if end > begin:
-            parts.append(pcm[begin * BYTES_PER_SAMPLE : end * BYTES_PER_SAMPLE])
-    return b"".join(parts)
+            ranges.append((begin, end))
+    ranges.sort()
+    return ranges
+
+
+def speech_sample_count(spans: SpeechSpans, total: int) -> int:
+    """Samples covered by ``spans`` within a ``total``-sample buffer (overlaps counted once)."""
+    covered = 0
+    cursor = 0
+    for begin, end in _clamped_spans(spans, total):
+        begin = max(begin, cursor)
+        if end > begin:
+            covered += end - begin
+            cursor = end
+    return covered
+
+
+def speech_region(pcm: bytes, spans: SpeechSpans, pad_samples: int) -> bytes:
+    """The s16le samples from the first span start to the last span end, padded by ``pad_samples``.
+
+    Everything between the spans (pauses inside the utterance) is kept;
+    the padding is clamped to the buffer. No spans: empty bytes.
+    """
+    total = len(pcm) // BYTES_PER_SAMPLE
+    ranges = _clamped_spans(spans, total)
+    if not ranges:
+        return b""
+    pad = max(0, int(pad_samples))
+    begin = max(0, ranges[0][0] - pad)
+    end = min(total, max(stop for _, stop in ranges) + pad)
+    return pcm[begin * BYTES_PER_SAMPLE : end * BYTES_PER_SAMPLE]
 
 
 def _sherpa_vad_factory(model_path: Path) -> SpanDetector:
@@ -255,10 +303,11 @@ class VoiceActivityTrimmer:
         self._warm_up_task = spawn(self.ensure_ready(), name="voice_vad_warm_up")
 
     async def trim(self, pcm: bytes, sample_rate: int) -> SpeechTrim:
-        """Return the detected speech of ``pcm`` (falls back to the whole buffer). Never raises.
+        """Return the speech region of ``pcm`` (falls back to the whole buffer). Never raises.
 
-        Only 16 kHz audio is trimmed (the rate the detector is configured
-        for); any other rate is returned untrimmed.
+        Only the outer silence is trimmed (see :func:`speech_region`). Only
+        16 kHz audio is trimmed (the rate the detector is configured for);
+        any other rate is returned untrimmed.
         """
         if sample_rate != SUPPORTED_SAMPLE_RATE:
             return untrimmed(pcm, sample_rate)
@@ -272,9 +321,10 @@ class VoiceActivityTrimmer:
         except Exception:
             logger.warning("Voice-activity detection failed; embedding the whole turn", exc_info=True)
             return untrimmed(pcm, sample_rate)
-        speech = concat_spans(pcm, spans)
-        seconds = len(speech) / (BYTES_PER_SAMPLE * sample_rate) if sample_rate > 0 else 0.0
-        return SpeechTrim(pcm=speech, speech_s=round(seconds, 3), vad=True)
+        region = speech_region(pcm, spans, round(_EDGE_PAD_S * sample_rate))
+        speech_s = speech_sample_count(spans, len(pcm) // BYTES_PER_SAMPLE) / sample_rate
+        embedded_s = len(region) / (BYTES_PER_SAMPLE * sample_rate)
+        return SpeechTrim(pcm=region, speech_s=round(speech_s, 3), vad=True, embedded_s=round(embedded_s, 3))
 
     def _detect(self, pcm: bytes) -> SpeechSpans:
         waveform = pcm_s16le_to_float32(pcm)
