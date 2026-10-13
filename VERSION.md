@@ -1,10 +1,16 @@
 # Version
 
-**Current Version:** 3.3.1
+**Current Version:** 3.4.0
 
 ## Recent Changes
 
-(tracking changes since 3.3.1)
+(tracking changes since 3.4.0)
+
+## Version History
+
+### 3.4.0 (MINOR) -- requesting person for text turns
+
+(PR #157: commits 2ae7886, ec3e164)
 
 - Personalization: a request carrying a Home Assistant `user_id` (Companion App typed turn, Assist dialog, mapped Open WebUI user) is named after the linked `person.*` entity. The orchestrator prelude resolves it once per turn on the cache-miss path (`app/ha_client/persons.py`, `PersonDirectory`: one cached `get_states` map, 300 s TTL with stale-while-revalidate, invalidated by person `state_changed` events and WS reconnects (an invalidated map is never served again), 1.5 s bounded join, 30 s retry after an HA failure, refreshes cancelled at shutdown) into `TaskContext.requester_person` / `requester_name`. `requester_identity` prefers that name over a voice match; it feeds the general/timer prompt line (`User: "<name>" (the Home Assistant user making this request)`; allowlist unchanged), the mediation line (`User (Home Assistant account): "<name>"`) and the send sender name. Voice-only turns are unchanged. Trigger: live trace 6c9ce78dc644401a ("Wer bin ich?" unanswered on a Companion App turn).
 - Cache: mediated speech is never stored. New action-cache rows write the original agent speech into `response_text` and `original_response_text`; a replay with the rewrite disabled or failing speaks `original_response_text` (legacy rows without it fall back to `response_text`). The `speech_has_turn_additions` / `reminder_applied` plumbing is removed. Agents with `_receives_speaker_context` (registry lookup: `AgentRegistry` / `CachedAgentRegistry.receives_speaker_context`, plugin and custom agents included) never write an action-cache row, with or without a known name; their routing row is kept. Schema, export and import are unchanged.
@@ -12,8 +18,7 @@
 - Orchestrator: the speaker and requester lookups are cancelled on every prelude exit path (memory setup, event publish, classification, memory join, speaker join).
 - Trace: the root span records `requester_person` and `requester_name`; the trace detail page shows the name next to the user id.
 - Calendar: `UserIdentityResolver` uses the shared person matcher (`find_person_by_user_id`); behavior unchanged.
-
-## Version History
+- Verification: `scripts/ci.py` full gate passed: 4494 container tests passed (1 skipped, 9 xfailed, 3 xpassed, coverage 85.28%), 213 integration tests passed, Ruff, bandit, pip-audit, Docker build and smoke test, Trivy; an independent review's findings (named speech reaching the action cache, hardcoded agent list, lookup cancellation, stale person map, refresh task ownership) were fixed before release. Not yet verified live.
 
 ### 3.3.1 (PATCH) -- LLM provider resilience
 
