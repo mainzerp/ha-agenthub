@@ -1050,6 +1050,17 @@ async def _migrate_to_49(db: aiosqlite.Connection) -> None:
     await db.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (49)")
 
 
+async def _migrate_to_50(db: aiosqlite.Connection) -> None:
+    # Migration 50: resolved requester name (HA person, else identified voice
+    # speaker), the name's own source and the personalization identity
+    # source on trace_summary, shown and searchable in the trace list.
+    # Nullable; old rows stay NULL. Column-guarded, so re-running is a no-op.
+    for column in ("user_name", "identity_source", "user_name_source"):
+        if not await _column_exists(db, "trace_summary", column):
+            await db.execute(f"ALTER TABLE trace_summary ADD COLUMN {column} TEXT")
+    await db.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (50)")
+
+
 # Ordered registry of (version, migration_callable). Each migration records
 # its own version marker. Applied in ascending order for versions greater
 # than the current schema version.
@@ -1102,6 +1113,7 @@ MIGRATIONS: list[tuple[int, Callable[[aiosqlite.Connection], Awaitable[None]]]] 
     (47, _migrate_to_47),
     (48, _migrate_to_48),
     (49, _migrate_to_49),
+    (50, _migrate_to_50),
 ]
 
 

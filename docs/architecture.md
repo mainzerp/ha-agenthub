@@ -386,7 +386,8 @@ Optional; off by default (`voice.speaker_id.enabled`). Flow:
    `speaker_id` trace span at dispatch (`status`, `profile_id`, `score`,
    `margin`, `duration_s`, `waited_ms` = time blocked at dispatch,
    `lookup_ms` = lookup start to result, `compute_ms`, `latency_ms`,
-   `speaker_name` when identified). An early prelude exit cancels the
+   `speaker_name` and the profile's linked `speaker_ha_user_id` when
+   identified). An early prelude exit cancels the
    lookup and removes the entry. An action-cache replay discards the
    entry. A turn with an attached speaker is treated as
    context-dependent and writes no action-cache or routing-cache row, so
@@ -458,9 +459,22 @@ shapes a reply:
 
 Trace: the root span carries `identity_source` (`ha` | `voice` | `none`,
 refined after the speaker join) and, when the request's HA user resolved
-to a person, `requester_person` (entity id) and `requester_name`; the
-trace detail page shows the name next to the user id. The
-`memory_retrieval` span records the identity source of its search.
+to a person, `requester_person` (entity id) and `requester_name`. The
+trace summary row stores, at finalize, `user_name` (HA person name,
+else identified voice speaker), `user_name_source` (the name's own source,
+`ha` | `voice`) and `identity_source` (personalization source); an HA user
+without a person entity plus a voice match yields a voice name with
+`identity_source` `ha`. On the cache-miss path the name is the one the
+prelude resolved. An action-cache replay runs no requester or speaker
+lookup: it takes the HA person name only from an already cached person map
+(`PersonDirectory.lookup_cached`, never waits; a cold map starts a
+background refresh and the row stays unnamed), and voice-only replays
+never get a name. The `memory_retrieval` span records the identity source,
+`search_user_id` and `scope` of its search plus a bounded `memories`
+list (see Session Memory). `user_id`, `speaker_ha_user_id`,
+`search_user_id`, `conversation_id` and `matched_conversation_id` are kept
+verbatim by the trace sanitizer (HA user ids and `owui-<hex>` conversation
+ids would otherwise be redacted as long hex tokens).
 
 Action-cache replays are not personalized: the voice entry is discarded,
 no speaker is attached, reminders resolve from the request user (else
@@ -626,6 +640,7 @@ Session memory gives the General Agent semantic recall of past conversations ("w
 - **Write path** -- `ConversationManager.store_turn` embeds each stored turn (raw text from `conversations`) fire-and-forget under the turn's personalization identity (request user, else a voice-identified speaker's linked HA user; see [Speaker Identification](#speaker-identification-voice-turns)); per-turn vectors go to the vec store, session rollup metadata to `memory_sessions`/`memory_turns` (deterministic digest summary, no LLM summarization).
 - **Read path** -- on cache-missed requests the orchestrator runs the memory search as a parallel prelude task (overlapped with classification). Matches are grouped per session (the current session is excluded -- its turns are already in the live context -- and sessions whose best-matched text duplicates a higher-ranked session are dropped), filtered by `memory.similarity_threshold` and `memory.scope` (per-user or global, keyed by the personalization identity; rows without a user form an anonymous bucket), and attached to `TaskContext.memory_context`.
 - **Injection** -- the General Agent appends matches to its system prompt (after the byte-stable static head) as score-annotated context: recall questions about past conversations are answered from this content; otherwise it is background only, never a basis for actions. For the top cross-session match, up to `memory.max_continuation_turns` turn pairs of the old session are copied into the context; the old session is never modified or reactivated.
+- **Tracing** -- the `memory_retrieval` span lists each match (`conversation_id`, `session_id`, `turn_id`, `similarity`, `last_turn_at`, a single-line snippet of at most 150 characters, `continuation_count`, `attached`; at most 10 entries, truncated in the producer and still trace-sanitized) together with `scope` and `search_user_id`; snippets are redacted on the full text before truncation; `attached` is true only when the matches were placed in the task context (false for timed-out or abandoned searches).
 - **Wait modes** -- `blocking` (default, waits up to `memory.wait_timeout_ms`; `best_effort` rarely lands a match with cached routing or fast LLM providers) or `best_effort` (zero added latency).
 - **Lifecycle** -- unlimited retention by design; on embedding-model change the vec table is reset and turns are lazily re-embedded by a startup backfill. Cache-hit (replayed) requests receive no memory lookup and pay no embed cost.
 

@@ -114,6 +114,7 @@ The `/data/chromadb` directory holds the sqlite-vec entity-index data and `cache
 Session memory matches are injected into the General Agent's system prompt with visible similarity scores: recall questions about past conversations are answered from this content, but it never triggers actions (false-positive lesson from v1.9.6). If recalled content looks wrong, raise `memory.similarity_threshold`; if nothing is recalled:
 
 - Verify `memory.enabled` is `true` and check the request logs for `Session memory: N match(es) attached` (or `memory_matches` in the dispatch trace span) — absent means the search found nothing or the request was served from the cache (cache-hit requests skip the memory lookup).
+- Select the trace's `memory_retrieval` span: **Loaded memories** shows which sessions matched, their similarity and snippet, and whether they were attached (not attached = timed out or abandoned); `scope` and `search_user_id` show which memory bucket was searched.
 - With `memory.wait_mode` = `best_effort`, matches frequently arrive too late when routing is cached or the LLM provider is fast; use `blocking` (default).
 - In per-user scope (`memory.scope` = `user`), sessions are only visible to the same user; requests without a user ID only see the anonymous bucket.
 

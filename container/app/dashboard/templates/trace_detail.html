@@ -65,11 +65,27 @@
                               :title="traceDetail.area_id || ''"
                               x-text="traceDetail.area_name || traceDetail.area_id || '-'"></span>
                     </div>
-                    <div x-show="traceDetail.user_id">
-                        <span class="text-muted text-xs">User</span><br>
-                        <span class="text-mono text-sm"
-                              :title="[traceDetail.requester_person, traceDetail.user_id].filter(Boolean).join(' / ')"
-                              x-text="traceDetail.requester_name ? traceDetail.requester_name + ' (' + shortId(traceDetail.user_id) + ')' : shortId(traceDetail.user_id)"></span>
+                    <div x-show="hasIdentity()" class="trace-identity">
+                        <span class="text-muted text-xs">Identity</span><br>
+                        <span class="trace-identity-name">
+                            <span class="text-sm" x-text="identityName() || 'Unknown'"></span>
+                            <span class="badge text-2xs" :class="sourceBadge(nameSource())" :title="nameSource() ? 'Name source: ' + sourceLabel(nameSource()) : 'No name resolved'" x-text="sourceLabel(nameSource())"></span>
+                        </span>
+                        <dl class="trace-identity-details">
+                            <div><dt>Personalization</dt><dd title="Whose memory and calendar were used for this turn" x-text="sourceLabel(traceDetail.identity_source)"></dd></div>
+                            <template x-if="traceDetail.requester_person">
+                                <div><dt>Person</dt><dd class="text-mono" x-text="traceDetail.requester_person"></dd></div>
+                            </template>
+                            <template x-if="traceDetail.user_id">
+                                <div><dt>HA user</dt><dd class="text-mono" :title="traceDetail.user_id" x-text="shortId(traceDetail.user_id)"></dd></div>
+                            </template>
+                            <template x-if="traceDetail.speaker">
+                                <div><dt>Voice</dt><dd x-text="speakerSummary()"></dd></div>
+                            </template>
+                            <template x-if="traceDetail.speaker && traceDetail.speaker.speaker_ha_user_id">
+                                <div><dt>Voice HA user</dt><dd class="text-mono" :title="traceDetail.speaker.speaker_ha_user_id" x-text="shortId(traceDetail.speaker.speaker_ha_user_id)"></dd></div>
+                            </template>
+                        </dl>
                     </div>
                     <div x-show="traceDetail.voice_followup">
                         <span class="text-muted text-xs">Context</span><br>
@@ -152,6 +168,27 @@
                                 <dl class="inspector-values"><dt>Duration</dt><dd x-text="formatDuration(selectedSpan.duration_ms)"></dd><dt>Status</dt><dd :class="{'trace-error': selectedSpan.status === 'error'}" x-text="selectedSpan.status || 'Not recorded'"></dd></dl>
                                 <template x-for="[key, value] in spanFields('overview')" :key="key"><dl class="inspector-values"><dt x-text="fieldLabel(key)"></dt><dd x-text="formatValue(value)"></dd></dl></template>
                             </details>
+                            <template x-if="spanMemories().length">
+                                <details open class="inspector-group"><summary x-text="'Loaded memories (' + spanMemories().length + ')'"></summary>
+                                    <p class="text-muted text-xs" x-text="memoryScopeLine()"></p>
+                                    <template x-for="(mem, memIdx) in spanMemories()" :key="memIdx">
+                                        <div class="memory-entry">
+                                            <div class="memory-entry-head">
+                                                <template x-if="mem.conversation_id">
+                                                    <a class="text-teal text-mono text-xs conv-link" :href="dashUrl('/dashboard/traces?search=' + encodeURIComponent(mem.conversation_id))" :title="'Show traces of session ' + mem.conversation_id" x-text="shortId(mem.conversation_id)"></a>
+                                                </template>
+                                                <span class="badge text-2xs" :class="mem.attached ? 'badge-green' : 'badge-muted'" :title="mem.attached ? 'Injected into the task context' : 'Found but not attached (timed out or abandoned)'" x-text="mem.attached ? 'Attached' : 'Not attached'"></span>
+                                            </div>
+                                            <dl class="inspector-values">
+                                                <dt>Similarity</dt><dd class="text-mono" x-text="mem.similarity != null ? Number(mem.similarity).toFixed(3) : 'Not recorded'"></dd>
+                                                <dt>Last turn</dt><dd x-text="formatEpoch(mem.last_turn_at)"></dd>
+                                                <dt>Continuation turns</dt><dd class="text-mono" x-text="mem.continuation_count != null ? mem.continuation_count : 0"></dd>
+                                            </dl>
+                                            <pre x-text="mem.snippet || 'No snippet recorded'"></pre>
+                                        </div>
+                                    </template>
+                                </details>
+                            </template>
                             <details open class="inspector-group"><summary>Input / Output</summary>
                                 <p class="text-muted text-sm" x-show="!spanFields('payload').length">No payload recorded.</p>
                                 <template x-for="[key, value] in spanFields('payload')" :key="key"><details class="payload-disclosure"><summary x-text="fieldLabel(key)"></summary><pre x-text="formatValue(value)"></pre></details></template>
@@ -271,7 +308,7 @@
                                 <div class="ml-2 mt-sm">
                                     <button class="btn btn-sm btn-secondary" :aria-expanded="!!comm._showMemory"
                                          @click="comm._showMemory = !comm._showMemory">
-                                        <span class="text-xs text-teal-glow fw-600">Memory</span>
+                                        <span class="text-xs text-teal-glow fw-600">Conversation history</span>
                                         <span class="text-3xs text-silver"
                                               x-text="'(' + comm.memory.length + ' prior messages)'"></span>
                                         <span class="text-3xs text-silver"
@@ -427,6 +464,55 @@ function traceDetailPage() {
                 this.copyStatus = 'Select the ID below to copy.';
             }
         },
+        hasIdentity() {
+            const d = this.traceDetail || {};
+            return !!(d.user_id || d.requester_name || d.speaker || (d.identity_source && d.identity_source !== 'none'));
+        },
+        identityName() {
+            const d = this.traceDetail || {};
+            if (d.requester_name) return d.requester_name;
+            if (d.user_name) return d.user_name;
+            if (d.identity_source === 'voice' && d.speaker && d.speaker.speaker_name) return d.speaker.speaker_name;
+            return '';
+        },
+        nameSource() {
+            // Where the shown name came from; independent of identity_source
+            // (an HA user without a person entity can be named by voice).
+            const d = this.traceDetail || {};
+            if (d.requester_name) return 'ha';
+            if (d.user_name) return d.user_name_source || null;
+            if (d.identity_source === 'voice' && d.speaker && d.speaker.speaker_name) return 'voice';
+            return null;
+        },
+        sourceLabel(source) {
+            const labels = { ha: 'HA account', voice: 'Voice' };
+            return labels[source] || 'None';
+        },
+        sourceBadge(source) {
+            const classes = { ha: 'badge-blue', voice: 'badge-teal' };
+            return classes[source] || 'badge-muted';
+        },
+        speakerSummary() {
+            const sp = this.traceDetail?.speaker;
+            if (!sp) return '';
+            const parts = [sp.status || 'unknown'];
+            if (sp.score != null) parts.push('score ' + Number(sp.score).toFixed(3));
+            if (sp.margin != null) parts.push('margin ' + Number(sp.margin).toFixed(3));
+            return (sp.speaker_name || 'No match') + ' (' + parts.join(', ') + ')';
+        },
+        spanMemories() {
+            const memories = this.selectedSpan?.span_name === 'memory_retrieval' ? this.selectedSpan?.metadata?.memories : null;
+            return Array.isArray(memories) ? memories : [];
+        },
+        memoryScopeLine() {
+            const meta = this.selectedSpan?.metadata || {};
+            const searchUser = meta.search_user_id ? this.shortId(meta.search_user_id) : 'anonymous';
+            return 'Scope: ' + (meta.scope || 'not recorded') + ', search user: ' + searchUser;
+        },
+        formatEpoch(value) {
+            if (value == null || !Number.isFinite(Number(value))) return 'Not recorded';
+            return new Date(Number(value) * 1000).toLocaleString();
+        },
         routingSource() {
             if (this.traceDetail.routing?.action_cache_hit) return 'Action cached';
             if (this.traceDetail.routing_cached === true) return 'Routing cached';
@@ -484,8 +570,9 @@ function traceDetailPage() {
         spanFields(group) {
             const timings = ['ttft_ms', 'latency_ms', 'tps', 'resolve_ms', 'state_fetch_ms'];
             const payloads = ['user_input', 'condensed_task', 'all_classifications', 'llm_response', 'agent_response', 'action_params', 'result_speech', 'candidates', 'response', 'input', 'output'];
-            return Object.entries(this.selectedSpan?.metadata || {}).filter(([key]) =>
-                group === 'overview' ? timings.includes(key) : group === 'payload' ? payloads.includes(key) : !timings.includes(key) && !payloads.includes(key));
+            // ``memories`` is rendered by the Loaded memories section only.
+            return Object.entries(this.selectedSpan?.metadata || {}).filter(([key]) => key !== 'memories' &&
+                (group === 'overview' ? timings.includes(key) : group === 'payload' ? payloads.includes(key) : !timings.includes(key) && !payloads.includes(key)));
         },
         fitTimeline() {
             this.zoom = 1;

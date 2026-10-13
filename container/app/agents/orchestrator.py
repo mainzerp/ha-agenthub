@@ -44,12 +44,12 @@ from app.agents.mediation import (
     needs_template_localization,
     speech_source_of,
 )
-from app.agents.personalization import mediation_speaker_kwargs, personalization_user_id
+from app.agents.personalization import mediation_speaker_kwargs, personalization_user_id, requester_identity
 from app.agents.prompt_builder import contains_no_content_sentinel
 from app.agents.sanitize import strip_markdown, strip_markdown_markers, strip_parenthetical_asides
 from app.agents.task_pipeline import PipelineDirector
 from app.analytics.collector import track_request, track_request_background
-from app.analytics.tracer import _optional_span, record_request_attribute
+from app.analytics.tracer import _optional_span, record_request_attribute, sanitize_trace_value
 from app.cache.cache_manager import ActionReplayOutcome, RoutingSkipOutcome
 from app.db.repository import SettingsRepository
 from app.ha_client.action_marker import HaActionMarker, track_ha_actions
@@ -177,6 +177,10 @@ async def _attach_requester_person(
     except Exception:
         logger.debug("Requester person lookup failed", exc_info=True)
         return
+    _apply_requester_person(task, person, span_collector)
+
+
+def _apply_requester_person(task: Any, person: PersonMatch | None, span_collector: Any) -> None:
     context = getattr(task, "context", None)
     if person is None or context is None:
         return
@@ -185,6 +189,25 @@ async def _attach_requester_person(
     record_request_attribute(span_collector, "requester_person", person.entity_id)
     if person.name:
         record_request_attribute(span_collector, "requester_name", person.name)
+
+
+def _attach_cached_requester_person(task: Any, ha_client: Any, span_collector: Any) -> None:
+    """Action-cache replay: attach the requester person from the warm person map only.
+
+    Never waits (a cold map yields no name and starts a background refresh),
+    so the cache-hit path keeps its latency. The name feeds the trace row
+    only: replayed speech is never personalized. ``user_id`` is unchanged.
+    """
+    context = getattr(task, "context", None)
+    user_id = getattr(context, "user_id", None) if context is not None else None
+    if not user_id or ha_client is None:
+        return
+    try:
+        person = get_person_directory().lookup_cached(ha_client, user_id)
+    except Exception:
+        logger.debug("Cached requester person lookup failed", exc_info=True)
+        return
+    _apply_requester_person(task, person, span_collector)
 
 
 def _consume_memory_task_result(memory_task: asyncio.Task, state: dict[str, Any] | None = None) -> None:
@@ -204,6 +227,42 @@ def _consume_memory_task_result(memory_task: asyncio.Task, state: dict[str, Any]
         logger.debug("Session-memory search failed", exc_info=exc)
 
 
+# Bounds for the per-match ``memories`` list on the memory_retrieval span.
+# Snippets are redacted on the FULL text before truncation (a cut token
+# could otherwise fall under the long-token threshold), then truncated.
+_MEMORY_TRACE_MAX_ENTRIES = 10
+_MEMORY_TRACE_SNIPPET_CHARS = 150
+
+
+def _memory_match_field(match: Any, name: str) -> Any:
+    return match.get(name) if isinstance(match, dict) else getattr(match, name, None)
+
+
+def _memory_trace_entries(matches: Any, attached: bool) -> list[dict[str, Any]]:
+    """Bounded, single-line trace view of the memory matches (one entry per match)."""
+    entries: list[dict[str, Any]] = []
+    for match in list(matches or [])[:_MEMORY_TRACE_MAX_ENTRIES]:
+        redacted = sanitize_trace_value(str(_memory_match_field(match, "matched_text") or ""), key="snippet")
+        snippet = " ".join(str(redacted).split())
+        if len(snippet) > _MEMORY_TRACE_SNIPPET_CHARS:
+            snippet = snippet[: _MEMORY_TRACE_SNIPPET_CHARS - 3].rstrip() + "..."
+        similarity = _memory_match_field(match, "similarity")
+        conversation_id = _memory_match_field(match, "conversation_id")
+        entries.append(
+            {
+                "conversation_id": str(conversation_id) if conversation_id else None,
+                "session_id": _memory_match_field(match, "session_id"),
+                "turn_id": _memory_match_field(match, "turn_id"),
+                "similarity": round(float(similarity), 4) if similarity is not None else None,
+                "last_turn_at": _memory_match_field(match, "last_turn_at"),
+                "snippet": snippet,
+                "continuation_count": len(_memory_match_field(match, "continuation_turns") or []),
+                "attached": attached,
+            }
+        )
+    return entries
+
+
 async def _trace_memory_retrieval(
     search_task: asyncio.Task,
     span_collector: Any,
@@ -213,7 +272,10 @@ async def _trace_memory_retrieval(
 
     Opens when the search task starts (concurrent with ``classify``) and
     closes when ``_resolve_memory_context`` (or the abandon callback) sets
-    ``state["resolved"]``. Only suffix-safe / innocuous metadata keys.
+    ``state["resolved"]``. Only suffix-safe / innocuous metadata keys, plus
+    the bounded ``memories`` list (one entry per match, ``attached`` set
+    when the matches reached the task context) and the effective search
+    ``scope`` reported through ``state["search_info"]``.
     """
     async with _optional_span(span_collector, "memory_retrieval", agent_id="orchestrator") as span:
         try:
@@ -235,6 +297,13 @@ async def _trace_memory_retrieval(
                 span["metadata"]["matched_conversation_id"] = str(conversation_id)
         await state["resolved"].wait()
         span["metadata"].update(state["metadata"])
+        scope = (state.get("search_info") or {}).get("scope")
+        if scope:
+            span["metadata"]["scope"] = scope
+        if matches:
+            span["metadata"]["memories"] = _memory_trace_entries(
+                matches, bool(state["metadata"].get("matches_attached"))
+            )
 
 
 async def _search_memory_after_speaker(
@@ -253,9 +322,16 @@ async def _search_memory_after_speaker(
     never changed.
     """
     voice_user_id = await speaker_lookup.wait_ha_user_id()
-    if voice_user_id and span_state is not None:
-        span_state["metadata"]["identity_source"] = "voice"
-    return await memory_service.search(user_text, voice_user_id, current_conversation_id=conversation_id)
+    if span_state is not None:
+        span_state["metadata"]["search_user_id"] = voice_user_id
+        if voice_user_id:
+            span_state["metadata"]["identity_source"] = "voice"
+    return await memory_service.search(
+        user_text,
+        voice_user_id,
+        current_conversation_id=conversation_id,
+        search_info=span_state.get("search_info") if span_state is not None else None,
+    )
 
 
 async def _resolve_memory_context(
@@ -307,20 +383,26 @@ async def _resolve_memory_context(
             # Abandoned best-effort search: the done-callback resolves the
             # span state when the late search finishes.
             memory_task.add_done_callback(lambda t: _consume_memory_task_result(t, span_state))
-        if span_state is not None and not span_state["resolved"].is_set() and memory_task.done():
-            span_state["metadata"].update(
-                {"wait_mode": wait_mode, "timed_out": False, "matches_attached": bool(matches)}
-            )
-            span_state["resolved"].set()
-        if matches and task.context is not None:
-            task.context.memory_context = [asdict(m) if is_dataclass(m) else dict(m) for m in matches]
-            top = task.context.memory_context[0]
-            logger.info(
-                "Session memory: %d match(es) attached (top session=%s sim=%.3f)",
-                len(matches),
-                top.get("conversation_id", "?"),
-                float(top.get("similarity") or 0.0),
-            )
+        attached = False
+        try:
+            if matches and task.context is not None:
+                task.context.memory_context = [asdict(m) if is_dataclass(m) else dict(m) for m in matches]
+                attached = True
+                top = task.context.memory_context[0]
+                logger.info(
+                    "Session memory: %d match(es) attached (top session=%s sim=%.3f)",
+                    len(matches),
+                    top.get("conversation_id", "?"),
+                    float(top.get("similarity") or 0.0),
+                )
+        finally:
+            # ``matches_attached`` reflects what actually reached the task
+            # context; the span state is resolved even if attaching failed.
+            if span_state is not None and not span_state["resolved"].is_set() and memory_task.done():
+                span_state["metadata"].update(
+                    {"wait_mode": wait_mode, "timed_out": False, "matches_attached": attached}
+                )
+                span_state["resolved"].set()
     except Exception:
         logger.debug("Session-memory resolution failed", exc_info=True)
 
@@ -983,6 +1065,15 @@ class OrchestratorAgent(BaseAgent):
             agents = list({s.get("agent_id") for s in span_collector.get_spans() if s.get("agent_id")})
             if "orchestrator" not in agents:
                 agents.insert(0, "orchestrator")
+            # Finalize-time identity: the prelude has already joined the
+            # speaker and requester lookups (an action-cache replay only reads
+            # the warm person map), so this is the resolved name (HA person,
+            # else identified voice speaker) with the name's own source. The
+            # personalization source is stored separately: an HA user without
+            # a person entity plus a voice match is named by voice but
+            # personalized as the HA user.
+            identity = requester_identity(task_context) if task_context is not None else None
+            identity_source = personalization_user_id(task_context)[1] if task_context is not None else None
             await create_trace_summary(
                 trace_id=span_collector.trace_id,
                 conversation_id=conversation_id,
@@ -1004,6 +1095,9 @@ class OrchestratorAgent(BaseAgent):
                 area_name=getattr(task_context, "area_name", None),
                 voice_followup=voice_followup,
                 cache_hit_type=cache_hit_type,
+                user_name=identity[0] if identity else None,
+                user_name_source=identity[1] if identity else None,
+                identity_source=identity_source,
             )
         except asyncio.CancelledError:
             raise
@@ -1184,6 +1278,10 @@ class OrchestratorAgent(BaseAgent):
             # A replayed action needs no speaker context; drop the voice-turn
             # entry so it can never attach to a later turn.
             discard_pending_speaker(conversation_id)
+            # Trace-only requester name from the warm person map (never waits;
+            # no speaker lookup runs on a replay, so voice-only hits stay
+            # unnamed).
+            _attach_cached_requester_person(task, self._ha_client, span_collector)
             replay = await self._finalize_action_replay_hit(
                 cache_replay.action_replay,
                 conversation_id,
@@ -1251,14 +1349,24 @@ class OrchestratorAgent(BaseAgent):
                 # user, else (when a speaker lookup is pending) the HA user linked
                 # to a voice-identified speaker, resolved before the search.
                 memory_user_id, identity_source = personalization_user_id(task.context)
-                memory_span_state = {"resolved": asyncio.Event(), "metadata": {"identity_source": identity_source}}
+                # ``search_user_id`` is the personalization user the search
+                # used (refined by the voice path); ``search_info`` receives
+                # the effective scope from the search itself.
+                memory_span_state = {
+                    "resolved": asyncio.Event(),
+                    "metadata": {"identity_source": identity_source, "search_user_id": memory_user_id},
+                    "search_info": {},
+                }
                 if memory_user_id is None and speaker_lookup is not None:
                     memory_search = _search_memory_after_speaker(
                         memory_service, user_text, conversation_id, speaker_lookup, memory_span_state
                     )
                 else:
                     memory_search = memory_service.search(
-                        user_text, memory_user_id, current_conversation_id=conversation_id
+                        user_text,
+                        memory_user_id,
+                        current_conversation_id=conversation_id,
+                        search_info=memory_span_state["search_info"],
                     )
                 memory_task = asyncio.create_task(memory_search)
                 memory_span_task = asyncio.create_task(

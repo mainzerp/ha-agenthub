@@ -62,6 +62,7 @@ class MemoryMatch:
     continuation_turns: list[dict[str, Any]] = field(default_factory=list)
     last_turn_at: int | None = None
     user_id: str | None = None
+    turn_id: int | None = None
 
 
 class MemoryService:
@@ -124,8 +125,14 @@ class MemoryService:
         query_text: str,
         user_id: str | None,
         current_conversation_id: str | None = None,
+        search_info: dict[str, Any] | None = None,
     ) -> list[MemoryMatch]:
-        """Semantic search over past session turns. Failure-contained: [] on error."""
+        """Semantic search over past session turns. Failure-contained: [] on error.
+
+        ``search_info`` (optional, caller-owned) receives the effective
+        ``scope`` once it is resolved, for tracing; the return value is
+        unchanged so existing callers are unaffected.
+        """
         try:
             if not query_text or not await self.is_enabled():
                 return []
@@ -140,6 +147,8 @@ class MemoryService:
             scope = str(raw_scope or _DEFAULT_SCOPE).strip().lower()
             if scope not in ("user", "global"):
                 scope = _DEFAULT_SCOPE
+            if search_info is not None:
+                search_info["scope"] = scope
             threshold = await _settings_float("memory.similarity_threshold", default=_DEFAULT_SIMILARITY_THRESHOLD)
             max_matches = max(1, await _settings_int("memory.max_matches", default=_DEFAULT_MAX_MATCHES))
             max_snippet_chars = await _settings_int("memory.max_snippet_chars", default=_DEFAULT_MAX_SNIPPET_CHARS)
@@ -233,6 +242,7 @@ class MemoryService:
                         continuation_turns=continuation_turns,
                         last_turn_at=row.get("last_turn_at"),
                         user_id=row.get("user_id"),
+                        turn_id=int(row["turn_id"]) if row.get("turn_id") is not None else None,
                     )
                 )
             return matches

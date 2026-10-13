@@ -23,7 +23,37 @@ Live pipeline in board format — headings are columns, cards are
 
 ## In Progress
 
+- Voice speaker identification confuses Patric and Laura · priority: P1 · area: voice
+  Outcome: the two enrolled speakers are told apart reliably or a turn
+  reports unknown instead of the wrong person. Analysis 2026-10-13: the
+  other profile scores 0.57-0.75 on every two-profile turn (margin 0.05 is
+  the only guard); likely causes: unguarded enrollment (any voice on any
+  satellite), silence embedded with speech (no VAD), loose margin.
+  Proposed: VAD trimming with a speech-seconds minimum, enrollment sample
+  guard and per-sample delete, all-profile scores in diagnostics, default margin
+  0.12; user re-enrolls both profiles alone. Blocked on user go-ahead.
+
 ## Testing
+
+- Trace: identity block, loaded memories, user in trace list · priority: P1 · area: trace
+  Outcome: trace detail header shows the identified name with its own
+  source (HA account / voice), person, HA user id, personalization source
+  (whose memory/calendar), voice speaker with score/margin/status and
+  linked HA user, also for voice-only turns; memory_retrieval lists each
+  loaded memory (session link, similarity, date, redacted snippet,
+  continuation count, attached), scope and search user; "Memory" toggle
+  renamed "Conversation history"; trace list shows/searches the user name
+  (trace_summary user_name, user_name_source, identity_source; migration
+  50); CSV export adds User. HA cache hits get the name from a warm person
+  map without waiting; voice-only cache hits stay unnamed. Branch
+  feat/trace-identity-memory, not committed.
+  Passed: ruff check/format clean; container suite 4527 passed, 1 skipped;
+  independent review findings (name vs source badge, cache-hit names,
+  snippet redaction order, owui id redaction, attached flag) fixed.
+  Not run: ci.py, bridge tests; pages not seen in a browser.
+  Needs user verification: review the diff; deploy; a satellite turn and
+  a Companion App turn each show the Identity group; a turn with memory
+  hits lists them with working session links; trace list shows names.
 
 - Text turns: resolve the HA user to a person name · priority: P1 · area: conversation
   Outcome: a typed Companion App turn ("Wer bin ich?") knows the person's
@@ -35,7 +65,8 @@ Live pipeline in board format — headings are columns, cards are
   agent speech); agents with the prompt line write routing rows only.
   Trace: `requester_person`,
   `requester_name`. Trigger: live trace 6c9ce78dc644401a. PR #157,
-  branch feat/ha-user-person-name; not released yet.
+  shipped in v3.4.0 (release PR #158,
+  https://github.com/mainzerp/ha-agenthub/releases/tag/v3.4.0).
   Passed: ruff check/format clean; tests/test_requester_person.py 65
   passed; cache tests 337 passed; container suite 4494 passed, 1 skipped;
   independent review findings fixed, then cache rule simplified per user

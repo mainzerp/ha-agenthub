@@ -7,7 +7,7 @@
 <div class="traces-page" x-data="tracesListPage()" x-init="init()">
     <section class="card trace-filters" aria-label="Filter traces">
         <label class="form-label" for="trace-search">Search requests</label>
-        <input id="trace-search" type="search" class="form-input" placeholder="Search user input or conversation..." x-model="search" @keyup.enter="page=1; loadTraces()" @input.debounce.500ms="page=1; loadTraces()">
+        <input id="trace-search" type="search" class="form-input" placeholder="Search user input, user name or conversation..." x-model="search" @keyup.enter="page=1; loadTraces()" @input.debounce.500ms="page=1; loadTraces()">
         <div class="trace-secondary-filters">
             <div><label class="form-label" for="trace-agent">Agent</label><select id="trace-agent" class="form-input" x-model="agentFilter" @change="page=1; loadTraces()"><option value="">All agents</option><template x-for="a in allAgents" :key="a"><option :value="a" x-text="a"></option></template></select></div>
             <div><label class="form-label" for="trace-label">Label</label><select id="trace-label" class="form-input" x-model="labelFilter" @change="page=1; loadTraces()"><option value="">All labels</option><template x-for="l in allLabels" :key="l"><option :value="l" x-text="l"></option></template></select></div>
@@ -31,7 +31,7 @@
                     <div class="trace-request">
                         <a class="trace-request-link" :href="dashUrl('/dashboard/traces/' + t.trace_id)" :title="t.user_input || 'Open trace details'" x-text="t.user_input || 'Request without text'"></a>
                         <div class="trace-row-meta"><time x-text="dashFormatTimestamp(t.created_at)"></time><span x-text="(t.agents || []).join(', ') || 'No agent recorded'"></span></div>
-                        <div class="trace-row-meta"><span x-text="'Source: ' + (t.source || '—')"></span><span :title="t.device_id || ''" x-text="'Device: ' + (t.device_name || t.device_id || '—')"></span><span x-text="'Confidence: ' + (t.routing_confidence != null ? Number(t.routing_confidence).toFixed(2) : '—')"></span><span x-show="t.label" x-text="'Label: ' + t.label"></span><span x-show="t.voice_followup" title="AgentHub kept the microphone open for a follow-up">Follow-up</span></div>
+                        <div class="trace-row-meta"><span x-text="'Source: ' + (t.source || '—')"></span><span :title="t.device_id || ''" x-text="'Device: ' + (t.device_name || t.device_id || '—')"></span><span x-text="'Confidence: ' + (t.routing_confidence != null ? Number(t.routing_confidence).toFixed(2) : '—')"></span><span x-show="t.user_name" :title="identityTitle(t)" x-text="'User: ' + t.user_name"></span><span x-show="t.label" x-text="'Label: ' + t.label"></span><span x-show="t.voice_followup" title="AgentHub kept the microphone open for a follow-up">Follow-up</span></div>
                     </div>
                     <div class="trace-row-duration"><span class="text-mono" x-text="t.total_duration_ms != null ? Math.round(t.total_duration_ms) + ' ms' : '—'"></span><a :href="dashUrl('/dashboard/traces/' + t.trace_id)" :aria-label="'Details for ' + (t.user_input || t.trace_id)">Details</a></div>
                 </article>
@@ -72,6 +72,10 @@ function tracesListPage() {
 
 
 
+        identityTitle(t) {
+            const sources = { ha: 'Home Assistant account', voice: 'Voice identification' };
+            return sources[t.user_name_source] ? 'Name from ' + sources[t.user_name_source] : 'Identified requester';
+        },
         get hasFilters() {
             return !!(this.search || this.agentFilter || this.labelFilter || this.dateFrom || this.dateTo);
         },

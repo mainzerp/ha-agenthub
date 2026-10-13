@@ -613,6 +613,10 @@ class PendingSpeakerLookup:
         }
         if status == STATUS_IDENTIFIED:
             metadata["speaker_name"] = result.get("name")
+            # The profile's linked HA user (kept verbatim by the trace
+            # sanitizer) so a voice-to-user mapping is checkable per trace.
+            if result.get("ha_user_id"):
+                metadata["speaker_ha_user_id"] = str(result.get("ha_user_id"))
             self._task.context.speaker = SpeakerContext(
                 status=status,
                 profile_id=result.get("profile_id"),

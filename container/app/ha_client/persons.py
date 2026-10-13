@@ -187,6 +187,22 @@ class PersonDirectory:
             logger.debug("Person lookup timed out after %.2fs; continuing without a name", timeout)
         return self._serve(user_id)
 
+    def lookup_cached(self, ha_client: Any, user_id: str | None) -> PersonMatch | None:
+        """Non-blocking :meth:`lookup`: answer only from the servable map, never wait.
+
+        When the map is stale or missing (and no failure backoff is active)
+        one background refresh is started so later turns find it warm. Must
+        be called from the event loop.
+        """
+        if not user_id or ha_client is None:
+            return None
+        self._bind(ha_client)
+        now = time.monotonic()
+        fresh = self._persons is not None and now < self._fresh_until
+        if not fresh and now >= self._retry_after:
+            self._ensure_refresh(ha_client)
+        return self._serve(user_id)
+
     def _ensure_refresh(self, ha_client: Any) -> asyncio.Task[None]:
         task = self._refresh_task
         if task is None or task.done() or self._refresh_generation != self._generation:

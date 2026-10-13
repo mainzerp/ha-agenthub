@@ -102,8 +102,13 @@ def _build_response(span_name: str, metadata: dict) -> str:
             top_similarity = metadata.get("top_similarity")
             if top_similarity is not None:
                 text += f", top sim {top_similarity}"
+            if metadata.get("matches_attached"):
+                text += ", attached"
         else:
             text = "no session match"
+        scope = metadata.get("scope")
+        if scope:
+            text += f" [scope {scope}]"
         if metadata.get("abandoned"):
             text += " (abandoned)"
         elif metadata.get("timed_out"):
@@ -207,6 +212,7 @@ async def export_traces(
             "Voice Followup",
             "Conversation Turns",
             "Cache Hit",
+            "User",
         ]
     )
     for row in rows:
@@ -238,6 +244,7 @@ async def export_traces(
                 voice_followup,
                 conv_turns_str,
                 row.get("cache_hit_type", ""),
+                row.get("user_name") or "",
             ]
         )
 
@@ -311,6 +318,20 @@ def _root_span_attribute(spans: list[dict[str, Any]], key: str) -> Any | None:
 def _root_span_user_id(spans: list[dict[str, Any]]) -> str | None:
     """Request ``user_id`` recorded on the root span metadata (None if absent)."""
     return _root_span_attribute(spans, "user_id")
+
+
+_SPEAKER_SUMMARY_KEYS = ("status", "speaker_name", "profile_id", "score", "margin", "duration_s", "speaker_ha_user_id")
+
+
+def _speaker_summary(spans: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Speaker identification outcome from the first ``speaker_id`` span (None if absent)."""
+    for span in spans:
+        if span.get("span_name") != "speaker_id":
+            continue
+        meta = span.get("metadata")
+        meta = meta if isinstance(meta, dict) else {}
+        return {key: meta.get(key) for key in _SPEAKER_SUMMARY_KEYS}
+    return None
 
 
 @router.get("/{trace_id}")
@@ -771,6 +792,14 @@ async def get_trace_detail(trace_id: str):
         # Requesting person resolved from the HA user (person.* entity, name).
         "requester_person": _root_span_attribute(spans, "requester_person"),
         "requester_name": _root_span_attribute(spans, "requester_name"),
+        # Personalization identity source ("ha" | "voice" | "none"): root span
+        # attribute, else the value stored on the summary row.
+        "identity_source": _root_span_attribute(spans, "identity_source") or summary.get("identity_source"),
+        # Resolved requester name and where it came from ("ha" | "voice");
+        # independent of identity_source (whose memory / calendar was used).
+        "user_name": summary.get("user_name"),
+        "user_name_source": summary.get("user_name_source"),
+        "speaker": _speaker_summary(spans),
         "spans": spans,
         "agent_executions": agent_executions,
         "agent_communication": agent_communication,

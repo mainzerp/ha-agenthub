@@ -6,6 +6,11 @@
 
 (tracking changes since 3.4.0)
 
+- Trace: the `speaker_id` span records the matched profile's linked HA user (`speaker_ha_user_id`); it, `user_id`, `search_user_id`, `conversation_id` and `matched_conversation_id` are kept verbatim by the trace sanitizer (API-key and bearer patterns still redact). The trace detail API adds `identity_source`, `user_name`, `user_name_source` and a `speaker` object (status, name, profile, score, margin, duration, linked HA user).
+- Trace: `trace_summary` gains nullable `user_name`, `user_name_source` and `identity_source` columns (migration 50). On the cache-miss path they are filled at finalize with the resolved requester (HA person name, else identified voice speaker), the name's own source and the personalization source. Action-cache replays take the HA person name only from an already cached person map (`PersonDirectory.lookup_cached`, never waits; a cold map starts a background refresh); voice-only replays get no name. The trace list shows and searches the user name; the CSV export adds a `User` column.
+- Trace: the `memory_retrieval` span records `scope`, `search_user_id` and a bounded `memories` list (conversation, session, turn id, similarity, last turn, 150-character snippet redacted before truncation, continuation count, attached flag true only when the matches reached the task context). `MemoryMatch` carries `turn_id`; `MemoryService.search` accepts an optional `search_info` dict that receives the effective scope.
+- Dashboard: the trace detail summary shows an Identity group (name with its own source badge, personalization source, person, HA user id, voice result, speaker's linked HA user), also for voice-only turns; the span inspector lists loaded memories with session links. The agent-communication "Memory" toggle is renamed "Conversation history" (UI label only).
+
 ## Version History
 
 ### 3.4.0 (MINOR) -- requesting person for text turns
