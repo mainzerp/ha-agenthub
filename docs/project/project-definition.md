@@ -135,6 +135,7 @@ The runtime is async end to end. Conversation streaming, agent dispatch, Home As
 - An OpenAI-compatible chat-completions API (`GET /v1/models`, `POST /v1/chat/completions`, trace source `openai`) lets Open WebUI chat with the orchestrator; Open WebUI background tasks are stubbed without dispatch, and Open WebUI users are mapped to Home Assistant users on the Persons page (`external_user_mappings`).
 - Admin APIs cover setup, cache inspection and flushing, traces, analytics, entity index operations, MCP management, plugins, send-device mappings, external user mappings, voice profiles, and settings.
 - `WS /ws/voice` receives teed voice-turn audio from the bridge for speaker identification; a recognized speaker is personalization context only (name, message sender, and with a linked Home Assistant user session memory and calendars) and never changes `user_id`, entity visibility, or authorization.
+- A request carrying a Home Assistant `user_id` is named after the linked `person.*` entity (cached person lookup in the orchestrator prelude, `TaskContext.requester_name`); that name wins over a voice match for the general/timer prompt line, mediation, and the send sender, and is wording only.
 - The dashboard currently routes to overview, login, agent configuration, system health, chat testing, personality, cache, entity index, analytics, traces, MCP servers, custom agents, timers, plugins, send devices, and unified settings pages.
 
 #### Orchestrator
@@ -218,7 +219,7 @@ The integration does not resolve entities, classify intent, or execute Home Assi
 | `cancel_speech` | Detect dismiss or cancel turns before live dispatch |
 | `language_detect` | Resolve per-turn reply language when auto mode is active |
 | `filler-agent` | Emit interim speech for slow turns |
-| `rewrite-agent` | Rephrase action-cache-hit speech; on failure the stored mediated response is used |
+| `rewrite-agent` | Rephrase action-cache-hit speech; on failure the stored original agent speech is used |
 | personality mediation | Optional final response mediation layer driven by runtime settings |
 | `sanitize` | Markdown stripping and speech-safe output cleanup |
 | `notification_dispatcher` | Background notification delivery support |
@@ -345,7 +346,7 @@ The current deployment target is a standalone Docker container connecting back t
 2. The integration enriches the request with conversation and origin context and forwards it to the container over WebSocket when possible.
 3. The container creates a per-turn trace context and hands the turn to the orchestrator.
 4. The orchestrator can short-circuit cancel or dismiss requests and can resolve reply language before live routing.
-5. The action cache is checked first. Safe hits replay the cached action after a visibility recheck and then rewrite the cached speech; if the rewrite fails, the stored mediated speech is reused and the trace records the rewrite as failed.
+5. The action cache is checked first. Safe hits replay the cached action after a visibility recheck and then rewrite the cached speech; if the rewrite fails, the stored original agent speech is spoken (mediated speech is never cached) and the trace records the rewrite as failed.
 6. If the turn is not satisfied by the action cache, the routing cache may reuse a prior routing decision.
 7. Live dispatch sends the task to a content agent, custom agent, or fallback agent. Entity resolution uses deterministic lookup first, then hybrid matching, with visibility, area, and domain filters applied before final selection.
 8. If the turn also requires delivery, the orchestrator runs the content-producing step first and `send-agent` second. The content step returns the verbatim message body; when it fails or replies with the `[[NO_CONTENT]]` sentinel, `send-agent` is not dispatched.

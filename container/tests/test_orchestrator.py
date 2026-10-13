@@ -1189,14 +1189,14 @@ class TestOrchestratorAgent:
 
     @patch("app.agents.orchestrator.SettingsRepository")
     @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
-    async def test_handle_task_action_hit_failed_rewrite_marks_span_and_serves_mediated_text(
+    async def test_handle_task_action_hit_failed_rewrite_marks_span_and_serves_original_speech(
         self, mock_track, mock_settings
     ):
-        """A failed rewrite serves the cached mediated text and is visible as failed in the trace."""
+        """A failed rewrite serves the original agent speech and is visible as failed in the trace."""
         result, rw_span, ret_span, mock_track_rewrite, _ = await self._run_action_hit_with_real_rewrite(
             mock_settings, {"side_effect": RuntimeError("model_not_found")}
         )
-        assert result["speech"] == "Das Licht ist jetzt an."
+        assert result["speech"] == "Done, the light is now on."
         assert rw_span["status"] == "error"
         assert rw_span["metadata"]["success"] is False
         assert rw_span["metadata"]["fallback"] == "cached_response"
@@ -1205,7 +1205,7 @@ class TestOrchestratorAgent:
         assert rw_span["metadata"]["latency_ms"] is not None
         assert "rewritten_text" not in rw_span["metadata"]
         assert ret_span["metadata"]["mediated"] is False
-        assert ret_span["metadata"]["final_response"] == "Das Licht ist jetzt an."
+        assert ret_span["metadata"]["final_response"] == "Done, the light is now on."
         assert mock_track_rewrite.await_args.kwargs["success"] is False
 
     @patch("app.agents.orchestrator.SettingsRepository")
@@ -3909,7 +3909,9 @@ class TestTemplateSpeechLocalization:
         # template stays the pre-mediation original (same as mediated text).
         cache_manager.store_response.assert_called_once()
         entry = cache_manager.store_response.call_args.args[0]
-        assert entry.response_text == _LOCALIZED_SPEECH
+        # The cache never stores mediated / localized speech: a replay
+        # rewrites the original agent speech into the entry language.
+        assert entry.response_text == _TEMPLATE_SPEECH
         assert entry.original_response_text == _TEMPLATE_SPEECH
 
     @pytest.mark.parametrize("speech_source", ["confirmation", "llm", None])

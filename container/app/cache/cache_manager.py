@@ -512,14 +512,14 @@ class CacheManager:
         a single LLM call.
 
         When rewriting is disabled, or the rewrite fails or returns nothing,
-        the stored ``response_text`` is returned. The store path guarantees it
-        carries no per-turn additions (calendar reminder, closing question):
-        it is the mediated speech only when the caching turn asserted it had
-        none, else the base agent speech. The caller appends the current
-        turn's reminder itself. A failed attempt leaves ``rewrite_applied``
-        False and sets ``rewrite_failed``.
+        the stored original agent speech (``original_response_text``; legacy
+        rows without it fall back to ``response_text``) is returned -- never
+        mediated speech, which can carry per-turn additions or the requesting
+        person's name. The caller appends the current turn's reminder itself.
+        A failed attempt leaves ``rewrite_applied`` False and sets
+        ``rewrite_failed``.
         """
-        fallback_text = result.response_text or result.original_response_text or ""
+        fallback_text = result.original_response_text or result.response_text or ""
         if not self._rewrite_agent or not self._rewrite_enabled:
             return fallback_text
         source_text = result.original_response_text or result.response_text
@@ -532,7 +532,7 @@ class CacheManager:
                 source_text, language=language, user_text=user_text, reminder_text=reminder_text
             )
         except Exception:
-            logger.warning("Rewrite failed, using cached mediated response", exc_info=True)
+            logger.warning("Rewrite failed, using the cached original agent speech", exc_info=True)
             rewritten = None
         rewrite_ms = (time.perf_counter() - t0) * 1000
         result.rewrite_latency_ms = rewrite_ms

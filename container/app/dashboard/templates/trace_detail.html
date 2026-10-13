@@ -68,8 +68,8 @@
                     <div x-show="traceDetail.user_id">
                         <span class="text-muted text-xs">User</span><br>
                         <span class="text-mono text-sm"
-                              :title="traceDetail.user_id || ''"
-                              x-text="shortId(traceDetail.user_id)"></span>
+                              :title="[traceDetail.requester_person, traceDetail.user_id].filter(Boolean).join(' / ')"
+                              x-text="traceDetail.requester_name ? traceDetail.requester_name + ' (' + shortId(traceDetail.user_id) + ')' : shortId(traceDetail.user_id)"></span>
                     </div>
                     <div x-show="traceDetail.voice_followup">
                         <span class="text-muted text-xs">Context</span><br>

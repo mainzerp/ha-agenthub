@@ -44,7 +44,7 @@ from app.agents.mediation import (
     needs_template_localization,
     speech_source_of,
 )
-from app.agents.personalization import personalization_user_id, speaker_display_name
+from app.agents.personalization import mediation_speaker_kwargs, personalization_user_id
 from app.agents.prompt_builder import contains_no_content_sentinel
 from app.agents.sanitize import strip_markdown, strip_markdown_markers, strip_parenthetical_asides
 from app.agents.task_pipeline import PipelineDirector
@@ -54,6 +54,7 @@ from app.cache.cache_manager import ActionReplayOutcome, RoutingSkipOutcome
 from app.db.repository import SettingsRepository
 from app.ha_client.action_marker import HaActionMarker, track_ha_actions
 from app.ha_client.home_context import populate_task_context_home_context
+from app.ha_client.persons import PersonMatch, get_person_directory
 from app.memory import get_memory_service
 from app.models.agent import (
     CANCEL_INTERACTION_AGENT,
@@ -133,6 +134,57 @@ async def _cancel_speaker_lookup(speaker_lookup: PendingSpeakerLookup | None) ->
     """Cancel an unfinished speaker lookup when the prelude exits early."""
     if speaker_lookup is not None:
         await speaker_lookup.cancel()
+
+
+# Upper bound for the requesting-person lookup (HA user -> person.*). It runs
+# concurrently with memory search and classification, so the join before
+# dispatch normally costs nothing; a slow HA fetch keeps filling the cache
+# in the background while this turn goes on without a name.
+_REQUESTER_LOOKUP_TIMEOUT_SEC = 1.5
+
+
+def _start_requester_lookup(task: Any, ha_client: Any) -> asyncio.Task[PersonMatch | None] | None:
+    """Start the person lookup for the request's HA user (None without user or HA client)."""
+    context = getattr(task, "context", None)
+    user_id = getattr(context, "user_id", None) if context is not None else None
+    if not user_id or ha_client is None:
+        return None
+    return asyncio.create_task(
+        get_person_directory().lookup(ha_client, user_id, timeout=_REQUESTER_LOOKUP_TIMEOUT_SEC),
+        name="requester-person-lookup",
+    )
+
+
+async def _cancel_requester_lookup(lookup: asyncio.Task[PersonMatch | None] | None) -> None:
+    """Cancel an unfinished requester lookup when the prelude exits early."""
+    if lookup is not None and not lookup.done():
+        lookup.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await lookup
+
+
+async def _attach_requester_person(
+    task: Any, lookup: asyncio.Task[PersonMatch | None] | None, span_collector: Any
+) -> None:
+    """Join the requester lookup and attach the person to ``task.context`` and the root span.
+
+    Personalization wording only: ``task.context.user_id`` is never changed.
+    """
+    if lookup is None:
+        return
+    try:
+        person = await lookup
+    except Exception:
+        logger.debug("Requester person lookup failed", exc_info=True)
+        return
+    context = getattr(task, "context", None)
+    if person is None or context is None:
+        return
+    context.requester_person = person.entity_id
+    context.requester_name = person.name
+    record_request_attribute(span_collector, "requester_person", person.entity_id)
+    if person.name:
+        record_request_attribute(span_collector, "requester_name", person.name)
 
 
 def _consume_memory_task_result(memory_task: asyncio.Task, state: dict[str, Any] | None = None) -> None:
@@ -718,6 +770,9 @@ class OrchestratorAgent(BaseAgent):
                 is_followup=incoming_context.is_followup if incoming_context else False,
                 # Speaker identification: prompt context only, never auth.
                 speaker=incoming_context.speaker if incoming_context else None,
+                # Requesting person (HA user -> person.*): wording only.
+                requester_person=incoming_context.requester_person if incoming_context else None,
+                requester_name=incoming_context.requester_name if incoming_context else None,
                 # Phase 6: anaphora recency hints ride the content leg like
                 # the rest of the conversation context.
                 last_entities=list(incoming_context.last_entities) if incoming_context else [],
@@ -876,7 +931,6 @@ class OrchestratorAgent(BaseAgent):
         task: IngressTask | None = None,
         merged_multi_agent: bool = False,
         used_origin_context: bool = False,
-        speech_has_turn_additions: bool | None = None,
     ) -> tuple[bool, bool]:
         return await self._cache_orchestrator.store_after_dispatch(
             user_text=user_text,
@@ -891,7 +945,6 @@ class OrchestratorAgent(BaseAgent):
             task=task,
             merged_multi_agent=merged_multi_agent,
             used_origin_context=used_origin_context,
-            speech_has_turn_additions=speech_has_turn_additions,
         )
 
     async def _get_bool_setting(self, key: str, default: bool) -> bool:
@@ -1164,6 +1217,10 @@ class OrchestratorAgent(BaseAgent):
         # rest of voice.speaker_id.wait_ms). Context only -- user_id and
         # entity visibility are never touched.
         speaker_lookup = start_speaker_lookup(task, conversation_id, span_collector)
+        # Requesting person: the request's HA user -> person.* name, looked
+        # up (cached, bounded) alongside classification and joined with the
+        # speaker before dispatch. Wording only -- never visibility or auth.
+        requester_lookup = _start_requester_lookup(task, self._ha_client)
 
         used_origin_context = bool(task and task.context and (task.context.area_id or task.context.device_id))
 
@@ -1184,32 +1241,35 @@ class OrchestratorAgent(BaseAgent):
         memory_task: asyncio.Task | None = None
         memory_span_state: dict[str, Any] | None = None
         memory_span_task: asyncio.Task | None = None
-        memory_service = get_memory_service()
-        if memory_service is not None and await memory_service.is_enabled():
-            # Personalization identity for the memory bucket: the request's HA
-            # user, else (when a speaker lookup is pending) the HA user linked
-            # to a voice-identified speaker, resolved before the search.
-            memory_user_id, identity_source = personalization_user_id(task.context)
-            memory_span_state = {"resolved": asyncio.Event(), "metadata": {"identity_source": identity_source}}
-            if memory_user_id is None and speaker_lookup is not None:
-                memory_search = _search_memory_after_speaker(
-                    memory_service, user_text, conversation_id, speaker_lookup, memory_span_state
-                )
-            else:
-                memory_search = memory_service.search(
-                    user_text, memory_user_id, current_conversation_id=conversation_id
-                )
-            memory_task = asyncio.create_task(memory_search)
-            memory_span_task = asyncio.create_task(
-                _trace_memory_retrieval(memory_task, span_collector, memory_span_state)
-            )
-
-        if publish_events and self._event_bus is not None:
-            await self._event_bus.publish(
-                "pipeline.pre_classify", {"task": task, "user_text": user_text, "language": detected_language}
-            )
-
+        # Everything awaited between starting the speaker / requester lookups
+        # and joining them runs under handlers that cancel both lookups, so
+        # no exit path leaves one running.
         try:
+            memory_service = get_memory_service()
+            if memory_service is not None and await memory_service.is_enabled():
+                # Personalization identity for the memory bucket: the request's HA
+                # user, else (when a speaker lookup is pending) the HA user linked
+                # to a voice-identified speaker, resolved before the search.
+                memory_user_id, identity_source = personalization_user_id(task.context)
+                memory_span_state = {"resolved": asyncio.Event(), "metadata": {"identity_source": identity_source}}
+                if memory_user_id is None and speaker_lookup is not None:
+                    memory_search = _search_memory_after_speaker(
+                        memory_service, user_text, conversation_id, speaker_lookup, memory_span_state
+                    )
+                else:
+                    memory_search = memory_service.search(
+                        user_text, memory_user_id, current_conversation_id=conversation_id
+                    )
+                memory_task = asyncio.create_task(memory_search)
+                memory_span_task = asyncio.create_task(
+                    _trace_memory_retrieval(memory_task, span_collector, memory_span_state)
+                )
+
+            if publish_events and self._event_bus is not None:
+                await self._event_bus.publish(
+                    "pipeline.pre_classify", {"task": task, "user_text": user_text, "language": detected_language}
+                )
+
             (
                 classifications,
                 routing_cached,
@@ -1232,6 +1292,7 @@ class OrchestratorAgent(BaseAgent):
             )
         except _RecoverableClassificationError as exc:
             await _cancel_speaker_lookup(speaker_lookup)
+            await _cancel_requester_lookup(requester_lookup)
             # Never abandon the detached memory overlap task: read-only,
             # safe to cancel.
             # Cancelling it makes the span task's shield await raise
@@ -1278,17 +1339,22 @@ class OrchestratorAgent(BaseAgent):
             )
         except BaseException:
             await _cancel_speaker_lookup(speaker_lookup)
+            await _cancel_requester_lookup(requester_lookup)
             raise
 
         try:
             await _resolve_memory_context(task, memory_task, memory_service, span_state=memory_span_state)
+            if speaker_lookup is not None:
+                await speaker_lookup.join()
+                if task.context is not None:
+                    record_request_attribute(
+                        span_collector, "identity_source", personalization_user_id(task.context)[1]
+                    )
+            await _attach_requester_person(task, requester_lookup, span_collector)
         except BaseException:
             await _cancel_speaker_lookup(speaker_lookup)
+            await _cancel_requester_lookup(requester_lookup)
             raise
-        if speaker_lookup is not None:
-            await speaker_lookup.join()
-            if task.context is not None:
-                record_request_attribute(span_collector, "identity_source", personalization_user_id(task.context)[1])
         self._drop_stale_followup_context(task, conversation_id, classifications)
 
         logger.debug(
@@ -1451,7 +1517,6 @@ class OrchestratorAgent(BaseAgent):
         routing_entry_id: str | None = None,
         ret_span: dict | None = None,
         canned_code: str | None = None,
-        reminder_applied: bool | None = None,
     ) -> tuple[str, bool]:
         """Run post-mediation finalization: merge voice followup, store cache/turn/trace.
 
@@ -1459,12 +1524,6 @@ class OrchestratorAgent(BaseAgent):
         ``dispatch_manager.canned_result``). For retryable codes (no agent
         consumed the turn) the clarifying question popped by the prelude is
         re-armed so the user can answer it again.
-
-        ``reminder_applied`` states whether a calendar reminder was woven
-        into ``mediated_speech`` (``None`` = unknown). Together with
-        ``mediated_followup`` it tells the cache whether the mediated speech
-        carries per-turn additions; only speech without additions may become
-        the localized replay fallback.
         """
         if routed_to is None:
             routed_to = target_agent
@@ -1534,9 +1593,6 @@ class OrchestratorAgent(BaseAgent):
                 task=task,
                 merged_multi_agent=False,
                 used_origin_context=used_origin_context,
-                speech_has_turn_additions=(
-                    None if reminder_applied is None else bool(reminder_applied or mediated_followup)
-                ),
             )
             cache_stored_response = cache_stored_action
         if ret_span is not None:
@@ -1679,7 +1735,7 @@ class OrchestratorAgent(BaseAgent):
                     span_collector=span_collector,
                     reminder_text=reminder_text,
                     allow_organic_followup=allow_organic_followup,
-                    speaker_name=speaker_display_name(task.context) or None,
+                    **mediation_speaker_kwargs(task.context),
                 )
             elif reminder_text:
                 # No mediation path -- append reminder directly as fallback
@@ -1723,7 +1779,6 @@ class OrchestratorAgent(BaseAgent):
                 routing_entry_id=routing_entry_id,
                 ret_span=ret_span,
                 canned_code=canned_code,
-                reminder_applied=bool(reminder_text),
             )
 
     async def _run_pipeline(
@@ -2341,6 +2396,9 @@ class OrchestratorAgent(BaseAgent):
             context.is_followup = task.context.is_followup
             # Speaker identification: prompt context only, never auth.
             context.speaker = task.context.speaker
+            # Requesting person (HA user -> person.*): wording only.
+            context.requester_person = task.context.requester_person
+            context.requester_name = task.context.requester_name
             # Phase 6: anaphora recency hints populated in the prelude.
             context.last_entities = list(task.context.last_entities)
         if self._ha_client:
@@ -2851,7 +2909,7 @@ class OrchestratorAgent(BaseAgent):
                 span_collector=span_collector,
                 reminder_text=reminder_text,
                 allow_organic_followup=allow_organic_followup,
-                speaker_name=speaker_display_name(task.context) or None,
+                **mediation_speaker_kwargs(task.context),
             )
             try:
                 while True:
@@ -2955,7 +3013,6 @@ class OrchestratorAgent(BaseAgent):
                 skip_response_cache=False,
                 used_origin_context=used_origin_context,
                 routing_entry_id=prelude.routing_entry_id,
-                reminder_applied=bool(reminder_text),
             )
         else:
             # Existing blocking path. The mediation probe was already
@@ -3178,6 +3235,7 @@ class OrchestratorAgent(BaseAgent):
         language: str | None = None,
         skipped_tasks: list[str] | None = None,
         speaker_name: str | None = None,
+        speaker_source: str | None = None,
     ) -> tuple[str, bool]:
         """Merge multiple agent responses into a single natural answer.
 
@@ -3194,6 +3252,7 @@ class OrchestratorAgent(BaseAgent):
             language=language,
             skipped_tasks=skipped_tasks,
             speaker_name=speaker_name,
+            speaker_source=speaker_source,
         )
 
     @staticmethod
@@ -3216,6 +3275,7 @@ class OrchestratorAgent(BaseAgent):
         reminder_text: str | None = None,
         allow_organic_followup: bool = False,
         speaker_name: str | None = None,
+        speaker_source: str | None = None,
     ) -> tuple[str, bool]:
         """Optionally mediate the domain agent response with personality.
 
@@ -3238,6 +3298,7 @@ class OrchestratorAgent(BaseAgent):
             reminder_text=reminder_text,
             allow_organic_followup=allow_organic_followup,
             speaker_name=speaker_name,
+            speaker_source=speaker_source,
         )
 
     async def _mediate_response_stream(
@@ -3250,6 +3311,7 @@ class OrchestratorAgent(BaseAgent):
         reminder_text: str | None = None,
         allow_organic_followup: bool = False,
         speaker_name: str | None = None,
+        speaker_source: str | None = None,
     ) -> AsyncGenerator[str, None]:
         """Streaming variant of _mediate_response.
 
@@ -3270,6 +3332,7 @@ class OrchestratorAgent(BaseAgent):
                 reminder_text=reminder_text,
                 allow_organic_followup=allow_organic_followup,
                 speaker_name=speaker_name,
+                speaker_source=speaker_source,
             )
         ) as mediation_stream:
             async for token in mediation_stream:

@@ -379,8 +379,10 @@ Optional; off by default (`voice.speaker_id.enabled`). Flow:
    only agents that opt in with `_receives_speaker_context = True`
    (`GeneralAgent`, `TimerAgent`) get the prompt line
    `Speaker: "<name>" (recognized by voice, unverified)` (name sanitized
-   as untrusted text). Device/domain agents (security included), lists,
-   calendar and custom/plugin agents never see it. Every consumed entry records a
+   as untrusted text), or `User: "<name>" (the Home Assistant user making
+   this request)` when the request's HA user resolved to a person (see
+   Requesting person below). Device/domain agents (security included),
+   lists, calendar and custom/plugin agents never see either line. Every consumed entry records a
    `speaker_id` trace span at dispatch (`status`, `profile_id`, `score`,
    `margin`, `duration_s`, `waited_ms` = time blocked at dispatch,
    `lookup_ms` = lookup start to result, `compute_ms`, `latency_ms`,
@@ -399,6 +401,27 @@ different HA user than the request's `user_id` is ignored entirely
 so all personalization follows the request user. It selects whose data
 shapes a reply:
 
+- **Requesting person** -- on the cache-miss path the prelude resolves the
+  request's `user_id` to the `person.*` entity whose `attributes.user_id`
+  matches (`app/ha_client/persons.py`, `PersonDirectory`), concurrently
+  with memory search and classification, and joins it with the speaker
+  lookup before dispatch (bounded by 1.5 s; a slower fetch keeps filling
+  the cache in the background). The map comes from one `get_states` call
+  and is served for 300 s; after that the previous map still answers at
+  once while one background refresh runs. A `state_changed` event that
+  adds, removes, renames or relinks a person, and a WebSocket reconnect,
+  invalidate it: the old map is never served again and the next lookup
+  waits (bounded) for a fresh fetch. A failed fetch keeps serving a map
+  that was never invalidated, otherwise returns no person, and is retried
+  no sooner than 30 s later. Refresh tasks are cancelled at shutdown. The
+  result is
+  stored on `TaskContext.requester_person` / `requester_name` (copied to
+  every dispatched context). No match (or no `friendly_name`) means no
+  name. `requester_identity(context)` returns the person name (source
+  `ha`), else the identified speaker's name (source `voice`), else none:
+  the HA user wins over any voice match. A turn without `user_id` behaves
+  exactly as before.
+
 - **Session memory** -- the search and `index_turn` use it. When the
   request has no `user_id` and a speaker lookup is pending, the memory
   search starts once the lookup resolves
@@ -416,18 +439,28 @@ shapes a reply:
   ("this is X"), default user. For source `voice` the spoken
   self-identification wins over the unverified voice match. Calendar
   visibility filtering is unchanged.
-- **Send agent** -- the sanitized speaker name fills `{sender_name}` in
+- **Send agent** -- the sanitized requesting-person name (person name,
+  else speaker name) fills `{sender_name}` in
   `prompts/send.txt` (the message is written from the sender's
   perspective; TTS adds a short attribution) and the notify title
   becomes "Message from <name>" (localized; `HA-AgentHub` when unknown).
 - **Mediation** -- single-agent mediation (blocking and streamed) and the
-  multi-agent merge add the line `Speaker (recognized by voice,
-  unverified): "<name>"` to the user content, so personality replies may
-  address the speaker by name.
+  multi-agent merge add the line `User (Home Assistant account):
+  "<name>"` for a resolved person, else `Speaker (recognized by voice,
+  unverified): "<name>"`, to the user content, so personality replies may
+  address the user by name.
+- **Caches** -- the action cache never stores mediated speech (which can
+  address the user by name), only the original agent speech. Agents that
+  receive the requester / speaker prompt line (`_receives_speaker_context`,
+  looked up via the agent registry, so plugin and custom agents count too)
+  never write an action-cache row, whether or not a name is known; their
+  routing row holds no speech and is still written.
 
 Trace: the root span carries `identity_source` (`ha` | `voice` | `none`,
-refined after the speaker join); the `memory_retrieval` span records the
-identity source of its search.
+refined after the speaker join) and, when the request's HA user resolved
+to a person, `requester_person` (entity id) and `requester_name`; the
+trace detail page shows the name next to the user id. The
+`memory_retrieval` span records the identity source of its search.
 
 Action-cache replays are not personalized: the voice entry is discarded,
 no speaker is attached, reminders resolve from the request user (else
@@ -436,8 +469,9 @@ turn is indexed under the request user (anonymous without one).
 
 Rules:
 
-- The speaker is context only: it never sets `user_id`, never changes
-  entity visibility and never authorizes anything. The prompt line is
+- The speaker and the requesting-person name are context only: they never
+  set `user_id`, never change entity visibility and never authorize
+  anything. The prompt line is
   opt-in per agent class so a voice match never reads like authorization
   to an action agent's LLM. The personalization identity is never used
   for visibility, authorization or audit records.
@@ -573,7 +607,7 @@ exact-hash miss); the action cache is exact-hash only:
   - **Hygiene**: turns that resolved no entity (failed action or a clarifying-question ending) are never stored, and a served entry is invalidated when the cached agent's turn fails, so a poisoned phrasing re-classifies via LLM on the next turn. A turn that ends in the routed agent's own clarifying question (`voice_followup`) is not a routing failure and keeps the served entry. A failed semantic hit never deletes the borrowed neighbour entry (it may route its own wording correctly); the neighbour is suppressed in memory for that exact query text instead. Entries below the current schema version are treated as a miss on read.
   - **Embedding model**: each routing entry records the `<provider>:<model>` that produced its vector. A semantic candidate whose vector came from a different model (even at the same dimension) is skipped and its vector dropped; the entry is re-embedded on its next exact hit.
 - **Action Cache** -- Caches full agent responses including executor-confirmed HA actions.
-  - **Hit** (exact hash match): Requires the owning agent to be registered and every referenced entity to exist in the entity index and be visible before replaying the stored HA command, then the rewrite agent rephrases the raw agent response in the turn language with the personality applied (the target language is repeated in the rewrite user message, and the `rewrite` span records it as `language`). If the rewrite fails or returns no text, the stored fallback response is returned; the `rewrite` span is marked failed (`success: false`, `fallback: cached_response`) and rewrite analytics count a failure. The stored fallback never carries per-turn additions: the orchestrator stores the mediated (localized) speech when the turn added no calendar reminder and no organic follow-up question, otherwise the base agent speech. The replayed entity is recorded as an anaphora hint, as on a live turn.
+  - **Hit** (exact hash match): Requires the owning agent to be registered and every referenced entity to exist in the entity index and be visible before replaying the stored HA command, then the rewrite agent rephrases the raw agent response in the turn language with the personality applied (the target language is repeated in the rewrite user message, and the `rewrite` span records it as `language`). If the rewrite is disabled, fails or returns no text, the stored original agent speech (`original_response_text`; legacy rows without it use `response_text`) is spoken; on failure the `rewrite` span is marked failed (`success: false`, `fallback: cached_response`) and rewrite analytics count a failure. The cache never stores mediated speech: new rows write the original agent speech into both `response_text` and `original_response_text`, so a replay never repeats a calendar reminder, follow-up question or the requesting person's name. Without a working rewrite, a replay in a non-English turn speaks the original agent speech, which may be an English executor template. The replayed entity is recorded as an anaphora hint, as on a live turn.
   - **Not stored**: context-dependent turns -- a follow-up answer to a clarifying question, or a turn whose executed entity was offered as an anaphora hint (`last_entities`) -- store neither an action nor a routing row. Background-sourced turns (`source="background"`, e.g. wake briefings) store no cache row, no conversation turn and no session memory; their traces are still written.
   - **Miss**: Continues to routing-cache lookup or the live pipeline; a provenance rejection always forces the full live path.
   - Max entries: 50,000 with LRU eviction.

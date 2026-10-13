@@ -190,6 +190,9 @@ class DispatchManager:
             context.is_followup = incoming_context.is_followup
             # Speaker identification: prompt context only, never auth.
             context.speaker = incoming_context.speaker
+            # Requesting person (HA user -> person.*): wording only.
+            context.requester_person = incoming_context.requester_person
+            context.requester_name = incoming_context.requester_name
             # Phase 6: carry anaphora recency hints onto the dispatch envelope.
             context.last_entities = list(incoming_context.last_entities)
         if resolved_language:

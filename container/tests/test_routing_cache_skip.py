@@ -781,7 +781,7 @@ async def test_successful_served_turn_still_stores_cache():
     orch._store_after_dispatch.assert_awaited_once()
 
 
-async def _finalize_success(orch, *, reminder_applied, mediated_followup=False):
+async def _finalize_success(orch, *, mediated_followup=False):
     await orch._finalize_post_mediation(
         task=_make_task("schalte das licht in der kueche ein"),
         user_text="schalte das licht in der kueche ein",
@@ -799,26 +799,22 @@ async def _finalize_success(orch, *, reminder_applied, mediated_followup=False):
         classifications=[("light-agent", "Turn on kitchen light", 1.0)],
         voice_followup_requested=False,
         mediated_followup=mediated_followup,
-        reminder_applied=reminder_applied,
     )
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("reminder_applied", "mediated_followup", "expected"),
-    [(False, False, False), (True, False, True), (False, True, True), (None, False, None)],
-)
-async def test_finalize_flags_turn_additions(reminder_applied, mediated_followup, expected):
-    """#132: mediated speech without reminder or organic follow-up question is
-    flagged addition-free (the cache keeps the localized text as rewrite
-    fallback); a reminder or follow-up marks additions; unknown stays unknown."""
+@pytest.mark.parametrize("mediated_followup", [False, True])
+async def test_finalize_passes_original_agent_speech_to_cache(mediated_followup):
+    """The cache store gets the unmediated agent speech; no turn-additions flag exists."""
     orch = _make_orchestrator(MagicMock())
     orch._store_turn = AsyncMock()
     orch._store_after_dispatch = AsyncMock(return_value=(True, False))
 
-    await _finalize_success(orch, reminder_applied=reminder_applied, mediated_followup=mediated_followup)
+    await _finalize_success(orch, mediated_followup=mediated_followup)
 
-    assert orch._store_after_dispatch.await_args.kwargs["speech_has_turn_additions"] is expected
+    kwargs = orch._store_after_dispatch.await_args.kwargs
+    assert kwargs["original_response_text"] == "Done, the kitchen light is on."
+    assert "speech_has_turn_additions" not in kwargs
 
 
 def _store_kwargs(task: IngressTask, **overrides):
@@ -848,17 +844,17 @@ def _storing_cache_orchestrator() -> tuple[CacheOrchestrator, MagicMock]:
 
 
 @pytest.mark.asyncio
-async def test_store_after_dispatch_keeps_localized_fallback():
-    """#132: without turn additions the stored replay fallback is the mediated
-    (localized) speech, not the English agent template."""
+async def test_store_after_dispatch_stores_original_agent_speech():
+    """The mediated (localized) speech is never stored; a replay rewrites the
+    original agent speech into the entry language or speaks it as is."""
     co, cache_manager = _storing_cache_orchestrator()
     task = _make_task("schalte das licht in der kueche ein")
 
-    stored = await co.store_after_dispatch(**_store_kwargs(task, speech_has_turn_additions=False))
+    stored = await co.store_after_dispatch(**_store_kwargs(task))
 
     assert stored == (True, False)
     entry = cache_manager.store_action_async.await_args.args[0]
-    assert entry.response_text == "Erledigt, das Kuechenlicht ist an."
+    assert entry.response_text == "Done, the kitchen light is on."
     assert entry.original_response_text == "Done, the kitchen light is on."
 
 

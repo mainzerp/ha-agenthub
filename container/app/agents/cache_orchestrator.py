@@ -381,8 +381,8 @@ class CacheOrchestrator:
                     rw_span["metadata"]["latency_ms"] = hit.rewrite_latency_ms
                     rw_span["metadata"]["success"] = True
                 elif hit.rewrite_failed:
-                    # The rewrite was attempted and failed: the cached mediated
-                    # response is served and the span is marked as errored.
+                    # The rewrite was attempted and failed: the stored original
+                    # agent speech is served and the span is marked as errored.
                     rw_span["status"] = "error"
                     rw_span["metadata"]["original_text"] = raw_speech
                     rw_span["metadata"]["latency_ms"] = hit.rewrite_latency_ms
@@ -479,16 +479,16 @@ class CacheOrchestrator:
         task: IngressTask | None = None,
         merged_multi_agent: bool = False,
         used_origin_context: bool = False,
-        speech_has_turn_additions: bool | None = None,
     ) -> tuple[bool, bool]:
         """Store either an action-cache row or a routing-cache row, never both.
 
-        ``speech_has_turn_additions`` states whether the mediated ``speech``
-        carries per-turn additions (calendar reminder, closing follow-up
-        question). Only an explicit ``False`` lets the mediated speech become
-        the stored replay fallback; otherwise (``True`` or unknown) the base
-        agent speech is stored so a later replay never repeats a stale
-        reminder or question.
+        An action row stores only the unmediated agent speech
+        (``original_response_text``; ``speech`` only when the caller has no
+        separate agent speech): mediated speech can carry per-turn additions
+        (calendar reminder, closing question) or the requesting person's
+        name and is never replayed. Agents that receive the requester /
+        speaker prompt line (``_receives_speaker_context``, registry lookup)
+        never write an action row; their routing row (no speech) is kept.
 
         Background turns (``source="background"``, e.g. wake briefings) never
         store a cache row: their synthetic prompts are not user phrasings.
@@ -584,7 +584,10 @@ class CacheOrchestrator:
                     for key in _CACHED_SERVICE_DATA_KEYS:
                         if key in raw_service_data:
                             cached_service_data[key] = raw_service_data[key]
-            if entity_id and action_name:
+            # Agents that get the requester / speaker prompt line may name the
+            # user in their own speech: no action row (the routing row below
+            # holds no speech and is still written).
+            if entity_id and action_name and not await self._receives_speaker_context(target_agent):
                 cached_action = CachedAction(
                     service=f"{domain}/{action_name}" if domain else action_name,
                     entity_id=entity_id,
@@ -596,12 +599,9 @@ class CacheOrchestrator:
                     agent_id=target_agent,
                     condensed_task=condensed_task,
                     confidence=confidence_value,
-                    # Replay fallback speech (used when the rewrite fails):
-                    # never the mediated speech unless it provably carries no
-                    # per-turn reminder or closing question.
-                    response_text=(
-                        speech if speech_has_turn_additions is False else (original_response_text or speech)
-                    ),
+                    # Replay speech: always the unmediated agent speech (the
+                    # rewrite source and the fallback when the rewrite fails).
+                    response_text=original_response_text or speech,
                     original_response_text=original_response_text or speech,
                     cached_action=cached_action,
                     entity_ids=entity_ids,
@@ -640,6 +640,17 @@ class CacheOrchestrator:
         except Exception:
             logger.warning("Failed to store routing decision", exc_info=True)
             return False, False
+
+    async def _receives_speaker_context(self, agent_id: str) -> bool:
+        """True when the dispatched agent gets the requester prompt line (registry lookup)."""
+        probe = getattr(self._agent_registry, "receives_speaker_context", None)
+        if probe is None:
+            return False
+        try:
+            return (await probe(agent_id)) is True
+        except Exception:
+            logger.debug("receives_speaker_context lookup failed for %s", agent_id, exc_info=True)
+            return False
 
     @staticmethod
     def _is_context_dependent_turn(task: IngressTask | None, entity_ids: list[str], action_executed) -> bool:

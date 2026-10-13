@@ -46,6 +46,16 @@ class AgentRegistry:
         """Return all registered agent cards."""
         return list(self._cards.values())
 
+    async def receives_speaker_context(self, agent_id: str) -> bool:
+        """True when the in-process agent opts into the requester / speaker prompt line.
+
+        Reads the handler's ``_receives_speaker_context`` class attribute
+        (built-in, custom and plugin agents alike). Unknown or remote agents
+        return False.
+        """
+        handler = self._handlers.get(agent_id)
+        return getattr(handler, "_receives_speaker_context", False) is True
+
     async def _get_handler_for_transport(self, agent_id: str) -> BaseAgent | None:
         """Return the agent handler instance for in-process transport only."""
         return self._handlers.get(agent_id)

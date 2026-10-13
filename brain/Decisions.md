@@ -213,8 +213,8 @@ prompts live in `container/app/prompts/`, `ctx.agent_registry` not
   text as a fake success. Rationale: a provider 404 went unnoticed for over a
   week because traces and analytics showed 100% rewrite success.
 - **Fallback speech is the stored mediated `response_text`**, not the raw
-  agent text. Rationale: the raw text is the English executor template; the
-  mediated text is what the user already heard, in their language and tone.
+  agent text. Superseded on 2026-10-13 (see "cache never stores personalized
+  speech").
 - **rewrite-agent defaults to `reasoning_effort: "none"`** via agent config
   (seed + migration 44, only where unset), not hardcoded. Rationale: the 2 s
   timeout leaves no room for thinking; the admin keeps control per model,
@@ -326,3 +326,25 @@ prompts live in `container/app/prompts/`, `ctx.agent_registry` not
   security/device agents never see it so a voice match cannot read as
   authorization. Rationale for 3.2.1: wait for the speaker until dispatch, not
   a fixed budget, after live trace 3e6238c0a4804f8d lost a late result.
+- **The requesting person's name comes from the request `user_id` first**
+  (`person.*` whose `user_id` attribute matches -> friendly name), else from
+  the identified speaker. It feeds the same prompt line (same allowlist),
+  mediation and send sender. Rationale: typed Companion App turns carry an
+  authenticated HA user but were anonymous by name (live trace
+  6c9ce78dc644401a, "Wer bin ich?").
+
+## 2026-10-13 — cache never stores personalized speech
+
+- **The action cache stores only the raw agent speech; a failed or disabled
+  rewrite replays that original.** The mediated fallback is dropped
+  (`response_text` keeps its field for export compatibility but carries the
+  agent speech). Rationale: mediation may name the requesting person, and a
+  replay must never carry one user's name to another; agents now receive a
+  language hint and write confirmation sentences in the user's language, so
+  the English-template concern behind the 2026-10-05 fallback is mostly gone.
+- **Agents with `_receives_speaker_context` (today general and timer) write
+  no action row, only the routing row.** Decided by the agent flag, not a
+  name list, so plugin agents follow. Rationale: their own speech may name
+  the person; general writes no action rows anyway.
+- Rejected: name-in-text checks (miss first-name-only mentions) and
+  requester-dependent cache rules (complexity for an edge case).

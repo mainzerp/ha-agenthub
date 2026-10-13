@@ -274,7 +274,7 @@ class TestCacheManager:
         manager._routing_cache.invalidate_by_entity_id.assert_called_once_with(["light.kitchen", "switch.garage"])
 
     @pytest.mark.asyncio
-    async def test_apply_rewrite_returns_cached_mediated_text_when_disabled(self):
+    async def test_apply_rewrite_returns_original_agent_speech_when_disabled(self):
         manager, _store = self._make_manager()
         manager._rewrite_agent = AsyncMock()
         manager._rewrite_enabled = False
@@ -282,7 +282,7 @@ class TestCacheManager:
 
         output = await manager.apply_rewrite(result)
 
-        assert output == "Cached text."
+        assert output == "Original."
         assert result.rewrite_failed is False
         manager._rewrite_agent.rewrite.assert_not_called()
 
@@ -1097,7 +1097,7 @@ class TestCacheManagerExtended:
     # because condensed_task carry is already covered in test_routing_cache_skip.py.
 
     @pytest.mark.asyncio
-    async def test_action_hit_preserves_cached_text_on_empty_rewrite(self):
+    async def test_action_hit_serves_original_speech_on_empty_rewrite(self):
         # v4: apply_rewrite() takes result + optional conversation=; no structured= kwarg
         manager, _store = self._make_manager()
         rewrite_agent = AsyncMock()
@@ -1112,7 +1112,24 @@ class TestCacheManagerExtended:
         )
         with patch("app.cache.cache_manager.track_rewrite", new_callable=AsyncMock):
             output = await manager.apply_rewrite(result)
-        assert output == "Original cached text."
+        assert output == "Original raw text."
+
+    @pytest.mark.asyncio
+    async def test_legacy_row_without_original_speech_still_replays(self):
+        manager, _store = self._make_manager()
+        rewrite_agent = AsyncMock()
+        rewrite_agent.rewrite = AsyncMock(return_value="")
+        manager._rewrite_agent = rewrite_agent
+        manager._rewrite_enabled = True
+        result = CacheResult(hit_type="action_hit", agent_id="light-agent", response_text="Legacy text.")
+        with patch("app.cache.cache_manager.track_rewrite", new_callable=AsyncMock):
+            output = await manager.apply_rewrite(result)
+        assert output == "Legacy text."
+        rewrite_agent.rewrite.assert_awaited_once_with(
+            "Legacy text.", language="en", user_text=None, reminder_text=None
+        )
+        manager._rewrite_enabled = False
+        assert await manager.apply_rewrite(result) == "Legacy text."
 
     @pytest.mark.asyncio
     async def test_action_hit_applies_rewrite(self):
@@ -1168,7 +1185,7 @@ class TestCacheManagerExtended:
         )
         with patch("app.cache.cache_manager.track_rewrite", new_callable=AsyncMock):
             output = await manager.apply_rewrite(result)
-        assert output == "Original."
+        assert output == "Original raw."
         assert result.rewrite_applied is False
         assert result.rewrite_failed is True
         assert result.original_response_text == "Original raw."
@@ -1189,7 +1206,7 @@ class TestCacheManagerExtended:
         )
         with patch("app.cache.cache_manager.track_rewrite", new_callable=AsyncMock):
             output = await manager.apply_rewrite(result)
-        assert output == "Original."
+        assert output == "Original raw."
         assert result.rewrite_applied is False
         assert result.rewrite_failed is True
         assert result.original_response_text == "Original raw."
@@ -1249,11 +1266,11 @@ class TestCacheManagerExtended:
         ],
         ids=["llm_raises", "llm_returns_empty"],
     )
-    async def test_real_rewrite_failure_returns_cached_mediated_text(self, llm_kwargs):
-        # Regression: a failing rewrite LLM used to be reported as a successful
-        # rewrite while the raw, unmediated agent text was spoken.
+    async def test_real_rewrite_failure_returns_original_agent_speech(self, llm_kwargs):
+        # A failing rewrite LLM is reported as failed (never as a successful
+        # rewrite) and the stored original agent speech is spoken.
         output, result, mock_track = await self._apply_real_rewrite(llm_kwargs)
-        assert output == "Das Licht im Keller ist jetzt an."
+        assert output == "Done, the basement light is now on."
         assert result.rewrite_applied is False
         assert result.rewrite_failed is True
         assert result.rewrite_latency_ms is not None

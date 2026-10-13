@@ -212,6 +212,12 @@ class TaskContext(BaseModel):
     # Speaker identification: set by the orchestrator prelude only for an
     # identified voice match. Prompt context only -- never authorization.
     speaker: SpeakerContext | None = None
+    # Requesting person: the ``person.*`` entity linked to ``user_id`` and
+    # its friendly name, resolved once per turn by the orchestrator prelude
+    # (cache-miss path). Personalization wording only -- never visibility,
+    # authorization or audit; ``user_id`` stays the request user.
+    requester_person: str | None = None
+    requester_name: str | None = None
 
 
 class ExecutedCommand(BaseModel):

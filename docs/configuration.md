@@ -113,9 +113,10 @@ timeout, temperature, `max_tokens`, and reasoning effort come from the
 (dashboard **Agents** page). Seeded defaults: `groq/llama-3.1-8b-instant`,
 timeout `2` s, temperature `0.8`, reasoning effort `none`.
 
-If the rewrite call fails, times out, or returns no text, the stored
-mediated response of the cache entry (the speech originally spoken for
-that entry) is returned unchanged. The trace marks the `rewrite` span as
+If the rewrite is disabled, or the call fails, times out, or returns no
+text, the stored original agent speech of the cache entry (the
+unmediated agent response; mediated speech is never cached) is returned
+unchanged. The trace marks the `rewrite` span as
 failed (`success: false`, `fallback: cached_response`) and rewrite
 analytics count the call as a failure.
 
