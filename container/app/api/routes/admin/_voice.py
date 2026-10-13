@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
@@ -22,6 +23,7 @@ from app.voice.enrollment import (
     MIN_ENROLL_SAMPLES,
     MIN_ENROLL_TIMEOUT_S,
 )
+from app.voice.profiles import sample_diagnostics
 from app.voice.service import get_speaker_service, is_speaker_id_enabled
 
 logger = logging.getLogger(__name__)
@@ -72,6 +74,9 @@ async def voice_status() -> dict[str, Any]:
         "engine": service.engine.status,
         "engine_error": service.engine.last_error,
         "model": service.engine.model_id,
+        "vad": service.vad.status,
+        "vad_state": getattr(service.vad, "state", None),
+        "vad_error": service.vad.last_error,
         "enrollment": service.enrollment.current(),
         "recent": service.store.recent(),
     }
@@ -141,6 +146,56 @@ async def reset_voice_samples(profile_id: int) -> dict[str, Any]:
     deleted = await VoiceProfileRepository.delete_samples(profile_id)
     get_speaker_service().invalidate_profiles()
     return {"ok": True, "deleted": deleted}
+
+
+@router.get("/profiles/{profile_id}/samples")
+async def list_voice_samples(profile_id: int) -> dict[str, Any]:
+    """A profile's samples with quality numbers (no embeddings are returned).
+
+    For samples of the current model: ``loo_score`` (cosine to the centroid
+    of the profile's other samples) and ``best_other_name`` /
+    ``best_other_score`` (closest other profile). Samples of another model
+    never join a centroid and carry no scores. ``pre_vad`` marks a sample
+    stored without silence trimming (``speech_s`` NULL): it was embedded with
+    its silence and should be re-enrolled.
+    """
+    await _require_profile(profile_id)
+    service = get_speaker_service()
+    model = service.engine.model_id
+    rows = await VoiceProfileRepository.list_samples(profile_id)
+    current = [row for row in rows if row.get("model") == model]
+    centroids = await service.centroids.get(model)
+    others = [centroid for centroid in centroids if centroid.profile_id != profile_id]
+    diagnostics = await asyncio.to_thread(sample_diagnostics, current, others)
+    by_id = {item["id"]: item for item in diagnostics}
+    samples = []
+    for row in rows:
+        diag = by_id.get(int(row["id"]), {})
+        samples.append(
+            {
+                "id": row["id"],
+                "created_at": row.get("created_at"),
+                "model": row.get("model"),
+                "current_model": row.get("model") == model,
+                "duration_s": row.get("duration_s"),
+                "speech_s": row.get("speech_s"),
+                "pre_vad": row.get("speech_s") is None,
+                "loo_score": diag.get("loo_score"),
+                "best_other_name": diag.get("best_other_name"),
+                "best_other_score": diag.get("best_other_score"),
+            }
+        )
+    return {"profile_id": profile_id, "model": model, "samples": samples}
+
+
+@router.delete("/profiles/{profile_id}/samples/{sample_id}")
+async def delete_voice_sample(profile_id: int, sample_id: int) -> dict[str, Any]:
+    """Delete one enrollment sample of a profile."""
+    await _require_profile(profile_id)
+    if not await VoiceProfileRepository.delete_sample(profile_id, sample_id):
+        raise HTTPException(status_code=404, detail="Voice sample not found")
+    get_speaker_service().invalidate_profiles()
+    return {"ok": True}
 
 
 @router.post("/profiles/{profile_id}/enroll")

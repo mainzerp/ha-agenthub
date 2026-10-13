@@ -348,3 +348,21 @@ prompts live in `container/app/prompts/`, `ctx.agent_registry` not
   the person; general writes no action rows anyway.
 - Rejected: name-in-text checks (miss first-name-only mentions) and
   requester-dependent cache rules (complexity for an edge case).
+
+## 2026-10-13 — voice: speaker ID reliability before model changes
+
+- **Fix input quality and enrollment before touching the model.** Silero VAD
+  (sherpa-onnx) trims enrollment and identification audio to speech; the
+  duration minimums count speech seconds. Rationale: live turns scored the
+  other profile 0.57-0.75; silence and room noise are shared by both
+  speakers and pull embeddings together.
+- **Enrollment rejects samples that do not fit** (below
+  `enroll_min_similarity` against the own centroid, or closer to another
+  profile); single samples can be deleted. Rationale: enrollment takes any
+  voice on any satellite, and one wrong sample shifts the centroid.
+- **Default margin 0.12** (live set to 0.15 on 2026-10-13); a migration moves
+  only values still at the old defaults. Rationale: a wrong answer is worse
+  than `unknown`.
+- Deferred: s-norm/cohort scoring, per-satellite samples, model switch
+  (3D-Speaker zh-en, ERes2NetV2, WeSpeaker ResNet34) until re-enrolled data
+  with the new diagnostics shows whether they are needed.

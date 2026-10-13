@@ -150,13 +150,18 @@ class VoiceProfileRepository:
         dim: int,
         model: str,
         duration_s: float | None = None,
+        speech_s: float | None = None,
     ) -> int:
-        """Store one enrollment sample (float32 embedding bytes) and return its id."""
+        """Store one enrollment sample (float32 embedding bytes) and return its id.
+
+        ``duration_s`` is the raw turn length, ``speech_s`` the speech the
+        voice-activity detector kept (None when the VAD did not run).
+        """
         async with get_db_write() as db:
             cursor = await db.execute(
-                "INSERT INTO voice_samples (profile_id, embedding, dim, model, duration_s, created_at) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
-                (profile_id, embedding, dim, model, duration_s, _now()),
+                "INSERT INTO voice_samples (profile_id, embedding, dim, model, duration_s, speech_s, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (profile_id, embedding, dim, model, duration_s, speech_s, _now()),
             )
             return int(cursor.lastrowid or 0)
 
@@ -179,6 +184,27 @@ class VoiceProfileRepository:
         async with get_db_write() as db:
             cursor = await db.execute("DELETE FROM voice_samples WHERE profile_id = ?", (profile_id,))
             return cursor.rowcount
+
+    @staticmethod
+    async def list_samples(profile_id: int) -> list[dict[str, Any]]:
+        """Return every sample of a profile (all models, oldest first), embedding bytes included."""
+        async with get_db_read() as db:
+            cursor = await db.execute(
+                "SELECT id, profile_id, embedding, dim, model, duration_s, speech_s, created_at "
+                "FROM voice_samples WHERE profile_id = ? ORDER BY id",
+                (profile_id,),
+            )
+            return [dict(row) for row in await cursor.fetchall()]
+
+    @staticmethod
+    async def delete_sample(profile_id: int, sample_id: int) -> bool:
+        """Delete one sample of a profile. Returns True when it existed."""
+        async with get_db_write() as db:
+            cursor = await db.execute(
+                "DELETE FROM voice_samples WHERE id = ? AND profile_id = ?",
+                (sample_id, profile_id),
+            )
+            return cursor.rowcount > 0
 
     @staticmethod
     async def list_samples_for_model(model: str) -> list[dict[str, Any]]:

@@ -199,13 +199,16 @@ class TestVoiceSettings:
         rows = {row["key"]: row for row in await SettingsRepository.get_by_category("voice")}
         assert rows["voice.speaker_id.enabled"]["value"] == "false"
         assert rows["voice.speaker_id.threshold"]["value"] == "0.55"
-        assert rows["voice.speaker_id.margin"]["value"] == "0.05"
-        assert rows["voice.speaker_id.min_duration_s"]["value"] == "1.5"
-        assert rows["voice.speaker_id.min_enroll_duration_s"]["value"] == "2.0"
+        assert rows["voice.speaker_id.margin"]["value"] == "0.12"
+        assert rows["voice.speaker_id.min_duration_s"]["value"] == "1.0"
+        assert rows["voice.speaker_id.min_enroll_duration_s"]["value"] == "1.5"
+        assert rows["voice.speaker_id.enroll_min_similarity"]["value"] == "0.45"
         assert rows["voice.speaker_id.wait_ms"]["value"] == "500"
         assert rows["voice.speaker_id.num_threads"]["value"] == "2"
         config = await load_voice_config()
-        assert config == _config(enabled=False)
+        assert config == _config(
+            enabled=False, margin=0.12, min_duration_s=1.0, min_enroll_duration_s=1.5, enroll_min_similarity=0.45
+        )
 
     @pytest.mark.parametrize(
         ("key", "value", "value_type"),
@@ -290,8 +293,9 @@ class TestSpeakerIdServiceProcessTurn:
 
         recent = service.store.recent()
         assert [r["status"] for r in recent] == ["unknown", "identified"]
-        # Calibration aid: nearest candidate shown for unknown turns.
-        assert recent[0]["name"] in ("Anna", "Ben")
+        # An unknown turn never carries a name; the nearest profile is only in ``scores``.
+        assert recent[0]["name"] is None
+        assert recent[0]["scores"][0]["name"] in ("Anna", "Ben")
         assert all(r["compute_ms"] is not None and r["latency_ms"] is not None for r in recent)
 
     async def test_engine_unavailable(self, db_repository):
@@ -506,7 +510,7 @@ class TestVoiceAdminApi:
         bad = await client.put("/api/admin/settings", json={"items": {"voice.speaker_id.wait_ms": "5000"}})
         assert bad.status_code == 400
         grouped = (await client.get("/api/admin/settings")).json()["settings"]
-        assert len(grouped["voice"]) == 7
+        assert len(grouped["voice"]) == 8
 
     async def test_num_threads_write_schedules_background_reload(self, admin_client):
         client, service = admin_client

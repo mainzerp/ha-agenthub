@@ -29,8 +29,16 @@
                     <span x-text="status.enrollment.remaining + ' sample' + (status.enrollment.remaining === 1 ? '' : 's') + ' remaining'"></span>
                     <span>&middot;</span>
                     <span class="tabular-nums" x-text="'expires in ' + countdown(status.enrollment.expires_at)"></span>
+                    <template x-if="status.enrollment.rejected">
+                        <span class="tabular-nums" x-text="'&middot; ' + status.enrollment.rejected + ' rejected'"></span>
+                    </template>
                 </span>
-                <span class="text-sm">Speak a few commands of 2 seconds or longer to a satellite.</span>
+                <span class="text-sm">Only this person speaks to a satellite now: say varied sentences with at least <span x-text="s['voice.speaker_id.min_enroll_duration_s'] || 1.5"></span> seconds of speech each.</span>
+                <template x-if="status.enrollment.last_rejection">
+                    <span class="text-sm text-danger" x-text="'Last sample rejected: ' + reasonLabel(status.enrollment.last_rejection.reason)"></span>
+                </template>
+                <span x-show="status.vad_state === 'failed'" class="text-sm text-danger">Silence trimming is unavailable: samples are stored untrimmed and flagged pre-VAD. Re-enroll once voice activity detection is ready.</span>
+                <span x-show="status.vad_state === 'pending'" class="text-sm">Silence trimming is loading; turns before it is ready are not stored.</span>
                 <span x-show="!status.enabled" class="text-sm text-danger">Speaker identification is disabled, so no samples will be collected.</span>
             </div>
             <button class="btn btn-sm btn-secondary" @click="cancelEnrollment()">Cancel</button>
@@ -65,6 +73,16 @@
                 <dt class="form-label">Model</dt>
                 <dd><code class="mono text-xs break-all" x-text="status.model || '-'"></code></dd>
             </div>
+            <div>
+                <dt class="form-label">Voice activity detection</dt>
+                <dd>
+                    <span class="badge" :class="engineBadge(status.vad)" x-text="status.vad || 'unknown'"></span>
+                </dd>
+            </div>
+            <div class="col-span-full" x-show="status.vad_error">
+                <dt class="form-label">VAD error (whole turns are embedded)</dt>
+                <dd class="text-danger text-sm break-all" x-text="status.vad_error"></dd>
+            </div>
             <div class="col-span-full" x-show="status.engine_error">
                 <dt class="form-label">Engine error</dt>
                 <dd class="text-danger text-sm break-all" x-text="status.engine_error"></dd>
@@ -81,17 +99,22 @@
                 <div class="form-group">
                     <label class="form-label" for="voice-margin">Margin (0-1)</label>
                     <input id="voice-margin" type="number" class="form-input" min="0" max="1" step="0.01" x-model.number="s['voice.speaker_id.margin']">
-                    <p class="form-hint">Minimum score gap between the best and the second-best profile.</p>
+                    <p class="form-hint">Minimum score gap between the best and the second-best profile. Raise it when two people get confused.</p>
                 </div>
                 <div class="form-group">
-                    <label class="form-label" for="voice-min-duration">Min. turn duration (s)</label>
+                    <label class="form-label" for="voice-min-duration">Min. speech for identification (s)</label>
                     <input id="voice-min-duration" type="number" class="form-input" min="0" max="30" step="0.1" x-model.number="s['voice.speaker_id.min_duration_s']">
-                    <p class="form-hint">Shorter voice turns are not identified.</p>
+                    <p class="form-hint">Seconds of detected speech (silence excluded). Shorter turns report too_short.</p>
                 </div>
                 <div class="form-group">
-                    <label class="form-label" for="voice-min-enroll-duration">Min. enrollment sample duration (s)</label>
+                    <label class="form-label" for="voice-min-enroll-duration">Min. speech per enrollment sample (s)</label>
                     <input id="voice-min-enroll-duration" type="number" class="form-input" min="0.5" max="30" step="0.1" x-model.number="s['voice.speaker_id.min_enroll_duration_s']">
-                    <p class="form-hint">Shorter voice turns are not stored as samples.</p>
+                    <p class="form-hint">Samples with less detected speech are rejected.</p>
+                </div>
+                <div class="form-group">
+                    <label class="form-label" for="voice-enroll-min-similarity">Min. enrollment similarity (0-1)</label>
+                    <input id="voice-enroll-min-similarity" type="number" class="form-input" min="0" max="1" step="0.01" x-model.number="s['voice.speaker_id.enroll_min_similarity']">
+                    <p class="form-hint">A new sample must reach this similarity to the profile's earlier samples.</p>
                 </div>
                 <div class="form-group">
                     <label class="form-label" for="voice-wait-ms">Max. wait (ms, 0-3000)</label>
@@ -155,8 +178,8 @@
                         <th>Actions</th>
                     </tr>
                 </thead>
-                <tbody>
-                    <template x-for="p in profiles" :key="p.id">
+                <template x-for="p in profiles" :key="p.id">
+                    <tbody>
                         <tr>
                             <td class="fw-600" x-text="p.name"></td>
                             <td>
@@ -172,14 +195,56 @@
                                     <span :title="status.enabled ? null : 'Enable speaker identification to enroll'">
                                         <button class="btn btn-sm btn-primary" @click="openEnroll(p)" :disabled="!status.enabled">Enroll</button>
                                     </span>
+                                    <button class="btn btn-sm btn-secondary" @click="toggleSamples(p)" :aria-expanded="samplesOpen(p) ? 'true' : 'false'" x-text="samplesOpen(p) ? 'Hide samples' : 'Samples'"></button>
                                     <button class="btn btn-sm btn-secondary" @click="openEdit(p)">Edit</button>
                                     <button class="btn btn-sm btn-secondary" @click="resetSamples(p)" :disabled="!p.sample_count">Reset samples</button>
                                     <button class="btn btn-sm btn-danger" @click="deleteProfile(p)">Delete</button>
                                 </div>
                             </td>
                         </tr>
-                    </template>
-                </tbody>
+                        <tr x-show="samplesOpen(p)" class="voice-samples-row">
+                            <td colspan="4">
+                                <template x-if="samplesOpen(p) && samplesFor(p).loading">
+                                    <p class="text-muted text-sm m-0">Loading samples...</p>
+                                </template>
+                                <template x-if="samplesOpen(p) && !samplesFor(p).loading && samplesFor(p).items.length === 0">
+                                    <p class="text-muted text-sm m-0">No samples stored.</p>
+                                </template>
+                                <template x-if="samplesOpen(p) && samplesFor(p).items.length > 0">
+                                    <div>
+                                        <p class="text-muted text-xs mt-0 mb-sm">Own fit: similarity to the profile's other samples. Closest other: best score against another profile. Delete samples whose own fit is low or whose closest other profile scores higher. Samples marked pre-VAD were recorded before silence trimming; reset and re-enroll the profile.</p>
+                                        <table class="data-table voice-samples-table">
+                                            <thead>
+                                                <tr>
+                                                    <th>#</th>
+                                                    <th>Recorded</th>
+                                                    <th class="text-right">Speech / turn</th>
+                                                    <th class="text-right">Own fit</th>
+                                                    <th>Closest other</th>
+                                                    <th></th>
+                                                </tr>
+                                            </thead>
+                                            <tbody>
+                                                <template x-for="sample in samplesFor(p).items" :key="sample.id">
+                                                    <tr>
+                                                        <td class="tabular-nums text-xs" x-text="sample.id"></td>
+                                                        <td class="text-xs text-nowrap" :title="sample.created_at" x-text="formatTime(sample.created_at)"></td>
+                                                        <td class="text-right tabular-nums text-nowrap text-xs" :class="sample.pre_vad ? 'text-danger' : ''" :title="sample.pre_vad ? 'Recorded before silence trimming; re-enrollment recommended' : null" x-text="sample.pre_vad ? 'pre-VAD / ' + fmtSeconds(sample.duration_s) : fmtSeconds(sample.speech_s) + ' / ' + fmtSeconds(sample.duration_s)"></td>
+                                                        <td class="text-right tabular-nums" :class="sampleSuspect(sample) ? 'text-danger' : ''" :title="sampleTitle(sample)" x-text="sample.current_model ? fmt2(sample.loo_score) : 'old model'"></td>
+                                                        <td class="text-xs" :class="sampleSuspect(sample) ? 'text-danger' : 'text-muted'" x-text="sample.best_other_name ? sample.best_other_name + ' ' + fmt2(sample.best_other_score) : '-'"></td>
+                                                        <td class="text-right">
+                                                            <button class="btn btn-sm btn-danger" @click="deleteSample(p, sample)">Delete</button>
+                                                        </td>
+                                                    </tr>
+                                                </template>
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                </template>
+                            </td>
+                        </tr>
+                    </tbody>
+                </template>
             </table>
         </div>
         <template x-if="!loading && profiles.length === 0">
@@ -193,7 +258,7 @@
     <!-- Recent results -->
     <div class="card">
         <h3 class="card-title mb-sm">Recent Results</h3>
-        <p class="text-muted text-sm mb-md">The last 20 identification results (no audio is kept). Compare the scores of correct matches with the scores other people get to tune the threshold and margin.</p>
+        <p class="text-muted text-sm mb-md">The last 20 identification results (no audio is kept). An unknown turn names no one; its nearest profile is only a candidate. Compare every profile's score per turn: when another person regularly scores close to the right one, delete that profile's bad samples or re-enroll it, then tune the threshold and margin.</p>
         <div class="table-container" x-show="(status.recent || []).length > 0">
             <table class="data-table">
                 <thead>
@@ -201,10 +266,12 @@
                         <th>Time</th>
                         <th>Status</th>
                         <th>Name</th>
+                        <th title="Nearest profile of a turn that was not identified">Nearest candidate</th>
                         <th class="text-right">Score</th>
                         <th class="text-right">Margin</th>
-                        <th class="text-right">Duration</th>
-                        <th class="text-right" title="Embedding plus profile matching">Compute</th>
+                        <th class="text-right" title="Detected speech / whole turn">Speech</th>
+                        <th>All scores</th>
+                        <th class="text-right" title="Voice activity detection, embedding and profile matching">Compute</th>
                         <th class="text-right" title="From the end of audio until the result was available">Latency</th>
                     </tr>
                 </thead>
@@ -212,11 +279,16 @@
                     <template x-for="(r, idx) in (status.recent || [])" :key="(r.timestamp || '') + ':' + idx">
                         <tr>
                             <td class="text-xs text-nowrap" :title="r.timestamp" x-text="formatTime(r.timestamp)"></td>
-                            <td><span class="badge" :class="resultBadge(r.status)" x-text="r.status || '-'"></span></td>
-                            <td x-text="r.name || '-'"></td>
+                            <td>
+                                <span class="badge" :class="resultBadge(r.status)" x-text="r.status || '-'"></span>
+                                <span x-show="r.reason" class="voice-result-reason text-xs text-muted" x-text="reasonLabel(r.reason)"></span>
+                            </td>
+                            <td class="fw-600" x-text="r.name || '-'"></td>
+                            <td class="text-xs text-muted" x-text="nearestCandidate(r)"></td>
                             <td class="text-right tabular-nums" x-text="fmt2(r.score)"></td>
                             <td class="text-right tabular-nums" x-text="fmt2(r.margin)"></td>
-                            <td class="text-right tabular-nums text-nowrap" x-text="r.duration_s == null ? '-' : Number(r.duration_s).toFixed(1) + ' s'"></td>
+                            <td class="text-right tabular-nums text-nowrap" :title="r.vad === false ? 'Voice activity detection did not run: the whole turn was used' : null" x-text="speechLabel(r)"></td>
+                            <td class="text-xs text-muted" x-text="allScores(r)"></td>
                             <td class="text-right tabular-nums text-nowrap" x-text="fmtMs(r.compute_ms)"></td>
                             <td class="text-right tabular-nums text-nowrap" x-text="fmtMs(r.latency_ms)"></td>
                         </tr>
@@ -307,6 +379,7 @@ function voiceProfilesPage() {
         enrollForm: { samples: 5, timeout_s: 300 },
         editTarget: null,
         editForm: { name: '', ha_user_id: '' },
+        samples: {},
         now: Date.now(),
         refreshInterval: null,
 
@@ -350,6 +423,11 @@ function voiceProfilesPage() {
                     || (previous && current && (previous.remaining !== current.remaining || previous.profile_id !== current.profile_id));
                 if (changed) {
                     await this.loadProfiles();
+                    var target = current || previous;
+                    var entry = target ? this.samples[target.profile_id] : null;
+                    if (entry && entry.open) {
+                        await this.loadSamples(target.profile_id);
+                    }
                     if (previous && !current) {
                         window.toast('Enrollment for ' + previous.name + ' finished', 'info');
                     }
@@ -563,11 +641,69 @@ function voiceProfilesPage() {
             }
         },
 
+        samplesOpen(p) {
+            var entry = this.samples[p.id];
+            return !!(entry && entry.open);
+        },
+
+        samplesFor(p) {
+            return this.samples[p.id] || { open: false, loading: false, items: [] };
+        },
+
+        async toggleSamples(p) {
+            if (this.samplesOpen(p)) {
+                this.samples[p.id] = { open: false, loading: false, items: [] };
+                return;
+            }
+            await this.loadSamples(p.id);
+        },
+
+        async loadSamples(profileId) {
+            var previous = this.samples[profileId];
+            this.samples[profileId] = { open: true, loading: true, items: previous ? previous.items : [] };
+            try {
+                var data = await window.dashboardApi.json('/api/admin/voice/profiles/' + profileId + '/samples');
+                this.samples[profileId] = { open: true, loading: false, items: (data && data.samples) || [] };
+            } catch (e) {
+                this.samples[profileId] = { open: false, loading: false, items: [] };
+                if (e.code === 'auth_expired') return;
+                window.toast(e.detail || 'Failed to load voice samples', 'error');
+            }
+        },
+
+        sampleTitle(sample) {
+            if (sample.pre_vad) return 'Recorded before silence trimming; re-enrollment recommended';
+            return this.sampleSuspect(sample) ? 'Does not fit this profile well; consider deleting it' : null;
+        },
+
+        sampleSuspect(sample) {
+            if (sample.pre_vad) return true;
+            if (!sample.current_model) return false;
+            var own = sample.loo_score;
+            var other = sample.best_other_score;
+            var minSimilarity = Number(this.s['voice.speaker_id.enroll_min_similarity']);
+            if (own !== null && own !== undefined && !Number.isNaN(minSimilarity) && own < minSimilarity) return true;
+            return own !== null && own !== undefined && other !== null && other !== undefined && other > own;
+        },
+
+        async deleteSample(p, sample) {
+            if (!confirm('Delete sample #' + sample.id + ' of ' + p.name + '?')) return;
+            try {
+                await window.dashboardApi.request('/api/admin/voice/profiles/' + p.id + '/samples/' + sample.id, { method: 'DELETE' });
+                window.toast('Sample deleted', 'success');
+                await Promise.all([this.loadSamples(p.id), this.loadProfiles()]);
+            } catch (e) {
+                if (e.code === 'auth_expired') return;
+                window.toast(e.detail || 'Failed to delete sample', 'error');
+            }
+        },
+
         async resetSamples(p) {
             if (!confirm('Delete all voice samples of ' + p.name + '? The profile stays and can be enrolled again.')) return;
             try {
                 await window.dashboardApi.request('/api/admin/voice/profiles/' + p.id + '/samples', { method: 'DELETE' });
                 window.toast('Samples deleted', 'success');
+                if (this.samplesOpen(p)) await this.loadSamples(p.id);
                 await this.loadProfiles();
             } catch (e) {
                 if (e.code === 'auth_expired') return;
@@ -609,6 +745,39 @@ function voiceProfilesPage() {
             return Number.isNaN(n) ? '-' : n.toFixed(1) + ' ms';
         },
 
+        fmtSeconds(value) {
+            if (value === null || value === undefined || value === '') return '-';
+            var n = Number(value);
+            return Number.isNaN(n) ? '-' : n.toFixed(1) + ' s';
+        },
+
+        speechLabel(r) {
+            if (r.speech_s === null || r.speech_s === undefined) return this.fmtSeconds(r.duration_s);
+            var label = this.fmtSeconds(r.speech_s) + ' / ' + this.fmtSeconds(r.duration_s);
+            return r.vad === false ? label + ' (no VAD)' : label;
+        },
+
+        nearestCandidate(r) {
+            if (r.status !== 'unknown' || !r.scores || !r.scores.length) return '-';
+            return r.scores[0].name + ' ' + this.fmt2(r.scores[0].score);
+        },
+
+        allScores(r) {
+            if (!r.scores || !r.scores.length) return '-';
+            return r.scores.map(item => item.name + ' ' + this.fmt2(item.score)).join(', ');
+        },
+
+        reasonLabel(reason) {
+            var labels = {
+                rejected_other_speaker: 'sounds like another profile',
+                rejected_inconsistent: "does not match this profile's earlier samples",
+                rejected_too_short: 'too little speech',
+                no_speech: 'no speech detected',
+                engine_not_ready: 'engine not ready',
+            };
+            return labels[reason] || (reason || '').replace(/_/g, ' ');
+        },
+
         fmt2(value) {
             if (value === null || value === undefined || value === '') return '-';
             var n = Number(value);
@@ -625,7 +794,7 @@ function voiceProfilesPage() {
         resultBadge(status) {
             if (status === 'identified') return 'badge-green';
             if (status === 'enrolled_sample') return 'badge-blue';
-            if (status === 'unknown') return 'badge-yellow';
+            if (status === 'unknown' || status === 'rejected_sample') return 'badge-yellow';
             if (status === 'error' || status === 'unavailable' || status === 'unsupported_audio') return 'badge-red';
             return 'badge-muted';
         },

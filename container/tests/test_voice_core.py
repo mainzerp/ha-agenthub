@@ -276,7 +276,13 @@ class TestTurnStore:
             "name",
             "score",
             "margin",
+            "second_name",
+            "second_score",
+            "scores",
             "duration_s",
+            "speech_s",
+            "vad",
+            "reason",
             "compute_ms",
             "latency_ms",
         }

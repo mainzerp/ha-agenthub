@@ -226,8 +226,19 @@ Check the **Voice Profiles** page (engine status, recent results) and the turn's
 - **Span status `timeout`:** no result had arrived by dispatch and the rest of `voice.speaker_id.wait_ms` ran out; check `latency_ms` of the voice turn (dashboard recent results) and raise `wait_ms` (max 3000) or `voice.speaker_id.num_threads`.
 - **Status `unavailable` / engine not `ready`:** the speaker model or `sherpa-onnx` could not be loaded; `engine_error` on the page names the cause. Images built without the model download it once into `/data/models/speaker/` and need GitHub access; after a failed load the engine retries after 60 s.
 - **Status `no_profiles`:** no profile has samples for the current model; enroll first.
-- **Always `unknown`:** compare the score of the nearest profile in the recent results with `voice.speaker_id.threshold` / `margin`, lower them carefully, and enroll more samples per person on each satellite.
-- **Mostly `too_short`:** commands are shorter than `voice.speaker_id.min_duration_s`; identification needs longer phrases.
+- **Always `unknown`:** compare the score of the nearest candidate in the recent results with `voice.speaker_id.threshold` / `margin`, lower them carefully, and enroll more samples per person on each satellite.
+- **Mostly `too_short`:** commands have less detected speech than `voice.speaker_id.min_duration_s` (default 1.0 s); silence before and after the command does not count. Identification needs longer phrases; a short command reports `too_short` instead of guessing.
+- **Speech shows "no VAD" / `vad=false`:** the voice-activity detector is not loaded (`vad_error` on the page names the cause; images without `silero_vad.onnx` download it once into `/data/models/speaker/`). Whole turns including silence are embedded then, which makes different speakers look more alike; enrollment samples stored meanwhile are flagged pre-VAD. A data-directory copy that fails to load is deleted and downloaded again after 60 s. Enrollment turns answering `unavailable` with reason `vad_not_ready` arrived while the VAD was still loading; repeat them.
+
+## Two Speakers Get Confused
+
+Symptom: person A is identified as person B (or the other way round), or most turns of both are `unknown` because the margin is small.
+
+- **Compare all scores:** the **All scores** column of the recent results (and `scores` on the `speaker_id` span) shows every profile's score per turn. When the wrong profile regularly scores within about 0.1 of the right one, the profiles are not separable yet; the default `voice.speaker_id.margin` of 0.12 reports such turns as `unknown` instead of guessing.
+- **After an upgrade:** samples enrolled before silence trimming (flagged **pre-VAD** in the sample list) embed the silence of the whole turn. Reset and re-enroll every profile.
+- **Check the samples:** open **Samples** on both profiles. Samples with a low **Own fit** or a **Closest other** score above the own fit were usually recorded while someone else spoke (enrollment takes every voice turn of every satellite) or from noise. Delete them one by one.
+- **Re-enroll alone:** if many samples are bad, **Reset samples** and enroll again, one person at a time with nobody else talking, using varied sentences with at least 1.5 s of speech. The enrollment guard rejects samples that do not clearly sound like this profile rather than another enrolled one (lead below half of `voice.speaker_id.margin`, `rejected_other_speaker`) or do not match the profile (`rejected_inconsistent`); frequent rejections during enrollment mean the wrong person is speaking or the microphone picks up others.
+- **Then tune:** raise `voice.speaker_id.margin` if confusions remain; raise `voice.speaker_id.threshold` only if unknown voices are identified as a profile.
 
 ## My Alarm Helper No Longer Rings
 

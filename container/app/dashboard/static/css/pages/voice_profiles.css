@@ -53,6 +53,20 @@
     gap: var(--space-2);
 }
 
+.voice-result-reason {
+    display: block;
+    margin-top: var(--space-1);
+}
+
+.voice-samples-row > td {
+    background: var(--bg-obsidian);
+    padding: var(--space-3) var(--space-4);
+}
+
+.voice-samples-table {
+    width: 100%;
+}
+
 @media (max-width: 640px) {
     .voice-enroll-banner {
         flex-direction: column;

@@ -1084,7 +1084,7 @@ class TestVoiceProfilesPage:
         assert 'x-data="voiceProfilesPage()"' in html
         assert "/dashboard/static/css/pages/voice_profiles.css" in html
         assert "window.dashboardApi.json('/api/admin/voice/status')" in html
-        assert "Speak a few commands of 2 seconds or longer to a satellite." in html
+        assert "Only this person speaks to a satellite now" in html
         assert "HA-AgentHub STT" in html
         assert "clearInterval(this.refreshInterval)" in html
         assert 'aria-labelledby="voice-enroll-modal-title"' in html
@@ -1095,6 +1095,20 @@ class TestVoiceProfilesPage:
         # Recent results show identification timing.
         assert 'x-text="fmtMs(r.compute_ms)"' in html
         assert 'x-text="fmtMs(r.latency_ms)"' in html
+        # Unknown turns show the nearest profile only as a separate candidate column.
+        assert 'x-text="nearestCandidate(r)"' in html
+        assert 'x-text="allScores(r)"' in html
+        assert 'x-text="speechLabel(r)"' in html
+        # Per-sample management and the enrollment guard setting.
+        assert "'/api/admin/voice/profiles/' + profileId + '/samples'" in html
+        assert '@click="deleteSample(p, sample)"' in html
+        assert "voice.speaker_id.enroll_min_similarity" in html
+        # Pre-VAD samples are flagged; the banner warns when silence trimming is unavailable.
+        assert "sample.pre_vad" in html and "Recorded before silence trimming" in html
+        assert "status.vad_state === 'failed'" in html
+        # Only an open sample list is reloaded, also after the enrollment ended.
+        assert "var target = current || previous;" in html and "entry && entry.open" in html
+        assert "r.status !== 'unknown'" in html
 
     async def test_sidebar_contains_voice_profiles_entry(self, dashboard_client: httpx.AsyncClient):
         resp = await dashboard_client.get("/dashboard/persons")

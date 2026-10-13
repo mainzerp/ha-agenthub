@@ -134,7 +134,11 @@ class SpeakerTurnStore:
     # -- calibration ring buffer ---------------------------------------
 
     def record_recent(self, result: dict[str, Any]) -> None:
-        """Remember a finished result for the dashboard (no audio, no embeddings)."""
+        """Remember a finished result for the dashboard (no audio, no embeddings).
+
+        ``name`` is the identified speaker or enrollment target only; the
+        nearest profile of an ``unknown`` turn is ``scores[0]``.
+        """
         self._recent.append(
             {
                 "timestamp": datetime.now(UTC).isoformat(),
@@ -143,7 +147,13 @@ class SpeakerTurnStore:
                 "name": result.get("name"),
                 "score": result.get("score"),
                 "margin": result.get("margin"),
+                "second_name": result.get("second_name"),
+                "second_score": result.get("second_score"),
+                "scores": result.get("scores"),
                 "duration_s": result.get("duration_s"),
+                "speech_s": result.get("speech_s"),
+                "vad": result.get("vad"),
+                "reason": result.get("reason"),
                 "compute_ms": result.get("compute_ms"),
                 "latency_ms": result.get("latency_ms"),
             }

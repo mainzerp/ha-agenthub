@@ -168,6 +168,11 @@ class TestVoiceWsProtocol:
             "score",
             "margin",
             "duration_s",
+            "speech_s",
+            "vad",
+            "scores",
+            "second_name",
+            "second_score",
             "reason",
             "compute_ms",
             "latency_ms",
@@ -426,6 +431,39 @@ class TestVoiceWsEnrollmentConfirmation:
         add_sample.assert_not_awaited()
         assert service.enrollment.current()["remaining"] == 2
         assert _results(ws)[0]["reason"] == "aborted"
+
+    async def test_rejected_sample_counts_only_after_end(self, service, enabled):
+        # Arming Ben while the voice matches Anna: the sample guard rejects it.
+        service.enrollment.arm(2, "Ben", samples=2, timeout_s=60)
+        ws, queue, session = await self._run_until_processed(
+            service, [_start(), _binary(_pcm(2.5)), _text({"type": "audio_end"})]
+        )
+        # Analysed at audio_end, but not counted or shown before ``end``.
+        assert service.enrollment.current()["rejected"] == 0
+        assert service.store.recent() == []
+
+        await queue.put(_text({"type": "end", "transcript_chars": 9}))
+        await asyncio.wait_for(session, 2.0)
+
+        result = _results(ws)[0]
+        assert result["status"] == "rejected_sample" and result["reason"] == "rejected_other_speaker"
+        armed = service.enrollment.current()
+        assert armed["rejected"] == 1 and armed["remaining"] == 2
+        assert armed["last_rejection"]["reason"] == "rejected_other_speaker"
+        assert [r["status"] for r in service.store.recent()] == ["rejected_sample"]
+
+    @pytest.mark.parametrize("closing", [_text({"type": "abort"}), _DISCONNECT])
+    async def test_unconfirmed_rejection_records_nothing(self, service, enabled, closing):
+        service.enrollment.arm(2, "Ben", samples=2, timeout_s=60)
+        _ws, queue, session = await self._run_until_processed(
+            service, [_start(), _binary(_pcm(2.5)), _text({"type": "audio_end"})]
+        )
+        await queue.put(closing)
+        await asyncio.wait_for(session, 2.0)
+
+        armed = service.enrollment.current()
+        assert armed["rejected"] == 0 and armed["last_rejection"] is None and armed["remaining"] == 2
+        assert service.store.recent() == []
 
     async def test_disconnect_without_end_discards_pending_sample(self, service, enabled):
         service.enrollment.arm(1, "Anna", samples=2, timeout_s=60)
