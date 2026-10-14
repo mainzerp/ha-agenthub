@@ -33,6 +33,7 @@ from app.agents.dispatch_manager import (
     DispatchManager,
 )
 from app.agents.filler_coordinator import FillerCoordinator
+from app.agents.followup import organic_followup_allowed, resolve_voice_followup
 from app.agents.language_detect import detect_user_language, warm_up_language_detector
 from app.agents.mediation import (
     TEMPLATE_SPEECH_SOURCES,
@@ -67,7 +68,6 @@ from app.models.agent import (
     LastEntity,
     TaskContext,
     source_allows_filler,
-    source_allows_voice_followup,
 )
 from app.voice import PendingSpeakerLookup, discard_pending_speaker, start_speaker_lookup
 
@@ -1597,6 +1597,9 @@ class OrchestratorAgent(BaseAgent):
                     allow_organic_followup = random.random() < p
             except (TypeError, ValueError):
                 pass
+        if allow_organic_followup:
+            # An armed voice enrollment must not get a closing invitation question.
+            allow_organic_followup = await organic_followup_allowed(task.span_collector)
 
         return reminder_text, allow_organic_followup
 
@@ -1652,7 +1655,12 @@ class OrchestratorAgent(BaseAgent):
         elif canned_code in RETRYABLE_CANNED_CODES:
             self._conversation_manager.restore_pending_question(conversation_id)
         source = task.context.source if task.context else None
-        voice_followup_effective = followup_question and source_allows_voice_followup(source)
+        voice_followup_effective = await resolve_voice_followup(
+            followup_question,
+            source,
+            span_collector=span_collector,
+            span_metadata=ret_span["metadata"] if ret_span is not None else None,
+        )
         if ret_span is not None:
             ret_span["metadata"]["final_response"] = speech
             ret_span["metadata"]["mediated"] = speech != original_speech
