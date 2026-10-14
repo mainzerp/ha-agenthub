@@ -321,6 +321,25 @@ places the same id into the `ConversationResult`; the container's own
 never forwarded to HA (HA core regenerates unknown-but-valid ULIDs, which
 would silently break session continuity).
 
+The effective flag is decided in one helper,
+`app/agents/followup.py::resolve_voice_followup`, called by the
+single-agent funnel (`_finalize_post_mediation`, reached by blocking,
+streaming and sequential-send turns) and the multi-agent merge
+(`DefaultFinalizationStrategy`); action-cache replays, cancel and noise
+turns never request a follow-up. While a voice-profile enrollment is
+armed and speaker identification is enabled
+(`app/voice/service.py::enrollment_active`, in-memory state of the
+existing speaker service; the TTL-cached enabled setting is read only
+while armed), follow-ups are suppressed for every turn: the result
+carries `voice_followup=false` (a follow-up turn starts without wake word
+right after TTS and would record the assistant's voice as a sample), and
+`_prepare_mediation_inputs` drops a won organic follow-up roll so
+mediation is not asked for a closing question. A clarifying question is
+still spoken and recorded as the pending question. A suppression records
+`followup_suppressed: "enrollment"` on the `return` span (when present)
+and the root span. Without a speaker service, or with speaker
+identification disabled, nothing is suppressed.
+
 ### HA Bridge Transport
 
 - One shared `/ws/conversation` socket. While idle, a background reader

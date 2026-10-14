@@ -1,12 +1,19 @@
 # Version
 
-**Current Version:** 3.5.2
+**Current Version:** 3.5.3
 
 ## Recent Changes
 
-(tracking changes since 3.5.2)
+(tracking changes since 3.5.3)
 
 ## Version History
+
+### 3.5.3 (PATCH) -- no voice follow-ups while enrolling
+
+(commit 59e2d1e)
+
+- Voice: follow-ups are paused while a voice-profile enrollment is armed (and speaker identification is enabled). Every finalization path (blocking, streaming, sequential-send, multi-agent merge) decides the voice follow-up through `app/agents/followup.py::resolve_voice_followup`, which returns `voice_followup=false` while `app/voice/service.py::enrollment_active()` is true (in-memory enrollment state; the cached enabled setting is read only while armed; no service or disabled means no suppression). A won organic follow-up roll is dropped, so mediation adds no closing question; clarifying questions are still spoken and kept as the pending question. The trace records `followup_suppressed: "enrollment"` on the `return` span (when present) and the root span. Reason: a follow-up turn starts without wake word right after TTS, so the assistant's voice tail ended up in enrollment samples.
+- Verification: `scripts/ci.py` full gate passed: 4617 container tests (4 skipped, 9 xfailed, 3 xpassed, coverage 85.37%), 215 integration tests, Ruff, bandit, pip-audit, Docker build and smoke test, Trivy. Not yet verified live.
 
 ### 3.5.2 (PATCH) -- enrollment outlier replacement, filler spoken early
 

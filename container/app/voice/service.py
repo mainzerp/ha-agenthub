@@ -669,6 +669,25 @@ async def _on_settings_write(key: str) -> None:
 SettingsRepository.register_write_listener(_on_settings_write)
 
 
+async def enrollment_active() -> bool:
+    """True while a voice-profile enrollment is armed and speaker identification is enabled.
+
+    Reads the in-memory enrollment state of an existing service only (never
+    creates one); the enabled setting (TTL-cached) is read only while an
+    enrollment is armed. Never raises: any failure means "not active".
+    """
+    service = _service
+    if service is None:
+        return False
+    try:
+        if service.enrollment.current() is None:
+            return False
+        return await is_speaker_id_enabled()
+    except Exception:
+        logger.debug("Enrollment state check failed; assuming not armed", exc_info=True)
+        return False
+
+
 def has_pending_speaker(conversation_id: str | None) -> bool:
     """True when a voice turn registered a speaker entry for ``conversation_id``."""
     service = _service

@@ -5,6 +5,7 @@ from app.voice.service import (  # noqa: F401
     SpeakerIdService,
     attach_speaker_to_task,
     discard_pending_speaker,
+    enrollment_active,
     get_speaker_service,
     has_pending_speaker,
     load_voice_config,

@@ -16,12 +16,13 @@ from app.agents.classification_engine import ClassificationEngine
 from app.agents.compound_utterance import looks_compound
 from app.agents.conversation_manager import ConversationManager, extract_resolved_entities
 from app.agents.dispatch_manager import DispatchManager, canned_error_code
+from app.agents.followup import resolve_voice_followup
 from app.agents.mediation import TEMPLATE_SPEECH_SOURCES, speech_source_of
 from app.agents.personalization import mediation_speaker_kwargs, personalization_user_id
 from app.agents.sanitize import strip_markdown
 from app.agents.task_pipeline import CacheReplayResult, DispatchResult
 from app.cache.cache_manager import CacheManager
-from app.models.agent import IngressTask, source_allows_voice_followup
+from app.models.agent import IngressTask
 
 __all__ = [
     "CacheReplayStrategy",
@@ -538,7 +539,12 @@ class DefaultFinalizationStrategy(FinalizationStrategy):
                 if followup_question and self._conversation_manager is not None:
                     self._conversation_manager.set_pending_question(conversation_id, speech, routed_to)
                 source = task.context.source if task and task.context else None
-                voice_followup_effective = followup_question and source_allows_voice_followup(source)
+                voice_followup_effective = await resolve_voice_followup(
+                    followup_question,
+                    source,
+                    span_collector=span_collector,
+                    span_metadata=ret_span["metadata"],
+                )
                 ret_span["metadata"]["final_response"] = speech
                 ret_span["metadata"]["mediated"] = (speech != original_speech) or len(classifications) > 1
                 ret_span["metadata"]["voice_followup"] = voice_followup_effective
