@@ -30,10 +30,11 @@ Live pipeline in board format — headings are columns, cards are
   MCP-Server hinzu?" are answered from live registry data (local tool
   agenthub_self_info: overview + section search over bundled docs in
   container/app/knowledge/, synced by scripts/sync_self_docs.py, ci.py
-  checks). Branch feat/general-self-info, not committed (Decisions
-  2026-10-15).
-  Passed: ruff clean; sync --check OK; container suite 4646 passed,
-  4 skipped. Not run: ci.py full gate, bridge tests, real Docker build.
+  checks). Decisions 2026-10-15. Shipped in v3.6.0
+  (https://github.com/mainzerp/ha-agenthub/releases/tag/v3.6.0).
+  Passed: ci.py full gate (container 4646, coverage 85.50%; bridge 215;
+  self-docs sync; Docker build + smoke, knowledge files in the image;
+  Trivy).
   Known change: general-agent always runs the tool loop, so the plain
   path's one-shot retry on an empty reply no longer applies.
   Needs user verification: review the diff; deploy; ask the three

@@ -1,15 +1,20 @@
 # Version
 
-**Current Version:** 3.5.3
+**Current Version:** 3.6.0
 
 ## Recent Changes
 
-(tracking changes since 3.5.3)
+(tracking changes since 3.6.0)
+
+## Version History
+
+### 3.6.0 (MINOR) -- general agent knows HA-AgentHub itself
+
+(commit 6f524a0)
 
 - General agent: answers questions about HA-AgentHub itself (what it is, which agents it has, how to use, configure, or troubleshoot it) through a built-in in-process tool `agenthub_self_info` (`app/agents/self_info.py`): topic `overview` renders version, registered agents (internal-only agents skipped), loaded plugins, and MCP server names with connection state; topic `docs` searches the user docs bundled at `container/app/knowledge/`. The general agent now always runs the tool loop, even without MCP tools; local tools shadow MCP tools of the same name and are traced as `mcp_tool_call` spans with `local: true`. Custom agents do not get the tool. Card description and skills (`self_description`) and `general.txt` (identity statement; self-questions answered only from the tool result) updated; routing examples added in all five languages.
 - Build: `scripts/sync_self_docs.py` copies `docs/user-guide.md`, `docs/configuration.md`, `docs/troubleshooting.md`, and `README.md` into `container/app/knowledge/` (generated marker, LF); `--check` is part of `scripts/ci.py`; `container/.dockerignore` includes `app/knowledge/*.md`.
-
-## Version History
+- Verification: `scripts/ci.py` full gate passed: 4646 container tests (4 skipped, 9 xfailed, 3 xpassed, coverage 85.50%), 215 integration tests, Ruff, self-docs sync check, bandit, pip-audit, Docker build and smoke test (knowledge files present in the image), Trivy. Not yet verified live.
 
 ### 3.5.3 (PATCH) -- no voice follow-ups while enrolling
 
