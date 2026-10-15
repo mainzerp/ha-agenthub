@@ -287,6 +287,7 @@ class TestGetPersonalityConfig:
                 "mediation.temperature": "0.3",
                 "filler.enabled": "true",
                 "filler.threshold_ms": "1500",
+                "filler.speculative_start": "false",
             }.get(key, default),
         ):
             async for client in _client_for(app):
@@ -298,6 +299,7 @@ class TestGetPersonalityConfig:
         assert data["mediation_temperature"] == 0.3
         assert data["filler_enabled"] is True
         assert data["filler_threshold_ms"] == 1500
+        assert data["filler_speculative_start"] is False
 
 
 @pytest.mark.asyncio

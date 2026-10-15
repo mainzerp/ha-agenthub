@@ -125,6 +125,7 @@ class PersonalityConfigUpdate(BaseModel):
     mediation_temperature: float | None = None
     filler_enabled: bool | None = None
     filler_threshold_ms: int | None = None
+    filler_speculative_start: bool | None = None
 
 
 # --- Overview ---
@@ -643,11 +644,13 @@ async def get_personality_config() -> dict[str, Any]:
     temperature = await SettingsRepository.get_value("mediation.temperature", "0.3")
     filler_enabled = await SettingsRepository.get_value("filler.enabled", "false")
     filler_threshold_ms = await SettingsRepository.get_value("filler.threshold_ms", "1000")
+    filler_speculative_start = await SettingsRepository.get_value("filler.speculative_start", "true")
     return {
         "prompt": prompt,
         "mediation_temperature": float(temperature or "0.3"),
         "filler_enabled": (filler_enabled or "false") == "true",
         "filler_threshold_ms": int(filler_threshold_ms or "1000"),
+        "filler_speculative_start": (filler_speculative_start or "true") == "true",
     }
 
 
@@ -685,6 +688,14 @@ async def update_personality_config(payload: PersonalityConfigUpdate) -> dict[st
             "int",
             "filler",
             "Milliseconds to wait before sending filler",
+        )
+    if payload.filler_speculative_start is not None:
+        await SettingsRepository.set(
+            "filler.speculative_start",
+            str(payload.filler_speculative_start).lower(),
+            "bool",
+            "filler",
+            "Start filler generation in parallel with classification (streaming turns only)",
         )
     return {"status": "ok"}
 

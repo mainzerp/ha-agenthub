@@ -164,6 +164,7 @@ relevant route before tuning.
 |-----|---------|------|-------------|
 | `filler.enabled` | `false` | bool | Emit a short interim "thinking" sentence (`filler_push` frame) while the real answer is being generated. The HA integration speaks it as an in-stream preamble to the response. Never applied to the OpenAI-compatible `/v1` API (source `openai`). |
 | `filler.threshold_ms` | `1000` | int | Minimum elapsed milliseconds before the filler agent is allowed to emit. |
+| `filler.speculative_start` | `true` | bool | Start filler generation on streaming turns in parallel with intent classification instead of at dispatch, so the filler is ready by the threshold. The filler is pushed as soon as routing confirms a high-latency target and `filler.threshold_ms` (counted from request start) has passed -- the agent gets no extra head start beyond the threshold. For any other target the speculative call is discarded (one extra filler LLM call per streaming turn while `filler.enabled` is on). Set `false` when one single-slot local backend (e.g. Ollama or llama.cpp with one parallel slot) serves both the classifier and the filler model: the speculative call would queue against classification and delay routing. `false` restores the dispatch-time start. |
 
 > **Recommendation:** Use `llama-3.1-8b-instant` for fast, low-cost filler generation.
 

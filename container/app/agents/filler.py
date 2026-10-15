@@ -50,7 +50,8 @@ class FillerAgent(BaseAgent):
         """Generate a filler phrase.
 
         Expects task.description in two-line format
-        "generate_filler:<target_agent>\n<raw user_text>".
+        "generate_filler:<target_agent>\n<raw user_text>"; the target agent
+        is empty for a speculative filler started before routing.
         Language is read from task.context.language.
         """
         try:
@@ -74,7 +75,11 @@ class FillerAgent(BaseAgent):
                 personality=personality or "",
                 language=language_name,
             )
-            user_content = f"{self._wrap_user_input(user_text[:200])}\n\nAgent: {target_agent}"
+            user_content = self._wrap_user_input(user_text[:200])
+            # A speculative filler starts before routing and carries no target
+            # agent: omit the line so the prompt's generic fallback applies.
+            if target_agent:
+                user_content = f"{user_content}\n\nAgent: {target_agent}"
 
             result = await asyncio.wait_for(
                 self._call_llm(

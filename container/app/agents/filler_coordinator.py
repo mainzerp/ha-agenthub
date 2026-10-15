@@ -1,7 +1,9 @@
 """Filler coordinator extracted from OrchestratorAgent.
 
 Owns the filler *decision* helpers: ``should_send_filler``,
-``get_filler_threshold_ms`` and ``invoke_filler_agent``.
+``should_start_speculative_filler``, ``get_filler_threshold_ms`` and
+``invoke_filler_agent``, plus :class:`FillerGeneration`, the timed handle on
+one filler-generation task.
 
 The actual filler *race* orchestration (the sequential-send
 ``asyncio.wait`` form and the streaming queue form) intentionally stays on the
@@ -27,12 +29,58 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 import uuid
+from collections.abc import Awaitable, Callable
 
 from app.a2a._request import build_send_request
 from app.models.agent import DispatchTask, TaskContext
 
 logger = logging.getLogger(__name__)
+
+
+class FillerGeneration:
+    """One filler-generation task plus its real timing.
+
+    ``start_ms`` / ``end_ms`` are milliseconds since the request start
+    (``t0``, a ``time.perf_counter()`` value) so the ``filler_generate``
+    span reflects the actual generation window instead of the threshold
+    race. ``speculative`` marks a task started before classification (its
+    target agent was unknown at start time).
+
+    The task wraps a coroutine *factory* rather than a coroutine object: a
+    task cancelled before its first step then never leaves an un-awaited
+    coroutine behind.
+    """
+
+    def __init__(
+        self,
+        factory: Callable[[], Awaitable[str | None]],
+        *,
+        t0: float,
+        speculative: bool,
+    ) -> None:
+        self._t0 = t0
+        self.speculative = speculative
+        self.start_ms = self.elapsed_ms()
+        self.end_ms: float | None = None
+        self.task: asyncio.Task[str | None] = asyncio.create_task(self._run(factory))
+
+    def elapsed_ms(self) -> float:
+        """Milliseconds since the request start."""
+        return (time.perf_counter() - self._t0) * 1000
+
+    async def _run(self, factory: Callable[[], Awaitable[str | None]]) -> str | None:
+        try:
+            return await factory()
+        finally:
+            # Completion, failure and cancellation all close the window.
+            self.end_ms = self.elapsed_ms()
+
+    def duration_ms(self) -> float:
+        """Generation time; up to now while the task never ran to its end."""
+        end_ms = self.end_ms if self.end_ms is not None else self.elapsed_ms()
+        return max(0.0, end_ms - self.start_ms)
 
 
 class FillerCoordinator:
@@ -63,6 +111,27 @@ class FillerCoordinator:
         if card is None:
             return False
         return card.expected_latency == "high"
+
+    async def should_start_speculative_filler(self) -> bool:
+        """Check whether filler generation may start before classification.
+
+        True when ``filler.enabled`` and ``filler.speculative_start`` are both
+        on. Both reads hit the TTL-cached settings store, so the check does
+        not delay the classification call.
+        """
+        try:
+            enabled = (await self._settings_repo.get_value("filler.enabled", "false") or "false").lower() == "true"
+            if not enabled:
+                return False
+            speculative = await self._settings_repo.get_value("filler.speculative_start", "true")
+            return (speculative or "true").lower() == "true"
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # Best-effort optimization: a failed read falls back to the
+            # dispatch-time start instead of breaking the turn.
+            logger.debug("Speculative filler settings read failed", exc_info=True)
+            return False
 
     async def get_filler_threshold_ms(self) -> int:
         """Read filler threshold from DB (live, not cached)."""

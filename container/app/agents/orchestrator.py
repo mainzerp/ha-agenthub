@@ -32,7 +32,7 @@ from app.agents.dispatch_manager import (
     RETRYABLE_CANNED_CODES,
     DispatchManager,
 )
-from app.agents.filler_coordinator import FillerCoordinator
+from app.agents.filler_coordinator import FillerCoordinator, FillerGeneration
 from app.agents.followup import organic_followup_allowed, resolve_voice_followup
 from app.agents.language_detect import detect_user_language, warm_up_language_detector
 from app.agents.mediation import (
@@ -111,21 +111,29 @@ def _stringify_error(err: Any) -> str | None:
 
 
 async def _cancel_filler_future(filler_future: asyncio.Task | None) -> None:
-    """Cancel a t=0 filler task that is no longer needed and retrieve its outcome.
+    """Cancel a filler task that is no longer needed and retrieve its outcome.
 
-    P1: filler generation starts at dispatch time; when the agent answers
-    before the threshold (or the turn exits early) the filler task is
-    cancelled here. The await after ``cancel()`` is suppression-scoped so a
-    mid-flight filler dispatch unwinds cleanly, and an already-finished
-    task's exception is retrieved so it never logs "exception was never
-    retrieved".
+    Filler generation starts speculatively before classification (or at
+    dispatch time with ``filler.speculative_start`` off); when the agent
+    answers before the threshold, the target is not filler-eligible, or the
+    turn exits early, the filler task is cancelled here. Idempotent: a done
+    or already-cancelled task is left as-is. The await after ``cancel()`` is
+    suppression-scoped so a mid-flight filler dispatch unwinds cleanly, and
+    an already-finished task's exception is retrieved so it never logs
+    "exception was never retrieved". A cancellation of the *calling* task
+    that lands during that await is not swallowed: it is re-raised once the
+    filler has unwound.
     """
     if filler_future is None:
         return
     if not filler_future.done():
+        current = asyncio.current_task()
+        cancelling_before = current.cancelling() if current is not None else 0
         filler_future.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await filler_future
+        if current is not None and current.cancelling() > cancelling_before:
+            raise asyncio.CancelledError
     elif not filler_future.cancelled():
         filler_future.exception()
 
@@ -444,9 +452,9 @@ class StreamingContext:
 
     filler_sent: bool = False
     filler_text_sent: str = ""
-    filler_start_ms: float = 0.0
-    filler_end_ms: float = 0.0
     filler_generated: bool = False
+    # Why a generated filler was not sent (e.g. "agent_first"); None if sent.
+    filler_skip_reason: str | None = None
     filler_send_ms: float = 0.0
     collected_speech: list[str] = field(default_factory=list)
     stream_directive: str | None = None
@@ -472,6 +480,33 @@ class StreamingContext:
     def append_speech(self, token: str) -> None:
         if token:
             self.collected_speech.append(token)
+
+
+@dataclass
+class _FillerSlot:
+    """Per-turn owner of the streaming filler-generation task.
+
+    The prelude fills it speculatively (before classification) when
+    ``filler.speculative_start`` is on; the dispatch paths reuse that task or
+    start one at dispatch time. :meth:`OrchestratorAgent._handle_task_stream_impl`
+    cancels whatever is left in its ``finally``, so no exit path leaves a
+    filler LLM call running.
+    """
+
+    # ``time.perf_counter()`` at request start (the turn's ``t0_request``).
+    t0: float
+    generation: FillerGeneration | None = None
+
+    @property
+    def task(self) -> asyncio.Task | None:
+        return self.generation.task if self.generation is not None else None
+
+
+def _apply_filler_generate_timing(span: dict[str, Any], generation: FillerGeneration, t0_request_utc: datetime) -> None:
+    """Pin a ``filler_generate`` span to the real generation window."""
+    span["metadata"]["speculative"] = generation.speculative
+    span["start_time"] = (t0_request_utc + timedelta(milliseconds=generation.start_ms)).isoformat()
+    span["_override_duration_ms"] = round(generation.duration_ms(), 2)
 
 
 @agent(
@@ -1208,12 +1243,18 @@ class OrchestratorAgent(BaseAgent):
         allow_classify_cache_lookup: bool = False,
         extended_metadata: bool = False,
         publish_events: bool = False,
+        filler_slot: _FillerSlot | None = None,
     ) -> PipelinePreludeResult:
         """Shared prelude: check background/cache, then resolve language and classify.
 
         Encapsulates the logic that was duplicated between
         :meth:`_handle_task_impl` and :meth:`_handle_task_stream_impl`.
         When ``early_exit`` is not ``None`` the caller must short-circuit.
+
+        ``filler_slot`` is passed by the streaming impl only: on a cache miss
+        it receives a speculative filler-generation task that overlaps
+        classification (the non-streaming path never starts one). The caller
+        owns the task and cancels it on every exit.
 
         P3 prelude reorder: the cache replay runs BEFORE language
         detection / turn prefetch, so action-cache hits skip ``langdetect``
@@ -1308,6 +1349,25 @@ class OrchestratorAgent(BaseAgent):
 
         # Cache miss: pay language detection and the (single) turn prefetch.
         conversation_id, detected_language, lang_turns = await self._pipeline_resolve_conversation_and_language(task)
+
+        # Speculative filler start (streaming only): the filler LLM call
+        # overlaps classification instead of starting at dispatch. The target
+        # agent is unknown yet, so the filler prompt's generic fallback
+        # applies. The settings reads are TTL-cached; after routing the
+        # stream impl reuses the task for a filler-eligible target and
+        # cancels it otherwise. The filler is still pushed only after routing.
+        if (
+            filler_slot is not None
+            and filler_slot.generation is None
+            and source_allows_filler(task.context.source if task.context else None)
+            and await self._should_start_speculative_filler()
+        ):
+            filler_language = detected_language
+            filler_slot.generation = FillerGeneration(
+                lambda: self._invoke_filler_agent(user_text, "", filler_language),
+                t0=filler_slot.t0,
+                speculative=True,
+            )
 
         # Speaker identification: the lookup for this conversation's
         # voice-turn result runs concurrently with memory search and
@@ -2184,18 +2244,99 @@ class OrchestratorAgent(BaseAgent):
     async def _handle_task_stream_impl(
         self, task: IngressTask | BackgroundTask
     ) -> AsyncGenerator[dict[str, Any], None]:
+        """Streaming turn with a guaranteed filler-task cleanup.
+
+        The per-turn :class:`_FillerSlot` owns the filler-generation task
+        (speculative or dispatch-time). Whatever exit the turn takes --
+        early exit, routing without a filler, error, or client cancellation
+        (``aclose`` / ``CancelledError``) -- the ``finally`` cancels and
+        awaits whatever task is left, so it never outlives the turn and its
+        outcome is always retrieved.
+        """
+        filler_slot = _FillerSlot(t0=time.perf_counter())
+        try:
+            async with contextlib.aclosing(self._stream_turn(task, filler_slot)) as turn:
+                async for chunk in turn:
+                    yield chunk
+        finally:
+            await _cancel_filler_future(filler_slot.task)
+
+    def _claim_filler_generation(
+        self, filler_slot: _FillerSlot, user_text: str, target_agent: str, language: str
+    ) -> FillerGeneration:
+        """Hand the routed filler path its generation task.
+
+        Reuses the speculative task when the prelude started one; otherwise
+        (``filler.speculative_start`` off) starts generation now, at dispatch
+        time, with the routed target agent.
+        """
+        if filler_slot.generation is None:
+            filler_slot.generation = FillerGeneration(
+                lambda: self._invoke_filler_agent(user_text, target_agent, language),
+                t0=filler_slot.t0,
+                speculative=False,
+            )
+        return filler_slot.generation
+
+    async def _discard_filler_generation(
+        self,
+        filler_slot: _FillerSlot,
+        span_collector: Any,
+        t0_request_utc: datetime,
+        *,
+        reason: str,
+        target_agent: str | None = None,
+        sequential_send: bool = False,
+    ) -> None:
+        """Cancel a speculative filler the routed turn does not use.
+
+        Records a ``filler_generate`` span (``was_sent=false``, ``cancelled``
+        = the generation was still running, ``cancel_reason`` = why it was
+        discarded) so the wasted generation stays visible in the trace. No-op
+        when no generation was started.
+        """
+        generation = filler_slot.generation
+        if generation is None:
+            return
+        filler_slot.generation = None
+        task = generation.task
+        # True when the generation was still running and had to be cut off;
+        # a finished-but-unused filler is discarded, not cancelled.
+        cancelled = not task.done()
+        filler_text = ""
+        if task.done() and not task.cancelled() and task.exception() is None:
+            filler_text = task.result() or ""
+        await _cancel_filler_future(task)
+        logger.debug("Speculative filler discarded (%s) for %s", reason, target_agent)
+        async with _optional_span(span_collector, "filler_generate", agent_id="filler-agent") as fg_span:
+            fg_span["metadata"]["target_agent"] = target_agent
+            fg_span["metadata"]["filler_text"] = filler_text
+            fg_span["metadata"]["was_sent"] = False
+            fg_span["metadata"]["cancelled"] = cancelled
+            fg_span["metadata"]["cancel_reason"] = reason
+            if sequential_send:
+                fg_span["metadata"]["sequential_send"] = True
+            _apply_filler_generate_timing(fg_span, generation, t0_request_utc)
+
+    async def _stream_turn(
+        self, task: IngressTask | BackgroundTask, filler_slot: _FillerSlot
+    ) -> AsyncGenerator[dict[str, Any], None]:
         span_collector = task.span_collector
-        t0_request = time.perf_counter()
+        t0_request = filler_slot.t0
         t0_request_utc = datetime.now(UTC)
 
         prelude = await self._run_pipeline_prelude(
             task,
             extended_metadata=False,
             publish_events=False,
+            filler_slot=filler_slot,
         )
         if prelude.early_exit is not None:
             ee = prelude.early_exit
             exit_type = ee.get("_exit_type", "")
+            await self._discard_filler_generation(
+                filler_slot, prelude.span_collector, t0_request_utc, reason=exit_type or "early_exit"
+            )
             if exit_type == "classification_error":
                 yield {
                     "token": "",
@@ -2251,6 +2392,9 @@ class OrchestratorAgent(BaseAgent):
         used_origin_context = prelude.used_origin_context
 
         if len(classifications) == 1 and target_agent == CANCEL_INTERACTION_AGENT:
+            await self._discard_filler_generation(
+                filler_slot, span_collector, t0_request_utc, reason="cancel_interaction", target_agent=target_agent
+            )
             async with _optional_span(span_collector, "dispatch", agent_id=CANCEL_INTERACTION_AGENT) as span:
                 full_speech = await generate_cancel_speech(detected_language, user_text)
                 latency_ms = (time.perf_counter() - t0_request) * 1000
@@ -2305,6 +2449,9 @@ class OrchestratorAgent(BaseAgent):
             return
 
         if len(classifications) == 1 and target_agent == NOISE_AGENT:
+            await self._discard_filler_generation(
+                filler_slot, span_collector, t0_request_utc, reason="noise", target_agent=target_agent
+            )
             await self._finalize_noise_turn(
                 task,
                 conversation_id=conversation_id,
@@ -2352,11 +2499,10 @@ class OrchestratorAgent(BaseAgent):
 
             seq_filler_sent = False
             seq_filler_text = ""
-            seq_filler_start_ms = 0.0
-            seq_filler_end_ms = 0.0
             seq_filler_generated = False
             seq_filler_send_ms = 0.0
             seq_filler_threshold_ms = 1000
+            seq_generation: FillerGeneration | None = None
 
             if seq_use_filler:
                 seq_filler_threshold_ms = await self._get_filler_threshold_ms()
@@ -2364,27 +2510,38 @@ class OrchestratorAgent(BaseAgent):
                 # already ran: dispatch + finalize directly (no second prelude).
                 task_coro = self._dispatch_and_finalize(task, prelude, t0_request=t0_request)
                 task_future = asyncio.create_task(task_coro)
-                # P1: kick off filler generation at dispatch time (t=0) so a
-                # slow agent hears the filler at ~threshold instead of
-                # threshold + filler-LLM latency. Cancelled when the agent
+                # Reuse the speculative filler generation (started before
+                # classification) or, with speculative start off, kick it off
+                # now so a slow agent hears the filler at ~threshold instead
+                # of threshold + filler-LLM latency. Cancelled when the agent
                 # answers before the threshold fires.
-                filler_future = asyncio.create_task(
-                    self._invoke_filler_agent(user_text, content_agent_for_filler or "", language)
+                seq_generation = self._claim_filler_generation(
+                    filler_slot, user_text, content_agent_for_filler or "", language
                 )
+                filler_future = seq_generation.task
                 try:
                     elapsed = time.perf_counter() - t0_request
                     remaining = max(0, seq_filler_threshold_ms / 1000 - elapsed)
 
                     done_set, _ = await asyncio.wait({task_future}, timeout=remaining)
                     if done_set:
-                        # handle_task completed before threshold -- no filler needed
+                        # handle_task completed before threshold -- no filler
+                        # needed. A filler that already finished is still traced.
                         result = task_future.result()
+                        if (
+                            filler_future.done()
+                            and not filler_future.cancelled()
+                            and filler_future.exception() is None
+                            and filler_future.result()
+                        ):
+                            seq_filler_generated = True
+                            seq_filler_text = filler_future.result() or ""
                         await _cancel_filler_future(filler_future)
                     else:
-                        # Threshold exceeded -- filler generation already runs
-                        # since t=0. Race it against the dispatch: an answer
-                        # that lands first makes the filler obsolete.
-                        seq_filler_start_ms = (time.perf_counter() - t0_request) * 1000
+                        # Threshold exceeded -- filler generation is already
+                        # running (or done). Race it against the dispatch: an
+                        # answer that lands first makes the filler obsolete. A
+                        # finished filler wins the wait immediately.
                         await asyncio.wait({filler_future, task_future}, return_when=asyncio.FIRST_COMPLETED)
                         filler_text = None
                         if filler_future.done():
@@ -2392,7 +2549,6 @@ class OrchestratorAgent(BaseAgent):
                                 filler_text = filler_future.result()
                         else:
                             await _cancel_filler_future(filler_future)
-                        seq_filler_end_ms = (time.perf_counter() - t0_request) * 1000
 
                         if filler_text and not task_future.done():
                             seq_filler_generated = True
@@ -2422,23 +2578,30 @@ class OrchestratorAgent(BaseAgent):
                         task_future.exception()
                     raise
             else:
+                await self._discard_filler_generation(
+                    filler_slot,
+                    span_collector,
+                    t0_request_utc,
+                    reason="target_not_eligible",
+                    target_agent=content_agent_for_filler,
+                    sequential_send=True,
+                )
                 result = await self._dispatch_and_finalize(task, prelude, t0_request=t0_request)
 
-            # Record filler_generate span
-            if seq_filler_generated:
+            # Record filler_generate span: real generation window (task start
+            # to completion), not the threshold race.
+            if seq_filler_generated and seq_generation is not None:
                 async with _optional_span(span_collector, "filler_generate", agent_id="filler-agent") as fg_span:
                     fg_span["metadata"]["threshold_ms"] = seq_filler_threshold_ms
                     fg_span["metadata"]["target_agent"] = content_agent_for_filler
                     fg_span["metadata"]["filler_text"] = seq_filler_text
                     fg_span["metadata"]["sequential_send"] = True
                     fg_span["metadata"]["was_sent"] = seq_filler_sent
-                    if seq_filler_start_ms > 0:
-                        actual_start = t0_request_utc + timedelta(milliseconds=seq_filler_start_ms)
-                        fg_span["start_time"] = actual_start.isoformat()
-                        fg_span["_override_duration_ms"] = round(
-                            seq_filler_end_ms - seq_filler_start_ms,
-                            2,
-                        )
+                    if not seq_filler_sent:
+                        # Finished but unused: the dispatch answered first.
+                        fg_span["metadata"]["cancelled"] = False
+                        fg_span["metadata"]["cancel_reason"] = "agent_first"
+                    _apply_filler_generate_timing(fg_span, seq_generation, t0_request_utc)
 
             # Record filler_send span
             if seq_filler_sent:
@@ -2468,6 +2631,8 @@ class OrchestratorAgent(BaseAgent):
             return
 
         if len(classifications) > 1:
+            # Multi-agent turns get no filler.
+            await self._discard_filler_generation(filler_slot, span_collector, t0_request_utc, reason="multi_agent")
             yield {
                 "token": "",
                 "done": False,
@@ -2554,13 +2719,21 @@ class OrchestratorAgent(BaseAgent):
         # P3-10: per-request filler-decision log; debug.
         logger.debug("Filler decision for %s: use_filler=%s", target_agent, use_filler)
 
-        # P1: start filler generation at dispatch time (t=0) so a slow agent
-        # hears the filler at ~threshold instead of threshold + filler-LLM
-        # latency. Cancelled as soon as the agent answers before the
-        # threshold (or when the turn ends without the filler being sent).
-        filler_task: asyncio.Task | None = None
+        # Reuse the speculative filler generation (started before
+        # classification) or, with speculative start off, start it now at
+        # dispatch time so a slow agent hears the filler at ~threshold
+        # instead of threshold + filler-LLM latency. Cancelled as soon as the
+        # agent answers before the threshold (or when the turn ends without
+        # the filler being sent); a target that gets no filler discards the
+        # speculative task right away.
+        filler_generation: FillerGeneration | None = None
         if use_filler:
-            filler_task = asyncio.create_task(self._invoke_filler_agent(user_text, target_agent, language))
+            filler_generation = self._claim_filler_generation(filler_slot, user_text, target_agent, language)
+        else:
+            await self._discard_filler_generation(
+                filler_slot, span_collector, t0_request_utc, reason="target_not_eligible", target_agent=target_agent
+            )
+        filler_task = filler_generation.task if filler_generation is not None else None
 
         # Relay state for the first-frame-latency path: when mediation is
         # inactive for the turn (no personality configured, no reminder
@@ -2725,17 +2898,23 @@ class OrchestratorAgent(BaseAgent):
                         done, _ = await asyncio.wait({get_task}, timeout=min(remaining_threshold, _remaining_budget()))
                         if get_task in done:
                             # Agent answered (or its stream ended) before the
-                            # threshold -- the t=0 filler is no longer needed.
+                            # threshold -- the filler is no longer needed. A
+                            # filler that already finished is still traced.
                             logger.debug("First chunk arrived before threshold")
+                            filler_text = _filler_result(filler_task)
+                            if filler_text:
+                                sc.filler_generated = True
+                                sc.filler_text_sent = filler_text
+                                sc.filler_skip_reason = "agent_first"
                             await _cancel_filler_future(filler_task)
                             item = get_task.result()
                         elif _remaining_budget() <= 0:
                             raise _StreamDispatchTimeoutError
                         else:
-                            # Agent is slow: race the (usually finished) t=0
-                            # filler generation against the first chunk.
+                            # Agent is slow: race the (usually finished)
+                            # filler generation against the first chunk. A
+                            # finished filler wins the wait immediately.
                             logger.debug("Threshold exceeded, racing filler for %s", target_agent)
-                            sc.filler_start_ms = (time.perf_counter() - t0_request) * 1000
                             race: set[asyncio.Future] = {get_task}
                             if filler_task is not None:
                                 race.add(filler_task)
@@ -2744,7 +2923,6 @@ class OrchestratorAgent(BaseAgent):
                             )
                             if not done:
                                 raise _StreamDispatchTimeoutError
-                            sc.filler_end_ms = (time.perf_counter() - t0_request) * 1000
                             filler_text = _filler_result(filler_task)
                             logger.debug(
                                 "Filler generation result: %s", repr(filler_text[:80]) if filler_text else "None"
@@ -2756,6 +2934,8 @@ class OrchestratorAgent(BaseAgent):
                                 # FLOW-MED-3: the agent answered first (or in
                                 # the same tick) -- skip the filler.
                                 logger.debug("Agent responded during filler generation, skipping filler")
+                                if filler_text:
+                                    sc.filler_skip_reason = "agent_first"
                                 await _cancel_filler_future(filler_task)
                                 item = get_task.result()
                             else:
@@ -2784,7 +2964,7 @@ class OrchestratorAgent(BaseAgent):
                     item = await _next_item()
             finally:
                 # The turn ended (agent answered, stream failed, or the
-                # dispatch timed out) -- make sure the t=0 filler task and
+                # dispatch timed out) -- make sure the filler task and
                 # the reader do not outlive the turn.
                 await _cancel_filler_future(filler_task)
                 reader_task.cancel()
@@ -2837,17 +3017,20 @@ class OrchestratorAgent(BaseAgent):
         latency_ms = (time.perf_counter() - t0_dispatch) * 1000
         track_request_background(target_agent, cache_hit=False, latency_ms=latency_ms)
 
-        # Record filler_generate span (always, if filler was generated -- even if not sent)
-        if sc.filler_generated:
+        # Record filler_generate span (always, if filler was generated -- even
+        # if not sent): real generation window (task start to completion), not
+        # the threshold race.
+        if sc.filler_generated and filler_generation is not None:
             async with _optional_span(span_collector, "filler_generate", agent_id="filler-agent") as fg_span:
                 fg_span["metadata"]["threshold_ms"] = filler_threshold_ms
                 fg_span["metadata"]["target_agent"] = target_agent
                 fg_span["metadata"]["filler_text"] = sc.filler_text_sent
                 fg_span["metadata"]["was_sent"] = sc.filler_sent
-                if sc.filler_start_ms > 0:
-                    actual_start = t0_request_utc + timedelta(milliseconds=sc.filler_start_ms)
-                    fg_span["start_time"] = actual_start.isoformat()
-                    fg_span["_override_duration_ms"] = round(sc.filler_end_ms - sc.filler_start_ms, 2)
+                if not sc.filler_sent:
+                    # Finished but unused: the agent's first chunk won.
+                    fg_span["metadata"]["cancelled"] = False
+                    fg_span["metadata"]["cancel_reason"] = sc.filler_skip_reason or "agent_first"
+                _apply_filler_generate_timing(fg_span, filler_generation, t0_request_utc)
 
         # Record filler_send span (only if filler was actually yielded to user)
         if sc.filler_sent:
@@ -3235,6 +3418,13 @@ class OrchestratorAgent(BaseAgent):
         orchestration (which reads it off the instance) keep working unchanged.
         """
         return await self._filler_coord.should_send_filler(target_agent)
+
+    async def _should_start_speculative_filler(self) -> bool:
+        """Check if filler generation may start before classification.
+
+        Delegates to :class:`~app.agents.filler_coordinator.FillerCoordinator`.
+        """
+        return await self._filler_coord.should_start_speculative_filler()
 
     async def _get_filler_threshold_ms(self) -> int:
         """Read filler threshold from DB (live, not cached).
