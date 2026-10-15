@@ -33,9 +33,10 @@ Live pipeline in board format — headings are columns, cards are
   dashboard toggle on the personality page). filler_generate span shows the
   real task start and generation time. Trigger: trace 5a90a16acd2b40b2
   (filler started at dispatch, 803 ms; first frame 1085 ms). Decision
-  2026-10-15. Uncommitted, no version bump yet (MINOR, new settings key).
-  Passed: container pytest 4680 passed; test_filler_speculative.py 33 passed
-  (3 runs); ruff check/format clean; ci.py without docker/trivy (first round).
+  2026-10-15. Shipped in v3.7.0
+  (https://github.com/mainzerp/ha-agenthub/releases/tag/v3.7.0).
+  Passed: ci.py full gate (container 4680, coverage 85.55%; bridge 215;
+  self-docs sync; Docker build + smoke; Trivy).
   Needs user verification: review the diff; deploy; ask "Welche Faehigkeiten
   hast du?" -> filler_generate (speculative=true) starts near classify start,
   first frame close to dispatch start; a device command -> filler_generate
