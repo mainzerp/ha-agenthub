@@ -54,8 +54,10 @@
   YES "Deaktiviere die Automation Nachtabsenkung" → automation-agent: Automation Nachtabsenkung deaktivieren
   NO  "Aktiviere die Szene Panik" → scene-agent, NOT automation-agent
 
-- general-agent (fallback, Q&A, web search, conversation):
+- general-agent (fallback, Q&A, web search, conversation, questions about this assistant itself):
   YES "Wer hat die Glühbirne erfunden?" → general-agent: Erfinder der Glühbirne
+  YES "Was kannst du alles?" → general-agent: eigene Fähigkeiten beschreiben
+  YES "Wie füge ich einen MCP-Server hinzu?" → general-agent: wie man einen MCP-Server hinzufügt
   NO  any clear device command → the matching specialized agent
 
 - cancel-interaction (dismiss the assistant interaction):

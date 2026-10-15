@@ -199,7 +199,7 @@ The integration does not resolve entities, classify intent, or execute Home Assi
 | Agent | Current Role | Notes |
 | --- | --- | --- |
 | `orchestrator` | Request entrypoint and coordinator | Always active as the control plane |
-| `general-agent` | General answers and fallback handling | Can use assigned MCP tools |
+| `general-agent` | General answers, questions about HA-AgentHub itself, and fallback handling | Can use assigned MCP tools; built-in `agenthub_self_info` tool (runtime overview and bundled-docs search) |
 | `light-agent` | Lighting actions and state queries | Registered by default |
 | `music-agent` | Music and media-oriented commands | Registered by default |
 | `timer-agent` | Timer workflows | Registered when enabled |

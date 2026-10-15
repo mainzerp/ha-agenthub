@@ -2211,26 +2211,28 @@ class TestSecurityAgentHandler:
 
 
 class TestGeneralAgent:
-    @patch("app.llm.client.complete", new_callable=AsyncMock, return_value="The weather today is sunny.")
+    @patch("app.llm.client.complete_with_tools", new_callable=AsyncMock, return_value="The weather today is sunny.")
     async def test_handle_task_freeform_qa(self, mock_complete):
         agent = GeneralAgent()
         result = await agent.handle_task(_make_task("what is the weather like?"))
         assert "weather" in result.speech.lower()
 
-    @patch("app.llm.client.complete", new_callable=AsyncMock, return_value="That is an interesting question.")
+    @patch(
+        "app.llm.client.complete_with_tools", new_callable=AsyncMock, return_value="That is an interesting question."
+    )
     async def test_handle_task_no_action_executed(self, mock_complete):
         agent = GeneralAgent()
         result = await agent.handle_task(_make_task("tell me a joke"))
         assert result.action_executed is None
 
-    @patch("app.llm.client.complete", new_callable=AsyncMock, return_value="Done.")
+    @patch("app.llm.client.complete_with_tools", new_callable=AsyncMock, return_value="Done.")
     async def test_handle_task_uses_system_prompt(self, mock_complete):
         agent = GeneralAgent()
         await agent.handle_task(_make_task("hello"))
         call_messages = mock_complete.call_args[0][1]
         assert call_messages[0]["role"] == "system"
 
-    @patch("app.llm.client.complete", new_callable=AsyncMock, return_value="   ")
+    @patch("app.llm.client.complete_with_tools", new_callable=AsyncMock, return_value="   ")
     async def test_handle_task_empty_response_returns_localized_error(self, mock_complete):
         agent = GeneralAgent()
         result = await agent.handle_task(_make_task("erzähl was", context=TaskContext(language="de")))
@@ -2238,7 +2240,7 @@ class TestGeneralAgent:
         assert result.error.code == "llm_empty_response"
         assert result.speech == "The language model did not return a response. Please try again."
 
-    @patch("app.llm.client.complete", new_callable=AsyncMock, return_value="Here is the recipe with link.")
+    @patch("app.llm.client.complete_with_tools", new_callable=AsyncMock, return_value="Here is the recipe with link.")
     async def test_sequential_send_prompt_override(self, mock_complete):
         agent = GeneralAgent()
         ctx = TaskContext(sequential_send=True)
@@ -2250,7 +2252,7 @@ class TestGeneralAgent:
         # Also verify max_tokens=2048 is passed
         assert mock_complete.call_args[1].get("max_tokens") == 2048
 
-    @patch("app.llm.client.complete", new_callable=AsyncMock, return_value="I am running late")
+    @patch("app.llm.client.complete_with_tools", new_callable=AsyncMock, return_value="I am running late")
     async def test_sequential_send_prompt_carries_content_leg_contract(self, mock_complete):
         from app.agents.prompt_builder import NO_CONTENT_SENTINEL
 
@@ -2263,7 +2265,7 @@ class TestGeneralAgent:
         assert "return exactly that text" in system_msg
         assert NO_CONTENT_SENTINEL in system_msg
 
-    @patch("app.llm.client.complete", new_callable=AsyncMock, return_value="answer")
+    @patch("app.llm.client.complete_with_tools", new_callable=AsyncMock, return_value="answer")
     async def test_non_sequential_send_prompt_has_no_content_leg_contract(self, mock_complete):
         from app.agents.prompt_builder import NO_CONTENT_SENTINEL
 
@@ -2309,7 +2311,7 @@ class TestGeneralAgent:
 
         assert contains_no_content_sentinel(text) is False
 
-    @patch("app.llm.client.complete", new_callable=AsyncMock, return_value="answer")
+    @patch("app.llm.client.complete_with_tools", new_callable=AsyncMock, return_value="answer")
     async def test_general_agent_wraps_user_prompt_and_user_history(self, mock_complete):
         agent = GeneralAgent()
         ctx = TaskContext(
@@ -2334,13 +2336,15 @@ class TestGeneralAgent:
 
 
 class TestGeneralAgentWithTools:
-    @patch("app.llm.client.complete", new_callable=AsyncMock, return_value="plain answer")
+    @patch("app.llm.client.complete_with_tools", new_callable=AsyncMock, return_value="plain answer")
     async def test_handle_task_without_mcp_manager(self, mock_complete):
-        """GeneralAgent works normally when no mcp_tool_manager is provided."""
+        """Without an MCP manager the tool loop still runs with only the self-info tool."""
         agent = GeneralAgent()
         task = _make_task("what is Python?")
         result = await agent.handle_task(task)
         assert result.speech == "plain answer"
+        names = [t["function"]["name"] for t in mock_complete.call_args.kwargs["tools"]]
+        assert names == ["agenthub_self_info"]
 
     @patch("app.llm.client.complete_with_tools", new_callable=AsyncMock, return_value="web answer")
     async def test_handle_task_with_tools_uses_complete_with_tools(self, mock_cwt):
@@ -2355,15 +2359,40 @@ class TestGeneralAgentWithTools:
         assert result.speech == "web answer"
         mock_cwt.assert_awaited_once()
 
-    @patch("app.llm.client.complete", new_callable=AsyncMock, return_value="fallback answer")
-    async def test_handle_task_falls_back_when_no_tools_assigned(self, mock_complete):
-        """GeneralAgent falls back to plain complete() when agent has no tools assigned."""
+    @patch("app.llm.client.complete", new_callable=AsyncMock, return_value="unused")
+    @patch("app.llm.client.complete_with_tools", new_callable=AsyncMock, return_value="fallback answer")
+    async def test_handle_task_offers_self_info_when_no_tools_assigned(self, mock_cwt, mock_complete):
+        """With zero MCP tools assigned the tool loop still runs (self-info tool only)."""
         mock_manager = MagicMock()
         mock_manager.get_tools_for_agent = AsyncMock(return_value=[])
         agent = GeneralAgent(mcp_tool_manager=mock_manager)
         task = _make_task("hello")
         result = await agent.handle_task(task)
         assert result.speech == "fallback answer"
+        mock_complete.assert_not_awaited()
+        names = [t["function"]["name"] for t in mock_cwt.call_args.kwargs["tools"]]
+        assert names == ["agenthub_self_info"]
+
+    @patch("app.llm.client.complete_with_tools", new_callable=AsyncMock, return_value="web answer")
+    async def test_handle_task_offers_self_info_alongside_mcp_tools(self, mock_cwt):
+        """The self-info tool comes first, followed by the assigned MCP tools."""
+        mock_manager = MagicMock()
+        mock_manager.get_tools_for_agent = AsyncMock(
+            return_value=[{"name": "web_search", "description": "Search", "input_schema": {}, "_server_name": "ddg"}]
+        )
+        agent = GeneralAgent(mcp_tool_manager=mock_manager)
+        await agent.handle_task(_make_task("latest news today"))
+        names = [t["function"]["name"] for t in mock_cwt.call_args.kwargs["tools"]]
+        assert names == ["agenthub_self_info", "web_search"]
+
+    @patch("app.llm.client.complete_with_tools", new_callable=AsyncMock, return_value="answer")
+    async def test_handle_task_keeps_llm_kwargs_and_sets_deadline(self, mock_cwt):
+        """Sequential-send max_tokens still reaches the LLM call; the loop is deadline-bounded."""
+        agent = GeneralAgent()
+        await agent.handle_task(_make_task("find a recipe", context=TaskContext(sequential_send=True)))
+        kwargs = mock_cwt.call_args.kwargs
+        assert kwargs["max_tokens"] == 2048
+        assert kwargs.get("deadline") is not None
 
 
 # ---------------------------------------------------------------------------

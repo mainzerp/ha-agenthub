@@ -17,10 +17,11 @@ from app.agents.base import (
 )
 from app.agents.decorator import agent
 from app.agents.prompt_builder import PromptBuilder
+from app.agents.self_info import SelfInfoProvider
 from app.agents.tool_calling import (
+    LocalTool,
     call_llm_with_mcp_tools,
     call_llm_with_mcp_tools_stream,
-    mcp_tools_to_openai_format,
 )
 from app.analytics.tracer import _optional_span
 from app.models.agent import AgentCard, AgentErrorCode, DispatchTask, TaskResult
@@ -41,19 +42,44 @@ def _memory_date_label(epoch: Any) -> str:
         return "unknown date"
 
 
+GENERAL_AGENT_DESCRIPTION = (
+    "Handles general knowledge, conversation, web search, current events, and requests outside device control. "
+    "Can search the web for real-time information. Answers questions about this assistant itself (HA-AgentHub): "
+    "what it is, which agents and capabilities it has, and how to use, configure or troubleshoot it. "
+    "Fallback for unroutable requests."
+)
+GENERAL_AGENT_SKILLS = ("general_qa", "web_search", "current_events", "conversation", "self_description", "fallback")
+
+
+def _build_general_agent(app: Any) -> GeneralAgent:
+    state = app.state
+    return GeneralAgent(
+        ha_client=getattr(state, "ha_client", None),
+        entity_index=getattr(state, "entity_index", None),
+        mcp_tool_manager=getattr(state, "mcp_tool_manager", None),
+        self_info=SelfInfoProvider(
+            agent_registry=getattr(state, "registry", None),
+            mcp_registry=getattr(state, "mcp_registry", None),
+            # Plugins load after agents are installed: resolve at call time.
+            plugin_loader_provider=lambda: getattr(state, "plugin_loader", None),
+        ),
+    )
+
+
+def _count_tools(mcp_tools: list[dict], local_tools: list[LocalTool]) -> int:
+    """Distinct tool names offered to the LLM (local names shadow MCP names)."""
+    return len({tool.get("name") for tool in mcp_tools} | {tool.name for tool in local_tools})
+
+
 @agent(
     agent_id="general-agent",
     name="General Agent",
-    description="Handles general knowledge, conversation, web search, current events, and requests outside device control. Can search the web for real-time information. Fallback for unroutable requests.",
-    skills=["general_qa", "web_search", "current_events", "conversation", "fallback"],
+    description=GENERAL_AGENT_DESCRIPTION,
+    skills=list(GENERAL_AGENT_SKILLS),
     expected_latency="high",
     timeout_sec=30.0,
     needs_entity_matcher=False,
-    factory=lambda app, filler: GeneralAgent(
-        ha_client=getattr(app.state, "ha_client", None),
-        entity_index=getattr(app.state, "entity_index", None),
-        mcp_tool_manager=getattr(app.state, "mcp_tool_manager", None),
-    ),
+    factory=lambda app, filler: _build_general_agent(app),
 )
 class GeneralAgent(BaseAgent):
     """Handles general Q&A and unroutable requests. No HA service calls."""
@@ -62,17 +88,25 @@ class GeneralAgent(BaseAgent):
     # the HA user's person name, else the voice-matched speaker.
     _receives_speaker_context = True
 
-    def __init__(self, ha_client=None, entity_index=None, mcp_tool_manager=None):
+    def __init__(
+        self,
+        ha_client=None,
+        entity_index=None,
+        mcp_tool_manager=None,
+        self_info: SelfInfoProvider | None = None,
+    ):
         super().__init__(ha_client=ha_client, entity_index=entity_index)
         self._mcp_tool_manager = mcp_tool_manager
+        # Without injected registries the tool still serves the bundled docs.
+        self._self_info = self_info if self_info is not None else SelfInfoProvider()
 
     @property
     def agent_card(self) -> AgentCard:
         return AgentCard(
             agent_id="general-agent",
             name="General Agent",
-            description="Handles general knowledge, conversation, web search, current events, and requests outside device control. Can search the web for real-time information. Fallback for unroutable requests.",
-            skills=["general_qa", "web_search", "current_events", "conversation", "fallback"],
+            description=GENERAL_AGENT_DESCRIPTION,
+            skills=list(GENERAL_AGENT_SKILLS),
             endpoint="local://general-agent",
             expected_latency="high",
             # P2-2 (FLOW-TIMEOUT-1): general-agent invokes web search and
@@ -162,27 +196,23 @@ class GeneralAgent(BaseAgent):
         span_collector = task.span_collector
         messages, llm_kwargs = await self._build_messages(task)
 
-        # Check for available MCP tools
+        # Always the tool path: the built-in self-info tool is offered even
+        # when no MCP tools are assigned.
         tools = await self._get_mcp_tools()
-        if tools:
-            tool_schemas = mcp_tools_to_openai_format(tools)
-            async with _optional_span(span_collector, "llm_call", agent_id="general-agent") as span:
-                response = await call_llm_with_mcp_tools(
-                    self,
-                    messages,
-                    tools,
-                    self._mcp_tool_manager,
-                    span_collector=span_collector,
-                    **llm_kwargs,
-                )
-                span["metadata"]["model"] = "general-agent"
-                span["metadata"]["llm_response"] = response[:500] if response else ""
-                span["metadata"]["tools_available"] = len(tool_schemas)
-        else:
-            async with _optional_span(span_collector, "llm_call", agent_id="general-agent") as span:
-                response = await self._call_llm(messages, span_collector=span_collector, **llm_kwargs)
-                span["metadata"]["model"] = "general-agent"
-                span["metadata"]["llm_response"] = response[:500] if response else ""
+        local_tools = self._local_tools()
+        async with _optional_span(span_collector, "llm_call", agent_id="general-agent") as span:
+            response = await call_llm_with_mcp_tools(
+                self,
+                messages,
+                tools,
+                self._mcp_tool_manager,
+                span_collector=span_collector,
+                local_tools=local_tools,
+                **llm_kwargs,
+            )
+            span["metadata"]["model"] = "general-agent"
+            span["metadata"]["llm_response"] = response[:500] if response else ""
+            span["metadata"]["tools_available"] = _count_tools(tools, local_tools)
 
         if not response or not response.strip():
             logger.warning("LLM returned empty response for general-agent task: %s", task.description[:100])
@@ -196,8 +226,8 @@ class GeneralAgent(BaseAgent):
     async def handle_task_stream(self, task: DispatchTask) -> AsyncGenerator[dict, None]:
         """Streaming variant of handle_task: yields LLM tokens as they arrive.
 
-        Same prompt assembly and MCP tool loop as :meth:`handle_task`, but
-        the final no-tools round streams via ``complete_stream`` so the
+        Same prompt assembly and tool loop as :meth:`handle_task`, but every
+        round streams via ``complete_with_tools_stream`` so the
         orchestrator can relay first tokens immediately on turns where
         mediation is inactive. Mid-stream failures keep any tokens already
         yielded; only a failure before the first token produces the canned
@@ -207,31 +237,24 @@ class GeneralAgent(BaseAgent):
         messages, llm_kwargs = await self._build_messages(task)
 
         tools = await self._get_mcp_tools()
+        local_tools = self._local_tools()
         collected: list[str] = []
         try:
-            if tools:
-                tool_schemas = mcp_tools_to_openai_format(tools)
-                async with _optional_span(span_collector, "llm_call", agent_id="general-agent") as span:
-                    async for token in call_llm_with_mcp_tools_stream(
-                        self,
-                        messages,
-                        tools,
-                        self._mcp_tool_manager,
-                        span_collector=span_collector,
-                        **llm_kwargs,
-                    ):
-                        collected.append(token)
-                        yield {"token": token, "done": False, "conversation_id": task.conversation_id}
-                    span["metadata"]["model"] = "general-agent"
-                    span["metadata"]["llm_response"] = "".join(collected)[:500]
-                    span["metadata"]["tools_available"] = len(tool_schemas)
-            else:
-                async with _optional_span(span_collector, "llm_call", agent_id="general-agent") as span:
-                    async for token in self._call_llm_stream(messages, span_collector=span_collector, **llm_kwargs):
-                        collected.append(token)
-                        yield {"token": token, "done": False, "conversation_id": task.conversation_id}
-                    span["metadata"]["model"] = "general-agent"
-                    span["metadata"]["llm_response"] = "".join(collected)[:500]
+            async with _optional_span(span_collector, "llm_call", agent_id="general-agent") as span:
+                async for token in call_llm_with_mcp_tools_stream(
+                    self,
+                    messages,
+                    tools,
+                    self._mcp_tool_manager,
+                    span_collector=span_collector,
+                    local_tools=local_tools,
+                    **llm_kwargs,
+                ):
+                    collected.append(token)
+                    yield {"token": token, "done": False, "conversation_id": task.conversation_id}
+                span["metadata"]["model"] = "general-agent"
+                span["metadata"]["llm_response"] = "".join(collected)[:500]
+                span["metadata"]["tools_available"] = _count_tools(tools, local_tools)
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -261,18 +284,6 @@ class GeneralAgent(BaseAgent):
             logger.warning("Failed to get MCP tools for general-agent", exc_info=True)
             return []
 
-    @staticmethod
-    def _mcp_tools_to_openai_format(mcp_tools: list[dict]) -> list[dict]:
-        """Convert MCP tool descriptors to OpenAI function-calling format."""
-        return mcp_tools_to_openai_format(mcp_tools)
-
-    async def _call_llm_with_tools(self, messages, tool_schemas, mcp_tools, span_collector=None, **overrides):
-        """Call LLM with tool calling support."""
-        return await call_llm_with_mcp_tools(
-            self,
-            messages,
-            mcp_tools,
-            self._mcp_tool_manager,
-            span_collector=span_collector,
-            **overrides,
-        )
+    def _local_tools(self) -> list[LocalTool]:
+        """Built-in in-process tools of the general agent (never MCP-assigned)."""
+        return [self._self_info.as_local_tool()]

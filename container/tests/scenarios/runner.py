@@ -473,8 +473,14 @@ async def run_scenario(scenario: Scenario, db_path) -> None:
             if text:
                 yield text
 
+        # general-agent always runs the tool loop (built-in self-info tool);
+        # the stub never requests tool calls, so it answers directly.
+        async def _complete_with_tools_router(agent_id, messages, tools, tool_executor, **kwargs):
+            return await handles.llm.complete(agent_id, messages, **kwargs)
+
         with (
             patch("app.llm.client.complete", new=_complete_router),
+            patch("app.llm.client.complete_with_tools", new=_complete_with_tools_router),
             patch("app.llm.client.complete_stream", new=_complete_stream_router),
             patch("app.llm.client.complete_with_tools_stream", new=_complete_with_tools_stream_router),
             patch("app.agents.base.complete", new=_complete_router)

@@ -369,3 +369,20 @@ prompts live in `container/app/prompts/`, `ctx.agent_registry` not
 - Deferred: s-norm/cohort scoring, per-satellite samples, model switch
   (3D-Speaker zh-en, ERes2NetV2, WeSpeaker ResNet34) until re-enrolled data
   with the new diagnostics shows whether they are needed.
+
+## 2026-10-15 — general agent answers questions about the system itself
+
+- **Local in-process tool `agenthub_self_info`, general-agent only.** Live
+  overview (identity, version, registered agents without internal-only ones,
+  loaded plugins, MCP server names) plus section search over bundled user
+  docs. Rationale: the system could not say what it is or what it can do;
+  runtime registries already hold the truth, and a local tool needs no MCP
+  subprocess. Custom agents do not get it (prime directive 8).
+- **Docs are bundled, not rewritten.** `scripts/sync_self_docs.py` copies
+  `docs/user-guide.md`, `docs/configuration.md`, `docs/troubleshooting.md`
+  and `README.md` into `container/app/knowledge/` (the image build context is
+  `./container`); `ci.py` fails on stale copies. Rationale (user decision):
+  no second hand-maintained text that drifts.
+- **Routing stays with the LLM classifier:** general-agent card gains a
+  self-description skill and few-shot examples in every language file; no
+  keyword routing (prime directive 11).

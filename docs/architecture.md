@@ -78,6 +78,28 @@ Thirteen specialized domain agents are reachable from intent classification:
 satellites, and notify targets). A `general-agent` fallback handles general
 questions and unroutable requests.
 
+The general agent also answers questions about HA-AgentHub itself. It always
+runs the LLM tool loop (`call_llm_with_mcp_tools[_stream]`), even with no MCP
+tools assigned, because it carries a built-in in-process tool,
+`agenthub_self_info` (`app/agents/self_info.py`):
+
+- topic `overview` -- product summary, version, registered agents (agent card
+  id, name, description, skills; internal-only agents skipped), loaded plugins
+  (name, version, description), and MCP server names with connection state.
+  No entities, settings values, URLs, commands, or credentials.
+- topic `docs` -- lexical (BM25 plus heading bonus) search over the user docs
+  bundled at `app/knowledge/` (copies of `docs/user-guide.md`,
+  `docs/configuration.md`, `docs/troubleshooting.md`, `README.md`, written by
+  `scripts/sync_self_docs.py`; `--check` runs in `scripts/ci.py`). Results are
+  labeled `file > heading path` and capped at about 6000 characters.
+
+Local tools are passed as `local_tools` to the shared executor in
+`app/agents/tool_calling.py`: they run in-process, their results use the same
+8000-character cut, a local name shadows an MCP tool of the same name (one
+warning per agent and name), and calls are traced as `mcp_tool_call` spans with
+`server_name: "local"` and `local: true`. Custom (DB-defined) agents do not get
+this tool.
+
 Domain-specific write contracts:
 
 - **Automation config changes** -- `create_automation`, `update_automation`, and `delete_automation` are two-turn: the executor validates the change (every referenced entity must exist in the entity index and be visible to `automation-agent`; services must be on the allow-list in `automation_executor._SERVICE_ALLOWLIST`; device/area/floor/label targets and templated entity or service names are rejected), stores it in `automation_confirmation.confirmation_store` (in memory, keyed by `conversation_id`, 5-minute TTL), and asks for confirmation with a voice follow-up. When a later turn reaches the automation agent while a proposal is pending, the agent LLM classifies the answer (confirm/decline/modify/unrelated, prompt `automation_confirm.txt`); only a confirmation writes to HA. Updates patch the config fetched from HA and abort if it changed before confirmation. Enable, disable, and trigger execute immediately.

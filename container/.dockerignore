@@ -10,6 +10,9 @@ __pycache__/
 *.pyc
 .git
 *.md
+# Bundled self-docs for the general agent (scripts/sync_self_docs.py). *.md above only matches
+# the context root; this keeps them included if it is widened to **/*.md (the later rule wins).
+!app/knowledge/*.md
 conftest.py
 pyproject.toml
 requirements-dev.txt

@@ -2979,7 +2979,7 @@ class TestSpanEndTime:
 
 
 class TestGeneralAgentSpans:
-    @patch("app.llm.client.complete", new_callable=AsyncMock, return_value="The weather is nice.")
+    @patch("app.llm.client.complete_with_tools", new_callable=AsyncMock, return_value="The weather is nice.")
     async def test_handle_task_creates_llm_call_span(self, mock_complete):
         from app.analytics.tracer import SpanCollector
 
@@ -3011,7 +3011,7 @@ class TestGeneralAgentSpans:
         assert len(llm_spans) == 1
         assert llm_spans[0]["agent_id"] == "general-agent"
 
-    @patch("app.llm.client.complete", new_callable=AsyncMock, return_value="No crash.")
+    @patch("app.llm.client.complete_with_tools", new_callable=AsyncMock, return_value="No crash.")
     async def test_handle_task_works_without_span_collector(self, mock_complete):
         agent = GeneralAgent()
         task = _make_task("hello")

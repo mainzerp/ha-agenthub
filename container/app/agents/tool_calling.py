@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
 import time
-from collections.abc import AsyncGenerator, Awaitable, Callable
+from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
+from dataclasses import dataclass
 from typing import Any
 
 from app.agents.base import BaseAgent
@@ -29,6 +31,78 @@ _MAX_GUARDED_ENTITY_REFS = 50
 _HIDDEN_ENTITY_TOOL_ERROR = (
     "Error: tool call rejected. It references a Home Assistant entity this agent is not allowed to access."
 )
+
+
+# Span-metadata ``server_name`` for in-process tools (they have no MCP server).
+LOCAL_TOOL_SERVER_NAME = "local"
+
+LocalToolHandler = Callable[[dict[str, Any]], Awaitable[str]]
+
+
+@dataclass(frozen=True)
+class LocalTool:
+    """An in-process tool offered to the LLM alongside an agent's MCP tools.
+
+    ``parameters`` is a JSON-schema object; ``handler`` receives the parsed
+    tool arguments and returns the text fed back to the LLM.
+    """
+
+    name: str
+    description: str
+    parameters: dict[str, Any]
+    handler: LocalToolHandler
+
+    def to_openai_schema(self) -> dict[str, Any]:
+        """Return the tool definition in OpenAI function-calling format."""
+        return {
+            "type": "function",
+            "function": {
+                "name": self.name,
+                "description": self.description,
+                "parameters": self.parameters,
+            },
+        }
+
+
+# (agent_id, tool name) pairs already warned about, so a colliding MCP tool
+# logs once per process instead of on every turn.
+_warned_tool_collisions: set[tuple[str, str]] = set()
+
+
+def merge_local_tools(
+    agent_id: str,
+    mcp_tools: list[dict[str, Any]],
+    local_tools: Sequence[LocalTool] | None,
+) -> tuple[list[dict[str, Any]], dict[str, LocalTool]]:
+    """Combine MCP tools with local tools; local names win on collision.
+
+    Returns the MCP tools that stay available (colliding ones dropped, with a
+    one-time warning) and the local tools keyed by name.
+    """
+    local_map = {tool.name: tool for tool in local_tools or ()}
+    if not local_map:
+        return list(mcp_tools), {}
+    kept: list[dict[str, Any]] = []
+    for tool in mcp_tools:
+        name = tool.get("name")
+        if name in local_map:
+            key = (agent_id, name)
+            if key not in _warned_tool_collisions:
+                _warned_tool_collisions.add(key)
+                logger.warning(
+                    "MCP tool '%s' (server '%s') collides with a built-in tool of %s; the MCP tool is ignored",
+                    name,
+                    tool.get("_server_name", ""),
+                    agent_id,
+                )
+            continue
+        kept.append(tool)
+    return kept, local_map
+
+
+def build_tool_schemas(mcp_tools: list[dict[str, Any]], local_tools: dict[str, LocalTool]) -> list[dict[str, Any]]:
+    """OpenAI tool schemas: local tools first (stable prefix), then MCP tools."""
+    return [tool.to_openai_schema() for tool in local_tools.values()] + mcp_tools_to_openai_format(mcp_tools)
 
 
 def mcp_tools_to_openai_format(mcp_tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -141,12 +215,32 @@ def _build_tool_executor(
     *,
     span_collector,
     include_tool_payload_metadata: bool,
+    local_tools: dict[str, LocalTool] | None = None,
 ) -> Callable[[str, dict], Awaitable[str]]:
-    """Return the traced, visibility-guarded, size-bounded MCP tool executor."""
+    """Return the traced, size-bounded tool executor.
+
+    Names in ``local_tools`` run in-process (they never touch Home Assistant
+    entities); every other name dispatches to MCP behind the entity
+    visibility guard.
+    """
     agent_id = agent.agent_card.agent_id
     tool_map = {tool["name"]: tool for tool in mcp_tools}
+    local_map = local_tools or {}
+
+    async def execute_local_tool(tool: LocalTool, arguments: dict) -> str:
+        try:
+            text = await tool.handler(arguments or {})
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning("Local tool '%s' failed for %s: %s", tool.name, agent_id, exc)
+            text = f"Tool error: {exc}"
+        return _truncate_string(str(text or ""), MCP_TOOL_RESULT_MAX_CHARS)
 
     async def execute_tool(name: str, arguments: dict) -> str:
+        local_tool = local_map.get(name)
+        if local_tool is not None:
+            return await execute_local_tool(local_tool, arguments)
         tool_info = tool_map.get(name)
         if not tool_info:
             return f"Error: unknown tool '{name}'"
@@ -175,9 +269,13 @@ def _build_tool_executor(
 
     async def traced_executor(name: str, arguments: dict) -> str:
         async with _optional_span(span_collector, "mcp_tool_call", agent_id=agent_id) as tool_span:
+            is_local = name in local_map
             tool_info = tool_map.get(name) or {}
             tool_span["metadata"]["tool_name"] = name
-            tool_span["metadata"]["server_name"] = tool_info.get("_server_name", "")
+            tool_span["metadata"]["server_name"] = (
+                LOCAL_TOOL_SERVER_NAME if is_local else tool_info.get("_server_name", "")
+            )
+            tool_span["metadata"]["local"] = is_local
             tool_span["metadata"]["argument_keys"] = sorted(str(key) for key in (arguments or {}))
             tool_span["metadata"]["argument_chars"] = _payload_char_count(arguments or {})
             if include_tool_payload_metadata:
@@ -199,24 +297,29 @@ async def call_llm_with_mcp_tools(
     *,
     span_collector=None,
     include_tool_payload_metadata: bool = True,
+    local_tools: Sequence[LocalTool] | None = None,
     **overrides: Any,
 ) -> str:
     """Call an agent LLM with assigned MCP tools and traced tool execution.
 
-    The whole tool loop is bounded by the agent's dispatch budget (``deadline``
-    override, see :func:`app.llm.client.complete_with_tools`) unless the
-    caller passes its own ``deadline``.
+    ``local_tools`` adds in-process tools (see :class:`LocalTool`); a local
+    name shadows an MCP tool of the same name. The whole tool loop is
+    bounded by the agent's dispatch budget (``deadline`` override, see
+    :func:`app.llm.client.complete_with_tools`) unless the caller passes its
+    own ``deadline``.
     """
     from app.llm.client import complete_with_tools
 
     messages = agent._normalize_llm_messages(messages)
-    tool_schemas = mcp_tools_to_openai_format(mcp_tools)
+    mcp_tools, local_map = merge_local_tools(agent.agent_card.agent_id, mcp_tools, local_tools)
+    tool_schemas = build_tool_schemas(mcp_tools, local_map)
     executor = _build_tool_executor(
         agent,
         mcp_tools,
         mcp_tool_manager,
         span_collector=span_collector,
         include_tool_payload_metadata=include_tool_payload_metadata,
+        local_tools=local_map,
     )
     await _resolve_tool_loop_deadline(agent, overrides)
     return await complete_with_tools(
@@ -237,6 +340,7 @@ async def call_llm_with_mcp_tools_stream(
     *,
     span_collector=None,
     include_tool_payload_metadata: bool = True,
+    local_tools: Sequence[LocalTool] | None = None,
     **overrides: Any,
 ) -> AsyncGenerator[str, None]:
     """Streaming variant of :func:`call_llm_with_mcp_tools`.
@@ -249,13 +353,15 @@ async def call_llm_with_mcp_tools_stream(
     from app.llm.client import complete_with_tools_stream
 
     messages = agent._normalize_llm_messages(messages)
-    tool_schemas = mcp_tools_to_openai_format(mcp_tools)
+    mcp_tools, local_map = merge_local_tools(agent.agent_card.agent_id, mcp_tools, local_tools)
+    tool_schemas = build_tool_schemas(mcp_tools, local_map)
     executor = _build_tool_executor(
         agent,
         mcp_tools,
         mcp_tool_manager,
         span_collector=span_collector,
         include_tool_payload_metadata=include_tool_payload_metadata,
+        local_tools=local_map,
     )
     await _resolve_tool_loop_deadline(agent, overrides)
     async for token in complete_with_tools_stream(

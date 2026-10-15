@@ -11,6 +11,8 @@ HA-AgentHub is a multi-agent AI assistant for Home Assistant. It has two main pa
 
 All runtime configuration is managed through the admin dashboard at `/dashboard/`.
 
+You can ask the assistant about itself, for example "What can you do?" or "How do I add an MCP server?". The general agent answers from the live list of agents, plugins, and MCP servers, and from this guide, the configuration reference, the troubleshooting guide, and the README, which are bundled into the container image. Answers cover only what these sources describe.
+
 ## First Launch / Setup Wizard
 
 On first launch, every route redirects to the setup wizard at `/setup/`. The wizard has five steps:
