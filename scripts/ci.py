@@ -160,6 +160,14 @@ def step_quality(cov_fail_under: int = 80) -> None:
         fail("ruff format")
         sys.exit(1)
 
+    # bundled self-docs (container/app/knowledge/) match their docs/ sources
+    try:
+        run([sys.executable, "scripts/sync_self_docs.py", "--check"])
+        ok("self-docs sync")
+    except subprocess.CalledProcessError:
+        fail("self-docs sync (run: python scripts/sync_self_docs.py)")
+        sys.exit(1)
+
     # mypy (non-blocking: report-only, never fails the build)
     try:
         result = run([sys.executable, "-m", "mypy", "container/app"], check=False)

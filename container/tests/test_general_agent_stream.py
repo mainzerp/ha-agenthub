@@ -43,7 +43,7 @@ def _agent() -> GeneralAgent:
 class TestGeneralAgentStreamNoTools:
     @pytest.mark.asyncio
     async def test_tokens_relayed_incrementally_then_done(self):
-        """No-tools path: complete_stream tokens are yielded as non-done
+        """No MCP tools: the tool-loop stream tokens are yielded as non-done
         chunks, followed by a single done chunk with an empty token."""
         agent = _agent()
         agent._get_mcp_tools = AsyncMock(return_value=[])
@@ -53,7 +53,7 @@ class TestGeneralAgentStreamNoTools:
             yield "weather "
             yield "is fine."
 
-        with patch("app.llm.client.complete_stream", side_effect=_fake_stream):
+        with patch("app.llm.client.complete_with_tools_stream", side_effect=_fake_stream):
             chunks = [c async for c in agent.handle_task_stream(_make_task())]
 
         token_chunks = [c for c in chunks if not c["done"]]
@@ -74,7 +74,7 @@ class TestGeneralAgentStreamNoTools:
             return
             yield  # pragma: no cover -- async generator shape
 
-        with patch("app.llm.client.complete_stream", side_effect=_empty_stream):
+        with patch("app.llm.client.complete_with_tools_stream", side_effect=_empty_stream):
             chunks = [c async for c in agent.handle_task_stream(_make_task())]
 
         assert len(chunks) == 1
@@ -91,7 +91,7 @@ class TestGeneralAgentStreamNoTools:
             raise RuntimeError("provider down")
             yield  # pragma: no cover -- async generator shape
 
-        with patch("app.llm.client.complete_stream", side_effect=_failing_stream):
+        with patch("app.llm.client.complete_with_tools_stream", side_effect=_failing_stream):
             chunks = [c async for c in agent.handle_task_stream(_make_task())]
 
         assert len(chunks) == 1
@@ -109,7 +109,7 @@ class TestGeneralAgentStreamNoTools:
             yield "Partial answer."
             raise RuntimeError("stream broke")
 
-        with patch("app.llm.client.complete_stream", side_effect=_partial_stream):
+        with patch("app.llm.client.complete_with_tools_stream", side_effect=_partial_stream):
             chunks = [c async for c in agent.handle_task_stream(_make_task())]
 
         token_chunks = [c for c in chunks if not c["done"]]

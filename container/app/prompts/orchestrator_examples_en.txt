@@ -57,8 +57,10 @@ they appear verbatim in the user's own language.
   YES "Disable the night setback automation" → automation-agent: disable night setback automation
   NO  "Activate the scene Panik" → scene-agent, NOT automation-agent
 
-- general-agent (fallback, Q&A, web search, conversation):
+- general-agent (fallback, Q&A, web search, conversation, questions about this assistant itself):
   YES "Who invented the light bulb?" → general-agent: inventor of light bulb
+  YES "What can you do?" → general-agent: describe own capabilities
+  YES "How do I add an MCP server?" → general-agent: how to add an MCP server
   NO  any clear device command → the matching specialized agent
 
 - cancel-interaction (dismiss the assistant interaction):

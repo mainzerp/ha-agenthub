@@ -23,17 +23,48 @@ Live pipeline in board format — headings are columns, cards are
 
 ## In Progress
 
-- Voice 3.5.1: keep inner pauses, relax enrollment anchor · priority: P1 · area: voice
-  Outcome: enrollment via headset works; same-speaker samples score
-  consistently. Cause: 3.5.0 joined VAD spans and cut inner pauses (offline
-  test: 14/72 errors vs 7/72 with outer trim + 0.2 s padding); the
-  inconsistent-sample rule anchored on one unchecked first sample. Also
-  bridge hardening (audio_processing fallback, ws compress=0). STT latency
-  checked: no bridge overhead (cloud direct 2.70 s vs bridge 2.64 s for
-  equal sentences; the stage includes listening). Branch fix/voice-vad-trim.
-  Next step: implement + tests + offline re-check.
-
 ## Testing
+
+- General agent knows the system itself (self-info tool) · priority: P1 · area: agents
+  Outcome: "Was kannst du?", "Was bist du?", "Wie fuege ich einen
+  MCP-Server hinzu?" are answered from live registry data (local tool
+  agenthub_self_info: overview + section search over bundled docs in
+  container/app/knowledge/, synced by scripts/sync_self_docs.py, ci.py
+  checks). Decisions 2026-10-15. Shipped in v3.6.0
+  (https://github.com/mainzerp/ha-agenthub/releases/tag/v3.6.0).
+  Passed: ci.py full gate (container 4646, coverage 85.50%; bridge 215;
+  self-docs sync; Docker build + smoke, knowledge files in the image;
+  Trivy).
+  Known change: general-agent always runs the tool loop, so the plain
+  path's one-shot retry on an empty reply no longer applies.
+  Needs user verification: review the diff; deploy; ask the three
+  questions in the chat test page -> answers name real agents/steps;
+  trace shows an mcp_tool_call span with server_name "local".
+
+- Voice 3.5.3: no voice follow-ups while enrolling · priority: P1 · area: voice
+  Outcome: while an enrollment is armed no turn reopens the microphone
+  (single decision point resolve_voice_followup; mediation gets no organic
+  closing question; clarifications still spoken); trace shows
+  followup_suppressed=enrollment. PR #164; shipped in v3.5.3
+  (https://github.com/mainzerp/ha-agenthub/releases/tag/v3.5.3).
+  Passed: ci.py full gate (container 4617, coverage 85.37%; bridge 215;
+  Docker build + smoke; Trivy).
+  Needs user verification: during enrollment no answer keeps the mic open
+  and replies end without an invitation question; outside enrollment
+  follow-ups work as before.
+
+- Voice 3.5.2: enroll 10 samples, replace session outliers; filler spoken early · priority: P1 · area: voice
+  Outcome: enrollment defaults 10 samples / 600 s; at the target, the worst
+  sample of the session is replaced when its leave-one-out score is below
+  enroll_min_similarity (max 3, older samples untouched); the filler is
+  padded past HA's 60-character TTS streaming threshold (e92ba0d). PR #163;
+  shipped in v3.5.2
+  (https://github.com/mainzerp/ha-agenthub/releases/tag/v3.5.2).
+  Passed: ci.py full gate (container 4595, coverage 85.35%; bridge 215;
+  Docker build + smoke; Trivy).
+  Needs user verification: deploy container + bridge; delete Patric's
+  sample 24 by hand; Laura enrolls 10 samples; a replaced outlier shows in
+  the banner; a slow answer speaks the filler before the reply.
 
 - Filler spoken before the answer (HA 60-char TTS threshold) · priority: P1 · area: voice
   Outcome: the filler is spoken while the agent still works, not with the
@@ -43,6 +74,23 @@ Live pipeline in board format — headings are columns, cards are
   `_TTS_STREAM_START_CHARS`); final speech unchanged. Bridge tests pass.
   Verify: voice turn on a slow agent (filler enabled) - filler audio starts
   before the answer; HA debug shows tts_start_streaming early.
+- Voice 3.5.1: keep inner pauses, relax enrollment anchor · priority: P1 · area: voice
+  Outcome: enrollment via headset works; same-speaker samples score
+  consistently. Cause: 3.5.0 joined VAD spans and cut inner pauses (offline
+  test: 14/72 errors vs 7/72 with outer trim + 0.2 s padding); the
+  inconsistent-sample rule anchored on one unchecked first sample. Bridge
+  hardening (audio_processing fallback, ws compress=0). STT latency checked:
+  no bridge overhead (cloud direct 2.70 s vs bridge 2.64 s, equal sentences).
+  PR #162; shipped in v3.5.1
+  (https://github.com/mainzerp/ha-agenthub/releases/tag/v3.5.1).
+  Passed: ci.py full gate (container 4583, coverage 85.33%; bridge 215;
+  Docker build + smoke; Trivy); real Silero tests in the image.
+  Needs user verification: deploy; reset both profiles; enroll each person
+  alone (5 varied sentences); samples accepted; sample list shows high
+  leave-one-out and low other-profile scores; recent results show a clear
+  gap between Patric and Laura.
+  Follow-up idea: benchmark alternative speaker models on real recordings.
+
 - Voice speaker identification reliability (Patric/Laura confusion) · priority: P1 · area: voice
   Outcome: the two enrolled speakers are told apart or a turn reports
   unknown. Silero VAD (sherpa-onnx) trims enrollment and identification

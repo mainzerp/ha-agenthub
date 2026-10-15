@@ -328,6 +328,9 @@ Discipline table); project mission and naming context live in
 - `container/data/` is runtime-only; `container/plugins/` is the user drop-in
   dir (files starting with `_` are ignored). Never edit generated or runtime
   artifacts.
+- `container/app/knowledge/*.md` are generated copies of user docs for the
+  general agent's `agenthub_self_info` tool. Edit the source doc, then run
+  `python scripts/sync_self_docs.py`; `ci.py` fails on stale copies.
 - The dashboard frontend is server-rendered Jinja2 + HTMX with vendored JS —
   there is no npm/node toolchain.
 - Keep the version in sync across `VERSION.md`, `container/app/__init__.py`, and

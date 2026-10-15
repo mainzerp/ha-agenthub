@@ -241,13 +241,18 @@ class TestSpeakerPromptLine:
             ),
         ],
     )
+    @patch("app.llm.client.complete_with_tools", new_callable=AsyncMock, return_value="Okay.")
     @patch("app.llm.client.complete", new_callable=AsyncMock, return_value="Okay.")
-    async def test_speaker_line_only_for_allowlisted_agents(self, mock_complete, factory, expected):
+    async def test_speaker_line_only_for_allowlisted_agents(
+        self, mock_complete, mock_complete_with_tools, factory, expected
+    ):
+        # general-agent always runs the tool loop; other agents call complete().
         agent = factory()
         task = make_dispatch_task(description="hello", context=_speaker_context())
         await agent.handle_task(task)
 
-        system_prompt = mock_complete.call_args[0][1][0]["content"]
+        llm_call = mock_complete.call_args or mock_complete_with_tools.call_args
+        system_prompt = llm_call[0][1][0]["content"]
         assert (_SPEAKER_LINE in system_prompt) is expected
         # The speaker context stays attached for every agent; only the prompt line is gated.
         assert task.context.speaker is not None and task.context.user_id == "ha-owner"

@@ -57,8 +57,10 @@ they appear verbatim in the user's own language.
   YES "Désactive l'automatisation mode nuit" → automation-agent: désactiver l'automatisation mode nuit
   NO  "Active la scène Panik" → scene-agent, NOT automation-agent
 
-- general-agent (fallback, Q&A, web search, conversation):
+- general-agent (fallback, Q&A, web search, conversation, questions about this assistant itself):
   YES "Qui a inventé l'ampoule ?" → general-agent: inventeur de l'ampoule
+  YES "Qu'est-ce que tu sais faire ?" → general-agent: décrire ses propres capacités
+  YES "Comment ajouter un serveur MCP ?" → general-agent: comment ajouter un serveur MCP
   NO  any clear device command → the matching specialized agent
 
 - cancel-interaction (dismiss the assistant interaction):

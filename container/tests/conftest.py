@@ -762,6 +762,14 @@ def build_scenario_backed_app(
                 "app.llm.client.complete_with_tools_stream", new=_complete_with_tools_stream_router
             )
             tools_stream_patcher.start()
+
+            # general-agent always runs the tool loop (built-in self-info
+            # tool); the stub never requests tool calls.
+            async def _complete_with_tools_router(agent_id, messages, tools, tool_executor, **kwargs):
+                return await handles.llm.complete(agent_id, messages, **kwargs)
+
+            tools_patcher = patch("app.llm.client.complete_with_tools", new=_complete_with_tools_router)
+            tools_patcher.start()
             base_patcher = None
             try:
                 base_patcher = patch("app.agents.base.complete", new=_complete_router)
@@ -774,6 +782,7 @@ def build_scenario_backed_app(
                 llm_patcher.stop()
                 stream_patcher.stop()
                 tools_stream_patcher.stop()
+                tools_patcher.stop()
                 if base_patcher is not None:
                     base_patcher.stop()
 
