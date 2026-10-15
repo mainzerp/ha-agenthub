@@ -540,6 +540,13 @@ async def _seed_defaults(db: aiosqlite.Connection) -> None:
             "filler",
             "Milliseconds to wait before sending filler",
         ),
+        (
+            "filler.speculative_start",
+            "true",
+            "bool",
+            "filler",
+            "Start filler generation in parallel with classification (streaming turns only)",
+        ),
         # Mediation
         (
             "mediation.model",

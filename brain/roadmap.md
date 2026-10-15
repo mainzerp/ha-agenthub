@@ -25,6 +25,23 @@ Live pipeline in board format — headings are columns, cards are
 
 ## Testing
 
+- Filler generated in parallel with classification · priority: P1 · area: voice
+  Outcome: the filler LLM call starts speculatively in the prelude (after the
+  action-cache check, parallel to classify); it is still sent only when routing
+  lands on a high-latency target, otherwise discarded (span with
+  cancel_reason). New setting filler.speculative_start (default true,
+  dashboard toggle on the personality page). filler_generate span shows the
+  real task start and generation time. Trigger: trace 5a90a16acd2b40b2
+  (filler started at dispatch, 803 ms; first frame 1085 ms). Decision
+  2026-10-15. Shipped in v3.7.0
+  (https://github.com/mainzerp/ha-agenthub/releases/tag/v3.7.0).
+  Passed: ci.py full gate (container 4680, coverage 85.55%; bridge 215;
+  self-docs sync; Docker build + smoke; Trivy).
+  Needs user verification: review the diff; deploy; ask "Welche Faehigkeiten
+  hast du?" -> filler_generate (speculative=true) starts near classify start,
+  first frame close to dispatch start; a device command -> filler_generate
+  span with cancel_reason=target_not_eligible, no filler spoken.
+
 - General agent knows the system itself (self-info tool) · priority: P1 · area: agents
   Outcome: "Was kannst du?", "Was bist du?", "Wie fuege ich einen
   MCP-Server hinzu?" are answered from live registry data (local tool

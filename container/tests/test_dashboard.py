@@ -604,6 +604,17 @@ class TestPersonalityPage:
         resp2 = await dashboard_client.get("/api/admin/personality/config")
         assert resp2.json()["prompt"] == ""
 
+    async def test_put_personality_config_filler_speculative_start(self, dashboard_client: httpx.AsyncClient):
+        resp = await dashboard_client.get("/api/admin/personality/config")
+        assert resp.json()["filler_speculative_start"] is True
+        resp = await dashboard_client.put(
+            "/api/admin/personality/config",
+            json={"filler_speculative_start": False},
+        )
+        assert resp.status_code == 200
+        resp2 = await dashboard_client.get("/api/admin/personality/config")
+        assert resp2.json()["filler_speculative_start"] is False
+
 
 @pytest.mark.integration
 class TestAgentEditorFailures:

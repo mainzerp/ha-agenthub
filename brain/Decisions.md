@@ -386,3 +386,19 @@ prompts live in `container/app/prompts/`, `ctx.agent_registry` not
 - **Routing stays with the LLM classifier:** general-agent card gains a
   self-description skill and few-shot examples in every language file; no
   keyword routing (prime directive 11).
+
+## 2026-10-15 — filler starts speculatively, parallel to classification
+
+- **Generate early, decide late.** The streaming path starts the filler LLM
+  call right after the action-cache check, in parallel with classification;
+  the send gate (target expected_latency "high", threshold from request start)
+  is unchanged and runs after routing. Rationale: the filler is only useful
+  when it lands early; at dispatch time it added its own generation latency
+  (~280 ms in trace 5a90a16acd2b40b2) to the first frame.
+- **Cost accepted, switchable.** Most turns route to low-latency domain agents,
+  so the speculative call is usually cancelled; only installs with
+  filler.enabled pay for it, and filler.speculative_start=false restores the
+  dispatch-time start.
+- **Generic prompt input.** The target agent is unknown at start; the filler
+  prompt's unknown-agent fallback applies, the user text still carries the
+  content.

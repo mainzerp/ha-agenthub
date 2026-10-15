@@ -1,12 +1,22 @@
 # Version
 
-**Current Version:** 3.6.0
+**Current Version:** 3.7.0
 
 ## Recent Changes
 
-(tracking changes since 3.6.0)
+(tracking changes since 3.7.0)
 
 ## Version History
+
+### 3.7.0 (MINOR) -- filler generated in parallel with classification
+
+(commit 270ec3b)
+
+- Filler: on the streaming path the filler LLM call starts speculatively right after the action-cache check (language known), in parallel with classification, instead of at dispatch. The send gate is unchanged: the filler is pushed only when routing lands on a target with `expected_latency: "high"` and `filler.threshold_ms` (counted from request start) has passed. Otherwise the task is discarded: low-latency target, noise, cancel, multi-agent, classification error, exceptions and client disconnects. Since the target is unknown at start, the filler prompt omits the `Agent:` line and its generic fallback applies. The non-streaming path never starts it. Trigger: trace 5a90a16acd2b40b2 (filler started at dispatch, 803 ms; first frame 1085 ms).
+- Setting: new `filler.speculative_start` (default `true`, seeded for existing installs), toggle "Speculative start" on the dashboard personality page. `false` restores the dispatch-time start. Turn it off when one single-slot local backend serves both the classifier and the filler model.
+- Traces: `filler_generate` now starts at the real task start and its duration is the generation time (was: threshold expiry and race duration); new attributes `speculative`, `cancelled`, `cancel_reason` (`target_not_eligible`, `multi_agent`, `noise`, `cancel_interaction`, `agent_first`, prelude exit types). A filler that finished but lost to the agent is now traced with `was_sent=false`.
+- Fix: `_cancel_filler_future` no longer swallows a cancellation of the calling task while it awaits the cancelled filler.
+- Verification: `scripts/ci.py` full gate passed: 4680 container tests (4 skipped, 9 xfailed, 3 xpassed, coverage 85.55%), 215 integration tests, Ruff, self-docs sync check, bandit, pip-audit, Docker build and smoke test, Trivy. Not yet verified live.
 
 ### 3.6.0 (MINOR) -- general agent knows HA-AgentHub itself
 

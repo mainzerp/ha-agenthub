@@ -66,6 +66,14 @@
             <span class="form-hint">How long to wait (ms) before sending a filler. 0 = send as soon as generated. Default: 1000 ms.</span>
         </div>
 
+        <div class="form-group" x-show="config.filler_enabled">
+            <label class="form-label flex-center">
+                <input type="checkbox" x-model="config.filler_speculative_start" class="w-auto">
+                Speculative start
+            </label>
+            <span class="form-hint">Start generating the filler while the request is still being classified, so it is ready sooner. It is only spoken when the request goes to a high-latency agent; otherwise the extra filler LLM call is discarded. Default: on.</span>
+        </div>
+
 
 
         <div class="form-actions">
@@ -88,7 +96,7 @@
 <script>
 function personalityPage() {
     return {
-        config: { prompt: "", mediation_temperature: 0.3, filler_enabled: false, filler_threshold_ms: 1000 },
+        config: { prompt: "", mediation_temperature: 0.3, filler_enabled: false, filler_threshold_ms: 1000, filler_speculative_start: true },
         saved: false,
         error: "",
         async loadConfig() {

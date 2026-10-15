@@ -298,7 +298,35 @@ When `filler.enabled` is `true`, the request source is not text-only
 orchestrator's first useful
 token takes longer than `filler.threshold_ms`, the filler agent
 generates one short interim sentence, emitted as a `filler_push` frame
-on the SSE/WS streams. The HA integration prepends it to the assistant
+on the SSE/WS streams.
+
+- Timing: with `filler.speculative_start` (default `true`) streaming
+  turns start the filler generation in the prelude, after the
+  action-cache check and language detection, in parallel with
+  classification and without a target agent (generic filler). After
+  routing the task is reused only for a high-latency target
+  (`expected_latency == "high"`, single-agent or sequential-send);
+  otherwise it is discarded. With the setting off generation starts at
+  dispatch. The threshold is measured from request start either way:
+  the filler is pushed as soon as routing confirms an eligible target
+  and `filler.threshold_ms` has passed (no extra head start for the
+  agent), unless the agent's first chunk arrives first. The
+  non-streaming path never generates a filler. On a single-slot local
+  LLM backend shared by classifier and filler model the speculative
+  call queues against classification; turn the setting off there.
+- Cleanup: the per-turn filler slot in `_handle_task_stream_impl`
+  cancels and awaits any remaining filler task on every exit (early
+  exits, multi-agent, errors, client cancellation).
+- Trace: `filler_generate` covers the real generation window (task
+  start to completion) with `speculative`, `threshold_ms`, `was_sent`
+  and `filler_text`. An unsent filler records `was_sent=false`,
+  `cancelled` (the generation was still running and was cut off) and
+  `cancel_reason`, the discard reason: `target_not_eligible`,
+  `multi_agent`, `noise`, `cancel_interaction`, a prelude exit type, or
+  `agent_first` (finished, but the agent answered first). `filler_send`
+  is a zero-length span at push time.
+
+The HA integration prepends the filler to the assistant
 message as an in-stream preamble (the first chat-log content delta), so
 on HA >= 2025.7 with a streaming TTS engine it is spoken early while
 the real reply continues to generate. HA starts streaming TTS only after
