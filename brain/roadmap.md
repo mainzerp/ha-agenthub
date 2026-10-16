@@ -46,7 +46,7 @@ Live pipeline in board format — headings are columns, cards are
   unreachable -> HA retries); reauth_confirm + Reconfigure (URL/key moved out
   of options); runtime 401/403 (REST, WS handshake, AI Task, STT tee) starts
   reauth once; diagnostics with redacted key/URL; `entry.runtime_data`;
-  shared aiohttp session. Not released (VERSION.md Recent Changes).
+  shared aiohttp session. Shipped in v3.8.0.
   Passed: bridge 269, container 4904 (incl. updated bridge tests), ruff;
   HA symbols checked in 2025.8.0 and 2026.2.3 wheels. Not run: real HA.
   Needs user verification: deploy bridge; restart HA with the container
@@ -96,7 +96,7 @@ Live pipeline in board format — headings are columns, cards are
   snapshot to `/data/backups/pre-migration-v<from>-to-v<to>-<UTC>.db` (newest
   3 kept); a failed snapshot aborts startup; `MIGRATION_BACKUP=false` skips
   it. A DB newer than the code's latest schema refuses to start with
-  restore instructions. Not released (VERSION.md Recent Changes).
+  restore instructions. Shipped in v3.8.0.
   Passed: container suite 4778 in an isolated worktree, migration tests,
   ruff, self-docs sync. Not run: Docker build, live DB.
   Needs user verification: copy the live DB, start the new image against
@@ -112,7 +112,7 @@ Live pipeline in board format — headings are columns, cards are
   routing. No filler, follow-up, mediation, pending question, cache, history
   or memory for task turns; error turns return 502. Migration 52 seeds both
   helper models (Agents page). Bridge min HA 2025.8.0. Decisions 2026-10-16.
-  Not released (VERSION.md Recent Changes); branch `ccr-76012fde-e5fd3y`.
+  Shipped in v3.8.0; branch `ccr-76012fde-e5fd3y`.
   Passed: container suite 4768 (48 ai_task tests), bridge suite 240 (25
   ai_task tests, HA stubs; symbols cross-checked against HA 2025.8.0 and
   2026.2.3 wheels), ruff, self-docs sync; independent review, 7 findings
@@ -136,8 +136,7 @@ Live pipeline in board format — headings are columns, cards are
   default (`ENABLE_API_DOCS`); dead code removed (`mcp/client_legacy.py`,
   `agents/notification_dispatcher.py`); docs fixed (Fernet backup/restore,
   SECURITY.md, `.env.example`, compose comments, TODO.md, stray
-  `validator_settings.json`). Not released (tracked in VERSION.md Recent
-  Changes). Branch `ccr-76012fde-e5fd3y`.
+  `validator_settings.json`). Shipped in v3.8.0. Branch `ccr-76012fde-e5fd3y`.
   Passed: container suite 4720 passed (4 skipped, 9 xfailed, 3 xpassed);
   ruff check/format on container/; self-docs sync; pip-audit clean with no
   ignores; 34 middleware tests incl. same-site cross-port POST -> 403 on the
