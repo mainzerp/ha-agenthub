@@ -3,8 +3,9 @@
 Local CI pipeline — cross-platform replacement for GitHub Actions.
 
 Runs the same steps as .github/workflows/ci.yml:
-  1. Quality   — ruff check, ruff format --check, pytest (container + HA)
-  2. Security  — bandit, pip-audit
+  1. Quality   — ruff check, ruff format --check, self-docs sync,
+                 dependency lock sync, pytest (container + HA)
+  2. Security  — bandit, pip-audit (on the hashed lock + pinned torch)
   3. Docker    — build image, optional trivy scan, push to registry
 
 Usage:
@@ -12,6 +13,8 @@ Usage:
     python scripts/ci.py --push --tag v1.30.0   # Build, scan and push
     python scripts/ci.py --skip-quality --skip-security --push
     python scripts/ci.py --no-trivy
+    python scripts/ci.py --check-lock       # Only verify container/requirements.lock
+    python scripts/ci.py --update-lock      # Regenerate container/requirements.lock
 """
 
 from __future__ import annotations
@@ -20,8 +23,10 @@ import argparse
 import json
 import os
 import platform
+import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -44,6 +49,37 @@ YELLOW = "\033[33m"
 DIM = "\033[90m"
 
 CI_FAIL = 0
+
+# Bandit checks skipped everywhere (CI, pre-commit, local-ci.ps1): B101 assert,
+# B104 bind-all-interfaces, B105 hardcoded-password-string false positives,
+# B311 non-crypto random, B608 SQL string building (parameterized elsewhere).
+BANDIT_SKIPS = "B101,B104,B105,B311,B608"
+
+# Dependency lock for the container image. torch is installed separately from
+# the PyTorch CPU index (requirements-torch.txt) and only constrains the lock,
+# so the lock carries torch's CPU runtime dependencies but not torch itself.
+REQUIREMENTS = "container/requirements.txt"
+TORCH_REQUIREMENTS = "container/requirements-torch.txt"
+LOCK_FILE = "container/requirements.lock"
+LOCK_PYTHON_VERSION = "3.12"  # keep in sync with the Dockerfile base image
+# Image platforms (Debian bookworm, glibc 2.36). The lock is resolved for the
+# first one; every platform must resolve to the identical lock. Hashes cover
+# all published files of each pinned version, so one lock serves both. (uv's
+# --universal mode is not used: it trusts one wheel's metadata, and
+# sherpa-onnx's linux_armv7l wheel omits its sherpa-onnx-core dependency.)
+LOCK_PLATFORMS = ("x86_64-manylinux_2_36", "aarch64-manylinux_2_36")
+LOCK_COMPILE_COMMAND = "python scripts/ci.py --update-lock"
+# CUDA-only dependencies of the PyPI torch wheel; the CPU wheel does not need them.
+TORCH_GPU_PACKAGES = (
+    "cuda-bindings",
+    "cuda-toolkit",
+    "nvidia-cudnn-cu13",
+    "nvidia-cusparselt-cu13",
+    "nvidia-nccl-cu13",
+    "nvidia-nvshmem-cu13",
+    "triton",
+)
+GPU_PACKAGE_PREFIXES = ("nvidia-", "cuda-", "triton")
 
 
 def header(msg: str) -> None:
@@ -115,6 +151,116 @@ def ensure_installed(tool: str) -> None:
         run([sys.executable, "-m", "pip", "install", tool], check=False)
 
 
+def uv_command() -> list[str]:
+    """Return the command prefix for uv.
+
+    Prefers the uv pinned in requirements-dev.txt (installed as a module in
+    this interpreter) so lock output does not drift with a global uv version.
+    """
+    import importlib.util
+
+    if importlib.util.find_spec("uv") is not None:
+        return [sys.executable, "-m", "uv"]
+    exe = which("uv")
+    if exe:
+        warn("uv from requirements-dev.txt not installed; using uv from PATH")
+        return [exe]
+    return [sys.executable, "-m", "uv"]
+
+
+def compile_lock(output: str, python_platform: str = LOCK_PLATFORMS[0]) -> None:
+    """Resolve requirements.txt for ``python_platform`` into a hashed lock.
+
+    An existing file at ``output`` acts as the preference set, so unchanged
+    requirements keep their pins and the result only moves when requirements
+    change (pip-tools semantics).
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        excludes = Path(tmp) / "torch-gpu-excludes.txt"
+        excludes.write_text("\n".join(TORCH_GPU_PACKAGES) + "\n")
+        run(
+            [
+                *uv_command(),
+                "pip",
+                "compile",
+                REQUIREMENTS,
+                "--constraints",
+                TORCH_REQUIREMENTS,
+                "--excludes",
+                str(excludes),
+                "--no-emit-package",
+                "torch",
+                "--python-platform",
+                python_platform,
+                "--python-version",
+                LOCK_PYTHON_VERSION,
+                "--generate-hashes",
+                "--custom-compile-command",
+                LOCK_COMPILE_COMMAND,
+                "--quiet",
+                "--output-file",
+                output,
+            ]
+        )
+
+
+def gpu_packages_in(lock_text: str) -> list[str]:
+    """Return lock entries that belong to the CUDA stack."""
+    names = []
+    for line in lock_text.splitlines():
+        if line and not line[0].isspace() and not line.startswith(("#", "-")):
+            name = line.split("==", 1)[0].strip().lower()
+            if name.startswith(GPU_PACKAGE_PREFIXES):
+                names.append(name)
+    return names
+
+
+def step_lock(update: bool = False) -> None:
+    """Verify (or regenerate) container/requirements.lock."""
+    base_image = f"FROM python:{LOCK_PYTHON_VERSION}-"
+    if base_image not in Path("container/Dockerfile").read_text():
+        fail(f"Dockerfile base image is not {base_image}* (update LOCK_PYTHON_VERSION)")
+        sys.exit(1)
+
+    if update:
+        try:
+            compile_lock(LOCK_FILE)
+        except subprocess.CalledProcessError:
+            fail("lock resolution failed")
+            sys.exit(1)
+        ok(f"{LOCK_FILE} regenerated")
+    elif not Path(LOCK_FILE).exists():
+        fail(f"{LOCK_FILE} missing (run: {LOCK_COMPILE_COMMAND})")
+        sys.exit(1)
+
+    # Re-resolve from the committed pins for every image platform; any
+    # difference means requirements changed or the platforms diverge.
+    for python_platform in LOCK_PLATFORMS:
+        with tempfile.TemporaryDirectory() as tmp:
+            candidate = Path(tmp) / "requirements.lock"
+            shutil.copyfile(LOCK_FILE, candidate)
+            try:
+                compile_lock(str(candidate), python_platform)
+            except subprocess.CalledProcessError:
+                fail(f"lock resolution failed for {python_platform}")
+                sys.exit(1)
+            if candidate.read_text() != Path(LOCK_FILE).read_text():
+                fail(
+                    f"{LOCK_FILE} does not match the {python_platform} resolution "
+                    f"(run: {LOCK_COMPILE_COMMAND}; if it persists, the platforms "
+                    "need different pins)"
+                )
+                sys.exit(1)
+    ok(f"dependency lock in sync ({', '.join(LOCK_PLATFORMS)})")
+
+    gpu = gpu_packages_in(Path(LOCK_FILE).read_text())
+    if gpu:
+        fail(
+            f"CUDA packages in {LOCK_FILE}: {', '.join(gpu)} (extend TORCH_GPU_PACKAGES)"
+        )
+        sys.exit(1)
+
+
 def detect_image_name() -> str:
     """Detect image name from git remote origin."""
     try:
@@ -167,6 +313,9 @@ def step_quality(cov_fail_under: int = 80) -> None:
     except subprocess.CalledProcessError:
         fail("self-docs sync (run: python scripts/sync_self_docs.py)")
         sys.exit(1)
+
+    # container/requirements.lock matches requirements.txt + requirements-torch.txt
+    step_lock()
 
     # mypy (non-blocking: report-only, never fails the build)
     try:
@@ -241,7 +390,7 @@ def step_security() -> None:
                 "-o",
                 "bandit-report.json",
                 "-s",
-                "B101,B104,B105,B311,B608",
+                BANDIT_SKIPS,
             ]
         )
         ok("bandit")
@@ -265,27 +414,37 @@ def step_security() -> None:
                 pass
         ok("bandit (low/medium issues only)")
 
-    # pip-audit
-    try:
-        run(
-            [
-                "pip-audit",
-                "-r",
-                "container/requirements.txt",
-                "--format=json",
-                "--output=pip-audit-report.json",
-            ]
-        )
-        ok("pip-audit")
-    except subprocess.CalledProcessError:
-        # pip-audit exits non-zero on known vulnerabilities (or audit errors);
-        # either way the dependency set is not proven clean, so fail the gate.
-        fail("pip-audit (vulnerabilities found — review pip-audit-report.json)")
-        sys.exit(2)
+    # pip-audit on exactly what the image installs, without resolving or
+    # installing anything: the hashed lock, then the separately pinned torch
+    # (unhashed, so it cannot share a run with the hash-checked lock).
+    audits = (
+        (LOCK_FILE, ["--require-hashes"], "pip-audit-report.json"),
+        (TORCH_REQUIREMENTS, ["--no-deps"], "pip-audit-torch-report.json"),
+    )
+    for requirements, mode, report in audits:
+        try:
+            run(
+                [
+                    "pip-audit",
+                    "-r",
+                    requirements,
+                    *mode,
+                    "--disable-pip",
+                    "--format=json",
+                    f"--output={report}",
+                ]
+            )
+            ok(f"pip-audit ({requirements})")
+        except subprocess.CalledProcessError:
+            # pip-audit exits non-zero on known vulnerabilities (or audit
+            # errors); either way the set is not proven clean: fail the gate.
+            fail(f"pip-audit ({requirements}: vulnerabilities found — review {report})")
+            sys.exit(2)
 
     print(f"\n{GREEN}Security reports saved:{RESET}")
     print(f"  {GREEN}- bandit-report.json{RESET}")
     print(f"  {GREEN}- pip-audit-report.json{RESET}")
+    print(f"  {GREEN}- pip-audit-torch-report.json{RESET}")
 
 
 def step_docker(
@@ -393,6 +552,8 @@ Examples:
   python scripts/ci.py --push --tag v1.30.0     # Build, scan and push
   python scripts/ci.py --skip-quality --push    # Skip quality, build + push
   python scripts/ci.py --no-trivy               # Skip Trivy scan
+  python scripts/ci.py --check-lock             # Verify container/requirements.lock
+  python scripts/ci.py --update-lock            # Regenerate container/requirements.lock
         """,
     )
     parser.add_argument(
@@ -416,6 +577,17 @@ Examples:
     parser.add_argument(
         "--no-cache", action="store_true", help="Build docker image without cache"
     )
+    lock_group = parser.add_mutually_exclusive_group()
+    lock_group.add_argument(
+        "--check-lock",
+        action="store_true",
+        help=f"Only verify that {LOCK_FILE} is in sync, then exit",
+    )
+    lock_group.add_argument(
+        "--update-lock",
+        action="store_true",
+        help=f"Only regenerate {LOCK_FILE} (needs uv), then exit",
+    )
     parser.add_argument(
         "--cov-fail-under",
         type=int,
@@ -423,6 +595,10 @@ Examples:
         help="Coverage threshold (default: 80)",
     )
     args = parser.parse_args()
+
+    if args.check_lock or args.update_lock:
+        step_lock(update=args.update_lock)
+        sys.exit(CI_FAIL)
 
     image_name = args.image_name or detect_image_name()
     dim(f"Detected image name: {image_name}")
@@ -459,7 +635,10 @@ Examples:
         if not args.skip_docker:
             print(f"{GREEN}Image: {args.registry}/{image_name}:{args.tag}{RESET}")
         if not args.skip_security:
-            print(f"{GREEN}Reports: bandit-report.json, pip-audit-report.json{RESET}")
+            print(
+                f"{GREEN}Reports: bandit-report.json, pip-audit-report.json, "
+                f"pip-audit-torch-report.json{RESET}"
+            )
         sys.exit(0)
     else:
         print(f"{RED}CI completed with failures.{RESET}")

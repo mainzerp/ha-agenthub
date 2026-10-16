@@ -431,6 +431,10 @@ Release checklist (all required):
       (background on Windows; verdict from the printed summary);
       `python -m pytest custom_components/tests/ -n auto`;
       `python scripts/ci.py` for the full gate. `mypy` is report-only.
+      After any change to `container/requirements.txt` or
+      `container/requirements-torch.txt`, regenerate the hashed image lock with
+      `python scripts/ci.py --update-lock` (`--check-lock` verifies; the full
+      gate fails on a stale lock).
 - [ ] Docs closeout done for the change (see Docs Discipline above).
 
 **Conventional Commits:** `<type>(<scope>): <short summary>`.

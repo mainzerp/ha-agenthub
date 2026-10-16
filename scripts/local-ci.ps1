@@ -6,8 +6,9 @@
 
 .DESCRIPTION
     Runs the same steps as .github/workflows/ci.yml but locally:
-      1. Quality   — ruff check, ruff format --check, pytest (container + HA)
-      2. Security  — bandit, pip-audit
+      1. Quality   — ruff check, ruff format --check, dependency lock sync,
+                     pytest (container + HA)
+      2. Security  — bandit, pip-audit (hashed lock + pinned torch)
       3. Docker    — build image, optional trivy scan, push to registry
 
     Exit codes:
@@ -125,6 +126,15 @@ if (-not $SkipQuality) {
         exit 1
     }
 
+    # container/requirements.lock in sync with requirements.txt (logic lives in ci.py)
+    Write-Host "`n>>> python scripts/ci.py --check-lock" -ForegroundColor Yellow
+    python scripts/ci.py --check-lock
+    if ($LASTEXITCODE -ne 0) {
+        Step-Footer $false "dependency lock (run: python scripts/ci.py --update-lock)"
+        exit 1
+    }
+    Step-Footer $true "dependency lock"
+
     # pytest container
     Write-Host "`n>>> pytest container/tests/ -n auto -q --tb=short --cov=app --cov-report=term-missing --cov-fail-under=72" -ForegroundColor Yellow
     Push-Location container
@@ -166,10 +176,10 @@ if (-not $SkipSecurity) {
         }
     }
 
-    # bandit
-    Write-Host "`n>>> bandit -r container/app -f json -o bandit-report.json -c container/.bandit.yml" -ForegroundColor Yellow
+    # bandit (same skip list as BANDIT_SKIPS in scripts/ci.py)
+    Write-Host "`n>>> bandit -r container/app -f json -o bandit-report.json -s B101,B104,B105,B311,B608" -ForegroundColor Yellow
     try {
-        bandit -r container/app -f json -o bandit-report.json -c container/.bandit.yml
+        bandit -r container/app -f json -o bandit-report.json -s B101,B104,B105,B311,B608
         Step-Footer $true "bandit"
     } catch {
         # bandit exits with non-zero when it finds issues
@@ -186,17 +196,26 @@ if (-not $SkipSecurity) {
     }
 
     # pip-audit
-    Write-Host "`n>>> pip-audit -r container/requirements.txt --format=json --output=pip-audit-report.json" -ForegroundColor Yellow
-    pip-audit -r container/requirements.txt --format=json --output=pip-audit-report.json
+    Write-Host "`n>>> pip-audit -r container/requirements.lock --require-hashes --disable-pip --format=json --output=pip-audit-report.json" -ForegroundColor Yellow
+    pip-audit -r container/requirements.lock --require-hashes --disable-pip --format=json --output=pip-audit-report.json
     if ($LASTEXITCODE -ne 0) {
         Step-Footer $false "pip-audit (vulnerabilities found - review pip-audit-report.json)"
         exit 2
     }
-    Step-Footer $true "pip-audit"
+    Step-Footer $true "pip-audit (lock)"
+
+    Write-Host "`n>>> pip-audit -r container/requirements-torch.txt --no-deps --disable-pip --format=json --output=pip-audit-torch-report.json" -ForegroundColor Yellow
+    pip-audit -r container/requirements-torch.txt --no-deps --disable-pip --format=json --output=pip-audit-torch-report.json
+    if ($LASTEXITCODE -ne 0) {
+        Step-Footer $false "pip-audit (vulnerabilities found - review pip-audit-torch-report.json)"
+        exit 2
+    }
+    Step-Footer $true "pip-audit (torch)"
 
     Write-Host "`nSecurity reports saved:" -ForegroundColor Green
     Write-Host "  - bandit-report.json" -ForegroundColor Green
     Write-Host "  - pip-audit-report.json" -ForegroundColor Green
+    Write-Host "  - pip-audit-torch-report.json" -ForegroundColor Green
 } else {
     Write-Host "Skipping security checks." -ForegroundColor DarkGray
 }
@@ -284,6 +303,6 @@ Step-Header "CI SUMMARY"
 Write-Host "All requested steps completed successfully." -ForegroundColor Green
 Write-Host "Image: $FullImageName" -ForegroundColor Green
 if (-not $SkipSecurity) {
-    Write-Host "Reports: bandit-report.json, pip-audit-report.json" -ForegroundColor Green
+    Write-Host "Reports: bandit-report.json, pip-audit-report.json, pip-audit-torch-report.json" -ForegroundColor Green
 }
 exit 0

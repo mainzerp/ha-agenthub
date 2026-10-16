@@ -1,0 +1,6 @@
+# CPU-only PyTorch for the container image. The Dockerfile installs this file
+# with --no-deps from https://download.pytorch.org/whl/cpu before
+# requirements.lock; the lock is resolved against it (constraint) so torch's
+# CPU runtime dependencies are pinned and hashed there. Bump torch here, then
+# run: python scripts/ci.py --update-lock
+torch==2.14.1

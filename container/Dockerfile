@@ -9,33 +9,32 @@ RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-reco
 
 RUN pip install --upgrade pip "setuptools>=78.1.1"
 
-COPY requirements.txt .
+COPY requirements-torch.txt requirements.lock ./
 
-# Install CPU-only PyTorch BEFORE main requirements.
-# sentence-transformers depends on torch; by pre-installing the CPU-only
-# variant, pip will find torch already satisfied and skip the CUDA build.
-# This eliminates ~4.3 GB of nvidia/cuda/triton libraries.
-RUN pip install --no-cache-dir --prefix=/install \
-    torch torchaudio torchvision \
-    --index-url https://download.pytorch.org/whl/cpu
+# CPU-only PyTorch, version pinned in requirements-torch.txt. --no-deps: its
+# runtime dependencies come hashed from requirements.lock, and the CUDA stack
+# of the PyPI wheel (~4.3 GB of nvidia/cuda/triton libraries) is never pulled.
+RUN pip install --no-cache-dir --prefix=/install --no-deps --ignore-installed \
+    --index-url https://download.pytorch.org/whl/cpu \
+    -r requirements-torch.txt
 
-# torchvision pulls in Pillow; force-upgrade to a secure version afterward
-RUN pip install --upgrade --no-cache-dir --prefix=/install "Pillow>=12.2.0"
-
-# Make pre-installed packages visible so pip skips torch on the next install
-ENV PYTHONPATH=/install/lib/python3.12/site-packages
-
-RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
+# Everything else from the fully pinned, hash-checked lock (generated from
+# requirements.txt by `python scripts/ci.py --update-lock`). --ignore-installed
+# keeps a package that the builder's own interpreter already has (setuptools)
+# from being skipped instead of landing in /install.
+RUN pip install --no-cache-dir --prefix=/install --require-hashes --no-deps \
+    --ignore-installed -r requirements.lock
 
 # ---- Final stage: slim runtime ----
 FROM python:3.12-slim-bookworm@sha256:d193c6f51a7dbd10395d6328de3a7edb0516fb0608ca138036576f574c3e07d2
 
 WORKDIR /app
 
-# Copy installed packages from builder
+# Copy installed packages from builder (setuptools comes pinned from the lock)
 COPY --from=builder /install /usr/local
 
-RUN pip install --upgrade --no-cache-dir "setuptools>=78.1.1,<82"
+# Fail the build when the separately installed torch and the lock disagree
+RUN pip check
 
 # Copy application code
 COPY app/ ./app/
@@ -51,7 +50,8 @@ RUN addgroup --system app && adduser --system --ingroup app app \
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
-# Ensure ca-certificates is present for HTTPS
+# Ensure ca-certificates is present for HTTPS. The upgrade pulls Debian
+# security fixes newer than the pinned base image digest (Trivy gates on them).
 RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
@@ -96,10 +96,15 @@ digest = hashlib.sha256(open(p, 'rb').read()).hexdigest(); \
 sys.exit(0 if digest == '${VAD_MODEL_SHA256}' else 'VAD model checksum mismatch')" \
     && chmod -R a+rX /opt/models
 
+# Default port; CONTAINER_PORT / CONTAINER_HOST override the listen address
+# (the compose files map and health-check the same variable).
 EXPOSE 8080
 
-HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
-    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8080/healthz')" || exit 1
+# Same probe and start period as the compose files.
+HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=3 \
+    CMD python -c "import os, urllib.request; urllib.request.urlopen('http://127.0.0.1:' + os.environ.get('CONTAINER_PORT', '8080') + '/healthz')" || exit 1
 
 ENTRYPOINT ["/entrypoint.sh"]
-CMD ["python", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080", "--ws-ping-interval", "30", "--ws-ping-timeout", "10", "--timeout-graceful-shutdown", "30"]
+# sh -c expands the listen address; exec replaces the shell so uvicorn runs
+# as PID 1 (entrypoint.sh and setpriv exec as well) and receives SIGTERM.
+CMD ["sh", "-c", "exec python -m uvicorn app.main:app --host \"${CONTAINER_HOST:-0.0.0.0}\" --port \"${CONTAINER_PORT:-8080}\" --ws-ping-interval 30 --ws-ping-timeout 10 --timeout-graceful-shutdown 30"]

@@ -39,23 +39,35 @@ Live pipeline in board format — headings are columns, cards are
 
 ## In Progress
 
-- HA bridge quality: reauth, setup check, diagnostics · priority: P2 · area: integration
-  Outcome: the bridge recovers cleanly from bad keys and an unreachable
-  container. Reauth flow is never triggered and miswired (no
-  ConfigEntryAuthFailed, no reauth_confirm step, no strings); setup does not
-  test the connection (no ConfigEntryNotReady); no diagnostics.py,
-  reconfigure flow or `entry.runtime_data`; private aiohttp sessions instead
-  of `async_get_clientsession`; tests use HA stubs, not
-  pytest-homeassistant-custom-component. Verify: rotated API key raises a
-  reauth notification in HA; container down at HA start retries setup.
-- CI and supply-chain hardening · priority: P2 · area: core
-  Outcome: CI catches what the release pipeline would. Image built on PRs
-  (today only on tags); linux/arm64 image; actions pinned by SHA; hassfest +
-  HACS validation + CodeQL; Python lock file with hashes (litellm is a
-  range); pin torch and drop unused torchvision/torchaudio; `CONTAINER_PORT`
-  vs. hard-coded 8080 in the Dockerfile CMD. Verify: CI green on a PR that
-  touches the Dockerfile; multi-arch manifest on the next tag.
 ## Testing
+
+- HA bridge quality: reauth, setup check, diagnostics · priority: P2 · area: integration
+  Outcome: setup probes `/api/health` with the key (401/403 -> Re-authenticate,
+  unreachable -> HA retries); reauth_confirm + Reconfigure (URL/key moved out
+  of options); runtime 401/403 (REST, WS handshake, AI Task, STT tee) starts
+  reauth once; diagnostics with redacted key/URL; `entry.runtime_data`;
+  shared aiohttp session. Not released (VERSION.md Recent Changes).
+  Passed: bridge 269, container 4904 (incl. updated bridge tests), ruff;
+  HA symbols checked in 2025.8.0 and 2026.2.3 wheels. Not run: real HA.
+  Needs user verification: deploy bridge; restart HA with the container
+  stopped -> integration shows "retrying setup", recovers when it starts;
+  rotate the container API key -> HA shows a Re-authenticate notification,
+  entering the new key fixes it; Reconfigure changes URL/key; "Download
+  diagnostics" shows no key or URL.
+- CI and supply-chain hardening · priority: P2 · area: core
+  Outcome: PR/main Docker build with runtime check; multi-arch release
+  (amd64 + arm64) with SBOM/provenance; SHA-pinned actions; hassfest, HACS
+  and CodeQL workflows; hashed lock file (+ separate torch pin 2.14.1),
+  torchvision/torchaudio dropped, setuptools>=83; CONTAINER_PORT honored.
+  Passed: actionlint 0 errors; lock in sync for x86_64 + aarch64; lock
+  installs with --require-hashes and pip check; container suite 4904 with
+  locked deps; sandbox image build (without torch/apt/model steps) healthy
+  on amd64 and arm64 (QEMU), clean SIGTERM. Only GitHub Actions can prove:
+  full build with torch CPU index + model downloads, arm64 build time vs
+  90 min timeout, hassfest/HACS/CodeQL results.
+  Needs user verification: push/PR -> docker-build, validate and codeql
+  workflows green; disable CodeQL "default setup" in repo settings if
+  enabled; next tag -> multi-arch manifest on ghcr.io.
 
 - Code-enforced approval for sensitive actions · priority: P1 · area: agents
   Outcome: unlock/open locks, alarm arm and disarm, and opening garage/gate/
