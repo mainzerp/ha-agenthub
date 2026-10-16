@@ -143,7 +143,15 @@ async def init_db() -> None:
     """Initialize database schema and seed default data.
 
     Called at container startup. All operations are idempotent.
+
+    Before the init transaction, :func:`_prepare_migrations` runs on the
+    write connection (``VACUUM INTO`` cannot run inside a transaction): it
+    refuses a database migrated by a newer build and snapshots an existing
+    database when migrations are pending (unless ``MIGRATION_BACKUP=false``).
     """
+    async with _get_write_lock():
+        conn = await _get_or_create_write_connection()
+        await _prepare_migrations(conn, await _db_path(), backup_enabled=bool(settings.migration_backup))
     async with get_db() as db:
         await _create_tables(db)
         await _create_indexes(db)
@@ -157,7 +165,7 @@ async def init_db() -> None:
 # submodule can import _column_exists from this package without a circular
 # import error.
 from app.db.schema._indexes import _create_indexes  # noqa: E402
-from app.db.schema._migrations import _run_migrations  # noqa: E402
+from app.db.schema._migrations import _prepare_migrations, _run_migrations  # noqa: E402
 from app.db.schema._seed import _seed_defaults  # noqa: E402
 from app.db.schema._tables import _create_tables  # noqa: E402
 

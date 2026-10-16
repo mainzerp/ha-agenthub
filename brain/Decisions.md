@@ -439,7 +439,27 @@ prompts live in `container/app/prompts/`, `ctx.agent_registry` not
   attachments into text (wrapped as untrusted data) before classification, so
   any agent can act on it and image bytes never enter A2A, the classifier,
   traces or memory. Direct image passing to the general agent can follow later.
-- **Formatter step for structured output.** A `task-formatter` model turns the
+- **Formatter step for structured output (AI Task).** A `task-formatter` model turns the
   unmediated agent result into JSON (json_object mode where supported),
   validated with `jsonschema` and repaired once; it must emit null for unknown
   fields. HA core does not validate the result, so validation lives here.
+
+## 2026-10-16 — code-enforced approval for sensitive actions
+
+- **Owner decisions:** approval required for `lock.unlock`/`lock.open`,
+  `alarm_control_panel` disarm AND arm (home/away/night/vacation/custom
+  bypass), and cover open/position/toggle on device_class garage, gate or
+  door. A spoken or typed "yes" is enough (LLM yes/no/unclear, 60 s TTL); no
+  speaker-ID factor (speaker stays prompt context only). Non-interactive
+  sources (`ai_task`, `background`, OpenAI endpoint without a stable chat id)
+  are blocked unless the entity is on an explicit allowlist setting.
+  Agent-created automations may only close garage/gate/door covers.
+- **Called "approval"**, because `confirmation` already names the spoken
+  success sentence in agent JSON.
+- **Two layers.** Interactive pause where the entity is resolved
+  (`call_service_with_verification`), plus a fail-closed backstop in
+  `HARestClient.call_service` that refuses any sensitive call without an
+  approval token, so cache replay, multi-action, background, plugins and
+  future paths cannot bypass it. Sensitive results are never action-cached.
+- **Answer judged on the verbatim user text in the orchestrator prelude**,
+  not on the classifier's condensed task (a bare "yes" gets paraphrased).

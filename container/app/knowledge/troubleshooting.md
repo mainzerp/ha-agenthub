@@ -22,6 +22,16 @@ docker compose logs ha-agenthub
   docker compose pull
   docker compose up -d
   ```
+- `SchemaDowngradeError: Database schema version <N> is newer than the latest schema version <M> known to this
+  HA-AgentHub build`: the database was migrated by a newer HA-AgentHub image and an older image was started on it. The
+  container refuses to run so the older code cannot misread the newer schema. Either start the newer image again
+  (unpin `HA_AGENTHUB_TAG` or set it to the newer version), or restore the pre-migration snapshot taken when the newer
+  image upgraded the database and keep the older image; see
+  [Restore a Pre-Migration Snapshot](backup-restore.md#restore-a-pre-migration-snapshot).
+- `MigrationBackupError: Pre-migration snapshot to ... failed`: schema migrations are pending and the automatic snapshot
+  into `/data/backups/` could not be written (disk full, read-only volume, `backups` exists as a file). The database
+  was not changed. Free disk space or fix the volume, then restart. Setting `MIGRATION_BACKUP=false` migrates without a
+  snapshot.
 
 ## Can't Connect to Home Assistant
 

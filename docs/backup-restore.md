@@ -24,6 +24,7 @@ Optional (included in a volume backup, safe to exclude or delete):
 |------|-------------|----------------|
 | `/data/logs/app.log*` | Rotating container log file (`LOG_DIR`) | Pre-restart log history gone |
 | `/data/logs/warnings.jsonl*` | Persisted WARNING+ log-buffer entries (`.1`, `.2` rotations, about 15 MB max), restored into the Logs page at startup | Pre-restart warnings and errors no longer shown after a restart |
+| `/data/backups/pre-migration-*.db` | Automatic pre-migration snapshots of the SQLite database (newest 3 kept), see [Automatic Pre-Migration Snapshots](#automatic-pre-migration-snapshots) | No rollback point for the last schema upgrades |
 
 ## Backup Procedure
 
@@ -43,6 +44,31 @@ docker run --rm \
 # Restart
 docker compose start ha-agenthub
 ```
+
+### Automatic Pre-Migration Snapshots
+
+At startup, when the image ships schema migrations the database has not
+applied yet, the container first writes a consistent copy of the
+existing SQLite database (`VACUUM INTO`) and only then migrates:
+
+- Location: a `backups/` directory next to the database file
+  (`/data/backups/` with the default `SQLITE_DB_PATH`), so the snapshots
+  live in the same volume and are part of a volume backup.
+- File name: `pre-migration-v<from>-to-v<to>-<UTC timestamp>.db`, where
+  `<from>` is the schema version before the upgrade (for example
+  `pre-migration-v50-to-v52-20261016T081500Z.db`). The path and size are
+  logged at INFO.
+- Retention: the newest 3 snapshots are kept; older
+  `pre-migration-*.db` files are deleted. Other files in `backups/` are
+  left alone.
+- No snapshot on a fresh install or when the schema is already current.
+- If the snapshot fails (disk full, permissions), startup aborts with an
+  error and the database is not migrated. Free space or fix permissions
+  and restart. `MIGRATION_BACKUP=false` (see
+  [Configuration](configuration.md)) skips the snapshot.
+- A snapshot covers only the SQLite database, not `/data/.fernet_key` or
+  `/data/chromadb/`. The Fernet key does not change on upgrade, so a
+  snapshot stays decryptable with the current key.
 
 ### Option 2: Fernet Key Export (passphrase-encrypted)
 
@@ -110,6 +136,32 @@ curl -s http://localhost:8080/healthz
 
 The entrypoint re-applies ownership of `/data` on start, so files
 written by the helper container as root are fine.
+
+### Restore a Pre-Migration Snapshot
+
+Use this to roll back to the image version that ran before an upgrade.
+Pick the snapshot whose `v<from>` matches the schema of that older image
+(the newest `pre-migration-*.db` for the most recent upgrade):
+
+```bash
+docker compose stop ha-agenthub
+docker run --rm -v ha-agenthub-data:/data alpine ls -l /data/backups
+docker run --rm -v ha-agenthub-data:/data alpine sh -c "\
+    cp /data/agent_assist.db /data/backups/before-restore.db && \
+    rm -f /data/agent_assist.db-wal /data/agent_assist.db-shm && \
+    cp /data/backups/pre-migration-v<from>-to-v<to>-<timestamp>.db /data/agent_assist.db"
+# Start the older image the snapshot belongs to
+HA_AGENTHUB_TAG=<older version> docker compose up -d ha-agenthub
+```
+
+- Delete `agent_assist.db-wal` and `agent_assist.db-shm` with the copy;
+  a leftover write-ahead log from the newer database corrupts the
+  restored file.
+- Start the older image that matches the snapshot. Starting the newer
+  image again simply re-applies the migrations (and takes a new
+  snapshot).
+- Data written after the snapshot (settings changes, conversations,
+  traces) is lost; `before-restore.db` keeps the newer state.
 
 ### Restore the Fernet Key from an Export
 

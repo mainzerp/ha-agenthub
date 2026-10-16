@@ -23,6 +23,10 @@ class Settings(BaseSettings):
     chromadb_persist_dir: str = "/data/chromadb"
     sqlite_db_path: str = "/data/agent_assist.db"
     fernet_key_path: str = "/data/.fernet_key"
+    # Take a ``VACUUM INTO`` snapshot of the SQLite DB into ``<db dir>/backups/``
+    # before applying pending schema migrations. Startup aborts when the
+    # snapshot fails. ``MIGRATION_BACKUP=false`` skips the snapshot.
+    migration_backup: bool = True
     # SEC-3: Defaults to True for production safety.
     # Local HTTP development should set ``COOKIE_SECURE=false`` explicitly
     # or the browser will drop the admin session and CSRF cookies.

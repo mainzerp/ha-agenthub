@@ -65,14 +65,21 @@ Live pipeline in board format — headings are columns, cards are
   automation confirmation; owner decisions pending (mechanism, sensitive
   list, ai_task/background behaviour). Verify: "Tuer aufschliessen" asks first; "ja" executes; anything else
   cancels; trace shows the gate.
-- DB migration safety · priority: P1 · area: core
-  Outcome: a failed or downgraded upgrade cannot lose data. `_run_migrations`
-  (`db/schema/_migrations.py:~1165`) applies 51 migrations with no snapshot
-  and no newer-than-code guard. Started 2026-10-16: `VACUUM INTO` snapshot before
-  pending migrations; refuse to start when the DB schema version exceeds the
-  code's maximum. Verify: tests for snapshot + guard; upgrade on a copy of
-  the live DB.
 ## Testing
+
+- DB migration safety · priority: P1 · area: core
+  Outcome: a failed or downgraded upgrade cannot lose data. Before pending
+  migrations on an existing DB, `_prepare_migrations` writes a `VACUUM INTO`
+  snapshot to `/data/backups/pre-migration-v<from>-to-v<to>-<UTC>.db` (newest
+  3 kept); a failed snapshot aborts startup; `MIGRATION_BACKUP=false` skips
+  it. A DB newer than the code's latest schema refuses to start with
+  restore instructions. Not released (VERSION.md Recent Changes).
+  Passed: container suite 4778 in an isolated worktree, migration tests,
+  ruff, self-docs sync. Not run: Docker build, live DB.
+  Needs user verification: copy the live DB, start the new image against
+  the copy -> log line "Pre-migration snapshot written" and a file in
+  `/data/backups/`; start an older image on the migrated copy -> refuses
+  with the downgrade message.
 
 - AI Task entity for automations (ai_task generate_data) · priority: P1 · area: integration
   Outcome: `ai_task.generate_data` on the HA-AgentHub AI Task entity runs a

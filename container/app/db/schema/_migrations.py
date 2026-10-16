@@ -7,10 +7,20 @@ current schema version is read once, then every migration whose version
 is greater than the current version is applied in ascending order. Each
 migration callable is responsible for recording its own version marker
 via ``INSERT OR IGNORE INTO schema_version (version) VALUES (N)``.
+
+Before the init transaction starts, :func:`_prepare_migrations` refuses to
+run against a database whose recorded schema version is newer than
+:data:`LATEST_SCHEMA_VERSION` (downgrade guard) and, when migrations are
+pending on an existing database, writes a consistent ``VACUUM INTO``
+snapshot to ``<db dir>/backups/`` (newest :data:`SNAPSHOT_RETENTION` kept).
 """
 
+import asyncio
 import logging
+import re
 from collections.abc import Awaitable, Callable
+from datetime import UTC, datetime
+from pathlib import Path
 
 import aiosqlite
 
@@ -1177,11 +1187,173 @@ MIGRATIONS: list[tuple[int, Callable[[aiosqlite.Connection], Awaitable[None]]]] 
 ]
 
 
+# Highest schema version this build knows how to produce.
+LATEST_SCHEMA_VERSION: int = MIGRATIONS[-1][0]
+
+# Pre-migration snapshots live in this directory next to the DB file.
+SNAPSHOT_DIR_NAME = "backups"
+# Number of pre-migration snapshots kept; older ones are deleted.
+SNAPSHOT_RETENTION = 3
+_SNAPSHOT_NAME_RE = re.compile(r"^pre-migration-v(\d+)-to-v(\d+)-(\d{8}T\d{6}Z)(?:-(\d+))?\.db$")
+
+
+class SchemaDowngradeError(RuntimeError):
+    """The database was migrated by a newer HA-AgentHub version than this build."""
+
+
+class MigrationBackupError(RuntimeError):
+    """The pre-migration snapshot could not be written; migrations were not applied."""
+
+
+def _downgrade_error(current_version: int, backup_dir: Path | None = None) -> SchemaDowngradeError:
+    where = str(backup_dir) if backup_dir is not None else f"the '{SNAPSHOT_DIR_NAME}/' directory next to the DB file"
+    return SchemaDowngradeError(
+        f"Database schema version {current_version} is newer than the latest schema version "
+        f"{LATEST_SCHEMA_VERSION} known to this HA-AgentHub build: the database was migrated by a newer "
+        f"HA-AgentHub version. Refusing to start. Run the newer HA-AgentHub image again, or stop the container, "
+        f"restore the matching pre-migration snapshot from {where} and start the matching older image "
+        f"(see docs/backup-restore.md)."
+    )
+
+
+async def _read_schema_version(db: aiosqlite.Connection) -> int | None:
+    """Return the recorded schema version, or ``None`` for a fresh database."""
+    cursor = await db.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_version'")
+    if await cursor.fetchone() is None:
+        return None
+    cursor = await db.execute("SELECT MAX(version) FROM schema_version")
+    row = await cursor.fetchone()
+    if row is None or row[0] is None:
+        return None
+    return int(row[0])
+
+
+def _snapshot_sort_key(path: Path) -> tuple[str, int]:
+    match = _SNAPSHOT_NAME_RE.match(path.name)
+    if match is None:  # pragma: no cover - callers only pass matching names
+        return ("", 0)
+    return (match.group(3), int(match.group(4) or 0))
+
+
+def _list_snapshots(backup_dir: Path) -> list[Path]:
+    """Return pre-migration snapshots in ``backup_dir``, oldest first (blocking; run in a thread)."""
+    if not backup_dir.is_dir():
+        return []
+    snapshots = [p for p in backup_dir.iterdir() if p.is_file() and _SNAPSHOT_NAME_RE.match(p.name)]
+    return sorted(snapshots, key=_snapshot_sort_key)
+
+
+def _next_snapshot_path(backup_dir: Path, from_version: int, to_version: int) -> Path:
+    """Pick a non-existing snapshot path (blocking; run in a thread)."""
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    base = f"pre-migration-v{from_version}-to-v{to_version}-{stamp}"
+    candidate = backup_dir / f"{base}.db"
+    counter = 1
+    while candidate.exists() or candidate.with_name(candidate.name + ".partial").exists():
+        candidate = backup_dir / f"{base}-{counter}.db"
+        counter += 1
+    return candidate
+
+
+def _prune_snapshots(backup_dir: Path, keep: int) -> list[Path]:
+    """Delete all but the newest ``keep`` snapshots (blocking; run in a thread)."""
+    snapshots = _list_snapshots(backup_dir)
+    removed: list[Path] = []
+    for old in snapshots[: max(len(snapshots) - keep, 0)]:
+        try:
+            old.unlink()
+            removed.append(old)
+        except OSError:
+            logger.warning("Could not delete old pre-migration snapshot %s", old, exc_info=True)
+    return removed
+
+
+def _unlink_quietly(path: Path) -> None:
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        logger.warning("Could not remove partial snapshot %s", path, exc_info=True)
+
+
+async def _create_pre_migration_snapshot(
+    db: aiosqlite.Connection, db_path: Path, from_version: int, to_version: int
+) -> Path:
+    """Write a consistent ``VACUUM INTO`` copy of the database and prune old snapshots.
+
+    ``db`` must not have an open transaction (SQLite refuses ``VACUUM`` inside
+    one). The statement runs on aiosqlite's worker thread; filesystem work is
+    pushed to ``asyncio.to_thread`` so the event loop never blocks.
+    """
+    backup_dir = db_path.parent / SNAPSHOT_DIR_NAME
+    target: Path | None = None
+    partial: Path | None = None
+    try:
+        target = await asyncio.to_thread(_next_snapshot_path, backup_dir, from_version, to_version)
+        # Write to a temporary name first so a failed snapshot never matches
+        # the retention pattern or looks like a usable backup.
+        partial = target.with_name(target.name + ".partial")
+        await db.execute("VACUUM INTO ?", (str(partial),))
+        await asyncio.to_thread(partial.replace, target)
+        size = (await asyncio.to_thread(target.stat)).st_size
+    except Exception as exc:
+        if partial is not None:
+            await asyncio.to_thread(_unlink_quietly, partial)
+        destination = target if target is not None else backup_dir
+        logger.error(
+            "Pre-migration snapshot to %s failed; aborting startup without applying migrations v%d -> v%d. "
+            "Free disk space or fix permissions, or set MIGRATION_BACKUP=false to migrate without a snapshot.",
+            destination,
+            from_version,
+            to_version,
+            exc_info=True,
+        )
+        raise MigrationBackupError(f"Pre-migration snapshot to {destination} failed: {exc}") from exc
+
+    logger.info(
+        "Pre-migration snapshot written: %s (%d bytes, schema v%d -> v%d)", target, size, from_version, to_version
+    )
+    removed = await asyncio.to_thread(_prune_snapshots, backup_dir, SNAPSHOT_RETENTION)
+    for old in removed:
+        logger.info("Removed old pre-migration snapshot %s", old)
+    return target
+
+
+async def _prepare_migrations(db: aiosqlite.Connection, db_path: Path, *, backup_enabled: bool) -> Path | None:
+    """Pre-flight for :func:`_run_migrations`; call outside any transaction.
+
+    - Fresh database (no recorded schema version): nothing to do.
+    - Recorded version newer than :data:`LATEST_SCHEMA_VERSION`: raise
+      :class:`SchemaDowngradeError`.
+    - Migrations pending and ``backup_enabled``: write a snapshot and return
+      its path; raise :class:`MigrationBackupError` when that fails.
+    """
+    current_version = await _read_schema_version(db)
+    if current_version is None:
+        return None
+    if current_version > LATEST_SCHEMA_VERSION:
+        error = _downgrade_error(current_version, db_path.parent / SNAPSHOT_DIR_NAME)
+        logger.error("%s", error)
+        raise error
+    if current_version >= LATEST_SCHEMA_VERSION:
+        return None
+    if not backup_enabled:
+        logger.warning(
+            "MIGRATION_BACKUP=false: applying schema migrations v%d -> v%d without a pre-migration snapshot",
+            current_version,
+            LATEST_SCHEMA_VERSION,
+        )
+        return None
+    return await _create_pre_migration_snapshot(db, db_path, current_version, LATEST_SCHEMA_VERSION)
+
+
 async def _run_migrations(db: aiosqlite.Connection) -> None:
     """Run incremental schema migrations based on schema_version."""
     cursor = await db.execute("SELECT MAX(version) FROM schema_version")
     row = await cursor.fetchone()
     current_version = row[0] if row and row[0] else 1
+    if current_version > LATEST_SCHEMA_VERSION:
+        raise _downgrade_error(current_version)
 
     for version, migrate in MIGRATIONS:
         if version > current_version:
