@@ -8,6 +8,8 @@ from dataclasses import dataclass
 from typing import Any
 
 from app.agents.action_executor import resolve_and_validate_entity
+from app.security import sensitive_actions
+from app.security.sensitive_actions import SETTING_ALLOWLIST, sensitive_reason_for_entity
 
 from . import _helpers
 
@@ -27,7 +29,11 @@ class DeferredDomainPolicy:
 # and an allow-list of argument-free services. Deferred writes are
 # fail-closed: anything outside this policy is rejected at schedule time and
 # re-checked at fire time (``background_actions``). Unlocking and disarming
-# are deliberately not schedulable.
+# are deliberately not schedulable. Sensitive actions that pass this policy
+# (alarm arming, opening a garage door/gate/door cover) are additionally
+# refused at schedule time unless approval is off or the entity is
+# allowlisted (``_deferred_action_needs_approval``); the HA client backstop
+# re-checks at fire time.
 DEFERRED_ACTION_POLICY: dict[str, DeferredDomainPolicy] = {
     "light": DeferredDomainPolicy("light-agent", frozenset({"turn_on", "turn_off", "toggle"})),
     "switch": DeferredDomainPolicy("light-agent", frozenset({"turn_on", "turn_off", "toggle"})),
@@ -62,6 +68,23 @@ def deferred_action_rejection(domain: str, service: str) -> str | None:
     if service not in policy.services:
         return f"The '{domain}/{service}' service cannot be scheduled as a delayed action."
     return None
+
+
+async def _deferred_action_needs_approval(
+    domain: str, service: str, entity_id: str, ha_client: Any, entity_index: Any = None
+) -> bool:
+    """True when ``domain/service`` on ``entity_id`` is sensitive and not exempt from approval."""
+    reason = await sensitive_reason_for_entity(
+        domain,
+        service,
+        entity_id,
+        state_fetcher=getattr(ha_client, "get_state", None),
+        entity_index=entity_index,
+    )
+    if reason is None:
+        return False
+    settings = await sensitive_actions.load_approval_settings()
+    return settings.enabled and entity_id.strip().lower() not in settings.allowlist
 
 
 def deferred_owner_agent(domain: str) -> str | None:
@@ -460,6 +483,21 @@ async def _delayed_action(
             "new_state": None,
             "speech": not_found.get("speech") or f"Could not find an entity matching '{target_entity}'.",
             "metadata": not_found.get("metadata"),
+        }
+    # Approval gate at schedule time: a sensitive action (alarm arm, opening
+    # a garage door/gate/door) cannot be approved when the delay ends, so it
+    # is refused now unless approval is off or the entity is allowlisted.
+    # The HA client backstop re-checks at fire time.
+    if await _deferred_action_needs_approval(action_domain, action_service, resolved_entity, ha_client, entity_index):
+        return {
+            "success": False,
+            "entity_id": None,
+            "new_state": None,
+            "speech": (
+                f"I cannot schedule this for {resolved.get('friendly_name') or resolved_entity}: it needs a "
+                f"spoken or typed confirmation when it runs. Add the entity to {SETTING_ALLOWLIST} to allow it."
+            ),
+            "cacheable": False,
         }
     await scheduler.schedule(
         logical_name=entity_query,

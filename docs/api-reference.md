@@ -348,6 +348,11 @@ the other fields; larger bodies, including chunked bodies without
 A task routed to a timer that the timer agent delegates to Home Assistant's
 built-in assistant cannot be honored; it returns `200` with a `text` stating
 that this is not supported in AI tasks and `action_executed: false`.
+A sensitive action (unlock, alarm arm/disarm, opening a garage door, gate or
+door cover) is refused the same way -- `200`, a `text` explaining that it
+needs a spoken or typed confirmation, `action_executed: false` -- unless the
+entity is in `approval.allowlist_entities` (see
+[Configuration](configuration.md#approval-settings)).
 
 **Errors** (`{"detail": "..."}`):
 
@@ -401,7 +406,7 @@ Returns one model:
 
 | Header | Use |
 |--------|-----|
-| `X-OpenWebUI-Chat-Id` | Conversation id `owui-<chat id>` (truncated to 64 characters). Without it every turn gets a fresh id (`owui-<random hex>`) and runs without server-side history. |
+| `X-OpenWebUI-Chat-Id` | Conversation id `owui-<chat id>` (truncated to 64 characters). Without it every turn gets a fresh id (`owui-<random hex>`) and runs without server-side history, and sensitive actions (unlock, alarm arm/disarm, opening a garage door, gate or door) are refused instead of asking for approval. |
 | `X-OpenWebUI-User-Id` | Records the user in `external_user_mappings` (source `openwebui`) and passes the mapped Home Assistant user id as `user_id`; unmapped users run without `user_id`. Mapping errors never fail the request. |
 | `X-OpenWebUI-User-Name`, `X-OpenWebUI-User-Email` | Stored as display metadata for the Persons page. |
 | `X-OpenWebUI-Task` | Marks an Open WebUI background task (see below). Empty values, unrendered `{{...}}` placeholders and `none`/`null`/`false`/`undefined` (case-insensitive) mean "no task". |

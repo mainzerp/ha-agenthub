@@ -6,6 +6,7 @@ import re
 from typing import Any
 
 from app.agents.action_executor import VERIFY_MISMATCH
+from app.agents.approval_gate import gate_speech
 
 # An observed HA state is only spoken when it is a short plain word
 # ("jammed", "unlocked", "armed_away"); anything else stays generic.
@@ -34,7 +35,15 @@ def failure_speech(action_name: str, friendly_name: str, verify: dict[str, Any] 
     plain words. Never embeds exception text, URLs, or other internals:
     callers log the details (``call_service_with_verification`` already
     logs the traceback).
+
+    A sensitive call held by the approval gate speaks nothing (the agent
+    asks one approval question for the turn); a refused one explains that
+    it needs a confirmation (see ``app.agents.approval_gate``).
     """
+    if isinstance(verify, dict):
+        gated = gate_speech(verify, action_name, friendly_name)
+        if gated is not None:
+            return gated
     verb = (action_name or "update").replace("_", " ")
     observed = _speakable_observed_state(verify)
     if observed:

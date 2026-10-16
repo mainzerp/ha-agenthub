@@ -19,6 +19,7 @@ from app.db.repository import SettingsRepository
 from app.entity.visibility import entity_is_visible
 from app.models.agent import BackgroundEvent, TaskContext
 from app.security.sanitization import wrap_user_input
+from app.security.sensitive_actions import SensitiveActionBlocked
 from app.util.ha_template import neutralize_ha_template
 from app.util.tasks import spawn
 
@@ -219,6 +220,12 @@ async def handle_background_event(
             await ha_client.call_service(domain, service, target_entity)
         except asyncio.CancelledError:
             raise
+        except SensitiveActionBlocked as exc:
+            # Approval backstop: nobody can approve at fire time.
+            failure = f"Delayed action rejected: {exc}"
+            logger.warning("Delayed action %s on %s blocked: approval required", target_action, target_entity)
+            await _announce_deferred_failure(ha_client, payload, entity_index, failure=failure)
+            return _error_result(failure, code="approval_required", recoverable=False)
         except Exception as exc:
             failure = f"Delayed action {target_action} on {target_entity} failed."
             logger.error("%s (%s)", failure, exc, exc_info=True)

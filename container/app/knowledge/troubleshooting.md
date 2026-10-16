@@ -308,6 +308,41 @@ Symptom: while one person enrolls alone, most samples are rejected (`rejected_in
 
 **Fix:** Since 1.19.0, the orchestrator dispatches LLM clarification turns when entity resolution fails. This is expected behavior. If you prefer the old silent failure mode, there is no toggle; ensure entity aliases and visibility rules are correct to minimize not-found cases. The matcher tolerates underscore-joined queries (e.g. `jalousie_mitte`) and close singular/plural name variants; adding an HA alias remains the reliable fix for names that differ more.
 
+## Action Needs a Confirmation / Blocked from Automations
+
+**Symptoms:** "unlock the front door", "disarm the alarm", "arm the alarm" or
+"open the garage" answers "Should I ...?" instead of acting; an AI task,
+delayed action or Open WebUI request answers "... needs a spoken or typed
+confirmation; it is not allowed from automations ..."; a delayed action is
+announced as "Delayed action rejected"; the automation agent refuses an
+automation that opens a garage door, gate or door cover.
+
+**Cause:** sensitive actions need an explicit yes in the same conversation
+(see [User Guide](user-guide.md#sensitive-actions-need-approval)).
+
+**Fix:**
+
+- Answer the question with a clear yes within 60 seconds. On a voice
+  satellite the microphone reopens; in chat, type the answer.
+- Open WebUI asks only when it sends the `X-OpenWebUI-Chat-Id` header.
+- To let an AI task, a delayed action or Open WebUI without chat id run the
+  action, add the entity to `approval.allowlist_entities`, or disable the
+  check with `approval.enabled = false` (see
+  [Configuration](configuration.md#approval-settings)). Automations created
+  by the agent still may only close those covers; open them from a script or
+  automation you write in Home Assistant.
+- A cover that opens without a question has no device class `garage`, `gate`
+  or `door` in Home Assistant; set it there (and resync the entity index) if
+  it should be protected. A cover that unexpectedly asks has a device class
+  that could not be read (entity not in the index and no state): check the
+  entity id and the Home Assistant connection.
+- A "yes" typed in another channel, or by another Home Assistant user,
+  does not approve; ask again from the original channel.
+- Traces show an `approval` span with the decision (`confirm`, `decline`,
+  `modify`, `unrelated`, `unclear`) and the age of the request; the log
+  shows `Approval gate pending/refused ...` and `Blocked unapproved sensitive
+  HA call ...`.
+
 ## Message Not Delivered to a Send Device
 
 **Symptoms:** A "send ... to ..." request answers "No matching send device mapping is configured" or "I could not prepare the content to send" (or the German equivalent), and nothing arrives.

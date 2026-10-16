@@ -456,6 +456,10 @@ response_variable: door_check
   structure makes the action fail.
 - **Timers** -- timers that the HA built-in assistant handles cannot be set
   from a task; the result says so.
+- **Sensitive actions** -- unlocking, arming or disarming an alarm and
+  opening a garage door, gate or door cover are refused (no question is
+  asked); the result text says so. See
+  [Sensitive Actions Need Approval](#sensitive-actions-need-approval).
 
 ## Device Command Behavior
 
@@ -464,6 +468,55 @@ response_variable: door_check
 - **Conditions** -- only lights support "do X if Y". Other agents say they cannot run the action conditionally and ask whether to do it now.
 - **Unsupported features** -- when Home Assistant reports that a device lacks a capability (tilt, position, volume, dimming, color), the agent says so instead of sending the command.
 - **Already in that state** -- a plain on/off/open/close request for a single device that is already in that state is answered without a service call; requests with values (brightness, color, position) and group entities always run.
+
+## Sensitive Actions Need Approval
+
+Some actions open the home to people, so HA-AgentHub never runs them on the
+first request:
+
+- `lock.unlock` and `lock.open`;
+- every alarm panel disarm and arm service (home, away, night, vacation,
+  custom bypass);
+- `cover.open_cover`, `cover.set_cover_position` and `cover.toggle` on covers
+  with the device class `garage`, `gate` or `door` (blinds, shutters and
+  tilt services are not affected; a cover whose Home Assistant state has no
+  device class, such as a cover group, is not affected either; when the
+  device class cannot be read at all, the cover is treated as a garage door).
+
+How it works per channel:
+
+- **Voice (Assist), dashboard chat, REST/WebSocket API** -- the agent asks
+  "Should I unlock Front Door?" (in your language; on a voice satellite the
+  microphone reopens). Answer within 60 seconds in the same conversation:
+  a clear yes runs exactly that action, a no cancels it, an unclear answer
+  is asked once more, and a different request cancels it and is handled
+  normally. Only the same channel and Home Assistant user that made the
+  request can approve it; an answer from another channel or user cancels it
+  without running anything. A late yes is told "That request expired, nothing was done."
+  Several sensitive actions in one request are asked for in one question;
+  the other actions of that request run right away.
+- **Open WebUI (OpenAI-compatible API)** -- asks like the chat when Open
+  WebUI sends the `X-OpenWebUI-Chat-Id` header; without it the action is
+  refused.
+- **AI Task, delayed actions, timers and other background work** -- never
+  asked; the action is refused with a short explanation. A delayed sensitive
+  action ("open the garage in 10 minutes", "arm the alarm in 5 minutes") is
+  refused when you schedule it unless the entity is allowlisted (unlocking
+  and disarming cannot be delayed at all).
+- **Automations created by the automation agent** -- may close or stop a
+  garage door, gate or door cover but never open, position or toggle it; a
+  cover the entity index does not know and a templated or indirect cover
+  target are refused the same way. Arming the alarm (home, away, night,
+  vacation, custom bypass) stays allowed in such automations; disarming and
+  unlocking are not available to them.
+
+Entities listed in `approval.allowlist_entities` run without a question, also
+from AI tasks and delayed actions; `approval.enabled = false` turns the
+approval off entirely (see [Configuration](configuration.md#approval-settings)).
+The approval is not tied to a voice profile: anyone who can talk to the
+assistant can answer yes. Scenes, Home Assistant scripts or automations, and
+external MCP tool servers that unlock or open something themselves are not
+covered.
 
 ## Troubleshooting from the UI
 

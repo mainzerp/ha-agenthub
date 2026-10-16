@@ -16,6 +16,7 @@ from typing import Any, cast
 from app.a2a._request import build_send_request, build_stream_request
 from app.a2a.protocol import JsonRpcRequest
 from app.agents.agent_registry import CachedAgentRegistry
+from app.agents.approval import handle_pending_approval
 from app.agents.base import BaseAgent
 from app.agents.cache_orchestrator import CacheOrchestrator
 from app.agents.cancel_speech import generate_cancel_speech
@@ -1307,6 +1308,25 @@ class OrchestratorAgent(BaseAgent):
         # DP-4: background turns early-exited above; only IngressTask reaches text reads.
         task = cast(IngressTask, task)
         user_text = task.description
+
+        # Sensitive-action approval: an answer to a pending approval question
+        # is judged on the verbatim user text BEFORE cache replay and
+        # classification (a condensed task would paraphrase a bare "yes").
+        approval_exit = await handle_pending_approval(self, task, conversation_id, user_text, span_collector)
+        if approval_exit is not None:
+            return PipelinePreludeResult(
+                conversation_id=conversation_id,
+                detected_language=context_language,
+                lang_turns=[],
+                span_collector=span_collector,
+                classifications=[],
+                routing_cached=False,
+                target_agent=str(approval_exit.get("routed_to") or ""),
+                condensed_task="",
+                confidence=None,
+                used_origin_context=False,
+                early_exit={"_exit_type": "approval", **approval_exit},
+            )
 
         cache_language = await self._explicit_cache_language(context_language)
         # Follow-up signal: while a clarifying question is pending, the

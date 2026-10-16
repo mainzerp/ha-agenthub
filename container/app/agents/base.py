@@ -30,6 +30,7 @@ _PROMPTS_DIR = Path(__file__).resolve().parent.parent / "prompts"
 _prompt_cache: dict[str, str] = {}
 
 _KNOWN_PROMPT_NAMES = (
+    "approval_confirm",
     "automation",
     "automation_confirm",
     "calendar",

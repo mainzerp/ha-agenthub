@@ -55,17 +55,28 @@ Live pipeline in board format — headings are columns, cards are
 
 ## In Progress
 
-- Code-enforced confirmation for sensitive actions · priority: P1 · area: agents
-  Outcome: unlock, alarm disarm, garage/door covers (and actions inside
-  agent-created automations) run only after an explicit confirmation enforced
-  in code, not in the prompt. Today they execute immediately
-  (`container/app/prompts/security.txt:15-25`). Options: confirmation turn
-  like automation_confirmation.py, PIN, satellite ask_question, speaker-ID
-  match. Started 2026-10-16: researching all action paths and the existing
-  automation confirmation; owner decisions pending (mechanism, sensitive
-  list, ai_task/background behaviour). Verify: "Tuer aufschliessen" asks first; "ja" executes; anything else
-  cancels; trace shows the gate.
 ## Testing
+
+- Code-enforced approval for sensitive actions · priority: P1 · area: agents
+  Outcome: unlock/open locks, alarm arm and disarm, and opening garage/gate/
+  door covers are held and asked ("Soll ich ...?"); a "ja" from the same
+  channel and user within 60 s executes exactly the held calls under a
+  scoped token. ai_task/background/OpenAI without chat id are refused unless
+  the entity is in `approval.allowlist_entities`; `approval.enabled` switches
+  it off. Fail-closed backstop in the HA REST/WS clients (cache replay,
+  multi-action, delayed actions, plugins); sensitive results never cached;
+  agent-created automations may only close access covers (arming the alarm
+  stays allowed); delayed sensitive actions refused at schedule time; unknown
+  cover device_class treated as sensitive. Decisions 2026-10-16. Not
+  released (VERSION.md Recent Changes).
+  Passed: container suite 4884, bridge 240, ruff, self-docs sync; security
+  review (5 findings fixed, bypass probes now fail). Known gaps: scenes,
+  scripts, automation.trigger and external MCP tools are not gated; no
+  dashboard control for the two settings yet (PUT /api/admin/settings).
+  Needs user verification: deploy; "Schliess die Haustuer auf" -> question,
+  "ja" -> unlocks, "nein" -> nothing; garage open asks; blinds open without
+  asking; "Schalte den Alarm in 10 Minuten scharf" -> refused; ai_task
+  "Oeffne das Garagentor" -> refused text; trace shows the approval span.
 
 - DB migration safety · priority: P1 · area: core
   Outcome: a failed or downgraded upgrade cannot lose data. Before pending

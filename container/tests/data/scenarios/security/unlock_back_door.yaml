@@ -20,6 +20,16 @@ request:
   text: "unlock the back door"
 expected:
   routed_agent: security-agent
-  service_calls:
-    - {domain: lock, service: unlock, target_entity: lock.back_door}
-  speech_contains: ["back"]
+  # Sensitive action: held for approval, nothing runs on the first turn.
+  service_calls: []
+  speech_contains: ["should i", "unlock", "back"]
+follow_up:
+  - request: {text: "yes"}
+    llm:
+      classify: |
+        {"decision": "confirm"}
+    expected:
+      routed_agent: security-agent
+      service_calls:
+        - {domain: lock, service: unlock, target_entity: lock.back_door}
+      speech_contains: ["unlocked"]

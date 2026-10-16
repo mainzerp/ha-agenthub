@@ -210,6 +210,11 @@ class TaskContext(BaseModel):
     # phrasings like "hier" (ambiguous in chat, resolvable for
     # a satellite in a known area).
     source: RequestSource = "api"
+    # False when the client cannot send a follow-up turn on the same
+    # conversation id (OpenAI-compatible request without
+    # ``X-OpenWebUI-Chat-Id``): sensitive actions are then refused instead
+    # of asking for approval (see ``app.agents.approval_gate``).
+    conversation_resumable: bool = True
     language: str = "en"
     background_event: BackgroundEvent | None = None
     sequential_send: bool = False

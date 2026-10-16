@@ -35,11 +35,13 @@ _response_key_map = {
     "ha_action": "result_speech",
     "filler_generate": "filler_text",
     "filler_send": "filler_text",
+    "approval": "decision",
 }
 
 _REWRITE_FAILED_RESPONSE = "Rewrite failed; cached response returned"
 
 _included_span_names = {
+    "approval",
     "dispatch",
     "dispatch_content",
     "dispatch_send",

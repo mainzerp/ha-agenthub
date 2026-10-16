@@ -130,6 +130,7 @@ route to them through the same dispatcher boundary as built-in agents.
    b. Calls the HA REST API (`ha_client/rest.py`) to execute `light/turn_on`.
    c. Verifies the resulting state (`call_service_with_verification` in `app/agents/action_executor.py`) and returns a response with speech text and action details.
 6. The orchestrator checks the **action cache** for an exact hash match and stores the new result on miss.
+   Sensitive actions (unlock, alarm arm/disarm, opening a garage door, gate or door) are held for an explicit approval instead of running in step 5; see [Sensitive-Action Approval](#sensitive-action-approval).
 7. The response flows back through the API layer to the HA integration, which speaks it to the user.
 
 Domain-agent result rules (`app/agents/actionable.py`, `app/agents/action_executor.py`):
@@ -781,6 +782,80 @@ share one contract:
 - **Relative changes** -- `brightness_step_pct` (native HA), `temperature_delta` (resolved against the current target), `volume_up`/`volume_down` (native HA), and `volume_delta` (resolved against the current volume). Unknown light parameters are rejected, not dropped.
 - **Results** -- every executed write returns `executed_command` (`domain`, `service`, `entity_id`, `service_data`). Failure speech is generic; exception text and URLs are only logged.
 - **Conditions** -- only the light executor evaluates the `condition` field; the other agents' prompts decline conditional requests instead of dropping the condition.
+
+### Sensitive-Action Approval
+
+Unlock/open a lock, alarm disarm and every arm service, and
+open/position/toggle on covers with device class `garage`/`gate`/`door`
+need an explicit approval (`app/security/sensitive_actions.py::classify_sensitive`,
+pure, case-insensitive; tilt services are not sensitive). The cover device
+class comes from the entity index, else the HA state (a state without a
+device class, e.g. a cover group, is not sensitive); when neither can be
+read, the cover counts as sensitive (fail closed).
+Settings `approval.enabled` / `approval.allowlist_entities` (see
+[Configuration](configuration.md#approval-settings)). Two layers:
+
+- **Gate** (`app/agents/approval_gate.py`) -- `call_service_with_verification`
+  runs it after the entity is resolved and visibility-checked. An unapproved
+  sensitive call is not executed: on an interactive turn (source `ha`,
+  `chat`, `api`, or `openai` with `TaskContext.conversation_resumable`, which
+  the OpenAI ingress sets only with `X-OpenWebUI-Chat-Id`; plus a
+  conversation id) `ActionableAgent.handle_task` has opened a collector, the
+  call is held there, and `app/agents/approval.py::build_approval_result`
+  stores one `PendingApproval` batch per conversation (in memory, 60 s TTL,
+  1 h tombstone without service data, max 256; calls held by several agents
+  in one turn are merged by trace id) and replaces the speech with one
+  question ("Should I unlock Front Door?", English template, localized like
+  other template speech) with `voice_followup`, which arms the pending
+  question. Executed blocks of a multi-action turn keep their speech in
+  front of the question. Without a collector (`ai_task`, `background`,
+  OpenAI without chat id) the call is refused with a plain, non-error result
+  text (`action_executed.success=false`).
+- **Answer** (`handle_pending_approval`) -- runs in the orchestrator prelude
+  before the action-cache replay and classification, on the verbatim user
+  text, for interactive sources only. The orchestrator LLM classifies it with
+  `prompts/approval_confirm.txt` (English examples; the shared fail-closed
+  `parse_decision` of the automation confirmation). `confirm` rechecks
+  visibility for the agent that held each call (`fail_closed_on_metadata_gap`) and runs
+  exactly the stored calls through `call_service_with_verification` inside
+  `approved_calls(...)`, a ContextVar token scoped to those
+  `(domain, service, entity_id)` tuples; `decline` drops them; `modify` /
+  `unrelated` drop them and continue the normal pipeline (the pending
+  question stays as merge context); an answer whose `source` or `user_id`
+  differs from the asking turn is treated as unrelated without an LLM call; `unclear` asks once more, then drops
+  them; a tombstone answers a late yes with "That request expired, nothing
+  was done." and otherwise continues normally. The turn is stored in
+  history, never cached, and records an `approval` span (`decision`,
+  `status`, `age_ms`, `agent_id`, `actions`, and `domain`/`service`/
+  `entity_id` for a single action; never service data or codes).
+- **Backstop** -- `HARestClient.call_service` and
+  `HAWebSocketClient.call_service` call `enforce_sensitive_call_policy` before
+  sending: a sensitive call without a matching token, not allowlisted, while
+  approval is enabled raises `SensitiveActionBlocked`. Lock/alarm services
+  without an explicit entity, `all`, and area/device/floor/label targets are
+  always blocked. Cover device classes come from the entity index registered
+  at startup, else the HA state (the WebSocket client has no state read, so
+  an unindexed cover is blocked there; the REST client's own WebSocket
+  fallback is not re-checked). `send_ws_command` refuses `call_service` /
+  `execute_script`. This covers action-cache replay (the entry is
+  invalidated and the turn runs live, so it asks), delayed actions (refused
+  and announced at fire time), AI tasks, plugins and future code paths.
+  Scenes, scripts and HA automations that unlock or open something, and
+  external MCP servers that call Home Assistant themselves, are indirect and
+  not covered.
+- **Never cached** -- the security and cover executors mark sensitive results
+  `cacheable=False` even when approval is off or the entity is allowlisted.
+- **Delayed actions** -- sensitive delayed actions (alarm arm, opening an
+  access cover; unlock/disarm are not schedulable at all) are refused at
+  schedule time unless exempt.
+- **Automation agent** -- configs may only `close_cover`/`stop_cover` covers
+  whose index device class is `garage`/`gate`/`door`, or that the index does
+  not know; cover calls with templated or indirect targets (`entity_id`
+  outside `target`/`data`/`data_template`/`service_data`) are refused.
+  Arming the alarm stays allowed (owner decision).
+- **Coexistence** -- automation-change proposals and approvals are separate
+  stores; storing one drops the other for the conversation (newer wins,
+  matching the single pending question).
 
 ### Cancel-Intent / Dismiss
 

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import inspect
 import logging
 import re
 import uuid
@@ -28,6 +29,7 @@ from app.agents.automation_confirmation import PendingAutomationChange, confirma
 from app.analytics.tracer import _optional_span
 from app.entity.deterministic_resolver import resolve_entity_deterministic_first
 from app.entity.visibility import entity_is_visible
+from app.security.sensitive_actions import ACCESS_COVER_DEVICE_CLASSES, ACCESS_COVER_SAFE_SERVICES
 
 logger = logging.getLogger(__name__)
 
@@ -494,6 +496,8 @@ _SERVICE_ALLOWLIST: dict[str, frozenset[str] | None] = {
     "todo": None,
     # scene.apply/scene.create take entity maps outside ``entity_id``.
     "scene": frozenset({"turn_on"}),
+    # Garage-door, gate and door covers are further limited to closing
+    # (``_access_cover_problems``).
     "lock": frozenset({"lock"}),
     "alarm_control_panel": frozenset(
         {"alarm_arm_home", "alarm_arm_away", "alarm_arm_night", "alarm_arm_vacation", "alarm_arm_custom_bypass"}
@@ -631,6 +635,146 @@ def _collect_references(config: dict[str, Any]) -> tuple[set[str], list[str], li
     return entities, services, problems
 
 
+# Containers of a service-call node that HA reads target entity ids from.
+_CALL_TARGET_CONTAINERS: tuple[str, ...] = ("target", "data", "data_template", "service_data")
+
+
+def _call_target_entities(node: dict[str, Any]) -> tuple[set[str], bool]:
+    """Entity ids one service-call node targets, and whether a target is unresolvable.
+
+    Reads ``entity_id`` from the node itself and from ``target``, ``data``,
+    ``data_template`` and ``service_data``. Unresolvable (statically
+    unverifiable): a templated container or entity id, a non-string id,
+    ``all``, or an ``entity_id`` anywhere else in the node.
+    """
+    found: set[str] = set()
+    unresolvable = False
+    containers: list[Any] = [node]
+    for key in _CALL_TARGET_CONTAINERS:
+        value = node.get(key)
+        if isinstance(value, str):
+            unresolvable = True
+        elif value is not None:
+            containers.append(value)
+    for container in containers:
+        if not isinstance(container, dict):
+            unresolvable = True
+            continue
+        raw = container.get("entity_id")
+        if raw is None:
+            continue
+        for value in raw if isinstance(raw, list) else [raw]:
+            if not isinstance(value, str) or _has_template(value):
+                unresolvable = True
+                continue
+            for part in value.split(","):
+                item = part.strip().lower()
+                if not item:
+                    continue
+                if "." not in item:
+                    unresolvable = True
+                    continue
+                found.add(item)
+
+    def nested_entity_ids(value: Any, depth: int) -> bool:
+        if isinstance(value, dict):
+            if depth > 0 and "entity_id" in value:
+                return True
+            return any(nested_entity_ids(v, depth + 1) for v in value.values())
+        if isinstance(value, list):
+            return any(nested_entity_ids(v, depth + 1) for v in value)
+        return False
+
+    # entity_id outside the known containers (e.g. data.options.entity_id).
+    for key, value in node.items():
+        if key in _CALL_TARGET_CONTAINERS or key == "entity_id":
+            if isinstance(value, dict) and any(nested_entity_ids(v, 1) for v in value.values()):
+                unresolvable = True
+            continue
+        if nested_entity_ids(value, 1):
+            unresolvable = True
+    return found, unresolvable
+
+
+def _collect_service_calls(config: dict[str, Any]) -> list[tuple[str, set[str], bool]]:
+    """``(service, target entity ids, unresolvable)`` for every service call in the actions section."""
+    calls: list[tuple[str, set[str], bool]] = []
+
+    def visit(node: Any) -> None:
+        if isinstance(node, list):
+            for item in node:
+                visit(item)
+            return
+        if not isinstance(node, dict):
+            return
+        for key in ("service", "action"):
+            value = node.get(key)
+            if isinstance(value, str) and "." in value and not _has_template(value):
+                entities, unresolvable = _call_target_entities(node)
+                calls.append((value.strip().lower(), entities, unresolvable))
+                break
+        for value in node.values():
+            visit(value)
+
+    for key, value in config.items():
+        if _SECTION_ALIASES.get(key) == "actions":
+            visit(value)
+    return calls
+
+
+async def _index_device_class(entity_index: Any, entity_id: str) -> tuple[bool, str | None]:
+    """``(known, device_class)`` from the entity index; a missing entry or failed lookup is unknown."""
+    getter = getattr(entity_index, "get_by_id_async", None) if entity_index is not None else None
+    if getter is None:
+        return False, None
+    try:
+        entry = getter(entity_id)
+        entry = await entry if inspect.isawaitable(entry) else entry
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        logger.debug("Device-class lookup failed for %s", entity_id, exc_info=True)
+        return False, None
+    if entry is None:
+        return False, None
+    device_class = getattr(entry, "device_class", None)
+    return True, (device_class.lower() if isinstance(device_class, str) and device_class else None)
+
+
+async def _access_cover_problems(config: dict[str, Any], entity_index: Any) -> list[str]:
+    """Garage doors, gates and door covers may only be closed or stopped by an automation.
+
+    Opening them needs a fresh approval each time, which an automation
+    running later cannot give. The device class comes from the entity index;
+    a cover the index does not know, or a target that cannot be resolved
+    statically (templates, ids outside the target containers), is treated
+    as an access cover (fail closed). Arming an alarm stays allowed.
+    """
+    problems: list[str] = []
+
+    def add(problem: str) -> None:
+        if problem not in problems:
+            problems.append(problem)
+
+    for service, entities, unresolvable in _collect_service_calls(config):
+        domain, _, name = service.partition(".")
+        if domain != "cover" or name in ACCESS_COVER_SAFE_SERVICES:
+            continue
+        if unresolvable:
+            add(
+                f"{service} with a templated or indirect target is not allowed: name the covers explicitly "
+                "so garage doors, gates and doors can be checked"
+            )
+        for entity_id in sorted(entities):
+            known, device_class = await _index_device_class(entity_index, entity_id)
+            if not known or device_class in ACCESS_COVER_DEVICE_CLASSES:
+                add(
+                    f"{service} on {entity_id} is not allowed: garage doors, gates and doors may only be "
+                    "closed or stopped by an automation, opening needs a confirmation each time"
+                )
+    return problems
+
+
 def _service_allowed(service: str) -> bool:
     domain, _, name = service.partition(".")
     if domain not in _SERVICE_ALLOWLIST:
@@ -665,6 +809,7 @@ async def _validate_automation_config(config: dict[str, Any], entity_index: Any,
             entities.add(f"script.{name}")
     rejected_entities = [eid for eid in sorted(entities) if not await _entity_allowed(eid, entity_index, agent_id)]
     messages = list(problems)
+    messages.extend(await _access_cover_problems(config, entity_index))
     if rejected_entities:
         messages.append("unknown or not permitted entities: " + ", ".join(rejected_entities))
     if rejected_services:

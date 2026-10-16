@@ -589,6 +589,24 @@ async def _seed_defaults(db: aiosqlite.Connection) -> None:
             "mediation",
             "Seconds of silence between streamed mediation tokens before the stream is aborted (must be > 0)",
         ),
+        # Approval for sensitive actions (unlock, alarm arm/disarm, opening
+        # garage doors / gates / door covers)
+        (
+            "approval.enabled",
+            "true",
+            "bool",
+            "approval",
+            "Require a spoken or typed yes before unlocking locks, arming or disarming alarms and opening "
+            "garage doors, gates and door covers",
+        ),
+        (
+            "approval.allowlist_entities",
+            "",
+            "string",
+            "approval",
+            "Entity ids (comma-separated or JSON list) whose sensitive actions run without confirmation, "
+            "also from automations and AI tasks",
+        ),
         # Language
         (
             "language",

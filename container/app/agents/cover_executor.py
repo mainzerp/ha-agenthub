@@ -22,6 +22,7 @@ from app.agents.executor_state_check import (
 from app.entity.visibility import entity_is_visible
 from app.ha_client.history_query import execute_recorder_history_query
 from app.models.agent import TaskContext
+from app.security.sensitive_actions import classify_sensitive
 
 logger = logging.getLogger(__name__)
 
@@ -245,6 +246,10 @@ async def execute_cover_action(
     # Resolve expected state
     expected_state = _resolve_expected_state(action_name, service_data)
 
+    # The pre-action state read carries the device class the approval gate
+    # needs (garage/gate/door covers); without a state the gate looks it up.
+    attributes = state_resp.get("attributes") if isinstance(state_resp, dict) else None
+    device_class = attributes.get("device_class") if isinstance(attributes, dict) else None
     verify = await call_service_with_verification(
         ha_client,
         domain,
@@ -253,17 +258,23 @@ async def execute_cover_action(
         service_data=service_data,
         expected_state=expected_state,
         previous_state=verification_previous_state(state_resp),
+        device_class=device_class if isinstance(device_class, str) else None,
+        device_class_known=isinstance(attributes, dict),
     )
     if not verify["success"]:
-        return {
+        failed: dict[str, Any] = {
             "success": False,
             "entity_id": entity_id,
             "new_state": None,
             "speech": failure_speech(action_name, friendly_name, verify),
         }
+        if verify.get("approval"):
+            failed["approval"] = verify["approval"]
+            failed["cacheable"] = False
+        return failed
 
     new_state = verify["observed_state"]
-    return {
+    result: dict[str, Any] = {
         "success": True,
         "action": action_name,
         "entity_id": entity_id,
@@ -283,6 +294,11 @@ async def execute_cover_action(
             "service_data": service_data,
         },
     }
+    if classify_sensitive(domain, service, entity_id, device_class if isinstance(device_class, str) else None):
+        # Opening a garage door, gate or door needs an approval on every
+        # request: never replay it from the action cache.
+        result["cacheable"] = False
+    return result
 
 
 # ---------------------------------------------------------------------------

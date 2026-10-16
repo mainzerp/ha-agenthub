@@ -180,6 +180,7 @@ class DispatchManager:
             # Session memory: matches resolved by the prelude overlap task.
             context.memory_context = incoming_context.memory_context
             context.source = incoming_context.source
+            context.conversation_resumable = incoming_context.conversation_resumable
             context.language = incoming_context.language
             context.injection_detected = incoming_context.injection_detected
             # M-16: preserve the sequential-send marker across the context

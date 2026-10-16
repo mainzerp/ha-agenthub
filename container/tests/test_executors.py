@@ -182,6 +182,7 @@ class TestSecurityExecutor:
         assert result["success"] is True
         ha.call_service.assert_awaited_once_with("lock", "lock", "lock.front_door", None)
 
+    @pytest.mark.usefixtures("approval_disabled")
     async def test_alarm_arm_away_calls_correct_service(self):
         matcher = AsyncMock()
         match_obj = MagicMock(entity_id="alarm_control_panel.home", friendly_name="Home Alarm")
@@ -198,6 +199,7 @@ class TestSecurityExecutor:
             "alarm_control_panel", "alarm_arm_away", "alarm_control_panel.home", None
         )
 
+    @pytest.mark.usefixtures("approval_disabled")
     async def test_unlock_with_code(self):
         matcher = AsyncMock()
         match_obj = MagicMock(entity_id="lock.front_door", friendly_name="Front Door")

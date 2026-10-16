@@ -221,6 +221,20 @@ Identifies the speaker of Assist voice turns teed in by the bridge STT wrapper (
 | `voice.speaker_id.wait_ms` | `500` | int | Wait budget (`0-3000` ms) of the conversation turn for a speaker result, counted from the start of the lookup (which runs concurrently with memory search and classification). A result that arrives before dispatch is always used; at dispatch the turn blocks at most the rest of the budget |
 | `voice.speaker_id.num_threads` | `2` | int | CPU threads for the speaker-embedding model (`1-8`). A change reloads the model in the background; voice turns keep using the loaded model until the new one is ready |
 
+### Approval Settings
+
+Approval of sensitive actions (unlock/open a lock, arm or disarm an alarm,
+open/position/toggle a cover with device class `garage`, `gate` or `door`);
+behavior per channel in the [User Guide](user-guide.md#sensitive-actions-need-approval).
+Changed via `PUT /api/admin/settings`; changes apply within the 60-second
+settings cache. A failed settings read keeps approval on with an empty
+allowlist.
+
+| Key | Default | Type | Description |
+|-----|---------|------|-------------|
+| `approval.enabled` | `true` | bool | Ask for a spoken or typed yes before a sensitive action runs and refuse sensitive actions from AI tasks, delayed actions and other non-interactive callers. `false` disables the approval gate and the write backstop entirely. |
+| `approval.allowlist_entities` | (empty) | string | Entity ids whose sensitive actions run without a question, also from AI tasks and delayed actions. Comma-separated (`lock.shed, cover.garage_door`) or a JSON list (`["lock.shed"]`); case-insensitive; invalid JSON counts as empty. |
+
 ### General Settings
 
 | Key | Default | Type | Description |

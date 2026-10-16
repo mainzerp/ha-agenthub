@@ -222,9 +222,19 @@ def _normalize_action_executed(raw) -> ActionResult | None:
 
 
 def _build_a2a_request(
-    conv_request: ConversationRequest, method: str, span_collector=None, request: Request | None = None
+    conv_request: ConversationRequest,
+    method: str,
+    span_collector=None,
+    request: Request | None = None,
+    *,
+    conversation_resumable: bool = True,
 ) -> tuple[JsonRpcRequest, IngressTask]:
-    """Convert a ConversationRequest into an A2A JsonRpcRequest + IngressTask."""
+    """Convert a ConversationRequest into an A2A JsonRpcRequest + IngressTask.
+
+    ``conversation_resumable=False`` marks a client that cannot send the
+    next turn on the same conversation id (approval questions are then not
+    asked; sensitive actions are refused).
+    """
     # FLOW-CTX-1 (0.18.6) / FLOW-WS-SPAN-1 (P1-6): source comes from the
     # SpanCollector that the TracingMiddleware derived from the route
     # path (WS or HTTP). Default when no collector was provided (pure
@@ -240,6 +250,7 @@ def _build_a2a_request(
         user_id=conv_request.user_id,
         language=conv_request.language or "en",
         source=source,
+        conversation_resumable=conversation_resumable,
         injection_detected=prepared_text.injection_detected,
     )
     task = IngressTask(

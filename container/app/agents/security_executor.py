@@ -17,6 +17,7 @@ from app.agents.executor_state_check import failure_speech, is_redundant_action,
 from app.entity.visibility import entity_is_visible
 from app.ha_client.history_query import execute_recorder_history_query
 from app.models.agent import TaskContext
+from app.security.sensitive_actions import classify_sensitive
 
 logger = logging.getLogger(__name__)
 
@@ -210,12 +211,16 @@ async def execute_security_action(
         previous_state=verification_previous_state(state_resp),
     )
     if not verify["success"]:
-        return {
+        failed: dict[str, Any] = {
             "success": False,
             "entity_id": entity_id,
             "new_state": None,
             "speech": failure_speech(action_name, friendly_name, verify),
         }
+        if verify.get("approval"):
+            failed["approval"] = verify["approval"]
+            failed["cacheable"] = False
+        return failed
 
     new_state = verify["observed_state"]
     # Codes/PINs are secrets: they are never echoed into the result, the
@@ -242,9 +247,11 @@ async def execute_security_action(
             "service_data": public_data,
         },
     }
-    if "code" in service_data:
+    if "code" in service_data or classify_sensitive(domain, service, entity_id, None):
         # A replay without the code would fail; a replay with it would mean
-        # storing the secret. Never cache coded security actions.
+        # storing the secret. Never cache coded security actions. Sensitive
+        # actions (unlock, arm, disarm) need an approval on every request,
+        # so they are never cached either.
         result["cacheable"] = False
     return result
 

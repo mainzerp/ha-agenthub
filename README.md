@@ -49,12 +49,12 @@ A multi-agent AI assistant for Home Assistant with container-based A2A orchestra
 | **Climate Agent** | `climate`, `fan`, `humidifier`, `weather`, `sensor` | Temperature (absolute and relative), HVAC mode, fan speed/preset/oscillation/direction, humidity, weather queries |
 | **Media Agent** | `media_player` | Playback, volume (absolute, relative, step), mute/unmute, source selection |
 | **Music Agent** | `media_player` | Music-focused playback (radio, playlists), library search, volume |
-| **Cover Agent** | `cover` | Open, close, stop, set position, tilt control |
+| **Cover Agent** | `cover` | Open, close, stop, set position, tilt control (opening a garage door, gate or door asks for approval) |
 | **Vacuum Agent** | `vacuum` | Start, pause, stop, return to base, clean spot, set fan speed |
 | **Scene Agent** | `scene` | Scene activation |
 | **Timer Agent** | `timer`, `input_datetime`, `input_boolean` | Timers, alarms, reminders |
 | **Automation Agent** | `automation`, `script` | Trigger, enable, disable, and query automations |
-| **Security Agent** | `lock`, `alarm_control_panel`, `camera`, `binary_sensor`, `sensor` | Arm/disarm, lock/unlock, camera on/off and status |
+| **Security Agent** | `lock`, `alarm_control_panel`, `camera`, `binary_sensor`, `sensor` | Arm/disarm, lock/unlock (unlock, arm and disarm ask for approval), camera on/off and status |
 | **Calendar Agent** | `calendar` | Query events, add reminders |
 | **Lists Agent** | `todo`, `shopping_list` | Shopping and todo list management |
 | **Send Agent** | — | Deliver content to phones, satellites, and notification targets |

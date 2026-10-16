@@ -20,6 +20,16 @@ request:
   text: "arm the alarm at home"
 expected:
   routed_agent: security-agent
-  service_calls:
-    - {domain: alarm_control_panel, service: alarm_arm_home, target_entity: alarm_control_panel.home_alarm}
-  speech_contains: ["alarm"]
+  # Sensitive action: held for approval, nothing runs on the first turn.
+  service_calls: []
+  speech_contains: ["should i", "arm", "home mode"]
+follow_up:
+  - request: {text: "yes"}
+    llm:
+      classify: |
+        {"decision": "confirm"}
+    expected:
+      routed_agent: security-agent
+      service_calls:
+        - {domain: alarm_control_panel, service: alarm_arm_home, target_entity: alarm_control_panel.home_alarm}
+      speech_contains: ["armed_home"]

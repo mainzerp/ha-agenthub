@@ -524,6 +524,8 @@ Entity-index maintenance is currently described by startup priming, Home Assista
 - dashboard access uses sessions plus CSRF protection
 - the container API uses an API key, and Home Assistant access uses a long-lived access token
 - plugins and external tool servers extend trusted execution, not isolated execution
+- sensitive Home Assistant actions (unlock or open a lock, arm or disarm an alarm, open a garage door, gate or door cover) never run on the first request: interactive channels ask for an explicit yes judged by an LLM on the verbatim answer, non-interactive callers (AI tasks, delayed actions, OpenAI requests without a chat id) are refused unless the entity is allowlisted, and a backstop in the Home Assistant client blocks any unapproved sensitive call (`approval.enabled`, `approval.allowlist_entities`; see [Architecture](../architecture.md#sensitive-action-approval))
+- speaker identification and the requesting user's name are prompt context only, never authorization
 
 ### Scalability
 
@@ -538,6 +540,7 @@ Entity-index maintenance is currently described by startup priming, Home Assista
 | --- | --- |
 | Legacy `agent-assist` naming can confuse contributors | This document calls out the naming split explicitly and treats the public name and compatibility names as separate concerns |
 | Cached actions could become invalid after visibility changes or entity removal | Visibility is rechecked before replay and failed replays invalidate the cache entry |
+| An LLM or replay path could unlock or open the home without the user's intent | Sensitive actions need an explicit approval per request, are never action-cached, and an approval-token backstop in the Home Assistant client blocks every other path |
 | Live Home Assistant, LLM, or MCP dependencies can fail mid-turn | The runtime preserves cache fallbacks where possible, keeps a general fallback agent, and surfaces failures through traces and logs |
 | In-process plugins can affect runtime stability or trust boundaries | Plugins are opt-in, lifecycle-managed, and documented as trusted-admin code rather than isolated extensions |
 | UI and docs can drift from optional agent enablement | Agent registration still depends on runtime config, so operational docs should continue to distinguish always-on control-plane pieces from enableable agents |

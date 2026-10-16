@@ -15,6 +15,7 @@ from app.defaults import DEFAULT_LOCAL_EMBEDDING_MODEL
 from app.entity.index import EntityIndex
 from app.entity.ingest import parse_ha_states, state_to_entity_index_entry
 from app.ha_client.persons import PERSON_ENTITY_PREFIX, get_person_directory, person_identity_changed
+from app.security.sensitive_actions import register_entity_index
 from app.util.tasks import spawn
 
 if TYPE_CHECKING:
@@ -590,6 +591,8 @@ async def setup_entity_index(app: FastAPI, source: str, ha_client: HARestClient,
     if entity_index is None:
         entity_index = EntityIndex(vector_store)
         app.state.entity_index = entity_index
+    # Device-class source for the sensitive-action approval backstop.
+    register_entity_index(entity_index)
 
     await schedule_entity_index_prime(app, ha_client, entity_index, vector_store)
     return entity_index

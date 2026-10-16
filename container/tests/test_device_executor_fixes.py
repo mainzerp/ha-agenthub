@@ -231,6 +231,7 @@ class TestNoopCheck:
         assert len(ha.calls) == 1
 
     @pytest.mark.asyncio
+    @pytest.mark.usefixtures("approval_disabled")
     async def test_security_code_skips_noop(self):
         ha = _FakeHA("lock.front", "unlocked", post_state="unlocked")
         result = await execute_security_action(
@@ -423,6 +424,7 @@ class TestExecutedCommand:
         assert result["executed_command"]["service"] == "turn_on"
 
     @pytest.mark.asyncio
+    @pytest.mark.usefixtures("approval_disabled")
     async def test_security_code_never_cached_or_echoed(self):
         ha = _FakeHA("alarm_control_panel.house", "armed_away", post_state="disarmed")
         result = await execute_security_action(
@@ -802,6 +804,7 @@ class TestSatelliteTargeting:
 
 class TestPreviousStateVerification:
     @pytest.mark.asyncio
+    @pytest.mark.usefixtures("approval_disabled")
     async def test_alarm_moving_to_other_state_after_arm_fails(self):
         """disarmed -> triggered after an arm call contradicts the command."""
         ha = _FakeHA("alarm_control_panel.house", "disarmed", post_state="triggered")
@@ -815,6 +818,7 @@ class TestPreviousStateVerification:
         assert "triggered" in result["speech"]
 
     @pytest.mark.asyncio
+    @pytest.mark.usefixtures("approval_disabled")
     async def test_alarm_unchanged_after_arm_stays_unverified(self):
         """An unchanged pre-call state may be a late report: not a failure."""
         ha = _FakeHA("alarm_control_panel.house", "disarmed", post_state="disarmed")

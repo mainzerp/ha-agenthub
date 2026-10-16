@@ -30,6 +30,7 @@ from app.models.agent import (
     source_is_stateless_task,
 )
 from app.models.cache import ActionCacheEntry, CachedAction
+from app.security.sensitive_actions import SensitiveActionBlocked
 
 logger = logging.getLogger(__name__)
 
@@ -749,6 +750,10 @@ class CacheOrchestrator:
                 "state": None,
                 "source": "cached_call",
             }
+        except SensitiveActionBlocked:
+            # Approval backstop: a sensitive action is never replayed from
+            # the cache; the caller invalidates the entry and runs live.
+            raise
         except Exception:
             logger.warning("Cached action execution failed", exc_info=True)
             return None

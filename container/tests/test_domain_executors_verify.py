@@ -310,6 +310,7 @@ async def _assert_verified_action(
 
 class TestCoverExecutorVerification:
     @pytest.mark.asyncio
+    @pytest.mark.usefixtures("approval_disabled")
     async def test_cover_open_cover_empty_rest_ws_confirms(self):
         from app.agents.cover_executor import execute_cover_action
 
@@ -342,6 +343,7 @@ class TestCoverExecutorVerification:
         )
 
     @pytest.mark.asyncio
+    @pytest.mark.usefixtures("approval_disabled")
     async def test_cover_set_position_empty_rest_ws_confirms(self):
         from app.agents.cover_executor import execute_cover_action
 
@@ -626,6 +628,7 @@ class TestSecurityExecutorVerification:
         )
 
     @pytest.mark.asyncio
+    @pytest.mark.usefixtures("approval_disabled")
     async def test_alarm_arm_home_unchanged_disarmed_is_not_reported_armed(self):
         """Critical safety test (#132): an alarm still disarmed after the verify
         window is never reported as armed (nor as disarmed): hedged wording."""

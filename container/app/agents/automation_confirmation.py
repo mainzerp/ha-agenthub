@@ -17,11 +17,10 @@ import asyncio
 import json
 import logging
 import re
-import time
-from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
 
+from app.agents.pending_store import PendingStore
 from app.models.agent import ActionExecuted, AgentError, AgentErrorCode, TaskResult
 
 if TYPE_CHECKING:
@@ -65,55 +64,26 @@ class PendingAutomationChange:
         return f"{self.kind}_automation"
 
 
-class AutomationConfirmationStore:
+class AutomationConfirmationStore(PendingStore[PendingAutomationChange]):
     """In-memory pending-proposal map keyed by conversation_id (TTL-bounded)."""
 
     def __init__(self, ttl_seconds: float = PENDING_TTL_SECONDS) -> None:
-        self._ttl = ttl_seconds
-        self._entries: OrderedDict[str, tuple[float, PendingAutomationChange | None]] = OrderedDict()
+        super().__init__(ttl_seconds, tombstone_ttl_seconds=_TOMBSTONE_TTL_SECONDS, max_entries=_MAX_ENTRIES)
 
     def put(self, conversation_id: str, change: PendingAutomationChange) -> None:
-        self._purge()
-        self._entries[conversation_id] = (time.monotonic(), change)
-        self._entries.move_to_end(conversation_id)
-        while len(self._entries) > _MAX_ENTRIES:
-            self._entries.popitem(last=False)
+        super().put(conversation_id, change)
+        # Newer wins: a fresh proposal supersedes a pending sensitive-action
+        # approval in the same conversation (one open question at a time).
+        from app.agents.approval import approval_store
+
+        approval_store.pop(conversation_id)
 
     def get(self, conversation_id: str | None) -> tuple[str, PendingAutomationChange | None]:
         """Return ``(status, change)`` with status ``active``, ``expired`` or ``none``."""
-        if not conversation_id:
-            return "none", None
-        entry = self._entries.get(conversation_id)
-        if entry is None:
-            return "none", None
-        stored_at, change = entry
-        age = time.monotonic() - stored_at
-        if change is not None and age <= self._ttl:
-            return "active", change
-        if age <= _TOMBSTONE_TTL_SECONDS:
-            return "expired", None
-        self._entries.pop(conversation_id, None)
-        return "none", None
-
-    def pop(self, conversation_id: str | None) -> PendingAutomationChange | None:
-        if not conversation_id:
-            return None
-        entry = self._entries.pop(conversation_id, None)
-        return entry[1] if entry else None
-
-    def clear(self) -> None:
-        self._entries.clear()
-
-    def _purge(self) -> None:
-        now = time.monotonic()
-        for key in list(self._entries):
-            stored_at, change = self._entries[key]
-            age = now - stored_at
-            if age > _TOMBSTONE_TTL_SECONDS:
-                self._entries.pop(key, None)
-            elif change is not None and age > self._ttl:
-                # Keep a tombstone (change dropped) for the late-answer message.
-                self._entries[key] = (stored_at, None)
+        status, payload = self.get_entry(conversation_id)
+        if status == "active" and isinstance(payload, PendingAutomationChange):
+            return "active", payload
+        return status, None
 
 
 confirmation_store = AutomationConfirmationStore()

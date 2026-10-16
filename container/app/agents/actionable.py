@@ -42,6 +42,8 @@ from app.agents.action_executor import (
     start_verify_records,
     unverified_speech,
 )
+from app.agents.approval import build_approval_result
+from app.agents.approval_gate import approval_is_interactive, close_approval_collector, open_approval_collector
 from app.agents.base import (
     UNTRUSTED_DATA_NOTE,
     UNTRUSTED_NAME_MAX_CHARS,
@@ -720,6 +722,8 @@ class ActionableAgent(BaseAgent):
                         span["metadata"]["confirmation_rejected_reason"] = confirmation_rejected
                     if verify_records:
                         span["metadata"]["verify_outcome"] = verify_records[-1]["outcome"]
+                    if result.get("approval"):
+                        span["metadata"]["approval"] = result["approval"]
             else:
                 result = await self._do_execute(
                     action,
@@ -1119,9 +1123,25 @@ class ActionableAgent(BaseAgent):
         # the pre-LLM keyword recall publishes fresh values for the
         # executor's closed-contract validation.
         candidate_ids_token = set_request_candidate_ids(None)
+        # Approval gate: sensitive calls (unlock, arm/disarm, opening a
+        # garage door/gate/door) are held in this collector on interactive
+        # turns and turned into one approval question below; on other turns
+        # the gate refuses them (see app.agents.approval_gate).
+        approval_token, approval_collector = open_approval_collector(
+            approval_is_interactive(task.context, task.conversation_id)
+        )
         try:
             try:
-                return await self._handle_task_inner(task)
+                result = await self._handle_task_inner(task)
+                if approval_collector.held:
+                    result = await build_approval_result(
+                        task,
+                        result,
+                        approval_collector.held,
+                        agent_id=self.agent_card.agent_id,
+                        entity_index=self._entity_index,
+                    )
+                return result
             except asyncio.CancelledError:
                 raise
             except Exception:
@@ -1134,6 +1154,7 @@ class ActionableAgent(BaseAgent):
                     SPEECH_SOURCE_TEMPLATE,
                 )
         finally:
+            close_approval_collector(approval_token)
             reset_request_candidate_ids(candidate_ids_token)
             reset_request_visible_entries(visible_entries_token)
             _current_task_var.reset(task_token)

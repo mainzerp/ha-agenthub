@@ -14,6 +14,8 @@ from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
+
 from app.agents.action_executor import (
     VERIFY_IN_PROGRESS,
     VERIFY_MISMATCH,
@@ -143,6 +145,7 @@ class TestVerificationOutcome:
         assert isinstance(verify["error"], StateVerificationError)
         assert "jammed" in str(verify["error"])
 
+    @pytest.mark.usefixtures("approval_disabled")
     async def test_alarm_unchanged_after_timeout_is_unverified_not_failed(self):
         @asynccontextmanager
         async def expect_state(entity_id, **_kwargs):
@@ -166,6 +169,7 @@ class TestVerificationOutcome:
         assert verify["verified"] is False
         assert verify["cacheable"] is False
 
+    @pytest.mark.usefixtures("approval_disabled")
     async def test_transitional_state_stays_success_in_progress(self):
         ha_client = SimpleNamespace(
             call_service=AsyncMock(return_value=[{"entity_id": "cover.garage", "state": "opening"}]),
@@ -441,6 +445,7 @@ class TestConfirmationSentence:
         assert result.speech == "Locking the front door."
         assert result.metadata["speech_source"] == "template"
 
+    @pytest.mark.usefixtures("approval_disabled")
     async def test_sensitive_code_in_confirmation_is_rejected_and_redacted(self):
         ha_client = SimpleNamespace(
             call_service=AsyncMock(return_value=[{"entity_id": "lock.front", "state": "unlocked"}])
