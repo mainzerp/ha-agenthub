@@ -26,6 +26,19 @@ Live pipeline in board format — headings are columns, cards are
   `agents/actionable.py:337-440`). Next step: owner decides whether to
   re-ratify the directive or move the code back. Verify: prime-directives.md
   and architecture.md describe the same path.
+- User and agent memory · priority: P2 · area: memory
+  Outcome: persistent user profiles with a memory tool (save/retrieve/update),
+  limits/eviction, optional dashboard UI. Gap audit 2026-10-16: only passive
+  session-turn similarity recall, general agent only; no explicit
+  save/recall/forget tool, no delete method in the memory repository, no
+  retention/eviction, no dashboard page. Treat memory writes as untrusted
+  input (memory-poisoning risk). Next step: design a per-person `user_facts`
+  store + local tool for the general agent, per-user cap with age eviction
+  (session-memory lessons in Athenaeum `ha-agenthub` topic). Verify: memory
+  persists across conversations and is controllable per user.
+
+## In Progress
+
 - HA bridge quality: reauth, setup check, diagnostics · priority: P2 · area: integration
   Outcome: the bridge recovers cleanly from bad keys and an unreachable
   container. Reauth flow is never triggered and miswired (no
@@ -42,19 +55,6 @@ Live pipeline in board format — headings are columns, cards are
   range); pin torch and drop unused torchvision/torchaudio; `CONTAINER_PORT`
   vs. hard-coded 8080 in the Dockerfile CMD. Verify: CI green on a PR that
   touches the Dockerfile; multi-arch manifest on the next tag.
-- User and agent memory · priority: P2 · area: memory
-  Outcome: persistent user profiles with a memory tool (save/retrieve/update),
-  limits/eviction, optional dashboard UI. Gap audit 2026-10-16: only passive
-  session-turn similarity recall, general agent only; no explicit
-  save/recall/forget tool, no delete method in the memory repository, no
-  retention/eviction, no dashboard page. Treat memory writes as untrusted
-  input (memory-poisoning risk). Next step: design a per-person `user_facts`
-  store + local tool for the general agent, per-user cap with age eviction
-  (session-memory lessons in Athenaeum `ha-agenthub` topic). Verify: memory
-  persists across conversations and is controllable per user.
-
-## In Progress
-
 ## Testing
 
 - Code-enforced approval for sensitive actions · priority: P1 · area: agents
