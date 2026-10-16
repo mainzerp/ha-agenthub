@@ -7,18 +7,6 @@ Live pipeline in board format — headings are columns, cards are
 ## Backlog
 
 
-- HA service for automations (ai_task-style contract) · priority: P1 · area: integration
-  Outcome: HA automations can call the container via a service/contract without
-  manual HTTP. Gap audit 2026-10-16: no `ai_task` platform, no services.yaml, no
-  structured output anywhere (no json_schema/response_format). Proposal: bridge
-  `AITaskEntity` with GENERATE_DATA (instructions + structure, later
-  attachments) instead of a custom service, so automations, blueprints and
-  HA's "Suggest" button target it; container endpoint (e.g. `/api/task`)
-  returning validated JSON `data`, skipping filler/follow-up/mediation and
-  the cache; raise bridge min HA version from 2025.4.0 to >= 2025.8. Next
-  step: confirm the AITaskEntity API against HA core source, then decide the
-  contract. Verify: `ai_task.generate_data` with a structure from a real HA
-  automation returns typed fields.
 - Code-enforced confirmation for sensitive actions · priority: P1 · area: agents
   Outcome: unlock, alarm disarm, garage/door covers (and actions inside
   agent-created automations) run only after an explicit confirmation enforced
@@ -82,6 +70,16 @@ Live pipeline in board format — headings are columns, cards are
   persists across conversations and is controllable per user.
 
 ## In Progress
+
+- AI Task entity for automations (ai_task generate_data) · priority: P1 · area: integration
+  Outcome: `ai_task.generate_data` on the HA-AgentHub entity runs a normal
+  orchestrator turn (devices may be switched) and returns typed JSON per the
+  `structure`, or text without one; image attachments reach a vision LLM.
+  No filler, voice follow-up or cache for task turns. Bridge min HA version
+  raised for ai_task. Decisions 2026-10-16. Next step: research HA core
+  AITaskEntity API and the container turn flow, then fix the contract.
+  Verify: an automation calls `ai_task.generate_data` with a structure and a
+  camera snapshot and gets typed fields; a task that switches a light works.
 
 ## Testing
 
