@@ -419,3 +419,27 @@ prompts live in `container/app/prompts/`, `ctx.agent_registry` not
   them, and they map the admin surface for anyone on the LAN.
 - **pip-audit fails the gate** with no ignore list; new advisories must be
   fixed or explicitly ignored with a reason.
+
+## 2026-10-16 — AI Task entity (ai_task generate_data)
+
+- **Owner decisions:** task requests go through the orchestrator like a normal
+  turn; tasks may switch devices; image attachments are in scope now.
+- **Native HA contract, not a custom service.** The bridge adds an
+  `AITaskEntity` (GENERATE_DATA + SUPPORT_ATTACHMENTS) so automations,
+  blueprints and HA's preferred-entity features target it. Bridge minimum HA
+  version 2025.8.0 (structure + attachments landed there; HA core research
+  against wheels 2025.6-2026.2.3).
+- **Separate container route `POST /api/ai_task`** with request source
+  `ai_task`: images exceed the WS/REST conversation size limits, and the source
+  switch reuses the existing exemptions. Task turns get no filler, voice
+  follow-up, mediation/organic closing question or pending question, never
+  read or write the action/routing cache, and are not stored as conversation
+  turns or memory (automation traffic would pollute personal memory).
+- **Vision pre-step, not image routing.** A `vision-agent` model describes
+  attachments into text (wrapped as untrusted data) before classification, so
+  any agent can act on it and image bytes never enter A2A, the classifier,
+  traces or memory. Direct image passing to the general agent can follow later.
+- **Formatter step for structured output.** A `task-formatter` model turns the
+  unmediated agent result into JSON (json_object mode where supported),
+  validated with `jsonschema` and repaired once; it must emit null for unknown
+  fields. HA core does not validate the result, so validation lives here.
