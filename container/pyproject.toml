@@ -19,7 +19,6 @@ filterwarnings = [
 source = ["app"]
 omit = [
     "app/dashboard/static/*",
-    "app/mcp/client_legacy.py",
     "app/mcp/servers/duckduckgo_server.py",
     "tests/*",
 ]
@@ -28,7 +27,6 @@ omit = [
 source = ["app"]
 omit = [
     "app/dashboard/static/*",
-    "app/mcp/client_legacy.py",
     "app/mcp/servers/duckduckgo_server.py",
     "tests/*",
 ]

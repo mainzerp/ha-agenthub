@@ -1840,6 +1840,54 @@ class TestLLMProviderAPI:
         data = resp.json()
         assert data["status"] == "error"
 
+    async def test_test_llm_provider_passes_bounded_timeout(self, authed_client: httpx.AsyncClient):
+        from app.api.routes.admin import _llm_providers
+
+        with patch("litellm.acompletion", new=AsyncMock(return_value=MagicMock())) as fake:
+            resp = await authed_client.post(
+                "/api/admin/llm-providers/test",
+                json={"provider": "groq", "api_key": "gsk-test"},
+            )
+        assert resp.status_code == 200
+        assert resp.json() == {"status": "ok", "provider": "groq"}
+        assert fake.await_args.kwargs["timeout"] == _llm_providers._PROVIDER_TEST_TIMEOUT_S
+
+    async def test_test_llm_provider_litellm_timeout_returns_error(self, authed_client: httpx.AsyncClient):
+        import litellm
+
+        exc = litellm.exceptions.Timeout(message="timed out", model="groq/x", llm_provider="groq")
+        with patch("litellm.acompletion", new=AsyncMock(side_effect=exc)):
+            resp = await authed_client.post(
+                "/api/admin/llm-providers/test",
+                json={"provider": "groq", "api_key": "gsk-test"},
+            )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "error"
+        assert "timed out" in data["detail"]
+
+    async def test_test_llm_provider_hanging_call_is_bounded(self, authed_client: httpx.AsyncClient):
+        import asyncio
+
+        from app.api.routes.admin import _llm_providers
+
+        async def _hang(**_kwargs):
+            await asyncio.sleep(30)
+
+        with (
+            patch.object(_llm_providers, "_PROVIDER_TEST_TIMEOUT_S", 0.01),
+            patch.object(_llm_providers, "_PROVIDER_TEST_GRACE_S", 0.01),
+            patch("litellm.acompletion", new=_hang),
+        ):
+            resp = await authed_client.post(
+                "/api/admin/llm-providers/test",
+                json={"provider": "groq", "api_key": "gsk-test"},
+            )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "error"
+        assert "timed out" in data["detail"]
+
     async def test_get_configured_providers(self, authed_client: httpx.AsyncClient):
         resp = await authed_client.get("/api/admin/llm-providers/configured")
         assert resp.status_code == 200

@@ -21,7 +21,9 @@ These are the only settings that use environment variables. All other configurat
 | `SQLITE_DB_PATH` | `/data/agent_assist.db` | SQLite database file path. |
 | `FERNET_KEY_PATH` | `/data/.fernet_key` | Path to the Fernet encryption key. Backup target. |
 | `COOKIE_SECURE` | `true` | Set to `true` when serving the dashboard behind HTTPS so the admin session and CSRF cookies are restricted to TLS. Setting it on plain HTTP silently breaks login (browser drops the cookie). Local development should override it to `false`. (Production compose defaults this to `true`; the in-app fallback is also `true` in `app/config.py`.) |
-| `CORS_ORIGINS` | `""` | Comma-separated list of allowed CORS origins. |
+| `CORS_ORIGINS` | `""` | Comma-separated list of allowed CORS origins. Origins listed here (not `*`) are also exempt from the cross-site request guard for cookie-authenticated requests (see [API Reference](api-reference.md#cross-site-request-protection)). |
+| `FRAME_ANCESTORS` | `'self'` | Source list for the `Content-Security-Policy: frame-ancestors` header sent on every HTTP response. Add the Home Assistant origin to embed the dashboard in an HA iframe panel, for example `'self' http://homeassistant.local:8123`. Values containing `;` or `,` are rejected and fall back to `'self'`. |
+| `ENABLE_API_DOCS` | `false` | Serve FastAPI's interactive API docs and schema at `/docs`, `/redoc`, and `/openapi.json`. Disabled by default so the API schema is not publicly exposed. |
 | `TRUSTED_PROXIES` | `""` | Comma-separated list of trusted reverse-proxy IPs or CIDR networks (for example `172.18.0.0/16`) for correct client-IP extraction from `X-Forwarded-For`. Invalid entries are logged and ignored. |
 
 Environment variables are loaded by Pydantic `BaseSettings` in `app/config.py` and support `.env` file loading.

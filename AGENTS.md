@@ -323,8 +323,7 @@ Discipline table); project mission and naming context live in
   the `new-agent` skill and must be imported in
   `container/app/agents/__init__.py` (the `@agent` decorator runs at import
   time).
-- Prompt assets live in `container/app/prompts/` (the `new-agent` skill shows a
-  stale path — trust the repo).
+- Prompt assets live in `container/app/prompts/`.
 - `container/data/` is runtime-only; `container/plugins/` is the user drop-in
   dir (files starting with `_` are ignored). Never edit generated or runtime
   artifacts.

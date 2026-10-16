@@ -402,3 +402,20 @@ prompts live in `container/app/prompts/`, `ctx.agent_registry` not
 - **Generic prompt input.** The target agent is unknown at start; the filler
   prompt's unknown-agent fallback applies, the user text still carries the
   content.
+
+## 2026-10-16 — quick hardening batch from the project audit
+
+- **Fetch-metadata guard instead of a CSRF header token.** Cookie-authenticated
+  mutating requests must be same-origin (`Sec-Fetch-Site` same-origin/none,
+  else Origin vs. Host); bearer clients and explicit `CORS_ORIGINS` entries
+  pass. Rationale: HA on the same host is same-site, so SameSite=lax does not
+  protect the admin JSON API; a header token would have touched every
+  dashboard fetch call and the admin-API skills, while the browser already
+  sends fetch metadata.
+- **Frame embedding stays possible.** Only CSP `frame-ancestors` is set
+  (default `'self'`, `FRAME_ANCESTORS` to widen it for an HA iframe); no full
+  CSP because templates use inline scripts.
+- **API docs off by default** (`ENABLE_API_DOCS`): nothing in the repo uses
+  them, and they map the admin surface for anyone on the LAN.
+- **pip-audit fails the gate** with no ignore list; new advisories must be
+  fixed or explicitly ignored with a reason.

@@ -78,7 +78,7 @@ flowchart LR
 
     RW --> B
 
-    BG[Background services\nnotification_dispatcher\ndelayed_tasks\nalarm_monitor\ncustom_loader] --> O
+    BG[Background services\nbackground_actions\ndelayed_tasks\nalarm_monitor\ncustom_loader] --> O
     BG --> EI
 ```
 
@@ -222,7 +222,7 @@ The integration does not resolve entities, classify intent, or execute Home Assi
 | `rewrite-agent` | Rephrase action-cache-hit speech; on failure the stored original agent speech is used |
 | personality mediation | Optional final response mediation layer driven by runtime settings |
 | `sanitize` | Markdown stripping and speech-safe output cleanup |
-| `notification_dispatcher` | Background notification delivery support |
+| `background_actions` | Background timer and alarm notification delivery |
 | `delayed_tasks` | Deferred task scheduling support |
 | `alarm_monitor` | Background alarm and timer monitoring |
 | `custom_loader` | Runtime loading of persisted custom agents |
@@ -451,7 +451,7 @@ This is not a single unified Pydantic settings tree. Pydantic loads the startup 
 | `FERNET_KEY_PATH` | `/data/.fernet_key` | Fernet key path for secret encryption |
 | `COOKIE_SECURE` | `false` | Forces admin session and CSRF cookies onto HTTPS only |
 | `HF_HUB_OFFLINE` | `0` | Compose and deployment control for offline Hugging Face model loading |
-| `HA_AGENTHUB_TAG` | `main` | Compose and deployment image tag selector |
+| `HA_AGENTHUB_TAG` | `latest` | Compose and deployment image tag selector |
 
 `HF_HUB_OFFLINE` and `HA_AGENTHUB_TAG` are deployment-time compose variables rather than core application settings.
 

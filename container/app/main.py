@@ -24,6 +24,7 @@ from app.dashboard.routes import router as dashboard_router
 from app.middleware.auth import SetupRedirectMiddleware, apply_exception_handlers
 from app.middleware.rate_limit import rate_limit_admin
 from app.middleware.tracing import TracingMiddleware
+from app.security.middleware import FetchMetadataCSRFMiddleware, SecurityHeadersMiddleware
 from app.setup.routes import router as setup_router
 
 # ``_configure_logging`` and ``_ensure_log_buffer_handler`` moved to
@@ -54,10 +55,15 @@ def create_app() -> FastAPI:
     """Application factory."""
     from app import __version__
 
+    # Interactive API docs and the OpenAPI schema are opt-in (ENABLE_API_DOCS).
+    docs_enabled = settings.enable_api_docs is True
     app = FastAPI(
         title="ha-agenthub",
         version=__version__,
         lifespan=lifespan,
+        docs_url="/docs" if docs_enabled else None,
+        redoc_url="/redoc" if docs_enabled else None,
+        openapi_url="/openapi.json" if docs_enabled else None,
     )
 
     # Exception handlers
@@ -66,11 +72,18 @@ def create_app() -> FastAPI:
     # Setup redirect middleware (redirects to /setup/ if unconfigured)
     app.add_middleware(SetupRedirectMiddleware)
 
+    # CORS origins (also the explicit trusted-origin list of the CSRF guard)
+    _cors_origins = [o.strip() for o in settings.cors_origins.split(",") if o.strip()]
+
+    # Fetch-metadata CSRF guard for cookie-authenticated unsafe requests.
+    # Added after SetupRedirect and before Tracing so it runs ahead of the
+    # setup DB check while blocked requests are still traced and logged.
+    app.add_middleware(FetchMetadataCSRFMiddleware, trusted_origins=_cors_origins)
+
     # Tracing middleware (trace ID + request logging)
     app.add_middleware(TracingMiddleware)
 
     # CORS middleware
-    _cors_origins = [o.strip() for o in settings.cors_origins.split(",") if o.strip()]
     app.add_middleware(
         CORSMiddleware,
         allow_origins=_cors_origins,
@@ -78,6 +91,10 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    # Security headers (outermost user middleware so redirects, CSRF blocks
+    # and CORS preflights carry them too)
+    app.add_middleware(SecurityHeadersMiddleware, frame_ancestors=settings.frame_ancestors)
 
     # Include routers
     app.include_router(health_routes.router)

@@ -246,7 +246,7 @@ class TestKnownAgentsMemoization:
 class TestNotificationDispatcherAgentId:
     @pytest.mark.asyncio
     async def test_generate_tts_message_uses_dispatcher_id(self):
-        from app.agents import notification_dispatcher as nd
+        from app.agents import background_actions as nd
         from app.security.sanitization import USER_INPUT_END, USER_INPUT_START
 
         with patch("app.llm.client.complete", new=AsyncMock(return_value="Timer ist fertig.")) as fake_complete:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import html
 import logging
 import secrets
@@ -19,6 +20,7 @@ from app.db.repository import (
     SetupStateRepository,
 )
 from app.ha_client.rest import test_ha_connection
+from app.llm.client import _is_timeout_error
 from app.middleware.rate_limit import rate_limit_setup
 from app.runtime_setup import ensure_setup_runtime_initialized
 from app.security.auth import (
@@ -33,6 +35,12 @@ from app.security.encryption import store_secret
 from app.security.hashing import hash_password
 
 logger = logging.getLogger(__name__)
+
+# Upper bound for the wizard's LLM "test connection" completion. Passed to
+# litellm as the provider timeout; ``asyncio.wait_for`` adds a small grace
+# period as a hard stop in case a provider adapter ignores the per-call timeout.
+_LLM_TEST_TIMEOUT_S = 30.0
+_LLM_TEST_GRACE_S = 5.0
 
 templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 templates.env.globals["app_version"] = _app_version
@@ -305,14 +313,23 @@ async def test_llm_endpoint(
             "model": model,
             "messages": [{"role": "user", "content": "Say hello"}],
             "max_tokens": 10,
+            "timeout": _LLM_TEST_TIMEOUT_S,
         }
         if provider == "custom_openai":
             kwargs["api_key"] = custom_provider_key or api_key
             kwargs["api_base"] = custom_provider_url
         else:
             kwargs["api_key"] = api_key
-        await litellm.acompletion(**kwargs)
+        await asyncio.wait_for(
+            litellm.acompletion(**kwargs),
+            timeout=_LLM_TEST_TIMEOUT_S + _LLM_TEST_GRACE_S,
+        )
         return HTMLResponse(f'<div class="alert alert-success">Connected to {html.escape(provider)}!</div>')
-    except Exception:
+    except Exception as exc:
+        if _is_timeout_error(exc):
+            logger.warning("LLM provider test timed out in setup wizard for %s", provider)
+            return HTMLResponse(
+                f'<div class="alert alert-error">Provider test timed out after {_LLM_TEST_TIMEOUT_S:.0f}s.</div>'
+            )
         logger.warning("LLM provider test failed in setup wizard", exc_info=True)
         return HTMLResponse('<div class="alert alert-error">Provider test failed. Check server logs.</div>')

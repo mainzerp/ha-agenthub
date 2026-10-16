@@ -2,10 +2,13 @@
 
 ## Supported Versions
 
-| Version | Supported          |
-| ------- | ------------------ |
-| 2.4.x   | :white_check_mark: |
-| < 2.4.0 | :x:                |
+Only the latest minor release line receives security fixes. Upgrade to the
+newest patch release before reporting.
+
+| Version | Supported |
+| ------- | --------- |
+| 3.7.x   | yes       |
+| < 3.7   | no        |
 
 ## Reporting a Vulnerability
 

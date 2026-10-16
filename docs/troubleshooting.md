@@ -142,6 +142,25 @@ Then restart the container:
 docker compose restart ha-agenthub
 ```
 
+## 403 "Cross-site request blocked"
+
+**Symptoms:** A dashboard or Admin API request (`POST`/`PUT`/`PATCH`/`DELETE`) fails with `403 {"detail": "Cross-site request blocked"}`.
+
+**Cause:** The request carried the dashboard session cookie but came from another origin (another host or port, including Home Assistant on `:8123` of the same host), or its `Origin` header did not match the `Host` the container received.
+
+**Fixes:**
+
+- Open the dashboard at its own URL instead of calling the Admin API from another site.
+- Behind a reverse proxy, forward the original `Host` header (or set `X-Forwarded-Host`) so the origin check matches.
+- Scripts should use `curl` with a cookie jar (no `Origin`/`Sec-Fetch-Site` headers) or the `Authorization: Bearer` API key where the endpoint accepts it.
+- To allow a trusted cross-origin page, list its exact origin in `CORS_ORIGINS`.
+
+## Dashboard Does Not Load in a Home Assistant Iframe
+
+**Cause:** The `Content-Security-Policy: frame-ancestors` header only allows `'self'` by default.
+
+**Fix:** Set `FRAME_ANCESTORS` to include the Home Assistant origin, for example `FRAME_ANCESTORS='self' http://homeassistant.local:8123`, and restart the container.
+
 ## Integration Not Appearing in Home Assistant
 
 **HACS installation:**

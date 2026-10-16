@@ -9,21 +9,100 @@ Live pipeline in board format — headings are columns, cards are
 
 - HA service for automations (ai_task-style contract) · priority: P1 · area: integration
   Outcome: HA automations can call the container via a service/contract without
-  manual HTTP. Next step: define the contract surface (service schema,
-  structured output). Verify: service callable from a real HA automation.
+  manual HTTP. Gap audit 2026-10-16: no `ai_task` platform, no services.yaml, no
+  structured output anywhere (no json_schema/response_format). Proposal: bridge
+  `AITaskEntity` with GENERATE_DATA (instructions + structure, later
+  attachments) instead of a custom service, so automations, blueprints and
+  HA's "Suggest" button target it; container endpoint (e.g. `/api/task`)
+  returning validated JSON `data`, skipping filler/follow-up/mediation and
+  the cache; raise bridge min HA version from 2025.4.0 to >= 2025.8. Next
+  step: confirm the AITaskEntity API against HA core source, then decide the
+  contract. Verify: `ai_task.generate_data` with a structure from a real HA
+  automation returns typed fields.
+- Code-enforced confirmation for sensitive actions · priority: P1 · area: agents
+  Outcome: unlock, alarm disarm, garage/door covers (and actions inside
+  agent-created automations) run only after an explicit confirmation enforced
+  in code, not in the prompt. Today they execute immediately
+  (`container/app/prompts/security.txt:15-25`). Options: confirmation turn
+  like automation_confirmation.py, PIN, satellite ask_question, speaker-ID
+  match. Next step: decide the confirmation mechanism and the sensitive-domain
+  list. Verify: "Tuer aufschliessen" asks first; "ja" executes; anything else
+  cancels; trace shows the gate.
+- DB migration safety · priority: P1 · area: core
+  Outcome: a failed or downgraded upgrade cannot lose data. `_run_migrations`
+  (`db/schema/_migrations.py:~1165`) applies 51 migrations with no snapshot
+  and no newer-than-code guard. Next step: `VACUUM INTO` snapshot before
+  pending migrations; refuse to start when the DB schema version exceeds the
+  code's maximum. Verify: tests for snapshot + guard; upgrade on a copy of
+  the live DB.
 - Tech-debt and stability hardening · priority: P1 · area: core
   Outcome: daily-driver reliability protected; known debt burned down.
   Includes the legacy `agent-assist` identifier removal tracked in `TODO.md`.
-  Verify: full verification gate passes; no regression on the live instance.
+  Audit 2026-10-16 candidates: split `_stream_turn` (1049 lines,
+  `agents/orchestrator.py:2321`); unify the four retry paths in
+  `llm/client.py`; merge the two background-task registries and drain both
+  on shutdown (`util/tasks.py`, `bootstrap/_tasks.py`); typed protocols for
+  entity_index/ha_client (drop sync fallbacks); single settings registry
+  (undocumented keys e.g. `notification.profile`); public CacheManager API
+  instead of `_routing_cache` access from routes; sync `getaddrinfo` in
+  `mcp/client.py` SSRF check (Directive 9). Verify: full verification gate
+  passes; no regression on the live instance.
+- Decide Directive 4 vs. runtime entity resolution · priority: P1 · area: entity-resolution
+  Outcome: the binding rule and the code agree. Directive 4 requires
+  deterministic-first resolution; the primary runtime path is keyword recall
+  plus LLM pick from a closed list (`docs/architecture.md:776-783`,
+  `agents/actionable.py:337-440`). Next step: owner decides whether to
+  re-ratify the directive or move the code back. Verify: prime-directives.md
+  and architecture.md describe the same path.
+- HA bridge quality: reauth, setup check, diagnostics · priority: P2 · area: integration
+  Outcome: the bridge recovers cleanly from bad keys and an unreachable
+  container. Reauth flow is never triggered and miswired (no
+  ConfigEntryAuthFailed, no reauth_confirm step, no strings); setup does not
+  test the connection (no ConfigEntryNotReady); no diagnostics.py,
+  reconfigure flow or `entry.runtime_data`; private aiohttp sessions instead
+  of `async_get_clientsession`; tests use HA stubs, not
+  pytest-homeassistant-custom-component. Verify: rotated API key raises a
+  reauth notification in HA; container down at HA start retries setup.
+- CI and supply-chain hardening · priority: P2 · area: core
+  Outcome: CI catches what the release pipeline would. Image built on PRs
+  (today only on tags); linux/arm64 image; actions pinned by SHA; hassfest +
+  HACS validation + CodeQL; Python lock file with hashes (litellm is a
+  range); pin torch and drop unused torchvision/torchaudio; `CONTAINER_PORT`
+  vs. hard-coded 8080 in the Dockerfile CMD. Verify: CI green on a PR that
+  touches the Dockerfile; multi-arch manifest on the next tag.
 - User and agent memory · priority: P2 · area: memory
   Outcome: persistent user profiles with a memory tool (save/retrieve/update),
-  limits/eviction, optional dashboard UI. Next step: design the storage and
-  retrieval contract (session-memory lessons in Athenaeum `ha-agenthub` topic).
-  Verify: memory persists across conversations and is controllable per user.
+  limits/eviction, optional dashboard UI. Gap audit 2026-10-16: only passive
+  session-turn similarity recall, general agent only; no explicit
+  save/recall/forget tool, no delete method in the memory repository, no
+  retention/eviction, no dashboard page. Treat memory writes as untrusted
+  input (memory-poisoning risk). Next step: design a per-person `user_facts`
+  store + local tool for the general agent, per-user cap with age eviction
+  (session-memory lessons in Athenaeum `ha-agenthub` topic). Verify: memory
+  persists across conversations and is controllable per user.
 
 ## In Progress
 
 ## Testing
+
+- Quick hardening batch 2026-10-16 (audit point 1) · priority: P1 · area: core
+  Outcome: low-risk fixes from the 2026-10-16 audit. pip-audit findings fail
+  the gate (no ignore list); 30 s timeouts on the admin and setup LLM
+  test-connection calls; fetch-metadata CSRF guard for cookie-authenticated
+  mutating requests; security headers (`FRAME_ANCESTORS`) and API docs off by
+  default (`ENABLE_API_DOCS`); dead code removed (`mcp/client_legacy.py`,
+  `agents/notification_dispatcher.py`); docs fixed (Fernet backup/restore,
+  SECURITY.md, `.env.example`, compose comments, TODO.md, stray
+  `validator_settings.json`). Not released (tracked in VERSION.md Recent
+  Changes). Branch `ccr-76012fde-e5fd3y`.
+  Passed: container suite 4720 passed (4 skipped, 9 xfailed, 3 xpassed);
+  ruff check/format on container/; self-docs sync; pip-audit clean with no
+  ignores; 34 middleware tests incl. same-site cross-port POST -> 403 on the
+  real app. Not run: Docker build, bridge suite (unchanged), live browser.
+  Needs user verification: review the diff; deploy; dashboard saves
+  settings, rotates the API key and runs a provider test in the browser
+  (no 403); `curl -X POST` from another origin with the session cookie and
+  `Origin: http://<host>:8123` returns 403; `/docs` returns 404.
 
 - Filler generated in parallel with classification · priority: P1 · area: voice
   Outcome: the filler LLM call starts speculatively in the prelude (after the
@@ -428,6 +507,15 @@ Live pipeline in board format — headings are columns, cards are
 - AI-powered automation suggestions · priority: idea · area: agents
 - Natural-language dashboard creation · priority: idea · area: dashboard
 - Security-agent sentinel mode (deferred — needs trigger contract + UI) · priority: P3 · area: agents
+- Camera/vision analysis (snapshot via ai_task attachments) · priority: idea · area: agents
+- Proactive event-driven notifications via assist_satellite announce/start_conversation · priority: idea · area: agents
+- Floors and labels as targets; direct script execution · priority: idea · area: entity
+- Per-user permissions and undo for the last action · priority: idea · area: agents
+- Stream agent deltas into HA's ChatLog (streaming TTS; less need for filler) · priority: idea · area: integration
+- Intent-accuracy regression harness (home-assistant-datasets / synthetic-home) · priority: idea · area: core
+- MCP Streamable HTTP transport (SSE only today) · priority: idea · area: mcp
+- Dashboard backup/restore and scheduled backups · priority: idea · area: dashboard
+- LLM cost and token tracking per agent/model · priority: idea · area: llm
 - Dashboard JS/CSS linting via standalone Biome pre-commit hook · priority: idea · area: dashboard
   Scope: `container/app/dashboard/static/` minus `vendor/` (3 JS files ~750
   lines, 24 CSS files ~2,800 lines); no package.json, no agent rule files.

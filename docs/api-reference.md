@@ -18,6 +18,21 @@ The API key is generated during the setup wizard (step 3).
 
 Admin endpoints require a session cookie obtained by logging in through the dashboard. The cookie name is `agent_assist_session` (literal in `container/app/security/auth.py`) and expires after 24 hours.
 
+### Cross-Site Request Protection
+
+Every `POST`, `PUT`, `PATCH`, or `DELETE` request that carries the `agent_assist_session` cookie and no `Authorization` header must be same-origin (`FetchMetadataCSRFMiddleware` in `container/app/security/middleware.py`):
+
+- With a `Sec-Fetch-Site` header, only `same-origin` and `none` are accepted.
+- Without `Sec-Fetch-Site`, an `Origin` header must match the request's `Host` (or `X-Forwarded-Host`) `host[:port]`; `Origin: null` is rejected.
+- Requests with neither header (for example `curl` with a cookie jar) are accepted.
+- Origins listed explicitly in `CORS_ORIGINS` are accepted; the wildcard `*` is not.
+
+Rejected requests return `403` with `{"detail": "Cross-site request blocked"}`. A Home Assistant page on another port of the same host counts as cross-origin. Bearer-token clients (`Authorization` header) and requests without the session cookie are not affected. Dashboard HTML form POSTs additionally keep the double-submit CSRF token check (`verify_csrf`).
+
+### Interactive API Docs
+
+`/docs`, `/redoc`, and `/openapi.json` are disabled by default. Set `ENABLE_API_DOCS=true` (see [Configuration](configuration.md#environment-variables)) to serve them.
+
 ### WebSocket
 
 Pass the API key in the `Authorization` header (recommended):
@@ -874,10 +889,31 @@ Auth: admin session.
 
 | Method | Path | Purpose |
 |--------|------|---------|
-| GET | `/api/admin/fernet-key-backup` | Export the current Fernet key for offline backup. |
+| POST | `/api/admin/fernet-key-backup` | Export the current Fernet key encrypted with a passphrase. |
 
-Auth: admin session. See [Backup and Restore](backup-restore.md) for
-guidance on storing the returned key.
+Auth: admin session (same-origin rule applies, see [Cross-Site Request Protection](#cross-site-request-protection)).
+
+**Request:**
+
+```json
+{"passphrase": "<passphrase>"}
+```
+
+**Response:**
+
+```json
+{
+  "status": "ok",
+  "encrypted_key": "<base64>",
+  "warning": "Store this key securely. Loss of this key makes all encrypted secrets unrecoverable."
+}
+```
+
+- `encrypted_key` is base64 of `salt (16 bytes) + nonce (12 bytes) + AES-256-GCM ciphertext and tag`; the AES key is derived from the passphrase with PBKDF2-HMAC-SHA256 (600000 iterations, 32-byte key).
+- The plaintext Fernet key is never returned.
+- An empty or whitespace-only passphrase returns HTTP 200 with `{"status": "error", "detail": "Passphrase required for key backup"}`.
+
+See [Restore the Fernet Key from an Export](backup-restore.md#restore-the-fernet-key-from-an-export) for the decryption and restore procedure.
 
 ## Admin -- Notification profile
 

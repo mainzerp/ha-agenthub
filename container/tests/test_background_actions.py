@@ -10,7 +10,7 @@ from app.agents import background_actions as ba
 from app.models.agent import BackgroundEvent, TaskContext
 
 # ---------------------------------------------------------------------------
-# G20: Parity between notification_dispatcher and background_actions
+# G20: background_actions handles timer and alarm background events
 # ---------------------------------------------------------------------------
 
 

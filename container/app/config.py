@@ -33,6 +33,14 @@ class Settings(BaseSettings):
     # `172.16.0.0/12`). Only these peers may supply X-Forwarded-For; otherwise the
     # direct client IP is used for rate limiting.
     trusted_proxies: str = ""
+    # Source list for the ``Content-Security-Policy: frame-ancestors`` header
+    # sent on every HTTP response. Add the Home Assistant origin (for example
+    # ``'self' http://homeassistant.local:8123``) to embed the dashboard in an
+    # HA iframe panel.
+    frame_ancestors: str = "'self'"
+    # Serve FastAPI's interactive API docs (/docs, /redoc, /openapi.json).
+    # Disabled by default so the API schema is not publicly exposed.
+    enable_api_docs: bool = False
 
     model_config = SettingsConfigDict(
         env_prefix="",

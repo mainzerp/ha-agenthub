@@ -274,15 +274,14 @@ def step_security() -> None:
                 "container/requirements.txt",
                 "--format=json",
                 "--output=pip-audit-report.json",
-                "--ignore-vuln",
-                "CVE-2026-28684",
-                "--ignore-vuln",
-                "CVE-2026-45829",
             ]
         )
         ok("pip-audit")
     except subprocess.CalledProcessError:
-        ok("pip-audit (vulnerabilities found — review pip-audit-report.json)")
+        # pip-audit exits non-zero on known vulnerabilities (or audit errors);
+        # either way the dependency set is not proven clean, so fail the gate.
+        fail("pip-audit (vulnerabilities found — review pip-audit-report.json)")
+        sys.exit(2)
 
     print(f"\n{GREEN}Security reports saved:{RESET}")
     print(f"  {GREEN}- bandit-report.json{RESET}")

@@ -44,22 +44,106 @@ docker run --rm \
 docker compose start ha-agenthub
 ```
 
-### Option 2: Fernet Key Export
+### Option 2: Fernet Key Export (passphrase-encrypted)
 
-Export the Fernet key via the admin API:
+`POST /api/admin/fernet-key-backup` returns the Fernet key encrypted with
+a passphrase you supply. There is no import endpoint; the key is restored
+by decrypting the envelope offline (see
+[Restore the Fernet Key from an Export](#restore-the-fernet-key-from-an-export)).
 
-```bash
-curl -s http://localhost:8080/api/admin/fernet-key-backup \
-  -H "Cookie: agent_assist_session=<session_cookie>" | jq .key
-```
+1. Log in to obtain the admin session cookie (`agent_assist_session`).
+   The login form requires the CSRF token minted by `GET /dashboard/login`:
 
-Store this key in a secure location (password manager, vault).
+   ```bash
+   BASE=http://localhost:8080
+   curl -s -c cookies.txt "$BASE/dashboard/login" -o login.html
+   CSRF=$(grep -o 'name="csrf_token" value="[^"]*"' login.html | sed 's/.*value="//; s/"$//')
+   curl -s -b cookies.txt -c cookies.txt -X POST "$BASE/dashboard/login" \
+       --data-urlencode username=<admin_user> \
+       --data-urlencode password=<admin_password> \
+       --data-urlencode csrf_token="$CSRF"
+   ```
+
+2. Export the encrypted key (JSON admin API: the session cookie is
+   enough, no CSRF field):
+
+   ```bash
+   curl -s -X POST "$BASE/api/admin/fernet-key-backup" \
+       -b cookies.txt \
+       -H "Content-Type: application/json" \
+       -d '{"passphrase": "<long passphrase>"}' \
+       | jq -r .encrypted_key > fernet_key.enc
+   ```
+
+Response fields:
+
+| Field | Content |
+|-------|---------|
+| `status` | `ok`, or `error` with `detail` when the passphrase is empty (still HTTP 200) |
+| `encrypted_key` | Base64 of `salt (16 bytes) + nonce (12 bytes) + AES-GCM ciphertext and tag` |
+| `warning` | Reminder to store the key securely |
+
+Crypto: AES-256-GCM, no associated data; the AES key is derived from
+the passphrase (UTF-8, leading/trailing whitespace stripped) with
+PBKDF2-HMAC-SHA256, 600000 iterations, 32-byte output, random 16-byte
+salt. The plaintext is the Fernet key string as stored in
+`/data/.fernet_key`.
+
+Store `fernet_key.enc` and the passphrase separately (password manager,
+vault). Delete `cookies.txt` and `login.html` when done with the admin
+API (the cache examples below reuse them).
 
 ## Restore Procedure
 
-1. Stop the container.
-2. Extract the backup into the Docker volume.
-3. Start the container and verify via `/healthz`.
+### Restore a Volume Backup
+
+```bash
+docker compose stop ha-agenthub
+docker run --rm \
+    -v ha-agenthub-data:/data \
+    -v $(pwd)/backup:/backup \
+    alpine \
+    sh -c "rm -rf /data/* /data/.[!.]* && tar xzf /backup/ha-agenthub-backup-<date>.tar.gz -C /"
+docker compose start ha-agenthub
+curl -s http://localhost:8080/healthz
+```
+
+The entrypoint re-applies ownership of `/data` on start, so files
+written by the helper container as root are fine.
+
+### Restore the Fernet Key from an Export
+
+The key is only useful together with the database whose `secrets` table
+it encrypted. Decrypt the envelope on any machine with the
+`cryptography` package (`pip install cryptography`):
+
+```python
+import base64
+import getpass
+
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+
+envelope = base64.b64decode(open("fernet_key.enc").read().strip())
+salt, nonce, ciphertext = envelope[:16], envelope[16:28], envelope[28:]
+passphrase = getpass.getpass("Passphrase: ").strip()
+kdf = PBKDF2HMAC(algorithm=hashes.SHA256(), length=32, salt=salt, iterations=600_000)
+key = AESGCM(kdf.derive(passphrase.encode("utf-8"))).decrypt(nonce, ciphertext, None)
+open("fernet_key", "wb").write(key)
+```
+
+A wrong passphrase raises `cryptography.exceptions.InvalidTag`. Write
+the key into the stopped stack's volume, then start it:
+
+```bash
+docker compose stop ha-agenthub
+docker run --rm -i -v ha-agenthub-data:/data alpine \
+    sh -c "cat > /data/.fernet_key && chmod 600 /data/.fernet_key" < fernet_key
+docker compose start ha-agenthub
+```
+
+Delete the plaintext `fernet_key` file afterwards.
 
 ## Cache Backup via Export and Import
 
@@ -69,19 +153,20 @@ admin endpoints. The exported envelope is a
 portable JSON document, not an encrypted secret, and can be stored
 in version control or shared between environments.
 
-Export both tiers:
+Export both tiers (`tier=routing|action|all`; session cookie from the
+login step in Option 2):
 
 ```bash
-curl -s "http://localhost:8080/api/admin/cache/export?tier=all" \
-    -H "Cookie: agent_assist_session=<session_cookie>" \
+curl -s "$BASE/api/admin/cache/export?tier=all" \
+    -b cookies.txt \
     -o cache-backup.json
 ```
 
 Re-import on the same or a different installation:
 
 ```bash
-curl -s -X POST "http://localhost:8080/api/admin/cache/import" \
-    -H "Cookie: agent_assist_session=<session_cookie>" \
+curl -s -X POST "$BASE/api/admin/cache/import" \
+    -b cookies.txt \
     -F file=@cache-backup.json \
     -F mode=merge \
     -F "tiers=routing,action"
@@ -118,11 +203,14 @@ checklist:
 3. Generate a new Fernet key out-of-band (for example,
    `python -c "from cryptography.fernet import Fernet;
    print(Fernet.generate_key().decode())"`) and write it to
-   `/data/.fernet_key` inside the volume.
+   `/data/.fernet_key` inside the volume (same helper-container command
+   as in [Restore the Fernet Key from an Export](#restore-the-fernet-key-from-an-export)).
 4. Restart the container (`docker compose start ha-agenthub`).
    Existing encrypted secrets become unreadable; you will need to
    re-enter the HA token, the container API key, and any LLM
-   provider keys via the dashboard.
+   provider keys via the dashboard. Existing dashboard sessions are
+   invalidated (the session signing key is derived from the Fernet
+   key); log in again.
 5. To rotate only the container API key (not the Fernet key), call
    `POST /api/admin/container-api-key/rotate` from an authenticated
    admin session and update the integration with the returned

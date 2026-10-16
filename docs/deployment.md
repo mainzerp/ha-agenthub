@@ -130,6 +130,12 @@ COOKIE_SECURE=false
 
 # Path to Fernet encryption key (default: /data/.fernet_key)
 # FERNET_KEY_PATH=/data/.fernet_key
+
+# CSP frame-ancestors value; widen it to embed the dashboard in an HA iframe
+# FRAME_ANCESTORS='self'
+
+# Serve /docs, /redoc and /openapi.json (default: false)
+# ENABLE_API_DOCS=false
 ```
 
 ### 4. Start the Container

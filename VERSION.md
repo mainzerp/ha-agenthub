@@ -6,6 +6,13 @@
 
 (tracking changes since 3.7.0)
 
+- Security: fetch-metadata CSRF guard (`app/security/middleware.py`) blocks cookie-authenticated POST/PUT/PATCH/DELETE requests that are not same-origin (`Sec-Fetch-Site` other than `same-origin`/`none`, or an `Origin` that does not match the request host). Bearer/API-key clients and explicit `CORS_ORIGINS` entries pass; form `verify_csrf` is unchanged. Closes the gap where any page on the same host (e.g. HA on :8123) could call the admin JSON API with the session cookie.
+- Security: responses carry `X-Content-Type-Options: nosniff`, `Referrer-Policy: same-origin` and CSP `frame-ancestors` (new env `FRAME_ANCESTORS`, default `'self'`). `/docs`, `/redoc` and `/openapi.json` are off unless the new env `ENABLE_API_DOCS=true`.
+- Fix: the admin and setup-wizard LLM "test connection" calls time out after 30 s instead of hanging.
+- CI: pip-audit findings now fail `scripts/ci.py` and `scripts/local-ci.ps1`; the stale ignore list (chromadb CVE-2026-45829, CVE-2026-28684) is removed.
+- Cleanup: removed the unused `app/mcp/client_legacy.py` and the deprecated `app/agents/notification_dispatcher.py` shim; removed the stray `validator_settings.json`.
+- Docs: Fernet key backup corrected (`POST /api/admin/fernet-key-backup` with passphrase, `encrypted_key`) plus a restore procedure in `docs/backup-restore.md`; `SECURITY.md` supported versions; `.env.example` `FERNET_KEY_PATH`; `HA_AGENTHUB_TAG` default; English compose comments; `TODO.md` cleanup.
+
 ## Version History
 
 ### 3.7.0 (MINOR) -- filler generated in parallel with classification

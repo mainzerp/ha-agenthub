@@ -392,8 +392,7 @@ async def _run_voice_followup_after_conversation(
 
 
 # English fallback texts. Other languages are produced from these through the
-# rewrite path (``_localize_text``); English is the final fallback. Kept as
-# dicts for the deprecated ``notification_dispatcher`` re-exports.
+# rewrite path (``_localize_text``); English is the final fallback.
 _FALLBACK_MESSAGES = {"en": "Timer {name} has finished"}
 _GENERIC_FALLBACK_MESSAGES = {"en": "The timer has finished"}
 _ALARM_FALLBACK_MESSAGE = "Alarm {name} has triggered"

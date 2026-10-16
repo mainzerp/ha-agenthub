@@ -186,14 +186,13 @@ if (-not $SkipSecurity) {
     }
 
     # pip-audit
-    Write-Host "`n>>> pip-audit -r container/requirements.txt --format=json --output=pip-audit-report.json --ignore-vuln CVE-2026-28684" -ForegroundColor Yellow
-    try {
-        pip-audit -r container/requirements.txt --format=json --output=pip-audit-report.json --ignore-vuln CVE-2026-28684
-        Step-Footer $true "pip-audit"
-    } catch {
-        # pip-audit may exit non-zero on vulnerabilities
-        Step-Footer $true "pip-audit (vulnerabilities found — review pip-audit-report.json)"
+    Write-Host "`n>>> pip-audit -r container/requirements.txt --format=json --output=pip-audit-report.json" -ForegroundColor Yellow
+    pip-audit -r container/requirements.txt --format=json --output=pip-audit-report.json
+    if ($LASTEXITCODE -ne 0) {
+        Step-Footer $false "pip-audit (vulnerabilities found - review pip-audit-report.json)"
+        exit 2
     }
+    Step-Footer $true "pip-audit"
 
     Write-Host "`nSecurity reports saved:" -ForegroundColor Green
     Write-Host "  - bandit-report.json" -ForegroundColor Green
