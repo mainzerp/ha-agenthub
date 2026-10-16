@@ -7,22 +7,6 @@ Live pipeline in board format — headings are columns, cards are
 ## Backlog
 
 
-- Code-enforced confirmation for sensitive actions · priority: P1 · area: agents
-  Outcome: unlock, alarm disarm, garage/door covers (and actions inside
-  agent-created automations) run only after an explicit confirmation enforced
-  in code, not in the prompt. Today they execute immediately
-  (`container/app/prompts/security.txt:15-25`). Options: confirmation turn
-  like automation_confirmation.py, PIN, satellite ask_question, speaker-ID
-  match. Next step: decide the confirmation mechanism and the sensitive-domain
-  list. Verify: "Tuer aufschliessen" asks first; "ja" executes; anything else
-  cancels; trace shows the gate.
-- DB migration safety · priority: P1 · area: core
-  Outcome: a failed or downgraded upgrade cannot lose data. `_run_migrations`
-  (`db/schema/_migrations.py:~1165`) applies 51 migrations with no snapshot
-  and no newer-than-code guard. Next step: `VACUUM INTO` snapshot before
-  pending migrations; refuse to start when the DB schema version exceeds the
-  code's maximum. Verify: tests for snapshot + guard; upgrade on a copy of
-  the live DB.
 - Tech-debt and stability hardening · priority: P1 · area: core
   Outcome: daily-driver reliability protected; known debt burned down.
   Includes the legacy `agent-assist` identifier removal tracked in `TODO.md`.
@@ -71,6 +55,23 @@ Live pipeline in board format — headings are columns, cards are
 
 ## In Progress
 
+- Code-enforced confirmation for sensitive actions · priority: P1 · area: agents
+  Outcome: unlock, alarm disarm, garage/door covers (and actions inside
+  agent-created automations) run only after an explicit confirmation enforced
+  in code, not in the prompt. Today they execute immediately
+  (`container/app/prompts/security.txt:15-25`). Options: confirmation turn
+  like automation_confirmation.py, PIN, satellite ask_question, speaker-ID
+  match. Started 2026-10-16: researching all action paths and the existing
+  automation confirmation; owner decisions pending (mechanism, sensitive
+  list, ai_task/background behaviour). Verify: "Tuer aufschliessen" asks first; "ja" executes; anything else
+  cancels; trace shows the gate.
+- DB migration safety · priority: P1 · area: core
+  Outcome: a failed or downgraded upgrade cannot lose data. `_run_migrations`
+  (`db/schema/_migrations.py:~1165`) applies 51 migrations with no snapshot
+  and no newer-than-code guard. Started 2026-10-16: `VACUUM INTO` snapshot before
+  pending migrations; refuse to start when the DB schema version exceeds the
+  code's maximum. Verify: tests for snapshot + guard; upgrade on a copy of
+  the live DB.
 ## Testing
 
 - AI Task entity for automations (ai_task generate_data) · priority: P1 · area: integration
