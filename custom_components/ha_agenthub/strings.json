@@ -10,27 +10,42 @@
           "url": "Container URL",
           "api_key": "API Key"
         }
+      },
+      "reauth_confirm": {
+        "title": "Re-authenticate HA-AgentHub",
+        "description": "The HA-AgentHub container at {url} rejected the saved API key. Enter the current API key from the container dashboard.",
+        "data": {
+          "api_key": "API Key"
+        }
+      },
+      "reconfigure": {
+        "title": "Reconfigure HA-AgentHub",
+        "description": "Change the container URL or API key. Leave API Key blank to keep the saved key.",
+        "data": {
+          "url": "Container URL",
+          "api_key": "API Key"
+        }
       }
     },
     "error": {
       "cannot_connect": "Unable to connect to the container. Check the URL and that the container is running.",
       "invalid_auth": "Invalid API key. Check the key and try again.",
-      "invalid_url": "Invalid URL. Must start with http:// or https://."
+      "invalid_url": "Invalid URL. Must start with http:// or https://.",
+      "already_configured": "This container is already configured."
     },
     "abort": {
       "already_configured": "This container is already configured.",
-      "reauth_successful": "Re-authentication was successful."
+      "reauth_successful": "Re-authentication was successful.",
+      "reconfigure_successful": "Reconfiguration was successful."
     }
   },
   "options": {
     "step": {
       "init": {
         "title": "HA-AgentHub settings",
-        "description": "Update connection settings for the HA-AgentHub container. Leave API Key blank to keep the saved key.",
+        "description": "Bridge settings for HA-AgentHub. To change the container URL or API key, use Reconfigure on the integration entry.",
         "data": {
           "name": "Name",
-          "url": "Container URL",
-          "api_key": "API Key",
           "ws_receive_timeout": "Response timeout (seconds)",
           "ship_logs": "Ship logs to container",
           "ship_logs_level": "Shipped log level",
@@ -42,11 +57,7 @@
       }
     },
     "error": {
-      "cannot_connect": "Unable to connect to the container. Check the URL and that the container is running.",
-      "invalid_auth": "Invalid API key. Check the key and try again.",
-      "invalid_url": "Invalid URL. Must start with http:// or https://.",
       "invalid_timeout": "Invalid timeout. Enter a positive number of seconds.",
-      "already_configured": "This container is already configured.",
       "invalid_stt_entity": "Select a speech-to-text entity other than the HA-AgentHub STT entity itself."
     }
   },

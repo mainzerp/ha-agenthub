@@ -21,8 +21,10 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import intent
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
+from . import AgentHubConfigEntry, async_report_auth_failure, async_report_auth_ok
 from .const import (
     CONF_WS_RECEIVE_TIMEOUT,
     DOMAIN,
@@ -245,7 +247,7 @@ def _strip_markdown(text: str) -> str:
 
 async def async_setup_entry(
     hass: HomeAssistant,
-    entry: ConfigEntry,
+    entry: AgentHubConfigEntry,
     async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     """Set up the conversation entity from a config entry."""
@@ -273,9 +275,9 @@ async def async_setup_entry(
                 entry.entry_id,
             )
 
-    data = hass.data[DOMAIN][entry.entry_id]
+    runtime = entry.runtime_data
     async_add_entities(
-        [HaAgentHubConversationEntity(entry, data["url"], data["api_key"])]
+        [HaAgentHubConversationEntity(entry, runtime.url, runtime.api_key)]
     )
 
 
@@ -296,6 +298,8 @@ class HaAgentHubConversationEntity(
         self._entry = entry
         self._url = url.rstrip("/")
         self._api_key = api_key
+        # HA's shared aiohttp session, fetched lazily (needs ``self.hass``).
+        # It is owned by HA and must never be closed here.
         self._session: aiohttp.ClientSession | None = None
         self._ws: aiohttp.ClientWebSocketResponse | None = None
         self._attr_unique_id = entry.entry_id
@@ -325,9 +329,6 @@ class HaAgentHubConversationEntity(
         self._coalesce_window_sec: float = 0.25
         # Debounced reconnect request flag for the background reconnect loop.
         self._reconnect_requested = asyncio.Event()
-        # Guards the automatic reauth trigger so a persistent 401 starts at
-        # most one reauth flow per failure episode (reset on next success).
-        self._reauth_triggered = False
         self._attr_device_info = dr.DeviceInfo(
             identifiers={(DOMAIN, entry.entry_id)},
             name=entry.title,
@@ -378,9 +379,8 @@ class HaAgentHubConversationEntity(
         async with self._coalesce_lock:
             self._bridge_tasks.difference_update(bridge_tasks)
         await self._disconnect_ws()
-        # P3: the shared session survives disconnects; close it exactly
-        # once when the entity is removed.
-        await self._close_session()
+        # HA owns the shared session: drop the reference, never close it.
+        self._session = None
         await super().async_will_remove_from_hass()
 
     async def _connect_ws(self) -> bool:
@@ -397,13 +397,11 @@ class HaAgentHubConversationEntity(
             # A closed socket is still installed: drop it (and its reader).
             await self._disconnect_ws_locked()
         try:
-            if self._session is None or self._session.closed:
-                self._session = aiohttp.ClientSession()
-
+            session = self._http_session()
             parsed = urlparse(self._url)
             ws_scheme = "wss" if parsed.scheme == "https" else "ws"
             ws_url = parsed._replace(scheme=ws_scheme).geturl()
-            ws = await self._session.ws_connect(
+            ws = await session.ws_connect(
                 f"{ws_url}{WS_PATH}",
                 headers={"Authorization": f"Bearer {self._api_key}"},
                 timeout=aiohttp.ClientTimeout(total=10),
@@ -413,15 +411,21 @@ class HaAgentHubConversationEntity(
             self._reconnect_delay = RECONNECT_BASE_DELAY
             self._ws_last_active = time.monotonic()
             self._start_idle_reader_locked(ws)
+            async_report_auth_ok(self._entry)
             logger.info("Connected to HA-AgentHub container at %s", self._url)
             return True
-        except (aiohttp.ClientError, asyncio.TimeoutError, OSError):
-            logger.warning("Failed to connect to container at %s", self._url)
-            # P3 (minimal WS reuse): keep the session on connect failure --
-            # a failed ws_connect does not poison the ClientSession, and
-            # reusing it across reconnect attempts avoids paying connection
-            # pool setup per retry. A dead session is replaced by the
-            # ``self._session.closed`` check above.
+        except (aiohttp.ClientError, asyncio.TimeoutError, OSError) as err:
+            # A rejected key fails the WebSocket handshake with 401/403
+            # (aiohttp ``WSServerHandshakeError`` carries the HTTP status).
+            if getattr(err, "status", None) in {401, 403}:
+                logger.warning(
+                    "Container at %s rejected the API key (HTTP %s)",
+                    self._url,
+                    err.status,
+                )
+                self._start_reauth_once()
+            else:
+                logger.warning("Failed to connect to container at %s", self._url)
             self._ws = None
             return False
 
@@ -434,11 +438,8 @@ class HaAgentHubConversationEntity(
         """Locked body of :meth:`_disconnect_ws`. Caller MUST hold
         ``self._ws_lock``.
 
-        P3 (minimal WS reuse): only the WebSocket is closed here. The
-        shared ``aiohttp.ClientSession`` survives reconnects (a fresh
-        session per reconnect pays connection-pool setup for no benefit)
-        and is closed exactly once on entity removal via
-        :meth:`_close_session`.
+        Only the WebSocket is closed here; the HTTP session is HA's shared
+        session and is never closed by the integration.
         """
         await self._stop_idle_reader()
         ws = self._ws
@@ -523,14 +524,11 @@ class HaAgentHubConversationEntity(
             if ws is not None and not ws.closed:
                 self._start_idle_reader_locked(ws)
 
-    async def _close_session(self) -> None:
-        """Close the shared aiohttp session (entity removal only)."""
-        if self._session and not self._session.closed:
-            try:
-                await self._session.close()
-            except (aiohttp.ClientError, OSError):
-                pass
-        self._session = None
+    def _http_session(self) -> aiohttp.ClientSession:
+        """Return HA's shared aiohttp session (cached; never closed here)."""
+        if self._session is None:
+            self._session = async_get_clientsession(self.hass)
+        return self._session
 
     async def _reconnect_loop(self) -> None:
         """Background loop that maintains the WebSocket connection."""
@@ -1106,13 +1104,11 @@ class HaAgentHubConversationEntity(
     def _start_reauth_once(self) -> None:
         """Start the reauth flow once per auth-failure episode.
 
-        The flag is reset on the next successful request so a recovered
-        connection can trigger reauth again if the key is rotated later.
+        The episode guard lives in the entry's runtime data (shared with the
+        AI Task and STT entities) and is reset by the next authenticated
+        answer, so a later key rotation triggers reauth again.
         """
-        if self._reauth_triggered:
-            return
-        self._reauth_triggered = True
-        self._entry.async_start_reauth(self.hass)
+        async_report_auth_failure(self.hass, self._entry)
 
     async def _process_via_rest(
         self,
@@ -1131,8 +1127,7 @@ class HaAgentHubConversationEntity(
             self._entry.options.get(CONF_WS_RECEIVE_TIMEOUT)
         )
         try:
-            if self._session is None or self._session.closed:
-                self._session = aiohttp.ClientSession()
+            session = self._http_session()
             headers = {"Authorization": f"Bearer {self._api_key}"}
             payload: dict[str, Any] = {
                 "text": user_input.text,
@@ -1140,7 +1135,7 @@ class HaAgentHubConversationEntity(
                 "language": user_input.language or "en",
             }
             payload.update(self._resolve_origin_context(user_input))
-            async with self._session.post(
+            async with session.post(
                 f"{self._url}/api/conversation",
                 json=payload,
                 headers=headers,
@@ -1159,7 +1154,7 @@ class HaAgentHubConversationEntity(
                         _rest_fallback_error_message(resp.status),
                         conversation_id,
                     )
-                self._reauth_triggered = False
+                async_report_auth_ok(self._entry)
                 # The container's tracing middleware returns a per-request
                 # trace id on every response; expose it to the log shipper.
                 current_trace_id.set(resp.headers.get("X-Trace-Id"))

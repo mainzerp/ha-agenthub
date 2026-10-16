@@ -21,6 +21,12 @@ def _ai_task_module():
     return ai_task
 
 
+def _runtime_data(url=BASE_URL, api_key=API_KEY):
+    from custom_components.ha_agenthub import AgentHubRuntimeData
+
+    return AgentHubRuntimeData(url=url, api_key=api_key)
+
+
 def _client_module():
     from custom_components.ha_agenthub import client
 
@@ -92,7 +98,13 @@ def hass():
 
 @pytest.fixture
 def entity(hass):
-    entry = SimpleNamespace(entry_id=ENTRY_ID, title="HA-AgentHub", options={})
+    entry = SimpleNamespace(
+        entry_id=ENTRY_ID,
+        title="HA-AgentHub",
+        options={},
+        runtime_data=_runtime_data(),
+        async_start_reauth=MagicMock(),
+    )
     ent = _ai_task_module().HaAgentHubAITaskEntity(entry, BASE_URL + "/", API_KEY)
     ent.hass = hass
     ent.entity_id = "ai_task.ha_agenthub_ai_task"
@@ -140,8 +152,8 @@ class TestPlatformSetup:
 
         hass = MagicMock()
         hass.config_entries.async_unload_platforms = AsyncMock(return_value=True)
-        hass.data = {DOMAIN: {ENTRY_ID: {"log_shipper": None}}}
-        entry = SimpleNamespace(entry_id=ENTRY_ID)
+        hass.data = {}
+        entry = SimpleNamespace(entry_id=ENTRY_ID, runtime_data=_runtime_data())
 
         assert await async_unload_entry(hass, entry) is True
         hass.config_entries.async_unload_platforms.assert_awaited_once_with(
@@ -151,8 +163,12 @@ class TestPlatformSetup:
 
     async def test_setup_entry_adds_one_entity(self, hass):
         ai_task = _ai_task_module()
-        hass.data = {"ha_agenthub": {ENTRY_ID: {"url": BASE_URL, "api_key": API_KEY}}}
-        entry = SimpleNamespace(entry_id=ENTRY_ID, title="HA-AgentHub", options={})
+        entry = SimpleNamespace(
+            entry_id=ENTRY_ID,
+            title="HA-AgentHub",
+            options={},
+            runtime_data=_runtime_data(),
+        )
         added = []
 
         await ai_task.async_setup_entry(hass, entry, added.extend)
@@ -349,6 +365,46 @@ class TestErrorMapping:
             await entity._async_generate_data(_task(), chat_log)
         assert API_KEY not in str(exc_info.value)
         chat_log.async_add_assistant_content_without_tools.assert_not_called()
+        entity._entry.async_start_reauth.assert_called_once_with(entity.hass)
+        assert entity._entry.runtime_data.connection_status == "auth_failed"
+
+    async def test_repeated_auth_errors_start_reauth_once(self, entity, chat_log):
+        session = _FakeSession(status=401, body={"detail": "Invalid API key"})
+
+        with _patch_session(session), _patch_timeout():
+            for _ in range(3):
+                with pytest.raises(_ha_error()):
+                    await entity._async_generate_data(_task(), chat_log)
+
+        entity._entry.async_start_reauth.assert_called_once_with(entity.hass)
+
+    async def test_success_after_auth_error_ends_the_episode(self, entity, chat_log):
+        with (
+            _patch_session(_FakeSession(status=401, body={})),
+            _patch_timeout(),
+            pytest.raises(_ha_error()),
+        ):
+            await entity._async_generate_data(_task(), chat_log)
+        with _patch_session(_FakeSession()), _patch_timeout():
+            await entity._async_generate_data(_task(), chat_log)
+        assert entity._entry.runtime_data.reauth_requested is False
+        assert entity._entry.runtime_data.connection_status == "ok"
+        with (
+            _patch_session(_FakeSession(status=403, body={})),
+            _patch_timeout(),
+            pytest.raises(_ha_error()),
+        ):
+            await entity._async_generate_data(_task(), chat_log)
+
+        assert entity._entry.async_start_reauth.call_count == 2
+
+    async def test_server_error_does_not_start_reauth(self, entity, chat_log):
+        session = _FakeSession(status=502, body={"detail": "boom"})
+
+        with _patch_session(session), _patch_timeout(), pytest.raises(_ha_error()):
+            await entity._async_generate_data(_task(), chat_log)
+
+        entity._entry.async_start_reauth.assert_not_called()
 
     async def test_502_includes_container_detail(self, entity, chat_log):
         session = _FakeSession(status=502, body={"detail": "LLM provider unavailable"})

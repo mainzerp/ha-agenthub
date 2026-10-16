@@ -1153,7 +1153,7 @@ reacts:
 
 | Code | When | Integration behavior |
 |------|------|----------------------|
-| `4001` | Missing or invalid API key; rejected before the handshake completes. | Connect fails; the turn uses REST (a REST `401`/`403` starts reauth). |
+| `4001` | Missing or invalid API key; rejected before the handshake completes. | Connect fails and the integration starts reauth (as does a REST `401`/`403`); the turn uses REST. |
 | `1008` | Per-IP connection limit; rejected before the handshake completes. | Connect fails; the turn uses REST. |
 | `1008` | Origin not in `app.state.allowed_ws_origins`; sent after accept with a reason. | Reconnects with backoff; turns use REST meanwhile. |
 | `1011` | uvicorn keepalive ping timeout (`--ws-ping-interval 30 --ws-ping-timeout 10`) or an unhandled server error. | Idle socket: detached and reconnected. During a turn: before the first frame the turn is retried over REST, after it the turn ends with a dropped-connection message. |

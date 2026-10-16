@@ -182,7 +182,7 @@ docker compose restart ha-agenthub
 **Manual installation:**
 
 1. Confirm the `custom_components/ha_agenthub/` directory exists in your HA config folder.
-2. Check that all files are present: `__init__.py`, `config_flow.py`, `const.py`, `conversation.py`, `manifest.json`, `strings.json`, and `translations/en.json`.
+2. Check that the whole directory from the release was copied, including `__init__.py`, `config_flow.py`, `conversation.py`, `manifest.json`, `strings.json`, and `translations/`.
 3. Restart Home Assistant.
 
 **After installation:**
@@ -392,7 +392,7 @@ Logs include timestamp, level, logger name, and message.
 
 - Is the `ship_logs` option actually enabled in the integration options dialog, and was the entry reloaded afterwards?
 - Is `ship_logs_level` set low enough? The level gate is on the shipper handler only -- the HA logger's own level still applies, so records below the effective HA log level never reach the shipper.
-- Is the container reachable from HA and the API key correct? A 401 from `/api/logs/ingest` triggers the integration's reauth flow; other failures drop the batch silently (drop-and-count with exponential backoff, no requeue).
+- Is the container reachable from HA and the API key correct? A failed `/api/logs/ingest` POST (including `401`) drops the batch silently (drop-and-count with exponential backoff, no requeue); a rejected key is reported by the conversation, AI Task, and STT paths, which start re-authentication. The drop counters are in the entry's **Download diagnostics** file.
 - When filtering the admin logs view by level, use the uppercase canonical levels (`DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`).
 - A container restart keeps only shipped records at WARNING and above (see [Remote Logs Not Visible](#remote-logs-not-visible)).
 
@@ -442,15 +442,38 @@ via `POST /api/admin/cache/import` (`mode=replace` for a clean
 slate, `mode=merge` to additively top up). See
 [Backup and Restore](backup-restore.md) for the curl recipe.
 
-## Options Flow Saved a Blank API Key
+## Integration Retries Setup After Home Assistant Starts
 
-**Symptoms:** After saving the integration options dialog without
-typing a value into the API key field, the integration appears to
-have been re-saved but conversations still authenticate.
+**Symptoms:** After an HA restart the HA-AgentHub entry shows "Setup failed,
+will retry" (or "Retrying setup"), and the conversation agent is missing until
+the container is up.
 
-**Cause:** This is intentional behaviour since version 1.0.0. Leaving
-the API key field blank in the options dialog keeps the previously
-stored key. Only enter a value when you want to replace it.
+**Cause:** On setup the integration calls `GET /api/health` with the API key
+(10 s timeout). A connection error, timeout, `5xx`, or a non-`ok` health
+answer means the container is not ready yet, so HA retries setup with
+backoff. This is expected when HA starts before the container.
+
+**Remediation:** None if the container comes up; the entry loads on the next
+retry. If it keeps retrying, verify the container is running and reachable
+from HA at the configured URL (see [Deployment -- Networking](deployment.md#networking)),
+or change the URL with **Reconfigure** on the entry.
+
+## API Key Rotated or Rejected
+
+**Symptoms:** HA shows a re-authentication notification for HA-AgentHub
+(Settings > Devices & Services, Repairs), conversation turns answer
+"...API key was rejected", or AI Task calls fail with "API key rejected".
+
+**Cause:** The container answered `401`/`403`: the API key was regenerated
+in the container, or the container's stored key became unreadable (for
+example after a Fernet key change). The integration starts one
+re-authentication flow per failure episode, from setup or from a runtime
+conversation, AI Task, or speaker identification request.
+
+**Remediation:** Open the notification and enter the current API key from
+the container dashboard. The key is validated before it is saved and the
+entry reloads. To change the URL as well, use **Reconfigure** in the entry's
+three-dot menu (a blank API key there keeps the stored key).
 
 ## Integration Migration Cannot Restore Credentials
 
@@ -460,8 +483,9 @@ obsolete value after newer credentials were previously discarded.
 
 **Cause and remediation:** Migration preserves available legacy values and
 prefers the current option values where they exist. It cannot reconstruct
-credentials that were already discarded. Reconfigure the integration with the
-container URL and API key; migration does not create replacement credentials.
+credentials that were already discarded. Use **Reconfigure** on the integration
+entry to enter the container URL and API key; migration does not create
+replacement credentials.
 
 ## Integration Error Messages
 
@@ -471,7 +495,7 @@ container trace id):
 
 | Spoken message (start) | Likely cause | Remediation |
 |------------------------|--------------|-------------|
-| "...API key was rejected" | REST `401`/`403`: container API key is wrong or was rotated. | Re-enter the API key in the integration (reauth starts automatically). |
+| "...API key was rejected" | REST `401`/`403`: container API key is wrong or was rotated. | Re-enter the API key in the re-authentication notification (it starts automatically), see [API Key Rotated or Rejected](#api-key-rotated-or-rejected). |
 | "...container returned an error" | REST `5xx` (LLM outage, internal error). | Check container logs and the `/api/health` probe. |
 | "...container is unavailable" | TCP/DNS failure between HA and the container. | Verify networking, `CONTAINER_PORT`, reverse proxy, and that the container is running. |
 | "...did not answer in time" | No reply within the integration's response timeout (`ws_receive_timeout`, default 120 s; WS and REST). | Check the trace for slow LLM calls; raise the timeout in the integration options if needed. The action may still have run. |

@@ -334,6 +334,53 @@ class TestAudioPassThrough:
 
 class TestContainerFailures:
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("status", [401, 403])
+    async def test_rejected_api_key_starts_reauth_once(
+        self, chat_session_id, stop_patches, status
+    ):
+        import aiohttp
+
+        from custom_components.ha_agenthub import AgentHubRuntimeData
+
+        class _HandshakeError(aiohttp.ClientError):
+            def __init__(self, status):
+                super().__init__(f"HTTP {status}")
+                self.status = status
+
+        inner = _make_inner()
+        session = _FakeSession(error=_HandshakeError(status))
+        entity, entry, patches = _make_entity(inner, session)
+        stop_patches.append(patches)
+        entry.runtime_data = AgentHubRuntimeData(url="http://c.local", api_key="k")
+        entry.async_start_reauth = MagicMock()
+
+        first = await entity.async_process_audio_stream(_metadata(), _audio())
+        await _drain_tee_tasks(entity)
+        second = await entity.async_process_audio_stream(_metadata(), _audio())
+        await _drain_tee_tasks(entity)
+
+        # Speech-to-text is unaffected; reauth is requested once per episode.
+        assert first is inner.result
+        assert second is inner.result
+        entry.async_start_reauth.assert_called_once_with(entity.hass)
+        assert entry.runtime_data.connection_status == "auth_failed"
+
+    @pytest.mark.asyncio
+    async def test_unreachable_container_does_not_start_reauth(
+        self, chat_session_id, stop_patches
+    ):
+        inner = _make_inner()
+        session = _FakeSession(error=OSError("connection refused"))
+        entity, entry, patches = _make_entity(inner, session)
+        stop_patches.append(patches)
+        entry.async_start_reauth = MagicMock()
+
+        await entity.async_process_audio_stream(_metadata(), _audio())
+        await _drain_tee_tasks(entity)
+
+        entry.async_start_reauth.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_connection_failure_does_not_affect_result(
         self, chat_session_id, stop_patches, caplog
     ):
@@ -842,11 +889,14 @@ class TestStateTracking:
 
 class TestPlatformSetup:
     def _hass(self):
-        from custom_components.ha_agenthub.const import DOMAIN
-
         hass = MagicMock()
-        hass.data = {DOMAIN: {"e1": {"url": "http://c.local", "api_key": "k"}}}
+        hass.data = {}
         return hass
+
+    def _runtime_data(self):
+        from custom_components.ha_agenthub import AgentHubRuntimeData
+
+        return AgentHubRuntimeData(url="http://c.local", api_key="k")
 
     @pytest.mark.asyncio
     async def test_no_entity_without_option(self):
@@ -876,6 +926,7 @@ class TestPlatformSetup:
             entry_id="e1",
             title="HA-AgentHub",
             options={"stt_entity_id": INNER_ENTITY_ID},
+            runtime_data=self._runtime_data(),
         )
         add_entities = MagicMock()
 
@@ -887,6 +938,8 @@ class TestPlatformSetup:
         assert isinstance(entities[0], stt_platform.HaAgentHubSttEntity)
         assert entities[0]._attr_unique_id == "e1_stt"
         assert entities[0]._inner_entity_id == INNER_ENTITY_ID
+        assert entities[0]._url == "http://c.local"
+        assert entities[0]._api_key == "k"
 
     def test_platforms_include_stt(self):
         from custom_components.ha_agenthub import PLATFORMS

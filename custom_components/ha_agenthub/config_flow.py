@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Mapping
 from typing import Any
 from urllib.parse import urlparse
 
@@ -113,10 +114,6 @@ def _build_options_schema(
     return vol.Schema(
         {
             vol.Optional(CONF_NAME, default=current.get(CONF_NAME, "")): TextSelector(),
-            vol.Required(
-                CONF_URL, default=current.get(CONF_URL, DEFAULT_CONTAINER_URL)
-            ): TextSelector(TextSelectorConfig(type=TextSelectorType.URL)),
-            vol.Optional(CONF_API_KEY, default=""): _password_selector(),
             vol.Optional(
                 CONF_WS_RECEIVE_TIMEOUT,
                 default=_timeout_default_str(
@@ -144,6 +141,22 @@ def _build_options_schema(
                     exclude_entities=[own_stt_entity_id] if own_stt_entity_id else [],
                 )
             ),
+        }
+    )
+
+
+def _build_reauth_schema() -> vol.Schema:
+    return vol.Schema({vol.Required(CONF_API_KEY): _password_selector()})
+
+
+def _build_reconfigure_schema(current_url: str) -> vol.Schema:
+    return vol.Schema(
+        {
+            vol.Required(CONF_URL, default=current_url): TextSelector(
+                TextSelectorConfig(type=TextSelectorType.URL)
+            ),
+            # Blank keeps the saved key.
+            vol.Optional(CONF_API_KEY, default=""): _password_selector(),
         }
     )
 
@@ -225,54 +238,80 @@ class HaAgentHubConfigFlow(ConfigFlow, domain=DOMAIN):
         )
 
     async def async_step_reauth(
+        self, entry_data: Mapping[str, Any]
+    ) -> ConfigFlowResult:
+        """Start re-authentication after the container rejected the API key."""
+        return await self.async_step_reauth_confirm()
+
+    async def async_step_reauth_confirm(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Handle re-authentication when the API key is rejected."""
+        """Ask for a new API key and validate it against the stored URL."""
         errors: dict[str, str] = {}
         entry = self._get_reauth_entry()
+        url = entry.data.get(CONF_URL, "")
+
+        if user_input is not None:
+            api_key = (user_input.get(CONF_API_KEY) or "").strip()
+            error = await _validate_connection(self.hass, url, api_key)
+            if error:
+                errors["base"] = error
+            else:
+                return self.async_update_reload_and_abort(
+                    entry, data_updates={CONF_API_KEY: api_key}
+                )
+
+        return self.async_show_form(
+            step_id="reauth_confirm",
+            data_schema=_build_reauth_schema(),
+            errors=errors,
+            description_placeholders={"url": url},
+        )
+
+    async def async_step_reconfigure(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Change the container URL and/or API key of an existing entry."""
+        errors: dict[str, str] = {}
+        entry = self._get_reconfigure_entry()
+        current_url = entry.data.get(CONF_URL, DEFAULT_CONTAINER_URL)
 
         if user_input is not None:
             try:
-                url = _normalize_url(
-                    user_input.get(CONF_URL, entry.data.get(CONF_URL, ""))
-                )
+                url = _normalize_url(user_input[CONF_URL])
             except ValueError:
                 errors["base"] = "invalid_url"
             else:
-                api_key = (user_input.get(CONF_API_KEY) or "").strip()
-                error = await _validate_connection(self.hass, url, api_key)
-                if error:
-                    errors["base"] = error
+                new_api_key = (user_input.get(CONF_API_KEY) or "").strip()
+                api_key = new_api_key or entry.data.get(CONF_API_KEY, "")
+                # The URL is the entry's unique_id: refuse one that another
+                # entry already owns before probing the container.
+                if any(
+                    existing.unique_id == url and existing.entry_id != entry.entry_id
+                    for existing in self.hass.config_entries.async_entries(DOMAIN)
+                ):
+                    errors["base"] = "already_configured"
                 else:
-                    entry_updates: dict[str, Any] = {
-                        "data": {
-                            **entry.data,
-                            CONF_URL: url,
-                            CONF_API_KEY: api_key,
-                        },
-                    }
-                    # Update unique_id when URL changes to keep deduplication correct.
-                    if url != entry.unique_id:
-                        for existing in self.hass.config_entries.async_entries(DOMAIN):
-                            if (
-                                existing.unique_id == url
-                                and existing.entry_id != entry.entry_id
-                            ):
-                                return self.async_abort(reason="already_configured")
-                        entry_updates["unique_id"] = url
-                    self.hass.config_entries.async_update_entry(entry, **entry_updates)
-                    await self.hass.config_entries.async_reload(entry.entry_id)
-                    return self.async_abort(reason="reauth_successful")
+                    error = await _validate_connection(self.hass, url, api_key)
+                    if error:
+                        errors["base"] = error
+                    else:
+                        return self.async_update_reload_and_abort(
+                            entry,
+                            unique_id=url,
+                            data_updates={CONF_URL: url, CONF_API_KEY: api_key},
+                        )
+            current_url = str(user_input.get(CONF_URL) or current_url)
 
         return self.async_show_form(
-            step_id="reauth",
-            data_schema=_build_user_schema(),
+            step_id="reconfigure",
+            data_schema=_build_reconfigure_schema(current_url),
             errors=errors,
         )
 
 
 class HaAgentHubOptionsFlow(OptionsFlow):
-    """Options flow for reconfiguring HA-AgentHub."""
+    """Options flow for the bridge settings (not the connection)."""
 
     def __init__(self, config_entry: ConfigEntry) -> None:
         self._entry = config_entry
@@ -289,96 +328,59 @@ class HaAgentHubOptionsFlow(OptionsFlow):
         own_stt_entity_id = _own_stt_entity_id(self.hass, self._entry)
 
         if user_input is not None:
-            try:
-                url = _normalize_url(user_input[CONF_URL])
-            except ValueError:
-                errors["base"] = "invalid_url"
+            timeout_provided = CONF_WS_RECEIVE_TIMEOUT in user_input
+            raw_timeout = user_input.get(
+                CONF_WS_RECEIVE_TIMEOUT,
+                current.get(CONF_WS_RECEIVE_TIMEOUT),
+            )
+            ws_receive_timeout = parse_positive_timeout(raw_timeout)
+            if ws_receive_timeout is None and not timeout_provided:
+                ws_receive_timeout = float(DEFAULT_WS_RECEIVE_TIMEOUT)
+            # The frontend omits a cleared optional field, so a missing
+            # key means "disabled" and does not fall back to the stored
+            # value.
+            stt_entity_id = str(user_input.get(CONF_STT_ENTITY_ID) or "").strip()
+            if ws_receive_timeout is None:
+                errors[CONF_WS_RECEIVE_TIMEOUT] = "invalid_timeout"
+            elif not _validate_stt_entity_id(stt_entity_id, own_stt_entity_id):
+                errors[CONF_STT_ENTITY_ID] = "invalid_stt_entity"
             else:
-                timeout_provided = CONF_WS_RECEIVE_TIMEOUT in user_input
-                raw_timeout = user_input.get(
-                    CONF_WS_RECEIVE_TIMEOUT,
-                    current.get(CONF_WS_RECEIVE_TIMEOUT),
+                ship_logs = bool(
+                    user_input.get(
+                        CONF_SHIP_LOGS,
+                        current.get(CONF_SHIP_LOGS, DEFAULT_SHIP_LOGS),
+                    )
                 )
-                ws_receive_timeout = parse_positive_timeout(raw_timeout)
-                if ws_receive_timeout is None and not timeout_provided:
-                    ws_receive_timeout = float(DEFAULT_WS_RECEIVE_TIMEOUT)
-                # The frontend omits a cleared optional field, so a missing
-                # key means "disabled" and does not fall back to the stored
-                # value.
-                stt_entity_id = str(user_input.get(CONF_STT_ENTITY_ID) or "").strip()
-                if ws_receive_timeout is None:
-                    errors[CONF_WS_RECEIVE_TIMEOUT] = "invalid_timeout"
-                elif not _validate_stt_entity_id(stt_entity_id, own_stt_entity_id):
-                    errors[CONF_STT_ENTITY_ID] = "invalid_stt_entity"
-                else:
-                    ship_logs = bool(
-                        user_input.get(
-                            CONF_SHIP_LOGS,
-                            current.get(CONF_SHIP_LOGS, DEFAULT_SHIP_LOGS),
-                        )
+                ship_logs_level = str(
+                    user_input.get(
+                        CONF_SHIP_LOGS_LEVEL,
+                        current.get(CONF_SHIP_LOGS_LEVEL, DEFAULT_SHIP_LOGS_LEVEL),
                     )
-                    ship_logs_level = str(
-                        user_input.get(
-                            CONF_SHIP_LOGS_LEVEL,
-                            current.get(CONF_SHIP_LOGS_LEVEL, DEFAULT_SHIP_LOGS_LEVEL),
-                        )
+                )
+                # The selector constrains UI input; fall back to the
+                # default for out-of-list values instead of a new error.
+                if ship_logs_level not in SHIP_LOGS_LEVELS:
+                    ship_logs_level = DEFAULT_SHIP_LOGS_LEVEL
+                new_name = (user_input.get(CONF_NAME) or "").strip()
+                name = new_name or current.get(CONF_NAME, self._entry.title)
+                # URL and API key are changed through the reconfigure and
+                # reauth flows; the name is the only data field kept here.
+                if name != self._entry.title or name != self._entry.data.get(CONF_NAME):
+                    self.hass.config_entries.async_update_entry(
+                        self._entry,
+                        title=name,
+                        data={**self._entry.data, CONF_NAME: name},
                     )
-                    # The selector constrains UI input; fall back to the
-                    # default for out-of-list values instead of a new error.
-                    if ship_logs_level not in SHIP_LOGS_LEVELS:
-                        ship_logs_level = DEFAULT_SHIP_LOGS_LEVEL
-                    new_api_key = (user_input.get(CONF_API_KEY) or "").strip()
-                    api_key = new_api_key or current.get(CONF_API_KEY, "")
-                    new_name = (user_input.get(CONF_NAME) or "").strip()
-                    name = new_name or current.get(CONF_NAME, self._entry.title)
-
-                    error = await _validate_connection(self.hass, url, api_key)
-                    if error:
-                        errors["base"] = error
-                    else:
-                        # Update unique_id when URL changes to keep deduplication correct.
-                        entry_updates: dict[str, Any] = {
-                            "title": name,
-                            "data": {
-                                **self._entry.data,
-                                CONF_NAME: name,
-                                CONF_URL: url,
-                                CONF_API_KEY: api_key,
-                            },
-                        }
-                        if url != self._entry.unique_id:
-                            for existing in self.hass.config_entries.async_entries(
-                                DOMAIN
-                            ):
-                                if (
-                                    existing.unique_id == url
-                                    and existing.entry_id != self._entry.entry_id
-                                ):
-                                    errors["base"] = "already_configured"
-                                    break
-                            else:
-                                entry_updates["unique_id"] = url
-                            if errors:
-                                return self.async_show_form(
-                                    step_id="init",
-                                    data_schema=_build_options_schema(
-                                        current, own_stt_entity_id
-                                    ),
-                                    errors=errors,
-                                )
-                        self.hass.config_entries.async_update_entry(
-                            self._entry, **entry_updates
-                        )
-                        # The flow manager replaces entry.options with this
-                        # dict: every option key must be written here.
-                        options: dict[str, Any] = {
-                            CONF_WS_RECEIVE_TIMEOUT: ws_receive_timeout,
-                            CONF_SHIP_LOGS: ship_logs,
-                            CONF_SHIP_LOGS_LEVEL: ship_logs_level,
-                        }
-                        if stt_entity_id:
-                            options[CONF_STT_ENTITY_ID] = stt_entity_id
-                        return self.async_create_entry(data=options)
+                # The flow manager replaces entry.options with this
+                # dict: every option key must be written here.
+                options: dict[str, Any] = {
+                    CONF_WS_RECEIVE_TIMEOUT: ws_receive_timeout,
+                    CONF_SHIP_LOGS: ship_logs,
+                    CONF_SHIP_LOGS_LEVEL: ship_logs_level,
+                }
+                if stt_entity_id:
+                    options[CONF_STT_ENTITY_ID] = stt_entity_id
+                return self.async_create_entry(data=options)
 
         return self.async_show_form(
             step_id="init",

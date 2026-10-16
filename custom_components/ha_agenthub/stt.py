@@ -25,6 +25,7 @@ from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.helpers.start import async_at_started
 
+from . import AgentHubConfigEntry, async_report_auth_failure
 from .const import (
     CONF_STT_ENTITY_ID,
     DOMAIN,
@@ -44,7 +45,7 @@ STT_DOMAIN = "stt"
 
 async def async_setup_entry(
     hass: HomeAssistant,
-    entry: ConfigEntry,
+    entry: AgentHubConfigEntry,
     async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     """Set up the STT wrapper entity when an inner STT entity is configured."""
@@ -60,9 +61,9 @@ async def async_setup_entry(
             registry.async_remove(stale)
         return
 
-    data = hass.data[DOMAIN][entry.entry_id]
+    runtime = entry.runtime_data
     async_add_entities(
-        [HaAgentHubSttEntity(entry, data["url"], data["api_key"], inner_entity_id)]
+        [HaAgentHubSttEntity(entry, runtime.url, runtime.api_key, inner_entity_id)]
     )
 
 
@@ -336,6 +337,10 @@ class HaAgentHubSttEntity(stt.SpeechToTextEntity):
             tee.finish(len(text))
         return result
 
+    def _report_auth_failure(self) -> None:
+        """Start reauth when the container rejects the tee's API key."""
+        async_report_auth_failure(self.hass, self._entry)
+
     def _start_tee(self, metadata: stt.SpeechMetadata) -> VoiceTee | None:
         """Start the background sender for this turn; None means no tee."""
         if not _metadata_supports_tee(metadata):
@@ -364,6 +369,7 @@ class HaAgentHubSttEntity(stt.SpeechToTextEntity):
                     "codec": str(_enum_value(metadata.codec)),
                     "format": str(_enum_value(metadata.format)),
                 },
+                on_auth_failure=self._report_auth_failure,
             )
         except Exception:
             logger.debug(

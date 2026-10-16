@@ -387,8 +387,12 @@ class TestShipperWiring:
         from custom_components.ha_agenthub.const import DOMAIN
 
         hass, entry = self._make_hass_entry({})
-        assert await async_setup_entry(hass, entry) is True
-        assert hass.data[DOMAIN]["e1"]["log_shipper"] is None
+        with patch(
+            "custom_components.ha_agenthub._async_probe_container", new=AsyncMock()
+        ):
+            assert await async_setup_entry(hass, entry) is True
+        assert entry.runtime_data.log_shipper is None
+        assert DOMAIN not in hass.data
         entry.async_create_background_task.assert_not_called()
 
     @pytest.mark.asyncio
@@ -403,12 +407,18 @@ class TestShipperWiring:
         shipper = None
         fake_session = MagicMock()
         try:
-            with patch(
-                "homeassistant.helpers.aiohttp_client.async_get_clientsession",
-                new=lambda hass: fake_session,
+            with (
+                patch(
+                    "homeassistant.helpers.aiohttp_client.async_get_clientsession",
+                    new=lambda hass: fake_session,
+                ),
+                patch(
+                    "custom_components.ha_agenthub._async_probe_container",
+                    new=AsyncMock(),
+                ),
             ):
                 assert await async_setup_entry(hass, entry) is True
-                shipper = hass.data[DOMAIN]["e1"]["log_shipper"]
+                shipper = entry.runtime_data.log_shipper
                 assert shipper is not None
                 entry.async_create_background_task.assert_called_once()
                 assert shipper._handler in package_logger.handlers

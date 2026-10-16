@@ -445,7 +445,7 @@ Tool-calling runtime limits (`app/agents/tool_calling.py`, `app/llm/client.py`):
 
 ## Home Assistant Integration Options
 
-These options live in the HA integration's options dialog (Settings -> Devices & Services -> HA-AgentHub -> Configure), not in the container. Changing them reloads the config entry.
+These options live in the HA integration's options dialog (Settings -> Devices & Services -> HA-AgentHub -> Configure), not in the container. Changing them reloads the config entry. Container URL and API key are changed with **Reconfigure** (same menu), and a rejected key triggers HA's **Re-authenticate** flow; see [Deployment](deployment.md).
 
 | Option | Default | Description |
 |--------|---------|-------------|

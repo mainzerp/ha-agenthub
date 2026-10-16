@@ -21,9 +21,50 @@ def _make_mock_module(name: str, attrs: dict | None = None) -> ModuleType:
     return mod
 
 
+_UNDEFINED = object()
+
+
 class _MockConfigFlow:
+    # Mirrors ConfigFlow.source; tests set it to "reauth" / "reconfigure".
+    source = "user"
+
     def __init_subclass__(cls, **kwargs):
         pass
+
+    def async_update_reload_and_abort(
+        self,
+        entry,
+        *,
+        unique_id=_UNDEFINED,
+        title=_UNDEFINED,
+        data=_UNDEFINED,
+        data_updates=_UNDEFINED,
+        options=_UNDEFINED,
+        reason=_UNDEFINED,
+        reload_even_if_entry_is_unchanged=True,
+    ):
+        """Same contract as HA core: update, schedule reload, then abort."""
+        if data_updates is not _UNDEFINED:
+            if data is not _UNDEFINED:
+                raise ValueError("Cannot set both data and data_updates")
+            data = {**entry.data, **data_updates}
+        kwargs = {
+            key: value
+            for key, value in (
+                ("unique_id", unique_id),
+                ("title", title),
+                ("data", data),
+                ("options", options),
+            )
+            if value is not _UNDEFINED
+        }
+        self.hass.config_entries.async_update_entry(entry, **kwargs)
+        self.hass.config_entries.async_schedule_reload(entry.entry_id)
+        if reason is _UNDEFINED:
+            reason = "reauth_successful"
+            if self.source == "reconfigure":
+                reason = "reconfigure_successful"
+        return self.async_abort(reason=reason)
 
     def async_show_form(self, *, step_id=None, data_schema=None, errors=None, **kwargs):
         return {
@@ -42,6 +83,25 @@ class _MockConfigFlow:
 
 class _MockConfigFlowResult:
     pass
+
+
+def _mock_async_redact_data(data, to_redact):
+    """Same semantics as homeassistant.components.diagnostics.async_redact_data."""
+    if isinstance(data, list):
+        return [_mock_async_redact_data(item, to_redact) for item in data]
+    if not isinstance(data, dict):
+        return data
+    redacted = {**data}
+    for key, value in redacted.items():
+        if value is None:
+            continue
+        if isinstance(value, str) and not value:
+            continue
+        if key in to_redact:
+            redacted[key] = "**REDACTED**"
+        elif isinstance(value, (dict, list)):
+            redacted[key] = _mock_async_redact_data(value, to_redact)
+    return redacted
 
 
 class _MockOptionsFlow:
@@ -252,6 +312,8 @@ def _mock_homeassistant_deps():
             "ConfigFlow": _MockConfigFlow,
             "ConfigFlowResult": _MockConfigFlowResult,
             "OptionsFlow": _MockOptionsFlow,
+            "SOURCE_REAUTH": "reauth",
+            "SOURCE_RECONFIGURE": "reconfigure",
         },
         "homeassistant.const": {
             "CONF_URL": "url",
@@ -271,7 +333,10 @@ def _mock_homeassistant_deps():
         "homeassistant.exceptions": {
             "HomeAssistantError": Exception,
             "ConfigEntryError": type("ConfigEntryError", (Exception,), {}),
+            "ConfigEntryAuthFailed": type("ConfigEntryAuthFailed", (Exception,), {}),
+            "ConfigEntryNotReady": type("ConfigEntryNotReady", (Exception,), {}),
         },
+        "homeassistant.loader": {"async_get_integration": MagicMock()},
         "homeassistant.helpers": {},
         "homeassistant.helpers.llm": {
             "selector_serializer": _mock_selector_serializer,
@@ -296,6 +361,10 @@ def _mock_homeassistant_deps():
             "EntitySelectorConfig": _FakeEntitySelectorConfig,
         },
         "homeassistant.components": {},
+        "homeassistant.components.diagnostics": {
+            "REDACTED": "**REDACTED**",
+            "async_redact_data": _mock_async_redact_data,
+        },
         "homeassistant.components.assist_pipeline": {},
         "homeassistant.components.ai_task": {
             "AITaskEntity": _MockAITaskEntity,
@@ -336,6 +405,7 @@ def _mock_homeassistant_deps():
         "homeassistant.helpers.entity_registry": {
             "EVENT_ENTITY_REGISTRY_UPDATED": "entity_registry_updated",
             "async_get": MagicMock(),
+            "async_entries_for_config_entry": MagicMock(return_value=[]),
         },
         "homeassistant.helpers.intent": {"IntentResponse": MagicMock},
         "homeassistant.helpers.entity_platform": {

@@ -664,10 +664,13 @@ def _ensure_ha_exceptions_mock():
     if "homeassistant" not in sys.modules:
         sys.modules["homeassistant"] = ModuleType("homeassistant")
     if "homeassistant.exceptions" not in sys.modules:
-        ha_exc = ModuleType("homeassistant.exceptions")
+        sys.modules["homeassistant.exceptions"] = ModuleType("homeassistant.exceptions")
+    ha_exc = sys.modules["homeassistant.exceptions"]
+    if not isinstance(getattr(ha_exc, "HomeAssistantError", None), type):
         ha_exc.HomeAssistantError = Exception
-        ha_exc.ConfigEntryError = type("ConfigEntryError", (Exception,), {})
-        sys.modules["homeassistant.exceptions"] = ha_exc
+    for name in ("ConfigEntryError", "ConfigEntryAuthFailed", "ConfigEntryNotReady"):
+        if not isinstance(getattr(ha_exc, name, None), type):
+            setattr(ha_exc, name, type(name, (Exception,), {}))
     if "homeassistant.helpers.aiohttp_client" not in sys.modules:
         from unittest.mock import MagicMock
 

@@ -3,12 +3,25 @@
 from __future__ import annotations
 
 import logging
+import time
+from dataclasses import dataclass, field
+from urllib.parse import urlparse
 
-from homeassistant.config_entries import ConfigEntry
+from homeassistant.config_entries import SOURCE_REAUTH, SOURCE_RECONFIGURE, ConfigEntry
 from homeassistant.const import CONF_API_KEY, CONF_URL, Platform
-from homeassistant.core import HomeAssistant
-from homeassistant.exceptions import ConfigEntryError
+from homeassistant.core import HomeAssistant, callback
+from homeassistant.exceptions import (
+    ConfigEntryAuthFailed,
+    ConfigEntryError,
+    ConfigEntryNotReady,
+)
 
+from .client import (
+    AgentHubAuthError,
+    AgentHubConnectionError,
+    AgentHubResponseError,
+    async_get_json,
+)
 from .const import (
     CONF_NAME,
     CONF_SHIP_LOGS,
@@ -16,7 +29,9 @@ from .const import (
     DEFAULT_SHIP_LOGS,
     DEFAULT_SHIP_LOGS_LEVEL,
     DOMAIN,
+    HEALTH_PATH,
     INTEGRATION_TITLE,
+    SETUP_PROBE_TIMEOUT,
 )
 from .log_shipper import LogShipper
 
@@ -27,6 +42,69 @@ logger = logging.getLogger(__name__)
 
 # The STT platform only adds an entity when the ``stt_entity_id`` option is set.
 PLATFORMS: list[Platform] = [Platform.AI_TASK, Platform.CONVERSATION, Platform.STT]
+
+# Values of ``AgentHubRuntimeData.connection_status`` (shown in diagnostics).
+CONNECTION_OK = "ok"
+CONNECTION_AUTH_FAILED = "auth_failed"
+
+
+@dataclass(slots=True)
+class AgentHubRuntimeData:
+    """Per-entry state, stored in ``entry.runtime_data`` while loaded."""
+
+    url: str
+    api_key: str
+    log_shipper: LogShipper | None = None
+    # Result of the last container call that told us something about the
+    # connection (setup probe, runtime auth failure, recovered request).
+    connection_status: str = CONNECTION_OK
+    connection_status_changed: float = field(default_factory=time.time)
+    # Guards the runtime reauth trigger: one reauth flow per auth-failure
+    # episode, shared by the conversation, AI Task and STT entities.
+    reauth_requested: bool = False
+
+    def set_connection_status(self, status: str) -> None:
+        if status != self.connection_status:
+            self.connection_status = status
+            self.connection_status_changed = time.time()
+
+
+type AgentHubConfigEntry = ConfigEntry[AgentHubRuntimeData]
+
+
+def _runtime_data(entry: ConfigEntry) -> AgentHubRuntimeData | None:
+    """Return the entry's runtime data, or None while it is not loaded."""
+    runtime = getattr(entry, "runtime_data", None)
+    return runtime if isinstance(runtime, AgentHubRuntimeData) else None
+
+
+@callback
+def async_report_auth_failure(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Start the reauth flow after the container rejected the API key.
+
+    Called by the entities on a runtime 401/403. Starts at most one reauth
+    flow per failure episode; :func:`async_report_auth_ok` ends the episode.
+    HA itself also skips the start while a reauth flow is in progress.
+    """
+    runtime = _runtime_data(entry)
+    if runtime is not None:
+        runtime.set_connection_status(CONNECTION_AUTH_FAILED)
+        if runtime.reauth_requested:
+            return
+        runtime.reauth_requested = True
+    logger.warning(
+        "HA-AgentHub container rejected the API key; starting re-authentication"
+    )
+    entry.async_start_reauth(hass)
+
+
+@callback
+def async_report_auth_ok(entry: ConfigEntry) -> None:
+    """Record an authenticated container answer (ends a failure episode)."""
+    runtime = _runtime_data(entry)
+    if runtime is not None:
+        runtime.reauth_requested = False
+        runtime.set_connection_status(CONNECTION_OK)
 
 
 def _normalize_url(url: str) -> str:
@@ -127,15 +205,49 @@ async def _async_reload_entry_on_update(
     hass: HomeAssistant, entry: ConfigEntry
 ) -> None:
     """Reload the integration when config entry data changes."""
+    # Reauth and reconfigure flows finish with ``async_update_reload_and_abort``,
+    # which schedules its own reload. HA runs update listeners eagerly while
+    # that flow is still in progress, so skipping here avoids a double reload.
+    if any(entry.async_get_active_flows(hass, {SOURCE_REAUTH, SOURCE_RECONFIGURE})):
+        return
     await hass.config_entries.async_reload(entry.entry_id)
 
 
-async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+async def _async_probe_container(hass: HomeAssistant, url: str, api_key: str) -> None:
+    """Make one authenticated call so setup fails fast with the right state.
+
+    ``GET /api/health`` requires the API key (unlike ``/healthz``), so it
+    tells a rejected key apart from an unreachable container. Messages name
+    the host only: the URL may embed credentials.
+    """
+    try:
+        host = urlparse(url).hostname or "container"
+    except ValueError:
+        host = "container"
+    try:
+        data = await async_get_json(
+            hass, url, api_key, HEALTH_PATH, timeout=SETUP_PROBE_TIMEOUT
+        )
+    except AgentHubAuthError as err:
+        raise ConfigEntryAuthFailed(
+            f"HA-AgentHub container rejected the API key (HTTP {err.status})"
+        ) from err
+    except AgentHubConnectionError as err:
+        raise ConfigEntryNotReady(
+            f"HA-AgentHub container at {host} is not reachable: {err}"
+        ) from err
+    except AgentHubResponseError as err:
+        raise ConfigEntryNotReady(
+            f"HA-AgentHub container at {host} is not ready: {err}"
+        ) from err
+    if data.get("status") != "ok":
+        raise ConfigEntryNotReady(f"HA-AgentHub container at {host} is not healthy")
+
+
+async def async_setup_entry(hass: HomeAssistant, entry: AgentHubConfigEntry) -> bool:
     """Set up HA-AgentHub from a config entry."""
     if entry.title in _LEGACY_ENTRY_TITLES:
         hass.config_entries.async_update_entry(entry, title=INTEGRATION_TITLE)
-
-    entry.async_on_unload(entry.add_update_listener(_async_reload_entry_on_update))
 
     # P3-6: URL and API key are the single source of truth in entry.data.
     # Options-based URL/API key are migrated to data by async_migrate_entry.
@@ -148,35 +260,32 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if not url:
         raise ConfigEntryError("HA-AgentHub config entry missing required URL")
 
-    hass.data.setdefault(DOMAIN, {})
-    hass.data[DOMAIN][entry.entry_id] = {
-        "url": url,
-        "api_key": api_key,
-    }
+    # Raises ConfigEntryAuthFailed (HA starts the reauth flow) or
+    # ConfigEntryNotReady (HA retries setup with backoff).
+    await _async_probe_container(hass, url, api_key)
 
+    entry.async_on_unload(entry.add_update_listener(_async_reload_entry_on_update))
+
+    runtime = AgentHubRuntimeData(url=url, api_key=api_key)
     # Opt-in log shipping to the container (entry-scoped lifecycle).
-    shipper = None
     if entry.options.get(CONF_SHIP_LOGS, DEFAULT_SHIP_LOGS):
-        shipper = LogShipper(
+        runtime.log_shipper = LogShipper(
             url,
             api_key,
             entry.options.get(CONF_SHIP_LOGS_LEVEL, DEFAULT_SHIP_LOGS_LEVEL),
         )
-        shipper.start(hass, entry)
-    hass.data[DOMAIN][entry.entry_id]["log_shipper"] = shipper
+        runtime.log_shipper.start(hass, entry)
+    entry.runtime_data = runtime
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     return True
 
 
-async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+async def async_unload_entry(hass: HomeAssistant, entry: AgentHubConfigEntry) -> bool:
     """Unload HA-AgentHub config entry."""
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if unload_ok:
-        shipper = hass.data[DOMAIN][entry.entry_id].get("log_shipper")
-        if shipper:
-            await shipper.stop()
-        hass.data[DOMAIN].pop(entry.entry_id, None)
-        if not hass.data[DOMAIN]:
-            hass.data.pop(DOMAIN, None)
+        runtime = _runtime_data(entry)
+        if runtime is not None and runtime.log_shipper is not None:
+            await runtime.log_shipper.stop()
     return unload_ok

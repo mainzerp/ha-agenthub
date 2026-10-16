@@ -18,6 +18,7 @@ from homeassistant.helpers import llm
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from voluptuous_openapi import convert
 
+from . import AgentHubConfigEntry, async_report_auth_failure, async_report_auth_ok
 from .client import (
     AgentHubAuthError,
     AgentHubConnectionError,
@@ -39,12 +40,12 @@ AI_TASK_TIMEOUT = 180.0
 
 async def async_setup_entry(
     hass: HomeAssistant,
-    entry: ConfigEntry,
+    entry: AgentHubConfigEntry,
     async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     """Set up the AI Task entity from a config entry."""
-    data = hass.data[DOMAIN][entry.entry_id]
-    async_add_entities([HaAgentHubAITaskEntity(entry, data["url"], data["api_key"])])
+    runtime = entry.runtime_data
+    async_add_entities([HaAgentHubAITaskEntity(entry, runtime.url, runtime.api_key)])
 
 
 def _normalize_mime_type(mime_type: str | None, path: Path) -> str:
@@ -160,9 +161,10 @@ class HaAgentHubAITaskEntity(ai_task.AITaskEntity):
                 timeout=AI_TASK_TIMEOUT,
             )
         except AgentHubAuthError as err:
+            async_report_auth_failure(self.hass, self._entry)
             raise HomeAssistantError(
                 f"HA-AgentHub API key rejected by the container (HTTP {err.status}); "
-                "reconfigure the integration with a valid API key"
+                "re-authenticate the integration with a valid API key"
             ) from err
         except AgentHubResponseError as err:
             message = f"HA-AgentHub AI task failed (HTTP {err.status})"
@@ -174,6 +176,7 @@ class HaAgentHubAITaskEntity(ai_task.AITaskEntity):
                 f"Cannot reach the HA-AgentHub container: {err}"
             ) from err
 
+        async_report_auth_ok(self._entry)
         if "data" not in response:
             raise HomeAssistantError(
                 "HA-AgentHub AI task response does not contain data"

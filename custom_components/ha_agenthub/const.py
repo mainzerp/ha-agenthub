@@ -25,7 +25,10 @@ CONF_NAME = "name"
 ATTR_CONVERSATION_ID = "conversation_id"
 ATTR_LANGUAGE = "language"
 WS_PATH = "/ws/conversation"
+# Authenticated health endpoint: validates the API key (``/healthz`` does not).
 HEALTH_PATH = "/api/health"
+# Bound for the one-shot container probe in ``async_setup_entry``.
+SETUP_PROBE_TIMEOUT = 10.0
 # Response timeout for one turn: bounds every WebSocket receive wait and the
 # whole REST fallback request. The option key keeps its historical name.
 CONF_WS_RECEIVE_TIMEOUT = "ws_receive_timeout"

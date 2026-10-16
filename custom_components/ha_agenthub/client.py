@@ -79,17 +79,51 @@ async def async_post_json(
     any other non-200 status or a body that is not a JSON object, and
     ``AgentHubConnectionError`` for transport errors and timeouts.
     """
+    return await _async_request_json(
+        hass, "post", base_url, api_key, path, timeout=timeout, payload=payload
+    )
+
+
+async def async_get_json(
+    hass: HomeAssistant,
+    base_url: str,
+    api_key: str,
+    path: str,
+    *,
+    timeout: float,
+) -> dict[str, Any]:
+    """GET ``path`` from the container and return the JSON object answer.
+
+    Same error contract as :func:`async_post_json`.
+    """
+    return await _async_request_json(
+        hass, "get", base_url, api_key, path, timeout=timeout
+    )
+
+
+async def _async_request_json(
+    hass: HomeAssistant,
+    method: str,
+    base_url: str,
+    api_key: str,
+    path: str,
+    *,
+    timeout: float,
+    payload: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Send one authenticated request over HA's shared aiohttp session."""
     session = async_get_clientsession(hass)
     url = f"{base_url.rstrip('/')}{path}"
+    request_kwargs: dict[str, Any] = {
+        "headers": {"Authorization": f"Bearer {api_key}"},
+        "timeout": aiohttp.ClientTimeout(total=timeout),
+    }
+    if payload is not None:
+        request_kwargs["json"] = payload
     # Only the transport is guarded here; status handling happens outside the
     # try block so its errors are never mistaken for transport failures.
     try:
-        async with session.post(
-            url,
-            json=payload,
-            headers={"Authorization": f"Bearer {api_key}"},
-            timeout=aiohttp.ClientTimeout(total=timeout),
-        ) as resp:
+        async with getattr(session, method)(url, **request_kwargs) as resp:
             raw = _RawResponse(status=resp.status, body=await resp.text())
     except TimeoutError as err:
         raise AgentHubConnectionError(f"timed out after {timeout:g}s") from err

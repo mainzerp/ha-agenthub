@@ -113,6 +113,13 @@ class LogShipper:
         self._dropped_batches = 0
         self._dropped_records = 0
 
+    def stats(self) -> dict[str, int]:
+        """Return the drop counters (exposed in diagnostics)."""
+        return {
+            "dropped_batches": self._dropped_batches,
+            "dropped_records": self._dropped_records,
+        }
+
     def start(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
         """Attach the handler to the package logger and start the flush loop.
 
