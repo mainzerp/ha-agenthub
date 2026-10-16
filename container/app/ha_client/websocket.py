@@ -14,6 +14,7 @@ import aiohttp
 from app.db.repository import SettingsRepository
 from app.ha_client.action_marker import note_ha_action_started
 from app.ha_client.auth import get_ha_token
+from app.security.sensitive_actions import enforce_sensitive_call_policy
 from app.util.tasks import spawn
 
 logger = logging.getLogger(__name__)
@@ -442,6 +443,9 @@ class HAWebSocketClient:
         Returns the response dict on success, or ``None`` if the call could not
         be sent, timed out, or returned an error result.
         """
+        # Approval backstop (see HARestClient.call_service); the REST
+        # fallback re-checks here with the same approval token.
+        await enforce_sensitive_call_policy(domain, service, entity_id, service_data)
         if not self.is_connected():
             return None
         payload = {

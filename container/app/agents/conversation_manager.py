@@ -14,6 +14,7 @@ from typing import Any
 
 from app.db.repository import ConversationRepository, SettingsRepository
 from app.memory import get_memory_service
+from app.models.agent import source_is_stateless_task
 from app.util.tasks import spawn
 
 logger = logging.getLogger(__name__)
@@ -216,9 +217,10 @@ class ConversationManager:
 
         Background turns (``source="background"``, e.g. wake briefings) are
         system-initiated and never stored: no history, no DB row, no session
-        memory. Their traces are recorded by the caller as usual.
+        memory. Stateless AI-task turns (``source="ai_task"``) are dropped the
+        same way. Their traces are recorded by the caller as usual.
         """
-        if not conversation_id or source == "background":
+        if not conversation_id or source == "background" or source_is_stateless_task(source):
             return
         turn_limit = await self._get_conversation_context_turn_limit()
         self._evict_stale_conversations()

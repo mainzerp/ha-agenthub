@@ -11,6 +11,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field, ValidationError, field_validator
 
+from app.agents.approval_gate import evaluate_approval_gate
 from app.db.repositories.settings import _settings_float
 from app.entity.deterministic_resolver import (
     filter_matches_by_domain,  # noqa: F401  -- re-exported for test compat
@@ -18,6 +19,8 @@ from app.entity.deterministic_resolver import (
 )
 from app.entity.visibility import _index_has_async_get_by_id, entity_is_visible
 from app.ha_client.rest import mark_verified_ha_service_call
+from app.security.redaction import is_sensitive_key
+from app.security.sensitive_actions import SensitiveActionBlocked
 
 logger = logging.getLogger(__name__)
 
@@ -883,6 +886,8 @@ async def call_service_with_verification(
     poll_max: float | None = None,
     previous_state: str | None = None,
     strict: bool = False,
+    device_class: str | None = None,
+    device_class_known: bool = False,
 ) -> dict[str, Any]:
     """Shared primitive for domain executors: REST ``call_service`` + WS verify.
 
@@ -921,6 +926,16 @@ async def call_service_with_verification(
             state that differs from it counts as a contradiction.
         strict: Opt-in: any non-target, non-transitional state is a
             contradiction (no executor uses this today).
+        device_class / device_class_known: the target's device class when
+            the caller already read it (covers); otherwise the approval gate
+            looks it up.
+
+    Approval gate: a sensitive call (``app.security.sensitive_actions``)
+    without an approval token is not executed. The result then carries
+    ``approval`` (``"pending"`` -- held for the turn's approval question --
+    or ``"refused"`` -- no interactive channel), ``outcome`` ``approval_pending``
+    / ``approval_refused``, ``success=False`` and ``cacheable=False``;
+    :func:`app.agents.executor_state_check.failure_speech` renders it.
 
     Returns:
         Dict with:
@@ -941,6 +956,20 @@ async def call_service_with_verification(
             error: the exception (call failure) or a
                 :class:`StateVerificationError` (mismatch), else ``None``.
     """
+    gate = await evaluate_approval_gate(
+        ha_client,
+        domain,
+        service,
+        entity_id,
+        service_data=service_data,
+        expected_state=expected_state,
+        device_class=device_class,
+        device_class_known=device_class_known,
+    )
+    if gate is not None:
+        logger.info("Approval gate %s for %s.%s on %s (%s)", gate.status, domain, service, entity_id, gate.reason)
+        return _approval_gate_result(domain, service, entity_id, service_data, gate.status, gate.reason)
+
     if ws_timeout is None:
         ws_timeout = await _settings_float(
             "state_verify.ws_timeout_sec",
@@ -998,6 +1027,11 @@ async def call_service_with_verification(
                 # tests) -- fall back to the simple call path; the caller
                 # still gets the REST response, just without WS verification.
                 call_result = await _call_service()
+    except SensitiveActionBlocked as exc:
+        # The write backstop refused the call (no approval token): report it
+        # like a gate refusal instead of a generic failure.
+        logger.warning("Sensitive call blocked by the backstop: %s/%s on %s", domain, service, entity_id)
+        return _approval_gate_result(domain, service, entity_id, service_data, "refused", exc.reason)
     except Exception as exc:
         logger.error(
             "Service call failed: %s/%s on %s",
@@ -1075,6 +1109,34 @@ async def call_service_with_verification(
         "verified": verified,
         "cacheable": outcome != VERIFY_UNVERIFIED or expected_state is None,
         "error": None,
+    }
+
+
+def _approval_gate_result(
+    domain: str,
+    service: str,
+    entity_id: str,
+    service_data: dict | None,
+    status: str,
+    reason: str,
+) -> dict[str, Any]:
+    """``call_service_with_verification`` result for a held or refused sensitive call."""
+    return {
+        "success": False,
+        "call_succeeded": False,
+        "outcome": f"approval_{status}",
+        "entity_id": entity_id,
+        "call_result": None,
+        "observed_state": None,
+        "verified": False,
+        "cacheable": False,
+        "error": None,
+        "approval": status,
+        "approval_reason": reason,
+        "approval_domain": domain,
+        "approval_service": service,
+        # Codes never leave the call: only non-secret keys are echoed.
+        "approval_service_data": {k: v for k, v in (service_data or {}).items() if not is_sensitive_key(k)},
     }
 
 

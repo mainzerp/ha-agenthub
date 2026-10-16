@@ -402,3 +402,68 @@ prompts live in `container/app/prompts/`, `ctx.agent_registry` not
 - **Generic prompt input.** The target agent is unknown at start; the filler
   prompt's unknown-agent fallback applies, the user text still carries the
   content.
+
+## 2026-10-16 — quick hardening batch from the project audit
+
+- **Fetch-metadata guard instead of a CSRF header token.** Cookie-authenticated
+  mutating requests must be same-origin (`Sec-Fetch-Site` same-origin/none,
+  else Origin vs. Host); bearer clients and explicit `CORS_ORIGINS` entries
+  pass. Rationale: HA on the same host is same-site, so SameSite=lax does not
+  protect the admin JSON API; a header token would have touched every
+  dashboard fetch call and the admin-API skills, while the browser already
+  sends fetch metadata.
+- **Frame embedding stays possible.** Only CSP `frame-ancestors` is set
+  (default `'self'`, `FRAME_ANCESTORS` to widen it for an HA iframe); no full
+  CSP because templates use inline scripts.
+- **API docs off by default** (`ENABLE_API_DOCS`): nothing in the repo uses
+  them, and they map the admin surface for anyone on the LAN.
+- **pip-audit fails the gate** with no ignore list; new advisories must be
+  fixed or explicitly ignored with a reason.
+
+## 2026-10-16 — AI Task entity (ai_task generate_data)
+
+- **Owner decisions:** task requests go through the orchestrator like a normal
+  turn; tasks may switch devices; image attachments are in scope now.
+- **Native HA contract, not a custom service.** The bridge adds an
+  `AITaskEntity` (GENERATE_DATA + SUPPORT_ATTACHMENTS) so automations,
+  blueprints and HA's preferred-entity features target it. Bridge minimum HA
+  version 2025.8.0 (structure + attachments landed there; HA core research
+  against wheels 2025.6-2026.2.3).
+- **Separate container route `POST /api/ai_task`** with request source
+  `ai_task`: images exceed the WS/REST conversation size limits, and the source
+  switch reuses the existing exemptions. Task turns get no filler, voice
+  follow-up, mediation/organic closing question or pending question, never
+  read or write the action/routing cache, and are not stored as conversation
+  turns or memory (automation traffic would pollute personal memory).
+- **Vision pre-step, not image routing.** A `vision-agent` model describes
+  attachments into text (wrapped as untrusted data) before classification, so
+  any agent can act on it and image bytes never enter A2A, the classifier,
+  traces or memory. Direct image passing to the general agent can follow later.
+- **Formatter step for structured output (AI Task).** A `task-formatter` model turns the
+  unmediated agent result into JSON (json_object mode where supported),
+  validated with `jsonschema` and repaired once; it must emit null for unknown
+  fields. HA core does not validate the result, so validation lives here.
+
+## 2026-10-16 — code-enforced approval for sensitive actions
+
+- **Owner decisions:** approval required for `lock.unlock`/`lock.open`,
+  `alarm_control_panel` disarm AND arm (home/away/night/vacation/custom
+  bypass), and cover open/position/toggle on device_class garage, gate or
+  door. A spoken or typed "yes" is enough (LLM yes/no/unclear, 60 s TTL); no
+  speaker-ID factor (speaker stays prompt context only). Non-interactive
+  sources (`ai_task`, `background`, OpenAI endpoint without a stable chat id)
+  are blocked unless the entity is on an explicit allowlist setting.
+  Agent-created automations may only close garage/gate/door covers.
+- **Called "approval"**, because `confirmation` already names the spoken
+  success sentence in agent JSON.
+- **Two layers.** Interactive pause where the entity is resolved
+  (`call_service_with_verification`), plus a fail-closed backstop in
+  `HARestClient.call_service` that refuses any sensitive call without an
+  approval token, so cache replay, multi-action, background, plugins and
+  future paths cannot bypass it. Sensitive results are never action-cached.
+- **Answer judged on the verbatim user text in the orchestrator prelude**,
+  not on the classifier's condensed task (a bare "yes" gets paraphrased).
+- **2026-10-16 follow-up:** delayed alarm arming (source `background` from the
+  delayed-action path) runs without approval; delayed disarm, unlock and
+  access-cover opening stay refused unless allowlisted. Interactive arming
+  still asks; ai_task arming still needs the allowlist.

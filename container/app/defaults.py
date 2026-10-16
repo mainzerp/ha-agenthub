@@ -61,3 +61,31 @@ VOICE_SETTING_RANGES: dict[str, tuple[float, float]] = {
     "voice.speaker_id.wait_ms": (0, 3000),
     "voice.speaker_id.num_threads": (1, 8),
 }
+
+# AI-task helper agent configs (``agent_configs`` rows, never A2A agents):
+# (agent_id, enabled, model, timeout, max_iterations, temperature, max_tokens,
+# description). Shared by the fresh-install seed and migration 52. The model
+# matches the seeded general-agent default; vision-agent needs an
+# image-capable model.
+AI_TASK_HELPER_AGENT_CONFIGS: tuple[tuple[str, int, str, int, int, float, int, str], ...] = (
+    (
+        "vision-agent",
+        1,
+        "openrouter/openai/gpt-4o-mini",
+        30,
+        1,
+        0.2,
+        1024,
+        "Describes image attachments of AI tasks (needs a vision-capable model)",
+    ),
+    (
+        "task-formatter",
+        1,
+        "openrouter/openai/gpt-4o-mini",
+        15,
+        1,
+        0.1,
+        2048,
+        "Formats AI-task results as JSON for the requested structure",
+    ),
+)

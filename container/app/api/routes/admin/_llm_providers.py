@@ -13,9 +13,16 @@ from pydantic import BaseModel, field_validator
 
 from app.api.routes import admin as _admin_pkg
 from app.db.repository import SecretsRepository, SettingsRepository
+from app.llm.client import _is_timeout_error
 from app.security.encryption import delete_secret, store_secret
 
 logger = logging.getLogger(__name__)
+
+# Upper bound for the admin "test connection" completion. Passed to litellm as
+# the provider timeout; ``asyncio.wait_for`` adds a small grace period as a hard
+# stop in case a provider adapter ignores the per-call timeout.
+_PROVIDER_TEST_TIMEOUT_S = 30.0
+_PROVIDER_TEST_GRACE_S = 5.0
 
 # Maps provider name to its secret key in the secrets table
 PROVIDER_SECRET_KEYS = {
@@ -204,6 +211,7 @@ async def test_llm_provider(payload: ProviderTestRequest):
             "messages": [{"role": "user", "content": "Say hello"}],
             "api_key": api_key,
             "max_tokens": 10,
+            "timeout": _PROVIDER_TEST_TIMEOUT_S,
         }
         if provider == "ollama":
             kwargs["api_base"] = base_url
@@ -216,13 +224,25 @@ async def test_llm_provider(payload: ProviderTestRequest):
                 extra_headers = {}
             if isinstance(extra_headers, dict) and extra_headers:
                 kwargs["extra_headers"] = extra_headers
-        await litellm.acompletion(**kwargs)
+        await asyncio.wait_for(
+            litellm.acompletion(**kwargs),
+            timeout=_PROVIDER_TEST_TIMEOUT_S + _PROVIDER_TEST_GRACE_S,
+        )
         return {"status": "ok", "provider": provider}
     except asyncio.CancelledError:
         raise
-    except (litellm.exceptions.APIError, litellm.exceptions.AuthenticationError, OSError):
-        logger.warning("LLM provider test failed for %s", provider, exc_info=True)
-        return {"status": "error", "detail": "Provider test failed. Check server logs."}
+    except Exception as exc:
+        # Checked first: builtin TimeoutError is an OSError subclass.
+        if _is_timeout_error(exc):
+            logger.warning("LLM provider test timed out for %s", provider)
+            return {
+                "status": "error",
+                "detail": f"Provider test timed out after {_PROVIDER_TEST_TIMEOUT_S:.0f}s.",
+            }
+        if isinstance(exc, (litellm.exceptions.APIError, litellm.exceptions.AuthenticationError, OSError)):
+            logger.warning("LLM provider test failed for %s", provider, exc_info=True)
+            return {"status": "error", "detail": "Provider test failed. Check server logs."}
+        raise
 
 
 @router.get("/llm-providers/configured")

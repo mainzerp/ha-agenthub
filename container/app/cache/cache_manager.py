@@ -19,6 +19,7 @@ from app.cache.embedding import get_embedding_engine
 from app.cache.routing_cache import RoutingCache, make_routing_entry_id
 from app.cache.sqlite_cache_store import COLLECTION_ACTION_CACHE, COLLECTION_ROUTING_CACHE, SqliteCacheStore
 from app.models.cache import ActionCacheEntry, CachedAction, RoutingCacheEntry
+from app.security.sensitive_actions import SensitiveActionBlocked
 from app.util.tasks import spawn
 
 logger = logging.getLogger(__name__)
@@ -303,6 +304,14 @@ class CacheManager:
             ha_span["metadata"]["cached"] = True
             try:
                 replay_result = await execute_cached_action(entry.cached_action)
+            except SensitiveActionBlocked:
+                # Sensitive actions need an approval on every request: drop
+                # the entry (e.g. stored before the approval gate existed)
+                # so the live pipeline asks for it.
+                logger.info("Action cache entry %s holds a sensitive action; invalidated", entry_id)
+                ha_span["metadata"]["approval_blocked"] = True
+                await self._invalidate_action_entry(entry_id)
+                replay_result = None
             except Exception:
                 logger.warning("Cached action replay failed", exc_info=True)
                 replay_result = None

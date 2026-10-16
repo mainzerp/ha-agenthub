@@ -8,10 +8,6 @@ context open for the lifetime of the client. All callers (``list_tools``,
 ``__aenter__`` and ``__aexit__`` for the underlying transport contexts
 run in the same task, which is required by the MCP SDK's anyio task
 groups.
-
-Regression: see CRIT-4 in docs/SubAgent/DEEP_CODE_REVIEW_ANALYSIS.md.
-The legacy direct-context implementation is preserved as
-``app/mcp/client_legacy.py``.
 """
 
 from __future__ import annotations

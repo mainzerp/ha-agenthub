@@ -22,7 +22,7 @@ from app.agents.personalization import mediation_speaker_kwargs, personalization
 from app.agents.sanitize import strip_markdown
 from app.agents.task_pipeline import CacheReplayResult, DispatchResult
 from app.cache.cache_manager import CacheManager
-from app.models.agent import IngressTask
+from app.models.agent import IngressTask, source_is_stateless_task
 
 __all__ = [
     "CacheReplayStrategy",
@@ -36,6 +36,19 @@ __all__ = [
 ]
 
 logger = logging.getLogger(__name__)
+
+
+def _join_task_agent_responses(agent_responses: list[tuple[str, str, bool]], failed_agent_ids: list[str]) -> str:
+    """Join multi-agent results of a stateless AI-task turn without an LLM merge.
+
+    Each non-empty agent speech becomes one line; agents that did not
+    complete their part are listed in a final plain line.
+    """
+    lines = [speech.strip() for _, speech, _ in agent_responses if speech and speech.strip()]
+    if failed_agent_ids:
+        lines.append(f"Not completed by: {', '.join(failed_agent_ids)}.")
+    return "\n".join(lines)
+
 
 # Fan-out cap for one multi-intent turn. Intents beyond the cap (lowest
 # confidence first) are not dispatched; they are reported to the user via
@@ -479,6 +492,7 @@ class DefaultFinalizationStrategy(FinalizationStrategy):
         is_sequential_send = dispatch_result.is_sequential_send
 
         voice_followup_effective = False
+        stateless_task = source_is_stateless_task(task.context.source if task and task.context else None)
 
         if len(classifications) > 1 and not is_sequential_send:
             # Multi-agent finalization
@@ -502,6 +516,11 @@ class DefaultFinalizationStrategy(FinalizationStrategy):
                         failed_agents=unreachable or sorted(skipped_ids),
                         language=language,
                     )
+                    mediated_followup = False
+                elif stateless_task:
+                    # Stateless AI-task turn: no merge/personality LLM call; the
+                    # unmediated agent results are joined deterministically.
+                    speech = _join_task_agent_responses(agent_responses, [*unreachable, *sorted(skipped_ids)])
                     mediated_followup = False
                 else:
                     reminder_text = None
@@ -530,7 +549,7 @@ class DefaultFinalizationStrategy(FinalizationStrategy):
                     )
 
                 ret_span["metadata"]["agent_response"] = speech
-                followup_question = bool(agent_voice_followup or mediated_followup)
+                followup_question = bool(agent_voice_followup or mediated_followup) and not stateless_task
                 # Follow-up signal (multi-agent): a merged answer that asks the
                 # user something records the pending question exactly like the
                 # single-agent funnel (_finalize_post_mediation) does. A
@@ -615,6 +634,10 @@ class DefaultFinalizationStrategy(FinalizationStrategy):
             "voice_followup": voice_followup_effective,
             "sanitized": True,
         }
+        if stateless_task:
+            # AI-task result text before TTS Markdown stripping (unmediated:
+            # mediation never runs for stateless task turns).
+            response["task_text"] = speech
         if has_error:
             # Phase-1 contract: response errors are plain strings.
             code = "unknown"

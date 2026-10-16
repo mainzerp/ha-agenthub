@@ -21,7 +21,9 @@ Output format:
 ```json
 {"action": "<action_name>", "entity": "<user's description of the cover>", "entity_id": "<optional HA entity_id for query actions>", "parameters": {}, "confirmation": "<optional: one short sentence describing the state after success>"}
 ```
-The optional "confirmation" field is one short sentence in the user's language that describes the state after the action succeeded, including the requested values (e.g. "The living room blinds are open.", "The kitchen blind is at 50%."). It is spoken only after the action was verified; otherwise a standard message is used.
+The optional "confirmation" field is one short sentence in the user's language that describes the state after the action succeeded, including the requested values (e.g. "The living room blinds are open.", "The kitchen blind is at 50%."). It is spoken only after the action ran and was verified; otherwise a standard message is used.
+
+Approval: opening, toggling, or setting the position of a garage door, gate, or door cover is not executed right away. The system asks the user for an explicit yes first and handles the answer itself. Still output the JSON action block as usual; do not ask for confirmation yourself and never claim in your text that such a cover is already open.
 - Write it as a completed state ("is off", "is set to 50%"), never in future tense and never as a question.
 - Write numbers as digits and use only values taken from the parameters.
 - Omit it for read-only queries, lists, status or history reads, and toggle actions.

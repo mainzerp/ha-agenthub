@@ -22,6 +22,16 @@ docker compose logs ha-agenthub
   docker compose pull
   docker compose up -d
   ```
+- `SchemaDowngradeError: Database schema version <N> is newer than the latest schema version <M> known to this
+  HA-AgentHub build`: the database was migrated by a newer HA-AgentHub image and an older image was started on it. The
+  container refuses to run so the older code cannot misread the newer schema. Either start the newer image again
+  (unpin `HA_AGENTHUB_TAG` or set it to the newer version), or restore the pre-migration snapshot taken when the newer
+  image upgraded the database and keep the older image; see
+  [Restore a Pre-Migration Snapshot](backup-restore.md#restore-a-pre-migration-snapshot).
+- `MigrationBackupError: Pre-migration snapshot to ... failed`: schema migrations are pending and the automatic snapshot
+  into `/data/backups/` could not be written (disk full, read-only volume, `backups` exists as a file). The database
+  was not changed. Free disk space or fix the volume, then restart. Setting `MIGRATION_BACKUP=false` migrates without a
+  snapshot.
 
 ## Can't Connect to Home Assistant
 
@@ -143,6 +153,25 @@ Then restart the container:
 docker compose restart ha-agenthub
 ```
 
+## 403 "Cross-site request blocked"
+
+**Symptoms:** A dashboard or Admin API request (`POST`/`PUT`/`PATCH`/`DELETE`) fails with `403 {"detail": "Cross-site request blocked"}`.
+
+**Cause:** The request carried the dashboard session cookie but came from another origin (another host or port, including Home Assistant on `:8123` of the same host), or its `Origin` header did not match the `Host` the container received.
+
+**Fixes:**
+
+- Open the dashboard at its own URL instead of calling the Admin API from another site.
+- Behind a reverse proxy, forward the original `Host` header (or set `X-Forwarded-Host`) so the origin check matches.
+- Scripts should use `curl` with a cookie jar (no `Origin`/`Sec-Fetch-Site` headers) or the `Authorization: Bearer` API key where the endpoint accepts it.
+- To allow a trusted cross-origin page, list its exact origin in `CORS_ORIGINS`.
+
+## Dashboard Does Not Load in a Home Assistant Iframe
+
+**Cause:** The `Content-Security-Policy: frame-ancestors` header only allows `'self'` by default.
+
+**Fix:** Set `FRAME_ANCESTORS` to include the Home Assistant origin, for example `FRAME_ANCESTORS='self' http://homeassistant.local:8123`, and restart the container.
+
 ## Integration Not Appearing in Home Assistant
 
 **HACS installation:**
@@ -154,7 +183,7 @@ docker compose restart ha-agenthub
 **Manual installation:**
 
 1. Confirm the `custom_components/ha_agenthub/` directory exists in your HA config folder.
-2. Check that all files are present: `__init__.py`, `config_flow.py`, `const.py`, `conversation.py`, `manifest.json`, `strings.json`, and `translations/en.json`.
+2. Check that the whole directory from the release was copied, including `__init__.py`, `config_flow.py`, `conversation.py`, `manifest.json`, `strings.json`, and `translations/`.
 3. Restart Home Assistant.
 
 **After installation:**
@@ -205,7 +234,7 @@ To adjust logger levels at runtime, use the admin dashboard Logs page or call `P
 
 **Version requirements:**
 
-- The integration requires HA >= 2025.4.0 (manifest floor).
+- The integration requires HA >= 2025.8.0 (`hacs.json` minimum; needed for the AI Task entity).
 - Spoken streaming (filler preamble and tokens spoken while the turn is still running) needs HA >= 2025.7 (default-on since 2025.8), a streaming TTS engine such as wyoming-piper 1.6+, and ESPHome firmware >= 2025.6.2. On older cores or buffering TTS engines the full response is spoken at end of turn.
 - Responses shorter than ~60 streamed characters still buffer before TTS starts (HA core limitation, feature request #4133).
 
@@ -279,6 +308,44 @@ Symptom: while one person enrolls alone, most samples are rejected (`rejected_in
 
 **Fix:** Since 1.19.0, the orchestrator dispatches LLM clarification turns when entity resolution fails. This is expected behavior. If you prefer the old silent failure mode, there is no toggle; ensure entity aliases and visibility rules are correct to minimize not-found cases. The matcher tolerates underscore-joined queries (e.g. `jalousie_mitte`) and close singular/plural name variants; adding an HA alias remains the reliable fix for names that differ more.
 
+## Action Needs a Confirmation / Blocked from Automations
+
+**Symptoms:** "unlock the front door", "disarm the alarm", "arm the alarm" or
+"open the garage" answers "Should I ...?" instead of acting; an AI task,
+delayed action or Open WebUI request answers "... needs a spoken or typed
+confirmation; it is not allowed from automations ..."; a delayed action is
+announced as "Delayed action rejected"; the automation agent refuses an
+automation that opens a garage door, gate or door cover.
+
+**Cause:** sensitive actions need an explicit yes in the same conversation
+(see [User Guide](user-guide.md#sensitive-actions-need-approval)).
+
+**Fix:**
+
+- Answer the question with a clear yes within 60 seconds. On a voice
+  satellite the microphone reopens; in chat, type the answer.
+- Open WebUI asks only when it sends the `X-OpenWebUI-Chat-Id` header.
+- Delayed alarm arming ("arm the alarm in 10 minutes") needs neither an
+  answer nor an allowlist entry; delayed disarming and unlocking are never
+  possible.
+- To let an AI task, a delayed action or Open WebUI without chat id run the
+  action, add the entity to `approval.allowlist_entities`, or disable the
+  check with `approval.enabled = false` (see
+  [Configuration](configuration.md#approval-settings)). Automations created
+  by the agent still may only close those covers; open them from a script or
+  automation you write in Home Assistant.
+- A cover that opens without a question has no device class `garage`, `gate`
+  or `door` in Home Assistant; set it there (and resync the entity index) if
+  it should be protected. A cover that unexpectedly asks has a device class
+  that could not be read (entity not in the index and no state): check the
+  entity id and the Home Assistant connection.
+- A "yes" typed in another channel, or by another Home Assistant user,
+  does not approve; ask again from the original channel.
+- Traces show an `approval` span with the decision (`confirm`, `decline`,
+  `modify`, `unrelated`, `unclear`) and the age of the request; the log
+  shows `Approval gate pending/refused ...` and `Blocked unapproved sensitive
+  HA call ...`.
+
 ## Message Not Delivered to a Send Device
 
 **Symptoms:** A "send ... to ..." request answers "No matching send device mapping is configured" or "I could not prepare the content to send" (or the German equivalent), and nothing arrives.
@@ -326,7 +393,7 @@ Logs include timestamp, level, logger name, and message.
 
 - Is the `ship_logs` option actually enabled in the integration options dialog, and was the entry reloaded afterwards?
 - Is `ship_logs_level` set low enough? The level gate is on the shipper handler only -- the HA logger's own level still applies, so records below the effective HA log level never reach the shipper.
-- Is the container reachable from HA and the API key correct? A 401 from `/api/logs/ingest` triggers the integration's reauth flow; other failures drop the batch silently (drop-and-count with exponential backoff, no requeue).
+- Is the container reachable from HA and the API key correct? A failed `/api/logs/ingest` POST (including `401`) drops the batch silently (drop-and-count with exponential backoff, no requeue); a rejected key is reported by the conversation, AI Task, and STT paths, which start re-authentication. The drop counters are in the entry's **Download diagnostics** file.
 - When filtering the admin logs view by level, use the uppercase canonical levels (`DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`).
 - A container restart keeps only shipped records at WARNING and above (see [Remote Logs Not Visible](#remote-logs-not-visible)).
 
@@ -376,15 +443,38 @@ via `POST /api/admin/cache/import` (`mode=replace` for a clean
 slate, `mode=merge` to additively top up). See
 [Backup and Restore](backup-restore.md) for the curl recipe.
 
-## Options Flow Saved a Blank API Key
+## Integration Retries Setup After Home Assistant Starts
 
-**Symptoms:** After saving the integration options dialog without
-typing a value into the API key field, the integration appears to
-have been re-saved but conversations still authenticate.
+**Symptoms:** After an HA restart the HA-AgentHub entry shows "Setup failed,
+will retry" (or "Retrying setup"), and the conversation agent is missing until
+the container is up.
 
-**Cause:** This is intentional behaviour since version 1.0.0. Leaving
-the API key field blank in the options dialog keeps the previously
-stored key. Only enter a value when you want to replace it.
+**Cause:** On setup the integration calls `GET /api/health` with the API key
+(10 s timeout). A connection error, timeout, `5xx`, or a non-`ok` health
+answer means the container is not ready yet, so HA retries setup with
+backoff. This is expected when HA starts before the container.
+
+**Remediation:** None if the container comes up; the entry loads on the next
+retry. If it keeps retrying, verify the container is running and reachable
+from HA at the configured URL (see [Deployment -- Networking](deployment.md#networking)),
+or change the URL with **Reconfigure** on the entry.
+
+## API Key Rotated or Rejected
+
+**Symptoms:** HA shows a re-authentication notification for HA-AgentHub
+(Settings > Devices & Services, Repairs), conversation turns answer
+"...API key was rejected", or AI Task calls fail with "API key rejected".
+
+**Cause:** The container answered `401`/`403`: the API key was regenerated
+in the container, or the container's stored key became unreadable (for
+example after a Fernet key change). The integration starts one
+re-authentication flow per failure episode, from setup or from a runtime
+conversation, AI Task, or speaker identification request.
+
+**Remediation:** Open the notification and enter the current API key from
+the container dashboard. The key is validated before it is saved and the
+entry reloads. To change the URL as well, use **Reconfigure** in the entry's
+three-dot menu (a blank API key there keeps the stored key).
 
 ## Integration Migration Cannot Restore Credentials
 
@@ -394,8 +484,9 @@ obsolete value after newer credentials were previously discarded.
 
 **Cause and remediation:** Migration preserves available legacy values and
 prefers the current option values where they exist. It cannot reconstruct
-credentials that were already discarded. Reconfigure the integration with the
-container URL and API key; migration does not create replacement credentials.
+credentials that were already discarded. Use **Reconfigure** on the integration
+entry to enter the container URL and API key; migration does not create
+replacement credentials.
 
 ## Integration Error Messages
 
@@ -405,7 +496,7 @@ container trace id):
 
 | Spoken message (start) | Likely cause | Remediation |
 |------------------------|--------------|-------------|
-| "...API key was rejected" | REST `401`/`403`: container API key is wrong or was rotated. | Re-enter the API key in the integration (reauth starts automatically). |
+| "...API key was rejected" | REST `401`/`403`: container API key is wrong or was rotated. | Re-enter the API key in the re-authentication notification (it starts automatically), see [API Key Rotated or Rejected](#api-key-rotated-or-rejected). |
 | "...container returned an error" | REST `5xx` (LLM outage, internal error). | Check container logs and the `/api/health` probe. |
 | "...container is unavailable" | TCP/DNS failure between HA and the container. | Verify networking, `CONTAINER_PORT`, reverse proxy, and that the container is running. |
 | "...did not answer in time" | No reply within the integration's response timeout (`ws_receive_timeout`, default 120 s; WS and REST). | Check the trace for slow LLM calls; raise the timeout in the integration options if needed. The action may still have run. |

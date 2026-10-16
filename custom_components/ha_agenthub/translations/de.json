@@ -10,27 +10,42 @@
           "url": "Container-URL",
           "api_key": "API-Schlüssel"
         }
+      },
+      "reauth_confirm": {
+        "title": "HA-AgentHub erneut authentifizieren",
+        "description": "Der HA-AgentHub-Container unter {url} hat den gespeicherten API-Schlüssel abgelehnt. Bitte den aktuellen API-Schlüssel aus dem Container-Dashboard eingeben.",
+        "data": {
+          "api_key": "API-Schlüssel"
+        }
+      },
+      "reconfigure": {
+        "title": "HA-AgentHub neu konfigurieren",
+        "description": "Container-URL oder API-Schlüssel ändern. API-Schlüssel leer lassen, um den gespeicherten Schlüssel zu behalten.",
+        "data": {
+          "url": "Container-URL",
+          "api_key": "API-Schlüssel"
+        }
       }
     },
     "error": {
       "cannot_connect": "Keine Verbindung zum Container möglich. Bitte die URL prüfen und sicherstellen, dass der Container läuft.",
       "invalid_auth": "Ungültiger API-Schlüssel. Bitte prüfen und erneut versuchen.",
-      "invalid_url": "Ungültige URL. Muss mit http:// oder https:// beginnen."
+      "invalid_url": "Ungültige URL. Muss mit http:// oder https:// beginnen.",
+      "already_configured": "Dieser Container ist bereits konfiguriert."
     },
     "abort": {
       "already_configured": "Dieser Container ist bereits konfiguriert.",
-      "reauth_successful": "Re-Authentifizierung erfolgreich."
+      "reauth_successful": "Re-Authentifizierung erfolgreich.",
+      "reconfigure_successful": "Neukonfiguration erfolgreich."
     }
   },
   "options": {
     "step": {
       "init": {
         "title": "HA-AgentHub Einstellungen",
-        "description": "Verbindungseinstellungen zum HA-AgentHub-Container aktualisieren. API-Schlüssel leer lassen, um den gespeicherten Schlüssel zu behalten.",
+        "description": "Bridge-Einstellungen für HA-AgentHub. Container-URL oder API-Schlüssel über \"Neu konfigurieren\" am Integrationseintrag ändern.",
         "data": {
           "name": "Name",
-          "url": "Container-URL",
-          "api_key": "API-Schlüssel",
           "ws_receive_timeout": "Antwort-Timeout (Sekunden)",
           "ship_logs": "Logs an Container senden",
           "ship_logs_level": "Log-Level für Versand",
@@ -42,12 +57,15 @@
       }
     },
     "error": {
-      "cannot_connect": "Keine Verbindung zum Container möglich. Bitte die URL prüfen und sicherstellen, dass der Container läuft.",
-      "invalid_auth": "Ungültiger API-Schlüssel. Bitte prüfen und erneut versuchen.",
-      "invalid_url": "Ungültige URL. Muss mit http:// oder https:// beginnen.",
       "invalid_timeout": "Ungültiges Timeout. Bitte eine positive Zahl in Sekunden eingeben.",
-      "already_configured": "Diese URL ist bereits konfiguriert.",
       "invalid_stt_entity": "Bitte eine andere Speech-to-Text-Entität als die HA-AgentHub-STT-Entität selbst wählen."
+    }
+  },
+  "entity": {
+    "ai_task": {
+      "ai_task": {
+        "name": "KI-Aufgabe"
+      }
     }
   }
 }

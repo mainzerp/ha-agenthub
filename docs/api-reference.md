@@ -6,7 +6,7 @@ All API endpoints (except the `/healthz` and `/readyz` probes and `/setup/*`) re
 
 ### Conversation Endpoints
 
-Conversation and OpenAI-compatible (`/v1/*`) endpoints use a Bearer token in the `Authorization` header:
+Conversation, AI-task (`/api/ai_task`) and OpenAI-compatible (`/v1/*`) endpoints use a Bearer token in the `Authorization` header:
 
 ```
 Authorization: Bearer <api_key>
@@ -17,6 +17,21 @@ The API key is generated during the setup wizard (step 3).
 ### Admin Endpoints
 
 Admin endpoints require a session cookie obtained by logging in through the dashboard. The cookie name is `agent_assist_session` (literal in `container/app/security/auth.py`) and expires after 24 hours.
+
+### Cross-Site Request Protection
+
+Every `POST`, `PUT`, `PATCH`, or `DELETE` request that carries the `agent_assist_session` cookie and no `Authorization` header must be same-origin (`FetchMetadataCSRFMiddleware` in `container/app/security/middleware.py`):
+
+- With a `Sec-Fetch-Site` header, only `same-origin` and `none` are accepted.
+- Without `Sec-Fetch-Site`, an `Origin` header must match the request's `Host` (or `X-Forwarded-Host`) `host[:port]`; `Origin: null` is rejected.
+- Requests with neither header (for example `curl` with a cookie jar) are accepted.
+- Origins listed explicitly in `CORS_ORIGINS` are accepted; the wildcard `*` is not.
+
+Rejected requests return `403` with `{"detail": "Cross-site request blocked"}`. A Home Assistant page on another port of the same host counts as cross-origin. Bearer-token clients (`Authorization` header) and requests without the session cookie are not affected. Dashboard HTML form POSTs additionally keep the double-submit CSRF token check (`verify_csrf`).
+
+### Interactive API Docs
+
+`/docs`, `/redoc`, and `/openapi.json` are disabled by default. Set `ENABLE_API_DOCS=true` (see [Configuration](configuration.md#environment-variables)) to serve them.
 
 ### WebSocket
 
@@ -264,6 +279,102 @@ Server side: `container/app/api/routes/voice.py`, `container/app/voice/`
 
 ---
 
+## AI Task
+
+### POST /api/ai_task
+
+Run one Home Assistant `ai_task.generate_data` call (the HA bridge's AI-task
+entity) as a non-streaming orchestrator turn with request source `ai_task`.
+Classification, routing and device actions work as for a conversation turn,
+so a task may switch devices. Flow and exemptions: [Architecture -- AI task
+flow](architecture.md#ai-task-flow).
+
+**Auth:** Bearer token. Per-IP rate limit shared with `/api/conversation`
+(30/minute, `429`). Total request cap: 48 MiB (50,331,648 bytes) of JSON
+body, enough for 4 base64-encoded images of 8 MiB each (about 44.7 MB) plus
+the other fields; larger bodies, including chunked bodies without
+`Content-Length`, return `413` as soon as the limit is exceeded.
+
+**Request body:**
+
+```json
+{
+  "task_name": "Front door check",
+  "instructions": "Is there a package at the front door?",
+  "structure": {
+    "type": "object",
+    "properties": {"package_present": {"type": "boolean"}, "summary": {"type": "string"}},
+    "required": ["package_present"]
+  },
+  "attachments": [{"mime_type": "image/jpeg", "data": "<base64>"}],
+  "conversation_id": "optional-conversation-id",
+  "language": "en",
+  "user_id": "optional-ha-user-id",
+  "device_id": "optional-ha-device-id"
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `task_name` | string | yes | Task name (1-200 characters). |
+| `instructions` | string | yes | Task instructions (1-4000 characters). |
+| `structure` | object | no | JSON schema of type `object` the result `data` must validate against (HA's voluptuous-openapi conversion). |
+| `attachments` | list | no | Up to 4 images: `mime_type` must be `image/*` (`image/jpg` is normalized to `image/jpeg`), `data` is base64, at most 8 MB decoded per image. |
+| `conversation_id` | string | no | Conversation id; AI-task turns are never stored in its history. |
+| `language` | string | no | Language hint (default `en`; the `language` setting still applies). |
+| `user_id` | string | no | HA user id of the caller (visibility and personalization like a conversation turn). |
+| `device_id` | string | no | HA device id, when the task has one. |
+
+**Response (200):**
+
+```json
+{
+  "conversation_id": "abc123",
+  "data": {"package_present": true, "summary": "A package is at the door."},
+  "text": "A package is lying on the doormat.",
+  "routed_agent": "general-agent",
+  "action_executed": false
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `conversation_id` | string | Conversation identifier of the task turn. |
+| `data` | object or string | With `structure`: a JSON object validated against it. Without: the result text (same as `text`). |
+| `text` | string | Unmediated agent result text (no personality, no Markdown stripping). |
+| `routed_agent` | string or null | Agent(s) that handled the task (comma-joined for multi-agent tasks). |
+| `action_executed` | bool | True when the turn reports a successful Home Assistant action. |
+
+A task routed to a timer that the timer agent delegates to Home Assistant's
+built-in assistant cannot be honored; it returns `200` with a `text` stating
+that this is not supported in AI tasks and `action_executed: false`.
+A sensitive action (unlock, alarm arm/disarm, opening a garage door, gate or
+door cover) is refused the same way -- `200`, a `text` explaining that it
+needs a spoken or typed confirmation, `action_executed: false` -- unless the
+entity is in `approval.allowlist_entities` (see
+[Configuration](configuration.md#approval-settings)).
+
+**Errors** (`{"detail": "..."}`):
+
+- `400`: invalid input -- missing or invalid fields, `structure` that is not a
+  valid JSON schema of type `object` (`jsonschema` `check_schema`), more than
+  4 attachments, a non-image mime type, invalid base64, an image over 8 MB.
+- `401`: missing or invalid API key.
+- `413`: request body over 48 MiB.
+- `502`: the orchestrator turn ended in an error (canned failure, all agents
+  failed; the detail is the error text and the formatter is skipped), the
+  vision step failed (including a configured `vision-agent` model
+  that litellm reports as not supporting images; the detail names the model
+  and the setting to change), the structured-output step failed (including a
+  result that still does not validate after one repair attempt), or the
+  orchestrator dispatch failed.
+
+Server side: `container/app/api/routes/ai_task.py`,
+`container/app/agents/task_vision.py`, `container/app/agents/task_formatter.py`
+(tests: `container/tests/test_ai_task.py`).
+
+---
+
 ## OpenAI-compatible API
 
 OpenAI chat-completions surface for clients such as Open WebUI
@@ -295,7 +406,7 @@ Returns one model:
 
 | Header | Use |
 |--------|-----|
-| `X-OpenWebUI-Chat-Id` | Conversation id `owui-<chat id>` (truncated to 64 characters). Without it every turn gets a fresh id (`owui-<random hex>`) and runs without server-side history. |
+| `X-OpenWebUI-Chat-Id` | Conversation id `owui-<chat id>` (truncated to 64 characters). Without it every turn gets a fresh id (`owui-<random hex>`) and runs without server-side history, and sensitive actions (unlock, alarm arm/disarm, opening a garage door, gate or door) are refused instead of asking for approval. |
 | `X-OpenWebUI-User-Id` | Records the user in `external_user_mappings` (source `openwebui`) and passes the mapped Home Assistant user id as `user_id`; unmapped users run without `user_id`. Mapping errors never fail the request. |
 | `X-OpenWebUI-User-Name`, `X-OpenWebUI-User-Email` | Stored as display metadata for the Persons page. |
 | `X-OpenWebUI-Task` | Marks an Open WebUI background task (see below). Empty values, unrendered `{{...}}` placeholders and `none`/`null`/`false`/`undefined` (case-insensitive) mean "no task". |
@@ -874,10 +985,31 @@ Auth: admin session.
 
 | Method | Path | Purpose |
 |--------|------|---------|
-| GET | `/api/admin/fernet-key-backup` | Export the current Fernet key for offline backup. |
+| POST | `/api/admin/fernet-key-backup` | Export the current Fernet key encrypted with a passphrase. |
 
-Auth: admin session. See [Backup and Restore](backup-restore.md) for
-guidance on storing the returned key.
+Auth: admin session (same-origin rule applies, see [Cross-Site Request Protection](#cross-site-request-protection)).
+
+**Request:**
+
+```json
+{"passphrase": "<passphrase>"}
+```
+
+**Response:**
+
+```json
+{
+  "status": "ok",
+  "encrypted_key": "<base64>",
+  "warning": "Store this key securely. Loss of this key makes all encrypted secrets unrecoverable."
+}
+```
+
+- `encrypted_key` is base64 of `salt (16 bytes) + nonce (12 bytes) + AES-256-GCM ciphertext and tag`; the AES key is derived from the passphrase with PBKDF2-HMAC-SHA256 (600000 iterations, 32-byte key).
+- The plaintext Fernet key is never returned.
+- An empty or whitespace-only passphrase returns HTTP 200 with `{"status": "error", "detail": "Passphrase required for key backup"}`.
+
+See [Restore the Fernet Key from an Export](backup-restore.md#restore-the-fernet-key-from-an-export) for the decryption and restore procedure.
 
 ## Admin -- Notification profile
 
@@ -1021,7 +1153,7 @@ reacts:
 
 | Code | When | Integration behavior |
 |------|------|----------------------|
-| `4001` | Missing or invalid API key; rejected before the handshake completes. | Connect fails; the turn uses REST (a REST `401`/`403` starts reauth). |
+| `4001` | Missing or invalid API key; rejected before the handshake completes. | Connect fails and the integration starts reauth (as does a REST `401`/`403`); the turn uses REST. |
 | `1008` | Per-IP connection limit; rejected before the handshake completes. | Connect fails; the turn uses REST. |
 | `1008` | Origin not in `app.state.allowed_ws_origins`; sent after accept with a reason. | Reconnects with backoff; turns use REST meanwhile. |
 | `1011` | uvicorn keepalive ping timeout (`--ws-ping-interval 30 --ws-ping-timeout 10`) or an unhandled server error. | Idle socket: detached and reconnected. During a turn: before the first frame the turn is retried over REST, after it the turn ends with a dropped-connection message. |

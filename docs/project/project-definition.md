@@ -78,7 +78,7 @@ flowchart LR
 
     RW --> B
 
-    BG[Background services\nnotification_dispatcher\ndelayed_tasks\nalarm_monitor\ncustom_loader] --> O
+    BG[Background services\nbackground_actions\ndelayed_tasks\nalarm_monitor\ncustom_loader] --> O
     BG --> EI
 ```
 
@@ -131,7 +131,7 @@ The runtime is async end to end. Conversation streaming, agent dispatch, Home As
 
 #### API and Admin Surface
 
-- Conversation entrypoints expose WebSocket, SSE, and REST conversation routes.
+- Conversation entrypoints expose WebSocket, SSE, and REST conversation routes, plus the non-streaming `POST /api/ai_task` route for Home Assistant AI-task calls (`ai_task.generate_data`).
 - An OpenAI-compatible chat-completions API (`GET /v1/models`, `POST /v1/chat/completions`, trace source `openai`) lets Open WebUI chat with the orchestrator; Open WebUI background tasks are stubbed without dispatch, and Open WebUI users are mapped to Home Assistant users on the Persons page (`external_user_mappings`).
 - Admin APIs cover setup, cache inspection and flushing, traces, analytics, entity index operations, MCP management, plugins, send-device mappings, external user mappings, voice profiles, and settings.
 - `WS /ws/voice` receives teed voice-turn audio from the bridge for speaker identification; a recognized speaker is personalization context only (name, message sender, and with a linked Home Assistant user session memory and calendars) and never changes `user_id`, entity visibility, or authorization.
@@ -187,6 +187,7 @@ The Home Assistant integration remains a thin bridge, but it does more than a bl
 - trusts backend markdown sanitization when advertised and falls back to local stripping otherwise
 - migrates legacy config-entry titles from `Agent Assist` to `HA-AgentHub`
 - optionally wraps a user-selected STT entity ("HA-AgentHub STT"), passing audio and transcript through unchanged and teeing a best-effort audio copy to the container for speaker identification; STT never depends on the container
+- registers an AI Task entity (`ai_task.generate_data` with structure and image attachments) that forwards tasks to `POST /api/ai_task`
 
 The integration does not resolve entities, classify intent, or execute Home Assistant services on behalf of agents.
 
@@ -220,9 +221,11 @@ The integration does not resolve entities, classify intent, or execute Home Assi
 | `language_detect` | Resolve per-turn reply language when auto mode is active |
 | `filler-agent` | Emit interim speech for slow turns |
 | `rewrite-agent` | Rephrase action-cache-hit speech; on failure the stored original agent speech is used |
+| `vision-agent` | AI-task pre-step: describe image attachments (config row only, never routed) |
+| `task-formatter` | AI-task post-step: format the result as JSON for the requested schema (config row only, never routed) |
 | personality mediation | Optional final response mediation layer driven by runtime settings |
 | `sanitize` | Markdown stripping and speech-safe output cleanup |
-| `notification_dispatcher` | Background notification delivery support |
+| `background_actions` | Background timer and alarm notification delivery |
 | `delayed_tasks` | Deferred task scheduling support |
 | `alarm_monitor` | Background alarm and timer monitoring |
 | `custom_loader` | Runtime loading of persisted custom agents |
@@ -318,6 +321,7 @@ The Home Assistant bridge prefers a persistent WebSocket connection to the conta
 - REST is used as the fallback path when the request has not already been written to the WebSocket
 - if the socket drops after the request is sent, the integration avoids REST replay to prevent duplicate container work
 - streamed filler tokens are marked so the integration can speak them immediately
+- AI-task calls (`ai_task.generate_data`) use `POST /api/ai_task`: one non-streaming orchestrator turn with source `ai_task` (no cache, mediation, filler, follow-up or history), an optional vision pre-step for image attachments and an optional structured-output formatter
 
 ### Container and Home Assistant
 
@@ -451,7 +455,7 @@ This is not a single unified Pydantic settings tree. Pydantic loads the startup 
 | `FERNET_KEY_PATH` | `/data/.fernet_key` | Fernet key path for secret encryption |
 | `COOKIE_SECURE` | `false` | Forces admin session and CSRF cookies onto HTTPS only |
 | `HF_HUB_OFFLINE` | `0` | Compose and deployment control for offline Hugging Face model loading |
-| `HA_AGENTHUB_TAG` | `main` | Compose and deployment image tag selector |
+| `HA_AGENTHUB_TAG` | `latest` | Compose and deployment image tag selector |
 
 `HF_HUB_OFFLINE` and `HA_AGENTHUB_TAG` are deployment-time compose variables rather than core application settings.
 
@@ -520,6 +524,8 @@ Entity-index maintenance is currently described by startup priming, Home Assista
 - dashboard access uses sessions plus CSRF protection
 - the container API uses an API key, and Home Assistant access uses a long-lived access token
 - plugins and external tool servers extend trusted execution, not isolated execution
+- sensitive Home Assistant actions (unlock or open a lock, arm or disarm an alarm, open a garage door, gate or door cover) never run on the first request: interactive channels ask for an explicit yes judged by an LLM on the verbatim answer, non-interactive callers (AI tasks, delayed actions, OpenAI requests without a chat id) are refused unless the entity is allowlisted (delayed alarm arming is exempt), and a backstop in the Home Assistant client blocks any unapproved sensitive call (`approval.enabled`, `approval.allowlist_entities`; see [Architecture](../architecture.md#sensitive-action-approval))
+- speaker identification and the requesting user's name are prompt context only, never authorization
 
 ### Scalability
 
@@ -534,6 +540,7 @@ Entity-index maintenance is currently described by startup priming, Home Assista
 | --- | --- |
 | Legacy `agent-assist` naming can confuse contributors | This document calls out the naming split explicitly and treats the public name and compatibility names as separate concerns |
 | Cached actions could become invalid after visibility changes or entity removal | Visibility is rechecked before replay and failed replays invalidate the cache entry |
+| An LLM or replay path could unlock or open the home without the user's intent | Sensitive actions need an explicit approval per request, are never action-cached, and an approval-token backstop in the Home Assistant client blocks every other path |
 | Live Home Assistant, LLM, or MCP dependencies can fail mid-turn | The runtime preserves cache fallbacks where possible, keeps a general fallback agent, and surfaces failures through traces and logs |
 | In-process plugins can affect runtime stability or trust boundaries | Plugins are opt-in, lifecycle-managed, and documented as trusted-admin code rather than isolated extensions |
 | UI and docs can drift from optional agent enablement | Agent registration still depends on runtime config, so operational docs should continue to distinguish always-on control-plane pieces from enableable agents |

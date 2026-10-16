@@ -27,8 +27,10 @@ from app.models.agent import (
     INTERNAL_ONLY_AGENTS,
     NOISE_AGENT,
     IngressTask,
+    source_is_stateless_task,
 )
 from app.models.cache import ActionCacheEntry, CachedAction
+from app.security.sensitive_actions import SensitiveActionBlocked
 
 logger = logging.getLogger(__name__)
 
@@ -492,11 +494,14 @@ class CacheOrchestrator:
 
         Background turns (``source="background"``, e.g. wake briefings) never
         store a cache row: their synthetic prompts are not user phrasings.
+        Stateless AI-task turns (``source="ai_task"``) never store one either:
+        their instructions are automation prompts, not user phrasings.
         """
         if merged_multi_agent or not self._cache_manager or not speech or has_error:
             return False, False
         task_context = getattr(task, "context", None) if task is not None else None
-        if getattr(task_context, "source", None) == "background":
+        task_source = getattr(task_context, "source", None)
+        if task_source == "background" or source_is_stateless_task(task_source):
             return False, False
         if not await self._get_bool_setting_impl("cache.enabled", True):
             return False, False
@@ -745,6 +750,10 @@ class CacheOrchestrator:
                 "state": None,
                 "source": "cached_call",
             }
+        except SensitiveActionBlocked:
+            # Approval backstop: a sensitive action is never replayed from
+            # the cache; the caller invalidates the entry and runs live.
+            raise
         except Exception:
             logger.warning("Cached action execution failed", exc_info=True)
             return None

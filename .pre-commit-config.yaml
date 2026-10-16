@@ -15,7 +15,8 @@ repos:
       - id: check-added-large-files
 
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.15.15
+    # Keep in sync with the ruff pin in container/requirements-dev.txt
+    rev: v0.16.9
     hooks:
       - id: ruff
         args: [--fix]
@@ -29,6 +30,7 @@ repos:
         name: bandit
         language: system
         entry: bandit
+        # Same skip list as BANDIT_SKIPS in scripts/ci.py
         args:
           - "-r"
           - "container/app"
@@ -43,8 +45,16 @@ repos:
         name: pip-audit
         language: system
         entry: python
-        args: ["-m", "pip_audit", "-r", "container/requirements.txt", "--ignore-vuln", "CVE-2026-28684", "--ignore-vuln", "CVE-2026-45829"]
-        files: ^container/requirements.*\.txt$
+        args: ["-m", "pip_audit", "-r", "container/requirements.lock", "--require-hashes", "--disable-pip"]
+        files: ^container/requirements.*\.(txt|lock)$
+        pass_filenames: false
+
+      - id: pip-audit-torch
+        name: pip-audit (torch)
+        language: system
+        entry: python
+        args: ["-m", "pip_audit", "-r", "container/requirements-torch.txt", "--no-deps", "--disable-pip"]
+        files: ^container/requirements-torch\.txt$
         pass_filenames: false
 
       - id: pytest-container

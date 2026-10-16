@@ -22,10 +22,10 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Python 3.12
-        uses: actions/setup-python@v7
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
           cache: pip
@@ -39,7 +39,7 @@ jobs:
 
       - name: Upload coverage report
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: coverage-report
           path: container/coverage.xml
@@ -51,10 +51,10 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Python 3.12
-        uses: actions/setup-python@v7
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
 
@@ -63,17 +63,82 @@ jobs:
 
       - name: Upload security scan artifacts
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: security-scan-reports
           path: |
             bandit-report.json
             pip-audit-report.json
+            pip-audit-torch-report.json
           retention-days: 14
+
+  # Validates Dockerfile and lock changes on every PR and main push: amd64
+  # only, loaded into the runner's Docker, never pushed. Tags use `docker`.
+  docker-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+
+    concurrency:
+      group: docker-build-${{ github.workflow }}-${{ github.ref }}
+      cancel-in-progress: true
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Build image (linux/amd64, no push)
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: ./container
+          platforms: linux/amd64
+          load: true
+          push: false
+          provenance: false
+          sbom: false
+          tags: ha-agenthub:ci
+          cache-from: type=gha
+          # PR caches are scoped to the PR ref; only main writes the shared cache.
+          cache-to: ${{ github.event_name == 'pull_request' && '' || 'type=gha,mode=max' }}
+
+      - name: Smoke test (import)
+        run: docker run --rm ha-agenthub:ci python -c "from app.main import app; print('OK')"
+
+      # Compose hardening, non-default CONTAINER_PORT: the image HEALTHCHECK
+      # must turn healthy and SIGTERM must reach uvicorn (clean exit 0).
+      - name: Runtime check (CONTAINER_PORT=9090, healthcheck, shutdown)
+        run: |
+          docker run -d --name agenthub-ci \
+            -e CONTAINER_PORT=9090 -e HF_HUB_OFFLINE=1 -v agenthub-ci-data:/data \
+            --read-only --tmpfs /tmp:noexec,nosuid,size=100m --tmpfs /var/tmp:noexec,nosuid,size=50m \
+            --cap-drop ALL --cap-add CHOWN --cap-add SETGID --cap-add SETUID \
+            --security-opt no-new-privileges:true --health-interval 5s \
+            ha-agenthub:ci
+          status=starting
+          for _ in $(seq 1 36); do
+            status=$(docker inspect -f '{{.State.Health.Status}}' agenthub-ci)
+            [ "$status" = healthy ] && break
+            sleep 5
+          done
+          docker logs agenthub-ci 2>&1 | tail -n 40
+          if [ "$status" != healthy ]; then
+            echo "::error::container not healthy on CONTAINER_PORT=9090 (status: $status)"
+            exit 1
+          fi
+          docker stop -t 40 agenthub-ci
+          code=$(docker inspect -f '{{.State.ExitCode}}' agenthub-ci)
+          if [ "$code" != 0 ]; then
+            echo "::error::unclean shutdown on SIGTERM (exit code $code)"
+            exit 1
+          fi
 
   docker:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    # linux/arm64 builds under QEMU emulation, model pre-download included
+    timeout-minutes: 90
     needs: [quality, security]
     if: startsWith(github.ref, 'refs/tags/v')
 
@@ -91,17 +156,22 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: GHCR image name (lowercase)
         id: ghcr
         run: echo "image=ghcr.io/$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
 
+      - name: Set up QEMU (linux/arm64)
+        uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+        with:
+          platforms: arm64
+
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v4
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -109,7 +179,7 @@ jobs:
 
       - name: Docker metadata (GHCR)
         id: meta
-        uses: docker/metadata-action@v6
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         with:
           images: ${{ steps.ghcr.outputs.image }}
           tags: |
@@ -118,20 +188,26 @@ jobs:
 
       - name: Build and push to GHCR
         id: build
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: ./container
+          platforms: linux/amd64,linux/arm64
           push: true
+          sbom: true
+          provenance: mode=max
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Smoke test (GHCR)
+      - name: Smoke test (GHCR, runner platform linux/amd64)
         run: docker run --rm ${{ steps.ghcr.outputs.image }}@${{ steps.build.outputs.digest }} python -c "from app.main import app; print('OK')"
 
+      - name: Smoke test (GHCR, linux/arm64 under QEMU)
+        run: docker run --rm --platform linux/arm64 ${{ steps.ghcr.outputs.image }}@${{ steps.build.outputs.digest }} python -c "import platform; from app.main import app; print('OK', platform.machine())"
+
       - name: Scan image with Trivy (SARIF)
-        uses: aquasecurity/trivy-action@v0.36.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: ${{ steps.meta.outputs.tags }}
           format: sarif
@@ -143,7 +219,7 @@ jobs:
           limit-severities-for-sarif: true
 
       - name: Scan image with Trivy (gate)
-        uses: aquasecurity/trivy-action@v0.36.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: ${{ steps.meta.outputs.tags }}
           format: table
@@ -155,7 +231,7 @@ jobs:
 
       - name: Upload Trivy SARIF
         if: always()
-        uses: github/codeql-action/upload-sarif@v4.38.2
+        uses: github/codeql-action/upload-sarif@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
         with:
           sarif_file: trivy-results.sarif
 
@@ -175,21 +251,21 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: GHCR image name (lowercase)
         id: ghcr
         run: echo "image=ghcr.io/$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
 
       - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v4
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       - name: Extract version from tag
         id: version
@@ -209,14 +285,14 @@ jobs:
 
       - name: Attest build provenance
         continue-on-error: true
-        uses: actions/attest-build-provenance@v4
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-name: ${{ steps.ghcr.outputs.image }}
           subject-digest: ${{ steps.retag.outputs.digest }}
           push-to-registry: true
 
       - name: Scan image with Trivy (SARIF)
-        uses: aquasecurity/trivy-action@v0.36.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: ${{ steps.ghcr.outputs.image }}:${{ steps.version.outputs.VERSION }}
           format: sarif
@@ -228,7 +304,7 @@ jobs:
           limit-severities-for-sarif: true
 
       - name: Scan image with Trivy (gate)
-        uses: aquasecurity/trivy-action@v0.36.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: ${{ steps.ghcr.outputs.image }}:${{ steps.version.outputs.VERSION }}
           format: table
@@ -240,7 +316,7 @@ jobs:
 
       - name: Upload Trivy SARIF
         if: always()
-        uses: github/codeql-action/upload-sarif@v4.38.2
+        uses: github/codeql-action/upload-sarif@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
         with:
           sarif_file: trivy-results.sarif
 
@@ -263,7 +339,7 @@ jobs:
           echo "name=v$VERSION -- $title" >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v3
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           name: ${{ steps.notes.outputs.name }}
           body_path: release-notes.md

@@ -8,7 +8,7 @@ from fastapi import APIRouter
 
 from app.bootstrap._agents import BUILT_IN_AGENT_IDS
 from app.db.repository import AgentConfigRepository, EntityVisibilityRepository
-from app.models.agent import INTERNAL_ONLY_AGENTS
+from app.models.agent import INTERNAL_ONLY_AGENTS, TASK_HELPER_AGENTS
 
 from . import _shared
 
@@ -32,8 +32,9 @@ async def list_agents() -> dict[str, Any]:
         seen_ids.add(a.agent_id)
 
     # Built-in agent IDs exposed via the admin API: the bootstrap seed set
-    # minus pipeline-internal ids (single source of truth).
-    builtin_agents = BUILT_IN_AGENT_IDS - INTERNAL_ONLY_AGENTS
+    # minus pipeline-internal ids (single source of truth), plus the AI-task
+    # helper config rows (never registered, but their model is configurable).
+    builtin_agents = (BUILT_IN_AGENT_IDS - INTERNAL_ONLY_AGENTS) | TASK_HELPER_AGENTS
 
     # Include disabled built-in agents from DB that are not yet registered
     all_configs = await AgentConfigRepository.list_all()

@@ -740,11 +740,15 @@ class TestConfigEntrySourceOfTruth:
         entry.async_on_unload = MagicMock()
         hass.config_entries.async_forward_entry_setups = AsyncMock(return_value=True)
 
-        result = await async_setup_entry(hass, entry)
+        with patch(
+            "custom_components.ha_agenthub._async_probe_container", new=AsyncMock()
+        ) as probe:
+            result = await async_setup_entry(hass, entry)
         assert result is True
-        stored = hass.data[DOMAIN][entry.entry_id]
-        assert stored["url"] == "http://data.local"
-        assert stored["api_key"] == "data-key"
+        probe.assert_awaited_once_with(hass, "http://data.local", "data-key")
+        assert entry.runtime_data.url == "http://data.local"
+        assert entry.runtime_data.api_key == "data-key"
+        assert DOMAIN not in hass.data
 
     @pytest.mark.asyncio
     async def test_migrate_entry_moves_url_and_api_key_from_options_to_data(self, hass):
@@ -778,7 +782,7 @@ class TestConfigEntrySourceOfTruth:
         from homeassistant.const import CONF_API_KEY, CONF_URL
 
         from custom_components.ha_agenthub import async_migrate_entry, async_setup_entry
-        from custom_components.ha_agenthub.const import CONF_NAME, DOMAIN
+        from custom_components.ha_agenthub.const import CONF_NAME
 
         entry = MagicMock()
         entry.entry_id = "e1"
@@ -816,9 +820,12 @@ class TestConfigEntrySourceOfTruth:
         assert entry.unique_id == "https://new.local"
         assert entry.title == "New name"
 
-        assert await async_setup_entry(hass, entry) is True
-        assert hass.data[DOMAIN][entry.entry_id]["url"] == "https://new.local"
-        assert hass.data[DOMAIN][entry.entry_id]["api_key"] == "new-key"
+        with patch(
+            "custom_components.ha_agenthub._async_probe_container", new=AsyncMock()
+        ):
+            assert await async_setup_entry(hass, entry) is True
+        assert entry.runtime_data.url == "https://new.local"
+        assert entry.runtime_data.api_key == "new-key"
 
     @pytest.mark.asyncio
     async def test_migrate_entry_rejects_url_identity_conflict(self, hass):
@@ -943,12 +950,7 @@ class TestOptionsFlow:
             new=AsyncMock(return_value=None),
         ) as mock_validate:
             result = await flow.async_step_init(
-                {
-                    "url": "http://old.local",
-                    "api_key": "",
-                    "name": "",
-                    "ws_receive_timeout": "45",
-                }
+                {"name": "", "ws_receive_timeout": "45"}
             )
 
         # The flow manager applies result["data"] to entry.options.
@@ -961,34 +963,24 @@ class TestOptionsFlow:
         entry.options = result["data"]
         assert entry.options["ws_receive_timeout"] == 45.0
 
-        mock_validate.assert_awaited_once_with(
-            flow.hass, "http://old.local", "stored-token"
-        )
-        flow.hass.config_entries.async_update_entry.assert_called_once()
-        update_kwargs = flow.hass.config_entries.async_update_entry.call_args.kwargs
-        assert "options" not in update_kwargs
-        assert "unique_id" not in update_kwargs
-        assert update_kwargs["data"]["url"] == "http://old.local"
-        assert update_kwargs["data"]["api_key"] == "stored-token"
+        # Connection settings moved to the reconfigure flow: the options flow
+        # neither probes the container nor rewrites entry data when the name
+        # is unchanged.
+        mock_validate.assert_not_called()
+        flow.hass.config_entries.async_update_entry.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_ship_logs_options_persisted(self):
         flow, _entry = self._make_flow()
 
-        with patch(
-            "custom_components.ha_agenthub.config_flow._validate_connection",
-            new=AsyncMock(return_value=None),
-        ):
-            result = await flow.async_step_init(
-                {
-                    "url": "http://old.local",
-                    "api_key": "",
-                    "name": "",
-                    "ws_receive_timeout": "45",
-                    "ship_logs": True,
-                    "ship_logs_level": "INFO",
-                }
-            )
+        result = await flow.async_step_init(
+            {
+                "name": "",
+                "ws_receive_timeout": "45",
+                "ship_logs": True,
+                "ship_logs_level": "INFO",
+            }
+        )
 
         assert result["type"] == "create_entry"
         assert result["data"] == {
@@ -1001,182 +993,310 @@ class TestOptionsFlow:
     async def test_ship_logs_level_out_of_list_falls_back_to_default(self):
         flow, _entry = self._make_flow()
 
-        with patch(
-            "custom_components.ha_agenthub.config_flow._validate_connection",
-            new=AsyncMock(return_value=None),
-        ):
-            result = await flow.async_step_init(
-                {
-                    "url": "http://old.local",
-                    "api_key": "",
-                    "name": "",
-                    "ws_receive_timeout": "45",
-                    "ship_logs": True,
-                    "ship_logs_level": "TRACE",
-                }
-            )
+        result = await flow.async_step_init(
+            {
+                "name": "",
+                "ws_receive_timeout": "45",
+                "ship_logs": True,
+                "ship_logs_level": "TRACE",
+            }
+        )
 
         assert result["type"] == "create_entry"
         assert result["data"]["ship_logs"] is True
         assert result["data"]["ship_logs_level"] == "DEBUG"
 
     @pytest.mark.asyncio
-    async def test_invalid_timeout_shows_form_error_without_validation(self):
+    async def test_invalid_timeout_shows_form_error(self):
+        flow, _entry = self._make_flow()
+
+        result = await flow.async_step_init({"name": "", "ws_receive_timeout": "abc"})
+
+        assert result["type"] == "form"
+        assert result["errors"] == {"ws_receive_timeout": "invalid_timeout"}
+        flow.hass.config_entries.async_update_entry.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_name_change_updates_title_and_data_only(self):
+        flow, _entry = self._make_flow()
+
+        result = await flow.async_step_init(
+            {
+                "name": "Kitchen hub",
+                "ws_receive_timeout": "30",
+                # Stale clients may still post connection fields; they are
+                # ignored by the options flow.
+                "url": "http://elsewhere.local",
+                "api_key": "other-key",
+            }
+        )
+
+        assert result["type"] == "create_entry"
+        flow.hass.config_entries.async_update_entry.assert_called_once()
+        update_kwargs = flow.hass.config_entries.async_update_entry.call_args.kwargs
+        assert update_kwargs["title"] == "Kitchen hub"
+        assert update_kwargs["data"] == {
+            "name": "Kitchen hub",
+            "url": "http://old.local",
+            "api_key": "stored-token",
+        }
+        assert "unique_id" not in update_kwargs
+
+
+# ---------------------------------------------------------------------------
+# 5.3.10 Reauth flow: reauth -> reauth_confirm with API key validation
+# ---------------------------------------------------------------------------
+
+
+class TestReauthFlow:
+    def _make_flow(self):
+        from custom_components.ha_agenthub.config_flow import HaAgentHubConfigFlow
+
+        entry = MagicMock()
+        entry.entry_id = "e1"
+        entry.title = "HA-AgentHub"
+        entry.data = {
+            "name": "HA-AgentHub",
+            "url": "http://old.local",
+            "api_key": "stored-token",
+        }
+        entry.unique_id = "http://old.local"
+
+        flow = HaAgentHubConfigFlow()
+        flow.source = "reauth"
+        flow.hass = MagicMock()
+        flow._get_reauth_entry = lambda: entry
+        return flow, entry
+
+    @pytest.mark.asyncio
+    async def test_reauth_shows_confirm_form(self):
         flow, _entry = self._make_flow()
 
         with patch(
             "custom_components.ha_agenthub.config_flow._validate_connection",
             new=AsyncMock(return_value=None),
         ) as mock_validate:
-            result = await flow.async_step_init(
-                {
-                    "url": "http://old.local",
-                    "api_key": "",
-                    "name": "",
-                    "ws_receive_timeout": "abc",
-                }
+            result = await flow.async_step_reauth(
+                {"url": "http://old.local", "api_key": "stored-token"}
             )
 
         assert result["type"] == "form"
-        assert result["errors"] == {"ws_receive_timeout": "invalid_timeout"}
+        assert result["step_id"] == "reauth_confirm"
+        assert result["errors"] == {}
         mock_validate.assert_not_called()
         flow.hass.config_entries.async_update_entry.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_url_change_updates_unique_id_in_same_write(self):
+    @pytest.mark.parametrize("error", ["invalid_auth", "cannot_connect"])
+    async def test_reauth_confirm_invalid_key_shows_error(self, error):
         flow, _entry = self._make_flow()
 
         with patch(
             "custom_components.ha_agenthub.config_flow._validate_connection",
-            new=AsyncMock(return_value=None),
-        ):
-            result = await flow.async_step_init(
-                {
-                    "url": "http://new.local",
-                    "api_key": "",
-                    "name": "",
-                    "ws_receive_timeout": "30",
-                }
-            )
-
-        assert result["type"] == "create_entry"
-        assert result["data"] == {
-            "ws_receive_timeout": 30.0,
-            "ship_logs": False,
-            "ship_logs_level": "DEBUG",
-        }
-        flow.hass.config_entries.async_update_entry.assert_called_once()
-        update_kwargs = flow.hass.config_entries.async_update_entry.call_args.kwargs
-        assert update_kwargs["unique_id"] == "http://new.local"
-        assert update_kwargs["data"]["url"] == "http://new.local"
-
-    @pytest.mark.asyncio
-    async def test_url_change_to_existing_unique_id_shows_error(self):
-        flow, _entry = self._make_flow()
-        other = MagicMock()
-        other.entry_id = "other-entry"
-        other.unique_id = "http://taken.local"
-        flow.hass.config_entries.async_entries = MagicMock(return_value=[other])
-
-        with patch(
-            "custom_components.ha_agenthub.config_flow._validate_connection",
-            new=AsyncMock(return_value=None),
-        ):
-            result = await flow.async_step_init(
-                {
-                    "url": "http://taken.local",
-                    "api_key": "",
-                    "name": "",
-                    "ws_receive_timeout": "30",
-                }
-            )
+            new=AsyncMock(return_value=error),
+        ) as mock_validate:
+            result = await flow.async_step_reauth_confirm({"api_key": "wrong"})
 
         assert result["type"] == "form"
-        assert result["errors"] == {"base": "already_configured"}
+        assert result["step_id"] == "reauth_confirm"
+        assert result["errors"] == {"base": error}
+        mock_validate.assert_awaited_once_with(flow.hass, "http://old.local", "wrong")
         flow.hass.config_entries.async_update_entry.assert_not_called()
+        flow.hass.config_entries.async_schedule_reload.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_reauth_confirm_success_updates_key_and_aborts(self):
+        flow, _entry = self._make_flow()
+
+        with patch(
+            "custom_components.ha_agenthub.config_flow._validate_connection",
+            new=AsyncMock(return_value=None),
+        ) as mock_validate:
+            result = await flow.async_step_reauth_confirm({"api_key": " new-key "})
+
+        assert result == {"type": "abort", "reason": "reauth_successful"}
+        mock_validate.assert_awaited_once_with(flow.hass, "http://old.local", "new-key")
+        flow.hass.config_entries.async_update_entry.assert_called_once()
+        update_kwargs = flow.hass.config_entries.async_update_entry.call_args.kwargs
+        # Only the API key changes; URL, name and unique_id stay untouched.
+        assert update_kwargs == {
+            "data": {
+                "name": "HA-AgentHub",
+                "url": "http://old.local",
+                "api_key": "new-key",
+            }
+        }
+        flow.hass.config_entries.async_schedule_reload.assert_called_once_with("e1")
 
 
 # ---------------------------------------------------------------------------
-# 5.3.10 Reauth flow: unique_id maintenance on URL change
+# 5.3.10b Reconfigure flow: change URL and API key
 # ---------------------------------------------------------------------------
 
 
-class TestReauthFlow:
-    def _make_flow(self, unique_id="http://old.local"):
+class TestReconfigureFlow:
+    def _make_flow(self, other_entries=()):
         from custom_components.ha_agenthub.config_flow import HaAgentHubConfigFlow
 
         entry = MagicMock()
         entry.entry_id = "e1"
         entry.title = "HA-AgentHub"
-        entry.data = {"url": "http://old.local", "api_key": "stored-token"}
-        entry.unique_id = unique_id
+        entry.data = {
+            "name": "HA-AgentHub",
+            "url": "http://old.local",
+            "api_key": "stored-token",
+        }
+        entry.unique_id = "http://old.local"
 
         flow = HaAgentHubConfigFlow()
+        flow.source = "reconfigure"
         flow.hass = MagicMock()
-        flow._get_reauth_entry = lambda: entry
-        flow.hass.config_entries.async_entries = MagicMock(return_value=[entry])
-        flow.hass.config_entries.async_reload = AsyncMock()
+        flow._get_reconfigure_entry = lambda: entry
+        flow.hass.config_entries.async_entries = MagicMock(
+            return_value=[entry, *other_entries]
+        )
         return flow, entry
 
     @pytest.mark.asyncio
-    async def test_reauth_same_url_leaves_unique_id_untouched(self):
+    async def test_reconfigure_shows_form(self):
+        flow, _entry = self._make_flow()
+
+        result = await flow.async_step_reconfigure()
+
+        assert result["type"] == "form"
+        assert result["step_id"] == "reconfigure"
+        assert result["errors"] == {}
+
+    @pytest.mark.asyncio
+    async def test_reconfigure_url_change_updates_entry_and_unique_id(self):
         flow, _entry = self._make_flow()
 
         with patch(
             "custom_components.ha_agenthub.config_flow._validate_connection",
             new=AsyncMock(return_value=None),
-        ):
-            result = await flow.async_step_reauth(
-                {"url": "http://old.local", "api_key": "new-key"}
+        ) as mock_validate:
+            result = await flow.async_step_reconfigure(
+                {"url": " https://new.local/ ", "api_key": ""}
             )
 
-        assert result == {"type": "abort", "reason": "reauth_successful"}
-        flow.hass.config_entries.async_update_entry.assert_called_once()
+        assert result == {"type": "abort", "reason": "reconfigure_successful"}
+        # A blank API key keeps the saved one.
+        mock_validate.assert_awaited_once_with(
+            flow.hass, "https://new.local", "stored-token"
+        )
         update_kwargs = flow.hass.config_entries.async_update_entry.call_args.kwargs
-        assert "unique_id" not in update_kwargs
-        assert update_kwargs["data"]["api_key"] == "new-key"
-        flow.hass.config_entries.async_reload.assert_awaited_once_with("e1")
+        assert update_kwargs["unique_id"] == "https://new.local"
+        assert update_kwargs["data"] == {
+            "name": "HA-AgentHub",
+            "url": "https://new.local",
+            "api_key": "stored-token",
+        }
+        flow.hass.config_entries.async_schedule_reload.assert_called_once_with("e1")
 
     @pytest.mark.asyncio
-    async def test_reauth_url_change_updates_unique_id_in_same_write(self):
+    async def test_reconfigure_new_api_key_is_validated_and_saved(self):
         flow, _entry = self._make_flow()
 
         with patch(
             "custom_components.ha_agenthub.config_flow._validate_connection",
             new=AsyncMock(return_value=None),
-        ):
-            result = await flow.async_step_reauth(
-                {"url": "http://new.local", "api_key": "new-key"}
+        ) as mock_validate:
+            result = await flow.async_step_reconfigure(
+                {"url": "http://old.local", "api_key": "rotated"}
             )
 
-        assert result == {"type": "abort", "reason": "reauth_successful"}
-        flow.hass.config_entries.async_update_entry.assert_called_once()
+        assert result["reason"] == "reconfigure_successful"
+        mock_validate.assert_awaited_once_with(flow.hass, "http://old.local", "rotated")
         update_kwargs = flow.hass.config_entries.async_update_entry.call_args.kwargs
-        assert update_kwargs["unique_id"] == "http://new.local"
-        assert update_kwargs["data"]["url"] == "http://new.local"
+        assert update_kwargs["data"]["api_key"] == "rotated"
+        assert update_kwargs["unique_id"] == "http://old.local"
 
     @pytest.mark.asyncio
-    async def test_reauth_url_change_to_other_entry_aborts(self):
-        flow, entry = self._make_flow()
+    @pytest.mark.parametrize(
+        ("validation", "url", "expected"),
+        [
+            (None, "ftp://bad", "invalid_url"),
+            ("cannot_connect", "http://new.local", "cannot_connect"),
+            ("invalid_auth", "http://new.local", "invalid_auth"),
+        ],
+    )
+    async def test_reconfigure_errors_keep_entry_untouched(
+        self, validation, url, expected
+    ):
+        flow, _entry = self._make_flow()
+
+        with patch(
+            "custom_components.ha_agenthub.config_flow._validate_connection",
+            new=AsyncMock(return_value=validation),
+        ):
+            result = await flow.async_step_reconfigure({"url": url, "api_key": "k"})
+
+        assert result["type"] == "form"
+        assert result["errors"] == {"base": expected}
+        flow.hass.config_entries.async_update_entry.assert_not_called()
+        flow.hass.config_entries.async_schedule_reload.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_reconfigure_to_url_of_other_entry_shows_error(self):
         other = MagicMock()
         other.entry_id = "other-entry"
         other.unique_id = "http://taken.local"
-        flow.hass.config_entries.async_entries = MagicMock(return_value=[entry, other])
+        flow, _entry = self._make_flow(other_entries=[other])
 
         with patch(
             "custom_components.ha_agenthub.config_flow._validate_connection",
             new=AsyncMock(return_value=None),
-        ):
-            result = await flow.async_step_reauth(
-                {"url": "http://taken.local", "api_key": "new-key"}
+        ) as mock_validate:
+            result = await flow.async_step_reconfigure(
+                {"url": "http://taken.local", "api_key": ""}
             )
 
-        assert result == {"type": "abort", "reason": "already_configured"}
+        assert result["type"] == "form"
+        assert result["errors"] == {"base": "already_configured"}
+        mock_validate.assert_not_called()
         flow.hass.config_entries.async_update_entry.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
-# 5.3.11 Automatic reauth trigger on 401/403 REST responses
+# 5.3.10c Update listener: no double reload after reauth/reconfigure
+# ---------------------------------------------------------------------------
+
+
+class TestUpdateListener:
+    @pytest.mark.asyncio
+    async def test_reload_skipped_while_reauth_or_reconfigure_flow_runs(self):
+        from custom_components.ha_agenthub import _async_reload_entry_on_update
+
+        hass = MagicMock()
+        hass.config_entries.async_reload = AsyncMock()
+        entry = MagicMock(entry_id="e1")
+        entry.async_get_active_flows = MagicMock(
+            return_value=iter([{"context": {"source": "reauth"}}])
+        )
+
+        await _async_reload_entry_on_update(hass, entry)
+
+        entry.async_get_active_flows.assert_called_once_with(
+            hass, {"reauth", "reconfigure"}
+        )
+        hass.config_entries.async_reload.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_reload_runs_for_options_changes(self):
+        from custom_components.ha_agenthub import _async_reload_entry_on_update
+
+        hass = MagicMock()
+        hass.config_entries.async_reload = AsyncMock()
+        entry = MagicMock(entry_id="e1")
+        entry.async_get_active_flows = MagicMock(return_value=iter([]))
+
+        await _async_reload_entry_on_update(hass, entry)
+
+        hass.config_entries.async_reload.assert_awaited_once_with("e1")
+
+
+# ---------------------------------------------------------------------------
+# 5.3.11 Automatic reauth trigger on 401/403 REST and WS responses
 # ---------------------------------------------------------------------------
 
 
@@ -1192,6 +1312,11 @@ class TestReauthTriggerOnAuthFailure:
         entry.async_create_background_task = MagicMock(return_value=MagicMock())
         entry.async_on_unload = MagicMock()
         entry.async_start_reauth = MagicMock()
+        from custom_components.ha_agenthub import AgentHubRuntimeData
+
+        entry.runtime_data = AgentHubRuntimeData(
+            url="http://example.com", api_key="key"
+        )
         entity = HaAgentHubConversationEntity(entry, "http://example.com", "key")
         entity.hass = MagicMock()
         return entity
@@ -1257,9 +1382,57 @@ class TestReauthTriggerOnAuthFailure:
         await entity._process_via_rest(user_input, _FakeChatLog())
         entity._entry.async_start_reauth.assert_not_called()
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("status", [401, 403])
+    async def test_ws_handshake_auth_failure_starts_reauth_once(self, status):
+        import aiohttp
+
+        class _HandshakeError(aiohttp.ClientError):
+            def __init__(self, status):
+                super().__init__(f"HTTP {status}")
+                self.status = status
+
+        entity = self._make_entity()
+        session = MagicMock()
+        session.ws_connect = AsyncMock(side_effect=_HandshakeError(status))
+        entity._session = session
+
+        assert await entity._connect_ws() is False
+        assert await entity._connect_ws() is False
+
+        entity._entry.async_start_reauth.assert_called_once_with(entity.hass)
+        assert entity._entry.runtime_data.connection_status == "auth_failed"
+
+    @pytest.mark.asyncio
+    async def test_ws_connection_error_does_not_start_reauth(self):
+        import aiohttp
+
+        entity = self._make_entity()
+        session = MagicMock()
+        session.ws_connect = AsyncMock(side_effect=aiohttp.ClientError("refused"))
+        entity._session = session
+
+        assert await entity._connect_ws() is False
+        entity._entry.async_start_reauth.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_ws_connect_success_ends_the_episode(self):
+        entity = self._make_entity()
+        entity._entry.runtime_data.reauth_requested = True
+        entity._entry.runtime_data.connection_status = "auth_failed"
+        ws = MagicMock()
+        ws.closed = False
+        session = MagicMock()
+        session.ws_connect = AsyncMock(return_value=ws)
+        entity._session = session
+
+        assert await entity._connect_ws() is True
+        assert entity._entry.runtime_data.reauth_requested is False
+        assert entity._entry.runtime_data.connection_status == "ok"
+
 
 # ---------------------------------------------------------------------------
-# 5.3.12 Setup entry raises ConfigEntryError when URL is missing
+# 5.3.12 Setup entry errors: missing URL, container probe
 # ---------------------------------------------------------------------------
 
 
@@ -1282,6 +1455,245 @@ class TestSetupEntryErrors:
 
         with pytest.raises(ConfigEntryError):
             await async_setup_entry(hass, entry)
+
+
+class TestSetupProbe:
+    """async_setup_entry probes GET /api/health once before loading platforms."""
+
+    def _make(self):
+        hass = MagicMock()
+        hass.data = {}
+        hass.config_entries.async_forward_entry_setups = AsyncMock(return_value=True)
+        entry = MagicMock()
+        entry.entry_id = "e1"
+        entry.title = "HA-AgentHub"
+        entry.data = {"url": "http://container.local", "api_key": "key"}
+        entry.options = {}
+        entry.async_on_unload = MagicMock()
+        entry.add_update_listener = MagicMock()
+        del entry.runtime_data
+        return hass, entry
+
+    @pytest.mark.asyncio
+    async def test_success_sets_runtime_data_and_forwards_platforms(self):
+        from custom_components.ha_agenthub import (
+            PLATFORMS,
+            AgentHubRuntimeData,
+            async_setup_entry,
+        )
+
+        hass, entry = self._make()
+        with patch(
+            "custom_components.ha_agenthub.async_get_json",
+            new=AsyncMock(return_value={"status": "ok"}),
+        ) as get_json:
+            assert await async_setup_entry(hass, entry) is True
+
+        get_json.assert_awaited_once_with(
+            hass, "http://container.local", "key", "/api/health", timeout=10.0
+        )
+        assert isinstance(entry.runtime_data, AgentHubRuntimeData)
+        assert entry.runtime_data.url == "http://container.local"
+        assert entry.runtime_data.api_key == "key"
+        assert entry.runtime_data.connection_status == "ok"
+        entry.add_update_listener.assert_called_once()
+        hass.config_entries.async_forward_entry_setups.assert_awaited_once_with(
+            entry, PLATFORMS
+        )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("status", [401, 403])
+    async def test_rejected_key_raises_config_entry_auth_failed(self, status):
+        from homeassistant.exceptions import ConfigEntryAuthFailed
+
+        from custom_components.ha_agenthub import async_setup_entry
+        from custom_components.ha_agenthub.client import AgentHubAuthError
+
+        hass, entry = self._make()
+        with (
+            patch(
+                "custom_components.ha_agenthub.async_get_json",
+                new=AsyncMock(side_effect=AgentHubAuthError(status)),
+            ),
+            pytest.raises(ConfigEntryAuthFailed),
+        ):
+            await async_setup_entry(hass, entry)
+
+        assert not hasattr(entry, "runtime_data")
+        entry.add_update_listener.assert_not_called()
+        hass.config_entries.async_forward_entry_setups.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "error",
+        [
+            "connection",
+            "server_error",
+            "unhealthy",
+        ],
+    )
+    async def test_unreachable_or_unhealthy_raises_config_entry_not_ready(self, error):
+        from homeassistant.exceptions import ConfigEntryNotReady
+
+        from custom_components.ha_agenthub import async_setup_entry
+        from custom_components.ha_agenthub.client import (
+            AgentHubConnectionError,
+            AgentHubResponseError,
+        )
+
+        side_effects = {
+            "connection": AsyncMock(
+                side_effect=AgentHubConnectionError("timed out after 10s")
+            ),
+            "server_error": AsyncMock(
+                side_effect=AgentHubResponseError(503, "starting")
+            ),
+            "unhealthy": AsyncMock(return_value={"status": "degraded"}),
+        }
+        hass, entry = self._make()
+        with (
+            patch(
+                "custom_components.ha_agenthub.async_get_json",
+                new=side_effects[error],
+            ),
+            pytest.raises(ConfigEntryNotReady),
+        ):
+            await async_setup_entry(hass, entry)
+
+        assert not hasattr(entry, "runtime_data")
+        hass.config_entries.async_forward_entry_setups.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_probe_maps_transport_errors_via_shared_session(self):
+        """End-to-end through client.py: a transport error becomes NotReady."""
+        import aiohttp
+        from homeassistant.exceptions import ConfigEntryNotReady
+
+        from custom_components.ha_agenthub import async_setup_entry, client
+
+        class _FailingGet:
+            async def __aenter__(self):
+                raise aiohttp.ClientError("refused")
+
+            async def __aexit__(self, *exc_info):
+                return False
+
+        session = MagicMock()
+        session.get = MagicMock(return_value=_FailingGet())
+        hass, entry = self._make()
+        with (
+            patch.object(client, "async_get_clientsession", return_value=session),
+            pytest.raises(ConfigEntryNotReady),
+        ):
+            await async_setup_entry(hass, entry)
+
+        session.get.assert_called_once()
+        assert session.get.call_args.args[0] == "http://container.local/api/health"
+        assert session.get.call_args.kwargs["headers"] == {
+            "Authorization": "Bearer key"
+        }
+
+
+# ---------------------------------------------------------------------------
+# 5.3.12b Diagnostics
+# ---------------------------------------------------------------------------
+
+
+class TestDiagnostics:
+    @pytest.mark.asyncio
+    async def test_diagnostics_redact_api_key_and_url_credentials(self):
+        from custom_components.ha_agenthub import AgentHubRuntimeData, diagnostics
+
+        hass = MagicMock()
+        entry = MagicMock()
+        entry.entry_id = "e1"
+        entry.title = "HA-AgentHub"
+        entry.version = 3
+        entry.state = MagicMock(value="loaded")
+        entry.data = {
+            "name": "HA-AgentHub",
+            "url": "https://user:pass@container.local:8443",
+            "api_key": "super-secret",
+        }
+        entry.options = {"ship_logs": False, "ws_receive_timeout": 120.0}
+        entry.runtime_data = AgentHubRuntimeData(
+            url="https://user:pass@container.local:8443", api_key="super-secret"
+        )
+        integration = MagicMock(version="3.7.0")
+        registry_entry = MagicMock(
+            entity_id="conversation.ha_agenthub",
+            domain="conversation",
+            disabled_by=None,
+        )
+
+        with (
+            patch.object(
+                diagnostics,
+                "async_get_integration",
+                new=AsyncMock(return_value=integration),
+            ),
+            patch.object(
+                diagnostics.er,
+                "async_entries_for_config_entry",
+                return_value=[registry_entry],
+            ),
+        ):
+            result = await diagnostics.async_get_config_entry_diagnostics(hass, entry)
+
+        dumped = repr(result)
+        assert "super-secret" not in dumped
+        assert "user:pass" not in dumped
+        assert result["entry"]["data"]["api_key"] == "**REDACTED**"
+        assert result["entry"]["data"]["url"] == "**REDACTED**"
+        assert result["entry"]["data"]["name"] == "HA-AgentHub"
+        assert result["entry"]["options"] == {
+            "ship_logs": False,
+            "ws_receive_timeout": 120.0,
+        }
+        assert result["entry"]["state"] == "loaded"
+        assert result["integration_version"] == "3.7.0"
+        assert result["container"] == {
+            "scheme": "https",
+            "host": "container.local",
+            "port": 8443,
+        }
+        assert result["runtime"]["loaded"] is True
+        assert result["runtime"]["connection_status"] == "ok"
+        assert result["runtime"]["log_shipping"] == {"enabled": False}
+        assert result["platforms"] == ["ai_task", "conversation", "stt"]
+        assert result["entities"] == [
+            {
+                "entity_id": "conversation.ha_agenthub",
+                "platform_domain": "conversation",
+                "disabled": False,
+            }
+        ]
+
+    @pytest.mark.asyncio
+    async def test_diagnostics_for_entry_that_failed_setup(self):
+        from custom_components.ha_agenthub import diagnostics
+
+        hass = MagicMock()
+        entry = MagicMock()
+        entry.entry_id = "e1"
+        entry.title = "HA-AgentHub"
+        entry.version = 3
+        entry.state = MagicMock(value="setup_error")
+        entry.data = {"url": "http://container.local", "api_key": "super-secret"}
+        entry.options = {}
+        del entry.runtime_data
+
+        with patch.object(
+            diagnostics,
+            "async_get_integration",
+            new=AsyncMock(return_value=MagicMock(version=None)),
+        ):
+            result = await diagnostics.async_get_config_entry_diagnostics(hass, entry)
+
+        assert "super-secret" not in repr(result)
+        assert result["runtime"] == {"loaded": False}
+        assert result["container"]["host"] == "container.local"
+        assert result["integration_version"] is None
 
 
 # ---------------------------------------------------------------------------
@@ -1427,8 +1839,8 @@ class TestUserIdForwarding:
 
 
 class TestWsSessionReuse:
-    """P3 step 1: one ``aiohttp.ClientSession`` is reused across reconnects;
-    only entity removal closes it."""
+    """The entity uses HA's shared ``aiohttp.ClientSession`` and never closes
+    it; only the WebSocket is closed on disconnect."""
 
     def _make_entity(self):
         from custom_components.ha_agenthub.conversation import (
@@ -1500,7 +1912,7 @@ class TestWsSessionReuse:
         assert entity._session is session
 
     @pytest.mark.asyncio
-    async def test_entity_removal_closes_session(self, monkeypatch):
+    async def test_entity_removal_does_not_close_shared_session(self, monkeypatch):
         import custom_components.ha_agenthub.conversation as conv_mod
 
         entity = self._make_entity()
@@ -1517,8 +1929,54 @@ class TestWsSessionReuse:
 
         await entity.async_will_remove_from_hass()
 
-        session.close.assert_awaited_once()
+        session.close.assert_not_awaited()
         assert entity._session is None
+
+    @pytest.mark.asyncio
+    async def test_ws_and_rest_use_ha_shared_session(self):
+        """No private ClientSession is ever constructed (WS connect + REST)."""
+        import custom_components.ha_agenthub.conversation as conv_mod
+
+        entity = self._make_entity()
+        entity.hass = MagicMock()
+        ws = MagicMock()
+        ws.closed = False
+        shared = MagicMock()
+        shared.closed = False
+        shared.ws_connect = AsyncMock(return_value=ws)
+        response = MagicMock()
+        response.status = 200
+        response.headers = {}
+        response.json = AsyncMock(return_value={"speech": "ok"})
+        post_ctx = MagicMock()
+        post_ctx.__aenter__ = AsyncMock(return_value=response)
+        post_ctx.__aexit__ = AsyncMock(return_value=False)
+        shared.post = MagicMock(return_value=post_ctx)
+        user_input = MagicMock()
+        user_input.text = "hello"
+        user_input.conversation_id = "c1"
+        user_input.language = "en"
+        user_input.device_id = None
+        user_input.context = None
+
+        with (
+            patch.object(
+                conv_mod.aiohttp,
+                "ClientSession",
+                side_effect=AssertionError("private ClientSession constructed"),
+            ) as session_cls,
+            patch.object(
+                conv_mod, "async_get_clientsession", return_value=shared
+            ) as get_shared,
+        ):
+            assert await entity._connect_ws() is True
+            await entity._process_via_rest(user_input, _FakeChatLog())
+
+        session_cls.assert_not_called()
+        get_shared.assert_called_once_with(entity.hass)
+        shared.ws_connect.assert_awaited_once()
+        shared.post.assert_called_once()
+        assert entity._session is shared
 
 
 # ---------------------------------------------------------------------------

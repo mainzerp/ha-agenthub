@@ -28,6 +28,8 @@ httpx==0.28.1
 # Data validation
 pydantic==2.13.5
 pydantic-settings==2.15.0
+# JSON Schema validation (AI-task structured output; litellm caps it below 5)
+jsonschema>=4.26.0,<5.0.0
 
 # MCP integration
 mcp==2.3.0
@@ -56,3 +58,5 @@ langdetect==1.0.9
 # Explicit minimum pins for vulnerable transitive dependencies
 Pillow>=12.3.0
 python-dotenv>=1.2.3
+# torch runtime dependency (PYSEC-2026-3447 fixed in 83.0.0)
+setuptools>=83.0.0

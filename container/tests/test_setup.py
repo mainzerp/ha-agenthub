@@ -517,6 +517,62 @@ class TestLLMTest:
             assert "alert-error" in resp.text
             assert "Provider test failed" in resp.text
 
+    async def test_llm_test_passes_bounded_timeout(self, setup_client: httpx.AsyncClient):
+        from app.setup import routes as setup_routes
+
+        mock_litellm_mod = MagicMock()
+        mock_litellm_mod.acompletion = AsyncMock(return_value=MagicMock())
+        with patch.dict(sys.modules, {"litellm": mock_litellm_mod}):
+            resp = await csrf_post(
+                setup_client,
+                "/setup/test/llm",
+                {"provider": "groq", "api_key": "gsk-xxx"},
+                get_url="/setup/step/4",
+            )
+        assert resp.status_code == 200
+        assert "alert-success" in resp.text
+        called = mock_litellm_mod.acompletion.await_args
+        assert called.kwargs["timeout"] == setup_routes._LLM_TEST_TIMEOUT_S
+
+    async def test_llm_test_timeout_returns_error(self, setup_client: httpx.AsyncClient):
+        mock_litellm_mod = MagicMock()
+        mock_litellm_mod.acompletion = AsyncMock(side_effect=TimeoutError())
+        with patch.dict(sys.modules, {"litellm": mock_litellm_mod}):
+            resp = await csrf_post(
+                setup_client,
+                "/setup/test/llm",
+                {"provider": "openrouter", "api_key": "sk-test"},
+                get_url="/setup/step/4",
+            )
+        assert resp.status_code == 200
+        assert "alert-error" in resp.text
+        assert "timed out" in resp.text
+
+    async def test_llm_test_hanging_call_is_bounded(self, setup_client: httpx.AsyncClient):
+        import asyncio
+
+        from app.setup import routes as setup_routes
+
+        async def _hang(**_kwargs):
+            await asyncio.sleep(30)
+
+        mock_litellm_mod = MagicMock()
+        mock_litellm_mod.acompletion = _hang
+        with (
+            patch.dict(sys.modules, {"litellm": mock_litellm_mod}),
+            patch.object(setup_routes, "_LLM_TEST_TIMEOUT_S", 0.01),
+            patch.object(setup_routes, "_LLM_TEST_GRACE_S", 0.01),
+        ):
+            resp = await csrf_post(
+                setup_client,
+                "/setup/test/llm",
+                {"provider": "openrouter", "api_key": "sk-test"},
+                get_url="/setup/step/4",
+            )
+        assert resp.status_code == 200
+        assert "alert-error" in resp.text
+        assert "timed out" in resp.text
+
     async def test_llm_test_unknown_provider(self, setup_client: httpx.AsyncClient):
         mock_litellm_mod = MagicMock()
         with patch.dict(sys.modules, {"litellm": mock_litellm_mod}):

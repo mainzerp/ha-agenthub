@@ -92,9 +92,11 @@
         'ha_call': '#5e8f70',
         'llm_provider_call': '#c98f38',
         'cache_fallthrough': '#d4756b',
+        'approval': '#c98a6a',
     };
 
     var _traceSpanLabels = {
+        'approval': 'Approval',
         'cache_lookup': 'Cache Lookup',
         'classify': 'Classification',
         'dispatch': 'Dispatch',

@@ -1,0 +1,45 @@
+name: Validate integration
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Weekly, so upstream hassfest/HACS rule changes surface between PRs
+    - cron: "17 3 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  hassfest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Upstream publishes no release tags; pinned to the master commit.
+      # The action runs ghcr.io/home-assistant/hassfest (tracks HA dev).
+      - name: hassfest
+        uses: home-assistant/actions/hassfest@50baf3a307f87100cf550d4ae127746595030d5d # master
+
+  hacs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      # Upstream's last tag (22.5.0) is stale; pinned to the main commit.
+      # The action runs ghcr.io/hacs/action:main.
+      - name: HACS validation
+        uses: hacs/action@1ebf01c408f29afcb6406bd431bc98fd8cbb15aa # main
+        with:
+          category: integration
+          # Brand images ship in custom_components/ha_agenthub/brand/, not in
+          # the home-assistant/brands repository.
+          ignore: brands
+          # Read-only token: no PR comment, results go to the job log.
+          comment: false

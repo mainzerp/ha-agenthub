@@ -323,8 +323,7 @@ Discipline table); project mission and naming context live in
   the `new-agent` skill and must be imported in
   `container/app/agents/__init__.py` (the `@agent` decorator runs at import
   time).
-- Prompt assets live in `container/app/prompts/` (the `new-agent` skill shows a
-  stale path — trust the repo).
+- Prompt assets live in `container/app/prompts/`.
 - `container/data/` is runtime-only; `container/plugins/` is the user drop-in
   dir (files starting with `_` are ignored). Never edit generated or runtime
   artifacts.
@@ -432,6 +431,10 @@ Release checklist (all required):
       (background on Windows; verdict from the printed summary);
       `python -m pytest custom_components/tests/ -n auto`;
       `python scripts/ci.py` for the full gate. `mypy` is report-only.
+      After any change to `container/requirements.txt` or
+      `container/requirements-torch.txt`, regenerate the hashed image lock with
+      `python scripts/ci.py --update-lock` (`--check-lock` verifies; the full
+      gate fails on a stale lock).
 - [ ] Docs closeout done for the change (see Docs Discipline above).
 
 **Conventional Commits:** `<type>(<scope>): <short summary>`.

@@ -20,8 +20,11 @@ These are the only settings that use environment variables. All other configurat
 | `CHROMADB_PERSIST_DIR` | `/data/chromadb` | Legacy path used by sqlite-vec entity-index data. |
 | `SQLITE_DB_PATH` | `/data/agent_assist.db` | SQLite database file path. |
 | `FERNET_KEY_PATH` | `/data/.fernet_key` | Path to the Fernet encryption key. Backup target. |
+| `MIGRATION_BACKUP` | `true` | Before applying pending schema migrations to an existing database, write a `VACUUM INTO` snapshot to `backups/` next to the database file (newest 3 kept); startup aborts if the snapshot fails. `false` migrates without a snapshot. See [Backup and Restore](backup-restore.md#automatic-pre-migration-snapshots). |
 | `COOKIE_SECURE` | `true` | Set to `true` when serving the dashboard behind HTTPS so the admin session and CSRF cookies are restricted to TLS. Setting it on plain HTTP silently breaks login (browser drops the cookie). Local development should override it to `false`. (Production compose defaults this to `true`; the in-app fallback is also `true` in `app/config.py`.) |
-| `CORS_ORIGINS` | `""` | Comma-separated list of allowed CORS origins. |
+| `CORS_ORIGINS` | `""` | Comma-separated list of allowed CORS origins. Origins listed here (not `*`) are also exempt from the cross-site request guard for cookie-authenticated requests (see [API Reference](api-reference.md#cross-site-request-protection)). |
+| `FRAME_ANCESTORS` | `'self'` | Source list for the `Content-Security-Policy: frame-ancestors` header sent on every HTTP response. Add the Home Assistant origin to embed the dashboard in an HA iframe panel, for example `'self' http://homeassistant.local:8123`. Values containing `;` or `,` are rejected and fall back to `'self'`. |
+| `ENABLE_API_DOCS` | `false` | Serve FastAPI's interactive API docs and schema at `/docs`, `/redoc`, and `/openapi.json`. Disabled by default so the API schema is not publicly exposed. |
 | `TRUSTED_PROXIES` | `""` | Comma-separated list of trusted reverse-proxy IPs or CIDR networks (for example `172.18.0.0/16`) for correct client-IP extraction from `X-Forwarded-For`. Invalid entries are logged and ignored. |
 
 Environment variables are loaded by Pydantic `BaseSettings` in `app/config.py` and support `.env` file loading.
@@ -219,6 +222,20 @@ Identifies the speaker of Assist voice turns teed in by the bridge STT wrapper (
 | `voice.speaker_id.wait_ms` | `500` | int | Wait budget (`0-3000` ms) of the conversation turn for a speaker result, counted from the start of the lookup (which runs concurrently with memory search and classification). A result that arrives before dispatch is always used; at dispatch the turn blocks at most the rest of the budget |
 | `voice.speaker_id.num_threads` | `2` | int | CPU threads for the speaker-embedding model (`1-8`). A change reloads the model in the background; voice turns keep using the loaded model until the new one is ready |
 
+### Approval Settings
+
+Approval of sensitive actions (unlock/open a lock, arm or disarm an alarm,
+open/position/toggle a cover with device class `garage`, `gate` or `door`);
+behavior per channel in the [User Guide](user-guide.md#sensitive-actions-need-approval).
+Changed via `PUT /api/admin/settings`; changes apply within the 60-second
+settings cache. A failed settings read keeps approval on with an empty
+allowlist.
+
+| Key | Default | Type | Description |
+|-----|---------|------|-------------|
+| `approval.enabled` | `true` | bool | Ask for a spoken or typed yes before a sensitive action runs and refuse sensitive actions from AI tasks, delayed actions (delayed alarm arming excepted) and other non-interactive callers. `false` disables the approval gate and the write backstop entirely. |
+| `approval.allowlist_entities` | (empty) | string | Entity ids whose sensitive actions run without a question, also from AI tasks and delayed actions. Comma-separated (`lock.shed, cover.garage_door`) or a JSON list (`["lock.shed"]`); case-insensitive; invalid JSON counts as empty. |
+
 ### General Settings
 
 | Key | Default | Type | Description |
@@ -248,6 +265,22 @@ Default routable agents: `orchestrator`, `light-agent`, `music-agent`,
 `timer-agent`, `climate-agent`, `media-agent`, `scene-agent`,
 `automation-agent`, `security-agent`, `general-agent`, `send-agent`
 (delivers messages to phones, satellites, and notification targets).
+
+### AI task helper models
+
+Two `agent_configs` rows configure the models of the AI-task endpoint
+(`POST /api/ai_task`, used by Home Assistant `ai_task.generate_data`). They
+appear on the dashboard Agents page (model, timeout, temperature, prompt) but
+are never routing targets.
+
+| Agent | Default model | Default timeout / temperature / max tokens | Purpose |
+|-------|---------------|--------------------------------------------|---------|
+| `vision-agent` | `openrouter/openai/gpt-4o-mini` (same as the seeded `general-agent`) | 30 s / 0.2 / 1024 | Describes image attachments before the task is routed. Must be an image-capable model: a model litellm reports as non-vision makes image tasks fail with HTTP 502. Prompt: `vision.txt`. |
+| `task-formatter` | `openrouter/openai/gpt-4o-mini` | 15 s / 0.1 / 2048 | Turns the task result into a JSON object for the requested `structure` (JSON mode where the provider supports it, one repair attempt). Prompt: `task-formatter.txt`. |
+
+Disabling `vision-agent` rejects tasks with attachments, and disabling
+`task-formatter` rejects tasks with a `structure` (HTTP 502). Both rows are
+seeded on fresh installs and added by schema migration 52 on upgrades.
 
 ### Wake briefing for internal alarms
 
@@ -413,7 +446,7 @@ Tool-calling runtime limits (`app/agents/tool_calling.py`, `app/llm/client.py`):
 
 ## Home Assistant Integration Options
 
-These options live in the HA integration's options dialog (Settings -> Devices & Services -> HA-AgentHub -> Configure), not in the container. Changing them reloads the config entry.
+These options live in the HA integration's options dialog (Settings -> Devices & Services -> HA-AgentHub -> Configure), not in the container. Changing them reloads the config entry. Container URL and API key are changed with **Reconfigure** (same menu), and a rejected key triggers HA's **Re-authenticate** flow; see [Deployment](deployment.md).
 
 | Option | Default | Description |
 |--------|---------|-------------|

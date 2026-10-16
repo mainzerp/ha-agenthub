@@ -1,7 +1,7 @@
 import sys
 from contextvars import ContextVar
 from dataclasses import dataclass
-from enum import Enum
+from enum import Enum, IntFlag
 from pathlib import Path
 from types import ModuleType
 from unittest.mock import MagicMock
@@ -21,9 +21,50 @@ def _make_mock_module(name: str, attrs: dict | None = None) -> ModuleType:
     return mod
 
 
+_UNDEFINED = object()
+
+
 class _MockConfigFlow:
+    # Mirrors ConfigFlow.source; tests set it to "reauth" / "reconfigure".
+    source = "user"
+
     def __init_subclass__(cls, **kwargs):
         pass
+
+    def async_update_reload_and_abort(
+        self,
+        entry,
+        *,
+        unique_id=_UNDEFINED,
+        title=_UNDEFINED,
+        data=_UNDEFINED,
+        data_updates=_UNDEFINED,
+        options=_UNDEFINED,
+        reason=_UNDEFINED,
+        reload_even_if_entry_is_unchanged=True,
+    ):
+        """Same contract as HA core: update, schedule reload, then abort."""
+        if data_updates is not _UNDEFINED:
+            if data is not _UNDEFINED:
+                raise ValueError("Cannot set both data and data_updates")
+            data = {**entry.data, **data_updates}
+        kwargs = {
+            key: value
+            for key, value in (
+                ("unique_id", unique_id),
+                ("title", title),
+                ("data", data),
+                ("options", options),
+            )
+            if value is not _UNDEFINED
+        }
+        self.hass.config_entries.async_update_entry(entry, **kwargs)
+        self.hass.config_entries.async_schedule_reload(entry.entry_id)
+        if reason is _UNDEFINED:
+            reason = "reauth_successful"
+            if self.source == "reconfigure":
+                reason = "reconfigure_successful"
+        return self.async_abort(reason=reason)
 
     def async_show_form(self, *, step_id=None, data_schema=None, errors=None, **kwargs):
         return {
@@ -42,6 +83,25 @@ class _MockConfigFlow:
 
 class _MockConfigFlowResult:
     pass
+
+
+def _mock_async_redact_data(data, to_redact):
+    """Same semantics as homeassistant.components.diagnostics.async_redact_data."""
+    if isinstance(data, list):
+        return [_mock_async_redact_data(item, to_redact) for item in data]
+    if not isinstance(data, dict):
+        return data
+    redacted = {**data}
+    for key, value in redacted.items():
+        if value is None:
+            continue
+        if isinstance(value, str) and not value:
+            continue
+        if key in to_redact:
+            redacted[key] = "**REDACTED**"
+        elif isinstance(value, (dict, list)):
+            redacted[key] = _mock_async_redact_data(value, to_redact)
+    return redacted
 
 
 class _MockOptionsFlow:
@@ -199,6 +259,49 @@ class _MockAddConfigEntryEntitiesCallback:
     pass
 
 
+@dataclass
+class _MockAttachment:
+    media_content_id: str
+    mime_type: str
+    path: Path
+
+
+class _MockAITaskEntityFeature(IntFlag):
+    GENERATE_DATA = 1
+    SUPPORT_ATTACHMENTS = 2
+    GENERATE_IMAGE = 4
+
+
+class _MockAITaskEntity:
+    """Minimal stand-in for HA's AITaskEntity / Entity base."""
+
+    hass = None
+    entity_id = None
+
+
+@dataclass
+class _MockGenDataTask:
+    name: str
+    instructions: str
+    structure: object = None
+    attachments: list | None = None
+    llm_api: object = None
+
+
+@dataclass
+class _MockGenDataTaskResult:
+    conversation_id: str
+    data: object
+
+
+def _mock_selector_serializer(schema):
+    return {"selector_serializer": True}
+
+
+def _mock_voluptuous_openapi_convert(schema, *, custom_serializer=None):
+    return {"converted": schema, "custom_serializer": custom_serializer}
+
+
 @pytest.fixture(autouse=True, scope="session")
 def _mock_homeassistant_deps():
     """Inject minimal mocks for homeassistant imports."""
@@ -209,12 +312,16 @@ def _mock_homeassistant_deps():
             "ConfigFlow": _MockConfigFlow,
             "ConfigFlowResult": _MockConfigFlowResult,
             "OptionsFlow": _MockOptionsFlow,
+            "SOURCE_REAUTH": "reauth",
+            "SOURCE_RECONFIGURE": "reconfigure",
         },
         "homeassistant.const": {
             "CONF_URL": "url",
             "CONF_API_KEY": "api_key",
             "Platform": type(
-                "Platform", (), {"CONVERSATION": "conversation", "STT": "stt"}
+                "Platform",
+                (),
+                {"AI_TASK": "ai_task", "CONVERSATION": "conversation", "STT": "stt"},
             ),
             "MATCH_ALL": "*",
         },
@@ -226,8 +333,14 @@ def _mock_homeassistant_deps():
         "homeassistant.exceptions": {
             "HomeAssistantError": Exception,
             "ConfigEntryError": type("ConfigEntryError", (Exception,), {}),
+            "ConfigEntryAuthFailed": type("ConfigEntryAuthFailed", (Exception,), {}),
+            "ConfigEntryNotReady": type("ConfigEntryNotReady", (Exception,), {}),
         },
+        "homeassistant.loader": {"async_get_integration": MagicMock()},
         "homeassistant.helpers": {},
+        "homeassistant.helpers.llm": {
+            "selector_serializer": _mock_selector_serializer,
+        },
         "homeassistant.helpers.aiohttp_client": {
             "async_get_clientsession": MagicMock,
         },
@@ -248,7 +361,17 @@ def _mock_homeassistant_deps():
             "EntitySelectorConfig": _FakeEntitySelectorConfig,
         },
         "homeassistant.components": {},
+        "homeassistant.components.diagnostics": {
+            "REDACTED": "**REDACTED**",
+            "async_redact_data": _mock_async_redact_data,
+        },
         "homeassistant.components.assist_pipeline": {},
+        "homeassistant.components.ai_task": {
+            "AITaskEntity": _MockAITaskEntity,
+            "AITaskEntityFeature": _MockAITaskEntityFeature,
+            "GenDataTask": _MockGenDataTask,
+            "GenDataTaskResult": _MockGenDataTaskResult,
+        },
         "homeassistant.components.stt": {
             "AudioBitRates": int,
             "AudioChannels": int,
@@ -272,6 +395,7 @@ def _mock_homeassistant_deps():
             "ConversationResult": _MockConversationResult,
             "AssistantContent": _MockAssistantContent,
             "AssistantContentDeltaDict": dict,
+            "Attachment": _MockAttachment,
             "ChatLog": MagicMock,
         },
         "homeassistant.helpers.device_registry": {
@@ -281,11 +405,13 @@ def _mock_homeassistant_deps():
         "homeassistant.helpers.entity_registry": {
             "EVENT_ENTITY_REGISTRY_UPDATED": "entity_registry_updated",
             "async_get": MagicMock(),
+            "async_entries_for_config_entry": MagicMock(return_value=[]),
         },
         "homeassistant.helpers.intent": {"IntentResponse": MagicMock},
         "homeassistant.helpers.entity_platform": {
             "AddConfigEntryEntitiesCallback": _MockAddConfigEntryEntitiesCallback,
         },
+        "voluptuous_openapi": {"convert": _mock_voluptuous_openapi_convert},
         "voluptuous": {
             "Schema": MagicMock,
             "Required": MagicMock,

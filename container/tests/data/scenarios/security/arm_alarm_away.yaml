@@ -26,8 +26,16 @@ llm:
 
 expected:
   routed_agent: security-agent
-  service_calls:
-    - domain: alarm_control_panel
-      service: alarm_arm_away
-      target_entity: alarm_control_panel.home_alarm
-  speech_contains: ["alarm"]
+  # Sensitive action: held for approval, nothing runs on the first turn.
+  service_calls: []
+  speech_contains: ["should i", "arm", "away mode"]
+follow_up:
+  - request: {text: "yes"}
+    llm:
+      classify: |
+        {"decision": "confirm"}
+    expected:
+      routed_agent: security-agent
+      service_calls:
+        - {domain: alarm_control_panel, service: alarm_arm_away, target_entity: alarm_control_panel.home_alarm}
+      speech_contains: ["armed_away"]

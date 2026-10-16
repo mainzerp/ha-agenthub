@@ -16,6 +16,7 @@ from typing import Any, cast
 from app.a2a._request import build_send_request, build_stream_request
 from app.a2a.protocol import JsonRpcRequest
 from app.agents.agent_registry import CachedAgentRegistry
+from app.agents.approval import handle_pending_approval
 from app.agents.base import BaseAgent
 from app.agents.cache_orchestrator import CacheOrchestrator
 from app.agents.cancel_speech import generate_cancel_speech
@@ -68,6 +69,7 @@ from app.models.agent import (
     LastEntity,
     TaskContext,
     source_allows_filler,
+    source_is_stateless_task,
 )
 from app.voice import PendingSpeakerLookup, discard_pending_speaker, start_speaker_lookup
 
@@ -893,6 +895,8 @@ class OrchestratorAgent(BaseAgent):
                 # Phase 6: anaphora recency hints ride the content leg like
                 # the rest of the conversation context.
                 last_entities=list(incoming_context.last_entities) if incoming_context else [],
+                # AI task: vision pre-step image description (untrusted context).
+                attachment_description=incoming_context.attachment_description if incoming_context else None,
             )
 
             if self._ha_client:
@@ -1195,7 +1199,13 @@ class OrchestratorAgent(BaseAgent):
         # question from the previous turn. Aborts, topic changes, and
         # answers each consume the entry exactly once; the next question
         # turn re-sets it at finalization.
-        pending = self._conversation_manager.pop_pending_question(conversation_id)
+        # Stateless AI-task turns never consume (or answer) a pending
+        # question that belongs to an interactive conversation.
+        pending = (
+            None
+            if source_is_stateless_task(task.context.source if task.context else None)
+            else self._conversation_manager.pop_pending_question(conversation_id)
+        )
         if pending and task.context is not None:
             task.context.pending_question = pending["question"]
             task.context.is_followup = True
@@ -1299,6 +1309,25 @@ class OrchestratorAgent(BaseAgent):
         task = cast(IngressTask, task)
         user_text = task.description
 
+        # Sensitive-action approval: an answer to a pending approval question
+        # is judged on the verbatim user text BEFORE cache replay and
+        # classification (a condensed task would paraphrase a bare "yes").
+        approval_exit = await handle_pending_approval(self, task, conversation_id, user_text, span_collector)
+        if approval_exit is not None:
+            return PipelinePreludeResult(
+                conversation_id=conversation_id,
+                detected_language=context_language,
+                lang_turns=[],
+                span_collector=span_collector,
+                classifications=[],
+                routing_cached=False,
+                target_agent=str(approval_exit.get("routed_to") or ""),
+                condensed_task="",
+                confidence=None,
+                used_origin_context=False,
+                early_exit={"_exit_type": "approval", **approval_exit},
+            )
+
         cache_language = await self._explicit_cache_language(context_language)
         # Follow-up signal: while a clarifying question is pending, the
         # answer turn must not be served from the action cache -- it has to
@@ -1308,12 +1337,15 @@ class OrchestratorAgent(BaseAgent):
         pending_question_active = self._conversation_manager.has_pending_question(conversation_id)
         if pending_question_active:
             logger.debug("Skipping action-cache replay: pending clarifying question for %s", conversation_id)
+        # Stateless AI-task turns never read the action or routing cache:
+        # their instructions are automation prompts, not user phrasings.
+        stateless_task = source_is_stateless_task(task.context.source if task.context else None)
         cache_replay = await self._pipeline_director.run_cache_replay(
             task,
             user_text,
             cache_language,
             span_collector,
-            skip_lookup=pre_classified is not None or pending_question_active,
+            skip_lookup=pre_classified is not None or pending_question_active or stateless_task,
         )
         if cache_replay.action_replay is not None:
             # A replayed action needs no speaker context; drop the voice-turn
@@ -1630,8 +1662,13 @@ class OrchestratorAgent(BaseAgent):
         has_error: bool,
         language: str,
     ) -> tuple[str | None, bool]:
-        """Return (reminder_text, allow_organic_followup)."""
+        """Return (reminder_text, allow_organic_followup).
+
+        Stateless AI-task turns get neither: their result feeds an automation.
+        """
         reminder_text: str | None = None
+        if source_is_stateless_task(task.context.source if task.context else None):
+            return None, False
         if self._calendar_injector is not None and not has_error:
             try:
                 reminder_text = await self._calendar_injector.inject_reminders(
@@ -1703,7 +1740,9 @@ class OrchestratorAgent(BaseAgent):
         cache_stored_response = False
 
         speech = mediated_speech
-        followup_question = bool(voice_followup_requested or mediated_followup)
+        source = task.context.source if task.context else None
+        # Stateless AI-task turns never arm (or re-arm) a pending question.
+        followup_question = bool(voice_followup_requested or mediated_followup) and not source_is_stateless_task(source)
         # Follow-up signal: the finalization funnel is the single point
         # reached by streaming, non-streaming, and sequential-send, so the
         # pending-question state is set exactly once here when the spoken
@@ -1712,9 +1751,8 @@ class OrchestratorAgent(BaseAgent):
         # request a voice follow-up.
         if followup_question:
             self._conversation_manager.set_pending_question(conversation_id, speech, routed_to)
-        elif canned_code in RETRYABLE_CANNED_CODES:
+        elif canned_code in RETRYABLE_CANNED_CODES and not source_is_stateless_task(source):
             self._conversation_manager.restore_pending_question(conversation_id)
-        source = task.context.source if task.context else None
         voice_followup_effective = await resolve_voice_followup(
             followup_question,
             source,
@@ -1895,8 +1933,12 @@ class OrchestratorAgent(BaseAgent):
             # system response again (deterministic executor confirmations
             # included).
             personality = await self._get_personality_cached()
+            # Stateless AI-task turns return the unmediated agent result: no
+            # personality rewrite (canned-error localization below still runs).
+            stateless_task = source_is_stateless_task(task.context.source if task.context else None)
             should_mediate = (
                 not skip_mediation_llm
+                and not stateless_task
                 and target_agent not in (CANCEL_INTERACTION_AGENT, NOISE_AGENT)
                 and (not has_error or not skip_mediation_on_error)
                 and (bool(personality.strip()) or bool(reminder_text))
@@ -2068,7 +2110,8 @@ class OrchestratorAgent(BaseAgent):
             ret_span["metadata"]["voice_followup"] = False
             ret_span["metadata"]["cache_stored_response"] = False
             ret_span["metadata"]["cache_stored_routing"] = False
-            self._conversation_manager.restore_pending_question(conversation_id)
+            if not source_is_stateless_task(task.context.source if task.context else None):
+                self._conversation_manager.restore_pending_question(conversation_id)
             if span_collector:
                 await self._create_trace(
                     span_collector,
@@ -2682,6 +2725,8 @@ class OrchestratorAgent(BaseAgent):
             context.requester_name = task.context.requester_name
             # Phase 6: anaphora recency hints populated in the prelude.
             context.last_entities = list(task.context.last_entities)
+            # AI task: vision pre-step image description (untrusted context).
+            context.attachment_description = task.context.attachment_description
         if self._ha_client:
             await populate_task_context_home_context(context, self._ha_client)
 
@@ -3164,8 +3209,10 @@ class OrchestratorAgent(BaseAgent):
         # must be woven in -- personality applies to every system response
         # again (deterministic executor confirmations included). Only a
         # mediation-inactive turn relays agent tokens straight through.
-        should_mediate = target_agent not in (CANCEL_INTERACTION_AGENT, NOISE_AGENT) and (
-            bool(personality.strip()) or bool(reminder_text)
+        should_mediate = (
+            target_agent not in (CANCEL_INTERACTION_AGENT, NOISE_AGENT)
+            and not source_is_stateless_task(task.context.source if task.context else None)
+            and (bool(personality.strip()) or bool(reminder_text))
         )
 
         tokens_were_streamed = sc.relayed_tokens

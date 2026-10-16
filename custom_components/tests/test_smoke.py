@@ -34,7 +34,9 @@ def _mock_homeassistant_deps():
             "CONF_URL": "url",
             "CONF_API_KEY": "api_key",
             "Platform": type(
-                "Platform", (), {"CONVERSATION": "conversation", "STT": "stt"}
+                "Platform",
+                (),
+                {"AI_TASK": "ai_task", "CONVERSATION": "conversation", "STT": "stt"},
             ),
             "MATCH_ALL": "*",
         },

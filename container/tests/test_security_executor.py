@@ -106,6 +106,7 @@ class TestExecuteSecurityAction:
         ha_client.call_service.assert_awaited_once_with("lock", "lock", "lock.front_door", None)
 
     @pytest.mark.asyncio
+    @pytest.mark.usefixtures("approval_disabled")
     async def test_unlock_success(self, ha_client, entity_matcher, entity_index):
         ha_client.get_state = AsyncMock(
             side_effect=[
@@ -121,6 +122,7 @@ class TestExecuteSecurityAction:
         ha_client.call_service.assert_awaited_once_with("lock", "unlock", "lock.front_door", None)
 
     @pytest.mark.asyncio
+    @pytest.mark.usefixtures("approval_disabled")
     async def test_alarm_arm_home_with_code_success(self, ha_client):
         matcher = AsyncMock()
         match_result = MagicMock()
@@ -146,6 +148,7 @@ class TestExecuteSecurityAction:
         )
 
     @pytest.mark.asyncio
+    @pytest.mark.usefixtures("approval_disabled")
     async def test_alarm_disarm_success(self, ha_client):
         matcher = AsyncMock()
         match_result = MagicMock()

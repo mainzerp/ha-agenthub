@@ -22,6 +22,7 @@ import collections
 import json
 import logging
 import time
+from collections.abc import Callable
 from typing import Any
 from urllib.parse import urlparse
 
@@ -88,8 +89,11 @@ class VoiceTee:
         start_payload: dict[str, Any],
         *,
         queue_max: int = VOICE_TEE_QUEUE_MAX,
+        on_auth_failure: Callable[[], None] | None = None,
     ) -> None:
         self._session = session
+        # Called (in the event loop) when the container rejects the API key.
+        self._on_auth_failure = on_auth_failure
         self._ws_url = ws_url
         self._api_key = api_key
         self._start_payload = start_payload
@@ -171,7 +175,11 @@ class VoiceTee:
                     raise
                 except (aiohttp.ClientError, TimeoutError, OSError) as err:
                     self._disable()
-                    unreachable_warning.log(self._ws_url, err)
+                    # A rejected key fails the handshake with HTTP 401/403.
+                    if getattr(err, "status", None) in {401, 403}:
+                        self._report_auth_failure()
+                    else:
+                        unreachable_warning.log(self._ws_url, err)
                     return
                 await ws.send_json(self._start_payload)
                 await self._pump_audio(ws)
@@ -197,6 +205,17 @@ class VoiceTee:
                         "Speaker identification: closing the voice socket failed",
                         exc_info=True,
                     )
+
+    def _report_auth_failure(self) -> None:
+        logger.debug("Speaker identification: container rejected the API key")
+        if self._on_auth_failure is None:
+            return
+        try:
+            self._on_auth_failure()
+        except Exception:
+            logger.debug(
+                "Speaker identification: auth failure callback failed", exc_info=True
+            )
 
     def _disable(self) -> None:
         self._disabled = True

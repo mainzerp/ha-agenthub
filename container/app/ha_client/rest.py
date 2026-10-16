@@ -19,6 +19,7 @@ from app.db.repository import SettingsRepository
 from app.ha_client.action_marker import note_ha_action_started
 from app.ha_client.auth import get_auth_headers
 from app.ha_client.websocket import WebSocketResetError
+from app.security.sensitive_actions import enforce_sensitive_call_policy, policy_already_enforced
 
 if TYPE_CHECKING:
     from app.ha_client.websocket import HAWebSocketClient
@@ -35,6 +36,9 @@ _REQUEST_NEVER_SENT_ERRORS: tuple[type[Exception], ...] = (
     httpx.PoolTimeout,
 )
 _direct_ha_write_warning_count = 0
+# WebSocket commands that run services or scripts: only ``call_service``
+# may send them, so the approval backstop always applies.
+_SERVICE_WS_COMMANDS: frozenset[str] = frozenset({"call_service", "execute_script"})
 
 
 @contextmanager
@@ -273,6 +277,9 @@ class HARestClient:
         Returns the command's ``result`` payload; ``None`` means either an
         empty success result or an error, so callers verify the effect.
         """
+        if msg_type in _SERVICE_WS_COMMANDS:
+            # Service calls must go through call_service (approval backstop).
+            raise ValueError(f"WebSocket command '{msg_type}' is not allowed here; use call_service")
         ws = self._state_observer
         if ws is None or not ws.is_connected():
             raise RuntimeError("Home Assistant WebSocket connection is not available")
@@ -290,7 +297,15 @@ class HARestClient:
         *,
         return_response: bool = False,
     ) -> dict[str, Any] | None:
-        """POST /api/services/<domain>/<service>."""
+        """POST /api/services/<domain>/<service>.
+
+        Approval backstop: a sensitive call (unlock, alarm arm/disarm,
+        opening a garage door/gate/door cover) without an approval token
+        raises :class:`app.security.sensitive_actions.SensitiveActionBlocked`
+        before anything is sent, whatever path it came from (cache replay,
+        delayed actions, plugins, AI tasks).
+        """
+        await enforce_sensitive_call_policy(domain, service, entity_id, service_data, state_fetcher=self.get_state)
         context = _ha_service_call_context.get()
         if context is None:
             warning_count = _record_direct_ha_write_warning()
@@ -341,13 +356,15 @@ class HARestClient:
         ws = self._state_observer
         if ws is not None and ws.is_connected():
             logger.info("Falling back to WebSocket for service call %s/%s ...", domain, service)
-            ws_result = await ws.call_service(
-                domain,
-                service,
-                entity_id=entity_id,
-                service_data=service_data,
-                return_response=return_response,
-            )
+            # Same call the backstop above already checked.
+            with policy_already_enforced():
+                ws_result = await ws.call_service(
+                    domain,
+                    service,
+                    entity_id=entity_id,
+                    service_data=service_data,
+                    return_response=return_response,
+                )
             if ws_result is not None:
                 logger.debug("WebSocket fallback succeeded for %s/%s", domain, service)
                 return ws_result

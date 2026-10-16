@@ -3,7 +3,7 @@
 ## Prerequisites
 
 - **Docker Engine** 20.10+ and **Docker Compose** v2
-- **Home Assistant** 2025.4.0 or later (2025.8+ recommended for spoken streaming)
+- **Home Assistant** 2025.8.0 or later
 - An LLM API key from at least one provider:
   - [OpenRouter](https://openrouter.ai/) (recommended -- access to multiple models)
   - [Groq](https://groq.com/) (fast inference)
@@ -69,8 +69,17 @@ volumes:
 Key points:
 
 - The image source of truth is GHCR
-  (`ghcr.io/mainzerp/ha-agenthub`); CI publishes `:latest` on every
-  push to `main`.
+  (`ghcr.io/mainzerp/ha-agenthub`). CI publishes only on `v*` release
+  tags (version tag plus `:latest`); pull requests and pushes to `main`
+  build a `linux/amd64` image for validation without pushing it.
+- Release images are multi-platform: `linux/amd64` and `linux/arm64`
+  (64-bit ARM hosts). Docker pulls the matching variant automatically;
+  32-bit ARM is not supported.
+- `CONTAINER_PORT` (default `8080`) is the port uvicorn listens on inside
+  the container; the compose port mapping, the compose healthcheck and the
+  image's own `HEALTHCHECK` all follow it, so changing it in `.env` moves
+  the whole stack. `CONTAINER_HOST` (default `0.0.0.0`) sets the bind
+  address.
 - Pin a release by setting `HA_AGENTHUB_TAG` (for example,
   `HA_AGENTHUB_TAG=1.44.2 docker compose up -d`).
 - The `ha-agenthub-data` named volume persists the SQLite database,
@@ -96,6 +105,13 @@ side. The service name is `ha-agenthub` in both compose files.
 ```bash
 docker compose -f docker-compose_local.yml up -d --build
 ```
+
+The build installs Python dependencies from `container/requirements.lock`
+(fully pinned, hash-checked with `pip --require-hashes`) plus the CPU-only
+PyTorch pinned in `container/requirements-torch.txt` (from the PyTorch CPU
+index). After editing `requirements.txt` or `requirements-torch.txt`,
+regenerate the lock with `python scripts/ci.py --update-lock` (needs `uv`);
+`python scripts/ci.py` fails on a stale lock.
 
 #### Security Hardening
 
@@ -130,6 +146,12 @@ COOKIE_SECURE=false
 
 # Path to Fernet encryption key (default: /data/.fernet_key)
 # FERNET_KEY_PATH=/data/.fernet_key
+
+# CSP frame-ancestors value; widen it to embed the dashboard in an HA iframe
+# FRAME_ANCESTORS='self'
+
+# Serve /docs, /redoc and /openapi.json (default: false)
+# ENABLE_API_DOCS=false
 ```
 
 ### 4. Start the Container
@@ -214,9 +236,39 @@ Review your configuration and complete the setup. The container initializes all 
 4. The integration registers as a conversation agent. You can select it as the default assistant in Settings > Voice Assistants.
 5. Optional, speaker identification: set **Speaker identification STT entity** (`stt_entity_id`) in the integration options and select the resulting **HA-AgentHub STT** entity as speech-to-text in the Assist pipeline. Requires a bridge version that ships `stt.py` (update through HACS together with the container). See [User Guide -- Voice Profiles](user-guide.md#voice-profiles).
 
-The options flow re-uses the same form. Leaving the API key field
-**blank** in the options dialog keeps the previously stored key; only
-enter a value when you want to replace it.
+On setup (HA start, reload) the integration makes one authenticated
+`GET /api/health` call (10 s timeout). An unreachable or unhealthy
+container leaves the entry in "Setup failed, will retry" and HA retries
+with backoff; a rejected API key starts re-authentication.
+
+#### Change settings, connection, and credentials
+
+The integration entry (Settings > Devices & Services > HA-AgentHub) has three dialogs:
+
+- **Configure** (options): name, response timeout, log shipping, and the
+  speaker identification STT entity. Saving reloads the entry; the container
+  is not contacted.
+- **Reconfigure** (three-dot menu): container URL and API key. Both are
+  validated against `GET /api/health` before they are saved. Leaving the API
+  key **blank** keeps the stored key. A URL that another HA-AgentHub entry
+  already uses is refused.
+- **Re-authenticate**: when the container rejects the API key (HTTP
+  `401`/`403`) at setup or at runtime (conversation turn, AI Task, or the
+  speaker identification audio tee), HA shows a re-authentication
+  notification under Settings > Devices & Services and in Repairs. Open it and
+  enter the current key from the container dashboard; the URL stays
+  unchanged. Only one re-authentication is started per failure episode.
+
+Earlier bridge versions edited URL and API key in **Configure**; existing
+entries keep their stored values and need no action.
+
+#### Diagnostics
+
+Use **Download diagnostics** in the entry's three-dot menu when reporting a
+bridge problem. The file contains the integration version, entry data and
+options with the API key and URL redacted, the container scheme, host, and
+port only, the last connection status (`ok` or `auth_failed`), log-shipping
+drop counters, and the entry's entities.
 
 #### Legacy entry-title migration
 

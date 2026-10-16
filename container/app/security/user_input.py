@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from app.security.sanitization import check_injection_patterns, sanitize_input
+from app.security.sanitization import MAX_INPUT_LENGTH, check_injection_patterns, sanitize_input
 
 
 @dataclass(frozen=True)
@@ -25,8 +25,8 @@ def _fix_mojibake(text: str) -> str:
         return text
 
 
-def prepare_user_text(text: str) -> PreparedUserInput:
+def prepare_user_text(text: str, *, max_length: int = MAX_INPUT_LENGTH) -> PreparedUserInput:
     """Sanitize one live user turn and detect prompt-injection patterns."""
-    sanitized = sanitize_input(_fix_mojibake(text or ""))
+    sanitized = sanitize_input(_fix_mojibake(text or ""), max_length=max_length)
     injection_detected = check_injection_patterns(sanitized)
     return PreparedUserInput(text=sanitized, injection_detected=injection_detected)

@@ -152,6 +152,34 @@ async def _clear_settings_cache():
 
 
 @pytest.fixture(autouse=True)
+def _reset_approval_state():
+    """Sensitive-action approval: no pending approval or registered index leaks between tests."""
+    from app.agents.approval import approval_store
+    from app.agents.automation_confirmation import confirmation_store
+    from app.security import sensitive_actions
+
+    approval_store.clear()
+    confirmation_store.clear()
+    sensitive_actions.register_entity_index(None)
+    yield
+    approval_store.clear()
+    confirmation_store.clear()
+    sensitive_actions.register_entity_index(None)
+
+
+@pytest.fixture()
+def approval_disabled():
+    """Run with ``approval.enabled=false`` (tests about executor behavior, not the approval gate)."""
+    from app.security.sensitive_actions import ApprovalSettings
+
+    async def _disabled() -> ApprovalSettings:
+        return ApprovalSettings(enabled=False)
+
+    with patch("app.security.sensitive_actions.load_approval_settings", new=_disabled):
+        yield
+
+
+@pytest.fixture(autouse=True)
 async def _clear_hot_path_caches():
     """P2: drop the memoized secrets / agent-config / provider-params caches.
 
@@ -636,10 +664,13 @@ def _ensure_ha_exceptions_mock():
     if "homeassistant" not in sys.modules:
         sys.modules["homeassistant"] = ModuleType("homeassistant")
     if "homeassistant.exceptions" not in sys.modules:
-        ha_exc = ModuleType("homeassistant.exceptions")
+        sys.modules["homeassistant.exceptions"] = ModuleType("homeassistant.exceptions")
+    ha_exc = sys.modules["homeassistant.exceptions"]
+    if not isinstance(getattr(ha_exc, "HomeAssistantError", None), type):
         ha_exc.HomeAssistantError = Exception
-        ha_exc.ConfigEntryError = type("ConfigEntryError", (Exception,), {})
-        sys.modules["homeassistant.exceptions"] = ha_exc
+    for name in ("ConfigEntryError", "ConfigEntryAuthFailed", "ConfigEntryNotReady"):
+        if not isinstance(getattr(ha_exc, name, None), type):
+            setattr(ha_exc, name, type(name, (Exception,), {}))
     if "homeassistant.helpers.aiohttp_client" not in sys.modules:
         from unittest.mock import MagicMock
 

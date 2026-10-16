@@ -45,7 +45,7 @@ A successful login answers with `303` redirect to `/dashboard/` and sets the `ag
 
 ## Using the token after login
 
-- **JSON Admin API** (`/api/admin/...`): session cookie is enough — no CSRF field needed.
+- **JSON Admin API** (`/api/admin/...`): session cookie is enough — no CSRF field needed. This works from `curl` because curl sends neither `Origin` nor `Sec-Fetch-Site`. Browser requests are checked by the fetch-metadata guard (`container/app/security/middleware.py`): cookie-authenticated `POST`/`PUT`/`PATCH`/`DELETE` calls from another origin (including Home Assistant on another port of the same host) get `403 Cross-site request blocked`. Do not add an `Origin` header to curl calls unless it matches `$BASE`.
 - **Dashboard form POSTs** (`/dashboard/...` with `application/x-www-form-urlencoded`): include the CSRF token as a form field. Read the current value from the cookie jar:
 
 ```bash
@@ -71,4 +71,5 @@ curl -s -b /tmp/aa_cookies.txt -c /tmp/aa_cookies.txt \
 | `401 CSRF token missing` | No `csrf_token` form field sent | Run the full login flow above |
 | `401 CSRF token invalid` | Form field != cookie value (stale jar) | Re-fetch `/dashboard/login`, extract fresh token |
 | `401 Invalid credentials` | Wrong `AA_USERNAME`/`AA_PASSWORD` | Check `secrets/.env.local` |
+| `403 Cross-site request blocked` | Cookie request sent with a foreign `Origin` or `Sec-Fetch-Site: cross-site`/`same-site` | Drop the `Origin` header or set it to `$BASE`; call from the dashboard origin |
 | Login page HTML has no token | Endpoint not reachable / setup mode | Verify `$BASE` and that onboarding is complete |

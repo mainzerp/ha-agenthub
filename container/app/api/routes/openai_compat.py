@@ -468,12 +468,19 @@ async def chat_completions(
         user_id=await _resolve_user_id(request),
     )
     span_collector = getattr(request.state, "span_collector", None)
+    # Without the chat-id header the next message gets a fresh conversation
+    # id, so an approval question could never be answered.
+    resumable = bool(_header(request, _HEADER_CHAT_ID))
 
     if body.stream:
-        a2a_request, _task = _build_a2a_request(conv_request, "message/stream", span_collector, request)
+        a2a_request, _task = _build_a2a_request(
+            conv_request, "message/stream", span_collector, request, conversation_resumable=resumable
+        )
         return StreamingResponse(_stream_turn(request, a2a_request, span_collector), media_type="text/event-stream")
 
-    a2a_request, _task = _build_a2a_request(conv_request, "message/send", span_collector, request)
+    a2a_request, _task = _build_a2a_request(
+        conv_request, "message/send", span_collector, request, conversation_resumable=resumable
+    )
     try:
         response = await _dispatcher.dispatch(a2a_request)
     except RuntimeError:

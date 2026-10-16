@@ -515,11 +515,25 @@ class TestHAConfigFlow:
             def _abort_if_unique_id_configured(self):
                 return None
 
-            def async_show_form(self, step_id, data_schema, errors):
+            def async_show_form(self, step_id, data_schema, errors, description_placeholders=None):
                 return {"type": "form", "step_id": step_id, "data_schema": data_schema, "errors": errors}
 
             def async_create_entry(self, title, data):
                 return {"type": "create_entry", "title": title, "data": data}
+
+            def async_abort(self, *, reason):
+                return {"type": "abort", "reason": reason}
+
+            def async_update_reload_and_abort(self, entry, *, unique_id=None, data_updates=None):
+                # Mirrors HA core: merge data_updates into entry.data, update,
+                # schedule a reload, abort with the source-specific reason.
+                kwargs = {"data": {**entry.data, **(data_updates or {})}}
+                if unique_id is not None:
+                    kwargs["unique_id"] = unique_id
+                self.hass.config_entries.async_update_entry(entry, **kwargs)
+                self.hass.config_entries.async_schedule_reload(entry.entry_id)
+                reason = "reconfigure_successful" if self.source == "reconfigure" else "reauth_successful"
+                return self.async_abort(reason=reason)
 
         class _FakeOptionsFlow:
             def async_show_form(self, step_id, data_schema, errors):
@@ -561,7 +575,7 @@ class TestHAConfigFlow:
         sys.modules["homeassistant.const"].CONF_NAME = "name"
         sys.modules["homeassistant.const"].CONF_NAME = "name"
         sys.modules["homeassistant.const"].Platform = type(
-            "Platform", (), {"CONVERSATION": "conversation", "STT": "stt"}
+            "Platform", (), {"AI_TASK": "ai_task", "CONVERSATION": "conversation", "STT": "stt"}
         )
         sys.modules["homeassistant.core"].HomeAssistant = type("HomeAssistant", (), {})
         sys.modules["homeassistant.helpers.selector"].TextSelector = _FakeTextSelector
@@ -650,53 +664,118 @@ class TestHAConfigFlow:
 
         assert result == "cannot_connect"
 
-    async def test_options_flow_blank_api_key_keeps_existing_secret(self):
-        config_flow = self._import_config_flow_module()
-
+    @staticmethod
+    def _make_entry():
         entry = MagicMock()
         entry.entry_id = "e1"
-        entry.data = {"url": "http://old.local", "api_key": "stored-token"}
+        entry.title = "HA-AgentHub"
+        entry.data = {"name": "HA-AgentHub", "url": "http://old.local", "api_key": "stored-token"}
         entry.options = {}
         entry.unique_id = "http://old.local"
+        return entry
 
-        flow = config_flow.HaAgentHubOptionsFlow(entry)
+    def _make_config_flow(self, config_flow, source, entry):
+        flow = config_flow.HaAgentHubConfigFlow()
+        flow.source = source
         flow.hass = MagicMock()
         flow.hass.config_entries = MagicMock()
-        flow.hass.config_entries.async_entries = MagicMock(return_value=[])
+        flow.hass.config_entries.async_entries = MagicMock(return_value=[entry])
+        flow._get_reauth_entry = lambda: entry
+        flow._get_reconfigure_entry = lambda: entry
+        return flow
+
+    async def test_reconfigure_blank_api_key_keeps_existing_secret(self):
+        config_flow = self._import_config_flow_module()
+        entry = self._make_entry()
+        flow = self._make_config_flow(config_flow, "reconfigure", entry)
 
         with patch(
             "custom_components.ha_agenthub.config_flow._validate_connection",
             new_callable=AsyncMock,
             return_value=None,
         ) as mock_validate:
-            result = await flow.async_step_init({"url": "http://ha.local/", "api_key": ""})
+            result = await flow.async_step_reconfigure({"url": "http://ha.local/", "api_key": "   "})
 
-        assert result["type"] == "create_entry"
-        assert result["data"] == {"ws_receive_timeout": 120.0, "ship_logs": False, "ship_logs_level": "DEBUG"}
-        entry.options = result["data"]
-        assert entry.options["ws_receive_timeout"] == 120.0
-
+        assert result == {"type": "abort", "reason": "reconfigure_successful"}
+        # The blank key is never sent or stored: the saved secret is used.
         mock_validate.assert_awaited_once_with(flow.hass, "http://ha.local", "stored-token")
         flow.hass.config_entries.async_update_entry.assert_called_once()
         update_kwargs = flow.hass.config_entries.async_update_entry.call_args.kwargs
-        assert update_kwargs["title"] == entry.title
         assert update_kwargs["data"] == {
+            "name": "HA-AgentHub",
             "url": "http://ha.local",
             "api_key": "stored-token",
-            "name": entry.title,
         }
         assert update_kwargs["unique_id"] == "http://ha.local"
         assert "options" not in update_kwargs
 
-    async def test_options_flow_schema_uses_blank_password_field(self):
+    async def test_reauth_blank_api_key_is_rejected_without_overwrite(self):
+        config_flow = self._import_config_flow_module()
+        entry = self._make_entry()
+        flow = self._make_config_flow(config_flow, "reauth", entry)
+        session = MagicMock()
+
+        # Real _validate_connection: a blank key fails before any request.
+        with patch(
+            "custom_components.ha_agenthub.config_flow.async_get_clientsession",
+            return_value=session,
+        ):
+            result = await flow.async_step_reauth_confirm({"api_key": ""})
+
+        assert result["type"] == "form"
+        assert result["step_id"] == "reauth_confirm"
+        assert result["errors"] == {"base": "invalid_auth"}
+        session.get.assert_not_called()
+        flow.hass.config_entries.async_update_entry.assert_not_called()
+        assert entry.data["api_key"] == "stored-token"
+
+    async def test_options_flow_never_touches_connection_secrets(self):
+        config_flow = self._import_config_flow_module()
+        entry = self._make_entry()
+
+        flow = config_flow.HaAgentHubOptionsFlow(entry)
+        flow.hass = MagicMock()
+        flow.hass.config_entries = MagicMock()
+
+        with patch(
+            "custom_components.ha_agenthub.config_flow._validate_connection",
+            new_callable=AsyncMock,
+            return_value=None,
+        ) as mock_validate:
+            # Stale frontends may still post connection fields; they are ignored.
+            result = await flow.async_step_init({"url": "http://ha.local/", "api_key": ""})
+
+        assert result["type"] == "create_entry"
+        assert result["data"] == {"ws_receive_timeout": 120.0, "ship_logs": False, "ship_logs_level": "DEBUG"}
+        mock_validate.assert_not_called()
+        flow.hass.config_entries.async_update_entry.assert_not_called()
+        assert entry.data["api_key"] == "stored-token"
+        assert entry.data["url"] == "http://old.local"
+
+    async def test_reconfigure_schema_uses_blank_password_field(self):
+        config_flow = self._import_config_flow_module()
+
+        schema = config_flow._build_reconfigure_schema("http://old.local")
+        marker, validator = self._schema_entry(schema, "api_key")
+        default_value = marker.default() if callable(marker.default) else marker.default
+        assert default_value == ""
+        assert validator.config.type == "password"
+        url_marker, _ = self._schema_entry(schema, "url")
+        assert url_marker.default() == "http://old.local"
+
+        reauth_marker, reauth_validator = self._schema_entry(config_flow._build_reauth_schema(), "api_key")
+        assert reauth_marker.default() is None
+        assert reauth_validator.config.type == "password"
+
+    async def test_options_schema_has_no_connection_fields(self):
         config_flow = self._import_config_flow_module()
 
         schema = config_flow._build_options_schema({"url": "http://old.local", "api_key": "stored-token"})
-        marker, validator = self._schema_entry(schema, "api_key")
-        default_value = marker.default() if callable(marker.default) else marker.default
+        fields = {getattr(marker, "schema", None) for marker in schema.schema}
 
-        assert default_value == ""
-        assert validator.config.type == "password"
+        assert "url" not in fields
+        assert "api_key" not in fields
+        assert "ws_receive_timeout" in fields
 
 
 # ---------------------------------------------------------------------------
@@ -1302,7 +1381,7 @@ class TestHAConfigEntryLifecycle:
         sys.modules["homeassistant.const"].CONF_API_KEY = "api_key"
         sys.modules["homeassistant.const"].CONF_NAME = "name"
         sys.modules["homeassistant.const"].Platform = type(
-            "Platform", (), {"CONVERSATION": "conversation", "STT": "stt"}
+            "Platform", (), {"AI_TASK": "ai_task", "CONVERSATION": "conversation", "STT": "stt"}
         )
 
         yield
@@ -1344,10 +1423,19 @@ class TestHAConfigEntryLifecycle:
         entry.options = {}
         entry.add_update_listener = MagicMock(side_effect=_add_update_listener)
         entry.async_on_unload = MagicMock()
+        # No reauth/reconfigure flow in progress: the listener must reload.
+        entry.async_get_active_flows = MagicMock(return_value=iter([]))
 
-        result = await async_setup_entry(hass, entry)
+        # Setup probes GET /api/health before loading platforms; the probe
+        # itself is covered in custom_components/tests.
+        with patch("custom_components.ha_agenthub._async_probe_container", new_callable=AsyncMock) as probe:
+            result = await async_setup_entry(hass, entry)
 
         assert result is True
+        probe.assert_awaited_once_with(hass, "http://ha.local", "token")
+        assert entry.runtime_data.url == "http://ha.local"
+        assert entry.runtime_data.api_key == "token"
+        assert "ha_agenthub" not in hass.data
         entry.add_update_listener.assert_called_once()
         entry.async_on_unload.assert_called_once_with("listener-unsub")
         assert registered_listener is not None
@@ -1468,7 +1556,7 @@ class TestHAConversationRestFallbackMessages:
         )
         # ``_process_via_rest`` delegates to these helpers; bind the real
         # implementations onto the MagicMock self.
-        for name in ("_rest_result", "_add_assistant_chat_log_content"):
+        for name in ("_rest_result", "_add_assistant_chat_log_content", "_http_session"):
             setattr(
                 entity,
                 name,

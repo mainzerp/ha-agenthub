@@ -7,7 +7,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-RequestSource = Literal["ha", "chat", "api", "openai", "background"]
+RequestSource = Literal["ha", "chat", "api", "openai", "background", "ai_task"]
 BackgroundEventType = Literal[
     "alarm_notification",
     "timer_notification",
@@ -21,8 +21,16 @@ BackgroundEventType = Literal[
 # voice follow-up (re-opening a satellite microphone) is never requested.
 # The OpenAI-compatible ``/v1`` ingress (Open WebUI) drops filler frames and
 # has no microphone, so both would only cost latency and mislabel traces.
-FILLER_EXEMPT_SOURCES: frozenset[str] = frozenset({"openai"})
-VOICE_FOLLOWUP_EXEMPT_SOURCES: frozenset[str] = frozenset({"openai"})
+# AI-task turns (``/api/ai_task``) feed an automation, not a listener.
+FILLER_EXEMPT_SOURCES: frozenset[str] = frozenset({"openai", "ai_task"})
+VOICE_FOLLOWUP_EXEMPT_SOURCES: frozenset[str] = frozenset({"openai", "ai_task"})
+
+# Request sources of stateless programmatic tasks (Home Assistant
+# ``ai_task.generate_data`` via ``/api/ai_task``). Their result text is
+# consumed by an automation: no action/routing cache read or write, no
+# personality mediation, calendar reminder or organic closing question, no
+# pending clarifying question, and no conversation history or session memory.
+STATELESS_TASK_SOURCES: frozenset[str] = frozenset({"ai_task"})
 
 
 def source_allows_filler(source: str | None) -> bool:
@@ -33,6 +41,11 @@ def source_allows_filler(source: str | None) -> bool:
 def source_allows_voice_followup(source: str | None) -> bool:
     """True when a request from ``source`` may request a voice follow-up."""
     return source not in VOICE_FOLLOWUP_EXEMPT_SOURCES
+
+
+def source_is_stateless_task(source: str | None) -> bool:
+    """True when ``source`` is a stateless programmatic task (see ``STATELESS_TASK_SOURCES``)."""
+    return source in STATELESS_TASK_SOURCES
 
 
 # Canonical agent identifiers used across the orchestration pipeline.
@@ -47,7 +60,11 @@ CANCEL_INTERACTION_AGENT = "cancel-interaction"
 NOISE_AGENT = "noise"
 # Agents that are internal to the orchestrator pipeline and should not be
 # exposed as routable targets or stored in routing/action caches.
-INTERNAL_ONLY_AGENTS: frozenset[str] = frozenset({"orchestrator", "rewrite-agent", "filler-agent"})
+# AI-task helpers: LLM config rows (``agent_configs``) used by the
+# ``/api/ai_task`` route for the image-description pre-step and the
+# structured-output formatter. They are never registered as A2A agents.
+TASK_HELPER_AGENTS: frozenset[str] = frozenset({"vision-agent", "task-formatter"})
+INTERNAL_ONLY_AGENTS: frozenset[str] = frozenset({"orchestrator", "rewrite-agent", "filler-agent"}) | TASK_HELPER_AGENTS
 
 
 class BackgroundEvent(BaseModel):
@@ -188,10 +205,16 @@ class TaskContext(BaseModel):
     # FLOW-CTX-1 (0.18.6): request origin. "ha" = voice satellite via
     # HA integration, "chat" = dashboard chat UI, "api" = raw REST/WS
     # without the HA wrapper, "openai" = OpenAI-compatible ``/v1`` API
-    # (e.g. Open WebUI; text chat, no satellite). Agents use this to disambiguate
+    # (e.g. Open WebUI; text chat, no satellite), "ai_task" = HA AI-task
+    # entity via ``/api/ai_task`` (automation, no listener). Agents use this to disambiguate
     # phrasings like "hier" (ambiguous in chat, resolvable for
     # a satellite in a known area).
     source: RequestSource = "api"
+    # False when the client cannot send a follow-up turn on the same
+    # conversation id (OpenAI-compatible request without
+    # ``X-OpenWebUI-Chat-Id``): sensitive actions are then refused instead
+    # of asking for approval (see ``app.agents.approval_gate``).
+    conversation_resumable: bool = True
     language: str = "en"
     background_event: BackgroundEvent | None = None
     sequential_send: bool = False
@@ -218,6 +241,10 @@ class TaskContext(BaseModel):
     # authorization or audit; ``user_id`` stays the request user.
     requester_person: str | None = None
     requester_name: str | None = None
+    # AI task (``source="ai_task"``): description of the task's image
+    # attachments produced by the vision pre-step. Untrusted prompt context
+    # (it describes camera content); the image bytes never enter a task.
+    attachment_description: str | None = None
 
 
 class ExecutedCommand(BaseModel):

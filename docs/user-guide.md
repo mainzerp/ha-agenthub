@@ -411,6 +411,56 @@ These short procedures link the dashboard pages described above.
     - Name the list ("add milk to the shopping list"); without a name the only visible list is used, and with several lists the agent asks which one.
     - Items match exactly first, then by a unique partial match; if several items match ("milk" with "oat milk" and "almond milk"), the agent asks which one.
 
+## Use HA-AgentHub from Automations
+
+The HA integration adds an AI Task entity, so automations and scripts can
+call HA-AgentHub with `ai_task.generate_data` (Home Assistant 2025.8 or
+later). The task runs through the normal routing: it can answer questions,
+read states and also switch devices, exactly like a typed command. Results
+are not spoken, not stored in conversation history or memory, and never
+served from or added to the cache.
+
+```yaml
+action: ai_task.generate_data
+data:
+  task_name: Front door check
+  entity_id: ai_task.ha_agenthub_ai_task  # check the AI Task entity id shown in Home Assistant
+  instructions: Is there a package in front of the door? Describe it briefly.
+  structure:
+    package_present:
+      description: True when a package is visible
+      required: true
+      selector:
+        boolean:
+    summary:
+      description: One short sentence
+      selector:
+        text:
+  attachments:
+    - media_content_id: media-source://camera/camera.front_door
+      media_content_type: image/jpeg
+response_variable: door_check
+```
+
+- **Result** -- `door_check.data` holds an object with the `structure`
+  fields (unknown values are `null`); without `structure` it is the answer
+  text.
+- **Attachments** -- up to 4 images (camera snapshots via
+  `media-source://camera/<entity_id>`, or image files), at most 8 MB each.
+  The `vision-agent` model describes them first, so it must support images;
+  set it on the **Agents** page (see
+  [Configuration](configuration.md#ai-task-helper-models)).
+- **Structure** -- the `task-formatter` model fills the requested fields
+  from the answer and never invents values; a result that does not fit the
+  structure makes the action fail.
+- **Timers** -- timers that the HA built-in assistant handles cannot be set
+  from a task; the result says so.
+- **Sensitive actions** -- unlocking, arming or disarming an alarm and
+  opening a garage door, gate or door cover are refused (no question is
+  asked); the result text says so. The delayed-alarm-arming exemption does
+  not apply to AI tasks. See
+  [Sensitive Actions Need Approval](#sensitive-actions-need-approval).
+
 ## Device Command Behavior
 
 - **Relative requests** -- "a bit brighter", "two degrees warmer", and "turn it up" change the current value instead of guessing an absolute one.
@@ -418,6 +468,60 @@ These short procedures link the dashboard pages described above.
 - **Conditions** -- only lights support "do X if Y". Other agents say they cannot run the action conditionally and ask whether to do it now.
 - **Unsupported features** -- when Home Assistant reports that a device lacks a capability (tilt, position, volume, dimming, color), the agent says so instead of sending the command.
 - **Already in that state** -- a plain on/off/open/close request for a single device that is already in that state is answered without a service call; requests with values (brightness, color, position) and group entities always run.
+
+## Sensitive Actions Need Approval
+
+Some actions open the home to people, so HA-AgentHub never runs them on the
+first request:
+
+- `lock.unlock` and `lock.open`;
+- every alarm panel disarm and arm service (home, away, night, vacation,
+  custom bypass);
+- `cover.open_cover`, `cover.set_cover_position` and `cover.toggle` on covers
+  with the device class `garage`, `gate` or `door` (blinds, shutters and
+  tilt services are not affected; a cover whose Home Assistant state has no
+  device class, such as a cover group, is not affected either; when the
+  device class cannot be read at all, the cover is treated as a garage door).
+
+How it works per channel:
+
+- **Voice (Assist), dashboard chat, REST/WebSocket API** -- the agent asks
+  "Should I unlock Front Door?" (in your language; on a voice satellite the
+  microphone reopens). Answer within 60 seconds in the same conversation:
+  a clear yes runs exactly that action, a no cancels it, an unclear answer
+  is asked once more, and a different request cancels it and is handled
+  normally. Only the same channel and Home Assistant user that made the
+  request can approve it; an answer from another channel or user cancels it
+  without running anything. A late yes is told "That request expired, nothing was done."
+  Several sensitive actions in one request are asked for in one question;
+  the other actions of that request run right away.
+- **Open WebUI (OpenAI-compatible API)** -- asks like the chat when Open
+  WebUI sends the `X-OpenWebUI-Chat-Id` header; without it the action is
+  refused.
+- **AI Task, delayed actions, timers and other background work** -- never
+  asked; the action is refused with a short explanation. A delayed sensitive
+  action ("open the garage in 10 minutes") is refused when you schedule it
+  unless the entity is allowlisted (unlocking and disarming cannot be
+  delayed at all).
+- **Delayed alarm arming** -- "arm the alarm in 10 minutes" (home, away,
+  night, vacation, custom bypass) is scheduled and runs when the delay ends
+  without a question and without an allowlist entry. Arming right away in a
+  conversation still asks; arming from an AI task is still refused unless
+  allowlisted.
+- **Automations created by the automation agent** -- may close or stop a
+  garage door, gate or door cover but never open, position or toggle it; a
+  cover the entity index does not know and a templated or indirect cover
+  target are refused the same way. Arming the alarm (home, away, night,
+  vacation, custom bypass) stays allowed in such automations; disarming and
+  unlocking are not available to them.
+
+Entities listed in `approval.allowlist_entities` run without a question, also
+from AI tasks and delayed actions (delayed alarm arming needs no entry); `approval.enabled = false` turns the
+approval off entirely (see [Configuration](configuration.md#approval-settings)).
+The approval is not tied to a voice profile: anyone who can talk to the
+assistant can answer yes. Scenes, Home Assistant scripts or automations, and
+external MCP tool servers that unlock or open something themselves are not
+covered.
 
 ## Troubleshooting from the UI
 
