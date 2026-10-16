@@ -336,6 +336,30 @@ async def test_ai_task_is_refused_with_plain_result_text(tmp_path):
         assert result.get("voice_followup") is not True
 
 
+async def _ask_arm(h: _Harness) -> dict:
+    h.feed("orchestrator", "security-agent (95%): Arm the alarm in home mode")
+    h.feed("security-agent", _block("alarm_arm_home", "home alarm"))
+    return await h.turn("arm the alarm in home mode")
+
+
+async def test_interactive_alarm_arming_still_asks(tmp_path):
+    # Only delayed actions may arm without approval; a conversation turn asks.
+    async with _pipeline(tmp_path) as h:
+        result = await _ask_arm(h)
+        assert h.calls == []
+        assert result["speech"].startswith("Should I arm")
+        assert "home mode" in result["speech"]
+        assert approval_store.get_entry(CONV)[0] == "active"
+
+
+async def test_ai_task_alarm_arming_is_still_refused(tmp_path):
+    async with _pipeline(tmp_path, source="ai_task") as h:
+        result = await _ask_arm(h)
+        assert h.calls == []
+        assert "needs a spoken or typed confirmation" in result["speech"]
+        assert approval_store.get_entry(CONV)[0] == "none"
+
+
 async def test_openai_without_stable_chat_id_is_refused(tmp_path):
     async with _pipeline(tmp_path, source="openai") as h:
         h.feed("orchestrator", "security-agent (95%): Unlock the back door")

@@ -232,7 +232,7 @@ allowlist.
 
 | Key | Default | Type | Description |
 |-----|---------|------|-------------|
-| `approval.enabled` | `true` | bool | Ask for a spoken or typed yes before a sensitive action runs and refuse sensitive actions from AI tasks, delayed actions and other non-interactive callers. `false` disables the approval gate and the write backstop entirely. |
+| `approval.enabled` | `true` | bool | Ask for a spoken or typed yes before a sensitive action runs and refuse sensitive actions from AI tasks, delayed actions (delayed alarm arming excepted) and other non-interactive callers. `false` disables the approval gate and the write backstop entirely. |
 | `approval.allowlist_entities` | (empty) | string | Entity ids whose sensitive actions run without a question, also from AI tasks and delayed actions. Comma-separated (`lock.shed, cover.garage_door`) or a JSON list (`["lock.shed"]`); case-insensitive; invalid JSON counts as empty. |
 
 ### General Settings

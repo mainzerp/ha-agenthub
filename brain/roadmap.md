@@ -69,13 +69,13 @@ Live pipeline in board format — headings are columns, cards are
   stays allowed); delayed sensitive actions refused at schedule time; unknown
   cover device_class treated as sensitive. Decisions 2026-10-16. Not
   released (VERSION.md Recent Changes).
-  Passed: container suite 4884, bridge 240, ruff, self-docs sync; security
+  Delayed alarm arming exempt (owner follow-up). Passed: container suite 4901, bridge 240, ruff, self-docs sync; security
   review (5 findings fixed, bypass probes now fail). Known gaps: scenes,
   scripts, automation.trigger and external MCP tools are not gated; no
   dashboard control for the two settings yet (PUT /api/admin/settings).
   Needs user verification: deploy; "Schliess die Haustuer auf" -> question,
   "ja" -> unlocks, "nein" -> nothing; garage open asks; blinds open without
-  asking; "Schalte den Alarm in 10 Minuten scharf" -> refused; ai_task
+  asking; "Schalte den Alarm in 10 Minuten scharf" -> arms after 10 min without asking; ai_task
   "Oeffne das Garagentor" -> refused text; trace shows the approval span.
 
 - DB migration safety · priority: P1 · area: core

@@ -9,7 +9,13 @@ from typing import Any
 
 from app.agents.action_executor import resolve_and_validate_entity
 from app.security import sensitive_actions
-from app.security.sensitive_actions import SETTING_ALLOWLIST, sensitive_reason_for_entity
+from app.security.sensitive_actions import (
+    ALARM_ARM_SERVICES,
+    SETTING_ALLOWLIST,
+    SOURCE_DELAYED_ACTION,
+    is_exempt_for_source,
+    sensitive_reason_for_entity,
+)
 
 from . import _helpers
 
@@ -29,11 +35,13 @@ class DeferredDomainPolicy:
 # and an allow-list of argument-free services. Deferred writes are
 # fail-closed: anything outside this policy is rejected at schedule time and
 # re-checked at fire time (``background_actions``). Unlocking and disarming
-# are deliberately not schedulable. Sensitive actions that pass this policy
-# (alarm arming, opening a garage door/gate/door cover) are additionally
-# refused at schedule time unless approval is off or the entity is
-# allowlisted (``_deferred_action_needs_approval``); the HA client backstop
-# re-checks at fire time.
+# are deliberately not schedulable. Alarm arming is schedulable without
+# approval (``SOURCE_EXEMPT_SERVICES`` in ``app.security.sensitive_actions``;
+# the fire path runs under ``sensitive_call_source(SOURCE_DELAYED_ACTION)``).
+# Other sensitive actions that pass this policy (opening a garage
+# door/gate/door cover) are refused at schedule time unless approval is off
+# or the entity is allowlisted (``_deferred_action_needs_approval``); the HA
+# client backstop re-checks at fire time.
 DEFERRED_ACTION_POLICY: dict[str, DeferredDomainPolicy] = {
     "light": DeferredDomainPolicy("light-agent", frozenset({"turn_on", "turn_off", "toggle"})),
     "switch": DeferredDomainPolicy("light-agent", frozenset({"turn_on", "turn_off", "toggle"})),
@@ -48,9 +56,7 @@ DEFERRED_ACTION_POLICY: dict[str, DeferredDomainPolicy] = {
     "automation": DeferredDomainPolicy("automation-agent", frozenset({"turn_on", "turn_off", "toggle", "trigger"})),
     "script": DeferredDomainPolicy("automation-agent", frozenset({"turn_on", "turn_off"})),
     "lock": DeferredDomainPolicy("security-agent", frozenset({"lock"})),
-    "alarm_control_panel": DeferredDomainPolicy(
-        "security-agent", frozenset({"alarm_arm_home", "alarm_arm_away", "alarm_arm_night"})
-    ),
+    "alarm_control_panel": DeferredDomainPolicy("security-agent", ALARM_ARM_SERVICES),
     "input_boolean": DeferredDomainPolicy("timer-agent", frozenset({"turn_on", "turn_off", "toggle"})),
 }
 
@@ -74,6 +80,8 @@ async def _deferred_action_needs_approval(
     domain: str, service: str, entity_id: str, ha_client: Any, entity_index: Any = None
 ) -> bool:
     """True when ``domain/service`` on ``entity_id`` is sensitive and not exempt from approval."""
+    if is_exempt_for_source(SOURCE_DELAYED_ACTION, domain, service):
+        return False
     reason = await sensitive_reason_for_entity(
         domain,
         service,
@@ -484,10 +492,11 @@ async def _delayed_action(
             "speech": not_found.get("speech") or f"Could not find an entity matching '{target_entity}'.",
             "metadata": not_found.get("metadata"),
         }
-    # Approval gate at schedule time: a sensitive action (alarm arm, opening
-    # a garage door/gate/door) cannot be approved when the delay ends, so it
-    # is refused now unless approval is off or the entity is allowlisted.
-    # The HA client backstop re-checks at fire time.
+    # Approval gate at schedule time: a sensitive action (opening a garage
+    # door/gate/door) cannot be approved when the delay ends, so it is
+    # refused now unless approval is off or the entity is allowlisted.
+    # Alarm arming is exempt for delayed actions. The HA client backstop
+    # re-checks at fire time.
     if await _deferred_action_needs_approval(action_domain, action_service, resolved_entity, ha_client, entity_index):
         return {
             "success": False,

@@ -458,7 +458,8 @@ response_variable: door_check
   from a task; the result says so.
 - **Sensitive actions** -- unlocking, arming or disarming an alarm and
   opening a garage door, gate or door cover are refused (no question is
-  asked); the result text says so. See
+  asked); the result text says so. The delayed-alarm-arming exemption does
+  not apply to AI tasks. See
   [Sensitive Actions Need Approval](#sensitive-actions-need-approval).
 
 ## Device Command Behavior
@@ -500,9 +501,14 @@ How it works per channel:
   refused.
 - **AI Task, delayed actions, timers and other background work** -- never
   asked; the action is refused with a short explanation. A delayed sensitive
-  action ("open the garage in 10 minutes", "arm the alarm in 5 minutes") is
-  refused when you schedule it unless the entity is allowlisted (unlocking
-  and disarming cannot be delayed at all).
+  action ("open the garage in 10 minutes") is refused when you schedule it
+  unless the entity is allowlisted (unlocking and disarming cannot be
+  delayed at all).
+- **Delayed alarm arming** -- "arm the alarm in 10 minutes" (home, away,
+  night, vacation, custom bypass) is scheduled and runs when the delay ends
+  without a question and without an allowlist entry. Arming right away in a
+  conversation still asks; arming from an AI task is still refused unless
+  allowlisted.
 - **Automations created by the automation agent** -- may close or stop a
   garage door, gate or door cover but never open, position or toggle it; a
   cover the entity index does not know and a templated or indirect cover
@@ -511,7 +517,7 @@ How it works per channel:
   unlocking are not available to them.
 
 Entities listed in `approval.allowlist_entities` run without a question, also
-from AI tasks and delayed actions; `approval.enabled = false` turns the
+from AI tasks and delayed actions (delayed alarm arming needs no entry); `approval.enabled = false` turns the
 approval off entirely (see [Configuration](configuration.md#approval-settings)).
 The approval is not tied to a voice profile: anyone who can talk to the
 assistant can answer yes. Scenes, Home Assistant scripts or automations, and

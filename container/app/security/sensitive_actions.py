@@ -11,10 +11,16 @@ This module owns the policy that every layer shares:
   ``domain/service`` call on one entity.
 - :func:`approved_calls` -- a ContextVar approval token scoped to exactly
   the approved ``(domain, service, entity_id)`` tuples.
+- :func:`sensitive_call_source` / :func:`is_exempt_for_source` -- per-source
+  exemptions (:data:`SOURCE_EXEMPT_SERVICES`). The only one today: a delayed
+  action (:data:`SOURCE_DELAYED_ACTION`) may arm an alarm panel without
+  approval. The source travels in a ContextVar set by the delayed-action
+  fire path, never as a caller-supplied argument of ``call_service``.
 - :func:`enforce_sensitive_call_policy` -- the fail-closed backstop called
   by ``HARestClient.call_service`` (and the WebSocket client): a sensitive
-  call without a matching token, outside the allowlist, while
-  ``approval.enabled`` is on, raises :class:`SensitiveActionBlocked`.
+  call without a matching token, outside the allowlist, not exempt for the
+  current source, while ``approval.enabled`` is on, raises
+  :class:`SensitiveActionBlocked`.
 
 Settings: ``approval.enabled`` (default true) and
 ``approval.allowlist_entities`` (comma-separated or JSON list of entity ids
@@ -58,6 +64,15 @@ ACCESS_COVER_SAFE_SERVICES: frozenset[str] = frozenset({"close_cover", "stop_cov
 # is always treated as needing approval.
 _INDIRECT_TARGET_KEYS: tuple[str, ...] = ("area_id", "device_id", "floor_id", "label_id")
 
+# Per-source exemptions: ``source -> {(domain, service)}`` that run without
+# approval or allowlist entry when the call comes from that source. Delayed
+# actions ("arm the alarm in 10 minutes") may arm, never disarm, unlock or
+# open an access cover. Exemptions apply to explicit entity targets only.
+SOURCE_DELAYED_ACTION = "delayed_action"
+SOURCE_EXEMPT_SERVICES: dict[str, frozenset[tuple[str, str]]] = {
+    SOURCE_DELAYED_ACTION: frozenset(("alarm_control_panel", service) for service in ALARM_ARM_SERVICES),
+}
+
 SETTING_ENABLED = "approval.enabled"
 SETTING_ALLOWLIST = "approval.allowlist_entities"
 
@@ -65,6 +80,7 @@ ApprovedCall = tuple[str, str, str]
 
 _approved_calls: ContextVar[frozenset[ApprovedCall]] = ContextVar("sensitive_approved_calls", default=frozenset())
 _policy_enforced: ContextVar[bool] = ContextVar("sensitive_policy_enforced", default=False)
+_call_source: ContextVar[str | None] = ContextVar("sensitive_call_source", default=None)
 
 # Process-wide entity index used for device-class lookups (wired at startup).
 _entity_index: Any = None
@@ -157,6 +173,39 @@ def is_call_approved(domain: str, service: str, entity_id: str | None) -> bool:
     if not entity_id:
         return False
     return (domain.strip().lower(), service.strip().lower(), entity_id.strip().lower()) in _approved_calls.get()
+
+
+# ---------------------------------------------------------------------------
+# Per-source exemptions
+# ---------------------------------------------------------------------------
+
+
+def is_exempt_for_source(source: str | None, domain: str, service: str) -> bool:
+    """True when ``domain/service`` needs no approval for calls from ``source``."""
+    if not source:
+        return False
+    exempt = SOURCE_EXEMPT_SERVICES.get(source)
+    if not exempt:
+        return False
+    return ((domain or "").strip().lower(), (service or "").strip().lower()) in exempt
+
+
+@contextmanager
+def sensitive_call_source(source: str) -> Iterator[None]:
+    """Mark HA calls inside the block as coming from ``source`` (see ``SOURCE_EXEMPT_SERVICES``).
+
+    Set only by trusted orchestrator code around the call it issues (the
+    delayed-action fire path in ``app.agents.background_actions``).
+    """
+    token = _call_source.set(source)
+    try:
+        yield
+    finally:
+        _call_source.reset(token)
+
+
+def current_call_source() -> str | None:
+    return _call_source.get()
 
 
 # ---------------------------------------------------------------------------
@@ -352,10 +401,12 @@ async def enforce_sensitive_call_policy(
     """Raise :class:`SensitiveActionBlocked` for an unapproved sensitive call.
 
     A call passes when it is not sensitive, when ``approval.enabled`` is
-    off, or when every sensitive target entity carries an approval token or
-    is on the allowlist. A sensitive service with a target that cannot be
-    checked per entity (``all``, area/device/floor/label targets, no target
-    for lock/alarm services) is blocked unless approval is disabled.
+    off, or when every sensitive target entity carries an approval token,
+    is on the allowlist, or the service is exempt for the current call
+    source (:func:`sensitive_call_source`). A sensitive service with a
+    target that cannot be checked per entity (``all``, area/device/floor/label
+    targets, no target for lock/alarm services) is blocked unless approval
+    is disabled.
     """
     if _policy_enforced.get():
         return
@@ -365,9 +416,12 @@ async def enforce_sensitive_call_policy(
     if not is_potentially_sensitive(domain, service):
         return
     entity_ids, indirect = _target_entity_ids(entity_id, service_data)
+    # A per-source exemption covers explicit targets only; indirect or
+    # missing targets stay blocked below.
+    checked: list[str] = [] if is_exempt_for_source(_call_source.get(), domain, service) else entity_ids
     needs_approval: list[str] = []
     reason: str | None = None
-    for target in entity_ids:
+    for target in checked:
         target_reason = await sensitive_reason_for_entity(domain, service, target, state_fetcher=state_fetcher)
         if target_reason is None or is_call_approved(domain, service, target):
             continue

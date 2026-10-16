@@ -831,7 +831,8 @@ Settings `approval.enabled` / `approval.allowlist_entities` (see
 - **Backstop** -- `HARestClient.call_service` and
   `HAWebSocketClient.call_service` call `enforce_sensitive_call_policy` before
   sending: a sensitive call without a matching token, not allowlisted, while
-  approval is enabled raises `SensitiveActionBlocked`. Lock/alarm services
+  approval is enabled, and not exempt for the current call source raises
+  `SensitiveActionBlocked`. Lock/alarm services
   without an explicit entity, `all`, and area/device/floor/label targets are
   always blocked. Cover device classes come from the entity index registered
   at startup, else the HA state (the WebSocket client has no state read, so
@@ -839,15 +840,30 @@ Settings `approval.enabled` / `approval.allowlist_entities` (see
   fallback is not re-checked). `send_ws_command` refuses `call_service` /
   `execute_script`. This covers action-cache replay (the entry is
   invalidated and the turn runs live, so it asks), delayed actions (refused
-  and announced at fire time), AI tasks, plugins and future code paths.
+  and announced at fire time, except alarm arming), AI tasks, plugins and
+  future code paths.
   Scenes, scripts and HA automations that unlock or open something, and
   external MCP servers that call Home Assistant themselves, are indirect and
   not covered.
 - **Never cached** -- the security and cover executors mark sensitive results
   `cacheable=False` even when approval is off or the entity is allowlisted.
-- **Delayed actions** -- sensitive delayed actions (alarm arm, opening an
-  access cover; unlock/disarm are not schedulable at all) are refused at
-  schedule time unless exempt.
+- **Per-source exemptions** -- `SOURCE_EXEMPT_SERVICES` in
+  `sensitive_actions.py` maps a call source to `(domain, service)` pairs that
+  need no approval or allowlist entry. The only entry: `delayed_action` may
+  run every `alarm_control_panel.alarm_arm_*` service (owner decision
+  2026-10-16, "arm the alarm in 10 minutes"). The source is not a
+  `call_service` argument: `background_actions` wraps the delayed-action
+  fire call in `sensitive_call_source(SOURCE_DELAYED_ACTION)` (a ContextVar),
+  and the backstop and the executor gate read it from there. The exemption
+  covers explicit entity targets only (indirect or missing targets stay
+  blocked). It is not tied to `TaskContext.source == "background"`, so wake
+  briefings, the alarm monitor and other background turns still refuse
+  arming; `ai_task` and interactive turns are unchanged.
+- **Delayed actions** -- alarm arming (every arm mode) is schedulable
+  (`DEFERRED_ACTION_POLICY`) and exempt; other sensitive delayed actions
+  (opening an access cover) are refused at schedule time unless approval is
+  off or the entity is allowlisted; unlock/disarm are not schedulable at
+  all.
 - **Automation agent** -- configs may only `close_cover`/`stop_cover` covers
   whose index device class is `garage`/`gate`/`door`, or that the index does
   not know; cover calls with templated or indirect targets (`entity_id`

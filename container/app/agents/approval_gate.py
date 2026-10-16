@@ -3,7 +3,8 @@
 ``call_service_with_verification`` asks :func:`evaluate_approval_gate`
 before it calls a service. A sensitive call (see
 ``app.security.sensitive_actions``) that is not approved, not on the
-allowlist and not exempt because approval is disabled never runs here:
+allowlist, not exempt for the current call source and not exempt because
+approval is disabled never runs here:
 
 - On an interactive turn, :class:`app.agents.actionable.ActionableAgent`
   has opened an :class:`ApprovalCollector`; the call is *held* in it and
@@ -25,7 +26,13 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from app.security import sensitive_actions
-from app.security.sensitive_actions import SETTING_ALLOWLIST, is_call_approved, sensitive_reason_for_entity
+from app.security.sensitive_actions import (
+    SETTING_ALLOWLIST,
+    current_call_source,
+    is_call_approved,
+    is_exempt_for_source,
+    sensitive_reason_for_entity,
+)
 
 GateStatus = Literal["pending", "refused"]
 
@@ -111,7 +118,11 @@ async def evaluate_approval_gate(
         device_class_known=device_class_known,
         state_fetcher=getattr(ha_client, "get_state", None),
     )
-    if reason is None or is_call_approved(domain, service, entity_id):
+    if (
+        reason is None
+        or is_call_approved(domain, service, entity_id)
+        or is_exempt_for_source(current_call_source(), domain, service)
+    ):
         return None
     settings = await sensitive_actions.load_approval_settings()
     if not settings.enabled or entity_id.strip().lower() in settings.allowlist:

@@ -325,6 +325,9 @@ automation that opens a garage door, gate or door cover.
 - Answer the question with a clear yes within 60 seconds. On a voice
   satellite the microphone reopens; in chat, type the answer.
 - Open WebUI asks only when it sends the `X-OpenWebUI-Chat-Id` header.
+- Delayed alarm arming ("arm the alarm in 10 minutes") needs neither an
+  answer nor an allowlist entry; delayed disarming and unlocking are never
+  possible.
 - To let an AI task, a delayed action or Open WebUI without chat id run the
   action, add the entity to `approval.allowlist_entities`, or disable the
   check with `approval.enabled = false` (see

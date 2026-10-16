@@ -524,7 +524,7 @@ Entity-index maintenance is currently described by startup priming, Home Assista
 - dashboard access uses sessions plus CSRF protection
 - the container API uses an API key, and Home Assistant access uses a long-lived access token
 - plugins and external tool servers extend trusted execution, not isolated execution
-- sensitive Home Assistant actions (unlock or open a lock, arm or disarm an alarm, open a garage door, gate or door cover) never run on the first request: interactive channels ask for an explicit yes judged by an LLM on the verbatim answer, non-interactive callers (AI tasks, delayed actions, OpenAI requests without a chat id) are refused unless the entity is allowlisted, and a backstop in the Home Assistant client blocks any unapproved sensitive call (`approval.enabled`, `approval.allowlist_entities`; see [Architecture](../architecture.md#sensitive-action-approval))
+- sensitive Home Assistant actions (unlock or open a lock, arm or disarm an alarm, open a garage door, gate or door cover) never run on the first request: interactive channels ask for an explicit yes judged by an LLM on the verbatim answer, non-interactive callers (AI tasks, delayed actions, OpenAI requests without a chat id) are refused unless the entity is allowlisted (delayed alarm arming is exempt), and a backstop in the Home Assistant client blocks any unapproved sensitive call (`approval.enabled`, `approval.allowlist_entities`; see [Architecture](../architecture.md#sensitive-action-approval))
 - speaker identification and the requesting user's name are prompt context only, never authorization
 
 ### Scalability

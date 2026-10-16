@@ -19,7 +19,7 @@ from app.db.repository import SettingsRepository
 from app.entity.visibility import entity_is_visible
 from app.models.agent import BackgroundEvent, TaskContext
 from app.security.sanitization import wrap_user_input
-from app.security.sensitive_actions import SensitiveActionBlocked
+from app.security.sensitive_actions import SOURCE_DELAYED_ACTION, SensitiveActionBlocked, sensitive_call_source
 from app.util.ha_template import neutralize_ha_template
 from app.util.tasks import spawn
 
@@ -217,7 +217,10 @@ async def handle_background_event(
             await _announce_deferred_failure(ha_client, payload, entity_index, failure=failure)
             return _error_result(failure, code="entity_not_visible", recoverable=False)
         try:
-            await ha_client.call_service(domain, service, target_entity)
+            # The call source tells the HA client backstop this is a delayed
+            # action, which may arm an alarm panel without approval.
+            with sensitive_call_source(SOURCE_DELAYED_ACTION):
+                await ha_client.call_service(domain, service, target_entity)
         except asyncio.CancelledError:
             raise
         except SensitiveActionBlocked as exc:

@@ -401,7 +401,8 @@ class TestAutomationAccessCovers:
 
 
 # ---------------------------------------------------------------------------
-# Delayed actions: refused at schedule time, blocked at fire time
+# Delayed actions: refused at schedule time, blocked at fire time, except
+# alarm arming (per-source exemption for delayed actions)
 # ---------------------------------------------------------------------------
 
 
@@ -445,7 +446,6 @@ class TestDeferredActions:
         [
             ("cover.garage_door", "cover/open_cover", "garage"),
             ("cover.gate", "cover/toggle", "gate"),
-            ("alarm_control_panel.home", "alarm_control_panel/alarm_arm_away", None),
         ],
     )
     async def test_sensitive_delayed_action_is_refused_at_schedule_time(
@@ -455,6 +455,29 @@ class TestDeferredActions:
             result, sched = await _schedule(target_entity, target_action, device_class)
         assert result["success"] is False
         assert "confirmation" in result["speech"]
+        sched.schedule.assert_not_called()
+
+    @pytest.mark.parametrize("service", sorted(sa.ALARM_ARM_SERVICES))
+    async def test_delayed_alarm_arming_is_schedulable_without_approval(self, service):
+        with _settings():
+            result, sched = await _schedule("alarm_control_panel.home", f"alarm_control_panel/{service}", None)
+        assert result["success"] is True
+        sched.schedule.assert_awaited_once()
+        assert sched.schedule.await_args.kwargs["payload"]["target_action"] == f"alarm_control_panel/{service}"
+
+    @pytest.mark.parametrize(
+        ("target_entity", "target_action"),
+        [
+            ("alarm_control_panel.home", "alarm_control_panel/alarm_disarm"),
+            ("lock.front_door", "lock/unlock"),
+            ("lock.front_door", "lock/open"),
+        ],
+    )
+    async def test_delayed_disarm_and_unlock_stay_unschedulable(self, target_entity, target_action):
+        with _settings():
+            result, sched = await _schedule(target_entity, target_action, None)
+        assert result["success"] is False
+        assert "cannot be scheduled" in result["speech"]
         sched.schedule.assert_not_called()
 
     async def test_blinds_and_closing_are_still_schedulable(self):
@@ -493,3 +516,105 @@ class TestDeferredActions:
         assert result["error"].startswith("Delayed action rejected")
         assert "action_executed" not in result
         announce.assert_awaited_once()
+
+    @staticmethod
+    async def _fire(client, target_entity: str, target_action: str):
+        from app.agents import background_actions as ba
+        from app.models.agent import BackgroundEvent
+
+        event = BackgroundEvent(
+            event_type="delayed_action",
+            payload={"target_entity": target_entity, "target_action": target_action},
+        )
+        with (
+            patch("app.agents.background_actions.entity_is_visible", new=AsyncMock(return_value=True)),
+            patch("app.agents.background_actions._announce_deferred_failure", new=AsyncMock()) as announce,
+        ):
+            result = await ba.handle_background_event(event, ha_client=client)
+        return result, announce
+
+    async def test_fire_time_delayed_arm_executes_without_approval(self):
+        client = _rest_client()
+        with _settings():
+            result, announce = await self._fire(
+                client, "alarm_control_panel.home", "alarm_control_panel/alarm_arm_away"
+            )
+        client._client.post.assert_awaited_once()
+        assert client._client.post.await_args.args[0].endswith("/services/alarm_control_panel/alarm_arm_away")
+        assert result["action_executed"]["success"] is True
+        announce.assert_not_awaited()
+        # The exemption is scoped to the delayed-action call only.
+        assert sa.current_call_source() is None
+
+    @pytest.mark.parametrize(
+        ("target_entity", "target_action"),
+        [
+            # Not schedulable (domain policy) and not exempt (backstop).
+            ("alarm_control_panel.home", "alarm_control_panel/alarm_disarm"),
+            ("lock.front_door", "lock/unlock"),
+        ],
+    )
+    async def test_fire_time_delayed_disarm_and_unlock_are_still_refused(self, target_entity, target_action):
+        client = _rest_client()
+        with _settings():
+            result, announce = await self._fire(client, target_entity, target_action)
+        client._client.post.assert_not_awaited()
+        assert result["error"].startswith("Delayed action rejected")
+        announce.assert_awaited_once()
+
+
+class TestSourceExemption:
+    def test_only_delayed_action_arming_is_exempt(self):
+        for service in sa.ALARM_ARM_SERVICES:
+            assert sa.is_exempt_for_source(sa.SOURCE_DELAYED_ACTION, "alarm_control_panel", service)
+            assert sa.is_exempt_for_source(sa.SOURCE_DELAYED_ACTION, " Alarm_Control_Panel ", service.upper())
+            for source in (None, "", "background", "ai_task", "ha", "chat", "api", "openai"):
+                assert not sa.is_exempt_for_source(source, "alarm_control_panel", service)
+        for domain, service in (
+            ("alarm_control_panel", "alarm_disarm"),
+            ("lock", "unlock"),
+            ("lock", "open"),
+            ("cover", "open_cover"),
+            ("cover", "toggle"),
+            ("cover", "set_cover_position"),
+        ):
+            assert not sa.is_exempt_for_source(sa.SOURCE_DELAYED_ACTION, domain, service)
+
+    async def test_backstop_blocks_arming_outside_the_delayed_action_scope(self):
+        client = _rest_client()
+        with _settings(), pytest.raises(SensitiveActionBlocked):
+            await client.call_service("alarm_control_panel", "alarm_arm_away", "alarm_control_panel.home")
+        client._client.post.assert_not_awaited()
+
+    async def test_backstop_lets_delayed_arming_through_only(self):
+        client = _rest_client({"cover.garage_door": {"attributes": {"device_class": "garage"}}})
+        with _settings(), sa.sensitive_call_source(sa.SOURCE_DELAYED_ACTION):
+            await client.call_service("alarm_control_panel", "alarm_arm_night", "alarm_control_panel.home")
+            for domain, service, entity_id in (
+                ("alarm_control_panel", "alarm_disarm", "alarm_control_panel.home"),
+                ("lock", "unlock", "lock.front_door"),
+                ("lock", "open", "lock.front_door"),
+                ("cover", "open_cover", "cover.garage_door"),
+            ):
+                with pytest.raises(SensitiveActionBlocked):
+                    await client.call_service(domain, service, entity_id)
+        client._client.post.assert_awaited_once()
+
+    async def test_delayed_arming_with_indirect_target_stays_blocked(self):
+        client = _rest_client()
+        with _settings(), sa.sensitive_call_source(sa.SOURCE_DELAYED_ACTION):
+            with pytest.raises(SensitiveActionBlocked):
+                await client.call_service("alarm_control_panel", "alarm_arm_away", None, {"area_id": "house"})
+            with pytest.raises(SensitiveActionBlocked):
+                await client.call_service("alarm_control_panel", "alarm_arm_away", None)
+        client._client.post.assert_not_awaited()
+
+    async def test_policy_check_reads_the_source_from_the_scope(self):
+        with _settings(), sa.sensitive_call_source(sa.SOURCE_DELAYED_ACTION):
+            await sa.enforce_sensitive_call_policy(
+                "alarm_control_panel", "alarm_arm_home", "alarm_control_panel.home", None
+            )
+        with _settings(), pytest.raises(SensitiveActionBlocked):
+            await sa.enforce_sensitive_call_policy(
+                "alarm_control_panel", "alarm_arm_home", "alarm_control_panel.home", None
+            )

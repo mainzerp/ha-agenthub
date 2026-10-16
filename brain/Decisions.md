@@ -463,3 +463,7 @@ prompts live in `container/app/prompts/`, `ctx.agent_registry` not
   future paths cannot bypass it. Sensitive results are never action-cached.
 - **Answer judged on the verbatim user text in the orchestrator prelude**,
   not on the classifier's condensed task (a bare "yes" gets paraphrased).
+- **2026-10-16 follow-up:** delayed alarm arming (source `background` from the
+  delayed-action path) runs without approval; delayed disarm, unlock and
+  access-cover opening stay refused unless allowlisted. Interactive arming
+  still asks; ai_task arming still needs the allowlist.
