@@ -1,7 +1,7 @@
 import sys
 from contextvars import ContextVar
 from dataclasses import dataclass
-from enum import Enum
+from enum import Enum, IntFlag
 from pathlib import Path
 from types import ModuleType
 from unittest.mock import MagicMock
@@ -199,6 +199,49 @@ class _MockAddConfigEntryEntitiesCallback:
     pass
 
 
+@dataclass
+class _MockAttachment:
+    media_content_id: str
+    mime_type: str
+    path: Path
+
+
+class _MockAITaskEntityFeature(IntFlag):
+    GENERATE_DATA = 1
+    SUPPORT_ATTACHMENTS = 2
+    GENERATE_IMAGE = 4
+
+
+class _MockAITaskEntity:
+    """Minimal stand-in for HA's AITaskEntity / Entity base."""
+
+    hass = None
+    entity_id = None
+
+
+@dataclass
+class _MockGenDataTask:
+    name: str
+    instructions: str
+    structure: object = None
+    attachments: list | None = None
+    llm_api: object = None
+
+
+@dataclass
+class _MockGenDataTaskResult:
+    conversation_id: str
+    data: object
+
+
+def _mock_selector_serializer(schema):
+    return {"selector_serializer": True}
+
+
+def _mock_voluptuous_openapi_convert(schema, *, custom_serializer=None):
+    return {"converted": schema, "custom_serializer": custom_serializer}
+
+
 @pytest.fixture(autouse=True, scope="session")
 def _mock_homeassistant_deps():
     """Inject minimal mocks for homeassistant imports."""
@@ -214,7 +257,9 @@ def _mock_homeassistant_deps():
             "CONF_URL": "url",
             "CONF_API_KEY": "api_key",
             "Platform": type(
-                "Platform", (), {"CONVERSATION": "conversation", "STT": "stt"}
+                "Platform",
+                (),
+                {"AI_TASK": "ai_task", "CONVERSATION": "conversation", "STT": "stt"},
             ),
             "MATCH_ALL": "*",
         },
@@ -228,6 +273,9 @@ def _mock_homeassistant_deps():
             "ConfigEntryError": type("ConfigEntryError", (Exception,), {}),
         },
         "homeassistant.helpers": {},
+        "homeassistant.helpers.llm": {
+            "selector_serializer": _mock_selector_serializer,
+        },
         "homeassistant.helpers.aiohttp_client": {
             "async_get_clientsession": MagicMock,
         },
@@ -249,6 +297,12 @@ def _mock_homeassistant_deps():
         },
         "homeassistant.components": {},
         "homeassistant.components.assist_pipeline": {},
+        "homeassistant.components.ai_task": {
+            "AITaskEntity": _MockAITaskEntity,
+            "AITaskEntityFeature": _MockAITaskEntityFeature,
+            "GenDataTask": _MockGenDataTask,
+            "GenDataTaskResult": _MockGenDataTaskResult,
+        },
         "homeassistant.components.stt": {
             "AudioBitRates": int,
             "AudioChannels": int,
@@ -272,6 +326,7 @@ def _mock_homeassistant_deps():
             "ConversationResult": _MockConversationResult,
             "AssistantContent": _MockAssistantContent,
             "AssistantContentDeltaDict": dict,
+            "Attachment": _MockAttachment,
             "ChatLog": MagicMock,
         },
         "homeassistant.helpers.device_registry": {
@@ -286,6 +341,7 @@ def _mock_homeassistant_deps():
         "homeassistant.helpers.entity_platform": {
             "AddConfigEntryEntitiesCallback": _MockAddConfigEntryEntitiesCallback,
         },
+        "voluptuous_openapi": {"convert": _mock_voluptuous_openapi_convert},
         "voluptuous": {
             "Schema": MagicMock,
             "Required": MagicMock,

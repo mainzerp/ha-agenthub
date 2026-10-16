@@ -59,9 +59,11 @@ _KNOWN_PROMPT_NAMES = (
     "scene",
     "security",
     "send",
+    "task-formatter",
     "timer",
     "timer_announcement",
     "vacuum",
+    "vision",
     "wake_briefing",
 )
 

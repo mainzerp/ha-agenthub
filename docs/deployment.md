@@ -3,7 +3,7 @@
 ## Prerequisites
 
 - **Docker Engine** 20.10+ and **Docker Compose** v2
-- **Home Assistant** 2025.4.0 or later (2025.8+ recommended for spoken streaming)
+- **Home Assistant** 2025.8.0 or later
 - An LLM API key from at least one provider:
   - [OpenRouter](https://openrouter.ai/) (recommended -- access to multiple models)
   - [Groq](https://groq.com/) (fast inference)

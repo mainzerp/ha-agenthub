@@ -100,7 +100,7 @@ See [docs/architecture.md](docs/architecture.md) for component diagrams, request
 ### Prerequisites
 
 - Docker Engine 20.10+ and Docker Compose v2
-- A running Home Assistant instance (2025.4.0+; 2025.8+ recommended for spoken streaming)
+- A running Home Assistant instance (2025.8.0+)
 - An LLM API key (OpenRouter, Groq, Cerebras, Anthropic, or Ollama)
 
 ### 1. Clone and Start

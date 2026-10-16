@@ -24,6 +24,7 @@ from app.a2a.transport import InProcessTransport
 from app.agents.custom_loader import CustomAgentLoader
 from app.agents.decorator import install_all_agents
 from app.api.routes import admin as admin_routes
+from app.api.routes import ai_task as ai_task_routes
 from app.api.routes import conversation as conversation_routes
 from app.api.routes import dashboard_api as dashboard_api_routes
 from app.api.routes import openai_compat as openai_compat_routes
@@ -75,6 +76,7 @@ async def setup_application(app: FastAPI) -> None:
     transport = InProcessTransport(registry)
     dispatcher = Dispatcher(registry, transport)
     conversation_routes.set_dispatcher(dispatcher)
+    ai_task_routes.set_dispatcher(dispatcher)
     openai_compat_routes.set_dispatcher(dispatcher)
     dashboard_api_routes.set_chat_dispatcher(dispatcher)
     admin_routes.set_registry(registry)

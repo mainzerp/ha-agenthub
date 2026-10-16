@@ -131,7 +131,7 @@ The runtime is async end to end. Conversation streaming, agent dispatch, Home As
 
 #### API and Admin Surface
 
-- Conversation entrypoints expose WebSocket, SSE, and REST conversation routes.
+- Conversation entrypoints expose WebSocket, SSE, and REST conversation routes, plus the non-streaming `POST /api/ai_task` route for Home Assistant AI-task calls (`ai_task.generate_data`).
 - An OpenAI-compatible chat-completions API (`GET /v1/models`, `POST /v1/chat/completions`, trace source `openai`) lets Open WebUI chat with the orchestrator; Open WebUI background tasks are stubbed without dispatch, and Open WebUI users are mapped to Home Assistant users on the Persons page (`external_user_mappings`).
 - Admin APIs cover setup, cache inspection and flushing, traces, analytics, entity index operations, MCP management, plugins, send-device mappings, external user mappings, voice profiles, and settings.
 - `WS /ws/voice` receives teed voice-turn audio from the bridge for speaker identification; a recognized speaker is personalization context only (name, message sender, and with a linked Home Assistant user session memory and calendars) and never changes `user_id`, entity visibility, or authorization.
@@ -187,6 +187,7 @@ The Home Assistant integration remains a thin bridge, but it does more than a bl
 - trusts backend markdown sanitization when advertised and falls back to local stripping otherwise
 - migrates legacy config-entry titles from `Agent Assist` to `HA-AgentHub`
 - optionally wraps a user-selected STT entity ("HA-AgentHub STT"), passing audio and transcript through unchanged and teeing a best-effort audio copy to the container for speaker identification; STT never depends on the container
+- registers an AI Task entity (`ai_task.generate_data` with structure and image attachments) that forwards tasks to `POST /api/ai_task`
 
 The integration does not resolve entities, classify intent, or execute Home Assistant services on behalf of agents.
 
@@ -220,6 +221,8 @@ The integration does not resolve entities, classify intent, or execute Home Assi
 | `language_detect` | Resolve per-turn reply language when auto mode is active |
 | `filler-agent` | Emit interim speech for slow turns |
 | `rewrite-agent` | Rephrase action-cache-hit speech; on failure the stored original agent speech is used |
+| `vision-agent` | AI-task pre-step: describe image attachments (config row only, never routed) |
+| `task-formatter` | AI-task post-step: format the result as JSON for the requested schema (config row only, never routed) |
 | personality mediation | Optional final response mediation layer driven by runtime settings |
 | `sanitize` | Markdown stripping and speech-safe output cleanup |
 | `background_actions` | Background timer and alarm notification delivery |
@@ -318,6 +321,7 @@ The Home Assistant bridge prefers a persistent WebSocket connection to the conta
 - REST is used as the fallback path when the request has not already been written to the WebSocket
 - if the socket drops after the request is sent, the integration avoids REST replay to prevent duplicate container work
 - streamed filler tokens are marked so the integration can speak them immediately
+- AI-task calls (`ai_task.generate_data`) use `POST /api/ai_task`: one non-streaming orchestrator turn with source `ai_task` (no cache, mediation, filler, follow-up or history), an optional vision pre-step for image attachments and an optional structured-output formatter
 
 ### Container and Home Assistant
 

@@ -49,5 +49,12 @@
       "already_configured": "Diese URL ist bereits konfiguriert.",
       "invalid_stt_entity": "Bitte eine andere Speech-to-Text-Entität als die HA-AgentHub-STT-Entität selbst wählen."
     }
+  },
+  "entity": {
+    "ai_task": {
+      "ai_task": {
+        "name": "KI-Aufgabe"
+      }
+    }
   }
 }

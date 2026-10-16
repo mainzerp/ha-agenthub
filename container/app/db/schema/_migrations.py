@@ -15,7 +15,7 @@ from collections.abc import Awaitable, Callable
 import aiosqlite
 
 from app.db.schema import _column_exists
-from app.defaults import CACHE_DEFAULTS
+from app.defaults import AI_TASK_HELPER_AGENT_CONFIGS, CACHE_DEFAULTS
 
 logger = logging.getLogger(__name__)
 
@@ -1105,6 +1105,20 @@ async def _migrate_to_51(db: aiosqlite.Connection) -> None:
     await db.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (51)")
 
 
+async def _migrate_to_52(db: aiosqlite.Connection) -> None:
+    # Migration 52: LLM config rows for the AI-task helpers (POST /api/ai_task):
+    # ``vision-agent`` describes image attachments, ``task-formatter`` builds
+    # the structured JSON result. Internal helpers, never A2A routing targets.
+    # Idempotent: INSERT OR IGNORE keeps an admin-edited row.
+    await db.executemany(
+        "INSERT OR IGNORE INTO agent_configs "
+        "(agent_id, enabled, model, timeout, max_iterations, temperature, max_tokens, description) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        AI_TASK_HELPER_AGENT_CONFIGS,
+    )
+    await db.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (52)")
+
+
 # Ordered registry of (version, migration_callable). Each migration records
 # its own version marker. Applied in ascending order for versions greater
 # than the current schema version.
@@ -1159,6 +1173,7 @@ MIGRATIONS: list[tuple[int, Callable[[aiosqlite.Connection], Awaitable[None]]]] 
     (49, _migrate_to_49),
     (50, _migrate_to_50),
     (51, _migrate_to_51),
+    (52, _migrate_to_52),
 ]
 
 

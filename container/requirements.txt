@@ -28,6 +28,8 @@ httpx==0.28.1
 # Data validation
 pydantic==2.13.5
 pydantic-settings==2.15.0
+# JSON Schema validation (AI-task structured output; litellm caps it below 5)
+jsonschema>=4.26.0,<5.0.0
 
 # MCP integration
 mcp==2.3.0

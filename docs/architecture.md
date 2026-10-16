@@ -107,7 +107,7 @@ Domain-specific write contracts:
 - **Lists** -- visibility always applies; an unnamed list resolves only when exactly one list is visible, and ambiguous item matches ask instead of acting.
 - Calendar, lists, and automation config results are `cacheable=False`, so these writes never enter the action cache.
 
-Internal A2A-registered helper agents: filler-agent and rewrite-agent. The mediation pass is baked into the orchestrator agent. Runtime services and utility modules (not A2A agents) include language detection, input sanitization, cancel-speech detection, notification dispatch, timer scheduling, and alarm monitoring.
+Internal A2A-registered helper agents: filler-agent and rewrite-agent. The mediation pass is baked into the orchestrator agent. The AI-task helpers `vision-agent` and `task-formatter` are LLM config rows only (`TASK_HELPER_AGENTS`, part of `INTERNAL_ONLY_AGENTS`): never registered as A2A agents and never routing targets (see [AI task flow](#ai-task-flow)). Runtime services and utility modules (not A2A agents) include language detection, input sanitization, cancel-speech detection, notification dispatch, timer scheduling, and alarm monitoring.
 
 Custom agents created through the admin API are also registered as A2A
 agents with IDs shaped as `custom-{name}`. Their prompt, model config,
@@ -157,6 +157,67 @@ ConversationManager, and the wake briefing composer gathers weather/news
 through A2A plus calendar/sensor facts through HA REST before overriding
 the spoken alarm text. This keeps the cross-agent boundary narrow and
 avoids direct peer-agent imports from the wake briefing module.
+
+### AI Task Flow
+
+`POST /api/ai_task` (`app/api/routes/ai_task.py`, contract in
+[API Reference](api-reference.md#post-apiai_task)) serves the HA bridge's
+AI-task entity (`ai_task.generate_data`). The trace source is `ai_task`
+(`TracingMiddleware`).
+
+1. **Validation** -- the body is streamed with a byte counter (48 MiB cap,
+   `413`). JSON parsing, the `AiTaskRequest` model, the `structure`
+   JSON-schema check (`jsonschema` `check_schema`, type `object`) and base64
+   decoding of the attachments run in a worker thread (`asyncio.to_thread`);
+   the request model's base64 copies are dropped after decoding. Invalid
+   input returns `400`. Task name and instructions are sanitized once
+   (`prepare_user_text`) and the sanitized text feeds the vision step, the
+   orchestrator and the formatter. The request source is always `ai_task`,
+   independent of the trace source.
+2. **Vision pre-step** (only with attachments; `app/agents/task_vision.py`)
+   -- one `complete()` call with the `vision-agent` config row and
+   OpenAI-style content parts (`text` plus `image_url` data URLs), prompt
+   `vision.txt`. Before the call, `litellm.supports_vision(model)` is
+   checked: a model litellm knows as non-vision returns `502` naming the
+   model and the setting; a model missing from litellm's model map is tried
+   (the provider decides). A disabled `vision-agent` row or a failed call
+   returns `502`. The `task_vision` span records `model`,
+   `attachment_count`, `vision_support` and `latency_ms` (no content). Image
+   bytes are never logged, traced, stored or placed into A2A envelopes.
+3. **Orchestrator turn** -- the description is appended to the instructions
+   inside `[UNTRUSTED_DATA_START]` / `[UNTRUSTED_DATA_END]` and also set on
+   `TaskContext.attachment_description` (copied onto every dispatch context;
+   the general agent adds it to its system prompt as an untrusted block,
+   because condensation may drop it from the dispatched task). The text is
+   sanitized with an 8500-character bound instead of the 500-character turn
+   limit and dispatched as a non-streaming `message/send` turn with source
+   `ai_task`: normal classification, routing and device actions (devices
+   may be switched). Source `ai_task` (`STATELESS_TASK_SOURCES`) skips the
+   action/routing cache read and write, filler, voice follow-up,
+   personality mediation, calendar reminder injection, the organic closing
+   question, pending clarifying questions (neither consumed nor set) and
+   conversation history / session memory storage. Multi-agent results are
+   joined line by line instead of the merge LLM call, followed by one line
+   naming every agent that did not complete (unreachable and skipped intents). Canned errors and
+   English executor templates are still localized. The orchestrator returns
+   the result text before Markdown stripping as `task_text`. A turn whose
+   result carries `error` (canned failure, all agents failed) returns `502`
+   with the error text; the formatter does not run.
+4. **Timer directive** -- a delegation directive (timer handled by HA's
+   built-in agent) cannot be honored inside a task; the route returns `200`
+   with a fixed text saying so.
+5. **Formatter** (only with `structure`; `app/agents/task_formatter.py`) --
+   one `complete()` call with the `task-formatter` config row (prompt
+   `task-formatter.txt`) carrying the task name, instructions, the result
+   text (untrusted block), whether an action was executed and the schema,
+   with `response_format={"type": "json_object"}` (sent with
+   `drop_params=True`; a provider that rejects it is retried once without
+   it). The answer is parsed (code fences stripped) and validated with the
+   schema's `jsonschema` validator (Draft 2020-12 default); an invalid answer
+   gets one repair call that includes the validation error. A second failure,
+   a disabled row or a failed call returns `502`. The `task_format` span
+   records `model`, `attempts`, `valid` and `latency_ms`. Without
+   `structure`, `data` is the result text.
 
 ### Send Agent and Sequential Dispatch
 
@@ -294,7 +355,7 @@ frame handed to the client.
 ### Filler / In-Stream Preamble
 
 When `filler.enabled` is `true`, the request source is not text-only
-(`FILLER_EXEMPT_SOURCES` in `app/models/agent.py`: `openai`), and the
+(`FILLER_EXEMPT_SOURCES` in `app/models/agent.py`: `openai`, `ai_task`), and the
 orchestrator's first useful
 token takes longer than `filler.threshold_ms`, the filler agent
 generates one short interim sentence, emitted as a `filler_push` frame
@@ -341,8 +402,8 @@ and spoken text agree.
 When a turn ends in a clarifying question (entity not found, ambiguous
 recall, deterministic disambiguation), the container sets
 `voice_followup=True` on the terminal response (never for the text-only
-sources in `VOICE_FOLLOWUP_EXEMPT_SOURCES`: `openai`; the pending question
-below is still recorded for them). The HA integration maps
+sources in `VOICE_FOLLOWUP_EXEMPT_SOURCES`: `openai`, `ai_task`; the pending
+question below is still recorded for `openai`, never for `ai_task`). The HA integration maps
 that to `ConversationResult(continue_conversation=True)` **in the same
 turn** on every response path (WS token stream, mediated done,
 single-burst done, REST) -- HA core keeps the chat session (same
@@ -745,7 +806,7 @@ exact-hash miss); the action cache is exact-hash only:
   - **Embedding model**: each routing entry records the `<provider>:<model>` that produced its vector. A semantic candidate whose vector came from a different model (even at the same dimension) is skipped and its vector dropped; the entry is re-embedded on its next exact hit.
 - **Action Cache** -- Caches full agent responses including executor-confirmed HA actions.
   - **Hit** (exact hash match): Requires the owning agent to be registered and every referenced entity to exist in the entity index and be visible before replaying the stored HA command, then the rewrite agent rephrases the raw agent response in the turn language with the personality applied (the target language is repeated in the rewrite user message, and the `rewrite` span records it as `language`). If the rewrite is disabled, fails or returns no text, the stored original agent speech (`original_response_text`; legacy rows without it use `response_text`) is spoken; on failure the `rewrite` span is marked failed (`success: false`, `fallback: cached_response`) and rewrite analytics count a failure. The cache never stores mediated speech: new rows write the original agent speech into both `response_text` and `original_response_text`, so a replay never repeats a calendar reminder, follow-up question or the requesting person's name. Without a working rewrite, a replay in a non-English turn speaks the original agent speech, which may be an English executor template. The replayed entity is recorded as an anaphora hint, as on a live turn.
-  - **Not stored**: context-dependent turns -- a follow-up answer to a clarifying question, or a turn whose executed entity was offered as an anaphora hint (`last_entities`) -- store neither an action nor a routing row. Background-sourced turns (`source="background"`, e.g. wake briefings) store no cache row, no conversation turn and no session memory; their traces are still written.
+  - **Not stored**: context-dependent turns -- a follow-up answer to a clarifying question, or a turn whose executed entity was offered as an anaphora hint (`last_entities`) -- store neither an action nor a routing row. Background-sourced turns (`source="background"`, e.g. wake briefings) and AI-task turns (`source="ai_task"`) store no cache row, no conversation turn and no session memory; their traces are still written. AI-task turns also never read the action or routing cache.
   - **Miss**: Continues to routing-cache lookup or the live pipeline; a provenance rejection always forces the full live path.
   - Max entries: 50,000 with LRU eviction.
   - No-op executions (entity already in the target state) are never stored: their response text is state-dependent and would be wrong on replay.

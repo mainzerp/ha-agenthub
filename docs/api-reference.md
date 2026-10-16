@@ -6,7 +6,7 @@ All API endpoints (except the `/healthz` and `/readyz` probes and `/setup/*`) re
 
 ### Conversation Endpoints
 
-Conversation and OpenAI-compatible (`/v1/*`) endpoints use a Bearer token in the `Authorization` header:
+Conversation, AI-task (`/api/ai_task`) and OpenAI-compatible (`/v1/*`) endpoints use a Bearer token in the `Authorization` header:
 
 ```
 Authorization: Bearer <api_key>
@@ -276,6 +276,97 @@ then drains frames until `end`/`abort`/disconnect.
 
 Server side: `container/app/api/routes/voice.py`, `container/app/voice/`
 (tests: `container/tests/test_voice_ws.py`, `test_voice_core.py`).
+
+---
+
+## AI Task
+
+### POST /api/ai_task
+
+Run one Home Assistant `ai_task.generate_data` call (the HA bridge's AI-task
+entity) as a non-streaming orchestrator turn with request source `ai_task`.
+Classification, routing and device actions work as for a conversation turn,
+so a task may switch devices. Flow and exemptions: [Architecture -- AI task
+flow](architecture.md#ai-task-flow).
+
+**Auth:** Bearer token. Per-IP rate limit shared with `/api/conversation`
+(30/minute, `429`). Total request cap: 48 MiB (50,331,648 bytes) of JSON
+body, enough for 4 base64-encoded images of 8 MiB each (about 44.7 MB) plus
+the other fields; larger bodies, including chunked bodies without
+`Content-Length`, return `413` as soon as the limit is exceeded.
+
+**Request body:**
+
+```json
+{
+  "task_name": "Front door check",
+  "instructions": "Is there a package at the front door?",
+  "structure": {
+    "type": "object",
+    "properties": {"package_present": {"type": "boolean"}, "summary": {"type": "string"}},
+    "required": ["package_present"]
+  },
+  "attachments": [{"mime_type": "image/jpeg", "data": "<base64>"}],
+  "conversation_id": "optional-conversation-id",
+  "language": "en",
+  "user_id": "optional-ha-user-id",
+  "device_id": "optional-ha-device-id"
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `task_name` | string | yes | Task name (1-200 characters). |
+| `instructions` | string | yes | Task instructions (1-4000 characters). |
+| `structure` | object | no | JSON schema of type `object` the result `data` must validate against (HA's voluptuous-openapi conversion). |
+| `attachments` | list | no | Up to 4 images: `mime_type` must be `image/*` (`image/jpg` is normalized to `image/jpeg`), `data` is base64, at most 8 MB decoded per image. |
+| `conversation_id` | string | no | Conversation id; AI-task turns are never stored in its history. |
+| `language` | string | no | Language hint (default `en`; the `language` setting still applies). |
+| `user_id` | string | no | HA user id of the caller (visibility and personalization like a conversation turn). |
+| `device_id` | string | no | HA device id, when the task has one. |
+
+**Response (200):**
+
+```json
+{
+  "conversation_id": "abc123",
+  "data": {"package_present": true, "summary": "A package is at the door."},
+  "text": "A package is lying on the doormat.",
+  "routed_agent": "general-agent",
+  "action_executed": false
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `conversation_id` | string | Conversation identifier of the task turn. |
+| `data` | object or string | With `structure`: a JSON object validated against it. Without: the result text (same as `text`). |
+| `text` | string | Unmediated agent result text (no personality, no Markdown stripping). |
+| `routed_agent` | string or null | Agent(s) that handled the task (comma-joined for multi-agent tasks). |
+| `action_executed` | bool | True when the turn reports a successful Home Assistant action. |
+
+A task routed to a timer that the timer agent delegates to Home Assistant's
+built-in assistant cannot be honored; it returns `200` with a `text` stating
+that this is not supported in AI tasks and `action_executed: false`.
+
+**Errors** (`{"detail": "..."}`):
+
+- `400`: invalid input -- missing or invalid fields, `structure` that is not a
+  valid JSON schema of type `object` (`jsonschema` `check_schema`), more than
+  4 attachments, a non-image mime type, invalid base64, an image over 8 MB.
+- `401`: missing or invalid API key.
+- `413`: request body over 48 MiB.
+- `502`: the orchestrator turn ended in an error (canned failure, all agents
+  failed; the detail is the error text and the formatter is skipped), the
+  vision step failed (including a configured `vision-agent` model
+  that litellm reports as not supporting images; the detail names the model
+  and the setting to change), the structured-output step failed (including a
+  result that still does not validate after one repair attempt), or the
+  orchestrator dispatch failed.
+
+Server side: `container/app/api/routes/ai_task.py`,
+`container/app/agents/task_vision.py`, `container/app/agents/task_formatter.py`
+(tests: `container/tests/test_ai_task.py`).
 
 ---
 

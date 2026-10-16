@@ -3,7 +3,13 @@
 import aiosqlite
 
 from app.db.schema import _column_exists
-from app.defaults import CACHE_DEFAULTS, DEFAULT_LOCAL_EMBEDDING_MODEL, MEMORY_DEFAULTS, VOICE_DEFAULTS
+from app.defaults import (
+    AI_TASK_HELPER_AGENT_CONFIGS,
+    CACHE_DEFAULTS,
+    DEFAULT_LOCAL_EMBEDDING_MODEL,
+    MEMORY_DEFAULTS,
+    VOICE_DEFAULTS,
+)
 
 
 async def _seed_defaults(db: aiosqlite.Connection) -> None:
@@ -636,6 +642,7 @@ async def _seed_defaults(db: aiosqlite.Connection) -> None:
         ),
         ("rewrite-agent", 0, "groq/llama-3.1-8b-instant", 2, 1, 0.5, 1024, "Cached response phrasing variation"),
         ("filler-agent", 1, None, 3, 1, 0.7, 1024, "Interim filler TTS phrase generation"),
+        *AI_TASK_HELPER_AGENT_CONFIGS,
     ]
 
     # Per-agent reasoning effort defaults (absent = Default, parameter not sent).

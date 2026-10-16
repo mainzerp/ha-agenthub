@@ -36,13 +36,16 @@ class TracingMiddleware:
         # it is set at construction, not patched post-hoc. HA-facing
         # routes under /api/conversation* and /ws/conversation use
         # ``"ha"``; dashboard chat is ``"chat"``; the OpenAI-compatible
-        # ``/v1/*`` API (Open WebUI) is ``"openai"``; everything else
-        # falls back to ``"api"``. Route handlers that hit this
+        # ``/v1/*`` API (Open WebUI) is ``"openai"``; the HA AI-task route
+        # ``/api/ai_task`` is ``"ai_task"``; everything else falls back to
+        # ``"api"``. Route handlers that hit this
         # middleware before the final classification can still
         # override by rebuilding the collector.
         path = scope.get("path", "")
         if path.startswith("/api/admin/chat"):
             source: str = "chat"
+        elif path == "/api/ai_task":
+            source = "ai_task"
         elif path.startswith("/api/conversation") or path.startswith("/ws/conversation"):
             source = "ha"
         elif path.startswith("/v1/"):

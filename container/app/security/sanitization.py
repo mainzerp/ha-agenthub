@@ -23,10 +23,15 @@ _DIRECTIONAL_OVERRIDES = set(range(0x202A, 0x202F)) | set(range(0x2066, 0x206A))
 _ALLOWED_FORMAT = {"\u200d", "\u200c"}
 
 
-def sanitize_input(text: str) -> str:
-    if len(text) > MAX_INPUT_LENGTH:
-        logger.warning("Input truncated from %d to %d chars", len(text), MAX_INPUT_LENGTH)
-    text = text[:MAX_INPUT_LENGTH]
+def sanitize_input(text: str, max_length: int = MAX_INPUT_LENGTH) -> str:
+    """Strip control/format characters and truncate to ``max_length`` characters.
+
+    ``max_length`` defaults to the conversation-turn limit; the AI-task route
+    passes its own larger bound (task instructions plus image description).
+    """
+    if len(text) > max_length:
+        logger.warning("Input truncated from %d to %d chars", len(text), max_length)
+    text = text[:max_length]
     text = text.replace("\x00", "")
     cleaned = []
     for ch in text:

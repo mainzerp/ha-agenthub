@@ -491,10 +491,14 @@ async def complete(
         retry_on_timeout: when False, a provider timeout is raised at once
             instead of being retried (domain agents: the HA action still
             has to run inside the dispatch budget).
+        response_format: OpenAI-style output format (e.g.
+            ``{"type": "json_object"}``). Sent with ``drop_params=True`` so
+            litellm drops it for providers that do not support the parameter.
     """
     span_collector = overrides.pop("span_collector", None)
     deadline: float | None = overrides.pop("deadline", None)
     retry_on_timeout = bool(overrides.pop("retry_on_timeout", True))
+    response_format = overrides.pop("response_format", None)
     row = await AgentConfigRepository.get(agent_id)
     if row is None:
         raise ValueError(f"No config found for agent: {agent_id}")
@@ -523,6 +527,9 @@ async def complete(
         )
         if reasoning_effort:
             call_kwargs["reasoning_effort"] = reasoning_effort
+            call_kwargs["drop_params"] = True
+        if response_format:
+            call_kwargs["response_format"] = response_format
             call_kwargs["drop_params"] = True
         async with _optional_span(span_collector, "llm_provider_call", agent_id=agent_id) as pspan:
             response, t0 = await _acompletion_with_transient_retry(

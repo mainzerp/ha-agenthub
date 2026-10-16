@@ -49,5 +49,12 @@
       "already_configured": "This container is already configured.",
       "invalid_stt_entity": "Select a speech-to-text entity other than the HA-AgentHub STT entity itself."
     }
+  },
+  "entity": {
+    "ai_task": {
+      "ai_task": {
+        "name": "AI Task"
+      }
+    }
   }
 }

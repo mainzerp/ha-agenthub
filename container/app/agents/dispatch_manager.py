@@ -195,6 +195,8 @@ class DispatchManager:
             context.requester_name = incoming_context.requester_name
             # Phase 6: carry anaphora recency hints onto the dispatch envelope.
             context.last_entities = list(incoming_context.last_entities)
+            # AI task: vision pre-step image description (untrusted context).
+            context.attachment_description = incoming_context.attachment_description
         if resolved_language:
             context.language = resolved_language
 

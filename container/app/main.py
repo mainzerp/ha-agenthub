@@ -11,6 +11,7 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.api.routes import admin as admin_routes
+from app.api.routes import ai_task as ai_task_routes
 from app.api.routes import conversation as conversation_routes
 from app.api.routes import dashboard_api as dashboard_api_routes
 from app.api.routes import health as health_routes
@@ -100,6 +101,8 @@ def create_app() -> FastAPI:
     app.include_router(health_routes.router)
     app.include_router(setup_router)
     app.include_router(conversation_routes.router)
+    # HA ai_task.generate_data bridge (non-streaming orchestrator task)
+    app.include_router(ai_task_routes.router)
     app.include_router(openai_compat_routes.router)
     # Voice-turn audio for speaker identification (one WS per Assist voice turn)
     app.include_router(voice_routes.router)

@@ -71,17 +71,31 @@ Live pipeline in board format — headings are columns, cards are
 
 ## In Progress
 
-- AI Task entity for automations (ai_task generate_data) · priority: P1 · area: integration
-  Outcome: `ai_task.generate_data` on the HA-AgentHub entity runs a normal
-  orchestrator turn (devices may be switched) and returns typed JSON per the
-  `structure`, or text without one; image attachments reach a vision LLM.
-  No filler, voice follow-up or cache for task turns. Bridge min HA version
-  raised for ai_task. Decisions 2026-10-16. Next step: research HA core
-  AITaskEntity API and the container turn flow, then fix the contract.
-  Verify: an automation calls `ai_task.generate_data` with a structure and a
-  camera snapshot and gets typed fields; a task that switches a light works.
-
 ## Testing
+
+- AI Task entity for automations (ai_task generate_data) · priority: P1 · area: integration
+  Outcome: `ai_task.generate_data` on the HA-AgentHub AI Task entity runs a
+  normal orchestrator turn (devices may be switched) via `POST /api/ai_task`
+  and returns typed JSON per `structure` (task-formatter + jsonschema, one
+  repair) or text; up to 4 images are described by the vision-agent before
+  routing. No filler, follow-up, mediation, pending question, cache, history
+  or memory for task turns; error turns return 502. Migration 52 seeds both
+  helper models (Agents page). Bridge min HA 2025.8.0. Decisions 2026-10-16.
+  Not released (VERSION.md Recent Changes); branch `ccr-76012fde-e5fd3y`.
+  Passed: container suite 4768 (48 ai_task tests), bridge suite 240 (25
+  ai_task tests, HA stubs; symbols cross-checked against HA 2025.8.0 and
+  2026.2.3 wheels), ruff, self-docs sync; independent review, 7 findings
+  fixed. Not run: Docker build, real HA, real LLM.
+  Needs user verification: deploy container + bridge; check the vision-agent
+  and task-formatter models on the Agents page (default
+  openrouter/openai/gpt-4o-mini); in HA Developer Tools run
+  `ai_task.generate_data` on `ai_task.ha_agenthub_ai_task` with
+  instructions "Ist das Wohnzimmerlicht an?" and a structure field
+  `licht_an` (boolean selector) -> typed result; with a camera attachment
+  `media-source://camera/<entity>` and "Ist jemand zu sehen?" -> sensible
+  answer; "Schalte das Wohnzimmerlicht ein" -> light switches; trace shows
+  source ai_task with task_vision / task_format spans.
+
 
 - Quick hardening batch 2026-10-16 (audit point 1) · priority: P1 · area: core
   Outcome: low-risk fixes from the 2026-10-16 audit. pip-audit findings fail

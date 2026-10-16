@@ -224,7 +224,7 @@ To adjust logger levels at runtime, use the admin dashboard Logs page or call `P
 
 **Version requirements:**
 
-- The integration requires HA >= 2025.4.0 (manifest floor).
+- The integration requires HA >= 2025.8.0 (manifest floor; needed for the AI Task entity).
 - Spoken streaming (filler preamble and tokens spoken while the turn is still running) needs HA >= 2025.7 (default-on since 2025.8), a streaming TTS engine such as wyoming-piper 1.6+, and ESPHome firmware >= 2025.6.2. On older cores or buffering TTS engines the full response is spoken at end of turn.
 - Responses shorter than ~60 streamed characters still buffer before TTS starts (HA core limitation, feature request #4133).
 

@@ -411,6 +411,51 @@ These short procedures link the dashboard pages described above.
     - Name the list ("add milk to the shopping list"); without a name the only visible list is used, and with several lists the agent asks which one.
     - Items match exactly first, then by a unique partial match; if several items match ("milk" with "oat milk" and "almond milk"), the agent asks which one.
 
+## Use HA-AgentHub from Automations
+
+The HA integration adds an AI Task entity, so automations and scripts can
+call HA-AgentHub with `ai_task.generate_data` (Home Assistant 2025.8 or
+later). The task runs through the normal routing: it can answer questions,
+read states and also switch devices, exactly like a typed command. Results
+are not spoken, not stored in conversation history or memory, and never
+served from or added to the cache.
+
+```yaml
+action: ai_task.generate_data
+data:
+  task_name: Front door check
+  entity_id: ai_task.ha_agenthub_ai_task  # check the AI Task entity id shown in Home Assistant
+  instructions: Is there a package in front of the door? Describe it briefly.
+  structure:
+    package_present:
+      description: True when a package is visible
+      required: true
+      selector:
+        boolean:
+    summary:
+      description: One short sentence
+      selector:
+        text:
+  attachments:
+    - media_content_id: media-source://camera/camera.front_door
+      media_content_type: image/jpeg
+response_variable: door_check
+```
+
+- **Result** -- `door_check.data` holds an object with the `structure`
+  fields (unknown values are `null`); without `structure` it is the answer
+  text.
+- **Attachments** -- up to 4 images (camera snapshots via
+  `media-source://camera/<entity_id>`, or image files), at most 8 MB each.
+  The `vision-agent` model describes them first, so it must support images;
+  set it on the **Agents** page (see
+  [Configuration](configuration.md#ai-task-helper-models)).
+- **Structure** -- the `task-formatter` model fills the requested fields
+  from the answer and never invents values; a result that does not fit the
+  structure makes the action fail.
+- **Timers** -- timers that the HA built-in assistant handles cannot be set
+  from a task; the result says so.
+
 ## Device Command Behavior
 
 - **Relative requests** -- "a bit brighter", "two degrees warmer", and "turn it up" change the current value instead of guessing an absolute one.

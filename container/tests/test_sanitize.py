@@ -56,7 +56,9 @@ def _ensure_ha_module_mocks():
     sys.modules["homeassistant.const"].CONF_URL = "url"
     sys.modules["homeassistant.const"].CONF_API_KEY = "api_key"
     sys.modules["homeassistant.const"].CONF_NAME = "name"
-    sys.modules["homeassistant.const"].Platform = types.SimpleNamespace(CONVERSATION="conversation", STT="stt")
+    sys.modules["homeassistant.const"].Platform = types.SimpleNamespace(
+        AI_TASK="ai_task", CONVERSATION="conversation", STT="stt"
+    )
 
     sys.modules["homeassistant.core"].HomeAssistant = type("HomeAssistant", (), {})
     sys.modules["homeassistant.exceptions"].HomeAssistantError = Exception

@@ -251,6 +251,22 @@ Default routable agents: `orchestrator`, `light-agent`, `music-agent`,
 `automation-agent`, `security-agent`, `general-agent`, `send-agent`
 (delivers messages to phones, satellites, and notification targets).
 
+### AI task helper models
+
+Two `agent_configs` rows configure the models of the AI-task endpoint
+(`POST /api/ai_task`, used by Home Assistant `ai_task.generate_data`). They
+appear on the dashboard Agents page (model, timeout, temperature, prompt) but
+are never routing targets.
+
+| Agent | Default model | Default timeout / temperature / max tokens | Purpose |
+|-------|---------------|--------------------------------------------|---------|
+| `vision-agent` | `openrouter/openai/gpt-4o-mini` (same as the seeded `general-agent`) | 30 s / 0.2 / 1024 | Describes image attachments before the task is routed. Must be an image-capable model: a model litellm reports as non-vision makes image tasks fail with HTTP 502. Prompt: `vision.txt`. |
+| `task-formatter` | `openrouter/openai/gpt-4o-mini` | 15 s / 0.1 / 2048 | Turns the task result into a JSON object for the requested `structure` (JSON mode where the provider supports it, one repair attempt). Prompt: `task-formatter.txt`. |
+
+Disabling `vision-agent` rejects tasks with attachments, and disabling
+`task-formatter` rejects tasks with a `structure` (HTTP 502). Both rows are
+seeded on fresh installs and added by schema migration 52 on upgrades.
+
 ### Wake briefing for internal alarms
 
 Internal AgentHub alarms created through `set_datetime` can now opt into

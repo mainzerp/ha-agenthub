@@ -561,7 +561,7 @@ class TestHAConfigFlow:
         sys.modules["homeassistant.const"].CONF_NAME = "name"
         sys.modules["homeassistant.const"].CONF_NAME = "name"
         sys.modules["homeassistant.const"].Platform = type(
-            "Platform", (), {"CONVERSATION": "conversation", "STT": "stt"}
+            "Platform", (), {"AI_TASK": "ai_task", "CONVERSATION": "conversation", "STT": "stt"}
         )
         sys.modules["homeassistant.core"].HomeAssistant = type("HomeAssistant", (), {})
         sys.modules["homeassistant.helpers.selector"].TextSelector = _FakeTextSelector
@@ -1302,7 +1302,7 @@ class TestHAConfigEntryLifecycle:
         sys.modules["homeassistant.const"].CONF_API_KEY = "api_key"
         sys.modules["homeassistant.const"].CONF_NAME = "name"
         sys.modules["homeassistant.const"].Platform = type(
-            "Platform", (), {"CONVERSATION": "conversation", "STT": "stt"}
+            "Platform", (), {"AI_TASK": "ai_task", "CONVERSATION": "conversation", "STT": "stt"}
         )
 
         yield
