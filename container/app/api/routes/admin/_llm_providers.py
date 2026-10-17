@@ -3,22 +3,30 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 from typing import Any
 
+import httpx
 import litellm
+import openai
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, field_validator
 
 from app.api.routes import admin as _admin_pkg
 from app.db.repository import SecretsRepository, SettingsRepository
+from app.llm import model_catalog
 from app.llm.client import _is_timeout_error
+from app.llm.providers import (
+    get_custom_openai_headers,
+    normalize_custom_openai_base_url,
+    normalize_custom_openai_name,
+    save_custom_openai_config,
+)
 from app.security.encryption import delete_secret, store_secret
 
 logger = logging.getLogger(__name__)
 
-# Upper bound for the admin "test connection" completion. Passed to litellm as
+# Upper bound for the custom OpenAI "test connection" completion fallback. Passed to litellm as
 # the provider timeout; ``asyncio.wait_for`` adds a small grace period as a hard
 # stop in case a provider adapter ignores the per-call timeout.
 _PROVIDER_TEST_TIMEOUT_S = 30.0
@@ -58,23 +66,12 @@ class CustomProviderConfig(BaseModel):
     @field_validator("base_url")
     @classmethod
     def validate_base_url(cls, v: str) -> str:
-        v = (v or "").strip()
-        if not v:
-            raise ValueError("base_url is required")
-        low = v.lower()
-        if not low.startswith(("http://", "https://")):
-            raise ValueError("base_url must start with http:// or https://")
-        return v
+        return normalize_custom_openai_base_url(v)
 
     @field_validator("name")
     @classmethod
     def validate_name(cls, v: str) -> str:
-        v = (v or "").strip()
-        if not v:
-            raise ValueError("name is required")
-        if len(v) > 64:
-            raise ValueError("name must be at most 64 characters")
-        return v
+        return normalize_custom_openai_name(v)
 
 
 router = APIRouter()
@@ -122,30 +119,12 @@ async def update_llm_provider_key(payload: ProviderKeyUpdate):
 @router.put("/llm-providers/custom-openai")
 async def update_custom_openai_config(payload: CustomProviderConfig):
     """Save custom OpenAI-compatible provider configuration."""
-    if payload.api_key:
-        await store_secret("custom_openai_api_key", payload.api_key)
-    await SettingsRepository.set(
-        "custom_openai_provider.name",
-        payload.name,
-        "string",
-        "llm",
-        "Custom OpenAI provider name",
+    await save_custom_openai_config(
+        name=payload.name,
+        base_url=payload.base_url,
+        api_key=payload.api_key,
+        extra_headers=payload.extra_headers,
     )
-    await SettingsRepository.set(
-        "custom_openai_provider.base_url",
-        payload.base_url,
-        "string",
-        "llm",
-        "Custom OpenAI provider base URL",
-    )
-    if payload.extra_headers is not None:
-        await SettingsRepository.set(
-            "custom_openai_provider.headers",
-            json.dumps(payload.extra_headers),
-            "json",
-            "llm",
-            "Custom OpenAI provider extra headers",
-        )
     return {"status": "ok", "provider": "custom_openai"}
 
 
@@ -169,80 +148,117 @@ async def delete_llm_provider_key(provider: str):
     return {"status": "ok"}
 
 
+def _test_error(kind: str, detail: str) -> dict[str, Any]:
+    return {"status": "error", "error_kind": kind, "detail": detail}
+
+
+def _classify_provider_exception(provider: str, exc: BaseException) -> dict[str, Any] | None:
+    """Map a provider/network exception to a test error result, or ``None`` if it is not one."""
+    # Checked first: builtin TimeoutError is an OSError subclass, and
+    # litellm's Timeout is an openai.APIConnectionError subclass.
+    if _is_timeout_error(exc):
+        logger.warning("LLM provider test timed out for %s", provider)
+        return _test_error(
+            model_catalog.ERROR_UNREACHABLE,
+            f"Provider test timed out after {_PROVIDER_TEST_TIMEOUT_S:.0f}s.",
+        )
+    if isinstance(exc, openai.AuthenticationError | openai.PermissionDeniedError):
+        logger.warning("LLM provider test failed for %s", provider, exc_info=True)
+        return _test_error(model_catalog.ERROR_AUTH, "Authentication failed. Check the API key.")
+    if isinstance(exc, openai.APIConnectionError | httpx.TransportError | OSError):
+        logger.warning("LLM provider test failed for %s", provider, exc_info=True)
+        return _test_error(model_catalog.ERROR_UNREACHABLE, "Could not connect to the provider.")
+    if isinstance(exc, openai.APIError | httpx.HTTPError):
+        logger.warning("LLM provider test failed for %s", provider, exc_info=True)
+        return _test_error(model_catalog.ERROR_PROVIDER, "Provider test failed. Check server logs.")
+    return None
+
+
+async def _test_custom_openai_completion(model: str, api_key: str | None) -> dict[str, Any]:
+    """Fallback test for custom endpoints without ``/models``: one tiny completion."""
+    base_url = await SettingsRepository.get_value("custom_openai_provider.base_url")
+    if not api_key:
+        api_key = await _admin_pkg.retrieve_secret("custom_openai_api_key")
+    if not base_url:
+        return _test_error(model_catalog.ERROR_NOT_CONFIGURED, "Custom OpenAI provider base URL not configured")
+    if not api_key:
+        return _test_error(model_catalog.ERROR_NOT_CONFIGURED, "Custom OpenAI provider API key not configured")
+    kwargs: dict[str, Any] = {
+        "model": model,
+        "messages": [{"role": "user", "content": "Say hello"}],
+        "api_key": api_key,
+        "api_base": base_url,
+        "max_tokens": 10,
+        "timeout": _PROVIDER_TEST_TIMEOUT_S,
+    }
+    extra_headers = await get_custom_openai_headers()
+    if extra_headers:
+        kwargs["extra_headers"] = extra_headers
+    await asyncio.wait_for(
+        litellm.acompletion(**kwargs),
+        timeout=_PROVIDER_TEST_TIMEOUT_S + _PROVIDER_TEST_GRACE_S,
+    )
+    return {
+        "status": "ok",
+        "detail": f"Connection OK, completion with {model} succeeded (model listing not supported).",
+        "model_count": None,
+    }
+
+
 @router.post("/llm-providers/test")
 async def test_llm_provider(payload: ProviderTestRequest):
-    """Test connectivity for an LLM provider."""
+    """Validate a provider's credentials by listing its models.
+
+    Provider and network failures are always reported as
+    ``{"status": "error", ...}`` with HTTP 200, never as a 500.
+    """
     provider = payload.provider
-    api_key = payload.api_key
-
-    test_models = {
-        "groq": "groq/llama-3.1-8b-instant",
-        "openrouter": "openrouter/openai/gpt-4o-mini",
-        "anthropic": "anthropic/claude-3-haiku-20240307",
-        "cerebras": "cerebras/llama3.1-8b",
-        "ollama": "ollama/llama3",
-        "custom_openai": payload.model or "custom_openai/gpt-4o-mini",
-    }
-    if provider not in test_models:
-        return {"status": "error", "detail": f"Unknown provider: {provider}"}
-
-    # If no key given, retrieve stored key
-    if provider == "ollama":
-        base_url = await SettingsRepository.get_value("ollama_base_url", "http://localhost:11434")
-        api_key = "not-needed"
-    elif provider == "custom_openai":
-        base_url = await SettingsRepository.get_value("custom_openai_provider.base_url")
-        if not api_key:
-            api_key = await _admin_pkg.retrieve_secret("custom_openai_api_key")
-        if not base_url:
-            return {"status": "error", "detail": "Custom OpenAI provider base URL not configured"}
-        if not api_key:
-            return {"status": "error", "detail": "Custom OpenAI provider API key not configured"}
-    elif not api_key:
-        secret_key = PROVIDER_SECRET_KEYS.get(provider)
-        if secret_key:
-            api_key = await _admin_pkg.retrieve_secret(secret_key)
-        if not api_key:
-            return {"status": "error", "detail": "No API key configured for " + provider}
+    if provider not in model_catalog.CATALOG_PROVIDERS:
+        return _test_error(model_catalog.ERROR_UNSUPPORTED, f"Unknown provider: {provider}")
+    api_key = (payload.api_key or "").strip() or None
 
     try:
-        kwargs: dict[str, Any] = {
-            "model": test_models[provider],
-            "messages": [{"role": "user", "content": "Say hello"}],
-            "api_key": api_key,
-            "max_tokens": 10,
-            "timeout": _PROVIDER_TEST_TIMEOUT_S,
-        }
-        if provider == "ollama":
-            kwargs["api_base"] = base_url
-        elif provider == "custom_openai":
-            kwargs["api_base"] = base_url
-            headers_raw = await SettingsRepository.get_value("custom_openai_provider.headers", "{}")
-            try:
-                extra_headers = json.loads(headers_raw or "{}")
-            except json.JSONDecodeError:
-                extra_headers = {}
-            if isinstance(extra_headers, dict) and extra_headers:
-                kwargs["extra_headers"] = extra_headers
-        await asyncio.wait_for(
-            litellm.acompletion(**kwargs),
-            timeout=_PROVIDER_TEST_TIMEOUT_S + _PROVIDER_TEST_GRACE_S,
-        )
-        return {"status": "ok", "provider": provider}
+        result = await model_catalog.list_provider_models(provider, api_key=api_key, use_cache=False)
+        if result["status"] == "ok":
+            count = len(result["models"])
+            return {"status": "ok", "detail": f"Connection OK, {count} models available.", "model_count": count}
+        kind = result["error_kind"]
+        if provider == "custom_openai" and kind == model_catalog.ERROR_UNSUPPORTED:
+            model = (payload.model or "").strip()
+            if model:
+                # litellm routes the completion by the provider prefix; accept bare names too.
+                if not model.startswith("custom_openai/"):
+                    model = f"custom_openai/{model}"
+                return await _test_custom_openai_completion(model, api_key)
+            return _test_error(kind, result["detail"] + " Enter a model name to test with a completion instead.")
+        return _test_error(kind, result["detail"])
     except asyncio.CancelledError:
         raise
     except Exception as exc:
-        # Checked first: builtin TimeoutError is an OSError subclass.
-        if _is_timeout_error(exc):
-            logger.warning("LLM provider test timed out for %s", provider)
-            return {
-                "status": "error",
-                "detail": f"Provider test timed out after {_PROVIDER_TEST_TIMEOUT_S:.0f}s.",
-            }
-        if isinstance(exc, (litellm.exceptions.APIError, litellm.exceptions.AuthenticationError, OSError)):
-            logger.warning("LLM provider test failed for %s", provider, exc_info=True)
-            return {"status": "error", "detail": "Provider test failed. Check server logs."}
+        classified = _classify_provider_exception(provider, exc)
+        if classified is None:
+            raise
+        return classified
+
+
+@router.get("/llm-providers/{provider}/models")
+async def list_llm_provider_models(provider: str, refresh: bool = False):
+    """List the models a provider offers (cached; ``refresh=true`` refetches).
+
+    Unknown providers return 404; provider-side failures return HTTP 200
+    with ``status: "error"``.
+    """
+    if provider not in model_catalog.CATALOG_PROVIDERS:
+        raise HTTPException(status_code=404, detail=f"Unknown provider: {provider}")
+    try:
+        return await model_catalog.list_provider_models(provider, use_cache=not refresh)
+    except asyncio.CancelledError:
         raise
+    except Exception as exc:
+        classified = _classify_provider_exception(provider, exc)
+        if classified is None:
+            raise
+        return {"provider": provider, **classified, "models": []}
 
 
 @router.get("/llm-providers/configured")

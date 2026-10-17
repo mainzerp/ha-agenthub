@@ -41,6 +41,21 @@ Live pipeline in board format — headings are columns, cards are
 
 ## Testing
 
+- Live provider model catalog and key test without hardcoded models · priority: P1 · area: llm
+  Outcome: the provider key test (admin + setup wizard) lists models (no
+  tokens, never HTTP 500); agent and cache-validator model pickers show the
+  provider's live models with static fallback; stale configured models are
+  flagged. Trigger: live Anthropic test 500 on 2026-10-17 (retired
+  `claude-3-haiku-20240307`, `litellm.NotFoundError` not caught). Also:
+  setup wizard now saves the custom OpenAI provider (field-name mismatch).
+  Shipped in v3.9.0. Passed: container 4944, bridge 269, `scripts/ci.py`
+  full gate (incl. docker build/smoke, trivy) before the wizard save fix;
+  after it ruff + 308 targeted tests, full suite via PR CI. HTTP mocked
+  only; no browser check.
+  Needs user verification: deploy; Settings > LLM > Anthropic Test shows
+  "Connection OK, N models available."; agent Model field lists Claude
+  models; Refresh list works; stale hint on an agent with a retired model.
+
 - HA bridge quality: reauth, setup check, diagnostics · priority: P2 · area: integration
   Outcome: setup probes `/api/health` with the key (401/403 -> Re-authenticate,
   unreachable -> HA retries); reauth_confirm + Reconfigure (URL/key moved out

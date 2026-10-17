@@ -1018,6 +1018,134 @@ def test_chat_suggestion_only_fills_empty_composer():
     )
 
 
+def test_model_catalog_memoizes_ok_results_and_never_throws():
+    _run_dashboard_asset(
+        "components.js",
+        r"""
+        const calls = [];
+        let mode = 'ok';
+        global.window = { dashboardApi: { json: async url => {
+            calls.push(url);
+            if (mode === 'throw') throw { detail: 'synthetic network failure' };
+            if (mode === 'error') return { provider: 'anthropic', status: 'error', error_kind: 'auth', detail: 'bad key', models: [] };
+            return { provider: 'anthropic', status: 'ok', cached: false, fetched_at: 'now',
+                     models: [{ id: 'claude-haiku-4-5', name: 'Claude Haiku 4.5', model: 'anthropic/claude-haiku-4-5' }, { bogus: true }] };
+        } } };
+        global.document = { getElementById: () => null, addEventListener: () => {} };
+        """,
+        r"""
+        const assert = require('node:assert/strict');
+        (async () => {
+            const catalog = window.dashModelCatalog;
+            const first = await catalog.fetchModels('anthropic');
+            assert.equal(first.status, 'ok');
+            assert.deepEqual(first.models.map(m => m.id), ['claude-haiku-4-5']);
+            await catalog.fetchModels('anthropic');
+            assert.equal(calls.length, 1);
+            await catalog.fetchModels('anthropic', { refresh: true });
+            assert.equal(calls.at(-1), '/api/admin/llm-providers/anthropic/models?refresh=true');
+            catalog.invalidate('anthropic');
+            mode = 'error';
+            const failed = await catalog.fetchModels('anthropic');
+            assert.equal(failed.status, 'error');
+            assert.equal(failed.error_kind, 'auth');
+            mode = 'throw';
+            const thrown = await catalog.fetchModels('anthropic');
+            assert.equal(thrown.status, 'error');
+            assert.equal(thrown.detail, 'synthetic network failure');
+            assert.equal(calls.length, 4);
+            assert.ok(catalog.fallbackModels('anthropic').some(m => m.id === 'claude-opus-5-5'));
+            assert.ok(!catalog.fallbackModels('anthropic').some(m => m.id.startsWith('claude-3')));
+            assert.equal(catalog.placeholder('unknown'), 'model-name');
+        })().catch(e => { console.error(e); process.exitCode = 1; });
+        """,
+    )
+
+
+def test_agent_model_picker_uses_live_list_and_flags_stale_model():
+    _run_dashboard_script(
+        "agents.html",
+        r"""
+        const assert = require('node:assert/strict');
+        (async () => {
+            let result = { status: 'ok', models: [{ id: 'claude-sonnet-5-5', name: 'Claude Sonnet 5.5' }] };
+            global.window = { dashModelCatalog: {
+                fetchModels: async () => result,
+                fallbackModels: p => [{ id: 'fallback-' + p, name: 'fallback-' + p }],
+                placeholder: () => 'model-name'
+            } };
+            const page = agentsPage();
+            const agent = page.prepareAgent({ agent_id: 'light agent', model: 'anthropic/claude-3-haiku-20240307' });
+            assert.equal(page.modelListId(agent), 'model-suggestions-light_agent');
+            await page.loadProviderModels(agent, false);
+            assert.equal(page.getModelSuggestions(agent)[0].id, 'claude-sonnet-5-5');
+            assert.equal(page.modelStatusText(agent), '1 models from provider');
+            assert.equal(page.isModelStale(agent), true);
+            agent._modelName = 'claude-sonnet-5-5';
+            assert.equal(page.isModelStale(agent), false);
+            agent._modelName = 'claude-3-haiku-20240307';
+            result = { status: 'error', error_kind: 'auth', detail: 'bad key', models: [] };
+            await page.loadProviderModels(agent, true);
+            assert.equal(page.isModelStale(agent), false);
+            assert.equal(page.getModelSuggestions(agent)[0].id, 'fallback-anthropic');
+            assert.equal(page.modelStatusText(agent), 'Could not load models: bad key, showing defaults');
+        })().catch(e => { console.error(e); process.exitCode = 1; });
+        """,
+    )
+
+
+def test_agent_model_picker_treats_untagged_ollama_model_as_latest():
+    _run_dashboard_script(
+        "agents.html",
+        r"""
+        const assert = require('node:assert/strict');
+        (async () => {
+            global.window = { dashModelCatalog: {
+                fetchModels: async () => ({ status: 'ok', models: [{ id: 'llama3:latest', name: 'llama3:latest' }] }),
+                fallbackModels: () => [],
+                placeholder: () => 'model-name'
+            } };
+            const page = agentsPage();
+            const agent = page.prepareAgent({ agent_id: 'light-agent', model: 'ollama/llama3' });
+            await page.loadProviderModels(agent, false);
+            assert.equal(page.isModelStale(agent), false);
+        })().catch(e => { console.error(e); process.exitCode = 1; });
+        """,
+    )
+
+
+def test_provider_test_shows_detail_and_omits_default_custom_model():
+    _run_dashboard_script(
+        "settings.html",
+        r"""
+        const assert = require('node:assert/strict');
+        (async () => {
+            const bodies = [];
+            const invalidated = [];
+            let response = { status: 'ok', detail: 'Connection OK, 14 models available.', model_count: 14 };
+            global.window = {
+                dashModelCatalog: { invalidate: p => invalidated.push(p) },
+                dashboardApi: { json: async (url, options) => { bodies.push(JSON.parse(options.body)); return response; } }
+            };
+            const page = settingsPage();
+            const messages = [];
+            page.showProviderMessage = (msg, type) => messages.push([msg, type]);
+            await page.testProvider('anthropic');
+            assert.deepEqual(messages.at(-1), ['anthropic: Connection OK, 14 models available.', 'success']);
+            assert.deepEqual(invalidated, ['anthropic']);
+            response = { status: 'error', error_kind: 'auth', detail: 'Invalid API key' };
+            await page.testProvider('groq');
+            assert.deepEqual(messages.at(-1), ['groq (auth): Invalid API key', 'error']);
+            assert.deepEqual(invalidated, ['anthropic']);
+            await page.testCustomProvider({ api_key: '', model: '' });
+            assert.ok(!('model' in bodies.at(-1)));
+            await page.testCustomProvider({ api_key: '', model: 'kimi-latest' });
+            assert.equal(bodies.at(-1).model, 'custom_openai/kimi-latest');
+        })().catch(e => { console.error(e); process.exitCode = 1; });
+        """,
+    )
+
+
 def test_agent_filter_matches_identity_description_and_resets():
     _run_dashboard_script(
         "agents.html",

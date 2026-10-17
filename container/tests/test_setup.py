@@ -229,7 +229,11 @@ class TestSetupStepSubmissions:
             patch(
                 "app.setup.routes.store_secret",
                 new_callable=AsyncMock,
-            ),
+            ) as mock_secret,
+            patch(
+                "app.setup.routes.save_custom_openai_config",
+                new_callable=AsyncMock,
+            ) as mock_custom,
             patch(
                 "app.setup.routes.SetupStateRepository.set_step_completed",
                 new_callable=AsyncMock,
@@ -243,9 +247,69 @@ class TestSetupStepSubmissions:
             )
             assert resp.status_code == 303
             assert "/setup/step/5" in resp.headers.get("location", "")
+            mock_secret.assert_awaited_once_with("openrouter_api_key", "sk-test-123")
+            mock_custom.assert_not_awaited()
 
-    async def test_step4_custom_provider_fields(self, setup_client: httpx.AsyncClient):
+    async def test_step4_custom_provider_saved_like_admin_endpoint(self, setup_client: httpx.AsyncClient):
+        """The template's custom_openai_* fields are persisted (settings + encrypted secret)."""
+        from app.db.repository import SettingsRepository
+        from app.security.encryption import retrieve_secret
+
+        with patch(
+            "app.setup.routes.SetupStateRepository.set_step_completed",
+            new_callable=AsyncMock,
+        ) as mock_complete:
+            resp = await csrf_post(
+                setup_client,
+                "/setup/step/4",
+                {
+                    "openrouter_key": "",
+                    "groq_key": "",
+                    "ollama_url": "",
+                    "custom_openai_name": " My Provider ",
+                    "custom_openai_url": " http://custom.local:8000/v1 ",
+                    "custom_openai_key": "sk-custom",
+                },
+                get_url="/setup/step/4",
+            )
+        assert resp.status_code == 303
+        assert "/setup/step/5" in resp.headers.get("location", "")
+        mock_complete.assert_awaited_once_with("llm_providers")
+        assert await SettingsRepository.get_value("custom_openai_provider.name") == "My Provider"
+        assert await SettingsRepository.get_value("custom_openai_provider.base_url") == "http://custom.local:8000/v1"
+        assert await retrieve_secret("custom_openai_api_key") == "sk-custom"
+        # No headers field in the wizard: stored headers stay untouched.
+        assert await SettingsRepository.get_value("custom_openai_provider.headers", "{}") == "{}"
+
+    async def test_step4_custom_provider_uses_shared_helper(self, setup_client: httpx.AsyncClient):
         with (
+            patch(
+                "app.setup.routes.save_custom_openai_config",
+                new_callable=AsyncMock,
+            ) as mock_custom,
+            patch(
+                "app.setup.routes.SetupStateRepository.set_step_completed",
+                new_callable=AsyncMock,
+            ),
+        ):
+            resp = await csrf_post(
+                setup_client,
+                "/setup/step/4",
+                {"custom_openai_url": "https://api.example.invalid/v1", "custom_openai_key": ""},
+                get_url="/setup/step/4",
+            )
+        assert resp.status_code == 303
+        # Blank name gets the default; blank key keeps any stored key; headers are left alone.
+        mock_custom.assert_awaited_once_with(
+            name="Custom Provider", base_url="https://api.example.invalid/v1", api_key=""
+        )
+
+    async def test_step4_empty_custom_fields_save_nothing(self, setup_client: httpx.AsyncClient):
+        with (
+            patch(
+                "app.llm.providers.store_secret",
+                new_callable=AsyncMock,
+            ) as mock_provider_secret,
             patch(
                 "app.setup.routes.store_secret",
                 new_callable=AsyncMock,
@@ -266,37 +330,57 @@ class TestSetupStepSubmissions:
                     "openrouter_key": "",
                     "groq_key": "",
                     "ollama_url": "",
-                    "custom_provider_name": "My Provider",
-                    "custom_provider_url": "http://custom.local:8000/v1",
-                    "custom_provider_key": "sk-custom",
-                    "custom_provider_headers": '{"X-Custom": "value"}',
+                    "custom_openai_name": "",
+                    "custom_openai_url": "  ",
+                    "custom_openai_key": "",
                 },
                 get_url="/setup/step/4",
             )
-            assert resp.status_code == 303
-            assert "/setup/step/5" in resp.headers.get("location", "")
-            mock_secret.assert_any_await("custom_openai_api_key", "sk-custom")
-            mock_settings.assert_any_await(
-                "custom_openai_provider.name",
-                "My Provider",
-                "string",
-                "llm",
-                "Custom OpenAI provider name",
+        assert resp.status_code == 303
+        mock_provider_secret.assert_not_awaited()
+        mock_secret.assert_not_awaited()
+        mock_settings.assert_not_awaited()
+
+    @pytest.mark.parametrize(
+        "fields",
+        [
+            {"custom_openai_key": "sk-custom"},
+            {"custom_openai_name": "Only a name"},
+            {"custom_openai_url": "ftp://custom.local", "custom_openai_key": "sk-custom"},
+            {"custom_openai_name": "x" * 65, "custom_openai_url": "https://api.example.invalid/v1"},
+        ],
+    )
+    async def test_step4_invalid_custom_provider_writes_nothing(self, setup_client: httpx.AsyncClient, fields):
+        with (
+            patch(
+                "app.llm.providers.store_secret",
+                new_callable=AsyncMock,
+            ) as mock_provider_secret,
+            patch(
+                "app.setup.routes.store_secret",
+                new_callable=AsyncMock,
+            ) as mock_secret,
+            patch(
+                "app.setup.routes.SettingsRepository.set",
+                new_callable=AsyncMock,
+            ) as mock_settings,
+            patch(
+                "app.setup.routes.SetupStateRepository.set_step_completed",
+                new_callable=AsyncMock,
+            ) as mock_complete,
+        ):
+            resp = await csrf_post(
+                setup_client,
+                "/setup/step/4",
+                {"openrouter_key": "sk-test-123", **fields},
+                get_url="/setup/step/4",
             )
-            mock_settings.assert_any_await(
-                "custom_openai_provider.base_url",
-                "http://custom.local:8000/v1",
-                "string",
-                "llm",
-                "Custom OpenAI provider base URL",
-            )
-            mock_settings.assert_any_await(
-                "custom_openai_provider.headers",
-                '{"X-Custom": "value"}',
-                "json",
-                "llm",
-                "Custom OpenAI provider extra headers",
-            )
+        assert resp.status_code == 422
+        assert "Custom OpenAI provider" in resp.text
+        mock_provider_secret.assert_not_awaited()
+        mock_secret.assert_not_awaited()
+        mock_settings.assert_not_awaited()
+        mock_complete.assert_not_awaited()
 
     async def test_step4_saves_groq_key_and_ollama_url(self, setup_client: httpx.AsyncClient):
         """Cover branches for groq_key and ollama_url in save_llm_keys."""
@@ -326,8 +410,8 @@ class TestSetupStepSubmissions:
             )
             assert resp.status_code == 303
             assert "/setup/step/5" in resp.headers.get("location", "")
-            mock_secret.assert_any_await("groq_api_key", "gsk-test-key")
-            mock_settings.assert_any_await(
+            mock_secret.assert_awaited_once_with("groq_api_key", "gsk-test-key")
+            mock_settings.assert_awaited_once_with(
                 "ollama_base_url",
                 "http://127.0.0.1:11434",
                 "string",
@@ -442,175 +526,127 @@ class TestHAConnectionTest:
 # ===================================================================
 
 
+def _catalog_result(provider: str, *, models: int = 2, error_kind: str | None = None, detail: str = "") -> dict:
+    if error_kind:
+        return {"provider": provider, "status": "error", "error_kind": error_kind, "detail": detail, "models": []}
+    items = [{"id": f"m{i}", "name": f"m{i}", "model": f"{provider}/m{i}"} for i in range(models)]
+    return {"provider": provider, "status": "ok", "models": items, "cached": False, "fetched_at": "now"}
+
+
+def _patch_catalog(**kwargs):
+    from app.setup import routes as setup_routes
+
+    return patch.object(setup_routes.model_catalog, "list_provider_models", new=AsyncMock(**kwargs))
+
+
 @pytest.mark.integration
 class TestLLMTest:
-    async def test_llm_test_success(self, setup_client: httpx.AsyncClient):
-        mock_choice = MagicMock()
-        mock_choice.message.content = "Hello!"
-        mock_resp = MagicMock()
-        mock_resp.choices = [mock_choice]
+    """The wizard tests credentials with a model listing, never a completion."""
 
+    async def _post(self, client: httpx.AsyncClient, data: dict) -> httpx.Response:
+        return await csrf_post(client, "/setup/test/llm", data, get_url="/setup/step/4")
+
+    async def test_llm_test_success(self, setup_client: httpx.AsyncClient):
         mock_litellm_mod = MagicMock()
-        mock_litellm_mod.acompletion = AsyncMock(return_value=mock_resp)
-        with patch.dict(sys.modules, {"litellm": mock_litellm_mod}):
-            resp = await csrf_post(
-                setup_client,
-                "/setup/test/llm",
-                {"provider": "openrouter", "api_key": "sk-test"},
-                get_url="/setup/step/4",
-            )
-            assert resp.status_code == 200
-            assert "alert-success" in resp.text
-            assert "Connected to openrouter" in resp.text
+        mock_litellm_mod.acompletion = AsyncMock()
+        with (
+            patch.dict(sys.modules, {"litellm": mock_litellm_mod}),
+            _patch_catalog(return_value=_catalog_result("openrouter", models=3)) as listing,
+        ):
+            resp = await self._post(setup_client, {"provider": "openrouter", "api_key": "sk-test"})
+        assert resp.status_code == 200
+        assert "alert-success" in resp.text
+        assert "Connected to openrouter" in resp.text
+        assert "3 models available" in resp.text
+        listing.assert_awaited_once_with("openrouter", api_key="sk-test", base_url=None, use_cache=False)
+        mock_litellm_mod.acompletion.assert_not_awaited()
 
     async def test_llm_test_groq_success(self, setup_client: httpx.AsyncClient):
-        mock_choice = MagicMock()
-        mock_choice.message.content = "Hi"
-        mock_resp = MagicMock()
-        mock_resp.choices = [mock_choice]
-        mock_litellm_mod = MagicMock()
-        mock_litellm_mod.acompletion = AsyncMock(return_value=mock_resp)
-        with patch.dict(sys.modules, {"litellm": mock_litellm_mod}):
-            resp = await csrf_post(
-                setup_client,
-                "/setup/test/llm",
-                {"provider": "groq", "api_key": "gsk-xxx"},
-                get_url="/setup/step/4",
-            )
+        with _patch_catalog(return_value=_catalog_result("groq")) as listing:
+            resp = await self._post(setup_client, {"provider": "groq", "api_key": "gsk-xxx"})
         assert resp.status_code == 200
-        assert "alert-success" in resp.text
         assert "Connected to groq" in resp.text
-        called = mock_litellm_mod.acompletion.await_args
-        assert called.kwargs["model"] == "groq/llama-3.1-8b-instant"
+        listing.assert_awaited_once_with("groq", api_key="gsk-xxx", base_url=None, use_cache=False)
 
     async def test_llm_test_ollama_success(self, setup_client: httpx.AsyncClient):
-        mock_choice = MagicMock()
-        mock_choice.message.content = "Hi"
-        mock_resp = MagicMock()
-        mock_resp.choices = [mock_choice]
-        mock_litellm_mod = MagicMock()
-        mock_litellm_mod.acompletion = AsyncMock(return_value=mock_resp)
-        with patch.dict(sys.modules, {"litellm": mock_litellm_mod}):
-            resp = await csrf_post(
+        with _patch_catalog(return_value=_catalog_result("ollama")) as listing:
+            resp = await self._post(
                 setup_client,
-                "/setup/test/llm",
-                {"provider": "ollama", "api_key": "not-used"},
-                get_url="/setup/step/4",
+                {"provider": "ollama", "api_key": "not-used", "base_url": "http://ollama.local:11434"},
             )
         assert resp.status_code == 200
-        assert "alert-success" in resp.text
         assert "Connected to ollama" in resp.text
-        called = mock_litellm_mod.acompletion.await_args
-        assert called.kwargs["model"] == "ollama/llama3"
+        listing.assert_awaited_once_with("ollama", api_key=None, base_url="http://ollama.local:11434", use_cache=False)
 
-    async def test_llm_test_failure(self, setup_client: httpx.AsyncClient):
-        mock_litellm_mod = MagicMock()
-        mock_litellm_mod.acompletion = AsyncMock(side_effect=Exception("API error"))
-        with patch.dict(sys.modules, {"litellm": mock_litellm_mod}):
-            resp = await csrf_post(
-                setup_client,
-                "/setup/test/llm",
-                {"provider": "openrouter", "api_key": "bad-key"},
-                get_url="/setup/step/4",
-            )
-            assert resp.status_code == 200
-            assert "alert-error" in resp.text
-            assert "Provider test failed" in resp.text
-
-    async def test_llm_test_passes_bounded_timeout(self, setup_client: httpx.AsyncClient):
-        from app.setup import routes as setup_routes
-
-        mock_litellm_mod = MagicMock()
-        mock_litellm_mod.acompletion = AsyncMock(return_value=MagicMock())
-        with patch.dict(sys.modules, {"litellm": mock_litellm_mod}):
-            resp = await csrf_post(
-                setup_client,
-                "/setup/test/llm",
-                {"provider": "groq", "api_key": "gsk-xxx"},
-                get_url="/setup/step/4",
-            )
-        assert resp.status_code == 200
-        assert "alert-success" in resp.text
-        called = mock_litellm_mod.acompletion.await_args
-        assert called.kwargs["timeout"] == setup_routes._LLM_TEST_TIMEOUT_S
-
-    async def test_llm_test_timeout_returns_error(self, setup_client: httpx.AsyncClient):
-        mock_litellm_mod = MagicMock()
-        mock_litellm_mod.acompletion = AsyncMock(side_effect=TimeoutError())
-        with patch.dict(sys.modules, {"litellm": mock_litellm_mod}):
-            resp = await csrf_post(
-                setup_client,
-                "/setup/test/llm",
-                {"provider": "openrouter", "api_key": "sk-test"},
-                get_url="/setup/step/4",
-            )
+    async def test_llm_test_auth_error_shows_detail(self, setup_client: httpx.AsyncClient):
+        result = _catalog_result("openrouter", error_kind="auth", detail="Authentication failed (HTTP 401).")
+        with _patch_catalog(return_value=result):
+            resp = await self._post(setup_client, {"provider": "openrouter", "api_key": "bad-key"})
         assert resp.status_code == 200
         assert "alert-error" in resp.text
-        assert "timed out" in resp.text
+        assert "Authentication failed (HTTP 401)." in resp.text
 
-    async def test_llm_test_hanging_call_is_bounded(self, setup_client: httpx.AsyncClient):
+    async def test_llm_test_unexpected_exception_never_raises(self, setup_client: httpx.AsyncClient):
+        with _patch_catalog(side_effect=RuntimeError("boom")):
+            resp = await self._post(setup_client, {"provider": "openrouter", "api_key": "bad-key"})
+        assert resp.status_code == 200
+        assert "alert-error" in resp.text
+        assert "Provider test failed" in resp.text
+
+    async def test_llm_test_hanging_listing_is_bounded(self, setup_client: httpx.AsyncClient):
         import asyncio
 
         from app.setup import routes as setup_routes
 
-        async def _hang(**_kwargs):
+        async def _hang(*_args, **_kwargs):
             await asyncio.sleep(30)
 
-        mock_litellm_mod = MagicMock()
-        mock_litellm_mod.acompletion = _hang
         with (
-            patch.dict(sys.modules, {"litellm": mock_litellm_mod}),
+            _patch_catalog(side_effect=_hang),
             patch.object(setup_routes, "_LLM_TEST_TIMEOUT_S", 0.01),
-            patch.object(setup_routes, "_LLM_TEST_GRACE_S", 0.01),
         ):
-            resp = await csrf_post(
-                setup_client,
-                "/setup/test/llm",
-                {"provider": "openrouter", "api_key": "sk-test"},
-                get_url="/setup/step/4",
-            )
+            resp = await self._post(setup_client, {"provider": "openrouter", "api_key": "sk-test"})
         assert resp.status_code == 200
         assert "alert-error" in resp.text
         assert "timed out" in resp.text
 
     async def test_llm_test_unknown_provider(self, setup_client: httpx.AsyncClient):
-        mock_litellm_mod = MagicMock()
-        with patch.dict(sys.modules, {"litellm": mock_litellm_mod}):
-            resp = await csrf_post(
-                setup_client,
-                "/setup/test/llm",
-                {"provider": "unknown-provider", "api_key": "key"},
-                get_url="/setup/step/4",
-            )
-            assert resp.status_code == 200
-            assert "alert-error" in resp.text
-            assert "Unknown provider" in resp.text
+        with _patch_catalog() as listing:
+            resp = await self._post(setup_client, {"provider": "unknown-provider", "api_key": "key"})
+        assert resp.status_code == 200
+        assert "alert-error" in resp.text
+        assert "Unknown provider" in resp.text
+        listing.assert_not_awaited()
 
     async def test_llm_test_custom_openai_success(self, setup_client: httpx.AsyncClient):
-        mock_choice = MagicMock()
-        mock_choice.message.content = "Hi"
-        mock_resp = MagicMock()
-        mock_resp.choices = [mock_choice]
-        mock_litellm_mod = MagicMock()
-        mock_litellm_mod.acompletion = AsyncMock(return_value=mock_resp)
-        with patch.dict(sys.modules, {"litellm": mock_litellm_mod}):
-            resp = await csrf_post(
+        # step4.html sends the custom key as ``api_key`` and the URL as ``base_url``.
+        with _patch_catalog(return_value=_catalog_result("custom_openai")) as listing:
+            resp = await self._post(
                 setup_client,
-                "/setup/test/llm",
-                {
-                    "provider": "custom_openai",
-                    "api_key": "sk-custom",
-                    "custom_provider_url": "http://custom.local:8000/v1",
-                    "custom_provider_key": "sk-custom",
-                },
-                get_url="/setup/step/4",
+                {"provider": "custom_openai", "api_key": "sk-custom", "base_url": "http://custom.local:8000/v1"},
             )
         assert resp.status_code == 200
         assert "alert-success" in resp.text
         assert "Connected to custom_openai" in resp.text
-        called = mock_litellm_mod.acompletion.await_args
-        assert called.kwargs["model"] == "custom_openai/gpt-4o-mini"
-        assert called.kwargs["api_base"] == "http://custom.local:8000/v1"
+        listing.assert_awaited_once_with(
+            "custom_openai", api_key="sk-custom", base_url="http://custom.local:8000/v1", use_cache=False
+        )
+
+    async def test_llm_test_custom_openai_unsupported_listing(self, setup_client: httpx.AsyncClient):
+        result = _catalog_result(
+            "custom_openai",
+            error_kind="unsupported",
+            detail="The custom endpoint does not support listing models (HTTP 404).",
+        )
+        with _patch_catalog(return_value=result):
+            resp = await self._post(
+                setup_client,
+                {"provider": "custom_openai", "api_key": "sk-custom", "base_url": "http://custom.local:8000/v1"},
+            )
+        assert resp.status_code == 200
+        assert "alert-error" in resp.text
+        assert "does not support listing models" in resp.text
+        assert "Settings &gt; LLM in the dashboard" in resp.text
 
 
 # ===================================================================

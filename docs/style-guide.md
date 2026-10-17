@@ -437,6 +437,7 @@ All shared Alpine.js factories live in `components.js` and are registered on `wi
 | `dashModal()` | Modal open/close with initial focus and focus restoration | `x-data="dashModal()"` |
 | `dashToasts()` | Alpine toast queue factory | Used by `#toast-root` |
 | `window.toast(msg, kind)` | Push a toast notification | `window.toast('Saved', 'success')` |
+| `window.dashModelCatalog` | Per-page memoized provider model lists (`fetchModels(provider, {refresh})` never throws; `invalidate`, `fallbackModels`, `placeholder`) | `await dashModelCatalog.fetchModels('anthropic')` |
 | `window.dashboardApi` | Authenticated fetch wrapper | `await dashboardApi.json('/api/admin/settings')` |
 | `window.dashUrl()` | `root_path`-aware URL builder | `dashUrl('/dashboard/agents')` |
 | `window.chartColors()` | Read named design colors from CSS | `chartColors().teal` |
