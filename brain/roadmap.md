@@ -65,6 +65,11 @@ Live pipeline in board format — headings are columns, cards are
   on amd64 and arm64 (QEMU), clean SIGTERM. Only GitHub Actions can prove:
   full build with torch CPU index + model downloads, arm64 build time vs
   90 min timeout, hassfest/HACS/CodeQL results.
+  Actions so far: PR/main docker-build, validate and codeql green; full
+  multi-arch tag build pushed within the timeout (run 38970506983). The
+  arm64 smoke test then failed with "cannot overwrite digest" (same digest
+  already pulled for amd64); fixed by removing the local image between the
+  smoke tests; the v3.8.0 tag was moved to the fix.
   Needs user verification: push/PR -> docker-build, validate and codeql
   workflows green; disable CodeQL "default setup" in repo settings if
   enabled; next tag -> multi-arch manifest on ghcr.io.
