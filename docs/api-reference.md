@@ -905,7 +905,8 @@ Auth: admin session.
 | PUT | `/api/admin/llm-providers` | Set a standard provider's API key. |
 | PUT | `/api/admin/llm-providers/custom-openai` | Create or update the custom provider: `name`, `base_url` required; `api_key` and `extra_headers` optional. |
 | PUT | `/api/admin/llm-providers/ollama` | Update Ollama provider config (special endpoint for local inference). |
-| POST | `/api/admin/llm-providers/test` | Validate a candidate provider config without persisting. |
+| GET | `/api/admin/llm-providers/{provider}/models` | List the models the provider offers (`?refresh=true` bypasses the cache). |
+| POST | `/api/admin/llm-providers/test` | Validate credentials by listing the provider's models; nothing is persisted. |
 | DELETE | `/api/admin/llm-providers/custom_openai` | Remove the custom provider (clears settings). |
 
 **Custom provider semantics (PUT `/api/admin/llm-providers/custom-openai`):**
@@ -916,6 +917,45 @@ Auth: admin session.
 | `extra_headers` | Stored headers are kept | `null` rejected with 422 | `{}` clears; any other map replaces the complete stored map (no merge) |
 
 `name` and `base_url` are always written on success. GET never returns the stored key or headers; a provider is `configured` only when both a stored key and base URL exist.
+
+**Model listing (GET `/api/admin/llm-providers/{provider}/models`):**
+
+`provider` is one of `openrouter`, `groq`, `anthropic`, `cerebras`, `custom_openai`, `ollama`; any other value
+returns 404. Provider-side failures always return HTTP 200 with `status: "error"`.
+
+```json
+{"provider": "anthropic", "status": "ok", "cached": false, "fetched_at": "2026-10-17T08:00:00+00:00",
+ "models": [{"id": "claude-opus-5-5", "name": "Claude Opus 5.5", "model": "anthropic/claude-opus-5-5"}]}
+{"provider": "anthropic", "status": "error", "error_kind": "auth", "detail": "Authentication failed (HTTP 401). Check the API key.", "models": []}
+```
+
+- `model` is the litellm model string to store in agent configs (`<provider>/<id>`, e.g.
+  `openrouter/openai/gpt-4o-mini`, `ollama/llama3:latest`, `custom_openai/my-model`).
+- Sources: Anthropic `GET /v1/models` (paginated, API order, newest first); Groq and Cerebras `GET /models`;
+  OpenRouter `GET /api/v1/models` after validating the key via `GET /api/v1/key` (fallback `/api/v1/auth/key`);
+  Ollama `GET {ollama_base_url}/api/tags`; custom provider `GET {base_url}/models` with the stored key and extra
+  headers. All lists except Anthropic are sorted by `id`. Each HTTP call times out after 15 s.
+- `error_kind`: `not_configured` (no stored key or base URL), `auth` (HTTP 401/403), `unsupported` (custom
+  endpoint answers `/models` with 404/405), `unreachable` (connect error, DNS failure, timeout),
+  `provider_error` (any other non-2xx or malformed response). `detail` never contains the key.
+- Successful results fetched with the stored credentials are cached per provider for 1 hour (`cached: true`
+  on a hit; `fetched_at` is the original fetch time). Storing or deleting a provider key, or changing
+  `ollama_base_url` / `custom_openai_provider.*`, drops that provider's entry.
+
+**Provider test (POST `/api/admin/llm-providers/test`):**
+
+Body `{"provider": "...", "api_key": "<optional candidate key>", "model": "<optional>"}`. Without `api_key` the
+stored key is used. The test lists the provider's models (uncached) instead of sending a completion; it always
+returns HTTP 200.
+
+```json
+{"status": "ok", "detail": "Connection OK, 42 models available.", "model_count": 42}
+{"status": "error", "error_kind": "auth", "detail": "Authentication failed (HTTP 401). Check the API key."}
+```
+
+`error_kind` uses the values above; an unknown `provider` returns `unsupported`. For `custom_openai` endpoints
+without `/models` (`unsupported`), a given `model` (bare or `custom_openai/`-prefixed) triggers a one-token completion test instead (30 s timeout); its success response has
+`model_count: null`. Without `model`, the `unsupported` error asks for one.
 
 Auth: admin session.
 
@@ -1410,4 +1450,4 @@ The setup wizard endpoints are used during initial configuration. They are not i
 | POST | `/setup/step/4` | Save LLM provider keys |
 | POST | `/setup/step/5` | Complete setup |
 | POST | `/setup/test/ha` | Test HA connection |
-| POST | `/setup/test/llm` | Test LLM provider |
+| POST | `/setup/test/llm` | Test LLM provider credentials by listing its models (`openrouter`, `groq`, `ollama`, `custom_openai`; form `api_key`, optional `base_url`); returns an HTML alert, never an error status |

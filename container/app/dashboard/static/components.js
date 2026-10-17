@@ -394,6 +394,100 @@
         };
     };
 
+    /* === dashModelCatalog ===
+     * Client-side catalog of the models a configured LLM provider offers.
+     * fetchModels() never throws: transport, HTTP, and auth failures resolve
+     * to {status: 'error', ...}. Successful lists are memoized per provider for
+     * the page load; failed lookups are not cached so the next call retries.
+     */
+    var MODEL_FALLBACKS = {
+        openrouter: ['openai/gpt-4o-mini', 'openai/gpt-4o', 'anthropic/claude-sonnet-4.5', 'google/gemini-2.5-flash', 'meta-llama/llama-3.1-8b-instruct'],
+        groq: ['llama-3.1-8b-instant', 'llama-3.3-70b-versatile', 'openai/gpt-oss-120b', 'openai/gpt-oss-20b'],
+        anthropic: ['claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5', 'claude-haiku-4-5'],
+        cerebras: ['llama3.1-8b', 'llama-3.3-70b', 'gpt-oss-120b'],
+        ollama: ['llama3.2', 'llama3.1', 'mistral', 'gemma2'],
+        custom_openai: ['gpt-4o-mini', 'gpt-4o', 'deepseek-chat', 'kimi-latest']
+    };
+    var MODEL_PLACEHOLDERS = {
+        openrouter: 'openai/gpt-4o-mini',
+        groq: 'llama-3.1-8b-instant',
+        anthropic: 'claude-haiku-4-5',
+        cerebras: 'llama3.1-8b',
+        ollama: 'llama3.2',
+        custom_openai: 'gpt-4o-mini'
+    };
+    var modelCatalogCache = {};
+
+    var normalizeModelList = function (provider, data) {
+        if (!data || typeof data !== 'object') {
+            return { provider: provider, status: 'error', error_kind: 'provider_error', detail: 'Invalid response', models: [] };
+        }
+        var models = [];
+        (Array.isArray(data.models) ? data.models : []).forEach(function (m) {
+            if (m && typeof m.id === 'string' && m.id) {
+                models.push({
+                    id: m.id,
+                    name: typeof m.name === 'string' && m.name ? m.name : m.id,
+                    model: typeof m.model === 'string' && m.model ? m.model : provider + '/' + m.id
+                });
+            }
+        });
+        if (data.status === 'ok') {
+            return { provider: provider, status: 'ok', models: models, cached: !!data.cached, fetched_at: data.fetched_at || null };
+        }
+        return {
+            provider: provider,
+            status: 'error',
+            error_kind: data.error_kind || 'provider_error',
+            detail: data.detail || 'Model list unavailable',
+            models: []
+        };
+    };
+
+    var dashModelCatalog = {
+        fetchModels: function (provider, opts) {
+            opts = opts || {};
+            if (!provider) {
+                return Promise.resolve({ provider: provider, status: 'error', error_kind: 'not_configured', detail: 'No provider selected', models: [] });
+            }
+            if (!opts.refresh && modelCatalogCache[provider]) {
+                return modelCatalogCache[provider];
+            }
+            var url = '/api/admin/llm-providers/' + encodeURIComponent(provider) + '/models' + (opts.refresh ? '?refresh=true' : '');
+            var pending = Promise.resolve()
+                .then(function () { return window.dashboardApi.json(url); })
+                .then(function (data) {
+                    return normalizeModelList(provider, data);
+                }, function (e) {
+                    var kind = e && e.code === 'auth_expired' ? 'auth' : 'unreachable';
+                    return { provider: provider, status: 'error', error_kind: kind, detail: (e && e.detail) || 'Request failed', models: [] };
+                })
+                .then(function (result) {
+                    if (result.status !== 'ok' && modelCatalogCache[provider] === pending) {
+                        delete modelCatalogCache[provider];
+                    }
+                    return result;
+                });
+            modelCatalogCache[provider] = pending;
+            return pending;
+        },
+        invalidate: function (provider) {
+            if (provider) {
+                delete modelCatalogCache[provider];
+            } else {
+                modelCatalogCache = {};
+            }
+        },
+        fallbackModels: function (provider) {
+            return (MODEL_FALLBACKS[provider] || []).map(function (id) {
+                return { id: id, name: id, model: provider + '/' + id };
+            });
+        },
+        placeholder: function (provider) {
+            return MODEL_PLACEHOLDERS[provider] || 'model-name';
+        }
+    };
+
     /* === Register on window === */
     window.dashboardShell = dashboardShell;
     window.dashModal = dashModal;
@@ -404,4 +498,5 @@
     window.dashCommandPalette = dashCommandPalette;
     window.dashLiveStream = dashLiveStream;
     window.dashSettingsRail = dashSettingsRail;
+    window.dashModelCatalog = dashModelCatalog;
 })();

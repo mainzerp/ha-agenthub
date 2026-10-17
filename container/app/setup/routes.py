@@ -20,7 +20,13 @@ from app.db.repository import (
     SetupStateRepository,
 )
 from app.ha_client.rest import test_ha_connection
+from app.llm import model_catalog
 from app.llm.client import _is_timeout_error
+from app.llm.providers import (
+    normalize_custom_openai_base_url,
+    normalize_custom_openai_name,
+    save_custom_openai_config,
+)
 from app.middleware.rate_limit import rate_limit_setup
 from app.runtime_setup import ensure_setup_runtime_initialized
 from app.security.auth import (
@@ -36,11 +42,12 @@ from app.security.hashing import hash_password
 
 logger = logging.getLogger(__name__)
 
-# Upper bound for the wizard's LLM "test connection" completion. Passed to
-# litellm as the provider timeout; ``asyncio.wait_for`` adds a small grace
-# period as a hard stop in case a provider adapter ignores the per-call timeout.
+# Hard upper bound for the wizard's LLM "test connection" (a model listing,
+# possibly several HTTP requests, each bounded by the catalog's own timeout).
 _LLM_TEST_TIMEOUT_S = 30.0
-_LLM_TEST_GRACE_S = 5.0
+# Providers the wizard can configure and test.
+_WIZARD_LLM_PROVIDERS = frozenset({"openrouter", "groq", "ollama", "custom_openai"})
+_CUSTOM_PROVIDER_DEFAULT_NAME = "Custom Provider"
 
 templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 templates.env.globals["app_version"] = _app_version
@@ -186,42 +193,38 @@ async def save_llm_keys(
     openrouter_key: str = Form(""),
     groq_key: str = Form(""),
     ollama_url: str = Form(""),
-    custom_provider_name: str = Form(""),
-    custom_provider_url: str = Form(""),
-    custom_provider_key: str = Form(""),
-    custom_provider_headers: str = Form(""),
+    custom_openai_name: str = Form(""),
+    custom_openai_url: str = Form(""),
+    custom_openai_key: str = Form(""),
 ):
-    """Step 4: Save LLM provider keys (Fernet-encrypted)."""
+    """Step 4: Save LLM provider keys (Fernet-encrypted).
+
+    The custom OpenAI-compatible provider is saved like
+    ``PUT /api/admin/llm-providers/custom-openai``: filling any of its fields
+    requires a valid base URL; a blank name defaults to "Custom Provider".
+    """
+    custom_name = custom_openai_name.strip()
+    custom_url = custom_openai_url.strip()
+    custom_key = custom_openai_key.strip()
+    custom_config: dict[str, str] | None = None
+    if custom_name or custom_url or custom_key:
+        # Validate before any write so a rejected submit leaves nothing half-saved.
+        try:
+            custom_config = {
+                "name": normalize_custom_openai_name(custom_name or _CUSTOM_PROVIDER_DEFAULT_NAME),
+                "base_url": normalize_custom_openai_base_url(custom_url),
+            }
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=f"Custom OpenAI provider: {exc}") from exc
+
     if openrouter_key:
         await store_secret("openrouter_api_key", openrouter_key)
     if groq_key:
         await store_secret("groq_api_key", groq_key)
     if ollama_url:
         await SettingsRepository.set("ollama_base_url", ollama_url, "string", "llm", "Ollama API URL")
-    if custom_provider_key and custom_provider_url:
-        await store_secret("custom_openai_api_key", custom_provider_key)
-        await SettingsRepository.set(
-            "custom_openai_provider.name",
-            custom_provider_name or "Custom Provider",
-            "string",
-            "llm",
-            "Custom OpenAI provider name",
-        )
-        await SettingsRepository.set(
-            "custom_openai_provider.base_url",
-            custom_provider_url,
-            "string",
-            "llm",
-            "Custom OpenAI provider base URL",
-        )
-        headers = custom_provider_headers.strip() or "{}"
-        await SettingsRepository.set(
-            "custom_openai_provider.headers",
-            headers,
-            "json",
-            "llm",
-            "Custom OpenAI provider extra headers",
-        )
+    if custom_config is not None:
+        await save_custom_openai_config(**custom_config, api_key=custom_key)
     await SetupStateRepository.set_step_completed("llm_providers")
     return RedirectResponse(url="/setup/step/5", status_code=303)
 
@@ -291,40 +294,34 @@ async def test_ha_endpoint(ha_url: str = Form(...), ha_token: str = Form(...)):
 async def test_llm_endpoint(
     provider: str = Form(...),
     api_key: str = Form(...),
-    custom_provider_url: str = Form(""),
-    custom_provider_key: str = Form(""),
+    base_url: str = Form(""),
 ):
-    """Test LLM provider with a small completion request."""
+    """Test an LLM provider's credentials by listing its models (never raises)."""
     try:
-        if provider == "groq":
-            model = "groq/llama-3.1-8b-instant"
-        elif provider == "openrouter":
-            model = "openrouter/openai/gpt-4o-mini"
-        elif provider == "ollama":
-            model = "ollama/llama3"
-        elif provider == "custom_openai":
-            model = "custom_openai/gpt-4o-mini"
-        else:
+        if provider not in _WIZARD_LLM_PROVIDERS:
             return HTMLResponse(f'<div class="alert alert-error">Unknown provider: {html.escape(provider)}</div>')
 
-        import litellm
-
-        kwargs = {
-            "model": model,
-            "messages": [{"role": "user", "content": "Say hello"}],
-            "max_tokens": 10,
-            "timeout": _LLM_TEST_TIMEOUT_S,
-        }
-        if provider == "custom_openai":
-            kwargs["api_key"] = custom_provider_key or api_key
-            kwargs["api_base"] = custom_provider_url
-        else:
-            kwargs["api_key"] = api_key
-        await asyncio.wait_for(
-            litellm.acompletion(**kwargs),
-            timeout=_LLM_TEST_TIMEOUT_S + _LLM_TEST_GRACE_S,
+        key: str | None = api_key
+        url: str | None = None
+        if provider == "ollama":
+            key = None
+            url = base_url
+        elif provider == "custom_openai":
+            url = base_url
+        result = await asyncio.wait_for(
+            model_catalog.list_provider_models(provider, api_key=key, base_url=url, use_cache=False),
+            timeout=_LLM_TEST_TIMEOUT_S,
         )
-        return HTMLResponse(f'<div class="alert alert-success">Connected to {html.escape(provider)}!</div>')
+        if result["status"] == "ok":
+            count = len(result["models"])
+            return HTMLResponse(
+                f'<div class="alert alert-success">Connected to {html.escape(provider)}! '
+                f"{count} models available.</div>"
+            )
+        detail = result["detail"]
+        if result["error_kind"] == model_catalog.ERROR_UNSUPPORTED:
+            detail += " Finish setup and test it with a model name under Settings > LLM in the dashboard."
+        return HTMLResponse(f'<div class="alert alert-error">{html.escape(provider)}: {html.escape(detail)}</div>')
     except Exception as exc:
         if _is_timeout_error(exc):
             logger.warning("LLM provider test timed out in setup wizard for %s", provider)

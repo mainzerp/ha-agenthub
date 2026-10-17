@@ -48,7 +48,7 @@
                             <input type="checkbox" :aria-label="'Enable ' + agent.agent_id" :checked="agent.enabled == 1" @change="toggleAgent(agent)">
                             <span class="toggle-slider"></span>
                         </label>
-                        <button class="btn btn-sm btn-secondary" @click="agent._editing = !agent._editing; if(agent._editing) { loadAgentMcpTools(agent.agent_id); }">Edit</button>
+                        <button class="btn btn-sm btn-secondary" @click="agent._editing = !agent._editing; if(agent._editing) { loadAgentMcpTools(agent.agent_id); loadProviderModels(agent, false); }">Edit</button>
                         <button class="btn btn-sm btn-secondary" @click="agent._editingPrompt = !agent._editingPrompt; if(agent._editingPrompt) loadPrompt(agent)">Prompt</button>
                     </div>
                 </div>
@@ -102,7 +102,7 @@
                         <div class="form-grid">
                             <div class="form-group">
                                 <label class="form-label">Provider</label>
-                                <select class="form-input" x-model="agent._provider" @change="updateModelString(agent, true)"
+                                <select class="form-input" x-model="agent._provider" @change="agent._provider = $event.target.value; updateModelString(agent, true); loadProviderModels(agent, false)"
                                         x-init="$nextTick(() => { $el.value = agent._provider })">
                                     <option value="">-- select --</option>
                                     <template x-for="p in allProviders" :key="p">
@@ -119,12 +119,19 @@
                                 <input type="text" class="form-input" x-model="agent._modelName"
                                        @input="updateModelString(agent, false)"
                                        :placeholder="getModelPlaceholder(agent._provider)"
-                                       list="model-suggestions">
-                                <datalist id="model-suggestions">
-                                    <template x-for="m in getModelSuggestions(agent._provider)" :key="m">
-                                        <option :value="m"></option>
+                                       :list="modelListId(agent)">
+                                <datalist :id="modelListId(agent)">
+                                    <template x-for="m in getModelSuggestions(agent)" :key="m.id">
+                                        <option :value="m.id" x-text="m.name !== m.id ? m.name : ''"></option>
                                     </template>
                                 </datalist>
+                                <div class="flex-center flex-wrap mt-sm" x-show="agent._provider">
+                                    <span class="text-muted text-xs" role="status" x-text="modelStatusText(agent)"></span>
+                                    <button type="button" class="btn btn-secondary btn-sm" @click="loadProviderModels(agent, true)"
+                                            :disabled="agent._modelStatus === 'loading'">Refresh list</button>
+                                </div>
+                                <div x-show="isModelStale(agent)" class="alert alert-warning mt-sm text-sm" role="alert"
+                                     x-text="'This model is not offered by ' + agent._provider + ' anymore. Pick another model.'"></div>
                             </div>
                             <div class="form-group">
                                 <label class="form-label">Timeout (s)</label>
@@ -308,6 +315,9 @@ function agentsPage() {
             agent._saved = false;
             agent._actionError = '';
             agent._feedbackTimer = null;
+            agent._models = [];
+            agent._modelStatus = '';
+            agent._modelDetail = '';
             this.applyAgentConfig(agent, agent);
             return agent;
         },
@@ -335,6 +345,8 @@ function agentsPage() {
             } else if (agent.model) {
                 agent._modelName = agent.model;
             }
+            agent._savedProvider = agent._provider;
+            agent._savedModelName = agent._modelName;
         },
         findAgent(agentId) {
             return this.agents.find(function(agent) {
@@ -453,25 +465,67 @@ function agentsPage() {
                 agent.model = '';
             }
         },
-        getModelSuggestions(provider) {
-            var suggestions = {
-                'openrouter': ['openai/gpt-4o-mini', 'openai/gpt-4o', 'anthropic/claude-3.5-sonnet', 'google/gemini-2.0-flash-001', 'meta-llama/llama-3.1-8b-instruct'],
-                'groq': ['llama-3.1-8b-instant', 'llama-3.1-70b-versatile', 'mixtral-8x7b-32768', 'gemma2-9b-it'],
-                'anthropic': ['claude-3-haiku-20240307', 'claude-3-5-sonnet-20241022', 'claude-3-opus-20240229'],
-                'ollama': ['llama3', 'mistral', 'codellama', 'gemma2'],
-                'custom_openai': ['gpt-4o-mini', 'gpt-4o', 'deepseek-chat', 'kimi-latest']
-            };
-            return suggestions[provider] || [];
+        modelListId(agent) {
+            return 'model-suggestions-' + String(agent.agent_id || '').replace(/[^A-Za-z0-9_-]/g, '_');
+        },
+        async loadProviderModels(agent, refresh) {
+            var provider = agent._provider;
+            var catalog = window.dashModelCatalog;
+            if (!provider || !catalog) {
+                agent._models = [];
+                agent._modelStatus = '';
+                agent._modelDetail = '';
+                return;
+            }
+            agent._modelStatus = 'loading';
+            var result = await catalog.fetchModels(provider, { refresh: !!refresh });
+            if (agent._provider !== provider) {
+                return;
+            }
+            if (result.status === 'ok' && result.models.length > 0) {
+                agent._models = result.models;
+                agent._modelStatus = 'ok';
+                agent._modelDetail = '';
+            } else {
+                agent._models = [];
+                agent._modelStatus = 'fallback';
+                agent._modelDetail = result.status === 'ok' ? 'provider returned no models' : (result.detail || 'unknown error');
+            }
+        },
+        getModelSuggestions(agent) {
+            if (agent._modelStatus === 'ok' && agent._models.length > 0) {
+                return agent._models;
+            }
+            var catalog = window.dashModelCatalog;
+            return catalog ? catalog.fallbackModels(agent._provider) : [];
+        },
+        modelStatusText(agent) {
+            if (agent._modelStatus === 'loading') {
+                return 'Loading models...';
+            }
+            if (agent._modelStatus === 'ok') {
+                return agent._models.length + ' models from provider';
+            }
+            if (agent._modelStatus === 'fallback') {
+                return 'Could not load models: ' + agent._modelDetail + ', showing defaults';
+            }
+            return '';
+        },
+        isModelStale(agent) {
+            // Only flag the persisted model, not a value the user is still typing.
+            if (agent._modelStatus !== 'ok' || agent._models.length === 0 || !agent._modelName) {
+                return false;
+            }
+            if (agent._provider !== agent._savedProvider || agent._modelName !== agent._savedModelName) {
+                return false;
+            }
+            // Ollama lists tagged names ("llama3:latest"); an untagged name means ":latest".
+            var name = agent._modelName;
+            return !agent._models.some(function(m) { return m.id === name || m.id === name + ':latest'; });
         },
         getModelPlaceholder(provider) {
-            var placeholders = {
-                'openrouter': 'openai/gpt-4o-mini',
-                'groq': 'llama-3.1-8b-instant',
-                'anthropic': 'claude-3-haiku-20240307',
-                'ollama': 'llama3',
-                'custom_openai': 'gpt-4o-mini'
-            };
-            return placeholders[provider] || 'model-name';
+            var catalog = window.dashModelCatalog;
+            return catalog ? catalog.placeholder(provider) : 'model-name';
         },
         async toggleAgent(agent) {
             var newEnabled = agent.enabled == 1 ? false : true;

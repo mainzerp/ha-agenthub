@@ -20,7 +20,7 @@ On first launch, every route redirects to the setup wizard at `/setup/`. The wiz
 1. **Admin account** -- create the username and bcrypt-hashed password used to log in to the dashboard.
 2. **Home Assistant connection** -- enter the HA URL and a Long-Lived Access Token. Use the **Test Connection** button to verify connectivity.
 3. **Container API key** -- an API key is generated automatically. Copy it immediately; it is shown only once. This key is needed when you configure the HA integration.
-4. **LLM providers** -- enter API keys for OpenRouter, Groq, Cerebras, Anthropic, or a custom OpenAI-compatible endpoint, or configure an Ollama URL. Use the **Test** button for each provider. For a custom provider, leave the API key blank to keep the stored key, and tick **Replace stored headers on save** only to overwrite the complete stored header set (an empty replacement clears them; leaving it unticked preserves stored headers). See the field matrix in [api-reference.md](api-reference.md#admin----llm-providers).
+4. **LLM providers** -- enter API keys for OpenRouter or Groq, an Ollama URL, or a custom OpenAI-compatible endpoint (name, base URL, API key; a filled custom field requires a valid `http(s)://` base URL, and a blank name defaults to "Custom Provider"). Use the **Test** buttons (OpenRouter, Groq, custom provider); they list the provider's models (no tokens are used) and report how many are available or why the check failed. Cerebras and Anthropic keys and custom provider headers are configured later under **Settings > LLM** in the dashboard.
 5. **Review** -- confirm the settings and complete setup. The container initializes the entity index, cache, and agents, then redirects to the dashboard.
 
 ![Login page for admin session access](screenshots/01_login_page.png)
@@ -143,6 +143,7 @@ The **Agents** page at `/dashboard/agents` lists all built-in agents and their s
 - Filter locally by agent ID or description; clear the filter to restore the full list.
 - Enable or disable each agent, or use **Edit** and **Prompt** to inspect its configuration.
 - Set the LLM **model**, **timeout**, **temperature**, **max tokens**, and **reasoning effort**.
+- The **Model** field suggests the models the selected provider currently offers (use **Refresh list** to reload). If the list cannot be loaded, built-in defaults are suggested instead; free-text entry always works. When the saved model is no longer offered by the provider, a warning asks you to pick another model.
 
 Changes are saved in SQLite and take effect immediately without a restart. The orchestrator only routes to enabled agents.
 
@@ -332,7 +333,8 @@ Clearing the cache is useful when behavior feels stale or an entity has changed 
 
 The **Settings** page at `/dashboard/settings` is a unified editor for advanced runtime settings stored in SQLite. Choose a category in the left navigation; on narrow screens the category navigation sits above the form. Provider credentials and test/save controls remain in their category. Categories include:
 
-- **Cache** -- enable/disable tiers, thresholds, max entries, LRU behavior, and validator configuration.
+- **LLM** -- provider keys and the custom OpenAI-compatible endpoint. **Test** lists the provider's models (no tokens are used) and reports how many are available, or the error reason such as an invalid key or an unreachable endpoint. For a custom endpoint that cannot list models, enter a **Test model** to test with one tiny completion instead.
+- **Cache** -- enable/disable tiers, thresholds, max entries, LRU behavior, and validator configuration. The validator model picker uses the same live provider model list, fallback defaults, and stale-model warning as the Agents page.
 - **Embedding** -- local or external embedding provider and model.
 - **Entity Matching** -- confidence threshold, top-N candidates, and expansion settings.
 - **Communication** -- WebSocket reconnect interval and stream buffer size.

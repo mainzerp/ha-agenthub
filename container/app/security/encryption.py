@@ -46,6 +46,19 @@ async def _invalidate_provider_params_cache() -> None:
         logger.warning("Failed to invalidate provider params cache", exc_info=True)
 
 
+async def _invalidate_model_catalog_cache(key: str) -> None:
+    """Drop the cached model list of the provider that uses secret ``key``.
+
+    Deferred import for the same reason as above (import cycle).
+    """
+    try:
+        from app.llm.model_catalog import invalidate_for_secret
+
+        await invalidate_for_secret(key)
+    except Exception:
+        logger.warning("Failed to invalidate model catalog cache", exc_info=True)
+
+
 def _load_or_generate_key() -> bytes:
     """Load (or generate on first start) the Fernet key.
 
@@ -126,6 +139,7 @@ async def store_secret(key: str, plaintext: str) -> None:
     await SecretsRepository.set(key, encrypted)
     await _secret_cache.invalidate(key)
     await _invalidate_provider_params_cache()
+    await _invalidate_model_catalog_cache(key)
 
 
 async def retrieve_secret(key: str) -> str | None:
@@ -152,6 +166,7 @@ async def delete_secret(key: str) -> None:
     await SecretsRepository.delete(key)
     await _secret_cache.invalidate(key)
     await _invalidate_provider_params_cache()
+    await _invalidate_model_catalog_cache(key)
 
 
 def export_fernet_key() -> str:

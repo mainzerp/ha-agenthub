@@ -467,3 +467,19 @@ prompts live in `container/app/prompts/`, `ctx.agent_registry` not
   delayed-action path) runs without approval; delayed disarm, unlock and
   access-cover opening stay refused unless allowlisted. Interactive arming
   still asks; ai_task arming still needs the allowlist.
+
+## 2026-10-17 — provider key test lists models instead of a completion
+
+- **Key test = model-list call**, not a completion against a hardcoded model.
+  Hardcoded test models rot when providers retire them (Anthropic
+  `claude-3-haiku-20240307` 404 on the live instance); a list call costs no
+  tokens and doubles as model discovery. OpenRouter's list is public, so its
+  key is checked separately via `/api/v1/key`. Custom OpenAI endpoints without
+  `/models` fall back to a completion with the user-entered model.
+- **Raw HTTP through the existing async client** for all providers, no
+  provider SDKs: one uniform code path, no new dependency or lock change.
+- **Provider failures never surface as HTTP 500**; the test and the models
+  endpoint answer 200 with `status: error` and an `error_kind`.
+- **Pickers stay free text** with live suggestions and a static fallback, so
+  an unreachable provider never blocks configuration; a configured model
+  missing from a successfully loaded list is flagged, not auto-changed.

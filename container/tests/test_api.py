@@ -1656,7 +1656,7 @@ class TestLLMProviderAPI:
         )
         assert response.status_code == 200
         with (
-            patch.object(routes, "store_secret", AsyncMock()) as store,
+            patch("app.llm.providers.store_secret", AsyncMock()) as store,
             patch.object(routes.SettingsRepository, "set", wraps=routes.SettingsRepository.set) as settings,
         ):
             response = await authed_client.put(
@@ -1703,7 +1703,7 @@ class TestLLMProviderAPI:
         from app.api.routes.admin import _llm_providers as routes
 
         with (
-            patch.object(routes, "store_secret", AsyncMock()) as store,
+            patch("app.llm.providers.store_secret", AsyncMock()) as store,
             patch.object(routes.SettingsRepository, "set", AsyncMock()) as settings,
         ):
             response = await authed_client.put(
@@ -1718,7 +1718,7 @@ class TestLLMProviderAPI:
         from app.api.routes.admin import _llm_providers as routes
 
         with (
-            patch.object(routes, "store_secret", AsyncMock()) as store,
+            patch("app.llm.providers.store_secret", AsyncMock()) as store,
             patch.object(routes.SettingsRepository, "set", wraps=routes.SettingsRepository.set) as settings,
         ):
             response = await authed_client.put(
@@ -1840,31 +1840,118 @@ class TestLLMProviderAPI:
         data = resp.json()
         assert data["status"] == "error"
 
-    async def test_test_llm_provider_passes_bounded_timeout(self, authed_client: httpx.AsyncClient):
+    @staticmethod
+    async def _configure_custom_without_models(authed_client: httpx.AsyncClient) -> None:
+        resp = await authed_client.put(
+            "/api/admin/llm-providers/custom-openai",
+            json={"name": "Synthetic", "base_url": "https://example.invalid/v1", "api_key": "synthetic-key"},
+        )
+        assert resp.status_code == 200
+
+    @staticmethod
+    def _unsupported_listing():
+        from app.llm import model_catalog
+
+        return patch.object(
+            model_catalog,
+            "list_provider_models",
+            new=AsyncMock(
+                return_value={
+                    "provider": "custom_openai",
+                    "status": "error",
+                    "error_kind": "unsupported",
+                    "detail": "The custom endpoint does not support listing models (HTTP 404).",
+                    "models": [],
+                }
+            ),
+        )
+
+    async def test_test_llm_provider_custom_fallback_passes_bounded_timeout(self, authed_client: httpx.AsyncClient):
         from app.api.routes.admin import _llm_providers
 
-        with patch("litellm.acompletion", new=AsyncMock(return_value=MagicMock())) as fake:
+        await self._configure_custom_without_models(authed_client)
+        with (
+            self._unsupported_listing(),
+            patch("litellm.acompletion", new=AsyncMock(return_value=MagicMock())) as fake,
+        ):
             resp = await authed_client.post(
                 "/api/admin/llm-providers/test",
-                json={"provider": "groq", "api_key": "gsk-test"},
+                json={"provider": "custom_openai", "model": "custom_openai/synthetic-model"},
             )
         assert resp.status_code == 200
-        assert resp.json() == {"status": "ok", "provider": "groq"}
-        assert fake.await_args.kwargs["timeout"] == _llm_providers._PROVIDER_TEST_TIMEOUT_S
+        data = resp.json()
+        assert data["status"] == "ok"
+        assert data["model_count"] is None
+        kwargs = fake.await_args.kwargs
+        assert kwargs["timeout"] == _llm_providers._PROVIDER_TEST_TIMEOUT_S
+        assert kwargs["model"] == "custom_openai/synthetic-model"
+        assert kwargs["api_base"] == "https://example.invalid/v1"
+        assert kwargs["api_key"] == "synthetic-key"
+
+    async def test_test_llm_provider_custom_fallback_prefixes_bare_model(self, authed_client: httpx.AsyncClient):
+        await self._configure_custom_without_models(authed_client)
+        with (
+            self._unsupported_listing(),
+            patch("litellm.acompletion", new=AsyncMock(return_value=MagicMock())) as fake,
+        ):
+            resp = await authed_client.post(
+                "/api/admin/llm-providers/test",
+                json={"provider": "custom_openai", "model": "synthetic-model"},
+            )
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "ok"
+        assert fake.await_args.kwargs["model"] == "custom_openai/synthetic-model"
+
+    async def test_test_llm_provider_unknown_reports_unsupported(self, authed_client: httpx.AsyncClient):
+        resp = await authed_client.post("/api/admin/llm-providers/test", json={"provider": "unknown_prov"})
+        assert resp.status_code == 200
+        assert resp.json()["error_kind"] == "unsupported"
+
+    async def test_test_llm_provider_custom_unsupported_without_model(self, authed_client: httpx.AsyncClient):
+        await self._configure_custom_without_models(authed_client)
+        with self._unsupported_listing(), patch("litellm.acompletion", new=AsyncMock()) as fake:
+            resp = await authed_client.post("/api/admin/llm-providers/test", json={"provider": "custom_openai"})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "error"
+        assert data["error_kind"] == "unsupported"
+        assert "Enter a model name" in data["detail"]
+        fake.assert_not_awaited()
 
     async def test_test_llm_provider_litellm_timeout_returns_error(self, authed_client: httpx.AsyncClient):
         import litellm
 
-        exc = litellm.exceptions.Timeout(message="timed out", model="groq/x", llm_provider="groq")
-        with patch("litellm.acompletion", new=AsyncMock(side_effect=exc)):
+        await self._configure_custom_without_models(authed_client)
+        exc = litellm.exceptions.Timeout(message="timed out", model="custom_openai/x", llm_provider="custom_openai")
+        with self._unsupported_listing(), patch("litellm.acompletion", new=AsyncMock(side_effect=exc)):
             resp = await authed_client.post(
                 "/api/admin/llm-providers/test",
-                json={"provider": "groq", "api_key": "gsk-test"},
+                json={"provider": "custom_openai", "model": "custom_openai/x"},
             )
         assert resp.status_code == 200
         data = resp.json()
         assert data["status"] == "error"
+        assert data["error_kind"] == "unreachable"
         assert "timed out" in data["detail"]
+
+    async def test_test_llm_provider_not_found_never_500(self, authed_client: httpx.AsyncClient):
+        """Regression: litellm.NotFoundError (retired model) escaped the handler as HTTP 500."""
+        import litellm
+
+        await self._configure_custom_without_models(authed_client)
+        exc = litellm.exceptions.NotFoundError(
+            message="model not found", model="custom_openai/gone", llm_provider="custom_openai"
+        )
+        with self._unsupported_listing(), patch("litellm.acompletion", new=AsyncMock(side_effect=exc)):
+            resp = await authed_client.post(
+                "/api/admin/llm-providers/test",
+                json={"provider": "custom_openai", "model": "custom_openai/gone"},
+            )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "error"
+        assert data["error_kind"] == "provider_error"
+        assert data["detail"]
 
     async def test_test_llm_provider_hanging_call_is_bounded(self, authed_client: httpx.AsyncClient):
         import asyncio
@@ -1874,11 +1961,52 @@ class TestLLMProviderAPI:
         async def _hang(**_kwargs):
             await asyncio.sleep(30)
 
+        await self._configure_custom_without_models(authed_client)
         with (
+            self._unsupported_listing(),
             patch.object(_llm_providers, "_PROVIDER_TEST_TIMEOUT_S", 0.01),
             patch.object(_llm_providers, "_PROVIDER_TEST_GRACE_S", 0.01),
             patch("litellm.acompletion", new=_hang),
         ):
+            resp = await authed_client.post(
+                "/api/admin/llm-providers/test",
+                json={"provider": "custom_openai", "model": "custom_openai/x"},
+            )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "error"
+        assert "timed out" in data["detail"]
+
+    async def test_test_llm_provider_lists_models(self, authed_client: httpx.AsyncClient):
+        from app.llm import model_catalog
+
+        listing = {
+            "provider": "groq",
+            "status": "ok",
+            "models": [{"id": "a", "name": "a", "model": "groq/a"}, {"id": "b", "name": "b", "model": "groq/b"}],
+            "cached": False,
+            "fetched_at": "2026-01-01T00:00:00+00:00",
+        }
+        with (
+            patch.object(model_catalog, "list_provider_models", new=AsyncMock(return_value=listing)) as fake,
+            patch("litellm.acompletion", new=AsyncMock()) as completion,
+        ):
+            resp = await authed_client.post(
+                "/api/admin/llm-providers/test",
+                json={"provider": "groq", "api_key": "gsk-test"},
+            )
+        assert resp.status_code == 200
+        assert resp.json() == {"status": "ok", "detail": "Connection OK, 2 models available.", "model_count": 2}
+        fake.assert_awaited_once_with("groq", api_key="gsk-test", use_cache=False)
+        completion.assert_not_awaited()
+
+    async def test_test_llm_provider_unexpected_listing_exception_never_500(self, authed_client: httpx.AsyncClient):
+        import litellm
+
+        from app.llm import model_catalog
+
+        exc = litellm.exceptions.RateLimitError(message="slow down", model="groq/x", llm_provider="groq")
+        with patch.object(model_catalog, "list_provider_models", new=AsyncMock(side_effect=exc)):
             resp = await authed_client.post(
                 "/api/admin/llm-providers/test",
                 json={"provider": "groq", "api_key": "gsk-test"},
@@ -1886,7 +2014,56 @@ class TestLLMProviderAPI:
         assert resp.status_code == 200
         data = resp.json()
         assert data["status"] == "error"
-        assert "timed out" in data["detail"]
+        assert data["error_kind"] == "provider_error"
+
+    async def test_list_provider_models_success_and_refresh(self, authed_client: httpx.AsyncClient):
+        from app.llm import model_catalog
+
+        listing = {
+            "provider": "anthropic",
+            "status": "ok",
+            "models": [{"id": "claude-x", "name": "Claude X", "model": "anthropic/claude-x"}],
+            "cached": False,
+            "fetched_at": "2026-01-01T00:00:00+00:00",
+        }
+        with patch.object(model_catalog, "list_provider_models", new=AsyncMock(return_value=listing)) as fake:
+            resp = await authed_client.get("/api/admin/llm-providers/anthropic/models")
+            assert resp.status_code == 200
+            assert resp.json() == listing
+            fake.assert_awaited_with("anthropic", use_cache=True)
+
+            resp = await authed_client.get("/api/admin/llm-providers/anthropic/models?refresh=true")
+            assert resp.status_code == 200
+            fake.assert_awaited_with("anthropic", use_cache=False)
+
+    async def test_list_provider_models_error_is_200(self, authed_client: httpx.AsyncClient):
+        resp = await authed_client.get("/api/admin/llm-providers/groq/models")
+        assert resp.status_code == 200
+        assert resp.json() == {
+            "provider": "groq",
+            "status": "error",
+            "error_kind": "not_configured",
+            "detail": "No API key configured for groq.",
+            "models": [],
+        }
+
+    async def test_list_provider_models_exception_is_200(self, authed_client: httpx.AsyncClient):
+        import litellm
+
+        from app.llm import model_catalog
+
+        exc = litellm.exceptions.NotFoundError(message="gone", model="groq/x", llm_provider="groq")
+        with patch.object(model_catalog, "list_provider_models", new=AsyncMock(side_effect=exc)):
+            resp = await authed_client.get("/api/admin/llm-providers/groq/models")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "error"
+        assert data["provider"] == "groq"
+        assert data["models"] == []
+
+    async def test_list_provider_models_unknown_is_404(self, authed_client: httpx.AsyncClient):
+        resp = await authed_client.get("/api/admin/llm-providers/unknown_prov/models")
+        assert resp.status_code == 404
 
     async def test_get_configured_providers(self, authed_client: httpx.AsyncClient):
         resp = await authed_client.get("/api/admin/llm-providers/configured")

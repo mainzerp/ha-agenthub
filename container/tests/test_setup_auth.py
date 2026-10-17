@@ -114,10 +114,9 @@ class TestSetupRoutesLockedAfterCompletion:
                 "openrouter_key": "",
                 "groq_key": "",
                 "ollama_url": "",
-                "custom_provider_name": "",
-                "custom_provider_url": "",
-                "custom_provider_key": "",
-                "custom_provider_headers": "",
+                "custom_openai_name": "",
+                "custom_openai_url": "",
+                "custom_openai_key": "",
             },
         )
         assert resp.status_code == 401

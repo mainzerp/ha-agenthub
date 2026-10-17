@@ -197,16 +197,16 @@ Enter API keys for one or more LLM providers:
 
 - **OpenRouter API Key** -- For access to GPT-4o-mini, Claude, and other models via a unified API.
 - **Groq API Key** -- For fast inference with Llama models (used by default for the orchestrator).
-- **Cerebras API Key** -- For fast inference with Llama models via Cerebras.
-- **Anthropic API Key** -- For Claude models via the Anthropic API.
 - **Ollama URL** -- For local model inference (e.g., `http://localhost:11434`).
 - **Custom OpenAI-compatible endpoint** -- Base URL and API key for any OpenAI-compatible provider.
+
+Cerebras and Anthropic keys are added later under Settings > LLM in the dashboard.
 
 > **Recommended models:**
 > - **Routable agents** (orchestrator, light-agent, climate-agent, etc.): `openai/gpt-oss-120b` with `reasoning_effort` set to `Low`.
 > - **Filler and rewrite agents**: `llama-3.1-8b-instant` (fast, low-cost).
 
-Use the "Test" button for each provider to verify the key works. Keys are stored encrypted in SQLite.
+Use the "Test" button for each provider to verify the key works: it lists the provider's models (no tokens are used) and reports how many are available or why the check failed. Keys are stored encrypted in SQLite.
 
 ### Step 5: Review and Complete
 
