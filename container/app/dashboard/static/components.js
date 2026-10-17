@@ -423,8 +423,11 @@
             return { provider: provider, status: 'error', error_kind: 'provider_error', detail: 'Invalid response', models: [] };
         }
         var models = [];
+        var seen = {};
         (Array.isArray(data.models) ? data.models : []).forEach(function (m) {
-            if (m && typeof m.id === 'string' && m.id) {
+            // Pickers key their options by id, and Alpine's x-for breaks on duplicate keys.
+            if (m && typeof m.id === 'string' && m.id && !Object.prototype.hasOwnProperty.call(seen, m.id)) {
+                seen[m.id] = true;
                 models.push({
                     id: m.id,
                     name: typeof m.name === 'string' && m.name ? m.name : m.id,
@@ -485,6 +488,115 @@
         },
         placeholder: function (provider) {
             return MODEL_PLACEHOLDERS[provider] || 'model-name';
+        },
+
+        /* --- Model picker helpers (shared by every model <select>) ---
+         * A picker is described by {status, models, provider, name, custom, detail}:
+         * status is '', 'loading', 'ok' or 'fallback'; models is the live list
+         * (only meaningful when status is 'ok'); name is the model id without
+         * the provider prefix; custom is true while free-text entry is shown;
+         * detail is the load error shown in the fallback status line.
+         */
+        CUSTOM_MODEL: '__custom__',
+        LOADING_MODEL: '__loading__',
+
+        // Resolve the live list for a picker. Never throws; an empty or failed
+        // list resolves to status 'fallback' with the error detail.
+        loadList: function (provider, refresh) {
+            if (!provider) {
+                return Promise.resolve({ status: '', models: [], detail: '' });
+            }
+            return dashModelCatalog.fetchModels(provider, { refresh: !!refresh }).then(function (result) {
+                if (result.status === 'ok' && result.models.length > 0) {
+                    return { status: 'ok', models: result.models, detail: '' };
+                }
+                return {
+                    status: 'fallback',
+                    models: [],
+                    detail: result.status === 'ok' ? 'provider returned no models' : (result.detail || 'unknown error')
+                };
+            });
+        },
+
+        // Ollama lists tagged names ("llama3:latest"); an untagged name means ":latest".
+        findModel: function (models, name) {
+            if (!name) {
+                return null;
+            }
+            for (var i = 0; i < models.length; i++) {
+                if (models[i].id === name || models[i].id === name + ':latest') {
+                    return models[i];
+                }
+            }
+            return null;
+        },
+
+        modelLabel: function (model) {
+            return model.name && model.name !== model.id ? model.name + ' (' + model.id + ')' : model.id;
+        },
+
+        pickerModels: function (picker) {
+            if (picker.status === 'ok' && picker.models && picker.models.length > 0) {
+                return picker.models;
+            }
+            return dashModelCatalog.fallbackModels(picker.provider);
+        },
+
+        // Each option carries its own `selected` flag: templates bind :selected per
+        // option because a <select> value set before async options render is lost.
+        // Computing it here once keeps large lists linear instead of rescanning
+        // the list for every option.
+        pickerOptions: function (picker) {
+            if (picker.status === 'loading') {
+                return [{ value: dashModelCatalog.LOADING_MODEL, label: 'Loading models...', disabled: true, selected: true }];
+            }
+            var models = dashModelCatalog.pickerModels(picker);
+            var current = dashModelCatalog.pickerValue(picker);
+            var options = [];
+            var add = function (value, label) {
+                options.push({ value: value, label: label, disabled: false, selected: value === current });
+            };
+            if (!picker.custom) {
+                if (!picker.name) {
+                    add('', '-- select model --');
+                } else if (!dashModelCatalog.findModel(models, picker.name)) {
+                    // Keep an unlisted saved value selectable instead of silently replacing it.
+                    var suffix = picker.status === 'ok' ? ' (not offered by provider)' : ' (current)';
+                    add(picker.name, picker.name + suffix);
+                }
+            }
+            models.forEach(function (m) {
+                add(m.id, dashModelCatalog.modelLabel(m));
+            });
+            add(dashModelCatalog.CUSTOM_MODEL, 'Custom model...');
+            return options;
+        },
+
+        pickerValue: function (picker) {
+            if (picker.status === 'loading') {
+                return dashModelCatalog.LOADING_MODEL;
+            }
+            if (picker.custom) {
+                return dashModelCatalog.CUSTOM_MODEL;
+            }
+            if (!picker.name) {
+                return '';
+            }
+            var match = dashModelCatalog.findModel(dashModelCatalog.pickerModels(picker), picker.name);
+            return match ? match.id : picker.name;
+        },
+
+        statusText: function (picker) {
+            if (picker.status === 'loading') {
+                return 'Loading models...';
+            }
+            if (picker.status === 'ok') {
+                return picker.models.length + ' models from provider';
+            }
+            if (picker.status === 'fallback') {
+                return 'Could not load models: ' + picker.detail + ', showing defaults';
+            }
+            return '';
         }
     };
 

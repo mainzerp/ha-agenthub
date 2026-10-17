@@ -122,6 +122,16 @@ class TestDashboardPageAccessibility:
         resp = await dashboard_client.get("/dashboard/agents")
         assert resp.status_code == 200
         assert "text/html" in resp.headers.get("content-type", "")
+        assert "<datalist" not in resp.text
+        assert "selectModel(agent, $event.target.value)" in resp.text
+
+    async def test_custom_agents_page_renders_model_dropdowns(self, dashboard_client: httpx.AsyncClient):
+        resp = await dashboard_client.get("/dashboard/custom-agents")
+        assert resp.status_code == 200
+        assert "model_override_picker" not in resp.text
+        assert resp.text.count("selectPickerModel(newPicker") == 1
+        assert resp.text.count("selectPickerModel(editPicker") == 1
+        assert "<datalist" not in resp.text
 
     async def test_system_health_page(self, dashboard_client: httpx.AsyncClient):
         resp = await dashboard_client.get("/dashboard/system-health")
@@ -158,6 +168,8 @@ class TestDashboardPageAccessibility:
         assert resp.status_code == 200
         assert "text/html" in resp.headers.get("content-type", "")
         assert DEFAULT_LOCAL_EMBEDDING_MODEL in resp.text
+        assert "<datalist" not in resp.text
+        assert 'id="validator-model-select"' in resp.text
 
     async def test_timers_page(self, dashboard_client: httpx.AsyncClient):
         resp = await dashboard_client.get("/dashboard/timers")
@@ -837,18 +849,36 @@ class TestSendDevicesAPI:
         assert "text/html" in resp.headers.get("content-type", "")
 
 
-def _run_dashboard_script(template: str, assertions: str) -> None:
-    """Execute page state transitions without an API or a browser dependency."""
+# Minimal browser globals that let components.js register its helpers under node.
+_COMPONENTS_PRELUDE = r"""
+global.window = { dashboardApi: { json: async () => { throw { detail: 'no API in tests' }; } } };
+global.document = { getElementById: () => null, addEventListener: () => {} };
+"""
+
+
+def _run_dashboard_script(template: str, assertions: str, *, with_components: bool = False) -> None:
+    """Execute page state transitions without an API or a browser dependency.
+
+    ``with_components`` loads the real ``components.js`` first so page code can use
+    the ``window.dashModelCatalog`` helpers; tests then stub only ``fetchModels``.
+    """
     node = shutil.which("node")
     if not node:
         pytest.skip("Node.js is required for dashboard JavaScript behavior checks")
     path = Path(__file__).parents[1] / "app/dashboard/templates" / template
     script = re.search(r"<script>(.*?)</script>", path.read_text(encoding="utf-8"), re.S)
     assert script is not None
+    prelude = ""
+    if with_components:
+        components = Path(__file__).parents[1] / "app/dashboard/static/components.js"
+        prelude = _COMPONENTS_PRELUDE + components.read_text(encoding="utf-8") + "\n"
+    # Feed the script through stdin: with components.js prepended it exceeds the
+    # Windows command-line length limit for ``node -e``.
     result = subprocess.run(
-        [node, "-e", script.group(1) + "\n" + assertions],
+        [node, "-"],
+        input=prelude + script.group(1) + "\n" + assertions,
         capture_output=True,
-        text=True,
+        encoding="utf-8",
         timeout=15,
         check=False,
     )
@@ -1029,7 +1059,8 @@ def test_model_catalog_memoizes_ok_results_and_never_throws():
             if (mode === 'throw') throw { detail: 'synthetic network failure' };
             if (mode === 'error') return { provider: 'anthropic', status: 'error', error_kind: 'auth', detail: 'bad key', models: [] };
             return { provider: 'anthropic', status: 'ok', cached: false, fetched_at: 'now',
-                     models: [{ id: 'claude-haiku-4-5', name: 'Claude Haiku 4.5', model: 'anthropic/claude-haiku-4-5' }, { bogus: true }] };
+                     models: [{ id: 'claude-haiku-4-5', name: 'Claude Haiku 4.5', model: 'anthropic/claude-haiku-4-5' }, { bogus: true },
+                              { id: 'claude-haiku-4-5', name: 'Duplicate' }] };
         } } };
         global.document = { getElementById: () => null, addEventListener: () => {} };
         """,
@@ -1039,7 +1070,9 @@ def test_model_catalog_memoizes_ok_results_and_never_throws():
             const catalog = window.dashModelCatalog;
             const first = await catalog.fetchModels('anthropic');
             assert.equal(first.status, 'ok');
+            // Duplicate ids are dropped: pickers key options by id.
             assert.deepEqual(first.models.map(m => m.id), ['claude-haiku-4-5']);
+            assert.equal(first.models[0].name, 'Claude Haiku 4.5');
             await catalog.fetchModels('anthropic');
             assert.equal(calls.length, 1);
             await catalog.fetchModels('anthropic', { refresh: true });
@@ -1062,35 +1095,159 @@ def test_model_catalog_memoizes_ok_results_and_never_throws():
     )
 
 
-def test_agent_model_picker_uses_live_list_and_flags_stale_model():
+def test_model_catalog_picker_options_label_stale_and_custom_entries():
+    _run_dashboard_asset(
+        "components.js",
+        _COMPONENTS_PRELUDE,
+        r"""
+        const assert = require('node:assert/strict');
+        const c = window.dashModelCatalog;
+        const models = [{ id: 'claude-opus-5-5', name: 'Claude Opus 5.5' }, { id: 'llama3:latest', name: 'llama3:latest' }];
+        assert.deepEqual(
+            c.pickerOptions({ status: 'loading', models: [], provider: 'anthropic', name: 'x', custom: false }),
+            [{ value: c.LOADING_MODEL, label: 'Loading models...', disabled: true, selected: true }]);
+        const listed = c.pickerOptions({ status: 'ok', models, provider: 'anthropic', name: 'claude-opus-5-5', custom: false });
+        assert.deepEqual(listed.map(o => o.label),
+            ['Claude Opus 5.5 (claude-opus-5-5)', 'llama3:latest', 'Custom model...']);
+        assert.deepEqual(listed.filter(o => o.selected).map(o => o.value), ['claude-opus-5-5']);
+        const tagged = c.pickerOptions({ status: 'ok', models, provider: 'ollama', name: 'llama3', custom: false });
+        assert.deepEqual(tagged.filter(o => o.selected).map(o => o.value), ['llama3:latest']);
+        const custom = c.pickerOptions({ status: 'ok', models, provider: 'anthropic', name: 'claude-opus-5-5', custom: true });
+        assert.deepEqual(custom.filter(o => o.selected).map(o => o.value), [c.CUSTOM_MODEL]);
+        assert.equal(c.pickerValue({ status: 'ok', models, provider: 'ollama', name: 'llama3', custom: false }), 'llama3:latest');
+        const stale = c.pickerOptions({ status: 'ok', models, provider: 'anthropic', name: 'old-model', custom: false });
+        assert.deepEqual(stale[0], { value: 'old-model', label: 'old-model (not offered by provider)', disabled: false, selected: true });
+        assert.equal(stale.filter(o => o.selected).length, 1);
+        assert.equal(stale.at(-1).value, c.CUSTOM_MODEL);
+        const empty = c.pickerOptions({ status: 'ok', models, provider: 'anthropic', name: '', custom: false });
+        assert.equal(empty[0].value, '');
+        assert.equal(empty[0].selected, true);
+        assert.equal(c.pickerValue({ status: 'ok', models, provider: 'anthropic', name: 'old-model', custom: true }), c.CUSTOM_MODEL);
+        const fallback = c.pickerOptions({ status: 'fallback', models: [], provider: 'anthropic', name: 'claude-opus-5-5', custom: false });
+        assert.deepEqual(fallback.slice(0, -1).map(o => o.value), c.fallbackModels('anthropic').map(m => m.id));
+        """,
+    )
+
+
+def test_agent_model_picker_selects_saved_model_and_keeps_stale_one():
     _run_dashboard_script(
         "agents.html",
         r"""
         const assert = require('node:assert/strict');
         (async () => {
+            const catalog = window.dashModelCatalog;
             let result = { status: 'ok', models: [{ id: 'claude-sonnet-5-5', name: 'Claude Sonnet 5.5' }] };
-            global.window = { dashModelCatalog: {
-                fetchModels: async () => result,
-                fallbackModels: p => [{ id: 'fallback-' + p, name: 'fallback-' + p }],
-                placeholder: () => 'model-name'
-            } };
+            catalog.fetchModels = async () => result;
             const page = agentsPage();
-            const agent = page.prepareAgent({ agent_id: 'light agent', model: 'anthropic/claude-3-haiku-20240307' });
-            assert.equal(page.modelListId(agent), 'model-suggestions-light_agent');
+            const listed = page.prepareAgent({ agent_id: 'light agent', model: 'anthropic/claude-sonnet-5-5' });
+            assert.equal(page.modelFieldId(listed), 'model-select-light_agent');
+            const loading = page.loadProviderModels(listed, false);
+            assert.deepEqual(page.modelOptions(listed).map(o => o.label), ['Loading models...']);
+            assert.equal(listed._modelName, 'claude-sonnet-5-5');
+            await loading;
+            assert.equal(page.modelSelectValue(listed), 'claude-sonnet-5-5');
+            assert.deepEqual(page.modelOptions(listed).map(o => o.label),
+                ['Claude Sonnet 5.5 (claude-sonnet-5-5)', 'Custom model...']);
+            assert.equal(page.modelStatusText(listed), '1 models from provider');
+            assert.equal(page.isModelStale(listed), false);
+
+            const agent = page.prepareAgent({ agent_id: 'light-agent', model: 'anthropic/claude-3-haiku-20240307' });
             await page.loadProviderModels(agent, false);
-            assert.equal(page.getModelSuggestions(agent)[0].id, 'claude-sonnet-5-5');
-            assert.equal(page.modelStatusText(agent), '1 models from provider');
+            assert.equal(page.modelOptions(agent)[0].label, 'claude-3-haiku-20240307 (not offered by provider)');
+            assert.equal(page.modelSelectValue(agent), 'claude-3-haiku-20240307');
+            assert.equal(agent.model, 'anthropic/claude-3-haiku-20240307');
             assert.equal(page.isModelStale(agent), true);
-            agent._modelName = 'claude-sonnet-5-5';
+            page.selectModel(agent, 'claude-sonnet-5-5');
+            assert.equal(agent.model, 'anthropic/claude-sonnet-5-5');
             assert.equal(page.isModelStale(agent), false);
-            agent._modelName = 'claude-3-haiku-20240307';
-            result = { status: 'error', error_kind: 'auth', detail: 'bad key', models: [] };
-            await page.loadProviderModels(agent, true);
-            assert.equal(page.isModelStale(agent), false);
-            assert.equal(page.getModelSuggestions(agent)[0].id, 'fallback-anthropic');
-            assert.equal(page.modelStatusText(agent), 'Could not load models: bad key, showing defaults');
         })().catch(e => { console.error(e); process.exitCode = 1; });
         """,
+        with_components=True,
+    )
+
+
+def test_agent_model_picker_custom_entry_saves_free_text():
+    _run_dashboard_script(
+        "agents.html",
+        r"""
+        const assert = require('node:assert/strict');
+        (async () => {
+            const catalog = window.dashModelCatalog;
+            catalog.fetchModels = async () => ({ status: 'ok', models: [{ id: 'claude-sonnet-5-5', name: 'claude-sonnet-5-5' }] });
+            const page = agentsPage();
+            const agent = page.prepareAgent({ agent_id: 'light-agent', model: 'anthropic/claude-sonnet-5-5' });
+            await page.loadProviderModels(agent, false);
+            assert.equal(agent._customModel, false);
+            page.selectModel(agent, catalog.LOADING_MODEL);
+            assert.equal(agent._customModel, false);
+            page.selectModel(agent, catalog.CUSTOM_MODEL);
+            assert.equal(agent._customModel, true);
+            assert.equal(agent._modelName, 'claude-sonnet-5-5');
+            assert.equal(page.modelSelectValue(agent), catalog.CUSTOM_MODEL);
+            agent._modelName = 'my-finetune';
+            page.updateModelString(agent, false);
+            assert.equal(agent.model, 'anthropic/my-finetune');
+            page.selectModel(agent, 'claude-sonnet-5-5');
+            assert.equal(agent._customModel, false);
+            assert.equal(agent.model, 'anthropic/claude-sonnet-5-5');
+        })().catch(e => { console.error(e); process.exitCode = 1; });
+        """,
+        with_components=True,
+    )
+
+
+def test_agent_model_picker_falls_back_to_defaults_on_error():
+    _run_dashboard_script(
+        "agents.html",
+        r"""
+        const assert = require('node:assert/strict');
+        (async () => {
+            const catalog = window.dashModelCatalog;
+            catalog.fetchModels = async () => ({ status: 'error', error_kind: 'auth', detail: 'bad key', models: [] });
+            const page = agentsPage();
+            const agent = page.prepareAgent({ agent_id: 'light-agent', model: 'anthropic/claude-3-haiku-20240307' });
+            await page.loadProviderModels(agent, true);
+            const values = page.modelOptions(agent).map(o => o.value);
+            assert.equal(values[0], 'claude-3-haiku-20240307');
+            assert.deepEqual(values.slice(1, -1), catalog.fallbackModels('anthropic').map(m => m.id));
+            assert.equal(values.at(-1), catalog.CUSTOM_MODEL);
+            assert.equal(page.modelSelectValue(agent), 'claude-3-haiku-20240307');
+            assert.equal(page.isModelStale(agent), false);
+            assert.equal(page.modelStatusText(agent), 'Could not load models: bad key, showing defaults');
+            catalog.fetchModels = async () => ({ status: 'ok', models: [] });
+            await page.loadProviderModels(agent, true);
+            assert.equal(page.modelStatusText(agent), 'Could not load models: provider returned no models, showing defaults');
+        })().catch(e => { console.error(e); process.exitCode = 1; });
+        """,
+        with_components=True,
+    )
+
+
+def test_agent_model_picker_resets_only_on_user_provider_change():
+    _run_dashboard_script(
+        "agents.html",
+        r"""
+        const assert = require('node:assert/strict');
+        (async () => {
+            const catalog = window.dashModelCatalog;
+            catalog.fetchModels = async p => ({ status: 'ok', models: [{ id: p + '-model', name: p + '-model' }] });
+            const page = agentsPage();
+            const agent = page.prepareAgent({ agent_id: 'light-agent', model: 'groq/unlisted-model' });
+            await page.loadProviderModels(agent, false);
+            assert.equal(agent._modelName, 'unlisted-model');
+            assert.equal(agent.model, 'groq/unlisted-model');
+            page.selectModel(agent, catalog.CUSTOM_MODEL);
+            agent._provider = 'anthropic';
+            page.updateModelString(agent, true);
+            await page.loadProviderModels(agent, false);
+            assert.equal(agent._modelName, '');
+            assert.equal(agent._customModel, false);
+            assert.equal(agent.model, '');
+            assert.equal(page.modelSelectValue(agent), '');
+            assert.deepEqual(page.modelOptions(agent).map(o => o.value), ['', 'anthropic-model', catalog.CUSTOM_MODEL]);
+        })().catch(e => { console.error(e); process.exitCode = 1; });
+        """,
+        with_components=True,
     )
 
 
@@ -1100,17 +1257,83 @@ def test_agent_model_picker_treats_untagged_ollama_model_as_latest():
         r"""
         const assert = require('node:assert/strict');
         (async () => {
-            global.window = { dashModelCatalog: {
-                fetchModels: async () => ({ status: 'ok', models: [{ id: 'llama3:latest', name: 'llama3:latest' }] }),
-                fallbackModels: () => [],
-                placeholder: () => 'model-name'
-            } };
+            window.dashModelCatalog.fetchModels = async () => ({ status: 'ok', models: [{ id: 'llama3:latest', name: 'llama3:latest' }] });
             const page = agentsPage();
             const agent = page.prepareAgent({ agent_id: 'light-agent', model: 'ollama/llama3' });
             await page.loadProviderModels(agent, false);
             assert.equal(page.isModelStale(agent), false);
+            assert.equal(page.modelSelectValue(agent), 'llama3:latest');
+            assert.equal(agent.model, 'ollama/llama3');
         })().catch(e => { console.error(e); process.exitCode = 1; });
         """,
+        with_components=True,
+    )
+
+
+def test_validator_model_picker_uses_select_and_custom_entry():
+    _run_dashboard_script(
+        "settings.html",
+        r"""
+        const assert = require('node:assert/strict');
+        (async () => {
+            const catalog = window.dashModelCatalog;
+            catalog.fetchModels = async () => ({ status: 'ok', models: [{ id: 'claude-haiku-5-5', name: 'Claude Haiku 5.5' }] });
+            const page = settingsPage();
+            page.s = { 'cache.validator.model': 'anthropic/retired-model' };
+            page.validatorProvider = 'anthropic';
+            page.validatorModelName = 'retired-model';
+            page.savedValidatorProvider = 'anthropic';
+            page.savedValidatorModelName = 'retired-model';
+            await page.loadValidatorModels(false);
+            assert.equal(page.validatorModelOptions()[0].label, 'retired-model (not offered by provider)');
+            assert.equal(page.validatorModelSelectValue(), 'retired-model');
+            assert.equal(page.isValidatorModelStale(), true);
+            assert.equal(page.s['cache.validator.model'], 'anthropic/retired-model');
+            page.selectValidatorModel('claude-haiku-5-5');
+            assert.equal(page.s['cache.validator.model'], 'anthropic/claude-haiku-5-5');
+            page.selectValidatorModel(catalog.CUSTOM_MODEL);
+            assert.equal(page.validatorCustomModel, true);
+            page.validatorModelName = 'my-validator';
+            page.updateValidatorModel(false);
+            assert.equal(page.s['cache.validator.model'], 'anthropic/my-validator');
+            page.validatorProvider = 'groq';
+            page.updateValidatorModel(true);
+            assert.equal(page.validatorCustomModel, false);
+            assert.equal(page.s['cache.validator.model'], '');
+            catalog.fetchModels = async () => ({ status: 'error', detail: 'timeout', models: [] });
+            await page.loadValidatorModels(true);
+            assert.equal(page.validatorModelStatusText(), 'Could not load models: timeout, showing defaults');
+            assert.deepEqual(page.validatorModelOptions().slice(1, -1).map(o => o.value),
+                catalog.fallbackModels('groq').map(m => m.id));
+        })().catch(e => { console.error(e); process.exitCode = 1; });
+        """,
+        with_components=True,
+    )
+
+
+def test_custom_agent_model_override_picker_keeps_storage_format():
+    _run_dashboard_script(
+        "custom_agents.html",
+        r"""
+        const assert = require('node:assert/strict');
+        (async () => {
+            const catalog = window.dashModelCatalog;
+            catalog.fetchModels = async () => ({ status: 'ok', models: [{ id: 'claude-haiku-5-5', name: 'claude-haiku-5-5' }] });
+            const page = customAgents();
+            page.editAgent({ name: 'garden', model_override: 'anthropic/claude-haiku-5-5', intent_patterns: [] });
+            await page.loadPickerModels(page.editPicker, false);
+            assert.equal(page.pickerValue(page.editPicker), 'claude-haiku-5-5');
+            assert.equal(page.pickerModelString(page.editPicker), 'anthropic/claude-haiku-5-5');
+            page.selectPickerModel(page.editPicker, catalog.CUSTOM_MODEL);
+            page.editPicker.modelName = 'free-text';
+            assert.equal(page.pickerModelString(page.editPicker), 'anthropic/free-text');
+            await page.setPickerProvider(page.editPicker, '');
+            assert.equal(page.pickerModelString(page.editPicker), '');
+            assert.equal(page.newPicker.provider, '');
+            assert.equal(page.pickerModelString(page.newPicker), '');
+        })().catch(e => { console.error(e); process.exitCode = 1; });
+        """,
+        with_components=True,
     )
 
 

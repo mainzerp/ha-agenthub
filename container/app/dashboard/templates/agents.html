@@ -115,16 +115,18 @@
                                 </select>
                             </div>
                             <div class="form-group">
-                                <label class="form-label">Model</label>
-                                <input type="text" class="form-input" x-model="agent._modelName"
+                                <label class="form-label" :for="modelFieldId(agent)">Model</label>
+                                <select class="form-input" :id="modelFieldId(agent)"
+                                        @change="selectModel(agent, $event.target.value)">
+                                    <template x-for="o in modelOptions(agent)" :key="o.value">
+                                        <option value="" :value="o.value" :disabled="o.disabled"
+                                                :selected="o.selected" x-text="o.label"></option>
+                                    </template>
+                                </select>
+                                <input type="text" class="form-input mt-sm" x-show="agent._customModel" x-model="agent._modelName"
                                        @input="updateModelString(agent, false)"
                                        :placeholder="getModelPlaceholder(agent._provider)"
-                                       :list="modelListId(agent)">
-                                <datalist :id="modelListId(agent)">
-                                    <template x-for="m in getModelSuggestions(agent)" :key="m.id">
-                                        <option :value="m.id" x-text="m.name !== m.id ? m.name : ''"></option>
-                                    </template>
-                                </datalist>
+                                       aria-label="Custom model id">
                                 <div class="flex-center flex-wrap mt-sm" x-show="agent._provider">
                                     <span class="text-muted text-xs" role="status" x-text="modelStatusText(agent)"></span>
                                     <button type="button" class="btn btn-secondary btn-sm" @click="loadProviderModels(agent, true)"
@@ -339,6 +341,7 @@ function agentsPage() {
             }
             agent._provider = '';
             agent._modelName = '';
+            agent._customModel = false;
             if (agent.model && agent.model.indexOf('/') !== -1) {
                 agent._provider = agent.model.split('/')[0];
                 agent._modelName = agent.model.substring(agent._provider.length + 1);
@@ -456,6 +459,7 @@ function agentsPage() {
         updateModelString(agent, providerChanged) {
             if (providerChanged) {
                 agent._modelName = '';
+                agent._customModel = false;
             }
             if (agent._provider && agent._modelName) {
                 agent.model = agent._provider + '/' + agent._modelName;
@@ -465,8 +469,21 @@ function agentsPage() {
                 agent.model = '';
             }
         },
-        modelListId(agent) {
-            return 'model-suggestions-' + String(agent.agent_id || '').replace(/[^A-Za-z0-9_-]/g, '_');
+        modelFieldId(agent) {
+            return 'model-select-' + String(agent.agent_id || '').replace(/[^A-Za-z0-9_-]/g, '_');
+        },
+        modelPicker(agent) {
+            var custom = !!agent._customModel;
+            return {
+                status: agent._modelStatus,
+                models: agent._models || [],
+                provider: agent._provider,
+                // The options ignore the name in custom mode; not reading it keeps
+                // typing in the custom field from re-rendering the whole list.
+                name: custom ? '' : agent._modelName,
+                custom: custom,
+                detail: agent._modelDetail
+            };
         },
         async loadProviderModels(agent, refresh) {
             var provider = agent._provider;
@@ -478,50 +495,50 @@ function agentsPage() {
                 return;
             }
             agent._modelStatus = 'loading';
-            var result = await catalog.fetchModels(provider, { refresh: !!refresh });
+            var result = await catalog.loadList(provider, refresh);
             if (agent._provider !== provider) {
                 return;
             }
-            if (result.status === 'ok' && result.models.length > 0) {
-                agent._models = result.models;
-                agent._modelStatus = 'ok';
-                agent._modelDetail = '';
-            } else {
-                agent._models = [];
-                agent._modelStatus = 'fallback';
-                agent._modelDetail = result.status === 'ok' ? 'provider returned no models' : (result.detail || 'unknown error');
-            }
+            agent._models = result.models;
+            agent._modelStatus = result.status;
+            agent._modelDetail = result.detail;
         },
-        getModelSuggestions(agent) {
-            if (agent._modelStatus === 'ok' && agent._models.length > 0) {
-                return agent._models;
-            }
+        modelOptions(agent) {
             var catalog = window.dashModelCatalog;
-            return catalog ? catalog.fallbackModels(agent._provider) : [];
+            return catalog ? catalog.pickerOptions(this.modelPicker(agent)) : [];
+        },
+        modelSelectValue(agent) {
+            var catalog = window.dashModelCatalog;
+            return catalog ? catalog.pickerValue(this.modelPicker(agent)) : agent._modelName;
+        },
+        selectModel(agent, value) {
+            var catalog = window.dashModelCatalog;
+            if (!catalog || value === catalog.LOADING_MODEL) {
+                return;
+            }
+            if (value === catalog.CUSTOM_MODEL) {
+                // Free entry starts from the current value.
+                agent._customModel = true;
+            } else {
+                agent._customModel = false;
+                agent._modelName = value;
+            }
+            this.updateModelString(agent, false);
         },
         modelStatusText(agent) {
-            if (agent._modelStatus === 'loading') {
-                return 'Loading models...';
-            }
-            if (agent._modelStatus === 'ok') {
-                return agent._models.length + ' models from provider';
-            }
-            if (agent._modelStatus === 'fallback') {
-                return 'Could not load models: ' + agent._modelDetail + ', showing defaults';
-            }
-            return '';
+            var catalog = window.dashModelCatalog;
+            return catalog ? catalog.statusText(this.modelPicker(agent)) : '';
         },
         isModelStale(agent) {
-            // Only flag the persisted model, not a value the user is still typing.
-            if (agent._modelStatus !== 'ok' || agent._models.length === 0 || !agent._modelName) {
+            // Only flag the persisted model, not a value the user is still editing.
+            var catalog = window.dashModelCatalog;
+            if (!catalog || agent._modelStatus !== 'ok' || agent._models.length === 0 || !agent._modelName) {
                 return false;
             }
             if (agent._provider !== agent._savedProvider || agent._modelName !== agent._savedModelName) {
                 return false;
             }
-            // Ollama lists tagged names ("llama3:latest"); an untagged name means ":latest".
-            var name = agent._modelName;
-            return !agent._models.some(function(m) { return m.id === name || m.id === name + ':latest'; });
+            return !catalog.findModel(agent._models, agent._modelName);
         },
         getModelPlaceholder(provider) {
             var catalog = window.dashModelCatalog;

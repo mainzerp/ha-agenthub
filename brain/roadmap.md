@@ -50,11 +50,17 @@ Live pipeline in board format — headings are columns, cards are
   setup wizard now saves the custom OpenAI provider (field-name mismatch).
   Shipped in v3.9.0. Passed: container 4944, bridge 269, `scripts/ci.py`
   full gate (incl. docker build/smoke, trivy) before the wizard save fix;
-  after it ruff + 308 targeted tests, full suite via PR CI. HTTP mocked
-  only; no browser check.
+  after it ruff + 308 targeted tests, full suite via PR CI. Live 2026-10-17:
+  3.9.0 running, all five configured providers list models.
+  User feedback: model field was a datalist, not a dropdown. Branch
+  `fix/model-dropdown`: real `<select>` with live models + "Custom model..."
+  on Agents, Cache validator and Custom Agents model override. Passed:
+  headless Edge harness on the real templates, `scripts/ci.py` full gate
+  (container 4956, bridge 269).
+  Dropdown fix shipped in v3.9.1.
   Needs user verification: deploy; Settings > LLM > Anthropic Test shows
-  "Connection OK, N models available."; agent Model field lists Claude
-  models; Refresh list works; stale hint on an agent with a retired model.
+  "Connection OK, N models available."; agent Model dropdown lists Claude
+  models; Refresh list works; stale model stays selected and flagged.
 
 - HA bridge quality: reauth, setup check, diagnostics · priority: P2 · area: integration
   Outcome: setup probes `/api/health` with the key (401/403 -> Re-authenticate,

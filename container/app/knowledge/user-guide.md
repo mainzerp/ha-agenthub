@@ -144,7 +144,7 @@ The **Agents** page at `/dashboard/agents` lists all built-in agents and their s
 - Filter locally by agent ID or description; clear the filter to restore the full list.
 - Enable or disable each agent, or use **Edit** and **Prompt** to inspect its configuration.
 - Set the LLM **model**, **timeout**, **temperature**, **max tokens**, and **reasoning effort**.
-- The **Model** field suggests the models the selected provider currently offers (use **Refresh list** to reload). If the list cannot be loaded, built-in defaults are suggested instead; free-text entry always works. When the saved model is no longer offered by the provider, a warning asks you to pick another model.
+- The **Model** dropdown lists the models the selected provider currently offers (use **Refresh list** to reload). If the list cannot be loaded, it shows built-in defaults instead. Choose **Custom model...** to type any model ID. A saved model that the provider no longer offers stays selected, marked "(not offered by provider)", with a warning to pick another model. Changing the provider clears the model selection.
 
 Changes are saved in SQLite and take effect immediately without a restart. The orchestrator only routes to enabled agents.
 
@@ -156,7 +156,7 @@ The **Custom Agents** page at `/dashboard/custom-agents` lets you create LLM-pow
 
 - **Name** -- normalized to a lowercase slug; the runtime ID becomes `custom-{name}`.
 - **System prompt** -- the agent's instructions.
-- **Model** -- the LLM model override.
+- **Model** -- optional LLM model override: pick a provider and a model from the same dropdown as the Agents page, or leave the provider on **Default** to use the general agent's model.
 - **MCP tools** -- tools from registered MCP servers that the agent can use.
 - **Intent patterns** -- phrases that help the orchestrator decide when to route to this agent.
 - **Entity visibility rules** -- which entities the agent can see.
@@ -335,7 +335,7 @@ Clearing the cache is useful when behavior feels stale or an entity has changed 
 The **Settings** page at `/dashboard/settings` is a unified editor for advanced runtime settings stored in SQLite. Choose a category in the left navigation; on narrow screens the category navigation sits above the form. Provider credentials and test/save controls remain in their category. Categories include:
 
 - **LLM** -- provider keys and the custom OpenAI-compatible endpoint. **Test** lists the provider's models (no tokens are used) and reports how many are available, or the error reason such as an invalid key or an unreachable endpoint. For a custom endpoint that cannot list models, enter a **Test model** to test with one tiny completion instead.
-- **Cache** -- enable/disable tiers, thresholds, max entries, LRU behavior, and validator configuration. The validator model picker uses the same live provider model list, fallback defaults, and stale-model warning as the Agents page.
+- **Cache** -- enable/disable tiers, thresholds, max entries, LRU behavior, and validator configuration. The validator model dropdown uses the same live provider model list, fallback defaults, **Custom model...** entry, and stale-model warning as the Agents page.
 - **Embedding** -- local or external embedding provider and model.
 - **Entity Matching** -- confidence threshold, top-N candidates, and expansion settings.
 - **Communication** -- WebSocket reconnect interval and stream buffer size.

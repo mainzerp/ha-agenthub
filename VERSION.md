@@ -1,12 +1,20 @@
 # Version
 
-**Current Version:** 3.9.0
+**Current Version:** 3.9.1
 
 ## Recent Changes
 
-(tracking changes since 3.9.0)
+(tracking changes since 3.9.1)
 
 ## Version History
+
+### 3.9.1 (PATCH) -- model fields as real dropdowns
+
+(commit 26eed0c)
+
+- Fix (dashboard): the agent Model field, the cache validator model and the custom-agent Model Override are real dropdowns listing the provider's live models (3.9.0 used a text field with suggestions that browsers only show while typing). "Custom model..." at the end allows free entry; when the list cannot be loaded the built-in defaults are shown; a saved model the provider no longer offers stays selected and is labelled "(not offered by provider)". Custom agents now pick provider and model separately ("Default (general agent model)" still saves no override). The embedding model stays a text field.
+- Fix (dashboard): duplicate model ids from a provider no longer leave the dropdown empty; choosing the "-- select model --" placeholder no longer saves it as a model name; large lists (OpenRouter, about 470 models) select and type faster; the custom-agent edit form renders its model list once instead of once per card.
+- Verification: full gate `scripts/ci.py` (container suite 4956 passed, integration suite 269 passed, Ruff, self-docs sync, lock check, bandit, pip-audit, docker build and smoke test, Trivy); the real agents, settings and custom-agents templates exercised in headless Edge with vendored Alpine 3.14.1 and a stubbed model API (selection after async load, refresh, reopen, stale model, custom entry, provider change, 470-entry list). Not covered: real mouse/keyboard use, Firefox, Safari.
 
 ### 3.9.0 (MINOR) -- live provider model catalog and key test
 
