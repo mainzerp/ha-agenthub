@@ -57,6 +57,7 @@ Live pipeline in board format — headings are columns, cards are
   on Agents, Cache validator and Custom Agents model override. Passed:
   headless Edge harness on the real templates, `scripts/ci.py` full gate
   (container 4956, bridge 269).
+  Dropdown fix shipped in v3.9.1.
   Needs user verification: deploy; Settings > LLM > Anthropic Test shows
   "Connection OK, N models available."; agent Model dropdown lists Claude
   models; Refresh list works; stale model stays selected and flagged.
