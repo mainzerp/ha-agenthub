@@ -20,6 +20,7 @@ from app.analytics.collector import track_cache_event_background, track_request_
 from app.analytics.tracer import _optional_span
 from app.cache.cache_manager import ActionReplayOutcome, ActionReplayRejected, CacheManager, RoutingSkipOutcome
 from app.db.repository import SettingsRepository
+from app.entity.tokens import fold_text
 from app.entity.visibility import _index_has_async_get_by_id, entity_is_visible
 from app.models.agent import (
     CANCEL_INTERACTION_AGENT,
@@ -91,6 +92,12 @@ async def routing_hit_is_still_valid(
         if not all(visibility):
             return False
     return True
+
+
+def _str_attr(obj: Any, name: str) -> str:
+    """``obj.name`` when it is a non-empty string, else ``""``."""
+    value = getattr(obj, name, None) if obj is not None else None
+    return value.strip() if isinstance(value, str) else ""
 
 
 _CACHED_SERVICE_DATA_KEYS: frozenset[str] = frozenset(
@@ -230,14 +237,26 @@ class CacheOrchestrator:
                 span_collector=span_collector,
                 check_agent=self._cached_agent_is_known,
             )
-            if action_hit is not None:
-                if isinstance(action_hit, ActionReplayRejected):
+            # Action-tier outcome is recorded on the span even when the
+            # final hit_type comes from the routing tier ("miss" = no row).
+            if isinstance(action_hit, ActionReplayRejected):
+                action_tier_reason = action_hit.reason
+                cache_span["metadata"].update(action_hit.details)
+            else:
+                action_tier_reason = "miss" if action_hit is None else "action_hit"
+            cache_span["metadata"]["action_tier_reason"] = action_tier_reason
+            if isinstance(action_hit, ActionReplayRejected):
+                if not action_hit.allow_routing_skip:
                     cache_span["metadata"]["hit_type"] = action_hit.reason
                     cache_span["metadata"]["cache_tier"] = 0
                     # Origin/provenance rejection is not an ordinary cache
                     # miss: routing skip would bypass the live resolution
-                    # required to select the current area/device target.
+                    # required to select the current area target.
                     return None, None
+                # visibility_rejected / visibility_deferred_index_not_ready /
+                # replay_failed keep the fall-through
+                # to the routing tier (its own visibility gate still runs).
+            elif action_hit is not None:
                 cache_span["metadata"]["hit_type"] = "action_hit"
                 cache_span["metadata"]["similarity"] = action_hit.similarity
                 cache_span["metadata"]["cached_agent_id"] = action_hit.agent_id
@@ -279,7 +298,9 @@ class CacheOrchestrator:
                 cache_span["metadata"]["cache_tier"] = 1
                 return None, routing_hit
 
-            cache_span["metadata"]["hit_type"] = "miss"
+            # A rejected action row stays visible as the final hit_type when
+            # the routing tier has nothing either.
+            cache_span["metadata"]["hit_type"] = action_tier_reason
             cache_span["metadata"]["cache_tier"] = 0
             track_cache_event_background(tier="both_miss", hit_type="miss")
             return None, None
@@ -496,6 +517,11 @@ class CacheOrchestrator:
         store a cache row: their synthetic prompts are not user phrasings.
         Stateless AI-task turns (``source="ai_task"``) never store one either:
         their instructions are automation prompts, not user phrasings.
+
+        Action rows are global unless the executed entity was selected
+        through the turn's origin area (see ``_origin_area_binding``).
+        ``used_origin_context`` only reports that origin context was present
+        and is kept for caller compatibility; it does not decide the binding.
         """
         if merged_multi_agent or not self._cache_manager or not speech or has_error:
             return False, False
@@ -592,7 +618,15 @@ class CacheOrchestrator:
             # Agents that get the requester / speaker prompt line may name the
             # user in their own speech: no action row (the routing row below
             # holds no speech and is still written).
-            if entity_id and action_name and not await self._receives_speaker_context(target_agent):
+            action_cacheable = bool(entity_id and action_name) and not await self._receives_speaker_context(
+                target_agent
+            )
+            bound_area_id: str | None = None
+            if action_cacheable:
+                action_cacheable, bound_area_id = await self._origin_area_binding(
+                    task, list(dict.fromkeys([entity_id, *entity_ids]))
+                )
+            if action_cacheable:
                 cached_action = CachedAction(
                     service=f"{domain}/{action_name}" if domain else action_name,
                     entity_id=entity_id,
@@ -610,11 +644,11 @@ class CacheOrchestrator:
                     original_response_text=original_response_text or speech,
                     cached_action=cached_action,
                     entity_ids=entity_ids,
-                    origin_area_id=(task.context.area_id if used_origin_context and task and task.context else None),
-                    origin_device_id=(
-                        task.context.device_id if used_origin_context and task and task.context else None
-                    ),
-                    origin_required=used_origin_context,
+                    # Global unless the target was selected through the
+                    # origin area; never bound to a device (schema 6).
+                    origin_area_id=bound_area_id,
+                    origin_device_id=None,
+                    origin_required=bound_area_id is not None,
                     executed_at=datetime.now(UTC).isoformat(),
                 )
                 try:
@@ -645,6 +679,64 @@ class CacheOrchestrator:
         except Exception:
             logger.warning("Failed to store routing decision", exc_info=True)
             return False, False
+
+    async def _origin_area_binding(
+        self,
+        task: IngressTask | None,
+        entity_ids: list[str],
+    ) -> tuple[bool, str | None]:
+        """Decide the origin binding of an action row: ``(cacheable, area_id)``.
+
+        ``(True, None)`` stores a global row, ``(True, area)`` a row bound to
+        the turn's origin area, ``(False, None)`` no action row at all.
+
+        The origin can only influence which entity a turn targets through the
+        satellite AREA: the shared resolver's ``preferred_area_id``
+        tie-breaks and area re-rank, the keyword-recall satellite-area
+        boost, and the "User is speaking from area" prompt line the agent
+        LLM sees. Every one of these can only pull the selection TOWARDS an
+        entity in the origin area; ``device_id`` is used by no entity
+        resolution path. So a target outside the origin area (or a turn
+        without area context) was selected by the wording alone and the row
+        is global. A target inside the origin area may have been chosen
+        because of it and is bound to that area -- conservatively, even when
+        the wording also names it explicitly; the next live turn from
+        another area then re-learns the phrase as a global row. When the
+        target's area cannot be determined the row is area-bound; when the
+        turn names an area only by name (no ``area_id``) such a row cannot
+        be bound and is not stored.
+        """
+        context = getattr(task, "context", None) if task is not None else None
+        origin_area_id = _str_attr(context, "area_id") or None
+        origin_area_name = fold_text(_str_attr(context, "area_name"))
+        if not origin_area_id and not origin_area_name:
+            return True, None
+        for entity_id in entity_ids:
+            entry = await self._lookup_index_entry(entity_id)
+            if entry is None:
+                in_origin_area = True
+            else:
+                entity_area = _str_attr(entry, "area") or None
+                entity_area_name = fold_text(_str_attr(entry, "area_name"))
+                in_origin_area = bool(
+                    (origin_area_id and entity_area == origin_area_id)
+                    or (origin_area_name and entity_area_name == origin_area_name)
+                )
+            if in_origin_area:
+                return (True, origin_area_id) if origin_area_id else (False, None)
+        return True, None
+
+    async def _lookup_index_entry(self, entity_id: str):
+        """Entity-index entry for ``entity_id``; None when absent or the lookup fails."""
+        if self._entity_index is None or not entity_id:
+            return None
+        try:
+            if _index_has_async_get_by_id(self._entity_index):
+                return await self._entity_index.get_by_id_async(entity_id)
+            return self._entity_index.get_by_id(entity_id)
+        except Exception:
+            logger.debug("Entity index lookup failed for %s during cache store", entity_id, exc_info=True)
+            return None
 
     async def _receives_speaker_context(self, agent_id: str) -> bool:
         """True when the dispatched agent gets the requester prompt line (registry lookup)."""

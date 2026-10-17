@@ -237,22 +237,23 @@ def _replay_manager(entry: ActionCacheEntry) -> CacheManager:
 
 class TestReplayGates:
     @pytest.mark.asyncio
-    async def test_origin_less_entry_does_not_replay_on_satellite_turn(self):
+    async def test_global_entry_replays_on_satellite_turn(self):
+        """Schema 6: a global row learned without origin replays on any satellite."""
         entry = make_action_cache_entry(cached_action=CachedAction(service="light/turn_on", entity_id="light.kitchen"))
         manager = _replay_manager(entry)
         execute = AsyncMock(return_value={"success": True})
 
-        result = await manager.try_replay_action(
-            query_text=entry.query_text,
-            origin_area_id="bedroom",
-            check_visibility=AsyncMock(return_value=True),
-            execute_cached_action=execute,
-        )
+        with patch("app.cache.cache_manager.track_cache_event_background"):
+            result = await manager.try_replay_action(
+                query_text=entry.query_text,
+                origin_area_id="bedroom",
+                origin_device_id="satellite.bedroom",
+                check_visibility=AsyncMock(return_value=True),
+                execute_cached_action=execute,
+            )
 
-        assert isinstance(result, ActionReplayRejected)
-        assert result.reason == "origin_mismatch"
-        execute.assert_not_called()
-        # The row stays valid for origin-less (dashboard/text) turns.
+        assert isinstance(result, ActionReplayOutcome)
+        execute.assert_awaited_once()
         manager._action_cache.invalidate_by_entry_id.assert_not_called()
 
     @pytest.mark.asyncio
@@ -654,7 +655,10 @@ class TestStatsAndPerKeyInvalidation:
 
         stats = await manager.get_stats_async()
 
-        assert stats == {"routing": {"count": 0}, "action": {"count": 0}}
+        assert stats == {
+            "routing": {"count": 0},
+            "action": {"count": 0, "deletions": {}, "deletions_deferred_index_not_ready": 0},
+        }
         assert seen and all(ident != loop_thread for ident in seen)
 
     def test_single_row_invalidation_keeps_unrelated_store(self, tmp_path):

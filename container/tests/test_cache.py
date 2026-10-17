@@ -58,6 +58,50 @@ class TestNormalization:
         assert a == b
         assert a != c
 
+    @pytest.mark.parametrize(
+        "variants",
+        [
+            # STT punctuation variants of one voice command share one key.
+            (
+                "Ambiente Wohnen einschalten.",
+                "Ambiente Wohnen, einschalten.",
+                "Ambiente, Wohnen einschalten.",
+                "Ambiente-Wohnen einschalten",
+                "Ambiente \u2013 Wohnen einschalten!",
+                "\u201eAmbiente Wohnen\u201c einschalten",
+                "Ambiente; Wohnen: einschalten",
+            ),
+            ("Kitchen off.", "Kitchen, off", "kitchen off!"),
+            ("Peter's lamp on", "Peter\u2019s lamp on", "Peters lamp on"),
+            ("Light on. Thanks", "light on, thanks", "Light on thanks!"),
+        ],
+    )
+    def test_inner_punctuation_variants_share_one_key(self, variants):
+        normalized = {normalize_text(text) for text in variants}
+        assert len(normalized) == 1
+        assert len({make_text_id(text, "de") for text in variants}) == 1
+
+    @pytest.mark.parametrize(
+        ("text", "expected"),
+        [
+            ("Set to 21,5 degrees", "set to 21,5 degrees"),
+            ("Set to 21.5 degrees.", "set to 21.5 degrees"),
+            ("Alarm at 10:30", "alarm at 10:30"),
+            ("Set to -3 degrees", "set to -3 degrees"),
+            ("Set to \u22123 degrees", "set to -3 degrees"),
+            ("Level 3-4", "level 3-4"),
+            ("turn on light.kitchen_ceiling.", "turn on light.kitchen_ceiling"),
+        ],
+    )
+    def test_numbers_and_entity_ids_are_preserved(self, text, expected):
+        assert normalize_text(text) == expected
+
+    def test_distinct_numbers_keep_distinct_keys(self):
+        texts = ["Set to 21,5 degrees", "Set to 21.5 degrees", "Set to 215 degrees", "Set to 21 5 degrees"]
+        assert len({make_text_id(text, "en") for text in texts}) == len(texts)
+        assert make_text_id("Alarm at 10:30", "en") != make_text_id("Alarm at 1030", "en")
+        assert make_text_id("Set to -3 degrees", "en") != make_text_id("Set to 3 degrees", "en")
+
 
 class TestActionCache:
     def _make_cache(self) -> tuple[ActionCache, MagicMock]:
@@ -240,7 +284,9 @@ class TestCacheManager:
             execute_cached_action=AsyncMock(return_value=None),
         )
 
-        assert result is None
+        assert isinstance(result, ActionReplayRejected)
+        assert result.reason == "replay_failed"
+        assert result.allow_routing_skip is True
         manager._action_cache.invalidate_by_entry_id.assert_not_called()
 
     @pytest.mark.asyncio
@@ -316,7 +362,10 @@ class TestCacheManager:
 
         stats = manager.get_stats()
 
-        assert stats == {"action": {"count": 1}, "routing": {"count": 2}}
+        assert stats == {
+            "action": {"count": 1, "deletions": {}, "deletions_deferred_index_not_ready": 0},
+            "routing": {"count": 2},
+        }
 
 
 # ---------------------------------------------------------------------------

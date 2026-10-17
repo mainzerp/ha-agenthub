@@ -13,7 +13,11 @@ from app.models.cache import ActionCacheEntry, CachedAction
 
 logger = logging.getLogger(__name__)
 
-_ACTION_CACHE_SCHEMA_VERSION = 5
+# v6: rows are global by default (replay for any origin); a row is bound to
+# ``origin_area_id`` only when the executed entity was selected through the
+# turn's origin area. Rows are never bound to a device. v5 rows were
+# device/area-bound by mere origin presence and cannot be reclassified.
+_ACTION_CACHE_SCHEMA_VERSION = 6
 
 
 def make_action_entry_id(query_text: str, *, language: str = "en") -> str:

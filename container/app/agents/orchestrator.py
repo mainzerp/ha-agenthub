@@ -1412,6 +1412,9 @@ class OrchestratorAgent(BaseAgent):
         # speaker before dispatch. Wording only -- never visibility or auth.
         requester_lookup = _start_requester_lookup(task, self._ha_client)
 
+        # True when the turn carries origin context. It does NOT decide the
+        # action-cache binding: CacheOrchestrator._origin_area_binding derives
+        # global vs area-bound from the executed entity's area.
         used_origin_context = bool(task and task.context and (task.context.area_id or task.context.device_id))
 
         # Routing-cache hit: classification is skipped for this agent; the

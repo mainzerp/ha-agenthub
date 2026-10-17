@@ -41,6 +41,21 @@ Live pipeline in board format — headings are columns, cards are
 
 ## Testing
 
+- Action cache: global rows, robust keys, durable entries · priority: P1 · area: cache
+  Outcome: cached action runs actually fire for repeated voice commands.
+  Trigger: live traces a9342d4628394800 / e1b762a7fd3a4231 missed (no row:
+  STT punctuation variants, device-bound rows, light rows vanishing).
+  Scope: rows global (area-bound only when origin resolved the entity);
+  punctuation-insensitive keys; explicit miss reasons in traces; root-cause
+  and fix of vanishing light rows; validator keeps the row language.
+  Passed: ruff; container 5037, bridge 269; `scripts/ci.py` full gate
+  (incl. docker build/smoke, trivy) on the second run; the first run hit
+  Windows SQLite "disk I/O error" flakes in unrelated tests.
+  Shipped in v3.10.0; deploy purges all schema-5 rows once.
+  Needs user verification: say "Kueche ausschalten." twice from satellite A,
+  then once from satellite B -> the third trace shows `action_hit`; vary the
+  commas -> still a hit; "Licht an" replays only in the learning room.
+
 - Live provider model catalog and key test without hardcoded models · priority: P1 · area: llm
   Outcome: the provider key test (admin + setup wizard) lists models (no
   tokens, never HTTP 500); agent and cache-validator model pickers show the

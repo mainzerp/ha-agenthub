@@ -29,6 +29,10 @@ class ActionCacheEntry(BaseModel):
     response_text: str
     cached_action: CachedAction
     entity_ids: list[str] = Field(default_factory=list)
+    # Schema 6 origin binding: ``origin_required`` False = global row (replays
+    # for any origin); True = bound to ``origin_area_id`` (the target entity
+    # was selected through the turn's origin area). ``origin_device_id`` is
+    # kept for export compatibility only and is never a replay binding.
     origin_area_id: str | None = None
     origin_device_id: str | None = None
     origin_required: bool = False
@@ -40,7 +44,7 @@ class ActionCacheEntry(BaseModel):
     last_accessed: str | None = None
     executed_at: str | None = None
     hit_count: int = 0
-    schema_version: int = 5
+    schema_version: int = 6
     # 1.12.4: preserve original agent response so rewrite agent can re-variate
     # from the raw text on every cache hit instead of rewriting an already
     # rewritten phrase.

@@ -483,3 +483,26 @@ prompts live in `container/app/prompts/`, `ctx.agent_registry` not
 - **Pickers stay free text** with live suggestions and a static fallback, so
   an unreachable provider never blocks configuration; a configured model
   missing from a successfully loaded list is flagged, not auto-changed.
+
+## 2026-10-17 — action cache is global; origin binds by area only
+
+- **Rows are global** (user decision): an explicit command learned on one
+  satellite replays on every satellite. Device binding is gone; it made the
+  same command miss once per satellite.
+- **Area binding only when the origin picked the entity**: a row is bound to
+  the turn's `area_id` when the executed entity lies in that area (room-relative
+  phrases like "Licht an"); otherwise global. The `used_origin_context` flag
+  only meant "turn had an origin", and the area line reaches every agent
+  prompt, so entity-in-turn-area is the observable proxy. Unknown entity ->
+  area-bound (conservative).
+- **One row per normalized text + language, last live result wins**. Area is
+  not part of the key, because validator, export/import and row updates derive
+  ids from text + language. Accepted cost: room-relative phrases move to the
+  latest room.
+- **Keys ignore inner punctuation** (STT varies commas/dashes); numbers keep
+  their separators. Schema 6 purges all older (device-bound) rows on deploy.
+- **Invalidate only on replay-relevant registry changes** and log every row
+  deletion (bulk as WARNING) — light rows vanished silently because any area
+  update deleted every row in that area and INFO logs do not survive restarts.
+- **Validator keeps the row language**; unknown language keeps the original
+  reply instead of falling back to an English template.

@@ -14,7 +14,7 @@ All orchestration, entity resolution, LLM calls, Home Assistant action execution
 
 ## 2. Action Cache Hits Require a Visibility Recheck
 
-An action-cache hit must never replay a cached Home Assistant action without first rechecking entity visibility for that turn. If the recheck fails, the entry is invalidated and the turn falls through to live orchestration. Skipping the recheck is a correctness violation.
+An action-cache hit must never replay a cached Home Assistant action without first rechecking entity visibility for that turn. If the recheck fails, the replay is refused, the entry is invalidated, and the turn falls through to live orchestration; only while the entity index has not loaded its first snapshot may the entry be kept, and it is still never replayed. Skipping the recheck is a correctness violation.
 
 ## 3. Agents Return Executed Results, Not Tool-Call Plans
 
