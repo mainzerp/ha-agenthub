@@ -51,7 +51,7 @@ Live pipeline in board format — headings are columns, cards are
   Passed: ruff; container 5037, bridge 269; `scripts/ci.py` full gate
   (incl. docker build/smoke, trivy) on the second run; the first run hit
   Windows SQLite "disk I/O error" flakes in unrelated tests.
-  Not committed, not deployed. Deploy purges all schema-5 rows once.
+  Shipped in v3.10.0; deploy purges all schema-5 rows once.
   Needs user verification: say "Kueche ausschalten." twice from satellite A,
   then once from satellite B -> the third trace shows `action_hit`; vary the
   commas -> still a hit; "Licht an" replays only in the learning room.
