@@ -5,6 +5,42 @@
 {% block header_title %}Custom Agents{% endblock %}
 
 {% block page_content %}
+{% macro model_override_picker(picker, id_prefix) %}
+<div class="form-group">
+    <label class="form-label" :for="{{ id_prefix }} + '-provider'">Model Provider (optional)</label>
+    <select class="form-input" :id="{{ id_prefix }} + '-provider'"
+            @change="setPickerProvider({{ picker }}, $event.target.value)">
+        <option value="" :selected="!{{ picker }}.provider">Default (general agent model)</option>
+        <template x-for="p in allProviders" :key="p">
+            <option :value="p" :selected="{{ picker }}.provider === p"
+                    x-text="configuredProviders.indexOf(p) !== -1 ? p : p + ' (no key)'"></option>
+        </template>
+        <template x-if="{{ picker }}.provider && allProviders.indexOf({{ picker }}.provider) === -1">
+            <option :value="{{ picker }}.provider" x-text="{{ picker }}.provider" selected></option>
+        </template>
+    </select>
+</div>
+<div class="form-group">
+    <label class="form-label" :for="{{ id_prefix }} + '-model'">Model Override</label>
+    <select class="form-input" :id="{{ id_prefix }} + '-model'"
+            :disabled="!{{ picker }}.provider && !{{ picker }}.modelName"
+            @change="selectPickerModel({{ picker }}, $event.target.value)">
+        <template x-for="o in pickerOptions({{ picker }})" :key="o.value">
+            <option value="" :value="o.value" :disabled="o.disabled"
+                    :selected="o.selected" x-text="o.label"></option>
+        </template>
+    </select>
+    <input type="text" class="form-input mt-sm" x-show="{{ picker }}.customModel" x-model="{{ picker }}.modelName"
+           :placeholder="pickerPlaceholder({{ picker }})" aria-label="Custom model id">
+    <div class="flex-center flex-wrap mt-sm" x-show="{{ picker }}.provider">
+        <span class="text-muted text-xs" role="status" x-text="pickerStatusText({{ picker }})"></span>
+        <button type="button" class="btn btn-secondary btn-sm" @click="loadPickerModels({{ picker }}, true)"
+                :disabled="{{ picker }}.modelStatus === 'loading'">Refresh list</button>
+    </div>
+    <div x-show="isPickerStale({{ picker }})" class="alert alert-warning mt-sm text-sm" role="alert"
+         x-text="'This model is not offered by ' + {{ picker }}.provider + ' anymore. Pick another model.'"></div>
+</div>
+{% endmacro %}
 <div x-data="customAgents()">
 
     <!-- Header -->
@@ -38,11 +74,7 @@
                     <textarea class="form-input" x-model="newAgent.system_prompt" rows="6" required
                               placeholder="You are an assistant that..."></textarea>
                 </div>
-                <div class="form-group">
-                    <label class="form-label">Model Override (optional)</label>
-                    <input type="text" class="form-input" x-model="newAgent.model_override"
-                           placeholder="gpt-4o-mini">
-                </div>
+                {{ model_override_picker('newPicker', "'new-agent'") }}
                 <div class="form-group">
                     <label class="form-label">Intent Patterns (one per line)</label>
                     <textarea class="form-input" x-model="newAgent.intent_patterns_text" rows="3"
@@ -91,18 +123,17 @@
                 <span x-text="(agent.mcp_tools || []).length"></span>
             </div>
 
-            <!-- Edit Form (inline) -->
-            <div x-show="editingAgent === agent.name" x-transition class="card-body">
+            <!-- Edit Form (inline). x-if, not x-show: every card would otherwise render
+                 its own hidden copy of the shared editPicker's model list. -->
+            <template x-if="editingAgent === agent.name">
+            <div class="card-body">
                 <form @submit.prevent="updateAgent(agent.name)">
                     <div class="form-grid-2">
                         <div class="form-group">
                             <label class="form-label">Description</label>
                             <input type="text" class="form-input" x-model="editData.description">
                         </div>
-                        <div class="form-group">
-                            <label class="form-label">Model Override</label>
-                            <input type="text" class="form-input" x-model="editData.model_override">
-                        </div>
+                        {{ model_override_picker('editPicker', "'edit-' + agent.name") }}
                         <div class="form-group form-grid-full">
                             <label class="form-label">System Prompt</label>
                             <textarea class="form-input" x-model="editData.system_prompt" rows="6"></textarea>
@@ -125,6 +156,7 @@
                     </div>
                 </form>
             </div>
+            </template>
         </div>
     </template>
 
@@ -136,6 +168,23 @@
 </div>
 
 <script>
+function newModelPicker(model) {
+    var picker = {
+        provider: '', modelName: '', customModel: false,
+        models: [], modelStatus: '', modelDetail: '',
+        savedProvider: '', savedModelName: '',
+    };
+    if (model && model.indexOf('/') !== -1) {
+        picker.provider = model.split('/')[0];
+        picker.modelName = model.substring(picker.provider.length + 1);
+    } else if (model) {
+        picker.modelName = model;
+    }
+    picker.savedProvider = picker.provider;
+    picker.savedModelName = picker.modelName;
+    return picker;
+}
+
 function customAgents() {
     return {
         agents: [],
@@ -144,11 +193,108 @@ function customAgents() {
         message: '',
         messageType: 'success',
         newAgent: {
-            name: '', description: '', system_prompt: '', model_override: '',
+            name: '', description: '', system_prompt: '',
             intent_patterns_text: '', mcp_tools_json: '',
         },
+        newPicker: newModelPicker(''),
+        editPicker: newModelPicker(''),
+        allProviders: [],
+        configuredProviders: [],
         editData: {},
-        init() { this.loadAgents(); },
+        init() { this.loadAgents(); this.loadProviders(); },
+        async loadProviders() {
+            try {
+                var data = await window.dashboardApi.json('/api/admin/llm-providers');
+                var providers = data.providers || {};
+                this.allProviders = Object.keys(providers);
+                this.configuredProviders = this.allProviders.filter(function(key) {
+                    return providers[key] && providers[key].configured;
+                });
+            } catch (e) {
+                if (e.code === 'auth_expired') return;
+                console.error('Failed to load LLM providers', e);
+            }
+        },
+        pickerModelString(picker) {
+            // Same storage format as the Agents page: provider + '/' + model id.
+            if (picker.provider && picker.modelName) {
+                return picker.provider + '/' + picker.modelName;
+            }
+            return picker.modelName || '';
+        },
+        pickerState(picker) {
+            var custom = !!picker.customModel;
+            return {
+                status: picker.modelStatus,
+                models: picker.models || [],
+                provider: picker.provider,
+                // The options ignore the name in custom mode; not reading it keeps
+                // typing in the custom field from re-rendering the whole list.
+                name: custom ? '' : picker.modelName,
+                custom: custom,
+                detail: picker.modelDetail,
+            };
+        },
+        setPickerProvider(picker, provider) {
+            picker.provider = provider;
+            picker.modelName = '';
+            picker.customModel = false;
+            return this.loadPickerModels(picker, false);
+        },
+        async loadPickerModels(picker, refresh) {
+            var provider = picker.provider;
+            var catalog = window.dashModelCatalog;
+            if (!provider || !catalog) {
+                picker.models = [];
+                picker.modelStatus = '';
+                picker.modelDetail = '';
+                return;
+            }
+            picker.modelStatus = 'loading';
+            var result = await catalog.loadList(provider, refresh);
+            if (picker.provider !== provider) return;
+            picker.models = result.models;
+            picker.modelStatus = result.status;
+            picker.modelDetail = result.detail;
+        },
+        pickerOptions(picker) {
+            var catalog = window.dashModelCatalog;
+            return catalog ? catalog.pickerOptions(this.pickerState(picker)) : [];
+        },
+        pickerValue(picker) {
+            var catalog = window.dashModelCatalog;
+            return catalog ? catalog.pickerValue(this.pickerState(picker)) : picker.modelName;
+        },
+        selectPickerModel(picker, value) {
+            var catalog = window.dashModelCatalog;
+            if (!catalog || value === catalog.LOADING_MODEL) return;
+            if (value === catalog.CUSTOM_MODEL) {
+                // Free entry starts from the current value.
+                picker.customModel = true;
+            } else {
+                picker.customModel = false;
+                picker.modelName = value;
+            }
+        },
+        pickerStatusText(picker) {
+            var catalog = window.dashModelCatalog;
+            return catalog ? catalog.statusText(this.pickerState(picker)) : '';
+        },
+        isPickerStale(picker) {
+            // Only flag the persisted model, not a value the user is still editing.
+            var catalog = window.dashModelCatalog;
+            if (!catalog || picker.modelStatus !== 'ok' || picker.models.length === 0 || !picker.modelName) {
+                return false;
+            }
+            if (picker.provider !== picker.savedProvider || picker.modelName !== picker.savedModelName) {
+                return false;
+            }
+            return !catalog.findModel(picker.models, picker.modelName);
+        },
+        pickerPlaceholder(picker) {
+            var catalog = window.dashModelCatalog;
+            return catalog ? catalog.placeholder(picker.provider) : 'model-name';
+        },
         async loadAgents() {
             try {
                 this.agents = await window.dashboardApi.json('/api/admin/custom-agents');
@@ -172,7 +318,7 @@ function customAgents() {
                         name: this.newAgent.name,
                         description: this.newAgent.description,
                         system_prompt: this.newAgent.system_prompt,
-                        model_override: this.newAgent.model_override || null,
+                        model_override: this.pickerModelString(this.newPicker) || null,
                         mcp_tools: mcp_tools,
                         intent_patterns: patterns.length > 0 ? patterns : null,
                     }),
@@ -180,7 +326,8 @@ function customAgents() {
                 this.message = 'Agent created and hot-reloaded';
                 this.messageType = 'success';
                 this.showCreateForm = false;
-                this.newAgent = {name:'', description:'', system_prompt:'', model_override:'', intent_patterns_text:'', mcp_tools_json:''};
+                this.newAgent = {name:'', description:'', system_prompt:'', intent_patterns_text:'', mcp_tools_json:''};
+                this.newPicker = newModelPicker('');
                 await this.loadAgents();
             } catch (e) {
                 if (e.code === 'auth_expired') return;
@@ -193,10 +340,11 @@ function customAgents() {
             this.editData = {
                 description: agent.description || '',
                 system_prompt: agent.system_prompt || '',
-                model_override: agent.model_override || '',
                 intent_patterns_text: (agent.intent_patterns || []).join('\n'),
                 enabled: !!agent.enabled,
             };
+            this.editPicker = newModelPicker(agent.model_override || '');
+            this.loadPickerModels(this.editPicker, false);
         },
         async updateAgent(name) {
             const patterns = this.editData.intent_patterns_text.split('\n').map(s => s.trim()).filter(Boolean);
@@ -207,7 +355,7 @@ function customAgents() {
                     body: JSON.stringify({
                         description: this.editData.description,
                         system_prompt: this.editData.system_prompt,
-                        model_override: this.editData.model_override || null,
+                        model_override: this.pickerModelString(this.editPicker) || null,
                         intent_patterns: patterns.length > 0 ? patterns : null,
                         enabled: this.editData.enabled,
                     }),

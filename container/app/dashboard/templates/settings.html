@@ -242,16 +242,18 @@
                         </select>
                     </div>
                     <div class="form-group">
-                        <label class="form-label">Model</label>
-                        <input type="text" class="form-input" x-model="validatorModelName"
+                        <label class="form-label" for="validator-model-select">Model</label>
+                        <select id="validator-model-select" class="form-input"
+                                @change="selectValidatorModel($event.target.value)">
+                            <template x-for="o in validatorModelOptions()" :key="o.value">
+                                <option value="" :value="o.value" :disabled="o.disabled"
+                                        :selected="o.selected" x-text="o.label"></option>
+                            </template>
+                        </select>
+                        <input type="text" class="form-input mt-sm" x-show="validatorCustomModel" x-model="validatorModelName"
                                @input="updateValidatorModel(false)"
                                :placeholder="getValidatorModelPlaceholder(validatorProvider)"
-                               list="validator-model-suggestions">
-                        <datalist id="validator-model-suggestions">
-                            <template x-for="m in getValidatorModelSuggestions()" :key="m.id">
-                                <option :value="m.id" x-text="m.name !== m.id ? m.name : ''"></option>
-                            </template>
-                        </datalist>
+                               aria-label="Custom validator model id">
                         <div class="flex-center flex-wrap mt-sm" x-show="validatorProvider">
                             <span class="text-muted text-xs" role="status" x-text="validatorModelStatusText()"></span>
                             <button type="button" class="btn btn-secondary btn-sm" @click="loadValidatorModels(true)"
@@ -542,6 +544,7 @@ function settingsPage() {
         validatorModels: [],
         validatorModelStatus: '',
         validatorModelDetail: '',
+        validatorCustomModel: false,
         allProviders: [],
         configuredProviders: [],
         weightKeys: [
@@ -601,6 +604,7 @@ function settingsPage() {
         updateValidatorModel(providerChanged) {
             if (providerChanged) {
                 this.validatorModelName = '';
+                this.validatorCustomModel = false;
             }
             if (this.validatorProvider && this.validatorModelName) {
                 this.s['cache.validator.model'] = this.validatorProvider + '/' + this.validatorModelName;
@@ -621,49 +625,67 @@ function settingsPage() {
                 return;
             }
             this.validatorModelStatus = 'loading';
-            var result = await catalog.fetchModels(provider, { refresh: !!refresh });
+            var result = await catalog.loadList(provider, refresh);
             if (this.validatorProvider !== provider) {
                 return;
             }
-            if (result.status === 'ok' && result.models.length > 0) {
-                this.validatorModels = result.models;
-                this.validatorModelStatus = 'ok';
-                this.validatorModelDetail = '';
-            } else {
-                this.validatorModels = [];
-                this.validatorModelStatus = 'fallback';
-                this.validatorModelDetail = result.status === 'ok' ? 'provider returned no models' : (result.detail || 'unknown error');
-            }
+            this.validatorModels = result.models;
+            this.validatorModelStatus = result.status;
+            this.validatorModelDetail = result.detail;
         },
 
-        getValidatorModelSuggestions() {
-            if (this.validatorModelStatus === 'ok' && this.validatorModels.length > 0) {
-                return this.validatorModels;
-            }
+        validatorModelPicker() {
+            var custom = !!this.validatorCustomModel;
+            return {
+                status: this.validatorModelStatus,
+                models: this.validatorModels || [],
+                provider: this.validatorProvider,
+                // The options ignore the name in custom mode; not reading it keeps
+                // typing in the custom field from re-rendering the whole list.
+                name: custom ? '' : this.validatorModelName,
+                custom: custom,
+                detail: this.validatorModelDetail
+            };
+        },
+
+        validatorModelOptions() {
             var catalog = window.dashModelCatalog;
-            return catalog ? catalog.fallbackModels(this.validatorProvider) : [];
+            return catalog ? catalog.pickerOptions(this.validatorModelPicker()) : [];
+        },
+
+        validatorModelSelectValue() {
+            var catalog = window.dashModelCatalog;
+            return catalog ? catalog.pickerValue(this.validatorModelPicker()) : this.validatorModelName;
+        },
+
+        selectValidatorModel(value) {
+            var catalog = window.dashModelCatalog;
+            if (!catalog || value === catalog.LOADING_MODEL) return;
+            if (value === catalog.CUSTOM_MODEL) {
+                // Free entry starts from the current value.
+                this.validatorCustomModel = true;
+            } else {
+                this.validatorCustomModel = false;
+                this.validatorModelName = value;
+            }
+            this.updateValidatorModel(false);
         },
 
         validatorModelStatusText() {
-            if (this.validatorModelStatus === 'loading') return 'Loading models...';
-            if (this.validatorModelStatus === 'ok') return this.validatorModels.length + ' models from provider';
-            if (this.validatorModelStatus === 'fallback') {
-                return 'Could not load models: ' + this.validatorModelDetail + ', showing defaults';
-            }
-            return '';
+            var catalog = window.dashModelCatalog;
+            return catalog ? catalog.statusText(this.validatorModelPicker()) : '';
         },
 
         isValidatorModelStale() {
-            // Only flag the persisted model, not a value the user is still typing.
-            if (this.validatorModelStatus !== 'ok' || this.validatorModels.length === 0 || !this.validatorModelName) {
+            // Only flag the persisted model, not a value the user is still editing.
+            var catalog = window.dashModelCatalog;
+            if (!catalog || this.validatorModelStatus !== 'ok' || this.validatorModels.length === 0 || !this.validatorModelName) {
                 return false;
             }
             if (this.validatorProvider !== this.savedValidatorProvider || this.validatorModelName !== this.savedValidatorModelName) {
                 return false;
             }
-            // Ollama lists tagged names ("llama3:latest"); an untagged name means ":latest".
-            var name = this.validatorModelName;
-            return !this.validatorModels.some(function(m) { return m.id === name || m.id === name + ':latest'; });
+            return !catalog.findModel(this.validatorModels, this.validatorModelName);
         },
 
         invalidateProviderModels(provider) {
@@ -1055,6 +1077,7 @@ function settingsPage() {
                 var model = flat['cache.validator.model'] || '';
                 this.validatorProvider = '';
                 this.validatorModelName = '';
+                this.validatorCustomModel = false;
                 if (model && model.indexOf('/') !== -1) {
                     this.validatorProvider = model.split('/')[0];
                     this.validatorModelName = model.substring(this.validatorProvider.length + 1);
