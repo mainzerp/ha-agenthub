@@ -203,8 +203,12 @@ jobs:
       - name: Smoke test (GHCR, runner platform linux/amd64)
         run: docker run --rm ${{ steps.ghcr.outputs.image }}@${{ steps.build.outputs.digest }} python -c "from app.main import app; print('OK')"
 
+      # The local image store keeps one platform per digest: drop the amd64 copy,
+      # or pulling the same digest for arm64 fails with "cannot overwrite digest".
       - name: Smoke test (GHCR, linux/arm64 under QEMU)
-        run: docker run --rm --platform linux/arm64 ${{ steps.ghcr.outputs.image }}@${{ steps.build.outputs.digest }} python -c "import platform; from app.main import app; print('OK', platform.machine())"
+        run: |
+          docker image rm ${{ steps.ghcr.outputs.image }}@${{ steps.build.outputs.digest }}
+          docker run --rm --platform linux/arm64 ${{ steps.ghcr.outputs.image }}@${{ steps.build.outputs.digest }} python -c "import platform; from app.main import app; print('OK', platform.machine())"
 
       - name: Scan image with Trivy (SARIF)
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
@@ -230,7 +234,7 @@ jobs:
           vuln-type: os,library
 
       - name: Upload Trivy SARIF
-        if: always()
+        if: always() && hashFiles('trivy-results.sarif') != ''
         uses: github/codeql-action/upload-sarif@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
         with:
           sarif_file: trivy-results.sarif
@@ -315,7 +319,7 @@ jobs:
           vuln-type: os,library
 
       - name: Upload Trivy SARIF
-        if: always()
+        if: always() && hashFiles('trivy-results.sarif') != ''
         uses: github/codeql-action/upload-sarif@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
         with:
           sarif_file: trivy-results.sarif
