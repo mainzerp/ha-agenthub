@@ -121,8 +121,60 @@ async def test_visibility_recheck_failure_invalidates_row():
         execute_cached_action=AsyncMock(return_value={"success": True}),
     )
 
-    assert result is None
+    assert isinstance(result, ActionReplayRejected)
+    assert result.reason == "visibility_rejected"
+    assert result.details == {"entity_id": entry.cached_action.entity_id}
+    assert result.allow_routing_skip is True
     manager._action_cache.invalidate_by_entry_id.assert_called_once()
+    assert manager.get_deletion_stats()["deletions"] == {"visibility_rejected": 1}
+
+
+@pytest.mark.asyncio
+async def test_visibility_rejection_during_index_warmup_keeps_row_and_refuses_replay():
+    manager = _make_manager()
+    entry = make_action_cache_entry(query_text="turn on kitchen light")
+    manager._action_cache.lookup_with_id = MagicMock(return_value=("entry-1", entry, 1.0))
+    manager._action_cache.invalidate_by_entry_id = MagicMock()
+    manager.set_entity_index_readiness_probe(lambda: False)
+    execute_cached_action = AsyncMock(return_value={"success": True})
+
+    result = await manager.try_replay_action(
+        query_text=entry.query_text,
+        language=entry.language,
+        check_visibility=AsyncMock(return_value=False),
+        execute_cached_action=execute_cached_action,
+    )
+
+    assert isinstance(result, ActionReplayRejected)
+    assert result.reason == "visibility_deferred_index_not_ready"
+    assert result.details == {"entity_id": entry.cached_action.entity_id}
+    assert result.allow_routing_skip is True
+    execute_cached_action.assert_not_awaited()
+    manager._action_cache.invalidate_by_entry_id.assert_not_called()
+    assert manager.get_deletion_stats() == {"deletions": {}, "deletions_deferred_index_not_ready": 1}
+
+
+@pytest.mark.asyncio
+async def test_lookup_deletions_record_their_specific_reason():
+    manager = _make_manager()
+    entry = make_action_cache_entry(query_text="turn on kitchen light")
+    entry.context_dependent = True
+    manager._action_cache.lookup_with_id = MagicMock(return_value=("entry-1", entry, 1.0))
+    manager._action_cache.invalidate_by_entry_id = MagicMock()
+    # Index readiness only defers index-dependent reasons.
+    manager.set_entity_index_readiness_probe(lambda: False)
+
+    result = await manager.try_replay_action(
+        query_text=entry.query_text,
+        language=entry.language,
+        check_visibility=AsyncMock(return_value=True),
+        execute_cached_action=AsyncMock(),
+    )
+
+    assert isinstance(result, ActionReplayRejected)
+    assert result.reason == "context_dependent"
+    manager._action_cache.invalidate_by_entry_id.assert_called_once_with("entry-1")
+    assert manager.get_deletion_stats()["deletions"] == {"context_dependent": 1}
 
 
 @pytest.mark.asyncio
@@ -139,7 +191,9 @@ async def test_transient_replay_miss_does_not_invalidate():
         execute_cached_action=AsyncMock(return_value=None),
     )
 
-    assert result is None
+    assert isinstance(result, ActionReplayRejected)
+    assert result.reason == "replay_failed"
+    assert result.allow_routing_skip is True
     manager._action_cache.invalidate_by_entry_id.assert_not_called()
 
 
@@ -162,6 +216,8 @@ async def test_origin_mismatch_forces_live_without_calling_cached_action():
 
     assert isinstance(result, ActionReplayRejected)
     assert result.reason == "origin_mismatch"
+    assert result.details == {"expected_area_id": "kitchen", "actual_area_id": "bedroom"}
+    assert result.allow_routing_skip is False
     replay.assert_not_awaited()
 
 
@@ -389,7 +445,9 @@ async def test_multi_target_visibility_recheck_invalidates_when_secondary_entity
         execute_cached_action=AsyncMock(return_value={"success": True}),
     )
 
-    assert result is None
+    assert isinstance(result, ActionReplayRejected)
+    assert result.reason == "visibility_rejected"
+    assert result.details == {"entity_id": "light.living_room"}
     manager._action_cache.invalidate_by_entry_id.assert_called_once()
 
 
@@ -422,3 +480,271 @@ async def test_pending_question_skips_action_cache_replay():
 
     assert prelude2.early_exit is None
     assert orch2._pipeline_director.run_cache_replay.await_args.kwargs["skip_lookup"] is False
+
+
+# ---------------------------------------------------------------------------
+# Schema 6: global rows by default, area binding only, never device-bound
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("current_area", "current_device"),
+    [
+        (None, None),
+        ("bedroom", None),
+        (None, "satellite.hallway"),
+        ("kitchen", "satellite.kitchen"),
+    ],
+)
+async def test_global_row_replays_for_any_origin(current_area, current_device):
+    manager = _make_manager()
+    entry = make_action_cache_entry(query_text="kitchen off")
+    assert entry.origin_required is False
+    manager._action_cache.lookup_with_id = MagicMock(return_value=("entry-1", entry, 1.0))
+    replay = AsyncMock(return_value={"success": True})
+
+    with patch("app.cache.cache_manager.track_cache_event_background"):
+        result = await manager.try_replay_action(
+            query_text=entry.query_text,
+            language=entry.language,
+            origin_area_id=current_area,
+            origin_device_id=current_device,
+            check_visibility=AsyncMock(return_value=True),
+            execute_cached_action=replay,
+        )
+
+    assert isinstance(result, ActionReplayOutcome)
+    replay.assert_awaited_once_with(entry.cached_action)
+
+
+@pytest.mark.asyncio
+async def test_area_bound_row_ignores_device_id():
+    """An area-bound row replays on any satellite of that area: rows are never device-bound."""
+    manager = _make_manager()
+    entry = make_action_cache_entry(query_text="light on")
+    entry.origin_required = True
+    entry.origin_area_id = "kitchen"
+    entry.origin_device_id = "satellite.kitchen_left"
+    manager._action_cache.lookup_with_id = MagicMock(return_value=("entry-1", entry, 1.0))
+    replay = AsyncMock(return_value={"success": True})
+
+    with patch("app.cache.cache_manager.track_cache_event_background"):
+        result = await manager.try_replay_action(
+            query_text=entry.query_text,
+            language=entry.language,
+            origin_area_id="kitchen",
+            origin_device_id="satellite.kitchen_right",
+            check_visibility=AsyncMock(return_value=True),
+            execute_cached_action=replay,
+        )
+
+    assert isinstance(result, ActionReplayOutcome)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("current_area", [None, "bedroom"])
+async def test_area_bound_row_rejects_other_or_missing_area_without_invalidating(current_area):
+    manager = _make_manager()
+    entry = make_action_cache_entry(query_text="light on")
+    entry.origin_required = True
+    entry.origin_area_id = "kitchen"
+    manager._action_cache.lookup_with_id = MagicMock(return_value=("entry-1", entry, 1.0))
+    manager._action_cache.invalidate_by_entry_id = MagicMock()
+    replay = AsyncMock(return_value={"success": True})
+
+    result = await manager.try_replay_action(
+        query_text=entry.query_text,
+        language=entry.language,
+        origin_area_id=current_area,
+        origin_device_id="satellite.kitchen",
+        check_visibility=AsyncMock(return_value=True),
+        execute_cached_action=replay,
+    )
+
+    assert isinstance(result, ActionReplayRejected)
+    assert result.reason == "origin_mismatch"
+    assert result.details == {"expected_area_id": "kitchen", "actual_area_id": current_area}
+    replay.assert_not_awaited()
+    manager._action_cache.invalidate_by_entry_id.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_schema_5_row_is_rejected_as_legacy():
+    manager = _make_manager()
+    entry = make_action_cache_entry(query_text="kitchen off")
+    entry.schema_version = 5
+    manager._action_cache.lookup_with_id = MagicMock(return_value=("entry-1", entry, 1.0))
+    manager._action_cache.invalidate_by_entry_id = MagicMock()
+    replay = AsyncMock(return_value={"success": True})
+
+    result = await manager.try_replay_action(
+        query_text=entry.query_text,
+        language=entry.language,
+        check_visibility=AsyncMock(return_value=True),
+        execute_cached_action=replay,
+    )
+
+    assert isinstance(result, ActionReplayRejected)
+    assert result.reason == "legacy_schema"
+    replay.assert_not_awaited()
+    manager._action_cache.invalidate_by_entry_id.assert_called_once_with("entry-1")
+
+
+@pytest.mark.asyncio
+async def test_visibility_rejection_logs_entry_and_entity(caplog):
+    manager = _make_manager()
+    entry = make_action_cache_entry(query_text="turn on kitchen light")
+    manager._action_cache.lookup_with_id = MagicMock(return_value=("entry-1", entry, 1.0))
+    manager._action_cache.invalidate_by_entry_id = MagicMock()
+
+    with caplog.at_level("INFO", logger="app.cache.cache_manager"):
+        await manager.try_replay_action(
+            query_text=entry.query_text,
+            language=entry.language,
+            check_visibility=AsyncMock(return_value=False),
+            execute_cached_action=AsyncMock(return_value={"success": True}),
+        )
+
+    records = [r for r in caplog.records if "visibility recheck" in r.getMessage()]
+    assert len(records) == 1
+    assert records[0].levelname == "INFO"
+    assert "entry-1" in records[0].getMessage()
+    assert entry.cached_action.entity_id in records[0].getMessage()
+
+
+@pytest.mark.asyncio
+async def test_replay_exception_is_replay_failed_and_logged_as_warning(caplog):
+    manager = _make_manager()
+    entry = make_action_cache_entry(query_text="turn on kitchen light")
+    manager._action_cache.lookup_with_id = MagicMock(return_value=("entry-1", entry, 1.0))
+    manager._action_cache.invalidate_by_entry_id = MagicMock()
+
+    with caplog.at_level("WARNING", logger="app.cache.cache_manager"):
+        result = await manager.try_replay_action(
+            query_text=entry.query_text,
+            language=entry.language,
+            check_visibility=AsyncMock(return_value=True),
+            execute_cached_action=AsyncMock(side_effect=RuntimeError("ha down")),
+        )
+
+    assert isinstance(result, ActionReplayRejected)
+    assert result.reason == "replay_failed"
+    assert result.details == {"entity_id": entry.cached_action.entity_id}
+    records = [r for r in caplog.records if "replay failed" in r.getMessage()]
+    assert len(records) == 1
+    assert records[0].levelname == "WARNING"
+    assert records[0].exc_info is not None
+    manager._action_cache.invalidate_by_entry_id.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# cache_lookup span: explicit action-tier reasons
+# ---------------------------------------------------------------------------
+
+
+async def _cache_lookup_span(action_result, routing_result=None, *, routing_valid=True) -> dict:
+    from app.analytics.tracer import SpanCollector
+
+    cache_manager = MagicMock()
+    cache_manager.try_replay_action = AsyncMock(return_value=action_result)
+    cache_manager.try_routing_skip = AsyncMock(return_value=routing_result)
+    orchestrator = CacheOrchestrator(cache_manager=cache_manager)
+    orchestrator._get_bool_setting_impl = AsyncMock(return_value=True)
+    orchestrator._routing_hit_is_still_valid = AsyncMock(return_value=routing_valid)
+    collector = SpanCollector("trace-action-tier")
+
+    with patch("app.agents.cache_orchestrator.track_cache_event_background"):
+        await orchestrator.try_cache_replay(
+            task=_make_task("turn on the light"),
+            user_text="turn on the light",
+            span_collector=collector,
+        )
+
+    spans = [s for s in collector._spans if s["span_name"] == "cache_lookup"]
+    assert len(spans) == 1
+    return spans[0]["metadata"]
+
+
+@pytest.mark.asyncio
+async def test_span_visibility_rejected_on_routing_miss():
+    rejected = ActionReplayRejected(
+        entry_id="entry-1",
+        reason="visibility_rejected",
+        details={"entity_id": "light.kitchen"},
+        allow_routing_skip=True,
+    )
+
+    meta = await _cache_lookup_span(rejected)
+
+    assert meta["hit_type"] == "visibility_rejected"
+    assert meta["action_tier_reason"] == "visibility_rejected"
+    assert meta["entity_id"] == "light.kitchen"
+    assert meta["cache_tier"] == 0
+
+
+@pytest.mark.asyncio
+async def test_span_visibility_deferred_during_index_warmup():
+    rejected = ActionReplayRejected(
+        entry_id="entry-1",
+        reason="visibility_deferred_index_not_ready",
+        details={"entity_id": "light.kitchen"},
+        allow_routing_skip=True,
+    )
+
+    meta = await _cache_lookup_span(rejected)
+
+    assert meta["hit_type"] == "visibility_deferred_index_not_ready"
+    assert meta["action_tier_reason"] == "visibility_deferred_index_not_ready"
+    assert meta["entity_id"] == "light.kitchen"
+    assert meta["cache_tier"] == 0
+
+
+@pytest.mark.asyncio
+async def test_span_records_action_tier_reason_on_routing_hit():
+    from app.cache.cache_manager import RoutingSkipOutcome
+
+    rejected = ActionReplayRejected(
+        entry_id="entry-1",
+        reason="replay_failed",
+        details={"entity_id": "light.kitchen"},
+        allow_routing_skip=True,
+    )
+    routing = RoutingSkipOutcome(
+        kind="routing_hit",
+        entry_id="route-1",
+        agent_id="light-agent",
+        condensed_task="turn on the light",
+        similarity=1.0,
+    )
+
+    meta = await _cache_lookup_span(rejected, routing)
+
+    assert meta["hit_type"] == "routing_hit"
+    assert meta["action_tier_reason"] == "replay_failed"
+    assert meta["entity_id"] == "light.kitchen"
+    assert meta["cache_tier"] == 1
+
+
+@pytest.mark.asyncio
+async def test_span_origin_mismatch_carries_expected_and_actual_area():
+    rejected = ActionReplayRejected(
+        entry_id="entry-1",
+        reason="origin_mismatch",
+        details={"expected_area_id": "kitchen", "actual_area_id": "bedroom"},
+    )
+
+    meta = await _cache_lookup_span(rejected)
+
+    assert meta["hit_type"] == "origin_mismatch"
+    assert meta["action_tier_reason"] == "origin_mismatch"
+    assert meta["expected_area_id"] == "kitchen"
+    assert meta["actual_area_id"] == "bedroom"
+
+
+@pytest.mark.asyncio
+async def test_span_plain_miss_keeps_miss_hit_type():
+    meta = await _cache_lookup_span(None)
+
+    assert meta["hit_type"] == "miss"
+    assert meta["action_tier_reason"] == "miss"

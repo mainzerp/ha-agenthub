@@ -230,6 +230,9 @@ Notes:
   `{"tiers": {"routing": [...], "action": [...]}}`. Only
   `format_version: 4` envelopes are accepted; older exports (including
   legacy `tiers.response` shapes) are rejected and must be regenerated.
+- Action entries must have `schema_version: 6`; older action entries
+  (exported before the global action-cache rows) are skipped with a
+  warning and re-learned from live turns.
 - `mode=replace` clears the targeted tiers before importing.
   `mode=merge` keeps existing entries.
 - Embeddings are imported as exported (there is no re-embedding on

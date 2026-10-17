@@ -41,9 +41,53 @@ def _normalize_language(language: str | None) -> str:
     return (language or "en").strip().lower() or "en"
 
 
+# Punctuation that STT engines and typists vary freely inside an utterance
+# ("Ambiente Wohnen, einschalten." / "Ambiente-Wohnen einschalten"). Each
+# candidate is classified by ``_separator_replacement`` against its
+# neighbours so numbers keep their separators ("21,5", "21.5", "10:30",
+# "-3", "3-4"). Sentence punctuation is a candidate only when whitespace
+# follows, so decimals ("21.5") and entity ids ("light.kitchen") stay intact.
+_DASH_CHARS = "-\u2010\u2011\u2012\u2013\u2014\u2015\u2212"
+_APOSTROPHE_CHARS = "'`\u00b4\u2018\u2019\u201b"
+_QUOTE_CHARS = '"\u201a\u201c\u201d\u201e\u201f\u00ab\u00bb\u2039\u203a'
+_SEPARATOR_CANDIDATE_RE = re.compile(
+    "[,:;" + re.escape(_DASH_CHARS + _APOSTROPHE_CHARS + _QUOTE_CHARS) + r"]|[.!?\u2026]+(?=\s)"
+)
+_TRAILING_PUNCTUATION = ".!?;:,\u2026"
+
+
+def _separator_replacement(match: re.Match[str]) -> str:
+    text = match.string
+    token = match.group(0)
+    prev_char = text[match.start() - 1] if match.start() > 0 else ""
+    next_char = text[match.end()] if match.end() < len(text) else ""
+    between_digits = prev_char.isdigit() and next_char.isdigit()
+    if token in ",:":
+        # Decimal comma / time colon ("21,5", "10:30") stay; elsewhere a separator.
+        return token if between_digits else " "
+    if token in _DASH_CHARS:
+        # Numeric range ("3-4") or sign ("-3") stays; a dash between words separates.
+        if between_digits or (next_char.isdigit() and (not prev_char or prev_char.isspace())):
+            return "-"
+        return " "
+    if token in _APOSTROPHE_CHARS:
+        # In-word apostrophes join ("Peter's" == "Peters"); quoting apostrophes separate.
+        return "" if prev_char.isalnum() and next_char.isalnum() else " "
+    return " "
+
+
 def normalize_text(text: str) -> str:
-    normalized = _WHITESPACE_RE.sub(" ", (text or "").strip()).casefold()
-    return normalized.rstrip(".!?;:,")
+    """Normalize an utterance for exact cache keys (action and routing tiers).
+
+    Casefolds, treats inner punctuation noise (commas, semicolons, colons,
+    dashes between words, quotes, sentence punctuation before more text) as
+    word separators, collapses whitespace, and strips trailing punctuation.
+    Numeric separators survive: "21,5", "21.5", "10:30", "-3" and "3-4" keep
+    their meaning and stay distinct from each other.
+    """
+    normalized = _SEPARATOR_CANDIDATE_RE.sub(_separator_replacement, (text or "").casefold())
+    normalized = _WHITESPACE_RE.sub(" ", normalized).strip()
+    return normalized.rstrip(_TRAILING_PUNCTUATION).rstrip()
 
 
 def make_text_id(text: str, language: str) -> str:

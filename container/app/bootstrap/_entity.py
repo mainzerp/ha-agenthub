@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from typing import TYPE_CHECKING
 
@@ -34,6 +35,12 @@ _ENTITY_SYNC_DISABLED_RECHECK_SEC = 300
 _ENTITY_UPDATE_FLUSH_INTERVAL_SEC = 0.5
 _CACHE_VALIDATOR_DEFAULT_INTERVAL_MIN = 60
 
+# Entity-registry fields whose change can alter what a cached action means or
+# whether it may replay: identity (rename), the names and aliases resolution
+# matches on, area / device placement, visibility (hidden / disabled) and the
+# device class visibility rules filter on. Cosmetic fields (icon, labels,
+# ``original_*`` values integrations rewrite on upgrades) are deliberately
+# absent: invalidating on them deleted valid action-cache rows.
 RELEVANT_REGISTRY_FIELDS = frozenset(
     {
         "entity_id",
@@ -45,11 +52,45 @@ RELEVANT_REGISTRY_FIELDS = frozenset(
         "hidden",
         "disabled",
         "hidden_by",
+        "disabled_by",
         "aliases",
-        "icon",
-        "labels",
     }
 )
+
+# Device-registry fields that change the entities' resolution inputs: the
+# device name (indexed as ``device_name``) and the area entities inherit.
+# Disabling a device is reported per entity by HA (entity ``disabled_by``).
+RELEVANT_DEVICE_FIELDS = frozenset({"name", "name_by_user", "area_id"})
+
+# Set on the EntityIndex instance created at bootstrap: False until the first
+# full HA snapshot is installed. An index that was never tracked counts as
+# loaded so tests and ad-hoc indexes keep the fail-closed behaviour.
+_SNAPSHOT_LOADED_ATTR = "initial_snapshot_loaded"
+
+
+def entity_index_snapshot_loaded(entity_index: EntityIndex | None) -> bool:
+    """Return True once ``entity_index`` holds a full HA snapshot.
+
+    Readiness signal for the action-cache lookup: a visibility recheck that
+    fails because the index has not loaded yet is a metadata gap, not proof
+    that the cached row is stale. The replay is still refused.
+    """
+    if entity_index is None:
+        return False
+    return getattr(entity_index, _SNAPSHOT_LOADED_ATTR, True) is not False
+
+
+def _mark_snapshot_loaded(entity_index: EntityIndex | None, loaded: bool) -> None:
+    if entity_index is None:
+        return
+    was_loaded = entity_index_snapshot_loaded(entity_index)
+    try:
+        setattr(entity_index, _SNAPSHOT_LOADED_ATTR, loaded)
+    except Exception:
+        logger.debug("Could not set entity index snapshot readiness", exc_info=True)
+        return
+    if loaded and not was_loaded:
+        logger.info("Entity index snapshot loaded; action-cache visibility invalidation enabled")
 
 
 def _set_entity_index_pending_status(entity_index: EntityIndex, *, state: str, total: int) -> None:
@@ -312,6 +353,8 @@ async def _prime_entity_index(app: FastAPI, ha_client: HARestClient, entity_inde
                 result["removed"],
                 result["unchanged"],
             )
+            if entities:
+                _mark_snapshot_loaded(entity_index, True)
         else:
             _set_entity_index_pending_status(entity_index, state="building", total=len(entities))
             try:
@@ -348,6 +391,8 @@ async def _prime_entity_index(app: FastAPI, ha_client: HARestClient, entity_inde
                 len(entities),
                 force_rebuild,
             )
+            if entities:
+                _mark_snapshot_loaded(entity_index, True)
         try:
             from app.entity.index import INDEX_SCHEMA_VERSION as _ISV
 
@@ -469,15 +514,26 @@ async def resync_entity_index(app: FastAPI, *, reason: str) -> dict | None:
         result["removed"],
         result["unchanged"],
     )
+    # A prime that failed at startup leaves the index unloaded; the first
+    # successful full sync (periodic, reconnect, admin refresh) loads it.
+    if entities:
+        _mark_snapshot_loaded(entity_index, True)
     return result
 
 
-def _has_relevant_changes(data: dict, changes: dict) -> bool:
-    """Return True if the event contains changes that affect cache semantics."""
-    action = data.get("action")
-    if action == "remove":
-        return True
-    # Check both data and changes for relevant fields.
+def _relevant_entity_changes(data: dict, changes: dict) -> list[str]:
+    """Return the changed entity-registry fields that affect cached replay.
+
+    ``["remove"]`` for a removal. HA reports the OLD values of changed fields
+    in ``changes``; a rename additionally carries ``old_entity_id``. Only
+    fields in ``RELEVANT_REGISTRY_FIELDS`` count -- ``create`` events and
+    cosmetic updates (icon, labels, ``original_*``) return an empty list.
+    """
+    if data.get("action") == "remove":
+        return ["remove"]
+    fields: set[str] = set()
+    if data.get("old_entity_id"):
+        fields.add("entity_id")
     # Home Assistant may put changed fields in either location depending on event type.
     for source in (data, changes):
         if not isinstance(source, dict):
@@ -486,63 +542,173 @@ def _has_relevant_changes(data: dict, changes: dict) -> bool:
             if key == "entity_id" and source is data:
                 continue
             if key in RELEVANT_REGISTRY_FIELDS:
-                return True
-    return False
+                fields.add(key)
+    return sorted(fields)
 
 
-def _resolve_registry_event_entity_ids(app: FastAPI, entity_index: EntityIndex, event: dict) -> list[str]:
-    """Resolve affected entity ids for HA registry events."""
-    data = event.get("data") or {}
+def _event_changes(data: dict) -> dict:
     changes = data.get("changes") or {}
-    if not isinstance(changes, dict):
-        changes = {}
+    return changes if isinstance(changes, dict) else {}
+
+
+def _event_entity_ids(data: dict, changes: dict) -> set[str]:
+    """Entity ids named by an entity-registry event (new and old id on a rename)."""
     entity_ids: set[str] = set()
+    for value in (data.get("entity_id"), changes.get("entity_id"), data.get("old_entity_id")):
+        if isinstance(value, str) and value:
+            entity_ids.add(value)
+    for raw in (data.get("entity_ids"), changes.get("entity_ids")):
+        if isinstance(raw, list):
+            entity_ids.update(str(item) for item in raw if item)
+    return entity_ids
 
-    direct_entity_id = data.get("entity_id")
-    if isinstance(direct_entity_id, str) and direct_entity_id:
-        entity_ids.add(direct_entity_id)
-    changed_entity_id = changes.get("entity_id")
-    if isinstance(changed_entity_id, str) and changed_entity_id:
-        entity_ids.add(changed_entity_id)
-    raw_entity_ids = data.get("entity_ids")
-    if isinstance(raw_entity_ids, list):
-        entity_ids.update(str(item) for item in raw_entity_ids if item)
-    changed_entity_ids = changes.get("entity_ids")
-    if isinstance(changed_entity_ids, list):
-        entity_ids.update(str(item) for item in changed_entity_ids if item)
+
+def _entities_in_areas(app: FastAPI, entity_index: EntityIndex, area_ids: set[str]) -> set[str]:
+    """Indexed entities (or, as fallback, registry-mapped entities) in ``area_ids``."""
+    if not area_ids:
+        return set()
+    entity_ids = {entry.entity_id for entry in entity_index.list_entries() if (entry.area or "") in area_ids}
     if entity_ids:
-        if _has_relevant_changes(data, changes):
-            return sorted(entity_ids)
-        return []
-
-    entries = entity_index.list_entries()
-
-    area_ids = {
-        str(value)
-        for key in ("area_id", "old_area_id", "new_area_id")
-        for value in [data.get(key), changes.get(key)]
-        if value
-    }
-    if area_ids:
-        entity_ids.update(entry.entity_id for entry in entries if (entry.area or "") in area_ids)
-
-    names = {
-        str(value).strip().lower()
-        for key in ("name", "old_name", "new_name", "device_name")
-        for value in [data.get(key), changes.get(key)]
-        if isinstance(value, str) and value.strip()
-    }
-    if names:
-        entity_ids.update(entry.entity_id for entry in entries if (entry.device_name or "").strip().lower() in names)
-
-    if entity_ids:
-        return sorted(entity_ids)
-
+        return entity_ids
     lookups = getattr(app.state, "entity_lookups", None) or {}
     area_lookup = lookups.get("area_id") or {}
-    if area_ids:
-        entity_ids.update(entity_id for entity_id, area_id in area_lookup.items() if area_id in area_ids)
-    return sorted(entity_ids)
+    return {entity_id for entity_id, area_id in area_lookup.items() if area_id in area_ids}
+
+
+def _entities_with_device_names(entity_index: EntityIndex, names: set[str]) -> set[str]:
+    wanted = {name.strip().lower() for name in names if name and name.strip()}
+    if not wanted:
+        return set()
+    return {
+        entry.entity_id for entry in entity_index.list_entries() if (entry.device_name or "").strip().lower() in wanted
+    }
+
+
+async def _device_entity_ids(ha_client: HARestClient, device_id: str) -> list[str] | None:
+    """Entity ids attached to ``device_id`` via HA's ``device_entities`` template.
+
+    Returns None when the lookup fails so callers can fall back to a broader,
+    conservative match instead of skipping the invalidation.
+    """
+    try:
+        rendered = await ha_client.render_template(
+            "{{ device_entities(device_id) | tojson }}",
+            variables={"device_id": device_id},
+        )
+    except Exception:
+        logger.debug("device_entities lookup failed for %s", device_id, exc_info=True)
+        return None
+    if not isinstance(rendered, str) or not rendered:
+        return None
+    try:
+        parsed = json.loads(rendered)
+    except ValueError:
+        return None
+    if not isinstance(parsed, list):
+        return None
+    return [str(item) for item in parsed if isinstance(item, str) and item]
+
+
+async def _fresh_area_name(ha_client: HARestClient, area_id: str) -> str | None:
+    """Current name of ``area_id`` from HA, or None when it cannot be read."""
+    try:
+        registry = await ha_client.get_area_registry()
+    except Exception:
+        logger.debug("Area registry lookup failed for %s", area_id, exc_info=True)
+        return None
+    if not isinstance(registry, dict):
+        return None
+    name = registry.get(area_id)
+    return str(name) if name else None
+
+
+async def _resolve_area_event(
+    app: FastAPI, ha_client: HARestClient, entity_index: EntityIndex, data: dict
+) -> tuple[list[str], str]:
+    """Entities whose cached rows an ``area_registry_updated`` event invalidates.
+
+    HA sends area events without a change set, for cosmetic edits too (icon,
+    picture, aliases, floor, labels, sensors). Only a removal or a name change
+    alters the indexed ``area_name``; replay visibility keys on area ids and is
+    rechecked on every replay, so other area edits keep the rows.
+    """
+    action = str(data.get("action") or "update")
+    area_id = data.get("area_id")
+    if not isinstance(area_id, str) or not area_id or action not in ("update", "remove"):
+        return [], ""
+    if action == "update":
+        previous = (_previous_lookups(app).get("area") or {}).get(area_id)
+        current = await _fresh_area_name(ha_client, area_id)
+        if previous is not None and current is not None and previous == current:
+            logger.debug("Area registry update for %s left its name unchanged; cache kept", area_id)
+            return [], ""
+        detail = f"area_registry_updated action=update area_id={area_id} name={previous!r}->{current!r}"
+    else:
+        detail = f"area_registry_updated action=remove area_id={area_id}"
+    return sorted(_entities_in_areas(app, entity_index, {area_id})), detail
+
+
+async def _resolve_device_event(
+    app: FastAPI, ha_client: HARestClient, entity_index: EntityIndex, data: dict
+) -> tuple[list[str], str]:
+    """Entities whose cached rows a ``device_registry_updated`` event invalidates.
+
+    Only a device update that changes ``RELEVANT_DEVICE_FIELDS`` counts, and it
+    targets the device's own entities -- not every entity sharing its old area.
+    Device creation needs nothing; removing or disabling a device makes HA emit
+    entity-registry events for each entity, which are handled per entity.
+    """
+    action = str(data.get("action") or "update")
+    changes = _event_changes(data)
+    fields = sorted(RELEVANT_DEVICE_FIELDS.intersection(changes))
+    if action != "update" or not fields:
+        return [], ""
+    device_id = data.get("device_id")
+    detail = f"device_registry_updated action=update device_id={device_id} fields={','.join(fields)}"
+    if isinstance(device_id, str) and device_id:
+        device_entities = await _device_entity_ids(ha_client, device_id)
+        if device_entities is not None:
+            return sorted(set(device_entities)), detail
+    # Fallback when the device -> entity lookup fails: over-invalidate rather
+    # than keep rows whose resolution inputs may have changed.
+    entity_ids: set[str] = set()
+    old_names = {str(changes.get(key)) for key in ("name", "name_by_user") if isinstance(changes.get(key), str)}
+    entity_ids |= _entities_with_device_names(entity_index, old_names)
+    old_area = changes.get("area_id")
+    if isinstance(old_area, str) and old_area:
+        entity_ids |= _entities_in_areas(app, entity_index, {old_area})
+    return sorted(entity_ids), f"{detail} (device lookup failed; broad match)"
+
+
+async def _resolve_registry_event(
+    app: FastAPI,
+    ha_client: HARestClient,
+    entity_index: EntityIndex,
+    event: dict,
+    *,
+    kind: str,
+) -> tuple[list[str], str]:
+    """Return ``(entity_ids, detail)`` a registry event must invalidate.
+
+    ``kind`` is the registry the event came from (``entity``, ``device`` or
+    ``area``). An empty list means the event does not affect cached replay.
+    """
+    data = event.get("data") or {}
+    if not isinstance(data, dict):
+        return [], ""
+    changes = _event_changes(data)
+    direct_ids = _event_entity_ids(data, changes)
+    if kind == "entity" or direct_ids:
+        fields = _relevant_entity_changes(data, changes)
+        if not direct_ids or not fields:
+            return [], ""
+        action = data.get("action") or "update"
+        return sorted(direct_ids), f"entity_registry_updated action={action} fields={','.join(fields)}"
+    if kind == "area":
+        return await _resolve_area_event(app, ha_client, entity_index, data)
+    if kind == "device":
+        return await _resolve_device_event(app, ha_client, entity_index, data)
+    return [], ""
 
 
 async def _refresh_registry_entities(
@@ -590,6 +756,9 @@ async def setup_entity_index(app: FastAPI, source: str, ha_client: HARestClient,
     entity_index = getattr(app.state, "entity_index", None)
     if entity_index is None:
         entity_index = EntityIndex(vector_store)
+        # The in-memory index is empty until the background prime installs
+        # the first HA snapshot (see ``entity_index_snapshot_loaded``).
+        _mark_snapshot_loaded(entity_index, False)
         app.state.entity_index = entity_index
     # Device-class source for the sensitive-action approval backstop.
     register_entity_index(entity_index)
@@ -610,6 +779,12 @@ async def setup_entity_observers(
     Stores ``ws_client``, ``ws_task``, ``flush_task``, ``sync_task`` on ``app.state``.
     Must be called *after* ``setup_cache`` so ``cache_manager`` is available for registry invalidation.
     """
+    # Action-cache rows rejected by the visibility recheck are kept (never
+    # replayed) while the entity index has not loaded its first snapshot.
+    register_probe = getattr(cache_manager, "set_entity_index_readiness_probe", None)
+    if callable(register_probe):
+        register_probe(lambda: entity_index_snapshot_loaded(entity_index))
+
     ws_client = getattr(app.state, "ws_client", None)
     if ws_client is None:
         from app.ha_client.websocket import HAWebSocketClient
@@ -663,19 +838,22 @@ async def setup_entity_observers(
                 )
                 entity_update_queue.put_nowait(entry)
 
-        async def _invalidate_registry_event(event: dict) -> list[str]:
-            resolved_entity_ids = _resolve_registry_event_entity_ids(app, entity_index, event)
+        async def _invalidate_registry_event(event: dict, *, kind: str) -> list[str]:
+            resolved_entity_ids, detail = await _resolve_registry_event(app, ha_client, entity_index, event, kind=kind)
             if not resolved_entity_ids:
                 return []
-            event_type = event.get("event_type", "unknown")
+            event_type = event.get("event_type") or f"{kind}_registry_updated"
             try:
-                counts = await cache_manager.invalidate_by_entity_id(resolved_entity_ids)
+                counts = await cache_manager.invalidate_by_entity_id(
+                    resolved_entity_ids, reason="registry_event", detail=detail
+                )
                 logger.info(
-                    "Cache invalidation succeeded for %s: entities=%s action=%d routing=%d",
+                    "Cache invalidation succeeded for %s: entities=%s action=%d routing=%d (%s)",
                     event_type,
                     sorted(resolved_entity_ids),
                     counts.get("action", 0),
                     counts.get("routing", 0),
+                    detail,
                 )
             except Exception:
                 logger.warning(
@@ -690,17 +868,17 @@ async def setup_entity_observers(
         # names from the cached lookups.
         async def on_entity_registry_updated(event: dict) -> None:
             ha_client.clear_area_registry_cache()
-            resolved_entity_ids = await _invalidate_registry_event(event)
+            resolved_entity_ids = await _invalidate_registry_event(event, kind="entity")
             await _refresh_registry_entities(app, ha_client, entity_index, resolved_entity_ids)
 
         async def on_device_registry_updated(event: dict) -> None:
             ha_client.clear_area_registry_cache()
-            resolved_entity_ids = await _invalidate_registry_event(event)
+            resolved_entity_ids = await _invalidate_registry_event(event, kind="device")
             await _refresh_registry_entities(app, ha_client, entity_index, resolved_entity_ids)
 
         async def on_area_registry_updated(event: dict) -> None:
             ha_client.clear_area_registry_cache()
-            resolved_entity_ids = await _invalidate_registry_event(event)
+            resolved_entity_ids = await _invalidate_registry_event(event, kind="area")
             await _refresh_registry_entities(app, ha_client, entity_index, resolved_entity_ids)
 
         # Registry refresh work issues send_command round-trips whose
@@ -785,6 +963,8 @@ async def setup_entity_observers(
                         hidden_ids=hidden_ids,
                     )
                     result = await entity_index.sync_async(entities, snapshot_generation=snapshot_generation)
+                    if entities:
+                        _mark_snapshot_loaded(entity_index, True)
                     logger.info(
                         "Deferred hidden-entity re-sync: +%d ~%d -%d =%d (hidden=%d)",
                         result["added"],

@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
+from app.cache.action_cache import _ACTION_CACHE_SCHEMA_VERSION
 from app.cache.sqlite_cache_store import (
     COLLECTION_ACTION_CACHE,
     COLLECTION_ROUTING_CACHE,
@@ -183,7 +184,7 @@ def _validate_entry(entry: dict, *, tier: str):
         # Do not fill in missing current provenance with model defaults: old
         # commands need a live execution before they may be replayed again.
         if (
-            entry.get("schema_version") != 5
+            entry.get("schema_version") != _ACTION_CACHE_SCHEMA_VERSION
             or "origin_required" not in entry
             or "origin_provenance" not in entry
             or entry.get("origin_provenance") is not True

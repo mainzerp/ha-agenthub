@@ -59,7 +59,7 @@ The export and import API surface uses the `action` tier name.
 |-----|---------|------|-------------|
 | `cache.validator.enabled` | `true` | bool | Enable periodic action-cache validation |
 | `cache.validator.interval_minutes` | `60` | int | Minutes between validation scans (`0` = disabled) |
-| `cache.validator.model` | (empty) | string | LLM model for cache validator response regeneration (empty = template only) |
+| `cache.validator.model` | (empty) | string | LLM model for cache validator response regeneration in the row's stored language (empty = English template for English rows; non-English rows needing a correction are deleted) |
 | `cache.validator.temperature` | `0.2` | float | Temperature for cache validator LLM regeneration |
 | `cache.validator.reasoning_effort` | `low` | string | Reasoning effort for cache validator LLM calls (`none`, `low`, `medium`, `high`) |
 | `cache.validator.max_tokens` | `1024` | int | Max tokens for cache validator LLM regeneration |

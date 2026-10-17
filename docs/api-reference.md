@@ -774,7 +774,13 @@ including `tiers.response` shapes) are rejected on import.
 
 ### GET /api/admin/cache/stats
 
-Get cache statistics per tier.
+Get cache statistics per tier: `{"routing": {...}, "action": {...}}`.
+The `action` object additionally carries `deletions` (action-row
+deletion counts by reason since process start, e.g. `registry_event`,
+`visibility_rejected`, `validator`, `manual_delete`, `flush`,
+`startup_legacy_schema`) and `deletions_deferred_index_not_ready`
+(visibility rejections kept because the entity index had not loaded its
+first snapshot).
 
 ### GET /api/admin/cache/entries
 
@@ -820,7 +826,9 @@ Multipart upload that restores cache entries from an envelope.
 
 The envelope shape is `{"format_version": 4, "tiers": {"routing":
 [<entry>, ...], "action": [<entry>, ...]}}`. Only `format_version: 4`
-envelopes are accepted; older exports must be regenerated. When the
+envelopes are accepted; older exports must be regenerated. Action entries
+must carry `schema_version: 6` with origin provenance; older action
+entries are skipped. When the
 embedding model recorded in the envelope differs from the active one,
 the import emits a warning (routing semantic matching relies on
 embeddings, so consider flushing the routing tier after a model
@@ -858,7 +866,9 @@ Response: `{"status": "ok", "entries": [...], "total", "page", "per_page", "page
 
 Each audit entry records `run_id`, `entry_id`, `query_text`, `language`,
 `agent_id`, `service`, `entity_id`, the final `verdict`
-(`consistent | correct_response | invalidate | no_action | error`), the raw
+(`consistent | correct_response | keep_original | invalidate | no_action | error`;
+`keep_original` = flagged, but no different reply could be produced, e.g.
+the row's language is unknown, so the stored reply is kept unchanged), the raw
 `llm_verdict` where available, `old_response_text` / `new_response_text`
 and `old_original_response_text` / `new_original_response_text`, a `deleted`
 flag, and `created_at`. Rows older than

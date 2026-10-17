@@ -174,7 +174,7 @@ def test_action_export_preserves_current_origin_provenance():
     payload = json.loads(b"".join(iter_export_chunks(_make_manager(store), ["action"], app_version="1.4.0")))
 
     exported = payload["tiers"]["action"][0]
-    assert exported["schema_version"] == 5
+    assert exported["schema_version"] == 6
     assert exported["origin_required"] is True
     assert exported["origin_provenance"] is True
 

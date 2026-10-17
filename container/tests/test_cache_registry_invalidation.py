@@ -5,19 +5,23 @@ from __future__ import annotations
 import asyncio
 import contextlib
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
 
 from app.cache.cache_manager import CacheManager
 from app.cache.vector_store import VectorStore
 
+REGISTRY_KWARGS = {"reason": "registry_event", "detail": ANY}
 
-async def _initialize_registry_runtime(*, entity_entries=None, cache_counts=None):
+
+async def _initialize_registry_runtime(*, entity_entries=None, cache_counts=None, lookups=None):
     from app.runtime_setup import _initialize_setup_dependent_services
 
     app = SimpleNamespace()
     app.state = SimpleNamespace()
+    if lookups is not None:
+        app.state.entity_lookups = lookups
 
     class FakeRegistry:
         async def register(self, _agent, *, replace=False):
@@ -153,7 +157,9 @@ async def test_entity_rename_invalidates_action_and_routing():
         }
     )
 
-    cache_manager.invalidate_by_entity_id.assert_awaited_once_with(["light.kitchen_new", "light.kitchen_old"])
+    cache_manager.invalidate_by_entity_id.assert_awaited_once_with(
+        ["light.kitchen_new", "light.kitchen_old"], **REGISTRY_KWARGS
+    )
     assert ha_client.get_state.await_count == 2
 
 
@@ -163,7 +169,7 @@ async def test_entity_remove_invalidates_action_and_routing():
 
     await handlers["entity_registry_updated"]({"data": {"entity_id": "light.kitchen", "action": "remove"}})
 
-    cache_manager.invalidate_by_entity_id.assert_awaited_once_with(["light.kitchen"])
+    cache_manager.invalidate_by_entity_id.assert_awaited_once_with(["light.kitchen"], **REGISTRY_KWARGS)
     ha_client.get_state.assert_awaited_once_with("light.kitchen")
 
 
@@ -196,7 +202,7 @@ async def test_relevant_registry_change_does_invalidate():
         }
     )
 
-    cache_manager.invalidate_by_entity_id.assert_awaited_once_with(["light.kitchen"])
+    cache_manager.invalidate_by_entity_id.assert_awaited_once_with(["light.kitchen"], **REGISTRY_KWARGS)
 
 
 @pytest.mark.asyncio
@@ -235,40 +241,204 @@ async def test_successful_invalidation_is_logged(caplog):
     assert "light.kitchen" in caplog.text
 
 
+_KITCHEN_ENTRIES = [
+    SimpleNamespace(entity_id="light.kitchen", area="kitchen", device_name="Kitchen Lamp"),
+    SimpleNamespace(entity_id="light.kitchen_ceiling", area="kitchen", device_name="Ceiling Spot"),
+    SimpleNamespace(entity_id="light.garage", area="garage", device_name="Garage Lamp"),
+]
+
+
 @pytest.mark.asyncio
-async def test_device_registry_update_fans_out_to_both_caches():
-    entries = [
-        SimpleNamespace(entity_id="light.kitchen", area="kitchen", device_name="Kitchen Lamp"),
-        SimpleNamespace(entity_id="switch.kitchen_socket", area="kitchen", device_name="Kitchen Lamp"),
-    ]
-    handlers, cache_manager, ha_client, _entity_index = await _initialize_registry_runtime(entity_entries=entries)
+async def test_device_rename_invalidates_only_that_devices_entities():
+    handlers, cache_manager, ha_client, _entity_index = await _initialize_registry_runtime(
+        entity_entries=_KITCHEN_ENTRIES
+    )
+    ha_client.render_template = AsyncMock(return_value='["light.kitchen", "switch.kitchen_socket"]')
 
-    await handlers["device_registry_updated"]({"data": {"device_name": "Kitchen Lamp"}})
+    await handlers["device_registry_updated"](
+        {"data": {"action": "update", "device_id": "dev-lamp", "changes": {"name_by_user": "Kitchen Lamp"}}}
+    )
 
-    cache_manager.invalidate_by_entity_id.assert_awaited_once_with(["light.kitchen", "switch.kitchen_socket"])
+    cache_manager.invalidate_by_entity_id.assert_awaited_once_with(
+        ["light.kitchen", "switch.kitchen_socket"], **REGISTRY_KWARGS
+    )
+    assert ha_client.render_template.await_args.kwargs == {"variables": {"device_id": "dev-lamp"}}
     assert ha_client.get_state.await_count == 2
 
 
 @pytest.mark.asyncio
-async def test_area_registry_update_fans_out_to_both_caches():
-    entries = [
-        SimpleNamespace(entity_id="light.kitchen", area="kitchen", device_name="Kitchen Lamp"),
-        SimpleNamespace(entity_id="switch.kitchen_socket", area="kitchen", device_name="Kitchen Lamp"),
-        SimpleNamespace(entity_id="light.garage", area="garage", device_name="Garage Lamp"),
-    ]
-    handlers, cache_manager, ha_client, _entity_index = await _initialize_registry_runtime(entity_entries=entries)
+async def test_device_area_change_does_not_invalidate_every_entity_in_the_old_area():
+    """Root-cause regression: a device moving out of ``kitchen`` used to
+    invalidate every action row of every entity in ``kitchen``."""
+    handlers, cache_manager, ha_client, _entity_index = await _initialize_registry_runtime(
+        entity_entries=_KITCHEN_ENTRIES
+    )
+    ha_client.render_template = AsyncMock(return_value='["light.kitchen"]')
 
-    await handlers["area_registry_updated"]({"data": {"area_id": "kitchen"}})
+    await handlers["device_registry_updated"](
+        {"data": {"action": "update", "device_id": "dev-lamp", "changes": {"area_id": "kitchen"}}}
+    )
 
-    cache_manager.invalidate_by_entity_id.assert_awaited_once_with(["light.kitchen", "switch.kitchen_socket"])
+    cache_manager.invalidate_by_entity_id.assert_awaited_once_with(["light.kitchen"], **REGISTRY_KWARGS)
+
+
+@pytest.mark.asyncio
+async def test_device_update_falls_back_to_broad_match_when_device_lookup_fails():
+    handlers, cache_manager, ha_client, _entity_index = await _initialize_registry_runtime(
+        entity_entries=_KITCHEN_ENTRIES
+    )
+    ha_client.render_template = AsyncMock(return_value=None)
+
+    await handlers["device_registry_updated"](
+        {"data": {"action": "update", "device_id": "dev-lamp", "changes": {"area_id": "kitchen"}}}
+    )
+
+    cache_manager.invalidate_by_entity_id.assert_awaited_once_with(
+        ["light.kitchen", "light.kitchen_ceiling"], **REGISTRY_KWARGS
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "data",
+    [
+        {"action": "update", "device_id": "dev-lamp", "changes": {"sw_version": "1.0.0"}},
+        {"action": "update", "device_id": "dev-lamp", "changes": {"labels": {"x"}, "modified_at": "t"}},
+        {"action": "create", "device_id": "dev-new"},
+        {"action": "remove", "device_id": "dev-lamp"},
+    ],
+)
+async def test_irrelevant_device_events_keep_cache(data):
+    handlers, cache_manager, ha_client, _entity_index = await _initialize_registry_runtime(
+        entity_entries=_KITCHEN_ENTRIES
+    )
+    ha_client.render_template = AsyncMock(return_value='["light.kitchen"]')
+
+    await handlers["device_registry_updated"]({"data": data})
+
+    cache_manager.invalidate_by_entity_id.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_cosmetic_area_update_keeps_cache():
+    """Root-cause regression: HA sends ``area_registry_updated`` without a
+    change set for icon / picture / alias / floor / label edits. Each one used
+    to delete every cached action of every entity in that area."""
+    handlers, cache_manager, ha_client, _entity_index = await _initialize_registry_runtime(
+        entity_entries=_KITCHEN_ENTRIES,
+        lookups={"area": {"kitchen": "Kueche"}, "alias": {}, "device": {}, "area_id": {}},
+    )
+    ha_client.get_area_registry = AsyncMock(return_value={"kitchen": "Kueche"})
+
+    await handlers["area_registry_updated"]({"data": {"action": "update", "area_id": "kitchen"}})
+
+    cache_manager.invalidate_by_entity_id.assert_not_awaited()
+    ha_client.get_state.assert_not_awaited()
+    ha_client.clear_area_registry_cache.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_area_rename_invalidates_entities_in_that_area():
+    handlers, cache_manager, ha_client, _entity_index = await _initialize_registry_runtime(
+        entity_entries=_KITCHEN_ENTRIES,
+        lookups={"area": {"kitchen": "Kueche"}, "alias": {}, "device": {}, "area_id": {}},
+    )
+    ha_client.get_area_registry = AsyncMock(return_value={"kitchen": "Kochbereich"})
+
+    await handlers["area_registry_updated"]({"data": {"action": "update", "area_id": "kitchen"}})
+
+    cache_manager.invalidate_by_entity_id.assert_awaited_once_with(
+        ["light.kitchen", "light.kitchen_ceiling"], **REGISTRY_KWARGS
+    )
     assert ha_client.get_state.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_area_remove_invalidates_entities_in_that_area():
+    handlers, cache_manager, _ha_client, _entity_index = await _initialize_registry_runtime(
+        entity_entries=_KITCHEN_ENTRIES
+    )
+
+    await handlers["area_registry_updated"]({"data": {"action": "remove", "area_id": "garage"}})
+
+    cache_manager.invalidate_by_entity_id.assert_awaited_once_with(["light.garage"], **REGISTRY_KWARGS)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("action", ["create", "reorder"])
+async def test_area_create_and_reorder_keep_cache(action):
+    handlers, cache_manager, _ha_client, _entity_index = await _initialize_registry_runtime(
+        entity_entries=_KITCHEN_ENTRIES
+    )
+
+    await handlers["area_registry_updated"]({"data": {"action": action, "area_id": "kitchen"}})
+
+    cache_manager.invalidate_by_entity_id.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"icon": "mdi:lamp"},
+        {"labels": {"evening"}},
+        {"original_name": "Kitchen", "translation_key": "light", "capabilities": {"min_mireds": 153}},
+        {"options": {"light": {"favorite_colors": []}}},
+    ],
+)
+async def test_cosmetic_entity_update_keeps_cache(changes):
+    """Root-cause regression: icon / label edits and integration-driven
+    ``original_*`` rewrites (HA upgrades) do not change what a cached action
+    targets and must not delete it."""
+    handlers, cache_manager, _ha_client, _entity_index = await _initialize_registry_runtime()
+
+    await handlers["entity_registry_updated"](
+        {"data": {"action": "update", "entity_id": "light.kitchen", "changes": changes}}
+    )
+
+    cache_manager.invalidate_by_entity_id.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_entity_create_keeps_cache():
+    handlers, cache_manager, _ha_client, _entity_index = await _initialize_registry_runtime()
+
+    await handlers["entity_registry_updated"]({"data": {"action": "create", "entity_id": "light.kitchen"}})
+
+    cache_manager.invalidate_by_entity_id.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "changes",
+    [{"disabled_by": None}, {"hidden_by": None}, {"area_id": "kitchen"}, {"aliases": set()}, {"device_id": "x"}],
+)
+async def test_replay_relevant_entity_update_invalidates(changes):
+    handlers, cache_manager, _ha_client, _entity_index = await _initialize_registry_runtime()
+
+    await handlers["entity_registry_updated"](
+        {"data": {"action": "update", "entity_id": "light.kitchen", "changes": changes}}
+    )
+
+    cache_manager.invalidate_by_entity_id.assert_awaited_once_with(["light.kitchen"], **REGISTRY_KWARGS)
+
+
+@pytest.mark.asyncio
+async def test_entity_id_rename_with_old_entity_id_invalidates_both_ids():
+    handlers, cache_manager, _ha_client, _entity_index = await _initialize_registry_runtime()
+
+    await handlers["entity_registry_updated"](
+        {"data": {"action": "update", "entity_id": "light.kueche", "old_entity_id": "light.kuche", "changes": {}}}
+    )
+
+    cache_manager.invalidate_by_entity_id.assert_awaited_once_with(["light.kuche", "light.kueche"], **REGISTRY_KWARGS)
 
 
 @pytest.mark.asyncio
 async def test_invalidation_runs_before_index_sync():
     order: list[str] = []
 
-    async def _invalidate(_entity_ids):
+    async def _invalidate(_entity_ids, **_kwargs):
         order.append("invalidate")
         return {"action": 1, "routing": 2}
 
@@ -315,7 +485,7 @@ async def test_registry_listener_schedules_refresh_off_receive_loop():
     gate.set()
     await asyncio.wait_for(task, timeout=2)
 
-    cache_manager.invalidate_by_entity_id.assert_awaited_once_with(["light.kitchen"])
+    cache_manager.invalidate_by_entity_id.assert_awaited_once_with(["light.kitchen"], **REGISTRY_KWARGS)
     ha_client.get_state.assert_awaited_once_with("light.kitchen")
 
 

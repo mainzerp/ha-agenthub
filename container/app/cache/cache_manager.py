@@ -3,17 +3,17 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import logging
 import threading
 import time
-from collections import OrderedDict
+from collections import Counter, OrderedDict
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
 from app.analytics.collector import track_cache_event_background, track_rewrite
 from app.analytics.tracer import _optional_span
+from app.cache._base_cache import _parse_entity_ids, _store_method
 from app.cache.action_cache import _ACTION_CACHE_SCHEMA_VERSION, ActionCache
 from app.cache.embedding import get_embedding_engine
 from app.cache.routing_cache import RoutingCache, make_routing_entry_id
@@ -31,6 +31,16 @@ logger = logging.getLogger(__name__)
 # exact query instead of deleting it.
 SEMANTIC_ENTRY_TOKEN_PREFIX = "semantic:"
 _MAX_SEMANTIC_SUPPRESSIONS = 4096
+
+# Action-cache deletions are logged per row at INFO. Deleting more rows than
+# this in one operation also logs one WARNING summary, which survives restarts
+# in the persisted warning log.
+_BULK_ACTION_DELETION_WARN_THRESHOLD = 3
+# Deletion reasons that depend on entity-index content. While the index has
+# not loaded its first HA snapshot such a rejection is a metadata gap, not
+# proof the row is stale: the row is kept (and still never replayed).
+_INDEX_DEPENDENT_DELETION_REASONS = frozenset({"visibility_rejected"})
+_MAX_LOGGED_BULK_KEYS = 20
 
 
 def make_semantic_entry_token(query_entry_id: str, neighbour_entry_id: str) -> str:
@@ -89,10 +99,24 @@ class ActionReplayOutcome:
 
 @dataclass
 class ActionReplayRejected:
-    """A candidate that must force the caller through live classification."""
+    """An action-cache row that was found but not replayed.
+
+    ``reason`` is the explicit action-tier miss reason recorded on the
+    ``cache_lookup`` span (``origin_mismatch``, ``legacy_schema``,
+    ``invalid_command``, ``context_dependent``, ``agent_unavailable``,
+    ``visibility_rejected``, ``visibility_deferred_index_not_ready``,
+    ``replay_failed``). ``details`` carries
+    trace-safe span metadata for the reason (e.g. expected vs actual
+    area id, the rejected entity id). ``allow_routing_skip`` is True only
+    for reasons that keep the historical fall-through to the routing tier
+    (visibility rejection or deferral, replay failure); every other reason forces live
+    classification.
+    """
 
     entry_id: str | None
     reason: str
+    details: dict[str, Any] = field(default_factory=dict)
+    allow_routing_skip: bool = False
 
 
 @dataclass
@@ -129,6 +153,13 @@ class CacheManager:
         # query entry id -> neighbour routing entry ids that misrouted it.
         self._semantic_suppressions: OrderedDict[str, set[str]] = OrderedDict()
         self._semantic_suppressions_lock = threading.Lock()
+        # Action-cache deletions by reason since process start (cache stats).
+        self._action_deletions: Counter[str] = Counter()
+        self._action_deletions_deferred: int = 0
+        self._deletion_stats_lock = threading.Lock()
+        # Returns False while the entity index has not loaded its first HA
+        # snapshot (registered by the entity bootstrap). None = always ready.
+        self._entity_index_ready_probe: Callable[[], bool] | None = None
 
     @property
     def response_cache(self) -> ActionCache:
@@ -151,16 +182,25 @@ class CacheManager:
             await asyncio.to_thread(
                 self._routing_cache.purge_entries_without_language,
             )
-            await asyncio.to_thread(
+            purged = await asyncio.to_thread(
                 self._action_cache.purge_entries_without_language,
             )
+            self._record_action_deletions("startup_missing_language", [], count=purged)
             await asyncio.to_thread(
                 self._routing_cache.purge_legacy_schema_entries,
                 5,
             )
-            await asyncio.to_thread(
+            # Action rows below the current schema are purged at startup;
+            # the lookup path also rejects any that slip through (import).
+            purged = await asyncio.to_thread(
                 self._action_cache.purge_legacy_schema_entries,
-                4,
+                _ACTION_CACHE_SCHEMA_VERSION,
+            )
+            self._record_action_deletions(
+                "startup_legacy_schema",
+                [],
+                count=purged,
+                detail=f"schema_version<{_ACTION_CACHE_SCHEMA_VERSION}",
             )
         except Exception:
             logger.warning(
@@ -214,6 +254,10 @@ class CacheManager:
 
         ``check_agent`` (optional) confirms the cached owning agent is still
         registered/enabled -- the same gate the routing tier applies.
+        ``origin_area_id`` is compared against area-bound rows only;
+        ``origin_device_id`` is accepted for caller compatibility and is
+        never a replay binding (schema 6). A found-but-rejected row returns
+        an :class:`ActionReplayRejected` carrying the explicit reason.
         """
         if not self._action_cache._enabled:
             return None
@@ -231,7 +275,7 @@ class CacheManager:
             # It may be a legacy command payload and must force a live turn,
             # never hand the utterance to routing-cache skip.
             if entry_id is not None:
-                await self._invalidate_action_entry(entry_id)
+                await self._invalidate_action_entry(entry_id, reason="invalid_command")
                 return ActionReplayRejected(entry_id=entry_id, reason="invalid_command")
             return None
 
@@ -239,7 +283,7 @@ class CacheManager:
         # last_entities) are never stored; a row that still carries the flag
         # (e.g. imported) is removed and forces a live turn.
         if entry.context_dependent:
-            await self._invalidate_action_entry(entry_id)
+            await self._invalidate_action_entry(entry_id, reason="context_dependent", entity_ids=entry.entity_ids)
             return ActionReplayRejected(entry_id=entry_id, reason="context_dependent")
 
         # The current version introduced executor-audited commands and
@@ -247,24 +291,34 @@ class CacheManager:
         # so delete only that action-cache row and force a live turn.  This
         # must not degrade to a routing-cache skip for the same utterance.
         if entry.schema_version != _ACTION_CACHE_SCHEMA_VERSION or not entry.origin_provenance:
-            await self._invalidate_action_entry(entry_id)
+            await self._invalidate_action_entry(entry_id, reason="legacy_schema", entity_ids=entry.entity_ids)
             return ActionReplayRejected(entry_id=entry_id, reason="legacy_schema")
 
-        if entry.origin_required and (
-            (entry.origin_area_id and entry.origin_area_id != origin_area_id)
-            or (entry.origin_device_id and entry.origin_device_id != origin_device_id)
-            or (entry.origin_area_id is None and entry.origin_device_id is None)
-        ):
-            return ActionReplayRejected(entry_id=entry_id, reason="origin_mismatch")
-        # The reverse direction: an entry learned without origin context
-        # (dashboard/text turn) must not replay on a satellite turn that has
-        # an area or device -- the live turn may resolve the same wording to
-        # an entity in that area. The row stays valid for origin-less turns.
-        if not entry.origin_required and (origin_area_id or origin_device_id):
-            return ActionReplayRejected(entry_id=entry_id, reason="origin_mismatch")
+        # Origin binding (schema 6): a global row (``origin_required`` False)
+        # replays for every origin -- any satellite, any area, or none. A row
+        # whose target entity was selected through the learning turn's origin
+        # area is bound to that area and replays only on turns from the same
+        # area. Rows are never bound to a device: ``origin_device_id`` is
+        # neither stored as a binding nor compared here.
+        if entry.origin_required:
+            if not entry.origin_area_id:
+                # An area-bound row without an area can never replay.
+                await self._invalidate_action_entry(entry_id, reason="origin_mismatch", entity_ids=entry.entity_ids)
+                return ActionReplayRejected(
+                    entry_id=entry_id,
+                    reason="origin_mismatch",
+                    details={"expected_area_id": None, "actual_area_id": origin_area_id},
+                )
+            if entry.origin_area_id != origin_area_id:
+                # Not invalidated: the row stays valid for its own area.
+                return ActionReplayRejected(
+                    entry_id=entry_id,
+                    reason="origin_mismatch",
+                    details={"expected_area_id": entry.origin_area_id, "actual_area_id": origin_area_id},
+                )
 
         if not self._cached_command_is_structurally_valid(entry.cached_action):
-            await self._invalidate_action_entry(entry_id)
+            await self._invalidate_action_entry(entry_id, reason="invalid_command", entity_ids=entry.entity_ids)
             return ActionReplayRejected(entry_id=entry_id, reason="invalid_command")
 
         # Re-validation: check visibility for every entity referenced by the
@@ -277,23 +331,46 @@ class CacheManager:
                 logger.warning("Action cache agent check failed", exc_info=True)
                 agent_ok = False
             if not agent_ok:
-                await self._invalidate_action_entry(entry_id)
+                await self._invalidate_action_entry(entry_id, reason="agent_unavailable", entity_ids=entry.entity_ids)
                 track_cache_event_background(tier="action", hit_type="miss")
                 return ActionReplayRejected(entry_id=entry_id, reason="agent_unavailable")
-        entity_ids_to_check = list(dict.fromkeys([entry.cached_action.entity_id, *(entry.entity_ids or [])]))
+        entity_ids_to_check = [
+            eid for eid in dict.fromkeys([entry.cached_action.entity_id, *(entry.entity_ids or [])]) if eid
+        ]
         try:
             visibility_results = await asyncio.gather(
-                *[check_visibility(cached_agent_id, eid) for eid in entity_ids_to_check if eid]
+                *[check_visibility(cached_agent_id, eid) for eid in entity_ids_to_check]
             )
+            rejected_entity_ids = [
+                eid for eid, visible in zip(entity_ids_to_check, visibility_results, strict=False) if not visible
+            ]
         except Exception:
             logger.warning("Action cache visibility recheck failed", exc_info=True)
-            visibility_results = [False]
-        if not all(visibility_results):
-            with contextlib.suppress(Exception):
-                if entry_id is not None:
-                    await asyncio.to_thread(self._action_cache.invalidate_by_entry_id, entry_id)
+            rejected_entity_ids = list(entity_ids_to_check) or [""]
+        if rejected_entity_ids:
+            # Directive 2: the row is invalidated and the turn runs live.
+            # While the entity index has not loaded its first snapshot the
+            # helper keeps the row (metadata gap, not proof of staleness);
+            # the replay is refused either way.
+            deleted = await self._invalidate_action_entry(
+                entry_id, reason="visibility_rejected", entity_ids=rejected_entity_ids
+            )
+            deferred = not deleted and not self.entity_index_ready
+            reject_reason = "visibility_deferred_index_not_ready" if deferred else "visibility_rejected"
+            logger.info(
+                "Action cache entry %s rejected by visibility recheck (agent=%s entity=%s reason=%s)",
+                entry_id,
+                cached_agent_id,
+                rejected_entity_ids[0],
+                reject_reason,
+            )
             track_cache_event_background(tier="action", hit_type="miss")
-            return None
+            return ActionReplayRejected(
+                entry_id=entry_id,
+                reason=reject_reason,
+                details={"entity_id": rejected_entity_ids[0]},
+                allow_routing_skip=True,
+            )
 
         # The ha_action span wraps the ACTUAL replay REST call here (it used
         # to be emitted downstream in finalize_action_replay_hit, where it
@@ -302,6 +379,8 @@ class CacheManager:
             ha_span["metadata"]["action"] = entry.cached_action.service
             ha_span["metadata"]["entity"] = entry.cached_action.entity_id
             ha_span["metadata"]["cached"] = True
+            approval_blocked = False
+            replay_error: BaseException | None = None
             try:
                 replay_result = await execute_cached_action(entry.cached_action)
             except SensitiveActionBlocked:
@@ -310,15 +389,35 @@ class CacheManager:
                 # so the live pipeline asks for it.
                 logger.info("Action cache entry %s holds a sensitive action; invalidated", entry_id)
                 ha_span["metadata"]["approval_blocked"] = True
-                await self._invalidate_action_entry(entry_id)
+                await self._invalidate_action_entry(
+                    entry_id, reason="sensitive", entity_ids=[entry.cached_action.entity_id]
+                )
+                approval_blocked = True
                 replay_result = None
-            except Exception:
-                logger.warning("Cached action replay failed", exc_info=True)
+            except Exception as exc:
+                replay_error = exc
                 replay_result = None
             ha_span["metadata"]["success"] = replay_result is not None
         if replay_result is None:
+            details: dict[str, Any] = {"entity_id": entry.cached_action.entity_id}
+            if approval_blocked:
+                details["approval_blocked"] = True
+            else:
+                # The row is kept: a failed REST call is usually transient.
+                logger.warning(
+                    "Action cache replay failed for entry %s (service=%s entity=%s); falling through",
+                    entry_id,
+                    entry.cached_action.service,
+                    entry.cached_action.entity_id,
+                    exc_info=replay_error,
+                )
             track_cache_event_background(tier="action", hit_type="miss")
-            return None
+            return ActionReplayRejected(
+                entry_id=entry_id,
+                reason="replay_failed",
+                details=details,
+                allow_routing_skip=True,
+            )
 
         track_cache_event_background(
             tier="action",
@@ -341,11 +440,148 @@ class CacheManager:
             original_response_text=entry.original_response_text,
         )
 
-    async def _invalidate_action_entry(self, entry_id: str | None) -> None:
+    async def _invalidate_action_entry(
+        self,
+        entry_id: str | None,
+        *,
+        reason: str = "replay_rejected",
+        entity_ids: list[str] | None = None,
+    ) -> bool:
+        """Delete one action row found by a lookup; returns True when deleted.
+
+        Every deletion is logged with ``reason``. An index-dependent rejection
+        (``visibility_rejected``) while the entity index has not loaded its
+        first snapshot keeps the row: the caller still refuses the replay, and
+        the next lookup rechecks visibility against the loaded index.
+        """
         if entry_id is None:
-            return
-        with contextlib.suppress(Exception):
+            return False
+        if reason in _INDEX_DEPENDENT_DELETION_REASONS and not self.entity_index_ready:
+            with self._deletion_stats_lock:
+                self._action_deletions_deferred += 1
+            logger.info(
+                "Action cache row kept: reason=%s key=%s entity_ids=%s (entity index not loaded yet)",
+                reason,
+                entry_id,
+                entity_ids or [],
+            )
+            return False
+        try:
             await asyncio.to_thread(self._action_cache.invalidate_by_entry_id, entry_id)
+        except Exception:
+            logger.warning("Action cache row delete failed: reason=%s key=%s", reason, entry_id, exc_info=True)
+            return False
+        self._record_action_deletions(reason, [(entry_id, None, list(entity_ids or []))])
+        return True
+
+    def set_entity_index_readiness_probe(self, probe: Callable[[], bool] | None) -> None:
+        """Register the entity-index readiness signal (see ``entity_index_ready``)."""
+        self._entity_index_ready_probe = probe
+
+    @property
+    def entity_index_ready(self) -> bool:
+        """False while the entity index has not loaded its first HA snapshot.
+
+        Without a registered probe the index is treated as ready, which keeps
+        the fail-closed delete-on-rejection behaviour. A failing probe counts
+        as not ready: rows are kept, replay is still refused.
+        """
+        probe = self._entity_index_ready_probe
+        if probe is None:
+            return True
+        try:
+            return bool(probe())
+        except Exception:
+            logger.debug("Entity index readiness probe failed", exc_info=True)
+            return False
+
+    def _record_action_deletions(
+        self,
+        reason: str,
+        rows: list[tuple[str, str | None, list[str]]],
+        *,
+        count: int | None = None,
+        detail: str = "",
+    ) -> None:
+        """Count and log action-cache deletions.
+
+        ``rows`` are ``(key, query_text, entity_ids)`` of the deleted rows when
+        known; ``count`` overrides ``len(rows)`` for bulk paths that only
+        report a number. Each known row logs at INFO; more than
+        ``_BULK_ACTION_DELETION_WARN_THRESHOLD`` rows at once also log one
+        WARNING summary so the event survives restarts.
+        """
+        deleted = len(rows) if count is None else (count if isinstance(count, int) else 0)
+        if deleted <= 0:
+            return
+        with self._deletion_stats_lock:
+            self._action_deletions[reason] += deleted
+        suffix = f" ({detail})" if detail else ""
+        for entry_id, query_text, entity_ids in rows:
+            logger.info(
+                "Action cache row deleted: reason=%s key=%s query=%r entity_ids=%s%s",
+                reason,
+                entry_id,
+                query_text,
+                entity_ids,
+                suffix,
+            )
+        if not rows:
+            logger.info("Action cache rows deleted: reason=%s count=%d%s", reason, deleted, suffix)
+        if deleted > _BULK_ACTION_DELETION_WARN_THRESHOLD:
+            keys = [row[0] for row in rows[:_MAX_LOGGED_BULK_KEYS]]
+            logger.warning(
+                "Bulk action-cache deletion: %d rows, reason=%s%s keys=%s",
+                deleted,
+                reason,
+                suffix,
+                keys,
+            )
+
+    def _snapshot_action_rows(
+        self,
+        *,
+        entry_ids: list[str] | None = None,
+        entity_ids: list[str] | None = None,
+    ) -> list[tuple[str, str | None, list[str]]] | None:
+        """Read ``(key, query_text, entity_ids)`` of action rows about to be deleted.
+
+        Rows are selected by ``entry_ids`` or, through the store's indexed
+        entity sidecar, by ``entity_ids``. Returns None when the store cannot
+        answer (no sidecar, read error); deletion then proceeds and is logged
+        by count only.
+        """
+        try:
+            if entry_ids is None:
+                finder = _store_method(self._cache_store, "find_entries_by_entity_ids")
+                if finder is None or not entity_ids:
+                    return None
+                entry_ids = list(finder(COLLECTION_ACTION_CACHE, entity_ids) or [])
+            if not entry_ids:
+                return []
+            page = self._cache_store.get(
+                COLLECTION_ACTION_CACHE, ids=list(entry_ids), include=["metadatas", "documents"]
+            )
+            ids = page.get("ids") or []
+            documents = page.get("documents") or []
+            metadatas = page.get("metadatas") or []
+        except Exception:
+            logger.debug("Could not snapshot action rows before deletion", exc_info=True)
+            return None
+        rows: list[tuple[str, str | None, list[str]]] = []
+        for index, row_id in enumerate(ids):
+            document = documents[index] if index < len(documents) else None
+            meta = (metadatas[index] if index < len(metadatas) else None) or {}
+            rows.append((str(row_id), document, _parse_entity_ids(meta.get("entity_ids"))))
+        return rows
+
+    def get_deletion_stats(self) -> dict[str, Any]:
+        """Action-cache deletions by reason since process start."""
+        with self._deletion_stats_lock:
+            return {
+                "deletions": dict(self._action_deletions),
+                "deletions_deferred_index_not_ready": self._action_deletions_deferred,
+            }
 
     @staticmethod
     def _cached_command_is_structurally_valid(cached_action: CachedAction) -> bool:
@@ -655,15 +891,29 @@ class CacheManager:
     async def store_action_async(self, entry: ActionCacheEntry) -> None:
         await asyncio.to_thread(self.store_action, entry)
 
-    def invalidate_action(self, entry_id: str, *, expected_created_at: str | None = None) -> bool:
+    def invalidate_action(
+        self,
+        entry_id: str,
+        *,
+        expected_created_at: str | None = None,
+        reason: str | None = None,
+    ) -> bool:
         """Delete an action row; with ``expected_created_at`` only while it is unchanged.
 
         Background maintenance passes the ``created_at`` of its snapshot so a
-        row re-stored by a live turn after the snapshot is kept.
+        row re-stored by a live turn after the snapshot is kept. ``reason``
+        defaults to ``validator`` for snapshot deletes and ``manual_delete``
+        otherwise (admin API).
         """
+        reason = reason or ("validator" if expected_created_at is not None else "manual_delete")
+        rows = self._snapshot_action_rows(entry_ids=[entry_id])
         if expected_created_at is not None:
-            return self._action_cache.invalidate_if_unchanged(entry_id, expected_created_at=expected_created_at)
-        return self._action_cache.invalidate_by_entry_id(entry_id)
+            deleted = self._action_cache.invalidate_if_unchanged(entry_id, expected_created_at=expected_created_at)
+        else:
+            deleted = self._action_cache.invalidate_by_entry_id(entry_id)
+        if deleted and rows != []:
+            self._record_action_deletions(reason, rows or [(entry_id, None, [])])
+        return deleted
 
     def invalidate_routing(self, entry_id: str) -> None:
         """Invalidate a served routing entry.
@@ -691,7 +941,18 @@ class CacheManager:
         with self._semantic_suppressions_lock:
             return frozenset(self._semantic_suppressions.get(query_entry_id, ()))
 
-    async def invalidate_by_entity_id(self, entity_ids) -> dict[str, int]:
+    async def invalidate_by_entity_id(
+        self,
+        entity_ids,
+        *,
+        reason: str = "entity_changed",
+        detail: str = "",
+    ) -> dict[str, int]:
+        """Delete every action and routing row that references ``entity_ids``.
+
+        ``reason`` / ``detail`` describe the trigger (e.g. the registry event)
+        and are logged with each deleted action row.
+        """
         unique_ids = [str(entity_id) for entity_id in dict.fromkeys(entity_ids or []) if entity_id]
         if not unique_ids:
             return {"action": 0, "routing": 0}
@@ -701,9 +962,20 @@ class CacheManager:
             # collection once instead of N times for N entity ids.
             return cache.invalidate_by_entity_id(unique_ids)
 
-        action_count, routing_count = await asyncio.gather(
-            asyncio.to_thread(_invalidate, self._action_cache),
+        def _invalidate_action() -> tuple[list[tuple[str, str | None, list[str]]] | None, int]:
+            rows = self._snapshot_action_rows(entity_ids=unique_ids)
+            return rows, _invalidate(self._action_cache)
+
+        (action_rows, action_count), routing_count = await asyncio.gather(
+            asyncio.to_thread(_invalidate_action),
             asyncio.to_thread(_invalidate, self._routing_cache),
+        )
+        trigger = f"trigger_entity_ids={unique_ids}"
+        self._record_action_deletions(
+            reason,
+            action_rows or [],
+            count=action_count,
+            detail=f"{detail}; {trigger}" if detail else trigger,
         )
         logger.debug(
             "CacheManager invalidated %d action and %d routing entries for entity_ids=%s",
@@ -716,7 +988,7 @@ class CacheManager:
             "routing": routing_count,
         }
 
-    def flush(self, tier: str | None = None) -> None:
+    def flush(self, tier: str | None = None, *, reason: str = "flush") -> None:
         """Clear one or both cache tiers."""
         if tier not in (None, "routing", "action"):
             raise ValueError(f"unknown cache tier {tier!r}")
@@ -731,6 +1003,7 @@ class CacheManager:
             count = self._cache_store.count(COLLECTION_ACTION_CACHE)
             if count > 0:
                 self._cache_store.delete_all(COLLECTION_ACTION_CACHE)
+                self._record_action_deletions(reason, [], count=count, detail=f"tier={tier or 'all'}")
             logger.info("Action cache flushed")
 
     def flush_pending(self) -> None:
@@ -740,9 +1013,12 @@ class CacheManager:
 
     def get_stats(self) -> dict[str, Any]:
         """Return combined stats for both tiers (blocking COUNT queries)."""
+        action_stats = self._action_cache.get_stats()
+        if isinstance(action_stats, dict):
+            action_stats = {**action_stats, **self.get_deletion_stats()}
         return {
             "routing": self._routing_cache.get_stats(),
-            "action": self._action_cache.get_stats(),
+            "action": action_stats,
         }
 
     async def get_stats_async(self) -> dict[str, Any]:
@@ -751,7 +1027,9 @@ class CacheManager:
 
     async def purge_readonly_entries(self) -> int:
         """Purge legacy read-only rows that should now live in routing cache."""
-        return await asyncio.to_thread(self._action_cache.purge_readonly_entries)
+        purged = await asyncio.to_thread(self._action_cache.purge_readonly_entries)
+        self._record_action_deletions("startup_readonly_purge", [], count=purged)
+        return purged
 
     def iter_action_entries(self, *, page_size: int = 1000):
         """Yield action-cache entries, paginating through the underlying store."""

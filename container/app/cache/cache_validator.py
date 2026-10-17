@@ -53,6 +53,13 @@ _EXPECTED_STATES: dict[str, str] = {
     "unlock": "unlocked",
 }
 
+# Cached replies are stored in the language of the turn; the validator must
+# judge meaning only, never the reply language.
+_LANGUAGE_NOTE = (
+    "Responses are written in the stated response language; that is expected and is never a reason "
+    "for 'correct_response'. Judge meaning, not language or wording style."
+)
+
 
 class ActionCacheValidator:
     """Periodically scan action-cache entries and correct inconsistent response_text."""
@@ -169,113 +176,21 @@ class ActionCacheValidator:
             for j, entry in enumerate(batch):
                 scanned += 1
                 try:
-                    if batch_failed:
-                        # Fallback to single-entry validation
-                        is_valid, corrected_text, llm_verdict = await self._validate_entry(entry)
-                        if is_valid:
-                            entry.validated_at = now
-                            await self._cache_manager.update_action_entry(entry)
-                            await self._write_audit(
-                                run_id,
-                                entry,
-                                verdict="consistent",
-                                llm_verdict=llm_verdict,
-                            )
-                            continue
-                        inconsistent += 1
-                        if corrected_text is not None:
-                            old_response = entry.response_text
-                            old_original = entry.original_response_text
-                            entry.response_text = corrected_text
-                            entry.original_response_text = corrected_text
-                            entry.validated_at = now
-                            await self._cache_manager.update_action_entry(entry)
-                            corrected += 1
-                            await self._write_audit(
-                                run_id,
-                                entry,
-                                verdict="correct_response",
-                                llm_verdict=llm_verdict,
-                                old_response_text=old_response,
-                                new_response_text=corrected_text,
-                                old_original_response_text=old_original,
-                                new_original_response_text=corrected_text,
-                            )
-                        else:
-                            entry_id = self._action_cache.make_entry_id(
-                                entry.query_text,
-                                language=entry.language,
-                            )
-                            await self._write_audit(
-                                run_id,
-                                entry,
-                                verdict="invalidate",
-                                llm_verdict=llm_verdict,
-                                old_response_text=entry.response_text,
-                                deleted=True,
-                            )
-                            await self._invalidate_snapshot(entry_id, entry)
-                            deleted += 1
+                    result = None if batch_failed else batch_results[j]
+                    if result is None:
+                        # Batch failed or this entry was unparseable: fall back
+                        # to single-entry validation.
+                        is_valid, was_corrected, was_deleted = await self._process_single_validation(entry, now, run_id)
                     else:
-                        # Use batch result
-                        result = batch_results[j]
-                        if result is None:
-                            # This individual entry was unparseable, fallback
-                            is_valid, corrected_text, llm_verdict = await self._validate_entry(entry)
-                            if is_valid:
-                                entry.validated_at = now
-                                await self._cache_manager.update_action_entry(entry)
-                                await self._write_audit(
-                                    run_id,
-                                    entry,
-                                    verdict="consistent",
-                                    llm_verdict=llm_verdict,
-                                )
-                                continue
-                            inconsistent += 1
-                            if corrected_text is not None:
-                                old_response = entry.response_text
-                                old_original = entry.original_response_text
-                                entry.response_text = corrected_text
-                                entry.original_response_text = corrected_text
-                                entry.validated_at = now
-                                await self._cache_manager.update_action_entry(entry)
-                                corrected += 1
-                                await self._write_audit(
-                                    run_id,
-                                    entry,
-                                    verdict="correct_response",
-                                    llm_verdict=llm_verdict,
-                                    old_response_text=old_response,
-                                    new_response_text=corrected_text,
-                                    old_original_response_text=old_original,
-                                    new_original_response_text=corrected_text,
-                                )
-                            else:
-                                entry_id = self._action_cache.make_entry_id(
-                                    entry.query_text,
-                                    language=entry.language,
-                                )
-                                await self._write_audit(
-                                    run_id,
-                                    entry,
-                                    verdict="invalidate",
-                                    llm_verdict=llm_verdict,
-                                    old_response_text=entry.response_text,
-                                    deleted=True,
-                                )
-                                await self._invalidate_snapshot(entry_id, entry)
-                                deleted += 1
-                        else:
-                            is_valid, was_corrected, was_deleted = await self._process_validation_result(
-                                entry, result, now, run_id
-                            )
-                            if not is_valid:
-                                inconsistent += 1
-                            if was_corrected:
-                                corrected += 1
-                            if was_deleted:
-                                deleted += 1
+                        is_valid, was_corrected, was_deleted = await self._process_validation_result(
+                            entry, result, now, run_id
+                        )
+                    if not is_valid:
+                        inconsistent += 1
+                    if was_corrected:
+                        corrected += 1
+                    if was_deleted:
+                        deleted += 1
                 except Exception:
                     logger.warning("Failed to validate cache entry", exc_info=True)
                     errors += 1
@@ -405,6 +320,7 @@ class ActionCacheValidator:
             "You are validating multiple smart-home assistant cache entries.",
             "For each entry below, evaluate whether the action matches the user query and whether the response is consistent with the action.",
             "",
+            _LANGUAGE_NOTE,
             "Answer with a JSON array where each element is one of: 'consistent', 'correct_response', or 'invalidate'.",
             "The array must have exactly the same number of elements as the entries below, in the same order.",
             "",
@@ -419,6 +335,7 @@ class ActionCacheValidator:
             lines.append(f"  Target entity: {entity_id}")
             lines.append(f"  Service data: {service_data}")
             lines.append(f"  Assistant response: '{entry.response_text}'")
+            lines.append(f"  Response language: {ActionCacheValidator._language_label(entry)}")
             lines.append("")
         lines.append("JSON array response:")
         return "\n".join(lines)
@@ -538,41 +455,94 @@ class ActionCacheValidator:
 
         if result == "correct_response":
             corrected_text = await self._regenerate_response(entry)
-            if corrected_text:
-                old_response = entry.response_text
-                old_original = entry.original_response_text
-                entry.response_text = corrected_text
-                entry.original_response_text = corrected_text
-                entry.validated_at = now
-                await self._cache_manager.update_action_entry(entry)
-                await self._write_audit(
-                    run_id,
-                    entry,
-                    verdict="correct_response",
-                    llm_verdict="correct_response",
-                    old_response_text=old_response,
-                    new_response_text=corrected_text,
-                    old_original_response_text=old_original,
-                    new_original_response_text=corrected_text,
-                )
-                return False, True, False
-            else:
-                entry_id = self._action_cache.make_entry_id(
-                    entry.query_text,
-                    language=entry.language,
-                )
-                await self._write_audit(
-                    run_id,
-                    entry,
-                    verdict="invalidate",
-                    llm_verdict="correct_response",
-                    old_response_text=entry.response_text,
-                    deleted=True,
-                )
-                await self._invalidate_snapshot(entry_id, entry)
-                return False, False, True
+            return await self._apply_correction(entry, corrected_text, now, run_id, llm_verdict="correct_response")
 
         # "invalidate" or None (unparseable)
+        await self._invalidate_with_audit(entry, run_id, llm_verdict=result)
+        return False, False, True
+
+    async def _process_single_validation(
+        self,
+        entry: ActionCacheEntry,
+        now: str,
+        run_id: int,
+    ) -> tuple[bool, bool, bool]:
+        """Validate one entry on its own (batch fallback) and apply the outcome.
+
+        Returns (is_valid, was_corrected, was_deleted) booleans for metric tracking.
+        """
+        is_valid, corrected_text, llm_verdict = await self._validate_entry(entry)
+        if is_valid:
+            entry.validated_at = now
+            await self._cache_manager.update_action_entry(entry)
+            await self._write_audit(
+                run_id,
+                entry,
+                verdict="consistent",
+                llm_verdict=llm_verdict,
+            )
+            return True, False, False
+        return await self._apply_correction(entry, corrected_text, now, run_id, llm_verdict=llm_verdict)
+
+    async def _apply_correction(
+        self,
+        entry: ActionCacheEntry,
+        corrected_text: str | None,
+        now: str,
+        run_id: int,
+        *,
+        llm_verdict: str | None,
+    ) -> tuple[bool, bool, bool]:
+        """Apply the outcome for an inconsistent entry.
+
+        - ``None``: no replacement could be produced, the entry is invalidated.
+        - Text equal to the stored ``response_text``: the row is kept unchanged
+          (for example when its language cannot be determined, so a localized
+          reply cannot be produced); only an audit row is written.
+        - Any other text: replaces ``response_text`` and ``original_response_text``.
+
+        Returns (is_valid, was_corrected, was_deleted) booleans for metric tracking.
+        """
+        if not corrected_text:
+            await self._invalidate_with_audit(entry, run_id, llm_verdict=llm_verdict)
+            return False, False, True
+
+        if corrected_text == entry.response_text:
+            await self._write_audit(
+                run_id,
+                entry,
+                verdict="keep_original",
+                llm_verdict=llm_verdict,
+                old_response_text=entry.response_text,
+            )
+            return False, False, False
+
+        old_response = entry.response_text
+        old_original = entry.original_response_text
+        entry.response_text = corrected_text
+        entry.original_response_text = corrected_text
+        entry.validated_at = now
+        await self._cache_manager.update_action_entry(entry)
+        await self._write_audit(
+            run_id,
+            entry,
+            verdict="correct_response",
+            llm_verdict=llm_verdict,
+            old_response_text=old_response,
+            new_response_text=corrected_text,
+            old_original_response_text=old_original,
+            new_original_response_text=corrected_text,
+        )
+        return False, True, False
+
+    async def _invalidate_with_audit(
+        self,
+        entry: ActionCacheEntry,
+        run_id: int,
+        *,
+        llm_verdict: str | None,
+    ) -> None:
+        """Record an invalidate audit row, then delete the snapshot entry."""
         entry_id = self._action_cache.make_entry_id(
             entry.query_text,
             language=entry.language,
@@ -581,12 +551,11 @@ class ActionCacheValidator:
             run_id,
             entry,
             verdict="invalidate",
-            llm_verdict=result,
+            llm_verdict=llm_verdict,
             old_response_text=entry.response_text,
             deleted=True,
         )
         await self._invalidate_snapshot(entry_id, entry)
-        return False, False, True
 
     async def _validate_entry(self, entry: ActionCacheEntry) -> tuple[bool, str | None, str | None]:
         """Return (is_valid, corrected_response_or_None, llm_verdict_or_None)."""
@@ -633,8 +602,10 @@ class ActionCacheValidator:
             f"Action performed: {service}\n"
             f"Target entity: {entity_id}\n"
             f"Service data: {service_data}\n"
-            f"Assistant response: '{response_text}'\n\n"
+            f"Assistant response: '{response_text}'\n"
+            f"Response language: {self._language_label(entry)}\n\n"
             f"Evaluate whether the action matches the user query and whether the response is consistent with the action.\n"
+            f"{_LANGUAGE_NOTE}\n"
             f"Answer with exactly one word:\n"
             f"- 'consistent' if the action matches the query and the response is appropriate\n"
             f"- 'correct_response' if the action matches the query but the response is inconsistent or wrong\n"
@@ -681,10 +652,53 @@ class ActionCacheValidator:
         logger.debug("LLM validation returned unparseable response: %r", llm_result)
         return None
 
+    @staticmethod
+    def _row_language(entry: ActionCacheEntry) -> tuple[str, str] | None:
+        """Return ``(primary_code, display_name)`` for the row's stored language.
+
+        Uses the same code-to-name mapping as the live reply agents (rewrite,
+        filler). Returns None when the row carries no language or a code the
+        mapping does not know, so callers can avoid guessing a reply language.
+        """
+        # Imported lazily: importing app.agents pulls in the orchestrator,
+        # which itself imports this module.
+        from app.agents.base import language_code_to_name
+
+        raw = (entry.language or "").strip().lower().replace("_", "-")
+        primary = raw.split("-", 1)[0]
+        if not primary:
+            return None
+        name = language_code_to_name(primary)
+        if not name or name.lower() == primary:
+            return None
+        return primary, name
+
+    @staticmethod
+    def _language_label(entry: ActionCacheEntry) -> str:
+        """Language name for validation prompts, or 'unknown'."""
+        row_language = ActionCacheValidator._row_language(entry)
+        return row_language[1] if row_language is not None else "unknown"
+
     async def _regenerate_response(self, entry: ActionCacheEntry) -> str | None:
-        """Try LLM first if configured, otherwise use deterministic template."""
+        """Regenerate a confirmation reply in the row's stored language.
+
+        Tries the LLM first if configured. The deterministic template is
+        English-only and is used solely for English rows. Returns the stored
+        ``response_text`` unchanged when the row's language cannot be
+        determined, and None when no localized reply can be produced.
+        """
         if entry.cached_action is None:
             return None
+
+        row_language = self._row_language(entry)
+        if row_language is None:
+            logger.info(
+                "Cache validator: language %r of entry %r is unknown, keeping the stored response",
+                entry.language,
+                entry.query_text,
+            )
+            return entry.response_text
+        language_code, language_name = row_language
 
         entity_id = entry.cached_action.entity_id
         service = entry.cached_action.service
@@ -703,10 +717,11 @@ class ActionCacheValidator:
                 action_desc = action_name.replace("_", " ")
                 target_name = friendly_name or entity_id or "device"
                 prompt = (
-                    f"Generate a single concise confirmation sentence in English that the device '{target_name}' "
-                    f"has been successfully {action_desc}. The expected state is '{expected_state}'. "
-                    f"Output ONLY the sentence, no extra text.\n"
-                    f"Example: Done, Kitchen Light is now on."
+                    f"Generate a single concise confirmation sentence in {language_name} that the device "
+                    f"'{target_name}' has been successfully {action_desc}. The expected state is '{expected_state}'. "
+                    f"Keep the device name exactly as given. Output ONLY the sentence, no extra text.\n"
+                    f"Example in English: Done, Kitchen Light is now on.\n\n"
+                    f"Write the sentence in {language_name}:"
                 )
                 messages = [{"role": "user", "content": prompt}]
 
@@ -737,7 +752,11 @@ class ActionCacheValidator:
             except Exception:
                 logger.debug("LLM regeneration failed, falling back to template", exc_info=True)
 
-        # Fallback to deterministic template
+        # The deterministic template is English-only: never write it into a
+        # row stored for another language.
+        if language_code != "en":
+            return None
+
         target_name = friendly_name or entity_id
         if not target_name:
             return None

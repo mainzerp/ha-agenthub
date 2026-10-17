@@ -162,7 +162,7 @@ The container primes a persistent entity index from Home Assistant and keeps it 
 
 #### Cache Layer
 
-The cache manager exposes a routing cache and a public action cache. Internal collection names and compatibility APIs still retain `response` naming. Action-cache hits replay stored Home Assistant actions only after rechecking entity visibility. Failed replays are invalidated and retried through the live orchestration path. Cache export and import are supported.
+The cache manager exposes a routing cache and a public action cache. Internal collection names and compatibility APIs still retain `response` naming. Action-cache rows are global (one per normalized text and language) unless the executed entity lay in the learning turn's origin area; such rows replay only from that area. Action-cache hits replay stored Home Assistant actions only after rechecking entity visibility; a visibility rejection deletes the row, a failed replay keeps it, and both fall through to the routing tier. Cache export and import are supported.
 
 #### Dashboard and Operations
 
@@ -296,13 +296,12 @@ Both tiers are persistent and have no TTL, but they are not unbounded. They use 
 ### Current Cache Flow
 
 1. the action cache is checked first because a replayable hit is more valuable than a routing-only hit
-2. a full action-cache hit is used only when the entry contains a safe cached action
-3. the runtime rechecks entity visibility before replaying the cached action
-4. if replay fails, the entry is invalidated and the turn falls through to live orchestration
+2. a full action-cache hit is used only when the entry contains a safe cached action and, for an area-bound row, the turn comes from the same area
+3. the runtime rechecks entity visibility before replaying the cached action; a rejected row is deleted (kept but not replayed while the entity index has not loaded its first snapshot)
+4. a visibility rejection or failed replay falls through to the routing tier; other rejections force live orchestration
 5. if there is no full action-cache hit, the routing cache can still skip reclassification
-6. partial action-cache matches provide context but do not short-circuit live execution
-7. rewrite applies only to cache-hit speech; filler and personality mediation remain separate runtime stages
-8. export and import operations are available for both tiers
+6. rewrite applies only to cache-hit speech; filler and personality mediation remain separate runtime stages
+7. export and import operations are available for both tiers
 
 ---
 
@@ -350,7 +349,7 @@ The current deployment target is a standalone Docker container connecting back t
 2. The integration enriches the request with conversation and origin context and forwards it to the container over WebSocket when possible.
 3. The container creates a per-turn trace context and hands the turn to the orchestrator.
 4. The orchestrator can short-circuit cancel or dismiss requests and can resolve reply language before live routing.
-5. The action cache is checked first. Safe hits replay the cached action after a visibility recheck and then rewrite the cached speech; if the rewrite fails, the stored original agent speech is spoken (mediated speech is never cached) and the trace records the rewrite as failed.
+5. The action cache is checked first. Safe hits (global rows, or area-bound rows on a turn from the same area) replay the cached action after a visibility recheck and then rewrite the cached speech; if the rewrite fails, the stored original agent speech is spoken (mediated speech is never cached) and the trace records the rewrite as failed.
 6. If the turn is not satisfied by the action cache, the routing cache may reuse a prior routing decision.
 7. Live dispatch sends the task to a content agent, custom agent, or fallback agent. Entity resolution uses deterministic lookup first, then hybrid matching, with visibility, area, and domain filters applied before final selection.
 8. If the turn also requires delivery, the orchestrator runs the content-producing step first and `send-agent` second. The content step returns the verbatim message body; when it fails or replies with the `[[NO_CONTENT]]` sentinel, `send-agent` is not dispatched.
@@ -515,7 +514,7 @@ Entity-index maintenance is currently described by startup priming, Home Assista
 
 - the Home Assistant bridge maintains a reconnecting WebSocket and can fall back to REST when appropriate
 - entity-index state is refreshed from Home Assistant events and periodic syncs
-- cached actions are revalidated against visibility and invalidated on replay failure
+- cached actions are revalidated against visibility before every replay and deleted when the recheck rejects them
 - background services for timers, notifications, alarms, and custom-agent loading are bootstrapped with the runtime rather than being treated as manual extras
 
 ### Security
@@ -539,7 +538,7 @@ Entity-index maintenance is currently described by startup priming, Home Assista
 | Risk | Current Mitigation |
 | --- | --- |
 | Legacy `agent-assist` naming can confuse contributors | This document calls out the naming split explicitly and treats the public name and compatibility names as separate concerns |
-| Cached actions could become invalid after visibility changes or entity removal | Visibility is rechecked before replay and failed replays invalidate the cache entry |
+| Cached actions could become invalid after visibility changes or entity removal | Visibility is rechecked before every replay and rejected rows are deleted; relevant registry changes delete affected rows |
 | An LLM or replay path could unlock or open the home without the user's intent | Sensitive actions need an explicit approval per request, are never action-cached, and an approval-token backstop in the Home Assistant client blocks every other path |
 | Live Home Assistant, LLM, or MCP dependencies can fail mid-turn | The runtime preserves cache fallbacks where possible, keeps a general fallback agent, and surfaces failures through traces and logs |
 | In-process plugins can affect runtime stability or trust boundaries | Plugins are opt-in, lifecycle-managed, and documented as trusted-admin code rather than isolated extensions |

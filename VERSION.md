@@ -6,6 +6,12 @@
 
 (tracking changes since 3.9.1)
 
+- Upgrade notes: action-cache schema 6 purges older action rows at the first start (cold action cache; rows re-learn from live turns); cache imports skip pre-6 action entries.
+- Feature (cache): action-cache rows are global -- one row per normalized text and language, replayed for any satellite, area or none. A row is bound to the turn's area only when the executed entity lies in that area (replays only there); `device_id` is never part of the binding; the last live result wins. Exact cache keys (action and routing) treat punctuation inside the utterance as separators, join in-word apostrophes and keep numbers ("21,5", "10:30", "-3"); LLM and embedding input is unchanged.
+- Feature (trace): `cache_lookup` records `action_tier_reason` even when the routing tier hits; new `hit_type` values `visibility_rejected`, `visibility_deferred_index_not_ready`, `replay_failed`, `origin_mismatch` (with `expected_area_id` / `actual_area_id`).
+- Fix (cache): registry events delete rows only for relevant changes (entity rename/removal, name, aliases, area, device, device class, hidden, disabled; area removal or rename; device name or area change, that device's entities only); icon, label, create and reorder events no longer wipe rows. Rows failing the visibility recheck before the entity index loaded its first snapshot are kept but not replayed. Every row deletion is logged with its reason (bulk deletions of more than 3 rows also at WARNING); cache stats gain `deletions` and `deletions_deferred_index_not_ready`.
+- Fix (cache validator): regenerated replies use the row's stored language and validation prompts never correct a reply for its language; an unknown language keeps the stored reply (audit verdict `keep_original`); the English template fallback applies only to English rows, other rows are deleted when no model is configured.
+
 ## Version History
 
 ### 3.9.1 (PATCH) -- model fields as real dropdowns

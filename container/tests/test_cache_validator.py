@@ -46,10 +46,11 @@ def _make_entry(
     response_text: str = "Done, kitchen light is now on.",
     entity_id: str = "light.kitchen_ceiling",
     query_text: str = "turn on kitchen light",
+    language: str = "en",
 ) -> ActionCacheEntry:
     return ActionCacheEntry(
         query_text=query_text,
-        language="en",
+        language=language,
         agent_id="light-agent",
         response_text=response_text,
         cached_action=CachedAction(service=service, entity_id=entity_id, service_data={}),
@@ -1470,3 +1471,157 @@ async def test_prune_skipped_when_retention_zero():
 
     mock_audit.cleanup_old.assert_not_awaited()
     assert _ACTION_CONTRADICTIONS["toggle"] == []
+
+
+# ---------------------------------------------------------------------------
+# Reply language: regenerated replies follow the row's stored language
+# ---------------------------------------------------------------------------
+
+_LLM_SETTINGS = {
+    "cache.validator.enabled": "true",
+    "cache.validator.batch_size": "10",
+    "cache.validator.model": "groq/openai/gpt-oss-20b",
+    "cache.validator.temperature": "0.2",
+    "cache.validator.max_tokens": "1024",
+    "cache.validator.reasoning_effort": "low",
+    "cache.validator.audit_retention_days": "90",
+}
+
+_GERMAN_QUIP = "Kueche ist an. Ich habe es erledigt, bevor die Anfrage vollstaendig war."
+_GERMAN_REPLY = "Erledigt, Kueche ist jetzt an."
+
+
+def _kitchen_index() -> MagicMock:
+    entity_index = MagicMock()
+    entity_index.get_by_id_async = AsyncMock(return_value=MagicMock(friendly_name="Kueche"))
+    return entity_index
+
+
+@pytest.mark.asyncio
+async def test_regenerate_response_de_row_asks_llm_for_german():
+    entry = _make_entry(
+        query_text="Kueche einschalten.", response_text=_GERMAN_QUIP, entity_id="light.kueche", language="de"
+    )
+    llm_client = AsyncMock()
+    llm_client.complete = AsyncMock(return_value=_GERMAN_REPLY)
+    validator = _make_validator(entity_index=_kitchen_index(), llm_client=llm_client)
+
+    with _patch_repos(_LLM_SETTINGS):
+        result = await validator._regenerate_response(entry)
+
+    assert result == _GERMAN_REPLY
+    prompt = llm_client.complete.await_args.kwargs["messages"][0]["content"]
+    assert "in German (Deutsch)" in prompt
+    assert "in English that" not in prompt
+    assert prompt.rstrip().endswith("Write the sentence in German (Deutsch):")
+
+
+@pytest.mark.asyncio
+async def test_regenerate_response_de_row_never_falls_back_to_english_template():
+    entry = _make_entry(response_text=_GERMAN_QUIP, entity_id="light.kueche", language="de-DE")
+    llm_client = AsyncMock()
+    llm_client.complete = AsyncMock(side_effect=RuntimeError("LLM down"))
+    validator = _make_validator(entity_index=_kitchen_index(), llm_client=llm_client)
+
+    with _patch_repos(_LLM_SETTINGS):
+        result = await validator._regenerate_response(entry)
+
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_run_once_de_row_correction_stores_german_reply():
+    """A de row flagged correct_response gets a German reply, never the English template."""
+    entry = _make_entry(
+        query_text="Kueche einschalten.", response_text=_GERMAN_QUIP, entity_id="light.kueche", language="de"
+    )
+    llm_client = AsyncMock()
+    llm_client.complete = AsyncMock(side_effect=['["correct_response"]', _GERMAN_REPLY])
+    validator = _make_validator(entries=[entry], entity_index=_kitchen_index(), llm_client=llm_client)
+
+    with _patch_repos(_LLM_SETTINGS) as (_, _, mock_audit):
+        result = await validator.run_once()
+
+    assert result["corrected"] == 1
+    assert entry.response_text == _GERMAN_REPLY
+    assert entry.original_response_text == _GERMAN_REPLY
+    assert "Done," not in entry.response_text
+    kwargs = mock_audit.insert_entry.await_args.kwargs
+    assert kwargs["language"] == "de"
+    assert kwargs["verdict"] == "correct_response"
+    assert kwargs["new_response_text"] == _GERMAN_REPLY
+    batch_prompt = llm_client.complete.await_args_list[0].kwargs["messages"][0]["content"]
+    assert "Response language: German (Deutsch)" in batch_prompt
+
+
+@pytest.mark.asyncio
+async def test_run_once_de_row_without_llm_reply_is_not_overwritten_with_english():
+    """When no German reply can be produced the row is invalidated, not rewritten in English."""
+    entry = _make_entry(response_text=_GERMAN_QUIP, entity_id="light.kueche", language="de")
+    llm_client = AsyncMock()
+    llm_client.complete = AsyncMock(side_effect=['["correct_response"]', RuntimeError("LLM down")])
+    validator = _make_validator(entries=[entry], entity_index=_kitchen_index(), llm_client=llm_client)
+
+    with _patch_repos(_LLM_SETTINGS) as (_, _, mock_audit):
+        result = await validator.run_once()
+
+    assert result["corrected"] == 0
+    assert result["deleted"] == 1
+    assert entry.response_text == _GERMAN_QUIP
+    validator._cache_manager.update_action_entry.assert_not_awaited()
+    assert mock_audit.insert_entry.await_args.kwargs["verdict"] == "invalidate"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("language", ["", "xx"])
+async def test_run_once_unknown_language_keeps_original_text(language):
+    """An unknown row language keeps the stored reply: no rewrite, no deletion."""
+    entry = _make_entry(response_text=_GERMAN_QUIP, entity_id="light.kueche", language=language)
+    entry.original_response_text = _GERMAN_QUIP
+    llm_client = AsyncMock()
+    llm_client.complete = AsyncMock(side_effect=['["correct_response"]', "Done, Kueche is now on."])
+    validator = _make_validator(entries=[entry], entity_index=_kitchen_index(), llm_client=llm_client)
+
+    with _patch_repos(_LLM_SETTINGS) as (_, _, mock_audit):
+        result = await validator.run_once()
+
+    assert result == {**result, "inconsistent": 1, "corrected": 0, "deleted": 0, "errors": 0}
+    assert entry.response_text == _GERMAN_QUIP
+    assert entry.original_response_text == _GERMAN_QUIP
+    # Only the batch validation call ran; no regeneration was attempted.
+    assert llm_client.complete.await_count == 1
+    validator._cache_manager.update_action_entry.assert_not_awaited()
+    validator._cache_manager.invalidate_action.assert_not_called()
+    kwargs = mock_audit.insert_entry.await_args.kwargs
+    assert kwargs["verdict"] == "keep_original"
+    assert kwargs["deleted"] is False
+    assert kwargs["new_response_text"] is None
+
+
+@pytest.mark.asyncio
+async def test_run_once_unknown_language_deterministic_path_keeps_original_text():
+    """Without an LLM, an implausible reply on an unknown-language row is kept, not templated."""
+    entry = _make_entry(
+        service="light/turn_off",
+        response_text="Done, Kitchen Light is now on.",
+        entity_id="light.kitchen_ceiling",
+        language="",
+    )
+    validator = _make_validator(entries=[entry], entity_index=_kitchen_index())
+
+    with _patch_repos() as (_, _, mock_audit):
+        result = await validator.run_once()
+
+    assert result["corrected"] == 0
+    assert result["deleted"] == 0
+    assert entry.response_text == "Done, Kitchen Light is now on."
+    validator._cache_manager.update_action_entry.assert_not_awaited()
+    assert mock_audit.insert_entry.await_args.kwargs["verdict"] == "keep_original"
+
+
+def test_row_language_mapping():
+    assert ActionCacheValidator._row_language(_make_entry(language="de")) == ("de", "German (Deutsch)")
+    assert ActionCacheValidator._row_language(_make_entry(language="de_DE")) == ("de", "German (Deutsch)")
+    assert ActionCacheValidator._row_language(_make_entry(language="en")) == ("en", "English")
+    assert ActionCacheValidator._row_language(_make_entry(language="")) is None
+    assert ActionCacheValidator._row_language(_make_entry(language="xx")) is None
