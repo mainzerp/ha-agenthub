@@ -1,12 +1,24 @@
 # Version
 
-**Current Version:** 3.8.0
+**Current Version:** 3.9.0
 
 ## Recent Changes
 
-(tracking changes since 3.8.0)
+(tracking changes since 3.9.0)
 
 ## Version History
+
+### 3.9.0 (MINOR) -- live provider model catalog and key test
+
+(commit 994c87a)
+
+- Upgrade notes: no action required. The provider **Test** no longer spends tokens; agents still configured with a model the provider has retired (for example `anthropic/claude-3-haiku-20240307`) now show a warning in the agent editor and should be switched to a current model.
+- Feature (container): provider model catalog (`app/llm/model_catalog.py`) -- the LLM provider **Test** (admin and setup wizard) validates the key by listing the provider's models instead of a completion against a hardcoded model (no tokens; Anthropic `/v1/models`, Groq, Cerebras, OpenRouter `/models` plus `/api/v1/key`, Ollama `/api/tags`, custom OpenAI `/models` with an optional test-model completion fallback). Provider failures answer HTTP 200 with `status: error` and `error_kind` (`auth`, `not_configured`, `unsupported`, `unreachable`, `provider_error`) instead of HTTP 500.
+- Feature (container): `GET /api/admin/llm-providers/{provider}/models` (cached 1 h, `?refresh=true`; key saves and provider settings writes clear it).
+- Feature (dashboard): agent and cache-validator model pickers suggest the provider's live models with a Refresh list button and static fallback (free text stays); a warning shows when a saved model is no longer offered; custom provider card gains an optional Test model field. Fallback lists drop retired Claude 3 ids.
+- Fix: the Anthropic key test returned HTTP 500 (retired `claude-3-haiku-20240307`, `litellm.NotFoundError` not caught); the setup wizard's custom endpoint test always sent an empty URL (`base_url` vs `custom_provider_url`).
+- Fix (setup wizard): the custom OpenAI provider is saved again (the form posted `custom_openai_*`, the handler read `custom_provider_*`, so nothing was stored); it now saves through the same helper as `PUT /api/admin/llm-providers/custom-openai` and rejects an invalid URL or name with 422. In the wizard test, an empty OpenRouter/Groq key now falls back to the stored key.
+- Verification: full gate `scripts/ci.py` (container suite 4944 passed, integration suite 269 passed, Ruff, self-docs sync, lock check, bandit, pip-audit, docker build and smoke test, Trivy) before the wizard save fix; after it Ruff plus 308 targeted tests (setup, API, model catalog, LLM, admin routes), full suite via PR CI. Provider HTTP is mocked in tests; not yet verified live.
 
 ### 3.8.0 (MINOR) -- AI Task entity, sensitive-action approval, security and CI hardening
 
