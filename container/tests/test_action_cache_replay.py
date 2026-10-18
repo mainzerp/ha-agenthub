@@ -468,6 +468,7 @@ async def test_pending_question_skips_action_cache_replay():
 
     assert prelude.early_exit is None
     assert orch._pipeline_director.run_cache_replay.await_args.kwargs["skip_lookup"] is True
+    assert orch._pipeline_director.run_cache_replay.await_args.kwargs["skip_reason"] == "pending_question"
 
     # Without a pending question the replay lookup runs as before.
     orch2 = _make_orchestrator(MagicMock())
@@ -480,6 +481,85 @@ async def test_pending_question_skips_action_cache_replay():
 
     assert prelude2.early_exit is None
     assert orch2._pipeline_director.run_cache_replay.await_args.kwargs["skip_lookup"] is False
+    assert orch2._pipeline_director.run_cache_replay.await_args.kwargs["skip_reason"] is None
+
+
+def _lookup_spans(collector) -> list[dict]:
+    return [s["metadata"] for s in collector.get_spans() if s["span_name"] == "cache_lookup"]
+
+
+class TestSkippedLookupIsTraced:
+    """A skipped cache lookup records hit_type="skipped" plus a reason, never null."""
+
+    @pytest.mark.asyncio
+    async def test_caller_skip_records_reason(self):
+        from app.agents.pipeline_strategies import DefaultCacheReplayStrategy
+        from app.analytics.tracer import SpanCollector
+
+        co = MagicMock()
+        co.try_cache_replay = AsyncMock()
+        strategy = DefaultCacheReplayStrategy(cache_manager=MagicMock(), cache_orchestrator=co)
+        collector = SpanCollector("trace-skip")
+
+        result = await strategy.execute(
+            _make_task("kuche"), "kuche", "de", collector, skip_lookup=True, skip_reason="pending_question"
+        )
+
+        assert result.action_replay is None and result.routing_skip is None
+        co.try_cache_replay.assert_not_called()
+        assert _lookup_spans(collector) == [{"hit_type": "skipped", "skip_reason": "pending_question", "cache_tier": 0}]
+
+    @pytest.mark.asyncio
+    async def test_compound_bypass_records_reason(self):
+        from app.agents.pipeline_strategies import DefaultCacheReplayStrategy
+        from app.analytics.tracer import SpanCollector
+
+        co = MagicMock()
+        co._get_bool_setting_impl = AsyncMock(return_value=True)
+        co.try_cache_replay = AsyncMock()
+        strategy = DefaultCacheReplayStrategy(cache_manager=MagicMock(), cache_orchestrator=co)
+        collector = SpanCollector("trace-compound")
+
+        with patch("app.agents.pipeline_strategies.looks_compound", return_value=True):
+            result = await strategy.execute(_make_task("a and b"), "a and b", "en", collector)
+
+        assert result.compound_bypass is True
+        assert _lookup_spans(collector)[0]["skip_reason"] == "compound_utterance"
+        assert _lookup_spans(collector)[0]["hit_type"] == "skipped"
+
+    @pytest.mark.asyncio
+    async def test_disabled_cache_records_reason(self):
+        from app.analytics.tracer import SpanCollector
+
+        co = CacheOrchestrator(cache_manager=MagicMock())
+        collector = SpanCollector("trace-disabled")
+
+        with patch.object(co, "_get_bool_setting_impl", new=AsyncMock(return_value=False)):
+            assert await co.try_cache_replay(user_text="turn on the light", span_collector=collector) == (None, None)
+
+        assert _lookup_spans(collector) == [{"hit_type": "skipped", "skip_reason": "cache_disabled", "cache_tier": 0}]
+
+    @pytest.mark.asyncio
+    async def test_skipped_hit_type_reaches_trace_summary(self):
+        from app.analytics.tracer import SpanCollector
+
+        orch = _make_orchestrator(MagicMock())
+        collector = SpanCollector("trace-summary-skip")
+        orch._conversation_manager.set_pending_question("conv-skip", "Which light?", "light-agent")
+        orch._pipeline_director.run_classification = AsyncMock(
+            return_value=([("light-agent", "kitchen", 0.9)], False, "light-agent", "kitchen", 0.9)
+        )
+        task = _make_task("kitchen")
+        task.conversation_id = "conv-skip"
+        task.span_collector = collector
+
+        await orch._run_pipeline_prelude(task)
+
+        with patch("app.analytics.tracer.create_trace_summary", new=AsyncMock()) as summary:
+            await orch._create_trace(collector, "conv-skip", "kitchen", "Done.", "light-agent", 0.9, "kitchen", [], [])
+
+        assert summary.await_args.kwargs["cache_hit_type"] == "skipped"
+        assert _lookup_spans(collector)[-1]["skip_reason"] == "pending_question"
 
 
 # ---------------------------------------------------------------------------

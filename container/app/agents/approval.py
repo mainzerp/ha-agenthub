@@ -491,6 +491,7 @@ async def _finish(
     followup: bool = False,
 ) -> dict[str, Any]:
     """Speak, record the turn and the trace; the answer turn consumes the pending question."""
+    from app.agents.cache_orchestrator import record_cache_lookup_skipped
     from app.agents.conversation_manager import extract_resolved_entities
     from app.agents.followup import resolve_voice_followup
     from app.agents.personalization import personalization_user_id
@@ -505,6 +506,8 @@ async def _finish(
     if followup:
         manager.set_pending_question(conversation_id, speech, agent_id)
     voice_followup = await resolve_voice_followup(followup, source, span_collector=span_collector)
+    # The approval answer is judged before any cache lookup: trace it as skipped.
+    await record_cache_lookup_skipped(span_collector, "pending_approval")
     async with _optional_span(span_collector, "return", agent_id="orchestrator") as ret_span:
         ret_span["metadata"]["from_agent"] = agent_id
         ret_span["metadata"]["final_response"] = speech

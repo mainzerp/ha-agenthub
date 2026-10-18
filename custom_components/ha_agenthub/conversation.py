@@ -824,10 +824,10 @@ class HaAgentHubConversationEntity(
     def _resolve_origin_context(
         self, user_input: conversation.ConversationInput
     ) -> dict[str, str]:
-        """Forward raw device_id, user_id and area_id to the container.
+        """Forward raw device_id and user_id to the container.
 
-        The container maintains its own entity index and resolves
-        human-readable names from its synced copy.  The bridge must
+        The container maintains its own HA registry copies and resolves
+        the origin area and human-readable names from them.  The bridge must
         not perform entity resolution on behalf of the container
         (Prime Directive 1).
         """
@@ -835,9 +835,9 @@ class HaAgentHubConversationEntity(
         device_id = getattr(user_input, "device_id", None)
         if device_id:
             extra["device_id"] = device_id
-            # HA ConversationInput does not expose area_id directly;
-            # the container resolves it from its own entity index via
-            # the device_id we forward above.
+            # HA ConversationInput does not expose area_id directly; the
+            # container derives the area (and device name) from its synced
+            # copy of HA's device registry via this device_id.
         # M-5: forward the HA user ID so the container can attribute the
         # request to a person.  Defensive getattr chain: older HA versions
         # or custom callers may not populate ``context``.

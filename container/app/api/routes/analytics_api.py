@@ -11,6 +11,7 @@ from datetime import UTC, datetime, timedelta
 
 from fastapi import APIRouter, Depends, Query
 
+from app.analytics.cache_rate import CACHE_HIT_EVENT_TYPES, count_cache_hits, per_request_hit_rate
 from app.db.repository import AnalyticsRepository, ConversationRepository
 from app.security.auth import require_admin_session
 
@@ -64,11 +65,8 @@ async def analytics_overview(
     avg_latency = round(sum(latencies) / len(latencies), 1) if latencies else 0
     latency_percentiles = _compute_percentiles(latencies, [50, 95, 99])
 
-    # Cache hit rate
-    hits = sum(1 for e in cache_events if e.get("event_type") in ("routing_hit", "semantic_hit", "action_hit"))
-    misses = sum(1 for e in cache_events if e.get("event_type") == "miss")
-    total_cache = hits + misses
-    hit_rate = round(hits / total_cache * 100, 1) if total_cache > 0 else 0
+    # Cache hit rate: per request (see app.analytics.cache_rate)
+    hit_rate = per_request_hit_rate(count_cache_hits(cache_events), total_requests)
 
     # Total conversations
     total_conversations = await ConversationRepository.count()
@@ -163,19 +161,21 @@ async def analytics_cache(
     hours: int = Query(24, ge=1, le=720),
     bucket_minutes: int = Query(60, ge=5, le=1440),
 ):
-    """Cache hit rate time-series in Chart.js format."""
+    """Per-request cache hit rate time-series in Chart.js format.
+
+    Each bucket is cache-hit events / ``request`` events in that bucket
+    (see ``app.analytics.cache_rate``).
+    """
     start = (datetime.now(UTC) - timedelta(hours=hours)).strftime("%Y-%m-%d %H:%M:%S")
     events = await AnalyticsRepository.query_by_range(start=start, limit=10000)
 
-    hit_types = {"routing_hit", "semantic_hit", "action_hit"}
-    miss_types = {"miss"}
-
     hits_per_bucket: dict[str, int] = defaultdict(int)
-    total_per_bucket: dict[str, int] = defaultdict(int)
+    requests_per_bucket: dict[str, int] = defaultdict(int)
 
     for e in events:
         et = e.get("event_type", "")
-        if et not in hit_types and et not in miss_types:
+        is_hit = et in CACHE_HIT_EVENT_TYPES
+        if not is_hit and et != "request":
             continue
         ts = e.get("created_at", "")
         try:
@@ -184,17 +184,15 @@ async def analytics_cache(
             ts_epoch = int(dt.timestamp())
             bucket_start = ts_epoch - (ts_epoch % bucket_secs)
             bucket_label = datetime.fromtimestamp(bucket_start, tz=UTC).strftime("%H:%M")
-            total_per_bucket[bucket_label] += 1
-            if et in hit_types:
+            if is_hit:
                 hits_per_bucket[bucket_label] += 1
+            else:
+                requests_per_bucket[bucket_label] += 1
         except (ValueError, TypeError):
             logger.debug("Failed to parse cache event timestamp %s", ts, exc_info=True)
 
-    labels = sorted(total_per_bucket.keys())
-    data = [
-        round(hits_per_bucket.get(lb, 0) / total_per_bucket[lb] * 100, 1) if total_per_bucket[lb] > 0 else 0
-        for lb in labels
-    ]
+    labels = sorted(set(requests_per_bucket) | set(hits_per_bucket))
+    data = [per_request_hit_rate(hits_per_bucket.get(lb, 0), requests_per_bucket.get(lb, 0)) for lb in labels]
 
     return {
         "labels": labels,

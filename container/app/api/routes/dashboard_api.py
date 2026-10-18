@@ -21,6 +21,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
 from app.a2a._request import build_send_request, build_stream_request
+from app.analytics.cache_rate import count_cache_hits, per_request_hit_rate
 from app.api.routes.conversation import _normalize_action_executed
 from app.db.repository import (
     AgentConfigRepository,
@@ -188,23 +189,13 @@ async def get_overview(request: Request) -> dict[str, Any]:
     except Exception:
         logger.debug("Failed to query recent requests", exc_info=True)
 
-    # Compute cache hit rate from analytics DB (cache tier stats don't track hits/queries)
-    cache_hit_rate = 0.0
+    # Per-request cache hit rate from the analytics DB (see app.analytics.cache_rate)
+    hit_rate = 0.0
     try:
-        cache_events = await AnalyticsRepository.query_by_range(
-            event_type="cache",
-            start=start_time,
-            limit=10000,
-        )
-        if cache_events:
-            total_lookups = len(cache_events)
-            hits = sum(
-                1 for e in cache_events if e.get("hit_type", "") in ("routing_hit", "semantic_hit", "action_hit")
-            )
-            cache_hit_rate = round(hits / total_lookups * 100, 1)
+        window_events = await AnalyticsRepository.query_by_range(start=start_time, limit=10000)
+        hit_rate = per_request_hit_rate(count_cache_hits(window_events), recent_requests)
     except Exception:
         logger.debug("Failed to compute cache hit rate", exc_info=True)
-    hit_rate = cache_hit_rate
 
     return {
         "recent_requests": recent_requests,
@@ -297,17 +288,13 @@ async def get_overview_extended(request: Request) -> dict[str, Any]:
             limit=10000,
         )
 
-    hit_types = {"routing_hit", "semantic_hit", "action_hit"}
-    miss_types = {"miss"}
-    hits = sum(1 for e in all_events if e.get("event_type") in hit_types)
-    misses = sum(1 for e in all_events if e.get("event_type") in miss_types)
-    total_cache = hits + misses
-    cache_hit_rate = round(hits / total_cache * 100, 1) if total_cache > 0 else 0
+    # Per request, not per cache event (see app.analytics.cache_rate)
+    cache_hit_rate = per_request_hit_rate(count_cache_hits(all_events), recent_requests)
 
-    # Cache tier breakdown counts
+    # Cache tier breakdown counts (raw events; one live turn can emit several misses)
     routing_hits = sum(1 for e in all_events if e.get("event_type") in ("routing_hit", "semantic_hit"))
     action_hits = sum(1 for e in all_events if e.get("event_type") == "action_hit")
-    cache_misses = misses
+    cache_misses = sum(1 for e in all_events if e.get("event_type") == "miss")
 
     # Conversations count
     total_conversations = 0

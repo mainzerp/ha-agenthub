@@ -79,6 +79,44 @@ class TestAnalyticsOverview:
         assert "p95" in data
         assert "p99" in data
 
+    async def test_cache_hit_rate_is_per_request_not_per_cache_event(self, db_repository):
+        """One live turn emits several miss events (action, routing, both_miss);
+        the hit rate divides hits by requests, not by cache events."""
+        app = _build_app()
+
+        request_events = [
+            {"event_type": "request", "created_at": "2024-01-01T12:00:00", "data": {"latency_ms": 100}}
+            for _ in range(15)
+        ]
+        cache_events = [{"event_type": "action_hit", "created_at": "2024-01-01T12:00:00", "data": {}}] + [
+            {"event_type": "miss", "created_at": "2024-01-01T12:00:00", "data": {"tier": "routing"}} for _ in range(24)
+        ]
+
+        async def _fake_query_by_range(*, event_type=None, start=None, limit=None):
+            if event_type == "request":
+                return request_events
+            return request_events + cache_events
+
+        with (
+            patch(
+                "app.api.routes.analytics_api.AnalyticsRepository.query_by_range",
+                new_callable=AsyncMock,
+                side_effect=_fake_query_by_range,
+            ),
+            patch(
+                "app.api.routes.analytics_api.ConversationRepository.count",
+                new_callable=AsyncMock,
+                return_value=1,
+            ),
+        ):
+            async for client in _client_for(app):
+                overview = (await client.get("/api/admin/analytics/overview")).json()
+                series = (await client.get("/api/admin/analytics/cache?bucket_minutes=60")).json()
+
+        assert overview["total_requests"] == 15
+        assert overview["cache_hit_rate"] == 6.7
+        assert series["datasets"][0]["data"] == [6.7]
+
 
 @pytest.mark.asyncio
 class TestAnalyticsRequests:

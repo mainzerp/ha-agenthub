@@ -1,12 +1,25 @@
 # Version
 
-**Current Version:** 3.10.0
+**Current Version:** 3.10.1
 
 ## Recent Changes
 
-(tracking changes since 3.10.0)
+(tracking changes since 3.10.1)
 
 ## Version History
+
+### 3.10.1 (PATCH) -- live run review fixes
+
+(commit 0a73558)
+
+- Fix (orchestrator): classifier lines with an empty task after the colon (`noise (85%):`) parse again, so background speech stays silent instead of getting a general-agent answer; a leftover `(NN%)` suffix on the agent id no longer maps to an unknown agent.
+- Fix (conversation): the container derives `area_id` and `device_name` from `device_id` via its synced HA device registry; an explicit `area_id` wins. Satellite turns resolve "the light" in their own room.
+- Fix (entity): the startup sync loads HA's hidden/disabled list before the first entity-index snapshot (waits up to 30 s for the WebSocket), so hidden entities are never searchable during startup; state events are not indexed before that.
+- Fix (cache): explicitly named recent referents are cached ("Keller ausschalten" after "Keller einschalten"); only turns resolved from conversation context stay uncached.
+- Fix (trace): streamed-mediation turns record the `return` span with the cache store decision; skipped cache lookups record `hit_type` `skipped` with `skip_reason` instead of a null `cache_hit_type`.
+- Fix (analytics): the cache hit rate is per request on all overview and analytics endpoints; the admin overview no longer always reports 0%.
+- Fix (llm): LiteLLM runs on its httpx transport; the aiohttp transport leaked sessions of evicted OpenAI-SDK clients ("Unclosed client session" errors). The HA WebSocket client never orphans its aiohttp session on reconnect, cancel or close errors.
+- Verification: full gate `scripts/ci.py` (container suite 5074 passed, integration suite 269 passed, Ruff, self-docs sync, lock check, bandit, pip-audit, docker build and smoke test, Trivy). The LiteLLM session leak was reproduced locally and is gone with the httpx transport; its match to the live errors is inferred from timing, not proven. Not yet verified live.
 
 ### 3.10.0 (MINOR) -- global action cache, robust keys, durable rows
 

@@ -183,6 +183,92 @@ class TestContextDependentTurnsNotStored:
         cm.store_action_async.assert_not_called()
 
 
+def _index_with(*entries) -> MagicMock:
+    by_id = {entry.entity_id: entry for entry in entries}
+    index = MagicMock(spec=["get_by_id"])
+    index.get_by_id.side_effect = by_id.get
+    return index
+
+
+_KELLER = make_entity_index_entry("light.keller", "Keller", area="keller")
+_KELLER_LICHT = make_entity_index_entry("light.keller_licht", "Keller Licht", area="keller", aliases=["Basement lamp"])
+
+
+def _keller_off(entity_id: str = "light.keller") -> dict:
+    return {"success": True, "action": "turn_off", "entity_id": entity_id, "service_data": {}}
+
+
+class TestReferentProvenance:
+    """A recent referent blocks the store only when the turn's text does not name it."""
+
+    @pytest.mark.asyncio
+    async def test_explicitly_named_recent_referent_is_stored(self):
+        # Live: "Keller einschalten" stored a row; "Keller ausschalten" in the
+        # same conversation stored nothing because light.keller was a referent.
+        co, cm = _cache_orchestrator()
+        co._entity_index = _index_with(_KELLER)
+        task = IngressTask(
+            description="Keller ausschalten",
+            context=TaskContext(last_entities=[LastEntity(entity_id="light.keller", friendly_name="Keller")]),
+        )
+
+        result = await _store(co, task, action_executed=_keller_off())
+
+        assert result == (True, False)
+        cm.store_action_async.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_compound_and_alias_naming_count_as_explicit(self):
+        co, cm = _cache_orchestrator()
+        co._entity_index = _index_with(_KELLER_LICHT)
+        hint = [LastEntity(entity_id="light.keller_licht", friendly_name="Keller Licht")]
+
+        for text in ("Kellerlicht aus", "turn off the basement lamp"):
+            cm.store_action_async.reset_mock()
+            task = IngressTask(description=text, context=TaskContext(last_entities=list(hint)))
+            result = await _store(co, task, action_executed=_keller_off("light.keller_licht"))
+            assert result == (True, False), text
+
+    @pytest.mark.asyncio
+    async def test_anaphoric_turns_stay_uncached_with_index(self):
+        co, cm = _cache_orchestrator()
+        co._entity_index = _index_with(_KELLER, _KELLER_LICHT)
+
+        for text, entity_id in (
+            ("schalte es aus", "light.keller"),
+            ("turn it off", "light.keller"),
+            # A partial name ("Licht") does not identify "Keller Licht": the
+            # referent decided the target, so the row would misfire elsewhere.
+            ("Licht aus", "light.keller_licht"),
+        ):
+            task = IngressTask(
+                description=text,
+                context=TaskContext(last_entities=[LastEntity(entity_id=entity_id)]),
+            )
+            result = await _store(co, task, action_executed=_keller_off(entity_id))
+            assert result == (False, False), text
+
+        cm.store_action_async.assert_not_called()
+        cm.store_routing_async.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_referent_missing_from_index_falls_back_to_hint_name(self):
+        co, _cm = _cache_orchestrator()
+        co._entity_index = _index_with()
+        named = IngressTask(
+            description="Keller ausschalten",
+            context=TaskContext(last_entities=[LastEntity(entity_id="light.keller", friendly_name="Keller")]),
+        )
+        unnamed = IngressTask(
+            description="Keller ausschalten",
+            context=TaskContext(last_entities=[LastEntity(entity_id="light.keller")]),
+        )
+
+        assert await _store(co, named, action_executed=_keller_off()) == (True, False)
+        # No name evidence at all: conservative, nothing stored.
+        assert await _store(co, unnamed, action_executed=_keller_off()) == (False, False)
+
+
 # ---------------------------------------------------------------------------
 # Item 9: replay fallback text never carries per-turn additions
 # ---------------------------------------------------------------------------

@@ -55,6 +55,7 @@ from app.analytics.tracer import _optional_span, record_request_attribute, sanit
 from app.cache.cache_manager import ActionReplayOutcome, RoutingSkipOutcome
 from app.db.repository import SettingsRepository
 from app.ha_client.action_marker import HaActionMarker, track_ha_actions
+from app.ha_client.devices import apply_device_origin
 from app.ha_client.home_context import populate_task_context_home_context
 from app.ha_client.persons import PersonMatch, get_person_directory
 from app.memory import get_memory_service
@@ -1273,6 +1274,10 @@ class OrchestratorAgent(BaseAgent):
         language, see :meth:`_explicit_cache_language`).
         """
         conversation_id, context_language = self._pipeline_resolve_conversation_id(task)
+        # Satellite origin: a turn carrying only device_id gets the device's
+        # registry area (and device name) before cache replay, routing and
+        # dispatch read the context. An explicit request area_id wins.
+        apply_device_origin(task.context)
         span_collector = task.span_collector
         if span_collector is not None and task.context is not None:
             # Request context on the root span: the (mapped) HA user id, or
@@ -1340,12 +1345,22 @@ class OrchestratorAgent(BaseAgent):
         # Stateless AI-task turns never read the action or routing cache:
         # their instructions are automation prompts, not user phrasings.
         stateless_task = source_is_stateless_task(task.context.source if task.context else None)
+        # A skipped lookup is traced as cache_lookup hit_type="skipped" with
+        # this reason (never a null cache_hit_type).
+        cache_skip_reason: str | None = None
+        if pre_classified is not None:
+            cache_skip_reason = "pre_classified"
+        elif pending_question_active:
+            cache_skip_reason = "pending_question"
+        elif stateless_task:
+            cache_skip_reason = "stateless_task"
         cache_replay = await self._pipeline_director.run_cache_replay(
             task,
             user_text,
             cache_language,
             span_collector,
-            skip_lookup=pre_classified is not None or pending_question_active or stateless_task,
+            skip_lookup=cache_skip_reason is not None,
+            skip_reason=cache_skip_reason,
         )
         if cache_replay.action_replay is not None:
             # A replayed action needs no speaker context; drop the voice-turn
@@ -1703,6 +1718,14 @@ class OrchestratorAgent(BaseAgent):
 
         return reminder_text, allow_organic_followup
 
+    @staticmethod
+    def _seed_return_span(ret_span: dict, from_agent: str, agent_response: str, speech_source: str | None) -> None:
+        """Common ``return`` span fields; ``_finalize_post_mediation`` adds the outcome and store decision."""
+        ret_span["metadata"]["from_agent"] = from_agent
+        ret_span["metadata"]["agent_response"] = agent_response
+        if speech_source:
+            ret_span["metadata"]["speech_source"] = speech_source
+
     async def _finalize_post_mediation(
         self,
         *,
@@ -1916,10 +1939,7 @@ class OrchestratorAgent(BaseAgent):
             mediation_agent = target_agent
         original_speech = speech
         async with _optional_span(span_collector, "return", agent_id="orchestrator") as ret_span:
-            ret_span["metadata"]["from_agent"] = routed_to
-            ret_span["metadata"]["agent_response"] = speech
-            if speech_source:
-                ret_span["metadata"]["speech_source"] = speech_source
+            self._seed_return_span(ret_span, routed_to, speech, speech_source)
 
             if mediation_inputs is not None:
                 # Precomputed by the caller (streaming path probes the
@@ -3340,29 +3360,35 @@ class OrchestratorAgent(BaseAgent):
                 mediated = full_speech
                 dispatch_span["metadata"]["mediation_truncated"] = True
 
-            # Run post-mediation finalization
-            full_speech, vf_eff = await self._finalize_post_mediation(
-                task=task,
-                user_text=user_text,
-                target_agent=target_agent,
-                confidence=confidence,
-                condensed_task=condensed_task,
-                mediated_speech=mediated,
-                original_speech="".join(sc.collected_speech),
-                action_executed=sc.action_executed,
-                has_error=has_error,
-                span_collector=span_collector,
-                conversation_id=conversation_id,
-                language=language,
-                turns=turns,
-                classifications=classifications,
-                voice_followup_requested=sc.stream_voice_followup,
-                mediated_followup=followup,
-                routed_to=routed_to,
-                skip_response_cache=False,
-                used_origin_context=used_origin_context,
-                routing_entry_id=prelude.routing_entry_id,
-            )
+            # Run post-mediation finalization inside the same ``return`` span
+            # the blocking path records, so the cache store decision
+            # (cache_stored_action / cache_stored_routing) is traced too.
+            agent_speech = "".join(sc.collected_speech)
+            async with _optional_span(span_collector, "return", agent_id="orchestrator") as ret_span:
+                self._seed_return_span(ret_span, routed_to or target_agent, agent_speech, sc.speech_source)
+                full_speech, vf_eff = await self._finalize_post_mediation(
+                    task=task,
+                    user_text=user_text,
+                    target_agent=target_agent,
+                    confidence=confidence,
+                    condensed_task=condensed_task,
+                    mediated_speech=mediated,
+                    original_speech=agent_speech,
+                    action_executed=sc.action_executed,
+                    has_error=has_error,
+                    span_collector=span_collector,
+                    conversation_id=conversation_id,
+                    language=language,
+                    turns=turns,
+                    classifications=classifications,
+                    voice_followup_requested=sc.stream_voice_followup,
+                    mediated_followup=followup,
+                    routed_to=routed_to,
+                    skip_response_cache=False,
+                    used_origin_context=used_origin_context,
+                    routing_entry_id=prelude.routing_entry_id,
+                    ret_span=ret_span,
+                )
         else:
             # Existing blocking path. The mediation probe was already
             # consumed above (has_error applied), so pass it through instead

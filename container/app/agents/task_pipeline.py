@@ -12,7 +12,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from app.agents.cache_orchestrator import CacheOrchestrator
+from app.agents.cache_orchestrator import CacheOrchestrator, record_cache_lookup_skipped
 from app.agents.classification_engine import ClassificationEngine
 from app.agents.conversation_manager import ConversationManager
 from app.agents.dispatch_manager import DispatchManager
@@ -167,8 +167,10 @@ class PipelineDirector:
         span_collector,
         *,
         skip_lookup: bool = False,
+        skip_reason: str | None = None,
     ) -> CacheReplayResult:
         if self._cache_manager is None:
+            await record_cache_lookup_skipped(span_collector, "cache_unavailable")
             return CacheReplayResult()
         return await self._cache_replay_strategy.execute(
             task=task,
@@ -176,6 +178,7 @@ class PipelineDirector:
             language=language,
             span_collector=span_collector,
             skip_lookup=skip_lookup,
+            skip_reason=skip_reason,
         )
 
     # ------------------------------------------------------------------

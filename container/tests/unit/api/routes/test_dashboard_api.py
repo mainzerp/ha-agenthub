@@ -61,6 +61,39 @@ class TestGetAdminOverview:
         assert "mcp_server_count" in data
         assert "time_range_hours" in data
 
+    async def test_cache_hit_rate_is_per_request(self, db_repository):
+        app = _build_app()
+        app.state.registry = MagicMock()
+        app.state.registry.list_agents = AsyncMock(return_value=[])
+        app.state.entity_index = None
+        app.state.cache_manager = None
+        app.state.mcp_registry = MagicMock()
+        app.state.mcp_registry.list_servers.return_value = []
+        requests = [{"event_type": "request", "data": {}} for _ in range(4)]
+        cache_events = [
+            {"event_type": "routing_hit", "data": {"tier": "routing"}},
+            {"event_type": "miss", "data": {"tier": "action"}},
+            {"event_type": "miss", "data": {"tier": "routing"}},
+            {"event_type": "miss", "data": {"tier": "both_miss"}},
+        ]
+
+        async def _fake_query_by_range(*, event_type=None, start=None, limit=None):
+            return requests if event_type == "request" else requests + cache_events
+
+        with (
+            patch("app.api.routes.dashboard_api.ensure_setup_runtime_initialized", new_callable=AsyncMock),
+            patch(
+                "app.api.routes.dashboard_api.AnalyticsRepository.query_by_range",
+                new_callable=AsyncMock,
+                side_effect=_fake_query_by_range,
+            ),
+        ):
+            async for client in _client_for(app):
+                data = (await client.get("/api/admin/overview")).json()
+
+        assert data["recent_requests"] == 4
+        assert data["cache_hit_rate"] == 25.0
+
 
 @pytest.mark.asyncio
 class TestGetAdminAgentById:

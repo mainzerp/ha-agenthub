@@ -99,6 +99,11 @@ class HAWebSocketClient:
 
         try:
             async with self._ws_lock:
+                # Never orphan a previous session: overwriting ``_session``
+                # without closing it leaves the GC to report
+                # "Unclosed client session" later.
+                if self._ws is not None or self._session is not None:
+                    await self._close_session_locked()
                 connector = aiohttp.TCPConnector(limit=10, limit_per_host=5, enable_cleanup_closed=True)
                 self._session = aiohttp.ClientSession(connector=connector)
                 self._ws = await self._session.ws_connect(ws_url, heartbeat=HEARTBEAT_INTERVAL)
@@ -143,6 +148,11 @@ class HAWebSocketClient:
                     await self.subscribe_events(event_type)
 
             return True
+        except asyncio.CancelledError:
+            # Cancelled mid-handshake (shutdown): release the half-open
+            # session before propagating so it is not left to the GC.
+            await self._close_session()
+            raise
         except Exception:
             # Broad on purpose: besides transport errors the handshake can
             # raise TypeError (aiohttp WSMessageTypeError when HA sends CLOSE
@@ -176,12 +186,17 @@ class HAWebSocketClient:
                     continue
                 with contextlib.suppress(asyncio.InvalidStateError):
                     future.set_exception(WebSocketResetError("websocket_closed"))
-        if self._ws and not self._ws.closed:
-            await self._ws.close()
-        self._ws = None
-        if self._session and not self._session.closed:
-            await self._session.close()
-        self._session = None
+        ws, self._ws = self._ws, None
+        session, self._session = self._session, None
+        try:
+            if ws is not None and not ws.closed:
+                await ws.close()
+        finally:
+            # Close the session even when ``ws.close()`` raises or is
+            # cancelled; dropping the reference unclosed would surface
+            # later as an asyncio "Unclosed client session" error.
+            if session is not None and not session.closed:
+                await session.close()
 
     def _cancel_all_state_waiters(self, reason: str) -> None:
         """Resolve every pending state waiter with ``WebSocketResetError``.

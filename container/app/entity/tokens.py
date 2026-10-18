@@ -9,8 +9,14 @@ from __future__ import annotations
 
 import re
 import unicodedata
+from collections.abc import Iterable
 
 from app.models.entity_index import EntityIndexEntry
+
+# An entity token of at least this many characters contained in a longer query
+# token counts as a hit, so German compounds match their parts
+# ("Kellerlicht" contains "keller" and "licht").
+COMPOUND_MIN_TOKEN_LEN = 4
 
 
 def fold_text(text: str) -> str:
@@ -84,3 +90,30 @@ def entry_field_tokens(
     for token in entry.id_tokens or []:
         identity_tokens.update(normalize_tokenize(token))
     return name_tokens, identity_tokens, area_tokens
+
+
+def token_in_query(token: str, query_tokens: set[str]) -> bool:
+    """True when ``token`` occurs in ``query_tokens`` verbatim or as a compound part."""
+    if token in query_tokens:
+        return True
+    return len(token) >= COMPOUND_MIN_TOKEN_LEN and any(
+        len(qt) >= COMPOUND_MIN_TOKEN_LEN and token in qt for qt in query_tokens
+    )
+
+
+def text_names_any(text: str, names: Iterable[str]) -> bool:
+    """True when ``text`` names one of ``names`` completely.
+
+    A name counts only when EVERY one of its tokens occurs in the text
+    (verbatim or as a compound part, see :func:`token_in_query`): a partial
+    name ("light" for "Basement Light") does not identify an entity.
+    Language-agnostic: compares the entity's own names, no word lists.
+    """
+    query_tokens = normalize_tokenize(text or "")
+    if not query_tokens:
+        return False
+    for name in names:
+        tokens = normalize_tokenize(name or "")
+        if tokens and all(token_in_query(token, query_tokens) for token in tokens):
+            return True
+    return False

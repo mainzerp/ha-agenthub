@@ -95,7 +95,7 @@ Send a natural language command and receive a full response.
 | `text` | string | yes | Natural language command. |
 | `conversation_id` | string | no | Reuse a prior turn's conversation thread. |
 | `device_id` | string | no | HA device id of the calling satellite/voice device. |
-| `area_id` | string | no | HA area id derived from the calling device. |
+| `area_id` | string | no | HA area id of the caller. When omitted, the container derives it (and missing `device_name` / `area_name`) from `device_id` via its synced HA device registry; an explicit value wins. |
 | `device_name` | string | no | Friendly device name (used by send-agent). |
 | `area_name` | string | no | Friendly area name (used for context and routing). |
 | `language` | string | no | Per-turn language override; falls back to the `language` setting (default `auto`). |
@@ -1242,6 +1242,12 @@ Get full thread detail for a conversation.
 
 Summary metrics (total requests, avg latency, cache hit rate, total conversations).
 
+`cache_hit_rate` is a per-request percentage: cache-hit events (`action_hit`,
+`routing_hit`, `semantic_hit`) divided by `request` events in the window,
+capped at 100. Raw miss events are not the denominator (one live turn emits a
+miss per tier it consulted). `GET /api/admin/overview` and
+`GET /api/admin/overview/extended` report `cache_hit_rate` the same way.
+
 **Query parameters:**
 - `hours` -- Time window (default: 24, max: 720)
 
@@ -1259,7 +1265,9 @@ Per-agent request counts and hit/miss summaries.
 
 ### GET /api/admin/analytics/cache
 
-Cache-tier summary: hits, misses, hit rate, and invalidations.
+Cache hit rate time series in Chart.js format (`hours`, `bucket_minutes`):
+one dataset `Cache Hit Rate (%)`, per bucket cache-hit events divided by
+`request` events (the same per-request rate as the overview).
 
 ### GET /api/admin/analytics/tokens
 
@@ -1275,7 +1283,9 @@ Aggregated error counts by type/agent over the requested window.
 
 ### GET /api/admin/analytics/cache/tiers
 
-Detailed per-tier analytics for routing and action caches.
+Per-tier event counts for routing and action caches (`Routing Hits`,
+`Action Hits`, `Misses`). These are raw events: one live turn can add several
+misses (action tier, routing tier, combined).
 
 ### GET /api/admin/analytics/rewrite
 

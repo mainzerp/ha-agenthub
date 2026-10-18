@@ -41,6 +41,20 @@ Live pipeline in board format — headings are columns, cards are
 
 ## Testing
 
+- Live run review 2026-10-18: fix findings · priority: P1 · area: core
+  Outcome: noise route silences background speech; satellite area resolved
+  from device_id; no aiohttp session leak; explicitly named entities cacheable
+  in on/off pairs; complete cache trace fields; no hidden-entity window at
+  startup. Skipped: voice samples (deleted on purpose), latency (user
+  observes), false wakes (new wake word).
+  Passed: `scripts/ci.py` full gate (container 5074, bridge 269, ruff, lock,
+  bandit, pip-audit, docker build/smoke, trivy). Shipped in v3.10.1.
+  Needs user verification after deploy: a satellite trace shows `area_id`;
+  "Licht an" on a satellite targets its room; "Keller einschalten" then
+  "Keller ausschalten" both store a row (`return` span shows the store);
+  a `noise` classification yields no answer; startup log has no +N/-N hidden
+  entity churn; no "Unclosed client session" within 24 h.
+
 - Action cache: global rows, robust keys, durable entries · priority: P1 · area: cache
   Outcome: cached action runs actually fire for repeated voice commands.
   Trigger: live traces a9342d4628394800 / e1b762a7fd3a4231 missed (no row:
