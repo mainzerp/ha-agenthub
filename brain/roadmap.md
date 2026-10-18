@@ -41,6 +41,19 @@ Live pipeline in board format — headings are columns, cards are
 
 ## Testing
 
+- Quiet enrollment turns (OK reply, no trace, no cache) · priority: P1 · area: voice
+  Outcome: while an enrollment is armed, tee'd voice turns are marked at
+  `/ws/voice` begin and short-circuited in the orchestrator prelude: "OK"
+  for an accepted sample, "Nicht gespeichert"/"Not saved" for a rejected
+  one; no agents, cache, memory, trace summary or spans. Reject log line
+  carries guard scores. Typed turns keep normal handling.
+  Full gate green (container 5104 passed, integration 269 passed, ci.py
+  exit 0); shipped in v3.11.0, not yet deployed.
+  Needs user verification after deploy: enroll 10 samples on a satellite in
+  quick succession; each turn answers "OK" within about a second, a
+  rejected sample says "Nicht gespeichert"; Traces page and cache stats
+  unchanged; a typed chat turn during enrollment is answered normally.
+
 - Live run review 2026-10-18: fix findings · priority: P1 · area: core
   Outcome: noise route silences background speech; satellite area resolved
   from device_id; no aiohttp session leak; explicitly named entities cacheable

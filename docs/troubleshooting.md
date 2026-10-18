@@ -283,7 +283,10 @@ Symptom: person A is identified as person B (or the other way round), or most tu
 
 ## Speakers Rejected During Enrollment
 
-Symptom: while one person enrolls alone, most samples are rejected (`rejected_inconsistent` or `rejected_other_speaker` in the enrollment banner and recent results) and the enrollment times out.
+Symptom: while one person enrolls alone, most samples are rejected (the satellite answers "Not saved" / "Nicht gespeichert"; `rejected_inconsistent` or `rejected_other_speaker` in the enrollment banner and recent results) and the enrollment times out.
+
+- **Read the scores:** each rejection logs `Rejected voice enrollment sample for profile <id>: <reason> (own=... best_other=... best_other_profile=... lead=... speech=... threshold=... margin=... min_similarity=...)` at INFO. `own` is the similarity to the profile's accepted samples (`None` for a first sample), `lead` its gap to the closest other profile; the guard needs `lead >= margin / 2` and, from the third sample on, `own >= min_similarity`.
+- **Satellite does not execute commands:** expected while an enrollment is armed; every satellite voice turn is only a sample and gets "OK" or "Not saved". Cancel or finish the enrollment to use voice commands again.
 
 - **Samples from 3.5.0:** 3.5.0 embedded only the joined speech segments, cutting the pauses inside a sentence; that made embeddings of the same speaker unstable (same speaker and headset scored 0.14-0.38 between samples) and later samples failed the guard. The trimming now cuts only the silence before and after the speech. Reset the samples of every profile and enroll again after this update.
 - **Poor first sample:** `rejected_inconsistent` applies only once two samples were accepted and compares against their centroid; a bad first sample no longer blocks the session. If the profile's samples still disagree, delete the sample with the lowest **Own fit** in the sample list or reset the profile.

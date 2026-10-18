@@ -284,8 +284,13 @@ class VoiceTurnSession:
             return
         self._config = config
         self._conversation_id = conversation_id
-        # Register before any audio so the conversation request can wait.
-        self._token = self._service.store.begin(conversation_id)
+        # Register before any audio so the conversation request can wait. A
+        # turn started while an enrollment is armed is marked here, once: the
+        # conversation side answers it with a short fixed reply instead of
+        # running the agents, even if the final sample's commit disarms the
+        # enrollment before the conversation turn arrives.
+        enrollment_turn = self._service.enrollment.current() is not None
+        self._token = self._service.store.begin(conversation_id, enrollment=enrollment_turn)
         if self._service.engine.status != "ready":
             self._service.schedule_warm_up()
 

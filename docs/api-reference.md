@@ -217,6 +217,17 @@ at `audio_end` regardless. The voice path never waits for the engine: a
 turn arriving before it is `ready` reports `unavailable` (reason
 `engine_not_ready`) and schedules a background warm-up.
 
+A session whose `start` arrives while enrollment is armed marks its turn
+as an enrollment turn. The conversation turn with the same
+`conversation_id` (`/ws/conversation`, `/api/conversation`,
+`/api/conversation/stream`) is then not processed by the agents: it waits
+at most 3 s for this session's result and answers with a fixed `speech` /
+`mediated_speech` (`OK` for an accepted sample or no result in time;
+`Not saved`, German `Nicht gespeichert`, otherwise), `routed_to`
+`orchestrator`, no `action_executed` and `voice_followup` false. It
+writes no trace rows (the response's `trace_id` has no trace), cache
+entries or conversation turns.
+
 **Server -> client:** exactly one result frame, then a normal close (`1000`):
 
 ```json

@@ -33,6 +33,7 @@ from app.agents.dispatch_manager import (
     RETRYABLE_CANNED_CODES,
     DispatchManager,
 )
+from app.agents.enrollment_turn import handle_enrollment_turn
 from app.agents.filler_coordinator import FillerCoordinator, FillerGeneration
 from app.agents.followup import organic_followup_allowed, resolve_voice_followup
 from app.agents.language_detect import detect_user_language, warm_up_language_detector
@@ -1274,6 +1275,29 @@ class OrchestratorAgent(BaseAgent):
         language, see :meth:`_explicit_cache_language`).
         """
         conversation_id, context_language = self._pipeline_resolve_conversation_id(task)
+        # Voice enrollment: a satellite turn whose voice session started while
+        # an enrollment was armed is only a sample. It gets a fixed reply
+        # before anything else runs -- no approval, cache, filler, speaker
+        # lookup, memory, classification, dispatch, turn store or trace.
+        enrollment_exit = (
+            None
+            if self._is_background_turn(task)
+            else await handle_enrollment_turn(conversation_id, context_language, task.span_collector)
+        )
+        if enrollment_exit is not None:
+            return PipelinePreludeResult(
+                conversation_id=conversation_id,
+                detected_language=context_language,
+                lang_turns=[],
+                span_collector=task.span_collector,
+                classifications=[],
+                routing_cached=False,
+                target_agent="orchestrator",
+                condensed_task="",
+                confidence=None,
+                used_origin_context=False,
+                early_exit={"_exit_type": "enrollment", **enrollment_exit},
+            )
         # Satellite origin: a turn carrying only device_id gets the device's
         # registry area (and device name) before cache replay, routing and
         # dispatch read the context. An explicit request area_id wins.
@@ -2426,9 +2450,10 @@ class OrchestratorAgent(BaseAgent):
                     final_chunk["error"] = _stringify_error(ee["error"])
                 yield final_chunk
             else:
-                # cache_replay exit: forward routing/action metadata so the
-                # streaming done frame carries the same bridge fields as the
-                # single-agent path (M-7).
+                # cache_replay / approval / enrollment exit: forward
+                # routing/action metadata so the streaming done frame carries
+                # the same bridge fields as the single-agent path (M-7). An
+                # enrollment exit has no action and never a voice follow-up.
                 final_chunk = {
                     "token": ee["speech"],
                     "done": True,

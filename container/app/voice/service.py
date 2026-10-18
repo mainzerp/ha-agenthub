@@ -24,6 +24,7 @@ from app.voice.audio import pcm_duration_s
 from app.voice.enrollment import EnrollmentState
 from app.voice.profiles import (
     REJECTED_TOO_SHORT,
+    EnrollmentCheck,
     ProfileCentroidCache,
     ProfileScore,
     check_enrollment_sample,
@@ -474,7 +475,7 @@ class SpeakerIdService:
         compute_ms = elapsed_ms(started_at)
         diagnostics: dict[str, Any] = {**trimmed, **_score_fields(check.ranked), "score": check.own_score}
         if check.reason is not None:
-            logger.info("Rejected voice enrollment sample for profile %s: %s", profile_id, check.reason)
+            _log_enrollment_rejection(profile_id, check, trim.speech_s, config)
             result = make_result(
                 STATUS_REJECTED_SAMPLE,
                 duration_s=duration,
@@ -626,6 +627,33 @@ class SpeakerIdService:
             )
 
 
+def _log_enrollment_rejection(profile_id: int, check: EnrollmentCheck, speech_s: float, config: VoiceConfig) -> None:
+    """Log a rejected enrollment sample with the scores the guard decided on.
+
+    ``own`` is the cosine to the profile's own centroid (None for a first
+    sample), ``best_other`` the closest other profile and ``lead`` the gap
+    between both; the guard requires ``lead >= margin / 2`` and, from the
+    third sample on, ``own >= min_similarity``.
+    """
+    others = [item for item in check.ranked if item.profile.profile_id != profile_id]
+    best_other = round(others[0].score, 4) if others else None
+    lead = round(check.own_score - best_other, 4) if check.own_score is not None and best_other is not None else None
+    logger.info(
+        "Rejected voice enrollment sample for profile %s: %s (own=%s best_other=%s best_other_profile=%s lead=%s "
+        "speech=%.2fs threshold=%.2f margin=%.2f min_similarity=%.2f)",
+        profile_id,
+        check.reason,
+        check.own_score,
+        best_other,
+        others[0].profile.profile_id if others else None,
+        lead,
+        speech_s,
+        config.threshold,
+        config.margin,
+        config.enroll_min_similarity,
+    )
+
+
 def _set_latency(result: dict[str, Any], received_at: float | None) -> None:
     """Set ``latency_ms`` of a computed result (one with ``compute_ms``)."""
     if received_at is not None and result.get("compute_ms") is not None:
@@ -699,6 +727,68 @@ def discard_pending_speaker(conversation_id: str | None) -> None:
     service = _service
     if service is not None and conversation_id:
         service.store.discard(conversation_id)
+
+
+# Upper bound an enrollment turn waits for its sample result. The analysis
+# (voice-activity trimming, embedding, guard) starts at ``audio_end``, which
+# the satellite sends before the transcript reaches the conversation turn.
+ENROLLMENT_RESULT_WAIT_S = 3.0
+
+# Sample outcome of an enrollment turn (see :func:`consume_enrollment_turn`).
+ENROLLMENT_OUTCOME_ACCEPTED = "accepted"
+ENROLLMENT_OUTCOME_REJECTED = "rejected"
+ENROLLMENT_OUTCOME_UNKNOWN = "unknown"
+
+
+@dataclass(frozen=True)
+class EnrollmentTurnOutcome:
+    """Outcome of :func:`consume_enrollment_turn`."""
+
+    outcome: str
+    status: str | None = None
+    reason: str | None = None
+    waited_ms: float = 0.0
+
+
+def is_enrollment_turn(conversation_id: str | None) -> bool:
+    """True when the voice turn of ``conversation_id`` started while an enrollment was armed.
+
+    Never waits: the marking is set when the ``/ws/voice`` session registers
+    its entry, before any audio. Typed, API and AI-task turns never have an
+    entry and are never enrollment turns.
+    """
+    service = _service
+    return service is not None and service.store.is_enrollment(conversation_id)
+
+
+async def consume_enrollment_turn(conversation_id: str, wait_s: float | None = None) -> EnrollmentTurnOutcome:
+    """Consume the entry of an enrollment turn and report whether its sample was taken.
+
+    Waits at most ``wait_s`` (default :data:`ENROLLMENT_RESULT_WAIT_S`) for
+    the analysis result. ``accepted``: the
+    sample passed the guard (it is stored when the voice session confirms
+    the turn); ``rejected``: the sample was not taken (guard rejection, too
+    little speech, engine or VAD not ready, error); ``unknown``: no result
+    in time. The entry is removed in every outcome. Never raises
+    (cancellation excepted).
+    """
+    service = _service
+    if service is None:
+        return EnrollmentTurnOutcome(ENROLLMENT_OUTCOME_UNKNOWN)
+    try:
+        lookup = await service.store.pop(conversation_id, ENROLLMENT_RESULT_WAIT_S if wait_s is None else wait_s)
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        logger.debug("Enrollment turn lookup failed for conversation %s", conversation_id, exc_info=True)
+        service.store.discard(conversation_id)
+        return EnrollmentTurnOutcome(ENROLLMENT_OUTCOME_UNKNOWN)
+    result = lookup.result
+    if result is None:
+        return EnrollmentTurnOutcome(ENROLLMENT_OUTCOME_UNKNOWN, waited_ms=lookup.waited_ms)
+    status = result.get("status")
+    outcome = ENROLLMENT_OUTCOME_ACCEPTED if status == STATUS_ENROLLED_SAMPLE else ENROLLMENT_OUTCOME_REJECTED
+    return EnrollmentTurnOutcome(outcome, status=status, reason=result.get("reason"), waited_ms=lookup.waited_ms)
 
 
 class PendingSpeakerLookup:

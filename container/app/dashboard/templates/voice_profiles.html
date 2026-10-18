@@ -36,7 +36,7 @@
                 <template x-if="status.enrollment.replaced">
                     <span class="text-sm" x-text="replacedLabel(status.enrollment)"></span>
                 </template>
-                <span class="text-sm">Only this person speaks to a satellite now: say varied sentences with at least <span x-text="s['voice.speaker_id.min_enroll_duration_s'] || 1.5"></span> seconds of speech each.</span>
+                <span class="text-sm">Only this person speaks to a satellite now: say varied sentences with at least <span x-text="s['voice.speaker_id.min_enroll_duration_s'] || 1.5"></span> seconds of speech each. Voice commands are not carried out until the enrollment ends.</span>
                 <template x-if="status.enrollment.last_rejection">
                     <span class="text-sm text-danger" x-text="'Last sample rejected: ' + reasonLabel(status.enrollment.last_rejection.reason)"></span>
                 </template>
@@ -310,7 +310,7 @@
     <div x-show="enrollTarget" x-cloak class="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="voice-enroll-modal-title" @click.self="enrollTarget = null" @keydown.escape.window="enrollTarget = null">
         <form class="card modal-card" @submit.prevent="submitEnroll()">
             <h3 id="voice-enroll-modal-title" class="mt-0" x-text="'Enroll ' + (enrollTarget ? enrollTarget.name : '')"></h3>
-            <p class="text-sm text-muted">The next voice turns from any satellite are stored as samples for this profile. Only one enrollment can be active at a time.</p>
+            <p class="text-sm text-muted">The next voice turns from any satellite are stored as samples for this profile. They are not carried out: the satellite only answers "OK" or "Not saved". Only one enrollment can be active at a time.</p>
             <div class="form-group">
                 <label class="form-label" for="voice-enroll-samples">Number of samples (1-20)</label>
                 <input id="voice-enroll-samples" type="number" class="form-input" min="1" max="20" step="1" x-model.number="enrollForm.samples" required>
