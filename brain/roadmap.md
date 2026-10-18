@@ -48,7 +48,7 @@ Live pipeline in board format — headings are columns, cards are
   one; no agents, cache, memory, trace summary or spans. Reject log line
   carries guard scores. Typed turns keep normal handling.
   Full gate green (container 5104 passed, integration 269 passed, ci.py
-  exit 0); not committed, not deployed.
+  exit 0); shipped in v3.11.0, not yet deployed.
   Needs user verification after deploy: enroll 10 samples on a satellite in
   quick succession; each turn answers "OK" within about a second, a
   rejected sample says "Nicht gespeichert"; Traces page and cache stats
