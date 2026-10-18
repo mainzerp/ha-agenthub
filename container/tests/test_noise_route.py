@@ -186,3 +186,72 @@ class TestNoiseSanitize:
         known = await orch._agent_registry.get_known_agents()
         assert NOISE_AGENT in known
         assert "cancel-interaction" in known
+
+
+class TestNoiseParse:
+    """Classifier lines for noise often carry no condensed task after the colon."""
+
+    @pytest.mark.parametrize(
+        ("line", "expected_confidence"),
+        [
+            ("noise (85%):", 0.85),
+            ("noise (85%): ", 0.85),
+            ("noise(85%):", 0.85),
+            ("noise (85 %):", 0.85),
+            ("noise:", None),
+        ],
+    )
+    async def test_noise_line_with_empty_condensed_parses(self, line, expected_confidence):
+        orch, _dispatcher = _make_orch()
+        engine = orch._classification_engine
+        results = await engine.parse_classification(line, "Und ich, eine Mann...")
+        assert results == [(NOISE_AGENT, "Und ich, eine Mann...", expected_confidence)]
+
+    async def test_normal_line_still_parses(self):
+        orch, _dispatcher = _make_orch()
+        engine = orch._classification_engine
+        results = await engine.parse_classification("light-agent (90%): turn on kitchen", "original")
+        assert results == [("light-agent", "turn on kitchen", 0.9)]
+
+    @patch("app.agents.orchestrator.SettingsRepository")
+    @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
+    @patch("app.llm.client.complete", new_callable=AsyncMock)
+    async def test_handle_task_empty_noise_line_is_silent(self, mock_complete, mock_track, mock_settings):
+        mock_settings.get_value = AsyncMock(side_effect=lambda k, d=None: "auto" if k == "language" else d)
+        orch, dispatcher = _make_orch()
+        mock_complete.return_value = f"{NOISE_AGENT} (85%):"
+
+        with patch("app.agents.conversation_manager.ConversationRepository") as mock_repo:
+            mock_repo.insert = AsyncMock(return_value=1)
+            task = make_ingress_task(description="Und ich, eine Mann...", context=TaskContext(language="de"))
+            task.conversation_id = "n5"
+            result = await orch.handle_task(task)
+
+        assert result["speech"] == ""
+        assert result["routed_to"] == NOISE_AGENT
+        dispatcher.dispatch.assert_not_awaited()
+        dispatcher.dispatch_stream.assert_not_awaited()
+
+    @patch("app.agents.orchestrator.SettingsRepository")
+    @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
+    @patch("app.llm.client.complete", new_callable=AsyncMock)
+    async def test_handle_task_stream_empty_noise_line_is_silent(self, mock_complete, mock_track, mock_settings):
+        mock_settings.get_value = AsyncMock(side_effect=lambda k, d=None: "auto" if k == "language" else d)
+        orch, dispatcher = _make_orch()
+        mock_complete.return_value = f"{NOISE_AGENT} (85%): "
+
+        with patch("app.agents.conversation_manager.ConversationRepository") as mock_repo:
+            mock_repo.insert = AsyncMock(return_value=1)
+            task = IngressTask(
+                description="Ich bin eine Betrügerin.",
+                conversation_id="n6",
+                context=TaskContext(language="de"),
+            )
+            chunks = [ch async for ch in orch.handle_task_stream(task)]
+
+        assert len(chunks) == 1
+        assert chunks[0]["done"] is True
+        assert chunks[0]["mediated_speech"] == ""
+        assert chunks[0]["routed_to"] == NOISE_AGENT
+        dispatcher.dispatch.assert_not_awaited()
+        dispatcher.dispatch_stream.assert_not_awaited()

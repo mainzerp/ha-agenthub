@@ -411,7 +411,7 @@ Cache can be flushed per tier or entirely from the admin dashboard or via the AP
 ## Analytics
 
 Stored traces and dashboard trace detail expose per-span whole-call latency (`latency_ms`) and, on streaming LLM calls, time-to-first-token (`ttft_ms`) and tokens-per-second (`tps`). Non-streaming calls record only `latency_ms` (first-chunk timing does not exist there).
-The `cache_lookup` span carries a numeric `cache_tier` metadata field: `0` = miss (neither tier), `1` = routing hit, `3` = action hit. (Tier 2 -- exact routing hit with cached entity bindings -- was removed; agents recall entities themselves.)
+The `cache_lookup` span carries a numeric `cache_tier` metadata field: `0` = miss (neither tier) or skipped lookup (`hit_type` `skipped` plus `skip_reason`), `1` = routing hit, `3` = action hit. (Tier 2 -- exact routing hit with cached entity bindings -- was removed; agents recall entities themselves.)
 The `/api/admin/analytics/tokens` endpoint aggregates average latency, TTFT, and TPS across requests, grouped by agent and provider.
 
 ## MCP Server Configuration

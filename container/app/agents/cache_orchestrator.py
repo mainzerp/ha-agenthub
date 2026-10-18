@@ -20,7 +20,7 @@ from app.analytics.collector import track_cache_event_background, track_request_
 from app.analytics.tracer import _optional_span
 from app.cache.cache_manager import ActionReplayOutcome, ActionReplayRejected, CacheManager, RoutingSkipOutcome
 from app.db.repository import SettingsRepository
-from app.entity.tokens import fold_text
+from app.entity.tokens import fold_text, text_names_any
 from app.entity.visibility import _index_has_async_get_by_id, entity_is_visible
 from app.models.agent import (
     CANCEL_INTERACTION_AGENT,
@@ -92,6 +92,25 @@ async def routing_hit_is_still_valid(
         if not all(visibility):
             return False
     return True
+
+
+# ``cache_lookup`` span ``hit_type`` for a turn whose cache lookup did not run;
+# ``skip_reason`` on the same span says why (see ``record_cache_lookup_skipped``).
+CACHE_LOOKUP_SKIPPED = "skipped"
+
+
+async def record_cache_lookup_skipped(span_collector, reason: str) -> None:
+    """Record a ``cache_lookup`` span for a turn that skipped the cache lookup.
+
+    Keeps ``trace_summary.cache_hit_type`` explicit (``skipped``) instead of
+    null. Reasons: ``pending_question``, ``pre_classified``,
+    ``stateless_task``, ``compound_utterance``, ``cache_disabled``,
+    ``cache_unavailable``. Trace only -- no analytics cache event is emitted.
+    """
+    async with _optional_span(span_collector, "cache_lookup", agent_id="orchestrator") as cache_span:
+        cache_span["metadata"]["hit_type"] = CACHE_LOOKUP_SKIPPED
+        cache_span["metadata"]["skip_reason"] = reason
+        cache_span["metadata"]["cache_tier"] = 0
 
 
 def _str_attr(obj: Any, name: str) -> str:
@@ -218,8 +237,10 @@ class CacheOrchestrator:
     ) -> tuple[ActionReplayOutcome | None, RoutingSkipOutcome | None]:
         """Try action replay first, then routing skip, before live classify."""
         if not self._cache_manager:
+            await record_cache_lookup_skipped(span_collector, "cache_unavailable")
             return None, None
         if not await self._get_bool_setting_impl("cache.enabled", True):
+            await record_cache_lookup_skipped(span_collector, "cache_disabled")
             return None, None
 
         _check_vis = check_visibility or self.cached_action_is_still_visible
@@ -555,7 +576,7 @@ class CacheOrchestrator:
         # would replay against the same entity in an unrelated conversation.
         # Neither tier stores them -- a routing row for "turn it off" would
         # equally misroute when the referent is a different domain.
-        if self._is_context_dependent_turn(task, entity_ids, action_executed):
+        if await self._is_context_dependent_turn(task, entity_ids, action_executed, user_text=user_text):
             return False, False
 
         confidence_value = confidence if confidence is not None else 0.0
@@ -749,18 +770,25 @@ class CacheOrchestrator:
             logger.debug("receives_speaker_context lookup failed for %s", agent_id, exc_info=True)
             return False
 
-    @staticmethod
-    def _is_context_dependent_turn(task: IngressTask | None, entity_ids: list[str], action_executed) -> bool:
+    async def _is_context_dependent_turn(
+        self,
+        task: IngressTask | None,
+        entity_ids: list[str],
+        action_executed,
+        *,
+        user_text: str = "",
+    ) -> bool:
         """True when the turn's outcome depended on conversation context.
 
         Signals: the turn answered a pending clarifying question
         (``is_followup`` / ``pending_question``), a speaker was recognized by
         voice (the agent saw the speaker's name, so its reply may be
         personalised and must never be replayed to another speaker), or an
-        executed entity is one of the anaphora hints offered via
-        ``last_entities``. The last test is deliberately conservative: an
-        entity named explicitly that also happens to be a recent referent is
-        not stored either.
+        executed entity was resolved FROM conversation context: it is one of
+        the anaphora hints offered via ``last_entities`` and ``user_text``
+        (the cache key) does not name it (see ``_names_referent``). A recent
+        referent the user named explicitly ("Keller ausschalten" after
+        "Keller einschalten") is selected by the wording alone and is stored.
         """
         context = getattr(task, "context", None) if task is not None else None
         if context is None:
@@ -769,17 +797,46 @@ class CacheOrchestrator:
             return True
         if getattr(context, "speaker", None) is not None:
             return True
-        last_entities = getattr(context, "last_entities", None) or []
-        hinted = {str(getattr(le, "entity_id", "") or "").strip().lower() for le in last_entities}
-        hinted.discard("")
-        if not hinted:
+        hints = {}
+        for le in getattr(context, "last_entities", None) or []:
+            key = str(getattr(le, "entity_id", "") or "").strip().lower()
+            if key:
+                hints.setdefault(key, le)
+        if not hints:
             return False
-        executed = {eid.strip().lower() for eid in entity_ids if eid}
+        executed = {eid.strip().lower(): eid.strip() for eid in entity_ids if eid and eid.strip()}
         if isinstance(action_executed, dict):
             command = action_executed.get("executed_command")
             if isinstance(command, dict) and command.get("entity_id"):
-                executed.add(str(command["entity_id"]).strip().lower())
-        return bool(executed & hinted)
+                command_id = str(command["entity_id"]).strip()
+                executed.setdefault(command_id.lower(), command_id)
+        user_text = user_text or _str_attr(task, "description")
+        for key, entity_id in executed.items():
+            hint = hints.get(key)
+            if hint is not None and not await self._names_referent(user_text, entity_id, hint):
+                return True
+        return False
+
+    async def _names_referent(self, user_text: str, entity_id: str, hint) -> bool:
+        """True when ``user_text`` names the referent ``entity_id`` itself.
+
+        Provenance check for a recent referent: the cache row is keyed by
+        ``user_text`` alone, so it may only be stored when that text
+        identifies the entity without the conversation. Name sources are the
+        index entry's ``friendly_name``, ``aliases`` and ``device_name`` (the
+        hint's ``friendly_name`` when the entry is unavailable); every token
+        of one name must occur in the text (``text_names_any``). Area names
+        do not count. No name source at all -> False (conservative).
+        """
+        entry = await self._lookup_index_entry(entity_id)
+        names: list[str] = []
+        if entry is not None:
+            names.append(_str_attr(entry, "friendly_name"))
+            names.extend(alias for alias in (getattr(entry, "aliases", None) or []) if isinstance(alias, str))
+            names.append(_str_attr(entry, "device_name"))
+        else:
+            names.append(_str_attr(hint, "friendly_name"))
+        return text_names_any(user_text, [name for name in names if name])
 
     async def invalidate_served_routing(
         self,

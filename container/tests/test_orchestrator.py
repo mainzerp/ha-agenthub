@@ -1229,7 +1229,7 @@ class TestOrchestratorAgent:
     @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
     @patch("app.llm.client.complete", new_callable=AsyncMock)
     async def test_handle_task_no_cache_manager(self, mock_complete, mock_track, mock_settings):
-        """handle_task works when cache_manager is None (no cache_lookup span)."""
+        """handle_task works when cache_manager is None (lookup traced as skipped)."""
         from app.analytics.tracer import SpanCollector
 
         orch, *_ = self._make_orchestrator()
@@ -1245,7 +1245,8 @@ class TestOrchestratorAgent:
             result = await orch.handle_task(task)
         assert result["speech"]
         span_names = [s["span_name"] for s in collector._spans]
-        assert "cache_lookup" not in span_names
+        lookups = [s["metadata"] for s in collector._spans if s["span_name"] == "cache_lookup"]
+        assert lookups == [{"hit_type": "skipped", "skip_reason": "cache_unavailable", "cache_tier": 0}]
         assert "classify" in span_names
 
     @patch("app.agents.orchestrator.SettingsRepository")

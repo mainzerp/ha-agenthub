@@ -11,7 +11,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Callable
 from typing import Any
 
-from app.agents.cache_orchestrator import CacheOrchestrator
+from app.agents.cache_orchestrator import CacheOrchestrator, record_cache_lookup_skipped
 from app.agents.classification_engine import ClassificationEngine
 from app.agents.compound_utterance import looks_compound
 from app.agents.conversation_manager import ConversationManager, extract_resolved_entities
@@ -70,6 +70,7 @@ class CacheReplayStrategy(ABC):
         span_collector,
         *,
         skip_lookup: bool = False,
+        skip_reason: str | None = None,
     ) -> CacheReplayResult: ...
 
 
@@ -153,17 +154,29 @@ class DefaultCacheReplayStrategy(CacheReplayStrategy):
         span_collector,
         *,
         skip_lookup: bool = False,
+        skip_reason: str | None = None,
     ) -> CacheReplayResult:
+        """Run the cache lookup; a skipped lookup is traced as ``hit_type="skipped"``.
+
+        ``skip_reason`` names why the caller skipped (``pending_question``,
+        ``pre_classified``, ``stateless_task``); it lands on the
+        ``cache_lookup`` span next to ``hit_type``.
+        """
         compound_bypass = False
         action_replay = None
         routing_skip = None
 
-        if not skip_lookup and self._cache_manager:
+        if skip_lookup:
+            await record_cache_lookup_skipped(span_collector, skip_reason or "skipped_by_caller")
+        elif not self._cache_manager:
+            await record_cache_lookup_skipped(span_collector, "cache_unavailable")
+        else:
             if await self._cache_orchestrator._get_bool_setting_impl(
                 "cache.compound_utterance_bypass", True
             ) and looks_compound(user_text):
                 compound_bypass = True
                 logger.debug("Skipping cache lookup for structurally compound utterance: %r", user_text[:80])
+                await record_cache_lookup_skipped(span_collector, "compound_utterance")
             else:
                 action_replay, routing_skip = await self._cache_orchestrator.try_cache_replay(
                     task=task,

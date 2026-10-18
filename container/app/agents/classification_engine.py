@@ -37,6 +37,13 @@ _UNPINNABLE_AGENTS = frozenset({CANCEL_INTERACTION_AGENT, NOISE_AGENT, "send-age
 _NO_AGENT_MESSAGE = "I couldn't determine the right agent for that request."
 _NO_CONTENT_MESSAGE = "I couldn't determine what content to deliver."
 
+# "<agent-id> (<nn>%): <condensed task>". The condensed task may be empty
+# (e.g. ``noise (85%):``); empty text falls back to the original utterance.
+_CLASSIFICATION_LINE_RE = re.compile(r"^([\w-]+)\s*\((\d+)%?\)\s*:\s*(.*)$", re.DOTALL)
+# Agent-id part of a line that only parsed via the ":" fallback but still
+# carries a confidence suffix, e.g. ``noise (85 %)``.
+_AGENT_CONFIDENCE_SUFFIX_RE = re.compile(r"^([\w-]+)\s*\(\s*(\d+)\s*%?\s*\)$")
+
 
 class _RecoverableClassificationError(RuntimeError):
     def __init__(self, message: str, *, code: str = "parse_error") -> None:
@@ -534,7 +541,7 @@ class ClassificationEngine:
             line = line.removeprefix(ANSWER_MARKER).strip()
             line = line.removeprefix("[SEQ]").strip()
             confidence: float | None
-            match = re.match(r"^([\w-]+)\s*\((\d+)%?\)\s*:\s*(.+)$", line, re.DOTALL)
+            match = _CLASSIFICATION_LINE_RE.match(line)
             if match:
                 agent_id = match.group(1).strip().lower()
                 confidence = min(float(match.group(2)) / 100.0, 1.0)
@@ -549,6 +556,11 @@ class ClassificationEngine:
                 condensed = condensed.strip()
                 condensed = _sanitize_condensed(condensed, fragment_re, line)
                 confidence = None
+                suffix_match = _AGENT_CONFIDENCE_SUFFIX_RE.match(agent_id)
+                if suffix_match:
+                    # Never map "<agent> (<nn>%)" to an unknown agent id.
+                    agent_id = suffix_match.group(1)
+                    confidence = min(float(suffix_match.group(2)) / 100.0, 1.0)
 
             if agent_id not in known_agents:
                 logger.warning("Unknown agent '%s' in classification, skipping line", agent_id)

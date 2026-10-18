@@ -57,7 +57,7 @@ from app.agents.base import (
 )
 from app.agents.decorator import agent
 from app.analytics.tracer import _optional_span
-from app.entity.tokens import entry_field_tokens, normalize_tokenize
+from app.entity.tokens import entry_field_tokens, normalize_tokenize, token_in_query
 from app.entity.visibility import filter_visible_results
 from app.models.agent import (
     ActionExecuted,
@@ -341,10 +341,6 @@ _NO_CANDIDATES_SCOPED_BLOCK = (
 # injected. Larger domains are token-filtered down to the top N.
 _KEYWORD_RECALL_MAX_INJECT = 15
 _KEYWORD_RECALL_TOP_N = 12
-# Compound containment guard, mirroring the matcher's near-miss token-length
-# guard: an entity token of at least this length that is a substring of a
-# query token counts as a hit ("innenhof" inside "innenhofuberdachung").
-_KEYWORD_COMPOUND_MIN_TOKEN_LEN = 4
 
 
 def _recall_is_ambiguous(
@@ -430,7 +426,7 @@ class ActionableAgent(BaseAgent):
         recall. Each visible entry is scored per field class by normalized
         token overlap against the task description plus the last user turn
         (anaphora follow-ups), with compound containment (an entity token >=
-        ``_KEYWORD_COMPOUND_MIN_TOKEN_LEN`` chars contained in a query
+        ``app.entity.tokens.COMPOUND_MIN_TOKEN_LEN`` chars contained in a query
         token counts as a hit) so German compounds match their parts. The
         score is a ``(name_hits, identity_hits, area_hits)`` tuple so
         name/alias evidence outranks area-token evidence. The name class
@@ -476,10 +472,7 @@ class ActionableAgent(BaseAgent):
             for class_tokens in entry_field_tokens(entry):
                 hits = 0
                 for token in class_tokens:
-                    if token in query_tokens or (
-                        len(token) >= _KEYWORD_COMPOUND_MIN_TOKEN_LEN
-                        and any(len(qt) >= _KEYWORD_COMPOUND_MIN_TOKEN_LEN and token in qt for qt in query_tokens)
-                    ):
+                    if token_in_query(token, query_tokens):
                         hits += 1
                 counts.append(hits)
             name_sources = [getattr(entry, "friendly_name", "") or ""]

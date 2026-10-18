@@ -613,6 +613,51 @@ class HARestClient:
 
         return await self._fetch_registry_lookup("entity_areas", template, _parse)
 
+    async def get_device_registry(self) -> dict[str, dict[str, str | None]]:
+        """Return ``{device_id: {"name": ..., "area_id": ...}}`` for devices with entities.
+
+        Feeds the satellite origin lookup (device_id -> area). Only devices
+        that own at least one entity are listed; a voice satellite always
+        owns its ``assist_satellite`` entity.
+        """
+        template = (
+            "{% set ns = namespace(ids=[], items=[]) %}"
+            "{% for s in states %}"
+            "{% set did = device_id(s.entity_id) %}"
+            "{% if did and did not in ns.ids %}"
+            "{% set ns.ids = ns.ids + [did] %}"
+            "{% set ns.items = ns.items + [{'id': did, "
+            "'name': device_attr(did, 'name_by_user') or device_attr(did, 'name'), "
+            "'area': device_attr(did, 'area_id')}] %}"
+            "{% endif %}{% endfor %}"
+            "{{ ns.items | tojson }}"
+        )
+
+        def _parse(rows: list[Any]) -> dict[str, Any]:
+            result: dict[str, Any] = {}
+            for row in rows:
+                did = row.get("id")
+                if not did:
+                    continue
+                name = row.get("name")
+                area = row.get("area")
+                result[str(did)] = {
+                    "name": str(name) if name else None,
+                    "area_id": str(area) if area else None,
+                }
+            return result
+
+        return await self._fetch_registry_lookup("device_registry", template, _parse)
+
+    @property
+    def hidden_entity_ids_loaded(self) -> bool:
+        """True once the hidden/disabled entity list was fetched from HA successfully.
+
+        Before that, :meth:`get_hidden_entity_ids` returns an empty set that
+        does NOT mean "no hidden entities" (the registry is WebSocket-only).
+        """
+        return self._last_hidden_entity_ids is not None
+
     async def get_hidden_entity_ids(self) -> set[str]:
         """Return entity IDs that are hidden or disabled in HA's entity registry.
 

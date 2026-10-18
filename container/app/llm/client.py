@@ -34,6 +34,11 @@ except ImportError:  # pragma: no cover - aiohttp is a litellm dependency
 
 logger = logging.getLogger(__name__)
 
+# LiteLLM's default aiohttp transport leaks the sessions of evicted OpenAI-SDK
+# clients (its closer holds them only weakly), which surfaces as periodic asyncio
+# "Unclosed client session" errors. The httpx transport closes cleanly.
+litellm.disable_aiohttp_transport = True
+
 
 class LLMError(Exception):
     """Raised when the LLM provider returns an unusable response."""

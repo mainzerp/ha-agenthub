@@ -506,3 +506,26 @@ prompts live in `container/app/prompts/`, `ctx.agent_registry` not
   update deleted every row in that area and INFO logs do not survive restarts.
 - **Validator keeps the row language**; unknown language keeps the original
   reply instead of falling back to an English template.
+
+## 2026-10-18 — live run review fixes
+
+- **Satellite area resolved in the container**, not the bridge (directive 1):
+  an in-memory device directory (`app/ha_client/devices.py`) refreshed with the
+  existing registry sync fills `area_id`/`device_name` from `device_id` at the
+  start of the orchestrator prelude; an explicit `area_id` wins. Works without
+  a bridge update. Consequence: room-relative cache rows now actually bind to
+  the satellite's area (see 2026-10-17).
+- **Hidden list before first snapshot**: the startup sync waits up to 30 s for
+  HA's hidden/disabled list before installing the entity index; after that it
+  installs unfiltered with a warning rather than staying empty forever.
+- **Explicitly named referents are cacheable**: a turn counts as
+  context-dependent unless the cache-key text fully names the referent
+  (friendly name, alias or device name, compounds allowed).
+  `resolution_path` cannot separate an echoed referent from a named one.
+- **LiteLLM uses the httpx transport** (`disable_aiohttp_transport`): its
+  aiohttp transport leaks sessions of evicted OpenAI-SDK clients (weakly held
+  by the closer), which caused the periodic "Unclosed client session" errors.
+- **Cache hit rate is per request** (hits / request events); per-event rates
+  counted up to three misses per turn.
+- Not fixed on purpose: voice samples (deleted by the user), classification and
+  rewrite latency (user observes), false wakes (new wake word).

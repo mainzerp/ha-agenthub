@@ -195,3 +195,56 @@ class TestConnectDoesNotOwnRunningFlag:
         assert result is True
         assert client._running is False
         assert client.is_connected() is False
+
+
+class TestSessionNeverOrphaned:
+    """Every replaced or torn-down aiohttp session must be closed explicitly.
+
+    An orphaned session is only reported by the GC, as an asyncio
+    "Unclosed client session" error without a traceback.
+    """
+
+    async def test_connect_closes_stale_session_before_opening_new_one(self):
+        client = HAWebSocketClient()
+        stale_session, stale_ws = _make_session([])
+        client._session = stale_session
+        client._ws = stale_ws
+        new_session, _new_ws = _make_session(_auth_ok_messages())
+
+        p1, p2, p3, p4, p5 = _connect_env(lambda *a, **k: new_session)
+        with p1, p2, p3, p4, p5:
+            result = await client.connect()
+
+        assert result is True
+        stale_ws.close.assert_awaited_once()
+        stale_session.close.assert_awaited_once()
+        assert client._session is new_session
+        new_session.close.assert_not_awaited()
+
+    async def test_close_session_closes_session_when_ws_close_raises(self):
+        client = HAWebSocketClient()
+        session, ws = _make_session([])
+        ws.close = AsyncMock(side_effect=RuntimeError("transport broken"))
+        client._session = session
+        client._ws = ws
+
+        with pytest.raises(RuntimeError):
+            await client._close_session()
+
+        session.close.assert_awaited_once()
+        assert client._session is None
+        assert client._ws is None
+        assert client._ws_lock.locked() is False
+
+    async def test_cancelled_connect_closes_session(self):
+        client = HAWebSocketClient()
+        session, ws = _make_session([asyncio.CancelledError()])
+
+        p1, p2, p3, p4, p5 = _connect_env(lambda *a, **k: session)
+        with p1, p2, p3, p4, p5, pytest.raises(asyncio.CancelledError):
+            await client.connect()
+
+        ws.close.assert_awaited_once()
+        session.close.assert_awaited_once()
+        assert client._session is None
+        assert client._ws is None

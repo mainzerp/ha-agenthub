@@ -1360,6 +1360,36 @@ class TestStreamedMediationFallback:
     @patch("app.agents.orchestrator.SettingsRepository")
     @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
     @patch("app.llm.client.complete", new_callable=AsyncMock)
+    async def test_streamed_mediation_records_return_span_with_store_decision(
+        self, mock_complete, mock_track, mock_settings
+    ):
+        """The streamed path traces the same return span as the blocking path."""
+        mock_complete.return_value = "light-agent (95%): Turn on light"
+
+        async def _short(**kwargs):
+            yield "Okay."
+
+        orch, collector = _setup_mediated_turn(mock_settings, _short)
+        orch._store_after_dispatch = AsyncMock(return_value=(True, False))
+        _spoken, _done, meta = await _run_turn(orch, collector, "conv-stream-return")
+
+        assert meta["mediation_streamed"] is True
+        returns = [s for s in collector.get_spans() if s["span_name"] == "return"]
+        assert len(returns) == 1
+        ret = returns[0]["metadata"]
+        assert ret["from_agent"] == "light-agent"
+        assert ret["agent_response"] == "Full agent answer."
+        assert ret["final_response"] == "Okay."
+        assert ret["mediated"] is True
+        assert ret["cache_stored_action"] is True
+        assert ret["cache_stored_response"] is True
+        assert ret["cache_stored_routing"] is False
+        orch._store_after_dispatch.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    @patch("app.agents.orchestrator.SettingsRepository")
+    @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
+    @patch("app.llm.client.complete", new_callable=AsyncMock)
     async def test_all_aside_output_falls_back(self, mock_complete, mock_track, mock_settings):
         mock_complete.return_value = "light-agent (95%): Turn on light"
 

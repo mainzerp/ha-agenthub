@@ -15,6 +15,7 @@ from app.db.repository import SettingsRepository
 from app.defaults import DEFAULT_LOCAL_EMBEDDING_MODEL
 from app.entity.index import EntityIndex
 from app.entity.ingest import parse_ha_states, state_to_entity_index_entry
+from app.ha_client.devices import get_device_directory
 from app.ha_client.persons import PERSON_ENTITY_PREFIX, get_person_directory, person_identity_changed
 from app.security.sensitive_actions import register_entity_index
 from app.util.tasks import spawn
@@ -34,6 +35,10 @@ _ENTITY_SYNC_DEFAULT_INTERVAL_MIN = 30
 _ENTITY_SYNC_DISABLED_RECHECK_SEC = 300
 _ENTITY_UPDATE_FLUSH_INTERVAL_SEC = 0.5
 _CACHE_VALIDATOR_DEFAULT_INTERVAL_MIN = 60
+# The first entity-index snapshot waits this long for HA's hidden/disabled
+# entity list (WebSocket-only entity registry) before it is installed.
+_FIRST_SNAPSHOT_HIDDEN_WAIT_SEC = 30.0
+_HIDDEN_IDS_RETRY_SEC = 1.0
 
 # Entity-registry fields whose change can alter what a cached action means or
 # whether it may replay: identity (rename), the names and aliases resolution
@@ -257,12 +262,62 @@ async def _wait_for_ws_connection(app: FastAPI, timeout: float = 8.0) -> bool:
     return False
 
 
+def _hidden_ids_loaded(ha_client: HARestClient | None) -> bool:
+    """True once HA's hidden/disabled entity list has been fetched successfully.
+
+    Clients without the probe (test doubles) count as loaded.
+    """
+    value = getattr(ha_client, "hidden_entity_ids_loaded", True)
+    return value if isinstance(value, bool) else True
+
+
+async def _hidden_ids_for_first_snapshot(app: FastAPI, ha_client: HARestClient) -> set[str]:
+    """Hidden/disabled entity ids for the first entity-index snapshot.
+
+    HA exposes the entity registry only over the WebSocket, which usually
+    connects after the prime starts. Installing the snapshot before the
+    list is known made hidden entities searchable until a later re-sync, so
+    the prime waits (bounded by ``_FIRST_SNAPSHOT_HIDDEN_WAIT_SEC``) for the
+    WebSocket and the registry. When the list is still unreadable, the
+    snapshot is installed without the filter (degraded) and the next sync
+    applies it.
+    """
+    hidden_ids = await ha_client.get_hidden_entity_ids()
+    if _hidden_ids_loaded(ha_client):
+        return hidden_ids
+    logger.info("Entity index prime: waiting for the HA entity registry (hidden/disabled entities)")
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + _FIRST_SNAPSHOT_HIDDEN_WAIT_SEC
+    while (remaining := deadline - loop.time()) > 0:
+        if not await _wait_for_ws_connection(app, timeout=remaining):
+            break
+        hidden_ids = await ha_client.get_hidden_entity_ids()
+        if _hidden_ids_loaded(ha_client):
+            return hidden_ids
+        await asyncio.sleep(min(_HIDDEN_IDS_RETRY_SEC, max(deadline - loop.time(), 0.0)))
+    logger.warning(
+        "Entity index prime: HA hidden/disabled entity list unavailable after %.0fs; "
+        "installing the first snapshot without the hidden filter until the next sync",
+        _FIRST_SNAPSHOT_HIDDEN_WAIT_SEC,
+    )
+    return hidden_ids
+
+
+async def _refresh_device_directory(ha_client: HARestClient, area_lookup: dict | None = None) -> None:
+    """Refresh the device_id -> area map used for satellite origin context."""
+    await get_device_directory().refresh(ha_client, area_lookup or None)
+
+
 async def _prime_entity_index(app: FastAPI, ha_client: HARestClient, entity_index: EntityIndex, vector_store) -> None:
     """Fetch HA states and build/sync the entity index in the background."""
     import time as _time
 
     _t0 = _time.monotonic()
     try:
+        # The hidden list is resolved BEFORE the states snapshot so the first
+        # snapshot never makes hidden / disabled entities searchable.
+        hidden_ids = await _hidden_ids_for_first_snapshot(app, ha_client)
+        app.state.hidden_entity_ids = hidden_ids
         snapshot_generation = _snapshot_generation(entity_index)
         states = await ha_client.get_states()
         _t1 = _time.monotonic()
@@ -272,8 +327,7 @@ async def _prime_entity_index(app: FastAPI, ha_client: HARestClient, entity_inde
         )
         _store_entity_lookups(app, area_lookup, alias_lookup, device_lookup, area_id_lookup)
         _set_area_assignment_status(entity_index, ha_client, area_id_lookup)
-        hidden_ids = await ha_client.get_hidden_entity_ids()
-        app.state.hidden_entity_ids = hidden_ids
+        await _refresh_device_directory(ha_client, area_lookup)
         entities = parse_ha_states(
             states,
             area_lookup=area_lookup,
@@ -457,6 +511,7 @@ async def build_entity_snapshot(app: FastAPI, ha_client: HARestClient) -> list[E
     )
     _store_entity_lookups(app, area_lookup, alias_lookup, device_lookup, area_id_lookup)
     _set_area_assignment_status(getattr(app.state, "entity_index", None), ha_client, area_id_lookup)
+    await _refresh_device_directory(ha_client, area_lookup)
     hidden_ids = await ha_client.get_hidden_entity_ids()
     app.state.hidden_entity_ids = hidden_ids
     return parse_ha_states(
@@ -823,6 +878,11 @@ async def setup_entity_observers(
                 if old_state is not None:
                     await entity_index.remove_async(entity_id)
                 return
+            # Before the first snapshot and the hidden list are in place, an
+            # entity cannot be checked against HA's hidden flag: do not index
+            # it. The first snapshot is fetched after the hidden list.
+            if not _hidden_ids_loaded(ha_client) and not entity_index_snapshot_loaded(entity_index):
+                return
 
             if new_state is None and old_state is not None:
                 await entity_index.remove_async(entity_id)
@@ -871,15 +931,20 @@ async def setup_entity_observers(
             resolved_entity_ids = await _invalidate_registry_event(event, kind="entity")
             await _refresh_registry_entities(app, ha_client, entity_index, resolved_entity_ids)
 
+        # Device and area events also refresh the satellite origin map
+        # (device_id -> area): device creation or a device moved to another
+        # area does not always touch an indexed entity.
         async def on_device_registry_updated(event: dict) -> None:
             ha_client.clear_area_registry_cache()
             resolved_entity_ids = await _invalidate_registry_event(event, kind="device")
             await _refresh_registry_entities(app, ha_client, entity_index, resolved_entity_ids)
+            await _refresh_device_directory(ha_client, _previous_lookups(app).get("area"))
 
         async def on_area_registry_updated(event: dict) -> None:
             ha_client.clear_area_registry_cache()
             resolved_entity_ids = await _invalidate_registry_event(event, kind="area")
             await _refresh_registry_entities(app, ha_client, entity_index, resolved_entity_ids)
+            await _refresh_device_directory(ha_client)
 
         # Registry refresh work issues send_command round-trips whose
         # replies only the WS receive loop can deliver, so listeners must
@@ -929,27 +994,32 @@ async def setup_entity_observers(
     if ha_client is not None and ws_client is not None:
         ha_client.set_state_observer(ws_client)
 
-    # WS-HIDDEN-SYNC: the first entity prime often runs before the WS client
-    # has connected.  Spawn a tiny background task that waits for the WS,
-    # fetches hidden entities over the WebSocket, and re-syncs the index
-    # if any hidden IDs were discovered post-startup.
+    # WS-HIDDEN-SYNC: the prime waits (bounded) for the WS to read the hidden
+    # list before its first snapshot. This task runs after the prime and
+    # re-syncs the index when the hidden list it reads over the WS differs
+    # from the one the snapshot was built with (degraded prime, or hidden
+    # flags changed meanwhile).
     async def _deferred_hidden_entity_sync() -> None:
         logger.info("Deferred hidden-entity sync task started")
         try:
+            prime_task = getattr(app.state, "entity_index_init_task", None)
+            if isinstance(prime_task, asyncio.Task) and not prime_task.done():
+                await asyncio.wait({prime_task})
             connected = await _wait_for_ws_connection(app, timeout=10.0)
             logger.info("Deferred hidden-entity sync: ws_connected=%s", connected)
             if connected:
                 # Give _receive_loop() a moment to start so send_command()
                 # does not race into a timeout.
                 await asyncio.sleep(1.0)
-                # Call the WebSocket client directly to bypass the REST
-                # client's empty-set cache from the pre-WS startup sync.
+                # Read the registry over the WebSocket directly, bypassing the
+                # REST client's TTL-cached list.
                 hidden_ids = await ws_client.get_hidden_entity_ids()
                 if hidden_ids is None:
                     logger.info("Deferred hidden-entity sync: registry fetch failed, keeping existing index")
                     return
                 logger.info("Deferred hidden-entity sync: hidden_ids=%d", len(hidden_ids))
-                if hidden_ids:
+                indexed_hidden_ids = getattr(app.state, "hidden_entity_ids", None) or set()
+                if hidden_ids != indexed_hidden_ids:
                     app.state.hidden_entity_ids = hidden_ids
                     snapshot_generation = _snapshot_generation(entity_index)
                     states = await ha_client.get_states()
