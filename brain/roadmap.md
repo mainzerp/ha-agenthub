@@ -48,7 +48,7 @@ Live pipeline in board format — headings are columns, cards are
   startup. Skipped: voice samples (deleted on purpose), latency (user
   observes), false wakes (new wake word).
   Passed: `scripts/ci.py` full gate (container 5074, bridge 269, ruff, lock,
-  bandit, pip-audit, docker build/smoke, trivy). Uncommitted, not deployed.
+  bandit, pip-audit, docker build/smoke, trivy). Shipped in v3.10.1.
   Needs user verification after deploy: a satellite trace shows `area_id`;
   "Licht an" on a satellite targets its room; "Keller einschalten" then
   "Keller ausschalten" both store a row (`return` span shows the store);
