@@ -450,7 +450,11 @@ mediation is not asked for a closing question. A clarifying question is
 still spoken and recorded as the pending question. A suppression records
 `followup_suppressed: "enrollment"` on the `return` span (when present)
 and the root span. Without a speaker service, or with speaker
-identification disabled, nothing is suppressed.
+identification disabled, nothing is suppressed. Satellite voice turns
+whose `/ws/voice` session started while enrollment was armed never reach
+these paths: they get a fixed reply without follow-up (see Enrollment
+turns under Speaker Identification); the suppression covers the
+remaining turns while armed (e.g. voice turns without the STT tee).
 
 ### HA Bridge Transport
 
@@ -495,7 +499,10 @@ Optional; off by default (`voice.speaker_id.enabled`). Flow:
    depends on the container.
 3. The container registers the `conversation_id` in an in-memory turn
    store (`app/voice/turn_store.py`: single-use entries, 120 s TTL, 256
-   entries, newest session per id wins) at `start`. At analysis it
+   entries, newest session per id wins) at `start`; an entry registered
+   while an enrollment is armed is marked as an enrollment turn (fixed
+   at `start`, so the final sample's commit, which disarms the
+   enrollment, never unmarks it). At analysis it
    first trims the outer silence of the turn with the sherpa-onnx Silero
    VAD (`app/voice/vad.py`, worker thread): the embedded region runs from
    the first to the last detected speech, padded by 0.2 s on each side
@@ -577,6 +584,24 @@ Optional; off by default (`voice.speaker_id.enabled`). Flow:
    entry. A turn with an attached speaker is treated as
    context-dependent and writes no action-cache or routing-cache row, so
    a personalised reply is never replayed to another speaker.
+5. **Enrollment turns.** When the conversation turn's entry is marked as
+   an enrollment turn (`is_enrollment_turn`), the orchestrator prelude
+   exits first (`_exit_type="enrollment"`, `app/agents/enrollment_turn.py`),
+   right after resolving `conversation_id` and before device origin,
+   approval, cache replay, language detection, filler, speaker lookup,
+   memory and classification. It waits at most 3 s
+   (`ENROLLMENT_RESULT_WAIT_S`) for the sample result, consumes the
+   entry and answers with a fixed reply keyed by the request language
+   (English fallback): `OK` for an accepted sample or no result in
+   time, `Not saved` / `Nicht gespeichert` when the sample was not taken
+   (guard rejection, too little speech, engine or VAD not ready, error).
+   No agent runs; the turn has no cache lookup or store, no
+   conversation-turn or memory write, no filler, no mediation, no voice
+   follow-up and no trace: `SpanCollector.discard()` drops every span
+   (the WebSocket `ws_turn` and middleware root spans included) and no
+   trace summary is created. The prelude logs one INFO line per such
+   turn (conversation id, outcome, status, reason). Typed, API and
+   AI-task turns have no marked entry and are processed normally.
 
 Personalization identity (`app/agents/personalization.py`):
 `personalization_user_id(context)` returns the request's `user_id`
@@ -678,6 +703,10 @@ Rules:
   profile at a time), qualifying turns are stored as samples instead of
   being identified -- only after the bridge confirms the turn with `end`
   (successful, non-empty transcript); `abort` or a disconnect discards it.
+  The conversation side of such a turn gets only a fixed reply (step 5).
+  A rejected sample is logged at INFO with the guard's scores (`own`,
+  `best_other`, `lead`, speech seconds, `threshold`, `margin`,
+  `min_similarity`).
 - The voice path never waits for a model load: while the engine is not
   `ready`, turns report `unavailable` and a background warm-up starts.
 - `/ws/voice` writes no connection-level trace; no audio is stored, only

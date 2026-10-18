@@ -5,8 +5,9 @@ so a conversation request arriving while the embedding is still being
 computed can wait (bounded) for the result. Entries are single-use, expire
 after :data:`ENTRY_TTL_S` and are capped at :data:`MAX_ENTRIES`. A newer
 session for the same ``conversation_id`` (multi-turn follow-up) replaces
-the older entry. The container runs a single process, so process memory is
-the right scope.
+the older entry. An entry registered while a voice-profile enrollment was
+armed is marked as an enrollment turn (see :meth:`SpeakerTurnStore.is_enrollment`).
+The container runs a single process, so process memory is the right scope.
 """
 
 from __future__ import annotations
@@ -31,6 +32,8 @@ class _Entry:
     created_at: float
     event: asyncio.Event = field(default_factory=asyncio.Event)
     result: dict[str, Any] | None = None
+    # True when a voice-profile enrollment was armed as the session started.
+    enrollment: bool = False
 
 
 @dataclass(frozen=True)
@@ -61,10 +64,13 @@ class SpeakerTurnStore:
 
     # -- session side --------------------------------------------------
 
-    def begin(self, conversation_id: str) -> int:
+    def begin(self, conversation_id: str, *, enrollment: bool = False) -> int:
         """Register a pending entry and return its session token.
 
         Replaces (and releases waiters of) an older entry for the same id.
+        ``enrollment`` marks the turn as an enrollment turn: the marking is
+        fixed at session start, so the commit of the final sample (which
+        disarms the enrollment) never turns it back into a normal turn.
         """
         self._purge_expired()
         old = self._entries.pop(conversation_id, None)
@@ -74,7 +80,7 @@ class SpeakerTurnStore:
             _, evicted = self._entries.popitem(last=False)
             evicted.event.set()
         token = next(self._tokens)
-        self._entries[conversation_id] = _Entry(token=token, created_at=time.monotonic())
+        self._entries[conversation_id] = _Entry(token=token, created_at=time.monotonic(), enrollment=enrollment)
         return token
 
     def resolve(self, conversation_id: str, token: int, result: dict[str, Any]) -> bool:
@@ -104,6 +110,14 @@ class SpeakerTurnStore:
             return False
         self._purge_expired()
         return conversation_id in self._entries
+
+    def is_enrollment(self, conversation_id: str | None) -> bool:
+        """True when an unconsumed entry for ``conversation_id`` was registered as an enrollment turn."""
+        if not conversation_id:
+            return False
+        self._purge_expired()
+        entry = self._entries.get(conversation_id)
+        return entry is not None and entry.enrollment
 
     async def pop(self, conversation_id: str, wait_s: float) -> SpeakerLookup:
         """Consume the entry, waiting up to ``wait_s`` while it is still pending.

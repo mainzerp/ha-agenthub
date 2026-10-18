@@ -529,3 +529,20 @@ prompts live in `container/app/prompts/`, `ctx.agent_registry` not
   counted up to three misses per turn.
 - Not fixed on purpose: voice samples (deleted by the user), classification and
   rewrite latency (user observes), false wakes (new wake word).
+
+## 2026-10-18 — enrollment turns get a fixed reply, no agents
+
+- **Marked at `/ws/voice` start, per conversation**, not by the global armed
+  flag: only tee'd satellite turns become enrollment turns (typed/API/ai_task
+  turns stay normal), and the final sample's commit cannot race the check.
+- **Short-circuit at the start of the orchestrator prelude**, before origin,
+  approval, cache, filler, speaker lookup, memory and classification; the
+  request's spans are discarded (`SpanCollector.discard`), so no trace row.
+- **Reply tells the outcome**: "OK" for an accepted sample or a result timeout
+  (3 s), "Nicht gespeichert"/"Not saved" for any unstored sample, so the user
+  knows which sentence to repeat. Static table, no LLM.
+- Reject log lines carry the guard scores; the in-memory `recent` list is lost
+  on restart.
+- Rejects of 2026-10-18 (4 x `rejected_inconsistent`, 0.06-0.22) were not a
+  capture bug (per-turn buffers, embedding before filler); cause unknown,
+  satellite side suspected. Threshold left at 0.45 pending a re-test.

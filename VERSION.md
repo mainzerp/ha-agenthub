@@ -6,6 +6,8 @@
 
 (tracking changes since 3.10.1)
 
+- Feature (voice): enrollment turns are not processed by agents. A satellite voice turn whose `/ws/voice` session started while an enrollment was armed (marked on the turn-store entry at `start`) gets a fixed reply right away -- `OK` (sample accepted, or no result within 3 s) or `Not saved` / `Nicht gespeichert` (sample not taken) -- with no cache lookup or store, conversation-turn or memory write, filler, classification, mediation, voice follow-up or trace rows (`SpanCollector.discard()`). Typed and API turns are processed normally. Rejected enrollment samples log the guard's scores (`own`, `best_other`, `lead`, speech, `threshold`, `margin`, `min_similarity`).
+
 ## Version History
 
 ### 3.10.1 (PATCH) -- live run review fixes

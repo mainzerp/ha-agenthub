@@ -394,6 +394,19 @@ class SpanCollector:
         self._spans: list[dict[str, Any]] = []
         # Request-level context (e.g. ``user_id``) stamped onto the root span.
         self.request_attributes: dict[str, Any] = {}
+        # Set by :meth:`discard`: the request is not traced at all.
+        self.discarded = False
+
+    def discard(self) -> None:
+        """Drop every collected span and stop collecting for this request.
+
+        Spans finished later (including the root span of the middleware or
+        the WebSocket turn) are dropped too and :meth:`flush` writes nothing,
+        so the request leaves no trace rows. Used for voice-enrollment turns.
+        """
+        self.discarded = True
+        self._spans.clear()
+        self.request_attributes.clear()
 
     def push_parent(self, span_id: str) -> contextvars.Token:
         """Set ``span_id`` as the current parent for subsequent spans and
@@ -459,7 +472,8 @@ class SpanCollector:
             else:
                 span["duration_ms"] = round((time.perf_counter() - t0) * 1000, 2)
                 span["end_time"] = datetime.now(UTC).isoformat()
-            self._spans.append(span)
+            if not self.discarded:
+                self._spans.append(span)
 
     def get_spans(self) -> list[dict[str, Any]]:
         """Return a shallow copy of the collected spans."""
@@ -474,7 +488,10 @@ class SpanCollector:
 
         Request attributes recorded via :meth:`set_request_attribute` are
         merged into the root span metadata; keys the caller already set win.
+        Ignored after :meth:`discard`.
         """
+        if self.discarded:
+            return
         if self.request_attributes:
             metadata = dict(span_data.get("metadata") or {})
             for attr_key, attr_value in self.request_attributes.items():
@@ -487,7 +504,10 @@ class SpanCollector:
         self.record_root_span(span_data)
 
     async def flush(self) -> None:
-        """Bulk insert all collected spans. Fire-and-forget."""
+        """Bulk insert all collected spans. Fire-and-forget; a no-op after :meth:`discard`."""
+        if self.discarded:
+            self._spans.clear()
+            return
         if not self._spans:
             return
         try:
@@ -514,6 +534,13 @@ class SpanCollector:
             logger.warning("Failed to flush %d trace spans", len(self._spans), exc_info=True)
         finally:
             self._spans.clear()
+
+
+def discard_trace(span_collector: Any) -> None:
+    """Drop the request's spans and stop tracing it when the collector supports it."""
+    discard = getattr(span_collector, "discard", None)
+    if callable(discard):
+        discard()
 
 
 def record_request_attribute(span_collector: Any, key: str, value: Any) -> None:

@@ -119,12 +119,14 @@ class TracingMiddleware:
             except Exception:
                 logger.warning("Failed to flush spans for trace %s", trace_id, exc_info=True)
 
-            try:
-                from app.db.repository import TraceSummaryRepository
+            # A discarded collector (voice-enrollment turn) has no trace summary to update.
+            if not getattr(span_collector, "discarded", False):
+                try:
+                    from app.db.repository import TraceSummaryRepository
 
-                await TraceSummaryRepository.update_duration(trace_id, round(duration_ms, 2))
-            except Exception:
-                logger.error("Failed to update trace summary duration for %s", trace_id, exc_info=True)
+                    await TraceSummaryRepository.update_duration(trace_id, round(duration_ms, 2))
+                except Exception:
+                    logger.error("Failed to update trace summary duration for %s", trace_id, exc_info=True)
 
             logger.info(
                 "[%s] %s %s -> %d (%.1fms)",
