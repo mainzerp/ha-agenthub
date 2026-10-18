@@ -382,21 +382,26 @@ async def test_chat_source_asks_without_reopening_the_microphone(tmp_path):
 # ---------------------------------------------------------------------------
 
 
+# Long enough that it never appears by chance in a monotonic timestamp of
+# the pending entry repr (a short code like "4711" did, flakily).
+ALARM_CODE = "8642097531"
+
+
 async def test_alarm_code_never_reaches_logs_spans_or_repr(tmp_path, caplog):
     caplog.set_level(logging.DEBUG)
     collector = SpanCollector("trace-approval-1", source="ha")
     async with _pipeline(tmp_path) as h:
-        h.feed("orchestrator", "security-agent (95%): Disarm the alarm with code 4711")
-        h.feed("security-agent", _block("alarm_disarm", "home alarm", {"code": "4711"}))
-        await h.turn("disarm the alarm with code 4711", span_collector=collector)
+        h.feed("orchestrator", "security-agent (95%): Disarm the alarm with code " + ALARM_CODE)
+        h.feed("security-agent", _block("alarm_disarm", "home alarm", {"code": ALARM_CODE}))
+        await h.turn("disarm the alarm with code " + ALARM_CODE, span_collector=collector)
         _status, pending = approval_store.get_entry(CONV)
-        assert "4711" not in repr(pending)
-        assert pending.actions[0].service_data == {"code": "4711"}
+        assert ALARM_CODE not in repr(pending)
+        assert pending.actions[0].service_data == {"code": ALARM_CODE}
 
         answer_collector = SpanCollector("trace-approval-2", source="ha")
         h.feed("orchestrator", CONFIRM)
         await h.turn("yes", span_collector=answer_collector)
-        assert h.handles.ha_client.calls[-1].service_data.get("code") == "4711"
+        assert h.handles.ha_client.calls[-1].service_data.get("code") == ALARM_CODE
 
         approval_spans = [s for s in answer_collector.get_spans() if s.get("span_name") == "approval"]
         assert approval_spans and approval_spans[0]["metadata"]["decision"] == "confirm"
@@ -406,7 +411,7 @@ async def test_alarm_code_never_reaches_logs_spans_or_repr(tmp_path, caplog):
         # machinery (executor, approval and HA call spans) never echoes the code.
         for span in collector.get_spans() + answer_collector.get_spans():
             if span.get("span_name") in ("approval", "ha_action", "return", "ha_call"):
-                assert "4711" not in repr(span.get("metadata")), span.get("span_name")
+                assert ALARM_CODE not in repr(span.get("metadata")), span.get("span_name")
     approval_loggers = (
         "app.agents.approval",
         "app.agents.approval_gate",
@@ -417,7 +422,7 @@ async def test_alarm_code_never_reaches_logs_spans_or_repr(tmp_path, caplog):
     )
     logged = [r.getMessage() for r in caplog.records if r.name.startswith(approval_loggers)]
     assert logged
-    assert not [line for line in logged if "4711" in line]
+    assert not [line for line in logged if ALARM_CODE in line]
 
 
 async def test_newer_question_wins_over_pending_automation_proposal(tmp_path):
