@@ -11,9 +11,18 @@ updates:
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 5
+    # codeql-action steps must share one version, or the workflow fails.
+    groups:
+      codeql-action:
+        patterns: ["github/codeql-action*"]
 
   - package-ecosystem: "docker"
     directory: "/container"
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 3
+    # The image stays on Python 3.12 (scripts/ci.py enforces it); patch and
+    # digest updates still come through.
+    ignore:
+      - dependency-name: "python"
+        update-types: ["version-update:semver-minor", "version-update:semver-major"]

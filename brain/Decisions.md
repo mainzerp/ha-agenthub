@@ -4,6 +4,19 @@ Decision rationale, so decisions stay made. Newest first. Binding architecture
 rules live in `docs/project/prime-directives.md` — this file records choices,
 not copies of rules.
 
+## 2026-10-19 — CI scanning and Dependabot policy
+
+- **Trivy also scans `main`**: `docker-build` uploads a SARIF for the
+  `ha-agenthub:ci` image on main pushes under the `ci.yml:docker` category.
+  Rationale: tag-only scanning (since 2026-05-08) left default-branch code
+  scanning stale; the main scan is non-blocking, the release gate is unchanged.
+- **Base image stays on Python 3.12**; Dependabot ignores python minor/major
+  bumps. Rationale: litellm and sherpa-onnx do not support 3.15 yet, and
+  `scripts/ci.py` pins the lock to 3.12. Revisit when the stack supports a
+  newer Python.
+- **codeql-action updates come as one Dependabot group.** Rationale: all
+  codeql-action steps in a workflow must share one version.
+
 ## 2026-10-13 — LLM provider resilience after trace 4c94d170dd51471e
 
 - **Transient provider errors are retried once in the LLM client**, detected
