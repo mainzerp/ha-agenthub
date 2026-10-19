@@ -12,4 +12,4 @@ uv==0.13.0
 mypy>=2.4.0
 pip-audit>=2.10.1
 bandit==1.9.4
-tzdata>=2026.4
+tzdata>=2026.5
