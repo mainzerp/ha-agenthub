@@ -74,10 +74,16 @@ jobs:
 
   # Validates Dockerfile and lock changes on every PR and main push: amd64
   # only, loaded into the runner's Docker, never pushed. Tags use `docker`.
+  # On main it also uploads a Trivy SARIF so code scanning on the default
+  # branch stays current (same category as the tag scan in `docker`).
   docker-build:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+
+    permissions:
+      contents: read
+      security-events: write
 
     concurrency:
       group: docker-build-${{ github.workflow }}-${{ github.ref }}
@@ -134,6 +140,26 @@ jobs:
             echo "::error::unclean shutdown on SIGTERM (exit code $code)"
             exit 1
           fi
+
+      - name: Scan image with Trivy (SARIF)
+        if: github.ref == 'refs/heads/main'
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ha-agenthub:ci
+          format: sarif
+          output: trivy-results.sarif
+          exit-code: 0
+          severity: HIGH,CRITICAL
+          scanners: vuln
+          vuln-type: os,library
+          limit-severities-for-sarif: true
+
+      - name: Upload Trivy SARIF
+        if: always() && github.ref == 'refs/heads/main' && hashFiles('trivy-results.sarif') != ''
+        uses: github/codeql-action/upload-sarif@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
+        with:
+          sarif_file: trivy-results.sarif
+          category: .github/workflows/ci.yml:docker
 
   docker:
     runs-on: ubuntu-latest
