@@ -234,12 +234,14 @@ def _clear_visibility_rules_cache():
 
 @pytest.fixture(autouse=True)
 async def _reset_write_conn():
-    """Close the shared global write connection so it never leaks across loops."""
+    """Close the shared global write connection and drop the write lock so neither leaks across loops."""
     yield
     try:
         import app.db.schema as _schema
         from tests.helpers import shutdown_aiosqlite
 
+        # asyncio.Lock binds to the loop of its first contended acquire.
+        _schema._write_lock = None
         if _schema._write_conn is not None:
             await shutdown_aiosqlite(_schema._write_conn)
             _schema._write_conn = None
