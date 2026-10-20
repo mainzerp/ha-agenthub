@@ -1,12 +1,23 @@
 # Version
 
-**Current Version:** 3.11.0
+**Current Version:** 3.11.1
 
 ## Recent Changes
 
-(tracking changes since 3.11.0)
+(tracking changes since 3.11.1)
 
 ## Version History
+
+### 3.11.1 (PATCH) -- dependency updates and CI scanning
+
+(commits c289111, da49f68, daf98a5, 678432c, fa02d21)
+
+- Deps (container image): fastapi 0.142.2 -> 0.143.3, pydantic 2.13.5 -> 2.14.1 (pydantic-core 2.46.5 -> 2.50.1), cryptography 50.0.1 -> 50.0.2, python 3.12-slim-bookworm base image digest refresh; requirement floors raised for litellm (`>=1.105.1`) and python-dotenv (`>=1.2.4`), both already locked at those versions. `container/requirements.lock` regenerated.
+- Deps (dev): uv 0.11.32 -> 0.13.0, pre-commit 4.6.2 -> 4.7.0, tzdata `>=2026.5`.
+- CI (docker): the `docker-build` job uploads a Trivy SARIF for main pushes, so code scanning on the default branch is current again (it had been stale since 2026-05-08); the orphaned `docker-build.yml:docker` scanning configuration was deleted.
+- CI (deps): all codeql-action steps on v4.39.0; Dependabot groups codeql-action updates and ignores python minor/major base-image bumps (the stack does not build on 3.15 yet).
+- Test (core): the per-test fixture resets the DB write lock, fixing the flaky `test_fire_omits_generic_logical_name_from_timer_name` ("Lock is bound to a different event loop"); the approval secrecy test uses a long alarm code (89dc888).
+- Verification: full gate `scripts/ci.py` on main 383c836 (container suite 5104 passed, integration suite 269 passed, Ruff, self-docs sync, lock check, bandit, pip-audit, docker build and smoke test, Trivy). No runtime behavior change intended; not yet verified live.
 
 ### 3.11.0 (MINOR) -- quiet enrollment turns
 
