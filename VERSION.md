@@ -1,12 +1,20 @@
 # Version
 
-**Current Version:** 3.11.1
+**Current Version:** 3.11.2
 
 ## Recent Changes
 
-(tracking changes since 3.11.1)
+(tracking changes since 3.11.2)
 
 ## Version History
+
+### 3.11.2 (PATCH) -- admin API error hardening
+
+(commit 1d6e3dd)
+
+- Fix (dashboard): admin API endpoints no longer return raw exception text; entity-index `stats`, `refresh` and `match-preview` (`deterministic.error`, `hybrid_error`) and the external user mapping update return fixed messages, full details stay in the logs. Resolves CodeQL `py/stack-trace-exposure` alerts #542-#545.
+- Security (code scanning): eight CodeQL alerts dismissed after triage (path-injection #538/#539 guarded by the agent-id regex, clear-text-logging #546/#547 log names or proxy CIDRs only, test-only regex/substring checks #540/#541/#548/#549). The open Trivy alerts are Debian bookworm base-image CVEs without an available fix; the release gate ignores unfixed findings.
+- Verification: full gate `scripts/ci.py` on main ca5566a (container suite 5104 passed, integration suite 269 passed, Ruff, self-docs sync, lock check, bandit, pip-audit, docker build and smoke test, Trivy). Not yet verified live.
 
 ### 3.11.1 (PATCH) -- dependency updates and CI scanning
 
