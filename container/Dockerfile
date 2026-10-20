@@ -1,5 +1,5 @@
 # ---- Builder stage: compile native wheels ----
-FROM python:3.12-slim-bookworm@sha256:d193c6f51a7dbd10395d6328de3a7edb0516fb0608ca138036576f574c3e07d2 AS builder
+FROM python:3.12-slim-bookworm@sha256:34386ef0cb081344d7ec1c103ba398e6e9f64e9ab3a1509accc92a4e24a07258 AS builder
 
 WORKDIR /build
 
@@ -26,7 +26,7 @@ RUN pip install --no-cache-dir --prefix=/install --require-hashes --no-deps \
     --ignore-installed -r requirements.lock
 
 # ---- Final stage: slim runtime ----
-FROM python:3.12-slim-bookworm@sha256:d193c6f51a7dbd10395d6328de3a7edb0516fb0608ca138036576f574c3e07d2
+FROM python:3.12-slim-bookworm@sha256:34386ef0cb081344d7ec1c103ba398e6e9f64e9ab3a1509accc92a4e24a07258
 
 WORKDIR /app
 
