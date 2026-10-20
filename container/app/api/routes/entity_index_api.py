@@ -149,9 +149,9 @@ async def get_entity_index_stats(request: Request):
             "sync": sync_stats,
             "sync_interval_minutes": int(sync_interval or 30),
         }
-    except Exception as exc:
+    except Exception:
         logger.warning("Failed to get entity index stats", exc_info=True)
-        return {"count": 0, "error": str(exc), "embedding": None, "sync": {}}
+        return {"count": 0, "error": "Failed to get entity index stats", "embedding": None, "sync": {}}
 
 
 @router.get("/match-preview")
@@ -285,9 +285,9 @@ async def match_preview(
                 deterministic["domain_allowed"] = False
             elif domain_filter:
                 metadata["domain_filter_dropped"] = False
-    except Exception as exc:
+    except Exception:
         logger.warning("match-preview: deterministic resolution failed", exc_info=True)
-        deterministic["error"] = str(exc)
+        deterministic["error"] = "Deterministic resolution failed; see logs"
 
     # -----------------------------------------------------------------
     # Hybrid matcher (what every non-light executor sees directly)
@@ -327,9 +327,9 @@ async def match_preview(
                         },
                     }
                 )
-    except Exception as exc:
+    except Exception:
         logger.warning("match-preview: hybrid matcher failed", exc_info=True)
-        hybrid_error = str(exc)
+        hybrid_error = "Hybrid matcher failed; see logs"
 
     # -----------------------------------------------------------------
     # Empty-state diagnostics: only when the hybrid list is empty.
@@ -440,6 +440,6 @@ async def refresh_entity_index(request: Request):
             "count": len(entities),
             **counts,
         }
-    except Exception as exc:
+    except Exception:
         logger.warning("Failed to refresh entity index", exc_info=True)
-        return {"status": "error", "detail": str(exc)}
+        return {"status": "error", "detail": "Entity index refresh failed; see logs"}

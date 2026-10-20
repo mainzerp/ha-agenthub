@@ -997,8 +997,8 @@ async def set_external_user_mapping(
 
     try:
         ok = await ExternalUserMappingRepository.set_mapping(source, external_user_id, ha_user_id)
-    except ValueError as exc:
-        return JSONResponse({"detail": str(exc)}, status_code=400)
+    except ValueError:
+        return JSONResponse({"detail": "Invalid ha_user_id"}, status_code=400)
     if not ok:
         return JSONResponse({"detail": "External user not found"}, status_code=404)
     return {"ok": True, "ha_user_id": ha_user_id}

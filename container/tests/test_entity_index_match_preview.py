@@ -626,7 +626,7 @@ async def test_match_preview_diagnostics_with_hybrid_error(preview_client):
         )
     assert resp.status_code == 200, resp.text
     data = resp.json()
-    assert data["hybrid_error"] == "boom"
+    assert data["hybrid_error"] == "Hybrid matcher failed; see logs"
     assert data["diagnostics"]["reason"] == "filtered_out"
 
 
