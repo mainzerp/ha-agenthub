@@ -451,6 +451,7 @@ class SpanCollector:
         }
         token = _current_parent.set(span_id)
         t0 = time.perf_counter()
+        self._emit_activity("span_start", span)
         try:
             yield span
         except Exception as exc:
@@ -472,8 +473,26 @@ class SpanCollector:
             else:
                 span["duration_ms"] = round((time.perf_counter() - t0) * 1000, 2)
                 span["end_time"] = datetime.now(UTC).isoformat()
+            self._emit_activity("span_end", span)
             if not self.discarded:
                 self._spans.append(span)
+
+    def _emit_activity(self, event_type: str, span: dict[str, Any]) -> None:
+        """Mirror a span start/end onto the live activity SSE stream (best-effort).
+
+        ``start_span`` always runs on an event loop; the SSE helper hands the
+        event over with ``call_soon_threadsafe`` when that is not the loop
+        serving the subscribers. Discarded traces (voice enrollment) are never
+        mirrored. Failures are swallowed so tracing is never affected.
+        """
+        if self.discarded:
+            return
+        try:
+            from app.api.routes.sse import publish_span_activity
+
+            publish_span_activity(event_type, span, self.source)
+        except Exception:
+            logger.debug("Activity event hook failed", exc_info=True)
 
     def get_spans(self) -> list[dict[str, Any]]:
         """Return a shallow copy of the collected spans."""

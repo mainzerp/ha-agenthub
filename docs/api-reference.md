@@ -1188,6 +1188,63 @@ list and `/api/admin/traces/{trace_id}` detail endpoints.
 
 Auth: admin session.
 
+## Admin -- Live streams (SSE)
+
+| Method | Path | SSE event | Purpose |
+|--------|------|-----------|---------|
+| GET | `/api/admin/overview/stream` | `overview` | Heartbeat every 30 s for the overview page. |
+| GET | `/api/admin/health/stream` | `health` | Heartbeat every 5 s. |
+| GET | `/api/admin/timers/stream` | `timers` | Heartbeat every 5 s. |
+| GET | `/api/admin/traces/stream` | `traces` | Heartbeat every 5 s. |
+| GET | `/api/admin/activity/stream` | `activity` | Live orchestrator and agent span activity. |
+
+Auth: admin session (401 without one). All streams are in-process (single
+worker), send `: keep-alive` comments every 15 s, and set `Cache-Control:
+no-cache` and `X-Accel-Buffering: no`. Each subscriber has a 32-event queue;
+when it is full the oldest events are dropped. The `/api/admin/*` rate limit
+(300 requests per minute per client IP) is checked once when the stream opens,
+not per event, so an open stream is never throttled; a reconnecting
+`EventSource` counts as one request per attempt.
+
+### GET /api/admin/activity/stream
+
+Emits one `activity` event when an allowlisted span starts and one when it
+ends, while the request is still in flight. Events are produced by the tracer
+(`SpanCollector.start_span`), so every traced turn (`ha`, `chat`, `api`,
+`openai`, `ai_task`) is covered, including streaming turns. Nothing is
+emitted while no client is connected, and discarded traces (voice enrollment)
+are never emitted.
+
+Allowlisted span names: `dispatch`, `dispatch_content`, `dispatch_send`,
+`dispatch_fallback`, `classify` and `classify.*`, `cache_lookup`, `rewrite`,
+`return`. On dispatch spans `agent_id` is the target agent that executes the
+work (for example `light-agent`); phase spans carry `orchestrator` or
+`rewrite-agent`.
+
+Frame format:
+
+```text
+event: activity
+data: {"type":"span_start","span_id":"3f9c1a7b2d4e","trace_id":"...","span_name":"dispatch","agent_id":"light-agent","ts":"2026-10-21T08:15:03.412+00:00","status":null,"duration_ms":null,"source":"chat"}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `type` | `"span_start"` or `"span_end"` | Lifecycle edge. |
+| `span_id` | string | Span id; pairs a start with its end. |
+| `trace_id` | string | Trace (request) id. |
+| `span_name` | string | One of the allowlisted names. |
+| `agent_id` | string or null | Agent the span is attributed to. |
+| `ts` | string | ISO-8601 UTC timestamp (span start or end time). |
+| `status` | `"ok"`, `"error"` or null | Outcome; null on `span_start`. |
+| `duration_ms` | number or null | Span duration; null on `span_start`. |
+| `source` | string or null | Request source: `ha`, `chat`, `api`, `openai`, `ai_task`. |
+
+Privacy: only ids, names, timing and status are sent. Span metadata (task
+text, user text, entity names, responses) is never included. Start and end
+events of one span can interleave with other spans of the same trace
+(parallel dispatches).
+
 ---
 
 ## Errors and status codes
