@@ -50,8 +50,12 @@ Live pipeline in board format — headings are columns, cards are
   Implemented and released in v3.12.0, not yet deployed. Passed: full gate,
   hassfest and HACS validation, real local container (endpoints, relay
   harness incl. restart, dashboard). Not run in a real Home Assistant.
-  Needs user verification: install the release, restart HA, add
-  `type: custom:agenthub-activity-orb-card` to a dashboard; the card shows
+  Redesign (3.13.0): picker entry with preview, UI editor, size/title/
+  transparent options, tilted orbit, Firefox load-order fix (3.12.0 had a
+  race with HA's scoped-registry polyfill).
+  Needs user verification: install the release, restart HA, add the card via
+  'Add card' > Agent Activity Orb (or
+  `type: custom:agenthub-activity-orb-card`) in Firefox and Chrome; the card shows
   live dispatch pulses without an AgentHub dashboard login; works after a HA
   restart and a container restart.
 
