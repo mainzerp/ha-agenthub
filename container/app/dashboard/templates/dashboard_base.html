@@ -38,6 +38,9 @@
         </svg>
     </button>
 
+    <!-- Mobile sidebar backdrop: tap outside the open sidebar to close it -->
+    <div class="sidebar-backdrop" x-show="isMobile && sidebarOpen" x-cloak @click="sidebarOpen = false" aria-hidden="true"></div>
+
     <!-- Sidebar -->
     <aside id="dashboard-sidebar" class="sidebar" :class="{ 'sidebar-open': sidebarOpen }" :inert="sidebarInert ? true : null" :aria-hidden="sidebarInert ? 'true' : 'false'">
         <div class="sidebar-header">

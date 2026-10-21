@@ -2,14 +2,9 @@
 {% block page_title %}Cache{% endblock %}
 {% block page_css %}<link rel="stylesheet" href="{{ static_url(request, '/dashboard/static/css/pages/cache.css') }}">{% endblock %}
 {% block header_title %}Cache Management{% endblock %}
+{% block page_subtitle %}<p class="page-subtitle">View cache statistics and browse cached entries.</p>{% endblock %}
 {% block page_content %}
 <div x-data="cachePage()" x-init="loadStats(); loadEntries()">
-
-    <div class="page-header">
-        <div class="page-header-text">
-            <p class="page-subtitle">View cache statistics and browse cached entries.</p>
-        </div>
-    </div>
 
     <!-- Top row: Overview cards + Backup/Export/Import -->
     <div class="stat-grid-3 mb-lg">
@@ -60,8 +55,8 @@
                 <span class="stat-card-label">Backup</span>
             </div>
 
-            <div class="grid-2 mt-sm gap-md">
-                <div class="border-right-subtle pr-md">
+            <div class="grid-2 mt-sm gap-md cache-backup-grid">
+                <div class="border-right-subtle pr-md cache-backup-export">
                     <div class="flex-center justify-start mb-sm">
                         <svg width="16" height="16" fill="none" stroke="var(--teal)" stroke-width="2" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
                         <span class="text-teal text-sm fw-600">Export</span>
@@ -93,13 +88,13 @@
                               x-text="importFileName || 'No file selected'"></span>
                     </div>
                     <div class="btn-group mt-sm">
-                        <label class="text-xs">
+                        <label class="text-xs cache-import-opt">
                             <input type="radio" name="importMode" value="merge" x-model="importMode"> Merge
                         </label>
-                        <label class="text-xs">
+                        <label class="text-xs cache-import-opt">
                             <input type="radio" name="importMode" value="replace" x-model="importMode"> Replace
                         </label>
-                        <label class="text-xs">
+                        <label class="text-xs cache-import-opt">
                             <input type="checkbox" x-model="importReembed"> Re-embed
                         </label>
                     </div>
@@ -111,7 +106,7 @@
     </div>
 
     <!-- Tabs + Flush All inline -->
-    <div class="flex-between mb-md">
+    <div class="flex-between mb-md cache-tabs-row">
         <div class="tab-nav mb-0" role="tablist" aria-label="Cache tier">
             <button type="button"
                     class="tab-btn"
@@ -140,15 +135,15 @@
     <!-- Routing tab -->
     <div x-show="activeTab === 'routing'" role="tabpanel" aria-label="Routing cache">
         <div class="card">
-            <div class="form-row mb-md">
-                <div class="form-group mb-0">
+            <div class="form-row mb-md cache-search-row">
+                <div class="form-group mb-0 cache-search-field">
                     <label class="form-label">Search</label>
-                    <input type="text" class="form-input w-200" x-model="search" placeholder="Search entries...">
+                    <input type="text" class="form-input w-200 cache-search-input" x-model="search" placeholder="Search entries...">
                 </div>
-                <button class="btn btn-primary btn-sm self-end" @click="page = 1; loadEntries()">Search</button>
+                <button class="btn btn-primary btn-sm self-end cache-search-btn" @click="page = 1; loadEntries()">Search</button>
             </div>
 
-            <div class="flex-between mb-md">
+            <div class="flex-between flex-wrap mb-md cache-pagination-row">
                 <span class="text-muted text-sm" x-text="'Showing ' + entries.length + ' of ' + entryTotal"></span>
                 <div class="flex-center">
                     <button class="btn btn-sm btn-secondary" :disabled="page <= 1" @click="page--; loadEntries()">Prev</button>
@@ -161,8 +156,8 @@
                 <p class="text-muted">Loading...</p>
             </template>
 
-            <div class="table-container-flush" x-show="!loadingEntries && entries.length > 0">
-                <table class="data-table">
+            <div class="table-container-flush" x-show="entries.length > 0">
+                <table class="data-table data-table--stack">
                     <thead>
                         <tr>
                             <th>Document</th>
@@ -176,12 +171,12 @@
                     <tbody>
                         <template x-for="e in entries" :key="e.id">
                             <tr :class="{ 'cache-row-selected': selectedEntry && selectedEntry.id === e.id }">
-                                <td class="truncate max-w-200" x-text="e.document"></td>
-                                <td><span class="badge badge-teal" x-text="e.agent_id || '-'"></span></td>
-                                <td class="text-mono" x-text="e.hit_count || '0'"></td>
-                                <td class="text-mono text-xs" x-text="dashFormatTimestamp(e.created_at)"></td>
-                                <td class="text-mono text-xs" x-text="dashFormatTimestamp(e.last_accessed)"></td>
-                                <td>
+                                <td class="cell-title truncate max-w-200" data-label="Document" :title="e.document" x-text="e.document"></td>
+                                <td data-label="Agent"><span class="badge badge-teal" x-text="e.agent_id || '-'"></span></td>
+                                <td class="text-mono" data-label="Hits" x-text="e.hit_count || '0'"></td>
+                                <td class="text-mono text-xs" data-label="Created" x-text="dashFormatTimestamp(e.created_at)"></td>
+                                <td class="text-mono text-xs" data-label="Last Accessed" x-text="dashFormatTimestamp(e.last_accessed)"></td>
+                                <td class="cell-actions">
                                     <button class="btn btn-sm btn-secondary" @click="showDetail(e)">Details</button>
                                     <button class="btn btn-sm btn-coral" @click="deleteEntry(e.id)">Delete</button>
                                 </td>
@@ -192,7 +187,7 @@
             </div>
 
             <template x-if="selectedEntry && activeTab === 'routing'">
-                <div class="span-detail-panel mt-md">
+                <div class="span-detail-panel mt-md" x-ref="detailPanel">
                     <div class="flex-between mb-sm">
                         <h4 class="text-sm fw-600" x-text="'Entry: ' + (selectedEntry.document || '-')"></h4>
                         <button class="btn btn-sm btn-secondary" @click="closeDetail()">Close</button>
@@ -253,15 +248,15 @@
     <!-- Action tab -->
     <div x-show="activeTab === 'action'" role="tabpanel" aria-label="Action cache">
         <div class="card">
-            <div class="form-row mb-md">
-                <div class="form-group mb-0">
+            <div class="form-row mb-md cache-search-row">
+                <div class="form-group mb-0 cache-search-field">
                     <label class="form-label">Search</label>
-                    <input type="text" class="form-input w-200" x-model="search" placeholder="Search entries...">
+                    <input type="text" class="form-input w-200 cache-search-input" x-model="search" placeholder="Search entries...">
                 </div>
-                <button class="btn btn-primary btn-sm self-end" @click="page = 1; loadEntries()">Search</button>
+                <button class="btn btn-primary btn-sm self-end cache-search-btn" @click="page = 1; loadEntries()">Search</button>
             </div>
 
-            <div class="flex-between mb-md">
+            <div class="flex-between flex-wrap mb-md cache-pagination-row">
                 <span class="text-muted text-sm" x-text="'Showing ' + entries.length + ' of ' + entryTotal"></span>
                 <div class="flex-center">
                     <button class="btn btn-sm btn-secondary" :disabled="page <= 1" @click="page--; loadEntries()">Prev</button>
@@ -274,8 +269,8 @@
                 <p class="text-muted">Loading...</p>
             </template>
 
-            <div class="table-container-flush" x-show="!loadingEntries && entries.length > 0">
-                <table class="data-table">
+            <div class="table-container-flush" x-show="entries.length > 0">
+                <table class="data-table data-table--stack">
                     <thead>
                         <tr>
                             <th>Document</th>
@@ -290,13 +285,13 @@
                     <tbody>
                         <template x-for="e in entries" :key="e.id">
                             <tr :class="{ 'cache-row-selected': selectedEntry && selectedEntry.id === e.id }">
-                                <td class="truncate max-w-200" x-text="e.document"></td>
-                                <td><span class="badge badge-teal" x-text="e.agent_id || '-'"></span></td>
-                                <td class="text-mono" x-text="e.hit_count || '0'"></td>
-                                <td class="text-mono text-xs" x-text="dashFormatTimestamp(e.created_at)"></td>
-                                <td class="text-mono text-xs" x-text="dashFormatTimestamp(e.last_accessed)"></td>
-                                <td class="text-mono text-xs" x-text="dashFormatTimestamp(e.validated_at)"></td>
-                                <td>
+                                <td class="cell-title truncate max-w-200" data-label="Document" :title="e.document" x-text="e.document"></td>
+                                <td data-label="Agent"><span class="badge badge-teal" x-text="e.agent_id || '-'"></span></td>
+                                <td class="text-mono" data-label="Hits" x-text="e.hit_count || '0'"></td>
+                                <td class="text-mono text-xs" data-label="Created" x-text="dashFormatTimestamp(e.created_at)"></td>
+                                <td class="text-mono text-xs" data-label="Last Accessed" x-text="dashFormatTimestamp(e.last_accessed)"></td>
+                                <td class="text-mono text-xs" data-label="Validated" x-text="dashFormatTimestamp(e.validated_at)"></td>
+                                <td class="cell-actions">
                                     <button class="btn btn-sm btn-secondary" @click="showDetail(e)">Details</button>
                                     <button class="btn btn-sm btn-coral" @click="deleteEntry(e.id)">Delete</button>
                                 </td>
@@ -307,7 +302,7 @@
             </div>
 
             <template x-if="selectedEntry && activeTab === 'action'">
-                <div class="span-detail-panel mt-md">
+                <div class="span-detail-panel mt-md" x-ref="detailPanel">
                     <div class="flex-between mb-sm">
                         <h4 class="text-sm fw-600" x-text="'Entry: ' + (selectedEntry.document || '-')"></h4>
                         <button class="btn btn-sm btn-secondary" @click="closeDetail()">Close</button>
@@ -428,7 +423,7 @@
             </div>
 
             <div class="table-container-flush" x-show="validatorHistory.length > 0">
-                <table class="data-table">
+                <table class="data-table data-table--stack">
                     <thead>
                         <tr>
                             <th>Started</th>
@@ -443,13 +438,13 @@
                     <tbody>
                         <template x-for="h in validatorHistory" :key="h.id">
                             <tr>
-                                <td x-text="dashFormatTimestamp(h.started_at)"></td>
-                                <td x-text="h.scanned"></td>
-                                <td x-text="h.inconsistent"></td>
-                                <td x-text="h.corrected"></td>
-                                <td x-text="h.deleted"></td>
-                                <td x-text="h.errors"></td>
-                                <td>
+                                <td class="cell-title" data-label="Started" x-text="dashFormatTimestamp(h.started_at)"></td>
+                                <td data-label="Scanned" x-text="h.scanned"></td>
+                                <td data-label="Inconsistent" x-text="h.inconsistent"></td>
+                                <td data-label="Corrected" x-text="h.corrected"></td>
+                                <td data-label="Deleted" x-text="h.deleted"></td>
+                                <td data-label="Errors" x-text="h.errors"></td>
+                                <td class="cell-actions">
                                     <button class="btn btn-sm btn-secondary" @click="showRunAudit(h)">Details</button>
                                 </td>
                             </tr>
@@ -459,13 +454,14 @@
             </div>
 
             <template x-if="selectedRun && activeTab === 'validator'">
-                <div class="span-detail-panel mt-md">
+                <div class="span-detail-panel mt-md" x-ref="runAuditPanel">
                     <div class="flex-between mb-sm">
                         <h4 class="text-sm fw-600" x-text="'Run: ' + dashFormatTimestamp(selectedRun.started_at)"></h4>
                         <button class="btn btn-sm btn-secondary" @click="closeRunAudit()">Close</button>
                     </div>
                     <div x-show="runAuditLoading" class="text-muted text-sm mb-sm">Loading audit entries...</div>
-                    <div x-show="!runAuditLoading && runAuditEntries.length === 0" class="text-muted text-sm mb-sm">
+                    <div x-show="runAuditError" class="text-coral text-sm mb-sm" role="alert" x-text="runAuditError"></div>
+                    <div x-show="!runAuditLoading && !runAuditError && runAuditEntries.length === 0" class="text-muted text-sm mb-sm">
                         No audit entries recorded for this run.
                     </div>
                     <template x-for="a in runAuditEntries" :key="a.id">
@@ -560,13 +556,22 @@ function cachePage() {
         runAuditPages: 1,
         runAuditTotal: 0,
         runAuditLoading: false,
+        runAuditError: '',
 
 
 
         parseJsonSafe: dashParseJsonSafe,
 
+        scrollPanelIntoView(refName) {
+            this.$nextTick(() => {
+                const el = this.$refs[refName];
+                if (el && el.scrollIntoView) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            });
+        },
+
         showDetail(entry) {
             this.selectedEntry = entry;
+            this.scrollPanelIntoView('detailPanel');
         },
 
         closeDetail() {
@@ -577,21 +582,31 @@ function cachePage() {
             this.selectedRun = run;
             this.runAuditPage = 1;
             this.runAuditEntries = [];
+            this.runAuditError = '';
             this.loadRunAuditEntries(1);
+            this.scrollPanelIntoView('runAuditPanel');
         },
 
         closeRunAudit() {
             this.selectedRun = null;
             this.runAuditEntries = [];
+            this.runAuditError = '';
         },
 
         async loadRunAuditEntries(page) {
             if (!this.selectedRun) return;
             this.runAuditLoading = true;
+            this.runAuditError = '';
             var data = await window.dashboardApi.safeJson(
                 '/api/admin/cache/validate/history/' + this.selectedRun.id + '/entries?page=' + page + '&per_page=50'
             );
-            if (data) {
+            if (!data || data.status === 'error') {
+                // Distinguish a failed load from a run that genuinely has no audit entries.
+                this.runAuditEntries = [];
+                this.runAuditError = (data && data.detail) ||
+                    'Failed to load audit entries: request failed. Check the container logs.';
+                toast('Failed to load audit entries', 'error');
+            } else {
                 this.runAuditEntries = data.entries || [];
                 this.runAuditTotal = data.total || 0;
                 this.runAuditPage = data.page || 1;
@@ -602,11 +617,13 @@ function cachePage() {
 
         setActiveTab(name) {
             this.activeTab = name;
-            this.tier = name;
+            // Only routing/action are valid API tiers; the validator tab keeps the last one.
+            if (name === 'routing' || name === 'action') this.tier = name;
             this.page = 1;
             this.selectedEntry = null;
             this.selectedRun = null;
             this.runAuditEntries = [];
+            this.runAuditError = '';
             if (name === 'validator') {
                 this.loadValidatorHistory();
             } else {

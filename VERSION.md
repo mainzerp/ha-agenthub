@@ -6,6 +6,10 @@
 
 (tracking changes since 3.11.2)
 
+- Fix (dashboard): Cache page Details buttons (routing, action, validator) now scroll the detail panel into view; validator audit-entry load failures show an error message and toast instead of the empty state; the validator tab no longer sends `tier=validator` (HTTP 422) on reload, delete and flush; entry tables no longer hide while a reload is in flight.
+- Fix (dashboard): phone layouts no longer squeeze text into one-letter columns. Tables inside cards keep word boundaries and scroll horizontally (cards set `overflow-wrap: anywhere`), buttons and badges stay on one line, toolbars and header rows wrap, `.stat-grid-6`, `.tab-nav`, `.detail-list`, `.btn-group` and `.form-row` mobile rules that were silently overridden by `components.css` now apply, and the page title (not the subtitle) clears the hamburger.
+- Feat (dashboard): mobile layout pass on the Cache page (stacked `.data-table--stack` tables, stacked tab row and search row, backup card divider), sidebar backdrop and `dvh` heights on phones, `.max-w-200`/`.max-w-128`/`.min-w-0` utilities.
+
 ## Version History
 
 ### 3.11.2 (PATCH) -- admin API error hardening

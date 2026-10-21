@@ -244,6 +244,8 @@ Layout: `.form-grid`, `.form-grid-2`, `.form-row`.
 
 Use `.table-container-flush` for borderless transparent tables.
 
+Stacked tables: add `.data-table--stack` to turn rows into label/value cards under 768px (header hidden). Every `td` needs `data-label="Column"`; mark the primary cell `td.cell-title` (full-width block, wraps) and the button cell `td.cell-actions` (full-width buttons, no label). Opt-in per table; pages that do not set the class keep the horizontally scrolling table.
+
 ### Modal
 
 ```html
@@ -410,6 +412,14 @@ Every dashboard page should use this structure inside `page_content`:
     </div>
 </div>
 ```
+
+## Mobile Conventions
+
+- Breakpoints are 768px (sidebar becomes an overlay with `.sidebar-backdrop`, grids collapse) and 480px (tighter card and table padding, single-column stat grids).
+- `layout.css` loads before `components.css`, so a mobile override of an equal-specificity component rule must live in the `Mobile hardening` block at the end of `components.css`; the same rule in `layout.css` is silently ignored.
+- `.card` sets `overflow-wrap: anywhere`, which shrinks a table's minimum width to one character. `.data-table` cells therefore reset it to `normal`; wide tables scroll inside `.table-container` or `.table-container-flush` instead of crushing columns. Keep every table inside one of those containers.
+- `.btn` and `.badge` never wrap. Rows that hold buttons or badges next to text need `flex-wrap` (or the `.flex-between` / `.form-actions` mobile wrap); a button with long multi-part content uses `.btn-wrap`.
+- Fixed-width inputs (`.w-200`) fill the row at 768px and below.
 
 ## Sidebar IA
 
