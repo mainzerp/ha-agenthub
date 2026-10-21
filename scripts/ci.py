@@ -314,6 +314,14 @@ def step_quality(cov_fail_under: int = 80) -> None:
         fail("self-docs sync (run: python scripts/sync_self_docs.py)")
         sys.exit(1)
 
+    # generated Lovelace card (custom_components/.../agenthub-activity-orb-card.js) matches its sources
+    try:
+        run([sys.executable, "scripts/sync_orb_card.py", "--check"])
+        ok("orb card sync")
+    except subprocess.CalledProcessError:
+        fail("orb card sync (run: python scripts/sync_orb_card.py)")
+        sys.exit(1)
+
     # container/requirements.lock matches requirements.txt + requirements-torch.txt
     step_lock()
 

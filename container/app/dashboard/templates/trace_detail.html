@@ -306,7 +306,7 @@
                             </template>
                             <template x-if="comm.memory && comm.memory.length > 0">
                                 <div class="ml-2 mt-sm">
-                                    <button class="btn btn-sm btn-secondary" :aria-expanded="!!comm._showMemory"
+                                    <button class="btn btn-sm btn-secondary btn-wrap" :aria-expanded="!!comm._showMemory"
                                          @click="comm._showMemory = !comm._showMemory">
                                         <span class="text-xs text-teal-glow fw-600">Conversation history</span>
                                         <span class="text-3xs text-silver"

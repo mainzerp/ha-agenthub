@@ -120,6 +120,9 @@ def create_app() -> FastAPI:
     from app.api.routes import sse as sse_routes
 
     app.include_router(sse_routes.router, dependencies=[Depends(rate_limit_admin)])
+    # Bearer-authenticated activity endpoints for server-to-server clients (HA bridge).
+    # The rate limit runs before the API-key check and is counted per connection, not per event.
+    app.include_router(sse_routes.api_router, dependencies=[Depends(rate_limit_admin)])
 
     # Batch C routers
     from app.api.routes import cache_api as cache_api_routes

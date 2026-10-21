@@ -278,6 +278,75 @@ name "Agent Assist" are renamed to "HA-AgentHub" automatically by
 upgrade. No manual action is required, and HACS users will not see
 duplicate entries.
 
+### Lovelace Activity Card
+
+The Agent Activity Orb (the live agent activity view of the dashboard overview)
+is also available as a Home Assistant Lovelace card. It is delivered by the
+bridge and covered by Home Assistant's own login: the container's dashboard
+session cookie does not reach a Home Assistant page, so the browser never talks
+to the container directly.
+
+How it works:
+
+- The integration serves the card module at
+  `/ha_agenthub_static/agenthub-activity-orb-card.js` and loads it on every
+  dashboard (extra frontend module). No dashboard resource has to be added by
+  hand, only a Home Assistant restart after installing or updating the
+  integration.
+- While at least one card is open, the bridge keeps one SSE connection per
+  config entry to the container's `GET /api/activity/stream` and relays the
+  events over Home Assistant's WebSocket API. The command
+  `ha_agenthub/activity/subscribe` is available to every logged-in Home
+  Assistant user (not admin-only): it carries span ids, agent ids, timing and
+  status only, never conversation text, entity names or credentials. The API
+  key stays in the bridge. The connection closes when the last card is
+  closed or the entry unloads, and reconnects with backoff (2 s doubling to
+  60 s) after a failure.
+- With several HA-AgentHub entries the card uses the first loaded entry. The
+  optional `entry_id` field of the WebSocket command selects another one.
+
+Add the card with a manual card in the dashboard editor or in YAML:
+
+```yaml
+type: custom:agenthub-activity-orb-card
+title: Agents      # optional, card title
+compact: false     # optional, smaller layout
+demo: false        # optional, play simulated activity without a container
+```
+
+Requirements:
+
+- A container release that provides `GET /api/activity/stream` and
+  `GET /api/activity/recent` (the release that introduced the activity orb on
+  the dashboard overview). An older container answers `404` and the card stays
+  offline.
+- The API key already configured for the integration; no extra permissions.
+
+Dashboards in YAML mode load the module automatically as well. Only if you
+manage dashboard resources explicitly, add it under `resources`:
+
+```yaml
+resources:
+  - url: /ha_agenthub_static/agenthub-activity-orb-card.js
+    type: module
+```
+
+Troubleshooting (card stays "offline"):
+
+1. Check the container URL and API key in Settings > Devices & Services >
+   HA-AgentHub; a rejected key starts re-authentication, and the container must
+   be reachable from the Home Assistant host.
+2. Look at the Home Assistant log for `custom_components.ha_agenthub.activity`:
+   one warning per failure kind (`rejected the API key`, `HTTP 404 ... container
+   too old`, `unavailable`); repeats are logged at debug level.
+3. Open the browser console. `Custom element doesn't exist:
+   agenthub-activity-orb-card` means the module was not loaded: restart Home
+   Assistant, hard-reload the browser, and confirm the URL above returns
+   JavaScript. A `not_loaded` WebSocket error means the HA-AgentHub entry is not
+   loaded (setup failed or retrying).
+4. After reloading the integration entry, reload the dashboard page so the card
+   subscribes again.
+
 ## Open WebUI
 
 [Open WebUI](https://openwebui.com/) can chat with HA-AgentHub (and control the

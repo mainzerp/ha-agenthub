@@ -559,3 +559,36 @@ prompts live in `container/app/prompts/`, `ctx.agent_registry` not
 - Rejects of 2026-10-18 (4 x `rejected_inconsistent`, 0.06-0.22) were not a
   capture bug (per-turn buffers, embedding before filler); cause unknown,
   satellite side suspected. Threshold left at 0.45 pending a re-test.
+
+## 2026-10-21 — Activity Orb: Canvas2D custom element on the SSE broker
+
+- **Canvas2D pseudo-3D, no library**: about 10 nodes need only projected
+  points, radial glow and curved links; adds no vendored weight, fits the
+  no-build dashboard and phones. three.js stays an option later because the
+  event contract and widget states do not depend on the renderer.
+- **Custom element with Shadow DOM** (`<agenthub-activity-orb>`) loaded globally
+  from `dashboard_base.html`: drop-in on any page, no Alpine/HTMX dependency.
+- **Transport is SSE, not WebSocket**: the dashboard session cookie already
+  authenticates `EventSource`; a dashboard WebSocket would need a new
+  cookie-auth dependency. Reuses the existing in-memory broker with a new
+  `activity` topic; payload is ids, names, timing and status only, never
+  span metadata or user text.
+- **Seven satellite slots** (changed from five on 2026-10-21), seeded with the
+  most recently used agents; the longest-unused idle slot is rotated out when
+  another agent is dispatched.
+
+## 2026-10-21 — Home Assistant card via the bridge
+
+- **Relay through the bridge, not direct from the browser**: HA pages carry no
+  dashboard session cookie and the `?token=` fallback is gone (SEC-2). The
+  bridge keeps one upstream SSE connection (API key, server side) and fans out
+  over a HA websocket command; HA's own login covers the card.
+- **Any authenticated HA user may subscribe** (not admin-only): the payload is
+  content-free ids, timing and status.
+- **One generated JS file** (`scripts/sync_orb_card.py`: widget plus card
+  wrapper) ships inside `custom_components/ha_agenthub/frontend/` because HACS
+  installs only that directory; `ci.py` fails on a stale copy, like the
+  self-docs copies. The integration serves and auto-registers it.
+- **Recency source**: an in-memory tracker of dispatch span starts, topped up
+  from persisted spans after a restart, behind `/recent` for both the
+  dashboard and the bridge.

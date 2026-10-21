@@ -53,32 +53,35 @@
         </template>
     </div>
 
-    <div class="overview-metrics" id="overview-cards">
-        <div class="stat-card">
-            <div class="stat-card-header">
-                <svg class="stat-card-icon text-teal" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
-                <span class="stat-card-label" x-text="'Total Requests (' + (data && data.time_range_hours > 24 ? '7d' : '24h') + ')'">Total Requests (24h)</span>
+    <div class="overview-hero">
+        <agenthub-activity-orb heading="Agent Activity"></agenthub-activity-orb>
+        <div class="overview-metrics" id="overview-cards">
+            <div class="stat-card">
+                <div class="stat-card-header">
+                    <svg class="stat-card-icon text-teal" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+                    <span class="stat-card-label" x-text="'Total Requests (' + (data && data.time_range_hours > 24 ? '7d' : '24h') + ')'">Total Requests (24h)</span>
+                </div>
+                <div class="stat-card-value" x-text="data ? data.recent_requests : '--'">--</div>
             </div>
-            <div class="stat-card-value" x-text="data ? data.recent_requests : '--'">--</div>
-        </div>
-        <div class="stat-card">
-            <div class="stat-card-header">
-                <svg class="stat-card-icon text-amber" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
-                <span class="stat-card-label">Avg Latency</span>
+            <div class="stat-card">
+                <div class="stat-card-header">
+                    <svg class="stat-card-icon text-amber" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+                    <span class="stat-card-label">Avg Latency</span>
+                </div>
+                <div class="stat-card-value" x-text="data ? data.avg_latency_ms + 'ms' : '--'">--</div>
+                <div class="stat-card-detail text-xs" x-show="data && data.latency_p50">
+                    <span>p50: <span x-text="data?.latency_p50 + 'ms'"></span></span>
+                    <span class="ml-md">p95: <span x-text="data?.latency_p95 + 'ms'"></span></span>
+                    <span class="ml-md">p99: <span x-text="data?.latency_p99 + 'ms'"></span></span>
+                </div>
             </div>
-            <div class="stat-card-value" x-text="data ? data.avg_latency_ms + 'ms' : '--'">--</div>
-            <div class="stat-card-detail text-xs" x-show="data && data.latency_p50">
-                <span>p50: <span x-text="data?.latency_p50 + 'ms'"></span></span>
-                <span class="ml-md">p95: <span x-text="data?.latency_p95 + 'ms'"></span></span>
-                <span class="ml-md">p99: <span x-text="data?.latency_p99 + 'ms'"></span></span>
+            <div class="stat-card">
+                <div class="stat-card-header">
+                    <svg class="stat-card-icon text-sage" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg>
+                    <span class="stat-card-label">Cache Hit Rate</span>
+                </div>
+                <div class="stat-card-value text-sage" x-text="data ? data.cache_hit_rate + '%' : '--'">--</div>
             </div>
-        </div>
-        <div class="stat-card">
-            <div class="stat-card-header">
-                <svg class="stat-card-icon text-sage" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg>
-                <span class="stat-card-label">Cache Hit Rate</span>
-            </div>
-            <div class="stat-card-value text-sage" x-text="data ? data.cache_hit_rate + '%' : '--'">--</div>
         </div>
     </div>
     <div class="overview-inventory" aria-label="System inventory">

@@ -155,6 +155,38 @@ class TraceSpanRepository:
             return row[0]
 
     @staticmethod
+    async def recent_dispatch_agents(
+        span_names: list[str],
+        excluded_ids: list[str],
+        days: int = 30,
+        limit: int = 64,
+    ) -> list[dict[str, Any]]:
+        """Return distinct agent ids of recent dispatch spans, most recent first.
+
+        Read-only and bounded: restricted to the last ``days`` days through the
+        ``created_at`` index and capped by ``limit``. Each row carries
+        ``agent_id`` and ``last_used`` (the latest span ``start_time``).
+        """
+        if not span_names:
+            return []
+        name_marks = ",".join("?" for _ in span_names)
+        params: list[Any] = [f"-{int(days)} days", *span_names]
+        excluded_sql = ""
+        if excluded_ids:
+            excluded_sql = f" AND agent_id NOT IN ({','.join('?' for _ in excluded_ids)})"
+            params.extend(excluded_ids)
+        params.append(int(limit))
+        async with get_db_read() as db:
+            cursor = await db.execute(
+                "SELECT agent_id, MAX(start_time) AS last_used FROM trace_spans "
+                f"WHERE created_at >= datetime('now', ?) AND span_name IN ({name_marks}) "
+                f"AND agent_id IS NOT NULL AND agent_id != ''{excluded_sql} "
+                "GROUP BY agent_id ORDER BY last_used DESC LIMIT ?",
+                params,
+            )
+            return [dict(row) for row in await cursor.fetchall()]
+
+    @staticmethod
     async def cleanup_old(days: int = 30) -> int:
         async with get_db_write() as db:
             cursor = await db.execute(

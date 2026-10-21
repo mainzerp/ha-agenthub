@@ -294,6 +294,31 @@ class _MockGenDataTaskResult:
     data: object
 
 
+@dataclass
+class _MockStaticPathConfig:
+    url_path: str
+    path: str
+    cache_headers: bool = True
+
+
+def _mock_websocket_command(schema):
+    """Keep the handler callable as-is and record the command schema."""
+
+    def decorator(func):
+        func._ws_schema = schema
+        return func
+
+    return decorator
+
+
+def _mock_async_response(func):
+    return func
+
+
+def _mock_event_message(iden, event):
+    return {"id": iden, "type": "event", "event": event}
+
+
 def _mock_selector_serializer(schema):
     return {"selector_serializer": True}
 
@@ -361,6 +386,17 @@ def _mock_homeassistant_deps():
             "EntitySelectorConfig": _FakeEntitySelectorConfig,
         },
         "homeassistant.components": {},
+        "homeassistant.helpers.config_validation": {
+            "config_entry_only_config_schema": lambda domain: MagicMock(),
+        },
+        "homeassistant.components.websocket_api": {
+            "websocket_command": _mock_websocket_command,
+            "async_response": _mock_async_response,
+            "event_message": _mock_event_message,
+            "async_register_command": MagicMock(),
+        },
+        "homeassistant.components.http": {"StaticPathConfig": _MockStaticPathConfig},
+        "homeassistant.components.frontend": {"add_extra_js_url": MagicMock()},
         "homeassistant.components.diagnostics": {
             "REDACTED": "**REDACTED**",
             "async_redact_data": _mock_async_redact_data,

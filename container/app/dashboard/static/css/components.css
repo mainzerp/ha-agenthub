@@ -717,6 +717,86 @@ input[type="range"]::-moz-range-thumb {
     overflow-x: auto;
 }
 
+/* Stacked table: rows render as label/value cards under 768px.
+   Opt in with .data-table--stack, a data-label on every td, td.cell-title for
+   the primary cell and td.cell-actions for the button cell. */
+@media (max-width: 768px) {
+    .data-table--stack,
+    .data-table--stack tbody,
+    .data-table--stack tr,
+    .data-table--stack td {
+        display: block;
+        width: 100%;
+    }
+
+    .data-table--stack thead {
+        display: none;
+    }
+
+    .data-table--stack tbody tr {
+        padding: 0.75rem 1rem;
+        border-bottom: 1px solid color-mix(in srgb, var(--bg-stone) 60%, transparent);
+    }
+
+    .data-table--stack tbody tr:last-child {
+        border-bottom: none;
+    }
+
+    .data-table--stack td {
+        display: flex;
+        justify-content: space-between;
+        align-items: baseline;
+        gap: 1rem;
+        padding: 0.25rem 0;
+        border-bottom: none;
+        text-align: right;
+        min-width: 0;
+        overflow-wrap: anywhere;
+    }
+
+    .data-table--stack td::before {
+        content: attr(data-label);
+        flex: none;
+        text-align: left;
+        font-size: 0.75rem;
+        font-weight: 500;
+        letter-spacing: 0.05em;
+        text-transform: uppercase;
+        color: var(--color-dust);
+    }
+
+    .data-table--stack td.cell-title {
+        display: block;
+        max-width: none;
+        padding-bottom: 0.5rem;
+        text-align: left;
+        font-weight: 600;
+        white-space: normal;
+        overflow: visible;
+        text-overflow: clip;
+    }
+
+    .data-table--stack td.cell-title::before {
+        display: block;
+        margin-bottom: 0.125rem;
+    }
+
+    .data-table--stack td.cell-actions {
+        display: flex;
+        gap: 0.5rem;
+        padding-top: 0.5rem;
+    }
+
+    .data-table--stack td.cell-actions::before {
+        content: none;
+    }
+
+    .data-table--stack td.cell-actions .btn {
+        flex: 1;
+        justify-content: center;
+    }
+}
+
 /* --- Badge enhancements --- */
 
 .badge-teal { background: rgba(226, 168, 75, 0.12); color: var(--teal); }
@@ -1174,9 +1254,12 @@ input[type="range"]::-moz-range-thumb {
 .w-140 { width: 140px; }
 .w-200 { width: 200px; }
 
+.min-w-0 { min-width: 0; }
 .min-w-180 { min-width: 180px; }
 .min-w-200 { min-width: 200px; }
 .min-w-220 { min-width: 220px; }
+.max-w-128 { max-width: 128px; }
+.max-w-200 { max-width: 200px; }
 .max-w-300 { max-width: 300px; }
 .max-w-400 { max-width: 400px; }
 
@@ -1224,6 +1307,7 @@ input[type="range"]::-moz-range-thumb {
 
 .modal-overlay > .card {
     max-height: 85vh;
+    max-height: calc(100dvh - 2rem);
     overflow-y: auto;
 }
 
@@ -1483,4 +1567,63 @@ details.card > .details-content {
 }
 @media (max-width: 768px) {
     .grid-2, .grid-3, .grid-4, .form-grid, .form-grid-2 { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* Small-phone density. Placed last so it follows the base card/table rules. */
+@media (max-width: 480px) {
+    .card,
+    .stat-card { padding: 0.875rem; }
+    .data-table th,
+    .data-table td { padding: 0.5rem 0.625rem; }
+    .data-table--stack td { padding: 0.25rem 0; }
+}
+
+/* --- Mobile hardening ---
+   Placed last: layout.css loads first, so equal-specificity rules there lose to
+   the base definitions above. Cards set overflow-wrap:anywhere, which collapses
+   table min-content widths to one character and squeezes every column into a
+   sliver; cells keep word boundaries so wide tables scroll in their container. */
+.data-table th,
+.data-table td { overflow-wrap: normal; word-break: normal; }
+.btn { white-space: nowrap; }
+.btn-wrap { white-space: normal; text-align: left; max-width: 100%; }
+.badge {
+    white-space: nowrap;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    vertical-align: bottom;
+}
+
+@media (max-width: 768px) {
+    .stat-grid-6 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .tab-nav { width: 100%; max-width: 100%; overflow-x: auto; }
+    .tab-btn { flex-shrink: 0; }
+    .form-row { align-items: stretch; }
+    .form-input.w-200 { width: 100%; }
+    .flex-between,
+    .card-header,
+    .panel-header,
+    .form-actions,
+    .page-header-actions { flex-wrap: wrap; }
+    .flex-between > *,
+    .card-header > * { min-width: 0; }
+    /* Wide tables scroll in their container instead of crushing columns. */
+    .data-table:not(.data-table--stack) th,
+    .data-table:not(.data-table--stack) td { min-width: 6rem; }
+    .data-table--stack th,
+    .data-table--stack td { overflow-wrap: anywhere; }
+    .detail-list { grid-template-columns: minmax(0, 1fr); gap: 0.25rem 0; }
+    .detail-label { margin-top: 0.5rem; white-space: normal; }
+}
+
+@media (max-width: 480px) {
+    .stat-grid-6 { grid-template-columns: minmax(0, 1fr); }
+    .btn-group { align-items: stretch; }
+    .chart-canvas-wrap { height: 160px; }
+    .chart-canvas-wrap-sm { height: 120px; }
+    .ml-2 { margin-left: 1rem; }
+    .comm-task,
+    .comm-memory,
+    .comm-response { margin-left: 1rem; }
 }

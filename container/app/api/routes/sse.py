@@ -1,10 +1,15 @@
 """Server-Sent Events (SSE) endpoints for live dashboard updates.
 
-Four streams are provided:
+Five streams are provided:
 - /api/admin/overview/stream
 - /api/admin/health/stream
 - /api/admin/timers/stream
 - /api/admin/traces/stream
+- /api/admin/activity/stream (live orchestrator/agent span activity)
+
+The activity stream and the recently-used-agents list are also served to
+server-to-server clients at /api/activity/stream and /api/activity/recent
+(Bearer API key).
 
 Each uses an in-process asyncio.Queue per subscriber. Multi-worker scaling
 is not in scope; the container ships a single worker today.
@@ -16,24 +21,61 @@ import asyncio
 import json
 import logging
 from collections.abc import AsyncGenerator
+from datetime import UTC, datetime
+from typing import Any
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import StreamingResponse
 
-from app.security.auth import require_admin_session
+from app.analytics.agent_recency import MAX_RECENT_LIMIT, recent_agents, record_agent_use
+from app.security.auth import require_admin_session, require_api_key
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/admin", tags=["sse"])
+# Server-to-server variant of the activity endpoints (Bearer API key, same
+# credential as /api/conversation). The handlers are shared with the admin routes.
+api_router = APIRouter(prefix="/api/activity", tags=["activity"], dependencies=[Depends(require_api_key)])
 
 # In-memory broker: topic -> list of queues
 _brokers: dict[str, list[asyncio.Queue]] = {}
+# Event loop that owns the queues of a topic (recorded on subscribe) so that
+# synchronous publishers can hop onto it when called from another thread.
+_topic_loops: dict[str, asyncio.AbstractEventLoop] = {}
+
+# Headers shared by every SSE stream. ``X-Accel-Buffering: no`` stops nginx
+# style reverse proxies (HA ingress, Nginx Proxy Manager) from buffering frames.
+_SSE_HEADERS = {
+    "Cache-Control": "no-cache",
+    "Connection": "keep-alive",
+    "X-Accel-Buffering": "no",
+}
+
+ACTIVITY_TOPIC = "activity"
+
+# Span names that are mirrored onto the activity stream. Only these names (plus
+# the ``classify.`` prefix below) ever leave the process; everything else is
+# dropped before a payload is built.
+ACTIVITY_SPAN_NAMES: frozenset[str] = frozenset(
+    {
+        "dispatch",
+        "dispatch_content",
+        "dispatch_send",
+        "dispatch_fallback",
+        "classify",
+        "cache_lookup",
+        "rewrite",
+        "return",
+    }
+)
+ACTIVITY_SPAN_PREFIXES: tuple[str, ...] = ("classify.",)
 
 
 async def _subscribe(topic: str) -> asyncio.Queue:
     """Return a new queue for the given topic and register it."""
     queue: asyncio.Queue = asyncio.Queue(maxsize=32)
     _brokers.setdefault(topic, []).append(queue)
+    _topic_loops[topic] = asyncio.get_running_loop()
     return queue
 
 
@@ -44,17 +86,18 @@ def _unsubscribe(topic: str, queue: asyncio.Queue) -> None:
         subscribers.remove(queue)
 
 
-async def _publish(topic: str, payload: dict) -> None:
-    """Broadcast a payload to all subscribers of a topic.
+def _publish_nowait(topic: str, payload: dict) -> None:
+    """Broadcast a payload to all subscribers of a topic without awaiting.
 
-    Drops oldest events when a subscriber's queue is full.
+    Must run on the loop that owns the subscriber queues. Drops oldest events
+    when a subscriber's queue is full.
     """
     subscribers = _brokers.get(topic)
     if not subscribers:
         return
     dead = []
     message = json.dumps(payload)
-    for q in subscribers:
+    for q in list(subscribers):
         # Drop oldest events until there is room (or the queue is empty).
         # The ``full()`` snapshot is racy, so ``put_nowait`` below still
         # handles ``QueueFull`` as the failure path.
@@ -70,6 +113,101 @@ async def _publish(topic: str, payload: dict) -> None:
     for d in dead:
         if d in subscribers:
             subscribers.remove(d)
+
+
+async def _publish(topic: str, payload: dict) -> None:
+    """Broadcast a payload to all subscribers of a topic.
+
+    Drops oldest events when a subscriber's queue is full.
+    """
+    _publish_nowait(topic, payload)
+
+
+# ---------------------------------------------------------------------------
+# Activity stream publishing (called from the tracing path)
+# ---------------------------------------------------------------------------
+
+
+def has_activity_subscribers() -> bool:
+    """Return True when at least one client listens to the activity stream."""
+    return bool(_brokers.get(ACTIVITY_TOPIC))
+
+
+def _is_activity_span(name: Any) -> bool:
+    return isinstance(name, str) and (name in ACTIVITY_SPAN_NAMES or name.startswith(ACTIVITY_SPAN_PREFIXES))
+
+
+def build_activity_event(event_type: str, span: dict[str, Any], source: str | None) -> dict[str, Any] | None:
+    """Build the activity payload for a span, or None when it is not allowlisted.
+
+    Privacy: only ids, the span name, timing and status are copied. Span
+    metadata and any other span field are never read.
+    """
+    name = span.get("span_name")
+    if event_type not in ("span_start", "span_end") or not _is_activity_span(name):
+        return None
+    is_end = event_type == "span_end"
+    ts = span.get("end_time" if is_end else "start_time") or datetime.now(UTC).isoformat()
+    duration = span.get("duration_ms") if is_end else None
+    agent_id = span.get("agent_id")
+    return {
+        "type": event_type,
+        "span_id": span.get("span_id"),
+        "trace_id": span.get("trace_id"),
+        "span_name": name,
+        "agent_id": agent_id if isinstance(agent_id, str) else None,
+        "ts": ts,
+        "status": ("error" if span.get("status") == "error" else "ok") if is_end else None,
+        "duration_ms": duration if isinstance(duration, int | float) and not isinstance(duration, bool) else None,
+        "source": source if isinstance(source, str) else None,
+    }
+
+
+def publish_activity(event: dict[str, Any]) -> None:
+    """Publish an already-built activity event to all activity subscribers.
+
+    Synchronous and non-blocking (``put_nowait`` only). Queues belong to the
+    loop that served the subscriber; when called from another thread the
+    publish is handed over with ``call_soon_threadsafe`` because asyncio
+    queues are not thread-safe. May raise; callers on the request path must
+    use :func:`publish_span_activity`.
+    """
+    if not has_activity_subscribers():
+        return
+    owner = _topic_loops.get(ACTIVITY_TOPIC)
+    if owner is None:
+        return
+    try:
+        running = asyncio.get_running_loop()
+    except RuntimeError:
+        running = None
+    if running is owner:
+        _publish_nowait(ACTIVITY_TOPIC, event)
+    else:
+        owner.call_soon_threadsafe(_publish_nowait, ACTIVITY_TOPIC, event)
+
+
+def publish_span_activity(event_type: str, span: dict[str, Any], source: str | None) -> None:
+    """Best-effort mirror of a span start/end onto the activity stream.
+
+    Never raises and does no work (no payload building) while nobody is
+    subscribed, so the tracing path stays zero-risk and nearly free. The
+    agent recency tracker is updated on every dispatch span start regardless
+    of subscribers (one dict update, never raises).
+    """
+    try:
+        if event_type == "span_start":
+            record_agent_use(span.get("span_name"), span.get("agent_id"), span.get("start_time"))
+    except Exception:
+        logger.debug("Failed to record agent use", exc_info=True)
+    try:
+        if not has_activity_subscribers():
+            return
+        event = build_activity_event(event_type, span, source)
+        if event is not None:
+            publish_activity(event)
+    except Exception:
+        logger.debug("Failed to publish activity event", exc_info=True)
 
 
 async def _sse_generator(
@@ -191,7 +329,7 @@ async def overview_stream(
     return StreamingResponse(
         _sse_generator(queue, "overview"),
         media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+        headers=_SSE_HEADERS,
     )
 
 
@@ -205,7 +343,7 @@ async def health_stream(
     return StreamingResponse(
         _sse_generator(queue, "health"),
         media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+        headers=_SSE_HEADERS,
     )
 
 
@@ -219,7 +357,7 @@ async def timers_stream(
     return StreamingResponse(
         _sse_generator(queue, "timers"),
         media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+        headers=_SSE_HEADERS,
     )
 
 
@@ -233,5 +371,52 @@ async def traces_stream(
     return StreamingResponse(
         _sse_generator(queue, "traces"),
         media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+        headers=_SSE_HEADERS,
     )
+
+
+async def _activity_stream_response() -> StreamingResponse:
+    """Subscribe to the activity topic and wrap it in an SSE response (shared by both auth variants)."""
+    queue = await _subscribe(ACTIVITY_TOPIC)
+    return StreamingResponse(
+        _sse_generator(queue, ACTIVITY_TOPIC),
+        media_type="text/event-stream",
+        headers=_SSE_HEADERS,
+    )
+
+
+async def _recent_agents_response(request: Request, limit: int) -> dict[str, Any]:
+    """Build the ``{"agents": [...]}`` payload from the app's A2A registry (shared by both auth variants)."""
+    registry = getattr(request.app.state, "registry", None)
+    return {"agents": await recent_agents(limit, registry=registry)}
+
+
+@router.get("/activity/stream")
+async def activity_stream(
+    request: Request,
+    _session: dict = Depends(require_admin_session),
+):
+    """SSE stream of live orchestrator/agent span activity (ids, names, timing only)."""
+    return await _activity_stream_response()
+
+
+@router.get("/activity/recent")
+async def activity_recent(
+    request: Request,
+    limit: int = Query(7, ge=1, le=MAX_RECENT_LIMIT),
+    _session: dict = Depends(require_admin_session),
+):
+    """Most recently used agents, most recent first (ids, names, timestamps only)."""
+    return await _recent_agents_response(request, limit)
+
+
+@api_router.get("/stream")
+async def api_activity_stream(request: Request):
+    """Bearer-authenticated activity SSE stream for server-to-server clients."""
+    return await _activity_stream_response()
+
+
+@api_router.get("/recent")
+async def api_activity_recent(request: Request, limit: int = Query(7, ge=1, le=MAX_RECENT_LIMIT)):
+    """Bearer-authenticated variant of ``/api/admin/activity/recent``."""
+    return await _recent_agents_response(request, limit)

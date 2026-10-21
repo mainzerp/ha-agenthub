@@ -3,6 +3,7 @@
 .dashboard-body {
     display: flex;
     min-height: 100vh;
+    min-height: 100dvh;
     background:
         radial-gradient(ellipse 80% 60% at 70% 20%, rgba(226, 168, 75, 0.04) 0%, transparent 60%),
         radial-gradient(ellipse 60% 80% at 20% 80%, rgba(226, 168, 75, 0.02) 0%, transparent 60%),
@@ -48,6 +49,11 @@
     cursor: pointer;
 }
 
+/* Sidebar backdrop (mobile only; toggled by dashboardShell.sidebarOpen) */
+.sidebar-backdrop {
+    display: none;
+}
+
 /* Sidebar */
 .sidebar {
     position: fixed;
@@ -55,6 +61,7 @@
     left: 0;
     width: var(--sidebar-width);
     height: 100vh;
+    height: 100dvh;
     background: var(--bg-void);
     border-right: 1px solid color-mix(in srgb, var(--bg-stone) 40%, transparent);
     display: flex;
@@ -221,6 +228,7 @@ button.sidebar-logout {
     display: flex;
     flex-direction: column;
     min-height: 100vh;
+    min-height: 100dvh;
     overflow-x: hidden; /* prevent horizontal scroll on mobile */
 }
 
@@ -308,6 +316,14 @@ button.sidebar-logout {
         transform: translateX(0);
     }
 
+    .sidebar-backdrop {
+        display: block;
+        position: fixed;
+        inset: 0;
+        background: rgba(0, 0, 0, 0.6);
+        z-index: 999; /* below the sidebar (1000) and the hamburger (1001) */
+    }
+
     .sidebar-toggle {
         display: block;
     }
@@ -316,8 +332,9 @@ button.sidebar-logout {
         margin-left: 0;
     }
 
-    /* Push page header past the fixed hamburger button (~44px icon + 12px left offset) */
-    .page-header {
+    /* Push the page title past the fixed hamburger button (~44px icon + 12px left offset);
+       the subtitle and actions keep the full width. */
+    .page-header .page-title {
         padding-left: 2.75rem;
     }
 
@@ -336,10 +353,6 @@ button.sidebar-logout {
     }
 
     .stat-grid-6 {
-        grid-template-columns: repeat(2, minmax(0, 1fr));
-    }
-
-    .stat-grid-3 {
         grid-template-columns: repeat(2, minmax(0, 1fr));
     }
 
@@ -403,10 +416,9 @@ button.sidebar-logout {
 
     .page-content { padding: 0.75rem; }
     /* Keep header left padding large enough to clear the (bigger) hamburger at ≤480px */
-    .page-header { padding-left: 3rem; }
+    .page-header .page-title { padding-left: 3rem; }
     .setup-shell { padding: 1rem; }
     .stat-grid-6 { grid-template-columns: 1fr; }
-    .stat-grid-3 { grid-template-columns: 1fr; }
     .sidebar-toggle { min-width: 44px; min-height: 44px; padding: 0.6rem; }
     .nav-group-toggle { padding: 0.65rem 0.75rem; }
     .nav-link { padding: 0.65rem 0.75rem; }
@@ -541,7 +553,7 @@ button.sidebar-logout {
 
 .span-detail-grid {
     display: grid;
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 0.75rem;
 }
 
