@@ -402,9 +402,13 @@ Troubleshooting (card stays "offline"):
    restart the Companion app). Verify the URL
    `/ha_agenthub_static/agenthub-activity-orb-card.js` returns JavaScript, and
    that `customElements.get('agenthub-activity-orb-card')` is defined in the
-   console. A `not_loaded` WebSocket error means the HA-AgentHub entry is not
-   loaded (setup failed or retrying). After 5 s offline the card shows
-   "Waiting for HA-AgentHub" inside the stage.
+   console. The card definition is deferred until the Home Assistant frontend
+   has booted (its custom-element registry is replaced during boot, and an
+   earlier definition would stay invisible to Lovelace); if that boot signal
+   never arrives the module defines the card after a 10 s fallback. A
+   `not_loaded` WebSocket error means the HA-AgentHub entry is not loaded (setup
+   failed or retrying). After 5 s offline the card shows "Waiting for
+   HA-AgentHub" inside the stage.
 4. After reloading the integration entry, reload the dashboard page so the card
    subscribes again.
 

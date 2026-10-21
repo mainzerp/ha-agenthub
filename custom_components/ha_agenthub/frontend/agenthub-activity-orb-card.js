@@ -2,9 +2,20 @@
  * Sources: container/app/dashboard/static/activity-orb.js + container/app/dashboard/static/activity-orb-card.src.js
  * Build: 3.12.0.32
  * Regenerate with: python scripts/sync_orb_card.py
+ * The body runs inside run(), deferred until the HA frontend has booted (see the sync script).
  */
 window.__AGENTHUB_ORB_BUILD__ = "3.12.0.32";
 
+(function () {
+    'use strict';
+
+    var done = false;
+    var timer = 0;
+
+    function run() {
+        if (done) { return; }
+        done = true;
+        if (timer) { clearTimeout(timer); timer = 0; }
 /*
  * <agenthub-activity-orb> - real-time visualization of orchestrator <-> agent activity.
  *
@@ -3327,4 +3338,24 @@ window.__AGENTHUB_ORB_BUILD__ = "3.12.0.32";
             documentationURL: 'https://github.com/mainzerp/ha-agenthub/blob/main/docs/deployment.md#lovelace-activity-card'
         });
     }
+})();
+
+    }
+
+    // Define the elements only once the HA frontend replaced window.customElements with its scoped registry
+    // polyfill; a native define made earlier is invisible to customElements.get()/whenDefined() in Lovelace.
+    // Pages without a <home-assistant> element (dashboard previews, test harnesses) never wait.
+    var registry = window.customElements;
+    if (
+        window.CustomElementRegistryPolyfill ||
+        !document.querySelector('home-assistant') ||
+        !registry ||
+        typeof registry.whenDefined !== 'function' ||
+        registry.get('home-assistant')
+    ) {
+        run();
+        return;
+    }
+    registry.whenDefined('home-assistant').then(run);
+    timer = setTimeout(run, 10000);
 })();
