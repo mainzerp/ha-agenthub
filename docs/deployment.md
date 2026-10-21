@@ -305,14 +305,70 @@ How it works:
 - With several HA-AgentHub entries the card uses the first loaded entry. The
   optional `entry_id` field of the WebSocket command selects another one.
 
-Add the card with a manual card in the dashboard editor or in YAML:
+Add the card from the card picker: edit the dashboard, choose **Add card**,
+search for **Agent Activity Orb** and select it. The picker shows a live preview
+that plays simulated activity (it never connects to the bridge). Adding the card
+opens the visual editor with these fields; every field is optional:
+
+| Field | YAML key | Meaning |
+|-------|----------|---------|
+| Show title | `show_title` | Turn off to hide the heading row completely (default on) |
+| Title | `title` | Heading text, default `Agent Activity`; an empty title hides it as well |
+| Height | `height` | `320` or `320px`, or a CSS length such as `40vh` or `50%`; empty = automatic. Minimum about 160 px, maximum 4000 px |
+| Width | `width` | `420` or `80%`; the card gets this as a maximum width and is centred in its cell; empty = full cell width |
+| Transparent background | `transparent` | Remove the dark stage and the card background so the orb floats on the dashboard; it adapts to light and dark surfaces |
+| Stage background | `background` | Optional CSS colour for the stage fill, for example `rgba(0,0,0,0.4)` or `var(--card-background-color)`; wins over the dark default, and over Transparent for the stage |
+| Compact | `compact` | Smaller card without the extra spacing |
+| Demo mode | `demo` | Play simulated activity without a container |
+| Config entry ID | `entry_id` | Only for several HA-AgentHub entries; default is the first loaded entry |
+
+Size rules: an explicit `height` fixes the stage height (and, in the sections
+view, the card asks for the matching number of grid rows). Without it, a card in
+a sections-view grid cell fills the cell, so the usual resize handles work.
+Outside a fixed cell the height follows the width (16:10, square below about
+480 px). Percentage heights need a container with a fixed height, such as a
+grid cell. Very small stages drop the agent labels (names stay in the tooltip).
+
+The same options in YAML (Edit in YAML or a manual card):
 
 ```yaml
 type: custom:agenthub-activity-orb-card
-title: Agents      # optional, card title
-compact: false     # optional, smaller layout
-demo: false        # optional, play simulated activity without a container
+title: Agents          # optional, default "Agent Activity"
+show_title: true       # optional, false hides the heading row
+height: 320px          # optional, number (px) or CSS length; empty = automatic
+width: 560             # optional, max-width in px or CSS length, centred
+transparent: false     # optional, true = no stage fill and no card chrome
+background: ''         # optional, CSS colour for the stage fill (wins over transparent for the stage)
+compact: false         # optional
+demo: false            # optional, simulated activity without a container
 ```
+
+Hidden title:
+
+```yaml
+type: custom:agenthub-activity-orb-card
+show_title: false
+```
+
+Fixed size, centred in its cell:
+
+```yaml
+type: custom:agenthub-activity-orb-card
+height: 240
+width: 420
+```
+
+Transparent card that floats on the dashboard background (works on light and
+dark themes; over a photographic background pick a solid `background` for the
+best legibility):
+
+```yaml
+type: custom:agenthub-activity-orb-card
+transparent: true
+```
+
+Several cards on one dashboard share one geometry cache and render at 30 fps
+each; a card that is scrolled out of view or on a hidden tab stops rendering.
 
 Requirements:
 
@@ -340,10 +396,15 @@ Troubleshooting (card stays "offline"):
    one warning per failure kind (`rejected the API key`, `HTTP 404 ... container
    too old`, `unavailable`); repeats are logged at debug level.
 3. Open the browser console. `Custom element doesn't exist:
-   agenthub-activity-orb-card` means the module was not loaded: restart Home
-   Assistant, hard-reload the browser, and confirm the URL above returns
-   JavaScript. A `not_loaded` WebSocket error means the HA-AgentHub entry is not
-   loaded (setup failed or retrying).
+   agenthub-activity-orb-card` (or "not found") means this browser page has not
+   loaded the new module, usually a stale page after an update: restart Home
+   Assistant after updating the integration, then hard-reload the page (or
+   restart the Companion app). Verify the URL
+   `/ha_agenthub_static/agenthub-activity-orb-card.js` returns JavaScript, and
+   that `customElements.get('agenthub-activity-orb-card')` is defined in the
+   console. A `not_loaded` WebSocket error means the HA-AgentHub entry is not
+   loaded (setup failed or retrying). After 5 s offline the card shows
+   "Waiting for HA-AgentHub" inside the stage.
 4. After reloading the integration entry, reload the dashboard page so the card
    subscribes again.
 
