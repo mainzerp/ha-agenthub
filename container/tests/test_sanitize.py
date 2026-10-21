@@ -20,6 +20,7 @@ import pytest
 
 from app.agents.mediation import StreamedSpeechFilter, _strip_followup_tag
 from app.agents.sanitize import strip_markdown, strip_parenthetical_asides
+from tests._ha_stubs import install_ha_stubs
 
 CORPUS_PATH = Path(__file__).parent / "data" / "sanitize_corpus.txt"
 
@@ -30,26 +31,18 @@ def _ensure_ha_module_mocks():
     Matches the lessons.md pattern: mock voluptuous and homeassistant.helpers.selector
     (plus the other HA modules the integration imports) before importing custom_components.
     """
-    ha_modules = [
-        "homeassistant",
-        "homeassistant.components",
-        "homeassistant.components.assist_pipeline",
-        "homeassistant.components.conversation",
-        "homeassistant.config_entries",
-        "homeassistant.const",
-        "homeassistant.core",
-        "homeassistant.exceptions",
-        "homeassistant.helpers",
-        "homeassistant.helpers.device_registry",
-        "homeassistant.helpers.entity_registry",
-        "homeassistant.helpers.intent",
-        "homeassistant.helpers.selector",
-        "homeassistant.helpers.entity_platform",
-        "voluptuous",
-    ]
-    for mod in ha_modules:
-        if mod not in sys.modules:
-            sys.modules[mod] = MagicMock()
+    install_ha_stubs(
+        [
+            "homeassistant.components.assist_pipeline",
+            "homeassistant.components.conversation",
+            "homeassistant.helpers.device_registry",
+            "homeassistant.helpers.entity_registry",
+            "homeassistant.helpers.intent",
+            "homeassistant.helpers.selector",
+            "homeassistant.helpers.entity_platform",
+            "voluptuous",
+        ]
+    )
 
     # Provide attributes required by the integration.
     sys.modules["homeassistant.const"].MATCH_ALL = "__ALL__"

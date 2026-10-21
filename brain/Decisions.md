@@ -573,5 +573,22 @@ prompts live in `container/app/prompts/`, `ctx.agent_registry` not
   cookie-auth dependency. Reuses the existing in-memory broker with a new
   `activity` topic; payload is ids, names, timing and status only, never
   span metadata or user text.
-- **Five satellite slots**, seeded with the most-used agents and replaced
-  LRU-by-idle when another agent is dispatched.
+- **Seven satellite slots** (changed from five on 2026-10-21), seeded with the
+  most recently used agents; the longest-unused idle slot is rotated out when
+  another agent is dispatched.
+
+## 2026-10-21 — Home Assistant card via the bridge
+
+- **Relay through the bridge, not direct from the browser**: HA pages carry no
+  dashboard session cookie and the `?token=` fallback is gone (SEC-2). The
+  bridge keeps one upstream SSE connection (API key, server side) and fans out
+  over a HA websocket command; HA's own login covers the card.
+- **Any authenticated HA user may subscribe** (not admin-only): the payload is
+  content-free ids, timing and status.
+- **One generated JS file** (`scripts/sync_orb_card.py`: widget plus card
+  wrapper) ships inside `custom_components/ha_agenthub/frontend/` because HACS
+  installs only that directory; `ci.py` fails on a stale copy, like the
+  self-docs copies. The integration serves and auto-registers it.
+- **Recency source**: an in-memory tracker of dispatch span starts, topped up
+  from persisted spans after a restart, behind `/recent` for both the
+  dashboard and the bridge.

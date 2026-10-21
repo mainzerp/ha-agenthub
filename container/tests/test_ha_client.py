@@ -21,6 +21,7 @@ from app.ha_client.auth import (
 from app.ha_client.rest import HARestClient, allow_internal_ha_service_calls
 from app.ha_client.rest import test_ha_connection as _test_ha_connection
 from app.ha_client.websocket import HAWebSocketClient
+from tests._ha_stubs import install_ha_stubs
 
 # ---------------------------------------------------------------------------
 # REST Client
@@ -490,20 +491,12 @@ class TestHAConfigFlow:
     def _mock_homeassistant(self):
         import sys
 
-        mocks = {}
-        ha_modules = [
-            "homeassistant",
-            "homeassistant.config_entries",
-            "homeassistant.const",
-            "homeassistant.core",
-            "homeassistant.helpers",
-            "homeassistant.helpers.selector",
-            "voluptuous",
-        ]
-        for mod in ha_modules:
-            if mod not in sys.modules:
-                mocks[mod] = MagicMock()
-                sys.modules[mod] = mocks[mod]
+        mocks = install_ha_stubs(
+            [
+                "homeassistant.helpers.selector",
+                "voluptuous",
+            ]
+        )
 
         class _FakeConfigFlow:
             def __init_subclass__(cls, **kwargs):
@@ -1128,27 +1121,18 @@ class TestHAConversationWSCloseError:
         """Mock homeassistant dependencies so custom_components can be imported."""
         import sys
 
-        mocks = {}
-        ha_modules = [
-            "homeassistant",
-            "homeassistant.components",
-            "homeassistant.components.assist_pipeline",
-            "homeassistant.components.conversation",
-            "homeassistant.config_entries",
-            "homeassistant.const",
-            "homeassistant.core",
-            "homeassistant.helpers",
-            "homeassistant.helpers.device_registry",
-            "homeassistant.helpers.entity_registry",
-            "homeassistant.helpers.intent",
-            "homeassistant.helpers.entity_platform",
-            "homeassistant.helpers.event",
-            "homeassistant.helpers.selector",
-        ]
-        for mod in ha_modules:
-            if mod not in sys.modules:
-                mocks[mod] = MagicMock()
-                sys.modules[mod] = mocks[mod]
+        mocks = install_ha_stubs(
+            [
+                "homeassistant.components.assist_pipeline",
+                "homeassistant.components.conversation",
+                "homeassistant.helpers.device_registry",
+                "homeassistant.helpers.entity_registry",
+                "homeassistant.helpers.intent",
+                "homeassistant.helpers.entity_platform",
+                "homeassistant.helpers.event",
+                "homeassistant.helpers.selector",
+            ]
+        )
 
         sys.modules["homeassistant.helpers.event"].async_track_state_change_event = MagicMock()
 
@@ -1363,17 +1347,7 @@ class TestHAConfigEntryLifecycle:
         """Mock Home Assistant modules so the custom integration can be imported."""
         import sys
 
-        mocks = {}
-        ha_modules = [
-            "homeassistant",
-            "homeassistant.config_entries",
-            "homeassistant.const",
-            "homeassistant.core",
-        ]
-        for mod in ha_modules:
-            if mod not in sys.modules:
-                mocks[mod] = MagicMock()
-                sys.modules[mod] = mocks[mod]
+        mocks = install_ha_stubs()
 
         sys.modules["homeassistant.config_entries"].ConfigEntry = type("ConfigEntry", (), {})
         sys.modules["homeassistant.core"].HomeAssistant = type("HomeAssistant", (), {})
@@ -1450,27 +1424,18 @@ class TestHAConversationRestFallbackMessages:
     def _mock_homeassistant(self):
         import sys
 
-        mocks = {}
-        ha_modules = [
-            "homeassistant",
-            "homeassistant.components",
-            "homeassistant.components.assist_pipeline",
-            "homeassistant.components.conversation",
-            "homeassistant.config_entries",
-            "homeassistant.const",
-            "homeassistant.core",
-            "homeassistant.helpers",
-            "homeassistant.helpers.device_registry",
-            "homeassistant.helpers.entity_registry",
-            "homeassistant.helpers.intent",
-            "homeassistant.helpers.entity_platform",
-            "homeassistant.helpers.event",
-            "homeassistant.helpers.selector",
-        ]
-        for mod in ha_modules:
-            if mod not in sys.modules:
-                mocks[mod] = MagicMock()
-                sys.modules[mod] = mocks[mod]
+        mocks = install_ha_stubs(
+            [
+                "homeassistant.components.assist_pipeline",
+                "homeassistant.components.conversation",
+                "homeassistant.helpers.device_registry",
+                "homeassistant.helpers.entity_registry",
+                "homeassistant.helpers.intent",
+                "homeassistant.helpers.entity_platform",
+                "homeassistant.helpers.event",
+                "homeassistant.helpers.selector",
+            ]
+        )
 
         sys.modules["homeassistant.helpers.event"].async_track_state_change_event = MagicMock()
 
@@ -1626,27 +1591,18 @@ class TestHAConversationCoalesceWindow:
     def _mock_homeassistant(self):
         import sys
 
-        mocks = {}
-        ha_modules = [
-            "homeassistant",
-            "homeassistant.components",
-            "homeassistant.components.assist_pipeline",
-            "homeassistant.components.conversation",
-            "homeassistant.config_entries",
-            "homeassistant.const",
-            "homeassistant.core",
-            "homeassistant.helpers",
-            "homeassistant.helpers.device_registry",
-            "homeassistant.helpers.entity_registry",
-            "homeassistant.helpers.intent",
-            "homeassistant.helpers.entity_platform",
-            "homeassistant.helpers.area_registry",
-            "homeassistant.helpers.event",
-        ]
-        for mod in ha_modules:
-            if mod not in sys.modules:
-                mocks[mod] = MagicMock()
-                sys.modules[mod] = mocks[mod]
+        install_ha_stubs(
+            [
+                "homeassistant.components.assist_pipeline",
+                "homeassistant.components.conversation",
+                "homeassistant.helpers.device_registry",
+                "homeassistant.helpers.entity_registry",
+                "homeassistant.helpers.intent",
+                "homeassistant.helpers.entity_platform",
+                "homeassistant.helpers.area_registry",
+                "homeassistant.helpers.event",
+            ]
+        )
         sys.modules["homeassistant.helpers.event"].async_track_state_change_event = MagicMock()
         sys.modules["homeassistant.const"].CONF_URL = "url"
         sys.modules["homeassistant.const"].CONF_API_KEY = "api_key"

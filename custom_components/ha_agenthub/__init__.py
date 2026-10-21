@@ -15,7 +15,11 @@ from homeassistant.exceptions import (
     ConfigEntryError,
     ConfigEntryNotReady,
 )
+from homeassistant.helpers import config_validation as cv
 
+from .activity import ActivityRelay
+from .activity_ws import async_register_activity_websocket
+from .card import async_register_card
 from .client import (
     AgentHubAuthError,
     AgentHubConnectionError,
@@ -55,6 +59,8 @@ class AgentHubRuntimeData:
     url: str
     api_key: str
     log_shipper: LogShipper | None = None
+    # Relay of the container's live activity stream for the Lovelace card.
+    activity: ActivityRelay | None = None
     # Result of the last container call that told us something about the
     # connection (setup probe, runtime auth failure, recovered request).
     connection_status: str = CONNECTION_OK
@@ -244,6 +250,20 @@ async def _async_probe_container(hass: HomeAssistant, url: str, api_key: str) ->
         raise ConfigEntryNotReady(f"HA-AgentHub container at {host} is not healthy")
 
 
+CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
+
+
+async def async_setup(hass: HomeAssistant, config: dict) -> bool:
+    """Register the Lovelace activity card pieces once per HA run.
+
+    Both registrations are entry-independent (HA cannot remove them again), so
+    the card loads and reports "offline" even while the entry is retrying.
+    """
+    async_register_activity_websocket(hass)
+    await async_register_card(hass)
+    return True
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: AgentHubConfigEntry) -> bool:
     """Set up HA-AgentHub from a config entry."""
     if entry.title in _LEGACY_ENTRY_TITLES:
@@ -267,6 +287,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: AgentHubConfigEntry) -> 
     entry.async_on_unload(entry.add_update_listener(_async_reload_entry_on_update))
 
     runtime = AgentHubRuntimeData(url=url, api_key=api_key)
+    # The upstream stream connection only opens on the first card subscriber.
+    runtime.activity = ActivityRelay(hass, url, api_key)
     # Opt-in log shipping to the container (entry-scoped lifecycle).
     if entry.options.get(CONF_SHIP_LOGS, DEFAULT_SHIP_LOGS):
         runtime.log_shipper = LogShipper(
@@ -286,6 +308,8 @@ async def async_unload_entry(hass: HomeAssistant, entry: AgentHubConfigEntry) ->
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if unload_ok:
         runtime = _runtime_data(entry)
+        if runtime is not None and runtime.activity is not None:
+            await runtime.activity.async_stop()
         if runtime is not None and runtime.log_shipper is not None:
             await runtime.log_shipper.stop()
     return unload_ok

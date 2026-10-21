@@ -92,6 +92,32 @@ VOICE_TEE_MAX_CONVERSATION_ID = 64
 VOICE_TEE_SAMPLE_RATE = 16000
 
 
+# Live agent activity relay (Lovelace activity card). The bridge keeps one
+# upstream SSE connection per config entry while a frontend subscriber exists.
+ACTIVITY_STREAM_PATH = "/api/activity/stream"
+ACTIVITY_RECENT_PATH = "/api/activity/recent"
+ACTIVITY_RECENT_LIMIT = 7
+ACTIVITY_RECENT_TIMEOUT = 5.0
+ACTIVITY_EVENT_NAME = "activity"
+# Reconnect backoff: first delay, doubled per failure, capped. Reset on the
+# first byte received from a connection.
+ACTIVITY_BACKOFF_BASE = 2.0
+ACTIVITY_BACKOFF_MAX = 60.0
+# The container sends a keep-alive comment every 15 s; a read gap slightly
+# above three intervals marks a dead connection. The stream has no total
+# timeout.
+ACTIVITY_SOCK_READ_TIMEOUT = 45.0
+ACTIVITY_CONNECT_TIMEOUT = 10.0
+# Upper bound for one unterminated SSE line; larger input is discarded.
+ACTIVITY_MAX_LINE_BYTES = 1024 * 1024
+# WebSocket command used by the Lovelace card (accessible to any
+# authenticated HA user; the payload is content-free ids/timing/status).
+WS_ACTIVITY_SUBSCRIBE = f"{DOMAIN}/activity/subscribe"
+# Lovelace card module served from the integration.
+CARD_FILENAME = "agenthub-activity-orb-card.js"
+CARD_URL_PATH = f"/{DOMAIN}_static/{CARD_FILENAME}"
+
+
 def stt_unique_id(entry_id: str) -> str:
     """Return the unique_id of the STT wrapper entity for a config entry."""
     return f"{entry_id}{STT_UNIQUE_ID_SUFFIX}"

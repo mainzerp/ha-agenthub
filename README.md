@@ -146,6 +146,8 @@ Copy `custom_components/ha_agenthub/` to your HA `config/custom_components/` dir
 
 In HA, go to Settings > Devices & Services > Add Integration > "HA-AgentHub". Enter the container URL and API key.
 
+The integration also ships a Lovelace card for the live agent activity orb (`type: custom:agenthub-activity-orb-card`), loaded automatically; see [Lovelace Activity Card](docs/deployment.md#lovelace-activity-card).
+
 ## Configuration
 
 HA-AgentHub uses three configuration tiers:
