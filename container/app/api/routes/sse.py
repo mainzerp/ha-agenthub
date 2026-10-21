@@ -7,6 +7,10 @@ Five streams are provided:
 - /api/admin/traces/stream
 - /api/admin/activity/stream (live orchestrator/agent span activity)
 
+The activity stream and the recently-used-agents list are also served to
+server-to-server clients at /api/activity/stream and /api/activity/recent
+(Bearer API key).
+
 Each uses an in-process asyncio.Queue per subscriber. Multi-worker scaling
 is not in scope; the container ships a single worker today.
 """
@@ -20,14 +24,18 @@ from collections.abc import AsyncGenerator
 from datetime import UTC, datetime
 from typing import Any
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import StreamingResponse
 
-from app.security.auth import require_admin_session
+from app.analytics.agent_recency import MAX_RECENT_LIMIT, recent_agents, record_agent_use
+from app.security.auth import require_admin_session, require_api_key
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/admin", tags=["sse"])
+# Server-to-server variant of the activity endpoints (Bearer API key, same
+# credential as /api/conversation). The handlers are shared with the admin routes.
+api_router = APIRouter(prefix="/api/activity", tags=["activity"], dependencies=[Depends(require_api_key)])
 
 # In-memory broker: topic -> list of queues
 _brokers: dict[str, list[asyncio.Queue]] = {}
@@ -183,8 +191,15 @@ def publish_span_activity(event_type: str, span: dict[str, Any], source: str | N
     """Best-effort mirror of a span start/end onto the activity stream.
 
     Never raises and does no work (no payload building) while nobody is
-    subscribed, so the tracing path stays zero-risk and nearly free.
+    subscribed, so the tracing path stays zero-risk and nearly free. The
+    agent recency tracker is updated on every dispatch span start regardless
+    of subscribers (one dict update, never raises).
     """
+    try:
+        if event_type == "span_start":
+            record_agent_use(span.get("span_name"), span.get("agent_id"), span.get("start_time"))
+    except Exception:
+        logger.debug("Failed to record agent use", exc_info=True)
     try:
         if not has_activity_subscribers():
             return
@@ -360,15 +375,48 @@ async def traces_stream(
     )
 
 
-@router.get("/activity/stream")
-async def activity_stream(
-    request: Request,
-    _session: dict = Depends(require_admin_session),
-):
-    """SSE stream of live orchestrator/agent span activity (ids, names, timing only)."""
+async def _activity_stream_response() -> StreamingResponse:
+    """Subscribe to the activity topic and wrap it in an SSE response (shared by both auth variants)."""
     queue = await _subscribe(ACTIVITY_TOPIC)
     return StreamingResponse(
         _sse_generator(queue, ACTIVITY_TOPIC),
         media_type="text/event-stream",
         headers=_SSE_HEADERS,
     )
+
+
+async def _recent_agents_response(request: Request, limit: int) -> dict[str, Any]:
+    """Build the ``{"agents": [...]}`` payload from the app's A2A registry (shared by both auth variants)."""
+    registry = getattr(request.app.state, "registry", None)
+    return {"agents": await recent_agents(limit, registry=registry)}
+
+
+@router.get("/activity/stream")
+async def activity_stream(
+    request: Request,
+    _session: dict = Depends(require_admin_session),
+):
+    """SSE stream of live orchestrator/agent span activity (ids, names, timing only)."""
+    return await _activity_stream_response()
+
+
+@router.get("/activity/recent")
+async def activity_recent(
+    request: Request,
+    limit: int = Query(7, ge=1, le=MAX_RECENT_LIMIT),
+    _session: dict = Depends(require_admin_session),
+):
+    """Most recently used agents, most recent first (ids, names, timestamps only)."""
+    return await _recent_agents_response(request, limit)
+
+
+@api_router.get("/stream")
+async def api_activity_stream(request: Request):
+    """Bearer-authenticated activity SSE stream for server-to-server clients."""
+    return await _activity_stream_response()
+
+
+@api_router.get("/recent")
+async def api_activity_recent(request: Request, limit: int = Query(7, ge=1, le=MAX_RECENT_LIMIT)):
+    """Bearer-authenticated variant of ``/api/admin/activity/recent``."""
+    return await _recent_agents_response(request, limit)

@@ -1197,8 +1197,10 @@ Auth: admin session.
 | GET | `/api/admin/timers/stream` | `timers` | Heartbeat every 5 s. |
 | GET | `/api/admin/traces/stream` | `traces` | Heartbeat every 5 s. |
 | GET | `/api/admin/activity/stream` | `activity` | Live orchestrator and agent span activity. |
+| GET | `/api/activity/stream` | `activity` | Same stream for server-to-server clients (Bearer API key). |
 
-Auth: admin session (401 without one). All streams are in-process (single
+Auth: admin session (401 without one); `/api/activity/stream` takes the
+container API key instead (see "Activity endpoints"). All streams are in-process (single
 worker), send `: keep-alive` comments every 15 s, and set `Cache-Control:
 no-cache` and `X-Accel-Buffering: no`. Each subscriber has a 32-event queue;
 when it is full the oldest events are dropped. The `/api/admin/*` rate limit
@@ -1244,6 +1246,61 @@ Privacy: only ids, names, timing and status are sent. Span metadata (task
 text, user text, entity names, responses) is never included. Start and end
 events of one span can interleave with other spans of the same trace
 (parallel dispatches).
+
+### Activity endpoints
+
+| Method | Path | Auth | Purpose |
+|--------|------|------|---------|
+| GET | `/api/admin/activity/stream` | Admin session cookie | Live activity SSE stream (browser dashboard). |
+| GET | `/api/admin/activity/recent` | Admin session cookie | Recently used agents. |
+| GET | `/api/activity/stream` | `Authorization: Bearer <container API key>` | Same SSE stream for server-to-server clients (HA bridge). |
+| GET | `/api/activity/recent` | `Authorization: Bearer <container API key>` | Same recently-used list. |
+
+The `/api/activity/*` routes use the same single container API key as
+`/api/conversation` (there are no key scopes) and return the same payloads and
+SSE headers as the admin routes; both variants share one implementation.
+Missing, malformed or wrong credentials return 401 (also when the stored key
+cannot be decrypted); the stream is not opened in that case. The `/api/admin/*`
+rate limit (300 requests per minute per client IP) runs before the credential
+check on both variants and is counted once per request, never per event, so an
+open stream is not throttled or closed by it and the reconnect rate of a client
+only matters per attempt. No request timeout is applied to an open stream; the
+server sends `: keep-alive` every 15 s and clients should reconnect with their
+own backoff (browsers retry `EventSource` after about 3 s by default). The
+server sends no `retry:` field.
+
+#### GET /api/activity/recent and GET /api/admin/activity/recent
+
+Query: `limit` (integer 1 to 20, default 7; 422 outside that range). Response:
+
+```json
+{"agents": [{"agent_id": "light-agent", "name": "Light Agent", "last_used": "2026-10-21T08:15:03.412+00:00"}]}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `agent_id` | string | Registered agent id (built-in, custom or plugin). |
+| `name` | string | Agent card name from the A2A registry. |
+| `last_used` | string or null | ISO-8601 UTC time of the agent's latest dispatch span start; null when only usage counts are known. |
+
+Recency semantics:
+
+- "Used" means the agent was the target of a dispatch-type span (`dispatch`,
+  `dispatch_content`, `dispatch_send`, `dispatch_fallback`). The container keeps
+  a bounded in-memory tracker (64 agents) updated on every such span start,
+  whether or not a client is connected to the stream. Discarded traces (voice
+  enrollment) are not counted.
+- Result order is most recent first. Only agents that are currently registered
+  in the A2A registry are returned, so disabled or removed agents drop out;
+  internal ids (`orchestrator`, `rewrite-agent`, `filler-agent`,
+  `vision-agent`, `task-formatter`) and the pipeline directives `noise` and
+  `cancel-interaction` are never returned.
+- When the tracker holds fewer than `limit` eligible agents (for example after
+  a restart) the list is topped up, in this order, from persisted dispatch
+  spans of the last 30 days (latest `start_time` per agent) and then from
+  `request` analytics usage counts of the last 30 days (busiest first,
+  `last_used` null). A database error only shortens the list.
+- Only ids, names and timestamps are returned; no span metadata or user text.
 
 ---
 

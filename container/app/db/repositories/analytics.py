@@ -49,6 +49,29 @@ class AnalyticsRepository:
                     row["data"] = json.loads(row["data"])
             return rows
 
+    @staticmethod
+    async def agent_usage_counts(excluded_ids: list[str], days: int = 30, limit: int = 64) -> list[dict[str, Any]]:
+        """Return ``request`` event counts per agent, busiest first (read-only, bounded).
+
+        Restricted to the last ``days`` days through the ``created_at`` index and
+        capped by ``limit``. Each row carries ``agent_id`` and ``request_count``.
+        """
+        params: list[Any] = [f"-{int(days)} days"]
+        excluded_sql = ""
+        if excluded_ids:
+            excluded_sql = f" AND agent_id NOT IN ({','.join('?' for _ in excluded_ids)})"
+            params.extend(excluded_ids)
+        params.append(int(limit))
+        async with get_db_read() as db:
+            cursor = await db.execute(
+                "SELECT agent_id, COUNT(*) AS request_count FROM analytics "
+                "WHERE event_type = 'request' AND created_at >= datetime('now', ?) "
+                f"AND agent_id IS NOT NULL AND agent_id != ''{excluded_sql} "
+                "GROUP BY agent_id ORDER BY request_count DESC, agent_id LIMIT ?",
+                params,
+            )
+            return [dict(row) for row in await cursor.fetchall()]
+
 
 class CacheValidatorRepository:
     """CRUD for cache validator run history."""
