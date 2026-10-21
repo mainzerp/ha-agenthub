@@ -26,8 +26,13 @@
         'vacuum-agent', 'scene-agent', 'security-agent', 'media-agent', 'automation-agent', 'calendar-agent'];
     var TAU = Math.PI * 2;
     var BREATH_S = 4.0;
+    // Orbit of the satellites: fixed roll (rad) of the ring around the view axis and a weak perspective, so the
+    // ring reads as 3D. The tilt itself is solved per stage size (see _solveRing) and never wobbles.
+    var RING_ROLL = 10 * Math.PI / 180;
+    var RING_PERSPECTIVE = 7;
     // Point budgets per quality tier: c = orchestrator cloud, s = points per satellite.
     var TIERS_DESKTOP = [{ c: 1200, s: 90 }, { c: 900, s: 72 }, { c: 600, s: 56 }, { c: 420, s: 44 }, { c: 300, s: 36 }];
+    var BOOT_TIER = { c: 120, s: 20 };   // first paint only: cheap enough for the mount task, replaced within ~100 ms
     var TIERS_SMALL = [{ c: 600, s: 52 }, { c: 450, s: 44 }, { c: 330, s: 36 }, { c: 240, s: 30 }];
 
     /* ------------------------------------------------------------------ */
@@ -122,6 +127,45 @@
             for (i = 0; i < AGENT_PALETTE.length; i++) { if (AGENT_PALETTE[i].name === name) { return i; } }
         }
         return hashId(String(id)) % AGENT_PALETTE.length;
+    }
+
+    // Colour with alpha: [r, g, b, a] for any CSS colour the canvas understands, else null.
+    function parseColorA(value) {
+        try {
+            if (!value) { return null; }
+            if (!_colorCtx) { _colorCtx = document.createElement('canvas').getContext('2d'); }
+            _colorCtx.fillStyle = '#000001';
+            _colorCtx.fillStyle = value;
+            var v = _colorCtx.fillStyle;
+            if (v === '#000001' && String(value).replace(/\s/g, '').toLowerCase() !== '#000001') { return null; }
+            if (v.charAt(0) === '#' && v.length === 7) { return [parseInt(v.slice(1, 3), 16), parseInt(v.slice(3, 5), 16), parseInt(v.slice(5, 7), 16), 1]; }
+            var m = /rgba?\(\s*([\d.]+)[,\s]+([\d.]+)[,\s]+([\d.]+)(?:[,\s/]+([\d.]+))?/.exec(v);
+            if (m) { return [+m[1], +m[2], +m[3], m[4] === undefined ? 1 : +m[4]]; }
+        } catch (_) { /* unresolved */ }
+        return null;
+    }
+
+    function relLum(c) {
+        var f = function (v) { v /= 255; return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); };
+        return 0.2126 * f(c[0]) + 0.7152 * f(c[1]) + 0.0722 * f(c[2]);
+    }
+
+    function contrastRatio(a, b) {
+        var l1 = relLum(a), l2 = relLum(b);
+        return (Math.max(l1, l2) + 0.05) / (Math.min(l1, l2) + 0.05);
+    }
+
+    // Darker, more saturated variant of a colour for light surfaces (source-over drawing needs real ink).
+    function darkVariant(c) {
+        var l = 0.3 * c[0] + 0.59 * c[1] + 0.11 * c[2];
+        return [0, 1, 2].map(function (i) { return clamp((l + (c[i] - l) * 1.35) * 0.58, 0, 255); });
+    }
+
+    // Move a colour toward `toward` (white or black) until it reaches `min` contrast against the surface.
+    function readable(c, surface, toward, min) {
+        var out = c.slice(), k;
+        for (k = 0; k < 8 && contrastRatio(out, surface) < min; k++) { out = mixRgb(out, toward, 0.2); }
+        return out;
     }
 
     function prettifyId(id) {
@@ -228,7 +272,7 @@
     /* Point-cloud geometry (shared, cached per point count)              */
     /* ------------------------------------------------------------------ */
 
-    var _cloudCache = {};
+    var _cloudCache = {}, _cloudPending = {};
 
     function seededRandom(seed) {
         var a = seed >>> 0;
@@ -244,14 +288,44 @@
     // A shell-weighted volumetric cloud: most points sit near the surface, some inside.
     // Neighbour pairs are precomputed once so a frame only projects and strokes them.
     function cloudGeometry(n, k) {
-        var key = n + ':' + k;
+        var key = n + ':' + k, r, g;
         if (_cloudCache[key]) { return _cloudCache[key]; }
+        g = _cloudPending[key] ? _cloudPending[key].gen : cloudGen(n, k);
+        do { r = g.next(); } while (!r.done);
+        return _cloudCache[key];
+    }
+
+    function cloudCached(n, k) { return !!_cloudCache[n + ':' + k]; }
+
+    // Builds the geometry in slices of about 3 ms (one task each) and calls back when it is cached. Concurrent requests
+    // for the same geometry (several cards on one page) share one build.
+    function cloudGeometryAsync(n, k, cb) {
+        var key = n + ':' + k, p = _cloudPending[key];
+        if (_cloudCache[key]) { cb(); return; }
+        if (p) { p.cbs.push(cb); return; }
+        p = _cloudPending[key] = { gen: cloudGen(n, k), cbs: [cb] };
+        var step = function () {
+            var t0 = performance.now(), r = { done: !!_cloudCache[key] };
+            while (!r.done && performance.now() - t0 < 3) { r = p.gen.next(); }
+            if (r.done) {
+                delete _cloudPending[key];
+                for (var i = 0; i < p.cbs.length; i++) { p.cbs[i](); }
+            } else {
+                setTimeout(step, 0);
+            }
+        };
+        setTimeout(step, 0);
+    }
+
+    function* cloudGen(n, k) {
+        var key = n + ':' + k;
         var rnd = seededRandom(1234567 + n);
         var dir = new Float32Array(n * 3);
         var r0 = new Float32Array(n);
         var ph = new Float32Array(n);
         var tws = new Float32Array(n);
         var pol = new Float32Array(n);
+        var kc = new Float32Array(n * 8);   // sin/cos of the static phase of each noise term (angle-sum identity per frame)
         var i, j, m;
         var golden = Math.PI * (3 - Math.sqrt(5));
         var spacing = Math.sqrt(12.566 / n);
@@ -268,8 +342,15 @@
             ph[i] = rnd() * TAU;
             tws[i] = 0.6 + rnd() * 1.6;
             pol[i] = Math.acos(z) / Math.PI;
+            var ex = dir[i * 3], ey = dir[i * 3 + 1], ez = dir[i * 3 + 2], ang;
+            ang = ex * 7.1 + ey * 3.3 - ez * 5.2; kc[i * 8] = Math.sin(ang); kc[i * 8 + 1] = Math.cos(ang);
+            ang = -ex * 4.4 + ey * 8.2 + ez * 3.9; kc[i * 8 + 2] = Math.sin(ang); kc[i * 8 + 3] = Math.cos(ang);
+            ang = ex * 2.7 - ey * 6.3 + ez * 8.0; kc[i * 8 + 4] = Math.sin(ang); kc[i * 8 + 5] = Math.cos(ang);
+            ang = TAU * pol[i] * 2.5; kc[i * 8 + 6] = Math.sin(ang); kc[i * 8 + 7] = Math.cos(ang);
+            if ((i & 255) === 255) { yield; }
         }
-        // Nearest neighbours in the displaced rest position (direction scaled by r0).
+        // Nearest neighbours in the displaced rest position (direction scaled by r0), found with a spatial grid:
+        // every point only looks at the points of the cells around it, so the cost is linear in n.
         var px = new Float32Array(n * 3);
         for (i = 0; i < n; i++) {
             px[i * 3] = dir[i * 3] * r0[i];
@@ -277,22 +358,50 @@
             px[i * 3 + 2] = dir[i * 3 + 2] * r0[i];
         }
         var far = k + 5;
+        var cs = Math.max(0.12, spacing * 2.4), gn = Math.ceil(2 / cs) + 1;
+        var cellOf = new Int32Array(n), cellCount = new Int32Array(gn * gn * gn + 1);
+        var cx, cy, cz;
+        for (i = 0; i < n; i++) {
+            cx = Math.min(gn - 1, Math.floor((px[i * 3] + 1) / cs));
+            cy = Math.min(gn - 1, Math.floor((px[i * 3 + 1] + 1) / cs));
+            cz = Math.min(gn - 1, Math.floor((px[i * 3 + 2] + 1) / cs));
+            cellOf[i] = (cx * gn + cy) * gn + cz;
+            cellCount[cellOf[i] + 1]++;
+        }
+        for (i = 0; i < gn * gn * gn; i++) { cellCount[i + 1] += cellCount[i]; }
+        var cellItems = new Int32Array(n), fill = cellCount.slice(0, gn * gn * gn);
+        for (i = 0; i < n; i++) { cellItems[fill[cellOf[i]]++] = i; }
         var seen = new Set();
         var edges = [];
         var bd = new Float32Array(far);
         var bi = new Int32Array(far);
+        var ring, x0, y0, z0, gx, gy, gz, c, t, e, d, dx, dy, dz, lim;
         for (i = 0; i < n; i++) {
-            for (m = 0; m < far; m++) { bd[m] = 1e9; bi[m] = -1; }
             var xi = px[i * 3], yi = px[i * 3 + 1], zi = px[i * 3 + 2];
-            for (j = 0; j < n; j++) {
-                if (j === i) { continue; }
-                var dx = px[j * 3] - xi, dy = px[j * 3 + 1] - yi, dz = px[j * 3 + 2] - zi;
-                var d = dx * dx + dy * dy + dz * dz;
-                if (d >= bd[far - 1]) { continue; }
-                m = far - 1;
-                while (m > 0 && bd[m - 1] > d) { bd[m] = bd[m - 1]; bi[m] = bi[m - 1]; m--; }
-                bd[m] = d;
-                bi[m] = j;
+            cx = Math.floor(cellOf[i] / (gn * gn)); cy = Math.floor(cellOf[i] / gn) % gn; cz = cellOf[i] % gn;
+            for (ring = 1; ring < gn; ring++) {
+                for (m = 0; m < far; m++) { bd[m] = 1e9; bi[m] = -1; }
+                for (gx = Math.max(0, cx - ring); gx <= Math.min(gn - 1, cx + ring); gx++) {
+                    for (gy = Math.max(0, cy - ring); gy <= Math.min(gn - 1, cy + ring); gy++) {
+                        for (gz = Math.max(0, cz - ring); gz <= Math.min(gn - 1, cz + ring); gz++) {
+                            c = (gx * gn + gy) * gn + gz;
+                            for (t = cellCount[c]; t < cellCount[c + 1]; t++) {
+                                j = cellItems[t];
+                                if (j === i) { continue; }
+                                dx = px[j * 3] - xi; dy = px[j * 3 + 1] - yi; dz = px[j * 3 + 2] - zi;
+                                d = dx * dx + dy * dy + dz * dz;
+                                if (d >= bd[far - 1]) { continue; }
+                                m = far - 1;
+                                while (m > 0 && bd[m - 1] > d) { bd[m] = bd[m - 1]; bi[m] = bi[m - 1]; m--; }
+                                bd[m] = d;
+                                bi[m] = j;
+                            }
+                        }
+                    }
+                }
+                // Exact once the farthest kept neighbour is inside the searched ring (every nearer point is in it).
+                lim = ring * cs;
+                if (bd[far - 1] <= lim * lim) { break; }
             }
             for (m = 0; m < k; m++) {
                 var lo = Math.min(i, bi[m]), hi = Math.max(i, bi[m]);
@@ -305,11 +414,189 @@
                 var kk2 = lo2 * 8192 + hi2;
                 if (!seen.has(kk2)) { seen.add(kk2); edges.push(lo2, hi2); }
             }
+            if ((i & 63) === 63) { yield; }
         }
         var edgeGroup = new Uint8Array(edges.length / 2);
         for (i = 0; i < edgeGroup.length; i++) { edgeGroup[i] = i % 3; }
-        _cloudCache[key] = { n: n, dir: dir, r0: r0, ph: ph, tws: tws, pol: pol, edges: new Uint16Array(edges), egrp: edgeGroup };
+        // Decompose the edge list into polylines (at most 8 edges each, consecutive edges share a node). Stroking one
+        // path with many short contours is far slower than stroking a few longer polylines.
+        var ne = edges.length / 2, adj = [], used = new Uint8Array(ne), seqs = [], cur, nextE, guard;
+        for (i = 0; i < n; i++) { adj.push([]); }
+        for (i = 0; i < ne; i++) { adj[edges[i * 2]].push(i); adj[edges[i * 2 + 1]].push(i); }
+        for (i = 0; i < ne; i++) {
+            if ((i & 511) === 511) { yield; }
+            if (used[i]) { continue; }
+            used[i] = 1;
+            var seq = [edges[i * 2], edges[i * 2 + 1]];
+            cur = seq[1];
+            for (guard = 0; guard < 7; guard++) {
+                nextE = -1;
+                for (t = 0; t < adj[cur].length; t++) { if (!used[adj[cur][t]]) { nextE = adj[cur][t]; break; } }
+                if (nextE < 0) { break; }
+                used[nextE] = 1;
+                cur = edges[nextE * 2] === cur ? edges[nextE * 2 + 1] : edges[nextE * 2];
+                seq.push(cur);
+            }
+            seqs.push(seq);
+        }
+        var chainStart = new Uint32Array(seqs.length + 1), flat = [];
+        for (i = 0; i < seqs.length; i++) { chainStart[i] = flat.length; for (t = 0; t < seqs[i].length; t++) { flat.push(seqs[i][t]); } }
+        chainStart[seqs.length] = flat.length;
+        _cloudCache[key] = { n: n, dir: dir, r0: r0, ph: ph, tws: tws, pol: pol, kc: kc, edges: new Uint16Array(edges), egrp: edgeGroup, chains: new Uint16Array(flat), chainStart: chainStart, nChains: seqs.length };
         return _cloudCache[key];
+    }
+
+    /* ------------------------------------------------------------------ */
+    /* Ring layout solver (shared by all instances, cached per stage size) */
+    /* ------------------------------------------------------------------ */
+
+    // The ring is inclined toward the viewer (b = R sin(tilt) is the vertical semi-axis) so far-side satellites
+    // project above the sphere silhouette instead of behind it: every far node, node ring and spinner included, clears
+    // the breathing sphere by 3 px, and every node plus its label stays on the stage. Because the perspective
+    // distance scales with R, node positions are R times a unit ring, so for a given tilt the largest R that fits the
+    // stage and the largest sphere that clears the far arc follow in closed form; only the label crowding check needs
+    // a few samples. The solution with the biggest sphere wins, flattest ring first among equals.
+    var RING_N = 84;                       // samples per revolution; 7 satellites sit 12 samples apart
+    var RING_COS = new Float64Array(RING_N), RING_SIN = new Float64Array(RING_N);
+    (function () { for (var j = 0; j < RING_N; j++) { RING_COS[j] = Math.cos(TAU * j / RING_N); RING_SIN[j] = Math.sin(TAU * j / RING_N); } })();
+    var RING_BUF = { ux: new Float64Array(RING_N), uy: new Float64Array(RING_N), uz: new Float64Array(RING_N), r: new Float64Array(RING_N), g: new Float64Array(RING_N), x: new Float64Array(RING_N), y: new Float64Array(RING_N) };
+    var RING_SINS = (function () {
+        var a = [], q;
+        for (q = 0.72; q <= 0.961; q += 0.02) { a.push(q); }
+        for (q = 0.70; q >= 0.499; q -= 0.02) { a.push(q); }
+        for (q = 0.46; q >= 0.199; q -= 0.04) { a.push(q); }
+        return a;
+    })();
+    var _ringCache = {}, _ringCacheSize = 0;
+    var _glowCache = {}, _glowCount = 0;
+
+    // Soft radial glow as a small cached sprite (tinted, 8 levels per channel): a scaled drawImage is much cheaper than
+    // filling a large radial gradient every frame. shape 'soft': 1, 1/3, 0 at 0, 0.5, 1; shape 'sat': flat to 0.12, then linear.
+    function glowSprite(shape, rgb) {
+        var q = [rgb[0] >> 3, rgb[1] >> 3, rgb[2] >> 3];
+        var key = shape + q[0] + '_' + q[1] + '_' + q[2];
+        var c = _glowCache[key];
+        if (c) { return c; }
+        if (_glowCount > 300) { _glowCache = {}; _glowCount = 0; }
+        c = document.createElement('canvas');
+        c.width = c.height = 128;
+        var g = c.getContext('2d'), col = [q[0] * 8 + 4, q[1] * 8 + 4, q[2] * 8 + 4];
+        var gr = g.createRadialGradient(64, 64, 0, 64, 64, 64);
+        if (shape === 'soft') {
+            gr.addColorStop(0, rgba(col, 1)); gr.addColorStop(0.5, rgba(col, 1 / 3)); gr.addColorStop(1, rgba(col, 0));
+        } else {
+            gr.addColorStop(0, rgba(col, 1)); gr.addColorStop(0.12, rgba(col, 1)); gr.addColorStop(1, rgba(col, 0));
+        }
+        g.fillStyle = gr;
+        g.fillRect(0, 0, 128, 128);
+        _glowCache[key] = c;
+        _glowCount += 1;
+        return c;
+    }
+    var _running = new Set();   // widgets whose render loop is active (visible)
+
+    function ringTry(w, h, nodeR, fs, labelMax) {
+        var B = RING_BUF, m = Math.min(w, h), n = SLOT_COUNT;
+        var labelHalf = labelMax * fs * 0.6 / 2, ls = labelMax ? 10 + fs + 4 : 2;
+        var cr = Math.cos(RING_ROLL), sr = Math.sin(RING_ROLL);
+        var best = null, bestKs = -1;
+        for (var si = 0; si < RING_SINS.length; si++) {
+            var sinT = RING_SINS[si], cosT = Math.sqrt(1 - sinT * sinT), j;
+            var rBound = 1e9, farMin = 1e9;
+            for (j = 0; j < RING_N; j++) {
+                var x = RING_COS[j], z = RING_SIN[j], yy = -z * sinT, zz = z * cosT;
+                var sc = RING_PERSPECTIVE / (RING_PERSPECTIVE + zz);
+                var ux = (x * cr - yy * sr) * sc, uy = (x * sr + yy * cr) * sc;
+                var rr = nodeR * sc * 1.05;
+                B.ux[j] = ux; B.uy[j] = uy; B.uz[j] = zz; B.r[j] = rr * 1.32 + 4; B.g[j] = rr * 1.32 + 10;
+                var ax = Math.abs(ux), ay = Math.abs(uy);
+                if (ax > 1e-6) { rBound = Math.min(rBound, (w / 2 - 2 - Math.max(B.r[j] * 1.6, labelHalf)) / ax); }
+                if (ay > 1e-6) { rBound = Math.min(rBound, (h / 2 - 2 - B.r[j] - ls) / ay); }
+            }
+            if (!(rBound > 12)) { continue; }
+            var R = rBound;
+            // Largest sphere that still clears every far node (node ring included) by 3 px.
+            var radMax = 1e9;
+            for (j = 0; j < RING_N; j++) {
+                if (B.uz[j] > 0) { radMax = Math.min(radMax, R * Math.hypot(B.ux[j], B.uy[j]) - B.r[j] - 3); }
+            }
+            var ks = Math.min(0.22, radMax / 1.12 / m);
+            if (ks < 0.09) { continue; }
+            ks = Math.floor(ks * 200) / 200;
+            if (ks <= bestKs) { continue; }
+            // Crowding: every label must find a free side and labels must not touch (12 phases cover all positions).
+            for (j = 0; j < RING_N; j++) { B.x[j] = R * B.ux[j]; B.y[j] = R * B.uy[j]; }
+            if (!ringCrowdOk(n, labelMax, labelHalf, fs)) { continue; }
+            bestKs = ks;
+            best = { sphereR: ks * m, R: R, sinT: sinT, f: R * RING_PERSPECTIVE };
+        }
+        return best;
+    }
+
+    function ringCrowdOk(n, labelMax, labelHalf, fs) {
+        var B = RING_BUF, step = RING_N / n, p, a, b, ia, ib, sa, ry, free, ok;
+        var rects = [0, 0, 0, 0, 0, 0, 0].map(function () { return [0, 0]; });
+        for (p = 0; p < step; p++) {
+            for (a = 0; a < n; a++) {
+                ia = p + a * step;
+                for (b = a + 1; b < n; b++) {
+                    ib = p + b * step;
+                    var ddx = B.x[ia] - B.x[ib], ddy = B.y[ia] - B.y[ib], rs = B.r[ia] + B.r[ib];
+                    if (ddx * ddx + ddy * ddy < rs * rs) { return false; }
+                }
+            }
+            if (!labelMax) { continue; }
+            for (a = 0; a < n; a++) {
+                ia = p + a * step;
+                free = false;
+                for (sa = 1; sa >= -1 && !free; sa -= 2) {
+                    ry = sa > 0 ? B.y[ia] + B.g[ia] : B.y[ia] - B.g[ia] - fs;
+                    ok = true;
+                    for (b = 0; b < n && ok; b++) {
+                        if (b === a) { continue; }
+                        ib = p + b * step;
+                        var nx = Math.min(Math.max(B.x[ib], B.x[ia] - labelHalf - 1), B.x[ia] + labelHalf + 1);
+                        var ny = Math.min(Math.max(B.y[ib], ry - 1), ry + fs + 1);
+                        if (Math.hypot(B.x[ib] - nx, B.y[ib] - ny) < B.r[ib]) { ok = false; }
+                    }
+                    if (ok) { free = true; rects[a][0] = ry; rects[a][1] = B.x[ia]; }
+                }
+                if (!free) { return false; }
+            }
+            for (a = 0; a < n; a++) {
+                for (b = a + 1; b < n; b++) {
+                    if (Math.abs(rects[a][1] - rects[b][1]) < labelHalf * 2 + 1 && Math.abs(rects[a][0] - rects[b][0]) < fs + 1) { return false; }
+                }
+            }
+        }
+        return true;
+    }
+
+    function solveRingLayout(w, h, narrow) {
+        // Solve on a coarse grid (conservatively rounded down); results are shared by every instance.
+        w = Math.floor(w / 8) * 8;
+        h = Math.floor(h / 8) * 8;
+        var key = w + 'x' + h + (narrow ? 'n' : '');
+        if (_ringCache[key]) { return _ringCache[key]; }
+        var m = Math.min(w, h);
+        var baseNode = clamp(m * (narrow ? 0.047 : 0.058), 10, 26);
+        var baseFs = narrow ? 9 : 11, baseMax = w < 300 ? 6 : (narrow ? 8 : 12);
+        // Density options, in order: the full-size look first, then smaller nodes and shorter labels, finally no labels.
+        var options = [[1, baseFs, baseMax], [0.85, baseFs, Math.min(baseMax, 9)], [0.72, Math.max(8, baseFs - 1), Math.min(baseMax, 7)], [0.6, 8, Math.min(baseMax, 5)], [0.72, 0, 0], [0.6, 0, 0]];
+        var best = null, pick = null, oi, g, nodeR;
+        for (oi = 0; oi < options.length && !pick; oi++) {
+            nodeR = clamp(baseNode * options[oi][0], 8, 26);
+            g = ringTry(w, h, nodeR, options[oi][1], options[oi][2]);
+            if (!g) { continue; }
+            g.nodeR = nodeR; g.fs = options[oi][1]; g.labelMax = options[oi][2];
+            if (!best || g.sphereR > best.sphereR) { best = g; }
+            if (g.sphereR >= m * 0.15) { pick = g; }
+        }
+        pick = pick || best || { sphereR: m * 0.1, R: m * 0.3, sinT: 0.9, f: m * 0.3 * RING_PERSPECTIVE, nodeR: 8, fs: 0, labelMax: 0 };
+        if (_ringCacheSize > 200) { _ringCache = {}; _ringCacheSize = 0; }
+        _ringCache[key] = pick;
+        _ringCacheSize += 1;
+        return pick;
     }
 
     /* ------------------------------------------------------------------ */
@@ -330,6 +617,13 @@
         '.card.is-bare .head { display: none; }',
         '.card.is-bare .conn { top: 0.75rem; right: 0.75rem; }',
         '.card.is-bare .stage { background: var(--orb-stage-bg, #12110f); border-radius: var(--orb-stage-radius, 12px); max-height: 100%; min-height: 120px; }',
+        '.card.is-transparent { background: none; border-color: transparent; }',
+        '.card.is-transparent .stage { background: transparent; }',
+        '.card.is-light .conn { color: #4a4642; }',
+        '.card.is-light .hint { color: #4a4642; background: rgba(255, 255, 255, 0.7); }',
+        '.card.is-light .dot { box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.25); }',
+        ':host([fixed-height]) { height: auto; }',
+        ':host([fixed-height]) .card.is-bare .stage, :host([fixed-height]) .card .stage { aspect-ratio: auto; height: var(--orb-stage-height, 240px); max-height: none; min-height: 0; }',
         '.head { display: flex; align-items: center; min-height: 1.25rem; margin: 0 0 0.75rem 0; padding-right: 7.5rem; }',
         '.card.is-compact .head { display: none; }',
         '.title { margin: 0; font-family: var(--font-display, var(--font-body, sans-serif)); font-size: 0.875rem;',
@@ -346,15 +640,15 @@
         '.conn[data-state="offline"] .dot { background: var(--danger, #d4756b); }',
         '@keyframes blink { 50% { opacity: 0.3; } }',
         '.stage { position: relative; width: 100%; aspect-ratio: 16 / 10; min-height: 0; }',
-        '.card.is-compact .stage { aspect-ratio: 2 / 1; }',
         '.card.is-narrow .stage { aspect-ratio: 1 / 1; }',
-        '.card.is-compact.is-narrow .stage { aspect-ratio: 4 / 3; }',
         'canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; border-radius: 0.5rem; touch-action: manipulation; }',
         'canvas:focus-visible { outline: 2px solid var(--teal, #e2a84b); outline-offset: 2px; }',
         '.tip { position: absolute; z-index: 3; max-width: 14rem; padding: 0.5rem 0.625rem; pointer-events: none;',
         '  background: var(--bg-obsidian, #151512); border: 1px solid var(--border-strong, #4a4642); border-radius: 0.375rem;',
         '  font-size: 0.75rem; line-height: 1.4; color: var(--color-cloud, #d5d0ca); box-shadow: 0 4px 16px rgba(0, 0, 0, 0.45); }',
         '.tip[hidden] { display: none; }',
+        '.hint { position: absolute; left: 50%; bottom: 0.5rem; z-index: 2; transform: translateX(-50%); max-width: 90%; padding: 0.2rem 0.6rem; border-radius: 999px; font-family: var(--font-mono, monospace); font-size: 0.6875rem; letter-spacing: 0.02em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--color-fog, #8a8580); background: rgba(10, 9, 8, 0.6); opacity: 0; transition: opacity 0.6s ease; pointer-events: none; }',
+        '.hint.show { opacity: 1; }',
         '.tip-head { display: flex; align-items: center; gap: 0.4rem; }',
         '.sw { width: 0.65rem; height: 0.65rem; border-radius: 0.15rem; flex-shrink: 0; }',
         '.tip-name { font-weight: 600; color: var(--color-light, #f5f2ee); overflow-wrap: anywhere; }',
@@ -374,7 +668,7 @@
     class AgentHubActivityOrb extends HTMLElement {
         static get palette() { return AGENT_PALETTE.map(function (c) { return { name: c.name, rgb: c.rgb.slice() }; }); }
 
-        static get observedAttributes() { return ['demo', 'heading', 'compact', 'span-timeout', 'transport', 'bare']; }
+        static get observedAttributes() { return ['demo', 'heading', 'compact', 'span-timeout', 'transport', 'bare', 'demo-idle', 'demo-burst', 'fixed-height', 'transparent', 'stage-background']; }
 
         constructor() {
             super();
@@ -416,6 +710,9 @@
             this._tip.setAttribute('role', 'tooltip');
             this._tip.hidden = true;
             stage.appendChild(this._tip);
+            this._hint = document.createElement('div');
+            this._hint.className = 'hint';
+            stage.appendChild(this._hint);
             card.appendChild(stage);
 
             this._live = document.createElement('div');
@@ -425,7 +722,7 @@
             card.appendChild(this._live);
             root.appendChild(card);
 
-            this._ctx = canvas.getContext('2d');
+            this._ctx = canvas.getContext('2d', { alpha: true });
             this._initState();
         }
 
@@ -439,6 +736,7 @@
 
             this._applyAttrs();
             this._readColors();
+            this._detectSurface();
             this._mqReduced = window.matchMedia ? window.matchMedia('(prefers-reduced-motion: reduce)') : null;
             this._reduced = !!(this._mqReduced && this._mqReduced.matches);
             this._onReducedChange = function (e) { self._reduced = !!e.matches; self._wake(); };
@@ -447,13 +745,13 @@
                 else if (this._mqReduced.addListener) { this._mqReduced.addListener(this._onReducedChange); }
             }
 
-            this._onVisibility = function () { self._wake(); };
+            this._onVisibility = function () { if (!document.hidden) { self._scheduleSurface(); } self._wake(); };
             document.addEventListener('visibilitychange', this._onVisibility);
 
             this._resizeObs = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(function () { self._roSeen = true; self._resize(); self._wake(); }) : null;
             if (this._resizeObs) { this._resizeObs.observe(this._stage); } else { window.addEventListener('resize', this._onWinResize = function () { self._resize(); }); }
 
-            this._inView = true;
+            this._inView = typeof IntersectionObserver === 'undefined';
             if (typeof IntersectionObserver !== 'undefined') {
                 this._io = new IntersectionObserver(function (entries) {
                     var last = entries[entries.length - 1];
@@ -463,15 +761,20 @@
                 this._io.observe(this._stage);
             }
 
-            this._themeObs = typeof MutationObserver !== 'undefined' ? new MutationObserver(function () { self._readColors(); self._wake(); }) : null;
+            this._themeObs = typeof MutationObserver !== 'undefined' ? new MutationObserver(function () { self._scheduleRefresh(); }) : null;
             if (this._themeObs) {
                 this._themeObs.observe(document.documentElement, { attributes: true, attributeFilter: ['class', 'data-theme', 'style'] });
             }
-            this._onThemeEvent = function () { self._readColors(); self._wake(); };
+            this._onThemeEvent = function () { self._readColors(); self._detectSurface(); self._wake(); };
             window.addEventListener('agenthub:theme-change', this._onThemeEvent);
 
             this._bindPointer();
-            this._sweeper = setInterval(function () { self._sweep(); }, 1000);
+            this._sweepTicks = 0;
+            this._sweeper = setInterval(function () {
+                self._sweep();
+                // Background changes the observers cannot see (page or card styling): re-check every 2 s, not per frame.
+                if ((self._sweepTicks += 1) % 2 === 0 && self._visible() && (self.hasAttribute('transparent') || self.hasAttribute('stage-background'))) { self._detectSurface(); }
+            }, 1000);
 
             if (!this._resizeObs) { this._roSeen = true; }
             this._resize();
@@ -485,7 +788,12 @@
             if (!this._connected) { return; }
             this._connected = false;
             this._stopSource();
+            if (this._layoutTimer) { clearTimeout(this._layoutTimer); this._layoutTimer = 0; }
+            if (this._surfTimer) { clearTimeout(this._surfTimer); this._surfTimer = 0; }
+            if (this._refreshTimer) { clearTimeout(this._refreshTimer); this._refreshTimer = 0; }
+            this._firstBurstTimer = null;
             this._stopLoop();
+            if (this._hintTimer) { clearTimeout(this._hintTimer); this._hintTimer = 0; }
             if (this._prebuildTimer) { clearTimeout(this._prebuildTimer); this._prebuildTimer = 0; }
             if (this._sweeper) { clearInterval(this._sweeper); this._sweeper = null; }
             if (this._resizeObs) { this._resizeObs.disconnect(); this._resizeObs = null; }
@@ -507,6 +815,8 @@
             if (!this._card) { return; }
             if (name === 'span-timeout') { return; }
             this._applyAttrs();
+            this._updateHint();
+            if (name === 'demo-idle') { this._rearmFirstIdle(); }
             if (name === 'demo' && this._connected) {
                 this._stopSource();
                 this._startSource();
@@ -532,6 +842,9 @@
             this._seedDone = true;
         }
 
+        /** Re-evaluate the surface behind a transparent orb (call after a theme or background change). */
+        refreshSurface() { this._readColors(); this._detectSurface(); }
+
         /** Drive the corner indicator for an external transport: 'live', 'reconnecting' or 'offline'. */
         setConnectionState(state) {
             if (state === 'live' || state === 'reconnecting' || state === 'offline') { this._setConn(state); }
@@ -556,6 +869,7 @@
                 pulses: this._pulses.length,
                 energy: +this._energy.toFixed(2),
                 points: this._cloud ? this._cloud.n : 0,
+                booting: !!this._booting,
                 satPoints: this._sat ? this._sat.n : 0,
                 tier: this._tierIdx,
                 workMs: +this._workMs.toFixed(2),
@@ -568,7 +882,13 @@
                 frameTs: this._frameTs || 0,
                 sinceConnectMs: this._connectedAt ? Math.round(performance.now() - this._connectedAt) : -1,
                 labels: this._labelDbg.slice(),
-                params: this._params
+                params: this._params,
+                layerProbe: { phase: this._probe.phase, useLayer: this._useLayer, ms: this._probe.ms || null },
+                profile: { light: this._light, target: this._profT === 1, lum: +this._surface.lum.toFixed(3), rgb: this._surface.rgb.map(Math.round), photo: !!this._surface.photo, fade: +this._pfade.toFixed(3) },
+                drawOrder: this._orderLog ? this._orderLog.slice() : [],
+                nodes: this._pos.map(function (q) { return { x: q.x, y: q.y, z: q.z, rd: q.rd, da: q.da, ad: q.ad }; }),
+                sphere: { cx: this._ring ? this._ring.cx : 0, cy: this._ring ? this._ring.cy : 0, r: this._rad },
+                ring: this._ring ? { R: this._ring.R, sinT: this._ring.sinT, tiltDeg: Math.asin(this._ring.sinT) * 180 / Math.PI, rollDeg: RING_ROLL * 180 / Math.PI, b: this._ring.R * this._ring.sinT, sphereR: this._sphereR } : null
             };
         }
 
@@ -621,6 +941,16 @@
             this._prevLayer = null;
             this._xf = 1;
             this._intro = 0;
+            this._light = false;
+            this._profT = 0;
+            this._pfade = 1;
+            this._pfadeV = 0;
+            this._surface = { rgb: [18, 17, 15], lum: 0.006 };
+            this._add = 'lighter';
+            this._ak = 1;
+            this._cActive = null;
+            this._useLayer = false;     // cached sphere layer on/off (chosen by a short A/B probe)
+            this._probe = { phase: 'wait', n: 0, a: [], b: [] };
             this._introV = 0;
             this._roSeen = false;
             this._layT = null;
@@ -657,6 +987,11 @@
             this._demo = this.hasAttribute('demo');
             this._external = this.getAttribute('transport') === 'external';
             this._card.classList.toggle('is-bare', this.hasAttribute('bare'));
+            this._card.classList.toggle('is-transparent', this.hasAttribute('transparent'));
+            var sbg = this.getAttribute('stage-background');
+            this._stage.style.background = sbg ? sbg : '';
+            this._surfaceDirty = true;
+            if (this._connected) { this._detectSurface(); }
             this._card.classList.toggle('is-compact', this._compact);
             this._canvas.setAttribute('aria-label', this._ariaSummary());
             this._renderConn();
@@ -686,8 +1021,116 @@
                 dim: get('--color-dust', [107, 102, 96]),
                 bg: get('--bg-basalt', [26, 24, 22])
             };
+            this._buildProfiles();
             var mono = cs.getPropertyValue('--font-mono').trim();
             this._fonts.mono = mono || 'ui-monospace, Menlo, Consolas, monospace';
+        }
+
+        /* ---------------- surface detection and render profiles ---------------- */
+
+        // Resolve any CSS colour (var() included) to [r, g, b, a] through a probe element in the shadow tree.
+        _resolveCss(value) {
+            if (!value) { return null; }
+            if (!this._cssProbe) {
+                this._cssProbe = document.createElement('i');
+                this._cssProbe.style.cssText = 'display:none;position:absolute;';
+                this._stage.appendChild(this._cssProbe);
+            }
+            this._cssProbe.style.backgroundColor = '';
+            this._cssProbe.style.backgroundColor = value;
+            if (!this._cssProbe.style.backgroundColor) { return null; }
+            return parseColorA(getComputedStyle(this._cssProbe).backgroundColor);
+        }
+
+        // The surface the orb is drawn on: an explicit stage background, the dark default stage, or the composited
+        // background of the ancestors (a transparent card). Photographic backgrounds are not analysed: only their
+        // resolved colour counts, then the HA theme variables, then prefers-color-scheme.
+        _detectSurface() {
+            if (!this._connected) { return; }
+            var rgb = null, photo = false, sbg = this.getAttribute('stage-background'), transparent = this.hasAttribute('transparent');
+            var layers = [];
+            if (sbg && !transparent) {
+                var c0 = this._resolveCss(sbg);
+                if (c0) { layers.push(c0); }
+            } else if (!transparent) {
+                // Default chrome: the dark stage (bare) or the dashboard card colour; no ancestor walk needed.
+                rgb = this.hasAttribute('bare') ? [18, 17, 15] : (this._colors ? this._colors.bg.slice() : [26, 24, 22]);
+            }
+            if (!rgb) {
+                var base = null, n = this._stage, hops = 0, photo = false;
+                var cs0 = getComputedStyle(this);
+                while (n && hops++ < 80) {
+                    if (n.nodeType === 1) {
+                        var ncs = getComputedStyle(n);
+                        var bg = parseColorA(ncs.backgroundColor);
+                        if ((!bg || bg[3] < 0.99) && ncs.backgroundImage && ncs.backgroundImage !== 'none') { photo = true; }
+                        if (bg && bg[3] > 0) {
+                            if (bg[3] >= 0.99) { base = bg; break; }
+                            layers.push(bg);
+                        }
+                    }
+                    n = n.parentNode || n.host || null;
+                }
+                if (!base) {
+                    base = this._resolveCss(cs0.getPropertyValue('--card-background-color').trim() || cs0.getPropertyValue('--primary-background-color').trim());
+                    if (!base) {
+                        var dark = window.matchMedia ? window.matchMedia('(prefers-color-scheme: dark)').matches : true;
+                        base = dark ? [18, 17, 15, 1] : [250, 250, 250, 1];
+                    }
+                }
+                rgb = base.slice(0, 3);
+                for (var i = layers.length - 1; i >= 0; i--) {
+                    var l = layers[i], al = l[3];
+                    rgb = [0, 1, 2].map(function (k) { return rgb[k] * (1 - al) + l[k] * al; });
+                }
+            }
+            var lum = relLum(rgb);
+            this._surface = { rgb: rgb, lum: lum, photo: !!photo };
+            // Light profile above L 0.20, back to dark below 0.15 (hysteresis around the white/black equal-contrast point).
+            var wantLight = this._profT === 1 ? lum > 0.15 : lum > 0.20;
+            this._profT = wantLight ? 1 : 0;
+            this._buildProfiles();
+            this._wake();
+        }
+
+        // Colour sets for both render profiles (rebuilt when tokens or the surface change, not per frame).
+        _buildProfiles() {
+            var C = this._colors;
+            if (!C) { return; }
+            var surf = this._surface.rgb;
+            var dark = Object.assign({}, C, { bg: surf });
+            var ink = function (c) { return readable(darkVariant(c), surf, [0, 0, 0], 4.5); };
+            var sphereL = ink(C.sphere);
+            var light = {
+                sphere: sphereL,
+                core: mixRgb([14, 24, 40], sphereL, 0.25),
+                active: ink(C.active),
+                ok: ink(C.ok),
+                err: ink(C.err),
+                text: [58, 58, 58],
+                dim: [120, 120, 120],
+                bg: surf
+            };
+            this._cDark = dark;
+            this._cLight = light;
+            this._cActive = this._light ? light : dark;
+        }
+
+        // Switch the profile with an eased dip (about 0.4 s in total), never a pop.
+        _updateProfile(dt) {
+            var want = this._profT === 1;
+            if (want !== this._light) {
+                damp2(this, '_pfade', 0, 0.12, 0.12, dt, 0, 1);
+                if (this._pfade < 0.04) {
+                    this._light = want;
+                    this._cActive = want ? this._cLight : this._cDark;
+                    this._card.classList.toggle('is-light', want);
+                    this._add = want ? 'source-over' : 'lighter';
+                    this._ak = want ? 2.0 : 1;
+                }
+            } else {
+                damp2(this, '_pfade', 1, 0.12, 0.12, dt, 0, 1);
+            }
         }
 
         /* ---------------- sizing ---------------- */
@@ -699,7 +1142,8 @@
             var rect = this._stage.getBoundingClientRect();
             var w = Math.max(1, Math.round(rect.width));
             var h = Math.max(1, Math.round(rect.height));
-            var dpr = Math.min(2, window.devicePixelRatio || 1);
+            // Cards (bare) are one of several widgets on a page: cap the pixel ratio lower than the dashboard widget.
+            var dpr = Math.min(this.hasAttribute('bare') ? 1.5 : 2, window.devicePixelRatio || 1);
             if (w === this._w && h === this._h && dpr === this._dpr) { return; }
             this._w = w;
             this._h = h;
@@ -709,29 +1153,56 @@
             var small = (window.innerWidth || w) < 600 || (navigator.hardwareConcurrency || 8) <= 4;
             this._minFrameMs = small ? 1000 / 30 : 0;
             var ladder = small ? TIERS_SMALL : TIERS_DESKTOP;
-            if (ladder !== this._ladder) { this._ladder = ladder; this._tierIdx = 0; this._warm = 0; this._slowFrames = 0; this._prevLayer = null; }
-            this._setTier(this._tierIdx, false);
-            this._layout();
+            var ladderChanged = ladder !== this._ladder;
+            if (ladderChanged) { this._ladder = ladder; this._tierIdx = 0; this._warm = 0; this._slowFrames = 0; this._prevLayer = null; }
+            if (this._layer && ladderChanged) { this._bootTier(); }   // the first geometry is built on the first frame
+            // First layout at once; later ones (drag-resizing) are debounced and eased.
+            if (this._ring) { this._scheduleLayout(); } else if (this._roSeen) { this._layout(); }
+            if (this.hasAttribute('transparent') || this.hasAttribute('stage-background')) { this._scheduleSurface(); }
             // Resizing a canvas clears it: repaint synchronously so no empty frame is ever shown.
             if (this._roSeen && this._visible() && this._colors && this._layer) { this._draw(); }
             this._wake();
         }
 
+        _scheduleLayout() {
+            var self = this;
+            if (this._layoutTimer) { clearTimeout(this._layoutTimer); }
+            this._layoutTimer = setTimeout(function () {
+                self._layoutTimer = 0;
+                if (self._connected) { self._layout(); self._wake(); }
+            }, 60);
+        }
+
+        _scheduleSurface() {
+            var self = this;
+            if (this._surfTimer) { clearTimeout(this._surfTimer); }
+            this._surfTimer = setTimeout(function () { self._surfTimer = 0; self._detectSurface(); }, 120);
+        }
+
+        // Root style/class mutations come in bursts (HA changes them often): colours are re-read once, 250 ms after the last.
+        _scheduleRefresh() {
+            var self = this;
+            if (this._refreshTimer) { clearTimeout(this._refreshTimer); }
+            this._refreshTimer = setTimeout(function () { self._refreshTimer = 0; self._readColors(); self._detectSurface(); self._wake(); }, 250);
+        }
+
         _makeLayer(idx) {
             var small = this._ladder === TIERS_SMALL;
-            var tier = this._ladder[idx];
+            var tier = typeof idx === 'number' ? this._ladder[idx] : idx;
             var G = cloudGeometry(tier.c, small ? 4 : 6);
             var SG = cloudGeometry(tier.s, 3);
             return {
                 G: G, proj: new Float32Array(G.n * 3), pbri: new Float32Array(G.n), pbk: new Uint8Array(G.n),
-                ekey: new Uint8Array(G.edges.length / 2), sat: SG, sp: new Float32Array(SG.n * 3)
+                ekey: new Uint8Array(G.nChains), sat: SG, sp: new Float32Array(SG.n * 3)
             };
         }
 
         // Switch the quality tier. With fade the previous layer keeps drawing with a falling weight while the
         // new one rises, so neither silhouette nor brightness pops (the weights always sum to one).
         _setTier(idx, fade) {
-            this._tierIdx = idx;
+            this._booting = false;
+            var boot = idx === BOOT_TIER;
+            this._tierIdx = boot ? 0 : idx;
             this._satPoint = this._ladder === TIERS_SMALL ? 1.0 : 1.35;
             var layer = this._makeLayer(idx);
             if (fade && this._layer) { this._prevLayer = this._layer; this._xf = 0; } else { this._prevLayer = null; this._xf = 1; }
@@ -740,33 +1211,52 @@
             this._sat = layer.sat;
         }
 
-        // Build the lower tiers ahead of time (in small tasks) so a later step-down never hitches.
+        // First paint must be cheap: when the target tier is not built yet, start on the smallest tier (built in about
+        // a millisecond), build the target in time slices and crossfade to it once it exists.
+        _bootTier() {
+            var self = this, idx = this._tierIdx, tier = this._ladder[idx], last = this._ladder.length - 1;
+            var small = this._ladder === TIERS_SMALL, kc = small ? 4 : 6;
+            if (idx === last || (cloudCached(tier.c, kc) && cloudCached(tier.s, 3))) { this._setTier(idx, false); return; }
+            this._setTier(BOOT_TIER, false);
+            this._tierIdx = idx;
+            this._booting = true;
+            cloudGeometryAsync(tier.c, kc, function () {
+                cloudGeometryAsync(tier.s, 3, function () {
+                    if (!self._connected || !self._booting) { return; }
+                    self._setTier(self._tierIdx, true);
+                    self._wake();
+                });
+            });
+        }
+
+        // Build the lower tiers ahead of time (time-sliced, one per 250 ms) so a later step-down never hitches.
         _prebuild() {
             var self = this, k = this._tierIdx + 1;
             var step = function () {
                 self._prebuildTimer = 0;
                 if (!self._connected || !self._ladder || k >= self._ladder.length) { return; }
+                if (self._booting) { self._prebuildTimer = setTimeout(step, 250); return; }
                 var small = self._ladder === TIERS_SMALL;
-                cloudGeometry(self._ladder[k].c, small ? 4 : 6);
-                cloudGeometry(self._ladder[k].s, 3);
-                k += 1;
-                self._prebuildTimer = setTimeout(step, 250);
+                cloudGeometryAsync(self._ladder[k].c, small ? 4 : 6, function () {
+                    cloudGeometryAsync(self._ladder[k].s, 3, function () {
+                        k += 1;
+                        if (self._connected) { self._prebuildTimer = setTimeout(step, 250); }
+                    });
+                });
             };
             this._prebuildTimer = setTimeout(step, 2200);
         }
 
+        // Sphere size, ring radius and tilt for a stage (shared, cached solver: see solveRingLayout).
+        _solveRing(w, h, narrow) { return solveRingLayout(w, h, narrow); }
+
         _layout() {
-            var w = this._w, h = this._h, m = Math.min(w, h);
+            var w = this._w, h = this._h;
             var narrow = w < 400;
-            var nodeR = clamp(m * (narrow ? 0.047 : 0.058), 10, 26);
-            var sphereR = m * (narrow ? 0.175 : 0.22);
-            this._labelFont = narrow ? 9 : 11;
-            this._labelMax = w < 300 ? 6 : (narrow ? 8 : 12);
-            var sideMargin = narrow ? Math.max(nodeR * 1.7, 34) : Math.max(nodeR * 3, 56); // room for the active halo
-            var rx = Math.max(10, w / 2 - sideMargin);
-            var ryAvail = (h / 2 - nodeR * 1.8 - 14 - this._labelFont - 8) / 1.2;
-            var sinT = clamp(ryAvail / rx, 0.2, 0.95);
-            var target = { cx: w / 2, cy: h / 2, R: rx, sinT: sinT, f: rx * 4.5, sphereR: sphereR, nodeR: nodeR };
+            var g = this._solveRing(w, h, narrow);
+            this._labelFont = g.fs;
+            this._labelMax = g.labelMax;
+            var target = { cx: w / 2, cy: h / 2, R: g.R, sinT: g.sinT, f: g.f, sphereR: g.sphereR, nodeR: g.nodeR };
             this._layT = target;
             if (!this._ring) {
                 this._setLayout(target);
@@ -907,6 +1397,20 @@
         _setConn(state) {
             this._connState = state;
             this._renderConn();
+            this._updateHint();
+        }
+
+        // After the connection has been offline for 5 s, say so inside the stage (fades in and out).
+        _updateHint() {
+            var self = this;
+            var offline = !this._demo && this._connState === 'offline';
+            if (this._hintTimer) { clearTimeout(this._hintTimer); this._hintTimer = 0; }
+            if (!offline) { this._hint.classList.remove('show'); return; }
+            this._hint.textContent = this._external ? 'Waiting for HA-AgentHub' : 'Activity stream offline';
+            this._hintTimer = setTimeout(function () {
+                self._hintTimer = 0;
+                if (self._connected && !self._demo && self._connState === 'offline') { self._hint.classList.add('show'); }
+            }, 5000);
         }
 
         _renderConn() {
@@ -925,6 +1429,7 @@
                 if (self._demoRunning) { fn(); }
             }, ms);
             this._demoTimers.push(t);
+            return t;
         }
 
         // Demo cycle: calm idle phase (no events, breathing and link waves clearly visible) followed by a burst
@@ -935,7 +1440,17 @@
             this._demoPhaseName = '';
             this._demoSetPhase('idle');
             // The first idle phase after start-up is a bit longer (and the widget is still fading in).
-            this._later(this._demoBurst.bind(this), this._demoIdleMs(true));
+            this._firstBurstTimer = this._later(this._demoBurst.bind(this), this._demoIdleMs(true));
+        }
+
+        // demo-idle may be set right after the widget connected (the card does so for previews): re-arm the first idle.
+        _rearmFirstIdle() {
+            if (!this._demoRunning || !this._firstBurstTimer) { return; }
+            var i = this._demoTimers.indexOf(this._firstBurstTimer);
+            if (i < 0) { this._firstBurstTimer = null; return; }
+            clearTimeout(this._firstBurstTimer);
+            this._demoTimers.splice(i, 1);
+            this._firstBurstTimer = this._later(this._demoBurst.bind(this), this._demoIdleMs(true));
         }
 
         _demoIdleMs(first) {
@@ -1437,6 +1952,7 @@
         _wake() {
             if (!this._connected) { return; }
             if (!this._visible()) { this._stopLoop(); return; }
+            _running.add(this);
             if (this._raf) { return; }
             var self = this;
             this._lastFrame = 0;
@@ -1445,6 +1961,7 @@
 
         _stopLoop() {
             if (this._raf) { cancelAnimationFrame(this._raf); this._raf = 0; }
+            _running.delete(this);
         }
 
         _frame(ts) {
@@ -1454,7 +1971,16 @@
             var schedule = function () { self._raf = requestAnimationFrame(function (t) { self._frame(t); }); };
             // Start painting only after the first measured size (or a short timeout): no first-paint jump.
             if (!this._roSeen && performance.now() - this._connectedAt < 150) { schedule(); return; }
-            if (this._lastFrame && this._minFrameMs && ts - this._lastFrame < this._minFrameMs - 2) { schedule(); return; }
+            // Geometry and ring are built on the first frame, not in the mount task (and never for a card that is not on screen).
+            if (!this._layer) { this._bootTier(); }
+            if (!this._ring) { this._layout(); }
+            // Several cards on one page share the main thread: 30 fps each unless a card is the only one running.
+            var minMs = this._minFrameMs;
+            if (this.hasAttribute('bare') && _running.size > 1) { minMs = Math.max(minMs, 1000 / 30); }
+            // Never faster than about 60 fps (high refresh rate displays gain nothing from more frames).
+            minMs = Math.max(minMs, 1000 / 62);
+            this._effMin = minMs;
+            if (this._lastFrame && minMs && ts - this._lastFrame < minMs * 0.85) { schedule(); return; }
             var gap = this._lastFrame ? ts - this._lastFrame : 0;
             // A long gap (tab load, hitch, throttling) must not make the animation lurch: cap dt.
             var dt = this._lastFrame ? Math.min(0.05, gap / 1000) : 0.016;
@@ -1464,23 +1990,58 @@
             this._update(dt);
             this._draw();
             this._frames += 1;
-            this._adapt(performance.now() - t0, gap);
+            var workMs = performance.now() - t0;
+            this._adapt(workMs, gap);
+            this._probeLayer(workMs);
             if (this._busy()) { schedule(); }
-            else { this._lastFrame = 0; }
+            else { this._lastFrame = 0; _running.delete(this); }
+        }
+
+        // Short A/B probe: the cached sphere layer helps where canvas drawing is rasterised on the main thread and hurts
+        // where raster work is deferred (it forces an early flush). Time 40 frames of each way and keep the cheaper.
+        _probeLayer(work) {
+            var P = this._probe;
+            if (P.phase === 'done' || this._reduced || performance.now() - this._connectedAt < 3500) { return; }
+            P.n += 1;
+            if (P.phase === 'wait') { if (P.n > 20) { P.phase = 'a'; P.n = 0; } return; }
+            var trimmed = function (arr) { // mean without the worst 5% (GC or scheduling hiccups)
+                var x = arr.slice().sort(function (p, q) { return p - q; }), k = Math.max(1, Math.floor(x.length * 0.95)), sum = 0, i;
+                for (i = 0; i < k; i++) { sum += x[i]; }
+                return sum / Math.max(1, k);
+            };
+            if (P.phase === 'a') {
+                P.a.push(work);
+                if (P.n >= 40) { P.phase = 'b'; P.n = 0; this._useLayer = true; }
+            } else if (P.phase === 'b') {
+                if (P.n > 6) { P.b.push(work); }
+                if (P.n >= 46) {
+                    P.phase = 'done';
+                    this._useLayer = trimmed(P.b) < trimmed(P.a) * 0.85;
+                    P.ms = { direct: +trimmed(P.a).toFixed(2), layer: +trimmed(P.b).toFixed(2) };
+                }
+            }
         }
 
         // Steps the point count down when frames run long (never back up, to avoid flapping).
         _adapt(work, gap) {
-            if (this._reduced || !gap || gap > 250) { return; }
+            if (this._reduced || !gap) { return; }
             // Grace period: JIT warm-up, first layout and first paint are not representative.
             if (performance.now() - this._connectedAt < 2500) { this._workMs = work; this._ivMs = gap; this._slowFrames = 0; this._warm = 0; return; }
+            if (gap > 250) {
+                // A stalled main thread: the long gap counts as a run of slow frames (the step-down stays crossfaded).
+                this._slowFrames += 20;
+                if (this._slowFrames >= 45 && this._tierIdx < this._ladder.length - 1) { this._setTier(this._tierIdx + 1, true); this._slowFrames = 0; this._warm = 0; }
+                return;
+            }
             this._workMs += (work - this._workMs) * 0.06;
             this._ivMs += (gap - this._ivMs) * 0.06;
-            if (this._warm < 40) { this._warm += 1; this._workMs = work; this._ivMs = gap; return; }
+            // Very slow frames (below ~8 fps) weigh more: the evidence arrives per second, not per frame.
+            var wt = gap > 120 ? Math.min(6, Math.round(gap / 60)) : 1;
+            if (this._warm < 40) { this._warm += wt; this._workMs = work; this._ivMs = gap; return; }
             var small = this._ladder === TIERS_SMALL;
             var budget = small ? 11 : 8;
-            var target = Math.max(16.7, this._minFrameMs || 0);
-            if (this._workMs > budget || this._ivMs > target * 1.4) { this._slowFrames += 1; } else { this._slowFrames = 0; }
+            var target = Math.max(16.7, this._effMin || this._minFrameMs || 0);
+            if (this._workMs > budget || this._ivMs > target * 1.4) { this._slowFrames += wt; } else { this._slowFrames = 0; }
             if (this._slowFrames >= 45 && this._tierIdx < this._ladder.length - 1) {
                 this._setTier(this._tierIdx + 1, true);
                 this._slowFrames = 0;
@@ -1495,6 +2056,7 @@
             if (motion) { this._time += dt; }
             var i, s, heatMax = 0;
             this._easeLayout(dt);
+            this._updateProfile(dt);
             // Fade the whole widget in on connect, then let satellites follow once data is seeded.
             damp2(this, '_intro', 1, 0.38, 0.38, dt, 0, 1);
             if (this._prevLayer) { this._xf += dt / 0.8; if (this._xf >= 1) { this._xf = 1; this._prevLayer = null; } }
@@ -1560,8 +2122,8 @@
         _nodePositions() {
             var R = this._ring, i;
             var phase = this._orbit;
-            var sinT = R.sinT * (1 + (this._reduced ? 0 : 0.03 * Math.sin(this._time * 0.35)));
-            var cosT = Math.sqrt(1 - Math.min(0.99, sinT * sinT));
+            var sinT = R.sinT, cosT = R.cosT;
+            var cr = Math.cos(RING_ROLL), sr = Math.sin(RING_ROLL);
             for (i = 0; i < SLOT_COUNT; i++) {
                 var th = phase + (i * TAU) / SLOT_COUNT;
                 var x = R.R * Math.cos(th);
@@ -1570,8 +2132,8 @@
                 var zz = z * cosT;
                 var sc = R.f / (R.f + zz);
                 var p = this._pos[i];
-                p.x = R.cx + x * sc;
-                p.y = R.cy + yy * sc;
+                p.x = R.cx + (x * cr - yy * sr) * sc;
+                p.y = R.cy + (x * sr + yy * cr) * sc;
                 p.s = sc;
                 p.z = zz;
                 p.r = this._nodeR * sc;
@@ -1580,8 +2142,8 @@
         }
 
         _draw() {
-            var ctx = this._ctx, C = this._colors;
-            if (!C) { this._readColors(); C = this._colors; }
+            var ctx = this._ctx, C = this._cActive;
+            if (!C) { this._readColors(); C = this._cActive || this._colors; }
             var dpr = this._dpr, w = this._w, h = this._h;
             ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
             ctx.clearRect(0, 0, w, h);
@@ -1592,23 +2154,27 @@
             var act = this._act;
             var intro = this._intro; // already critically damped: zero slope at the start, no extra shaping
             this._rad = this._sphereR * (1 + 0.05 * bs + 0.06 * act + 0.03 * this._kick) * (0.94 + 0.06 * intro);
-            ctx.globalAlpha = intro;
+            ctx.globalAlpha = intro * this._pfade;
             this._ringCol = mixRgb(C.sphere, C.core, 0.55);
             for (var si = 0; si < SLOT_COUNT; si++) { this._slotColor(this._slots[si], C); }
+            // Direct mode, calm orb, fast frames: every second frame reuses the point projection (the layer mode has its own cadence).
+            this._reuseProj = !this._useLayer && (this._frames & 1) === 1 && act < 0.15 && !this._reduced && !this._prevLayer && this._ivMs < 24 && (this._dtLast || 0) <= 1;
             this._wavePos = this._reduced ? 2 : (((this._time / BREATH_S) % 1) * 1.35);
             this._nodePositions();
             var order = this._slots.map(function (x, k) { return k; }).sort(function (a, b) { return this._pos[b].z - this._pos[a].z; }.bind(this));
 
             this._drawLinks(ctx, C, breath);
             var n, idx;
+            var log = this._orderLog = [];
             for (n = 0; n < order.length; n++) {
                 idx = order[n];
-                if (this._pos[idx].z > 0) { this._drawNode(ctx, C, idx, breath, 'body'); }
+                if (this._pos[idx].z > 0) { this._drawNode(ctx, C, idx, breath, 'body'); log.push(idx); }
             }
-            this._drawSphere(ctx, C, breath);
+            if (this._useLayer) { this._drawHalo(ctx, C); this._compositeSphere(ctx, C, breath); } else { this._drawSphere(ctx, C, breath); this._drawHalo(ctx, C); }
+            log.push('sphere');
             for (n = 0; n < order.length; n++) {
                 idx = order[n];
-                if (this._pos[idx].z <= 0) { this._drawNode(ctx, C, idx, breath, 'body'); }
+                if (this._pos[idx].z <= 0) { this._drawNode(ctx, C, idx, breath, 'body'); log.push(idx); }
             }
             this._drawWaves(ctx, C);
             this._drawPulses(ctx, C);
@@ -1648,10 +2214,11 @@
         // Display colour of a satellite: dim and desaturated when idle, vivid when active,
         // eased toward the error colour by errHeat.
         _slotColor(s, C) {
-            var luma = 0.3 * s.col[0] + 0.59 * s.col[1] + 0.11 * s.col[2];
+            var base = this._light ? readable(darkVariant(s.col), this._surface.rgb, [0, 0, 0], 4.5) : s.col;
+            var luma = 0.3 * base[0] + 0.59 * base[1] + 0.11 * base[2];
             var grey = [luma, luma, luma];
-            var vivid = mixRgb(s.col, C.core, 0.12 * s.heat);
-            var idle = mixRgb(grey, s.col, 0.62);
+            var vivid = mixRgb(base, C.core, 0.12 * s.heat);
+            var idle = mixRgb(grey, base, 0.62);
             var c = mixRgb(idle, vivid, clamp(s.heat + 0.6 * s.flash, 0, 1));
             s.dc = mixRgb(c, C.err, clamp(s.errHeat, 0, 1));
             return s.dc;
@@ -1694,7 +2261,7 @@
                     var gg = ctx.createLinearGradient(g.sx, g.sy, g.ex, g.ey);
                     gg.addColorStop(0, rgba(C.sphere, 0.10 * hot * a));
                     gg.addColorStop(1, rgba(dc, 0.14 * hot * a));
-                    ctx.globalCompositeOperation = 'lighter';
+                    ctx.globalCompositeOperation = this._add;
                     ctx.lineWidth = 7;
                     ctx.strokeStyle = gg;
                     ctx.stroke();
@@ -1715,18 +2282,21 @@
             var cyr = Math.cos(this._rotY), syr = Math.sin(this._rotY);
             var tilt = 0.38 + (this._reduced ? 0 : 0.05 * Math.sin(t * 0.2));
             var cxr = Math.cos(tilt), sxr = Math.sin(tilt);
-            var dir = G.dir, r0 = G.r0, ph = G.ph, tws = G.tws, pol = G.pol;
+            var dir = G.dir, r0 = G.r0, ph = G.ph, tws = G.tws, kc = G.kc;
             var FS = 8, i, ux, uy, uz, nz, rw, rr, x, y, z, x1, z1, y2, z2, sc, bri, v, d01;
             var tw1 = t * 0.7, tw2 = -t * 0.55, tw3 = t * 0.4;
+            var C1 = Math.cos(tw1), S1 = Math.sin(tw1), C2 = Math.cos(tw2), S2 = Math.sin(tw2), C3 = Math.cos(tw3), S3 = Math.sin(tw3);
+            var CR = Math.cos(TAU * tt), SR = Math.sin(TAU * tt);
             var rimBoost = 1 + 0.5 * act;
             var minX = 1e9, maxX = -1e9, minY = 1e9, maxY = -1e9, px, py;
 
-            for (i = 0; i < n; i++) {
+            // Direct mode with a calm orb: every second frame reuses the previous projection (about 0.5 px of drift at most).
+            var reuse = this._reuseProj && L.projOk && Math.abs(rad - L.projRad) < 0.6 && R.cx === L.pcx && R.cy === L.pcy, np = reuse ? 0 : n;
+            if (!reuse) { L.projRad = rad; L.pcx = R.cx; L.pcy = R.cy; }
+            for (i = 0; i < np; i++) {
                 ux = dir[i * 3]; uy = dir[i * 3 + 1]; uz = dir[i * 3 + 2];
-                nz = (Math.sin(ux * 7.1 + uy * 3.3 - uz * 5.2 + tw1) +
-                      Math.sin(-ux * 4.4 + uy * 8.2 + uz * 3.9 + tw2) +
-                      Math.sin(ux * 2.7 - uy * 6.3 + uz * 8.0 + tw3)) * 0.3333;
-                rw = Math.sin(TAU * (pol[i] * 2.5 - tt));
+                nz = (kc[i * 8] * C1 + kc[i * 8 + 1] * S1 + kc[i * 8 + 2] * C2 + kc[i * 8 + 3] * S2 + kc[i * 8 + 4] * C3 + kc[i * 8 + 5] * S3) * 0.3333;
+                rw = kc[i * 8 + 6] * CR - kc[i * 8 + 7] * SR;
                 rr = r0[i] * (1 + amp * nz + rip * rw);
                 x = ux * rr; y = uy * rr; z = uz * rr;
                 x1 = x * cyr + z * syr;
@@ -1748,32 +2318,39 @@
                 pk[i] = v * 5 | 0;
                 if (pk[i] > 4) { pk[i] = 4; }
             }
-            if (primary) { this._bbox = { w: maxX - minX, h: maxY - minY, cx: (maxX + minX) / 2, cy: (maxY + minY) / 2 }; }
+            L.projOk = true;
+            if (primary && !reuse) { this._bbox = { w: maxX - minX, h: maxY - minY, cx: (maxX + minX) / 2, cy: (maxY + minY) / 2 }; }
 
-            ctx.globalCompositeOperation = 'lighter';
+            ctx.globalCompositeOperation = this._add;
 
-            // Connection web: three depth bands x three shimmer groups, additive.
-            var edges = G.edges, eg = G.egrp, ek = L.ekey, ne = edges.length / 2, e, a, b, key;
-            for (e = 0; e < ne; e++) {
-                a = edges[e * 2]; b = edges[e * 2 + 1];
-                var ad = (pr[a * 3 + 2] + pr[b * 3 + 2]) * 0.5;
-                ek[e] = (ad < -0.28 ? 0 : (ad > 0.28 ? 2 : 1)) * 3 + eg[e];
+            // Connection web: polylines in three depth bands (front twinkles in groups). The faint back band draws every
+            // other polyline at doubled alpha: same look, fewer segments.
+            var ch = G.chains, cst = G.chainStart, nc = G.nChains, ck = L.ekey, e, a, b, key, q, z0, s0, s1;
+            for (e = 0; e < nc; e++) {
+                s0 = cst[e]; s1 = cst[e + 1]; z0 = 0;
+                for (q = s0; q < s1; q++) { z0 += pr[ch[q] * 3 + 2]; }
+                z0 /= (s1 - s0);
+                ck[e] = z0 < -0.28 ? 0 : (z0 > 0.28 ? 3 : 1 + (e & 1));
             }
-            var depthAlpha = [0.30, 0.18, 0.09];
-            var webMul = (1 + 0.75 * act) * (1 + 0.32 * bs);
+            var depthAlpha = [0.30, 0.18, 0.18, 0.18];
+            var webMul = (1 + 0.75 * act) * (1 + 0.32 * bs) * this._ak;
             if (primary) { this._webMul = webMul; }
-            for (key = 0; key < 9; key++) {
-                var band = (key / 3) | 0, grp = key % 3;
-                var shimmer = 0.78 + 0.22 * Math.sin(t * 0.9 + grp * 2.1);
+            var grp, shimmer;
+            for (key = 0; key < 4; key++) {
+                // key 0: front, 1 and 2: middle (two halves), 3: back (every other polyline only)
+                grp = key === 3 ? 2 : key;
+                shimmer = 0.78 + 0.22 * Math.sin(t * 0.9 + grp * 2.1);
                 ctx.beginPath();
-                for (e = 0; e < ne; e++) {
-                    if (ek[e] !== key) { continue; }
-                    a = edges[e * 2]; b = edges[e * 2 + 1];
-                    ctx.moveTo(pr[a * 3], pr[a * 3 + 1]);
-                    ctx.lineTo(pr[b * 3], pr[b * 3 + 1]);
+                for (e = 0; e < nc; e++) {
+                    if (ck[e] !== key) { continue; }
+                    if (key === 3 && (e & 2)) { continue; }
+                    if (key === 2) { continue; }
+                    s0 = cst[e]; s1 = cst[e + 1];
+                    ctx.moveTo(pr[ch[s0] * 3], pr[ch[s0] * 3 + 1]);
+                    for (q = s0 + 1; q < s1; q++) { ctx.lineTo(pr[ch[q] * 3], pr[ch[q] * 3 + 1]); }
                 }
-                ctx.strokeStyle = rgba(C.sphere, depthAlpha[band] * shimmer * webMul * wt);
-                ctx.lineWidth = band === 0 ? 0.9 : 0.7;
+                ctx.strokeStyle = rgba(C.sphere, depthAlpha[key] * (key === 3 ? 1.0 : (key === 1 ? 1.6 : 1)) * shimmer * webMul * wt);
+                ctx.lineWidth = key === 0 ? 0.9 : 0.7;
                 ctx.stroke();
             }
 
@@ -1791,10 +2368,55 @@
                         ctx.rect(pr[i * 3] - sz * 0.5, pr[i * 3 + 1] - sz * 0.5, sz, sz);
                     }
                 }
-                ctx.fillStyle = rgba(mixRgb(C.sphere, C.core, 0.1 + bucket * 0.17), alphas[bucket] * (1 + 0.25 * act) * wt);
+                ctx.fillStyle = rgba(mixRgb(C.sphere, C.core, 0.1 + bucket * 0.17), alphas[bucket] * (1 + 0.25 * act) * wt * this._ak);
                 ctx.fill();
             }
 
+        }
+
+        // Wide soft halo around the orchestrator: drawn every frame (cheap), the detailed sphere is a cached layer.
+        _drawHalo(ctx, C) {
+            var R = this._ring, rad = this._rad;
+            var pulse = 1 + 0.42 * this._bs + 0.32 * this._act + 0.3 * this._kick;
+            var g1R = Math.min(rad * 2.7, this._h * 0.5);
+            ctx.globalCompositeOperation = this._add;
+            var ga = ctx.globalAlpha;
+            ctx.globalAlpha = ga * Math.min(1, 0.18 * pulse);
+            ctx.drawImage(glowSprite('soft', C.sphere), R.cx - g1R, R.cy - g1R, g1R * 2, g1R * 2);
+            ctx.globalAlpha = ga;
+            ctx.globalCompositeOperation = 'source-over';
+        }
+
+        // The point cloud, web, core and rings are drawn into a small offscreen layer on every second frame (about 30 Hz
+        // at 60 fps, every frame when frames are slower) and composited each frame: the rotation and breathing are slow, so
+        // the saved raster work is not visible, while satellites, links and labels keep the full frame rate.
+        _compositeSphere(ctx, C, breath) {
+            var R = this._ring, dpr = this._dpr;
+            var side = Math.ceil((this._sphereR * 3.4 + 4) / 16) * 16;
+            var L = this._sl;
+            if (!L || L.side !== side || L.dpr !== dpr) {
+                L = this._sl = { cv: document.createElement('canvas'), side: side, dpr: dpr, t: -1e9 };
+                L.cv.width = L.cv.height = Math.ceil(side * dpr);
+                L.ctx = L.cv.getContext('2d', { alpha: true });
+            }
+            var now = performance.now();
+            var stale = L.cA !== C || L.layer !== this._layer || L.prev !== this._prevLayer || L.reduced !== this._reduced;
+            // Redraw on every second frame when frames are fast; every frame when they are slow (about 30 fps or less).
+            // (every third frame while the orb is calm: its motion is then too slow to show it)
+            var every = this._act < 0.15 ? 3 : 2;
+            if (stale || (this._frames % every) === 0 || this._ivMs > 28 || (this._dtLast || 0) > 1) {
+                L.cA = C; L.layer = this._layer; L.prev = this._prevLayer; L.reduced = this._reduced; L.t = now;
+                L.ox = Math.round(R.cx / 2) * 2 - side / 2;
+                L.oy = Math.round(R.cy / 2) * 2 - side / 2;
+                var lc = L.ctx;
+                lc.setTransform(dpr, 0, 0, dpr, -L.ox * dpr, -L.oy * dpr);
+                lc.globalAlpha = 1;
+                lc.globalCompositeOperation = 'source-over';
+                lc.clearRect(L.ox, L.oy, side, side);
+                this._drawSphere(lc, C, breath);
+            }
+            ctx.globalCompositeOperation = 'source-over';
+            ctx.drawImage(L.cv, L.ox, L.oy, side, side);
         }
 
         _drawSphere(ctx, C, breath) {
@@ -1807,20 +2429,11 @@
             } else {
                 this._drawCloud(ctx, C, this._layer, 1, true);
             }
-            ctx.globalCompositeOperation = 'lighter';
+            ctx.globalCompositeOperation = this._add;
 
             // Layered halo, bright core and soft outer glow ring.
             var pulse = 1 + 0.42 * bs + 0.32 * act + 0.3 * this._kick;
             this._pulseMul = pulse;
-            var g1R = Math.min(rad * 2.7, this._h * 0.5);
-            var g1 = ctx.createRadialGradient(R.cx, R.cy, 0, R.cx, R.cy, g1R);
-            g1.addColorStop(0, rgba(C.sphere, 0.18 * pulse));
-            g1.addColorStop(0.5, rgba(C.sphere, 0.06 * pulse));
-            g1.addColorStop(1, rgba(C.sphere, 0));
-            ctx.fillStyle = g1;
-            ctx.beginPath();
-            ctx.arc(R.cx, R.cy, g1R, 0, TAU);
-            ctx.fill();
 
             var g2 = ctx.createRadialGradient(R.cx, R.cy, 0, R.cx, R.cy, rad * 1.45);
             g2.addColorStop(0, rgba(mixRgb(C.sphere, C.core, 0.4), 0.22 * pulse));
@@ -1883,7 +2496,7 @@
         _drawWaves(ctx, C) {
             if (!this._waves.length) { return; }
             var R = this._ring;
-            ctx.globalCompositeOperation = 'lighter';
+            ctx.globalCompositeOperation = this._add;
             for (var n = 0; n < this._waves.length; n++) {
                 var wv = this._waves[n];
                 var e = easeOut(wv.t);
@@ -1920,37 +2533,32 @@
                 sp[k * 3 + 1] = p.y + y2 * r * sc;
                 sp[k * 3 + 2] = z2;
             }
-            var edges = G.edges, ne = edges.length / 2, e, ea, eb, pass;
-            var webA = (0.26 + 0.07 * sb + 0.10 * bump + 0.42 * hot) * alpha * wt;
-            for (pass = 0; pass < 2; pass++) {
-                ctx.beginPath();
-                for (e = 0; e < ne; e++) {
-                    ea = edges[e * 2]; eb = edges[e * 2 + 1];
-                    if (((sp[ea * 3 + 2] + sp[eb * 3 + 2]) > 0) !== (pass === 0)) { continue; }
-                    ctx.moveTo(sp[ea * 3], sp[ea * 3 + 1]);
-                    ctx.lineTo(sp[eb * 3], sp[eb * 3 + 1]);
-                }
-                ctx.strokeStyle = rgba(dc, webA * (pass === 0 ? 0.45 : 1));
-                ctx.lineWidth = pass === 0 ? 0.5 : 0.7;
-                ctx.stroke();
+            // Satellites are small: one stroke for the front half of the web and one fill for all points.
+            var edges = G.edges, ne = edges.length / 2, e, ea, eb;
+            var webA = (0.26 + 0.07 * sb + 0.10 * bump + 0.42 * hot) * alpha * wt * this._ak;
+            ctx.beginPath();
+            for (e = 0; e < ne; e++) {
+                ea = edges[e * 2]; eb = edges[e * 2 + 1];
+                if ((sp[ea * 3 + 2] + sp[eb * 3 + 2]) > 0) { continue; }
+                ctx.moveTo(sp[ea * 3], sp[ea * 3 + 1]);
+                ctx.lineTo(sp[eb * 3], sp[eb * 3 + 1]);
             }
+            ctx.strokeStyle = rgba(dc, webA * 1.15);
+            ctx.lineWidth = 0.7;
+            ctx.stroke();
             var psz = this._satPoint;
-            for (pass = 0; pass < 2; pass++) {
-                ctx.beginPath();
-                for (k = 0; k < n; k++) {
-                    if ((sp[k * 3 + 2] > 0) !== (pass === 0)) { continue; }
-                    ctx.rect(sp[k * 3] - psz * 0.5, sp[k * 3 + 1] - psz * 0.5, psz, psz);
-                }
-                ctx.fillStyle = rgba(mixRgb(dc, C.core, 0.35), (pass === 0 ? 0.35 : 0.8) * (0.8 + 0.2 * (1 + sb) * 0.5 + 0.35 * hot) * alpha * wt);
-                ctx.fill();
-            }
+            ctx.beginPath();
+            for (k = 0; k < n; k++) { ctx.rect(sp[k * 3] - psz * 0.5, sp[k * 3 + 1] - psz * 0.5, psz, psz); }
+            ctx.fillStyle = rgba(mixRgb(dc, C.core, 0.35), 0.62 * (0.8 + 0.2 * (1 + sb) * 0.5 + 0.35 * hot) * alpha * wt * this._ak);
+            ctx.fill();
         }
 
         _drawNode(ctx, C, i, breath, part) {
             var s = this._slots[i], p = this._pos[i], t = this._time;
             var empty = !s.shownId;
             var a = empty ? 0 : smooth01(s.appear);
-            var depthA = lerp(0.7, 1, clamp((p.s - 0.8) / 0.4, 0, 1));
+            var depthA = lerp(0.7, 1, clamp((p.s - 0.88) / 0.26, 0, 1));
+            p.da = depthA;
             var wob = this._reduced ? 0.5 : 0.5 + 0.5 * Math.sin(t * 1.1 + i * 1.3);
             var sb = this._reduced ? 0 : Math.sin(TAU * (t / BREATH_S * s.bRate + s.phase));
             var r = p.r * (empty ? 1 : lerp(0.55, 1, a)) * (1 + 0.05 * sb);
@@ -1976,16 +2584,13 @@
             var bump = this._reduced ? 0 : 0.5 * Math.exp(-Math.pow(1 - this._wavePos, 2) / 0.02);
 
             if (part !== 'label') {
-                ctx.globalCompositeOperation = 'lighter';
+                ctx.globalCompositeOperation = this._add;
                 // Halo.
                 var hr = r * (2.3 + 0.7 * hot);
-                var hg = ctx.createRadialGradient(p.x, p.y, r * 0.3, p.x, p.y, hr);
-                hg.addColorStop(0, rgba(dc, (0.11 + 0.05 * sb + 0.05 * wob + 0.30 * hot + 0.10 * bump) * alpha));
-                hg.addColorStop(1, rgba(dc, 0));
-                ctx.fillStyle = hg;
-                ctx.beginPath();
-                ctx.arc(p.x, p.y, hr, 0, TAU);
-                ctx.fill();
+                var ga = ctx.globalAlpha;
+                ctx.globalAlpha = ga * Math.min(1, (0.11 + 0.05 * sb + 0.05 * wob + 0.30 * hot + 0.10 * bump) * alpha);
+                ctx.drawImage(glowSprite('sat', dc), p.x - hr, p.y - hr, hr * 2, hr * 2);
+                ctx.globalAlpha = ga;
                 // Web and points: one layer normally, two (complementary weights) while the tier changes.
                 if (this._prevLayer && this._xf < 1) {
                     this._drawSatCloud(ctx, C, this._prevLayer, 1 - smooth01(this._xf), s, p, r, dc, alpha, sb, hot, bump);
@@ -2029,7 +2634,7 @@
                 }
                 if (s.okT > 0 && !this._reduced) {
                     var ot = s.okT;
-                    ctx.globalCompositeOperation = 'lighter';
+                    ctx.globalCompositeOperation = this._add;
                     ctx.lineWidth = 1.5;
                     ctx.strokeStyle = rgba(C.ok, Math.sin(Math.PI * clamp(ot, 0, 1)) * 0.6 * alpha);
                     ctx.beginPath();
@@ -2069,6 +2674,11 @@
 
         _drawLabels(ctx, C) {
             var fs = this._labelFont, i, k;
+            if (!this._labelMax) {
+                // Labels are hidden on very small stages (names stay available in the tooltip and to screen readers).
+                for (i = 0; i < this._labelDbg.length; i++) { this._labelDbg[i] = null; }
+                return;
+            }
             var instant = (this._dtLast || 0) > 1; // tests snap the placement
             var kk = 1 - Math.exp(-(this._dtLast || 0.016) / 0.16);
             ctx.font = fs + 'px ' + this._fonts.mono;
@@ -2097,17 +2707,19 @@
                 var t = smooth01(s.lblT);
                 var ry = lerp(above.y, below.y, t);
                 var rect = { x: below.x, y: ry, w: below.w, h: fs };
-                var lcol = mixRgb(dc, C.core, 0.45);
+                var surf = this._surface.rgb;
+                var lcol = this._light ? readable(mixRgb(dc, [0, 0, 0], 0.3), surf, [0, 0, 0], 4.5) : readable(mixRgb(dc, C.core, 0.45), surf, [255, 255, 255], 4.5);
                 var lal = (0.9 + 0.1 * clamp(hot + (focus ? 1 : 0), 0, 1)) * a;
                 this._labelDbg[i] = { id: s.shownId, rgb: lcol.map(Math.round), alpha: +lal.toFixed(3), rect: rect, node: { x: p.x, y: p.y, r: r * 1.32 + 4 } };
                 if (this._noLabels) { continue; } // test hook: measure what is behind the labels
                 // Soft dark halo behind the glyphs keeps the text legible over the bright web.
                 var tx = p.x, ty = rect.y;
                 ctx.lineWidth = 5;
-                ctx.strokeStyle = rgba(C.bg, 0.30 * a);
+                var photoHalo = this._surface.photo;
+                ctx.strokeStyle = rgba(C.bg, (photoHalo ? 0.60 : 0.30) * a);
                 ctx.strokeText(text, tx, ty);
                 ctx.lineWidth = 2.5;
-                ctx.strokeStyle = rgba(C.bg, 0.80 * a);
+                ctx.strokeStyle = rgba(C.bg, (photoHalo ? 0.97 : 0.80) * a);
                 ctx.strokeText(text, tx, ty);
                 ctx.fillStyle = rgba(lcol, lal);
                 ctx.fillText(text, tx, ty);
@@ -2123,7 +2735,7 @@
                     var chipAbove = p.y - gap - cfs - 8;
                     var chipBelow = p.y + gap;
                     var cyy = lerp(chipBelow, chipAbove, t);
-                    var ccol = s.chipErr ? C.err : mixRgb(dc, C.core, 0.3);
+                    var ccol = readable(s.chipErr ? C.err : mixRgb(dc, C.core, 0.3), surf, this._light ? [0, 0, 0] : [255, 255, 255], 4.5);
                     ctx.beginPath();
                     if (ctx.roundRect) { ctx.roundRect(cx, cyy, tw, cfs + 7, 5); } else { ctx.rect(cx, cyy, tw, cfs + 7); }
                     ctx.fillStyle = rgba(C.bg, 0.92 * ca);
@@ -2142,7 +2754,7 @@
 
         _drawPulses(ctx, C) {
             if (!this._pulses.length) { return; }
-            ctx.globalCompositeOperation = 'lighter';
+            ctx.globalCompositeOperation = this._add;
             ctx.lineCap = 'round';
             for (var n = 0; n < this._pulses.length; n++) {
                 var p = this._pulses[n];

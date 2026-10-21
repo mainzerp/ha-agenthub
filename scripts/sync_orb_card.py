@@ -7,6 +7,19 @@ generated-file banner with a version/build marker, into
 ``custom_components/ha_agenthub/frontend/agenthub-activity-orb-card.js``. The integration registers that one
 file as a frontend resource.
 
+Deferred definition (the "Custom element doesn't exist" fix): the Home Assistant frontend replaces
+``window.customElements`` with the scoped-custom-element-registry polyfill when its app bundle boots, and the
+polyfilled ``get()``/``whenDefined()`` only see tags defined through the polyfill. ``frontend.add_extra_js_url``
+modules can run before that happens, so a native ``define`` made too early is invisible to Lovelace. The
+generated file therefore wraps the whole body (both elements and ``customCards``) in ``run()`` and calls it:
+
+* immediately, when the polyfill is already installed (``window.CustomElementRegistryPolyfill``);
+* immediately, on any page without a ``<home-assistant>`` element (dashboard previews, test harnesses);
+* otherwise (the HA index page on a cold load) once ``customElements.whenDefined('home-assistant')`` resolves,
+  which happens after the polyfill is installed, with a ``setTimeout`` fallback so the card is never lost.
+
+``run()`` executes exactly once and its errors are not caught, so they surface in the console.
+
 Usage:
     python scripts/sync_orb_card.py           # write/refresh the generated file
     python scripts/sync_orb_card.py --check   # exit 1 when the generated file is missing or stale
@@ -53,6 +66,43 @@ def build_marker(root: Path = REPO_ROOT) -> str:
     return f"{version}.{build}"
 
 
+FALLBACK_MS = 10000
+
+# The concatenated sources go between these two parts, inside run().
+WRAPPER_HEAD = """(function () {
+    'use strict';
+
+    var done = false;
+    var timer = 0;
+
+    function run() {
+        if (done) { return; }
+        done = true;
+        if (timer) { clearTimeout(timer); timer = 0; }
+"""
+
+WRAPPER_TAIL = f"""    }}
+
+    // Define the elements only once the HA frontend replaced window.customElements with its scoped registry
+    // polyfill; a native define made earlier is invisible to customElements.get()/whenDefined() in Lovelace.
+    // Pages without a <home-assistant> element (dashboard previews, test harnesses) never wait.
+    var registry = window.customElements;
+    if (
+        window.CustomElementRegistryPolyfill ||
+        !document.querySelector('home-assistant') ||
+        !registry ||
+        typeof registry.whenDefined !== 'function' ||
+        registry.get('home-assistant')
+    ) {{
+        run();
+        return;
+    }}
+    registry.whenDefined('home-assistant').then(run);
+    timer = setTimeout(run, {FALLBACK_MS});
+}})();
+"""
+
+
 def render(root: Path = REPO_ROOT) -> str:
     """Return the expected content of the generated card file."""
     marker = build_marker(root)
@@ -61,12 +111,14 @@ def render(root: Path = REPO_ROOT) -> str:
         f" * Sources: {WIDGET_SRC} + {CARD_SRC}\n"
         f" * Build: {marker}\n"
         f" * Regenerate with: {FIX_COMMAND}\n"
+        " * The body runs inside run(), deferred until the HA frontend has booted (see the sync script).\n"
         " */\n"
         f'window.__AGENTHUB_ORB_BUILD__ = "{marker}";\n'
     )
     widget = _read_text(root / WIDGET_SRC)
     card = _read_text(root / CARD_SRC)
-    return banner + "\n" + widget.rstrip("\n") + "\n\n" + card.rstrip("\n") + "\n"
+    body = widget.rstrip("\n") + "\n\n" + card.rstrip("\n") + "\n"
+    return banner + "\n" + WRAPPER_HEAD + body + "\n" + WRAPPER_TAIL
 
 
 def find_stale(root: Path = REPO_ROOT) -> list[str]:
