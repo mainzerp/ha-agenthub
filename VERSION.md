@@ -1,18 +1,24 @@
 # Version
 
-**Current Version:** 3.11.2
+**Current Version:** 3.12.0
 
 ## Recent Changes
 
-(tracking changes since 3.11.2)
+(tracking changes since 3.12.0)
+
+## Version History
+
+### 3.12.0 (MINOR) -- live agent activity orb and Lovelace card
+
+(commits c14c033, 1a0b3db, 1052cc8, 88f01f9, 896d1c4, 40ae69d, bb89be8; PR #198)
 
 - Fix (dashboard): Cache page Details buttons (routing, action, validator) now scroll the detail panel into view; validator audit-entry load failures show an error message and toast instead of the empty state; the validator tab no longer sends `tier=validator` (HTTP 422) on reload, delete and flush; entry tables no longer hide while a reload is in flight.
 - Fix (dashboard): phone layouts no longer squeeze text into one-letter columns. Tables inside cards keep word boundaries and scroll horizontally (cards set `overflow-wrap: anywhere`), buttons and badges stay on one line, toolbars and header rows wrap, `.stat-grid-6`, `.tab-nav`, `.detail-list`, `.btn-group` and `.form-row` mobile rules that were silently overridden by `components.css` now apply, and the page title (not the subtitle) clears the hamburger.
 - Feat (dashboard): mobile layout pass on the Cache page (stacked `.data-table--stack` tables, stacked tab row and search row, backup card divider), sidebar backdrop and `dvh` heights on phones, `.max-w-200`/`.max-w-128`/`.min-w-0` utilities.
 - Feat (dashboard): live Agent Activity Orb on the System Overview page. New `<agenthub-activity-orb>` custom element (Canvas2D, Shadow DOM, embeddable on any dashboard page, `demo` attribute for previews) shows the orchestrator as a wireframe sphere and five agent satellites with real-time dispatch and return pulses; new admin SSE stream `GET /api/admin/activity/stream` (ids, span names, timing and status only) fed from the span tracer; the Requests, Latency and Cache hit rate cards now sit beside the widget.
 - Feat (dashboard, integration): the Activity Orb shows the seven most recently used agents (least recently used idle one rotates out, distinct colours, labels drawn above the sphere); new `GET /api/admin/activity/recent` and API-key endpoints `GET /api/activity/stream` and `GET /api/activity/recent`; the HACS bridge relays the stream over the HA websocket command `ha_agenthub/activity/subscribe` and serves a generated Lovelace card (`custom:agenthub-activity-orb-card`, options `title`, `compact`, `demo`, `entry_id`) that it registers automatically (`scripts/sync_orb_card.py` builds it; `ci.py` checks it).
-
-## Version History
+- Deps (container image): certifi 2026.7.22 -> 2026.10.19 and pillow 12.3.0 -> 13.0.0 (security fixes); pip-audit and trivy report no findings.
+- Verification: full gate `scripts/ci.py` on bb89be8, identical content to main 3cbcc53 (container suite 5202 passed, bridge suite 325 passed, Ruff, self-docs and card sync, lock check, bandit, pip-audit, docker build and smoke test, trivy); real local container checks of all four activity endpoints, live events, the bridge relay including a container restart, and the dashboard in headless Chrome. Not verified: the Lovelace card inside a real Home Assistant instance (mocked tests, hassfest and HACS validation only).
 
 ### 3.11.2 (PATCH) -- admin API error hardening
 
