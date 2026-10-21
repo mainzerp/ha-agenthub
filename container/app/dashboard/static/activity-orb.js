@@ -18,15 +18,17 @@
     var STREAM_PATH = '/api/admin/activity/stream';
     var AGENTS_PATH = '/api/admin/agents';
     var EXTENDED_PATH = '/api/admin/overview/extended';
-    var SLOT_COUNT = 5;
+    var RECENT_PATH = '/api/admin/activity/recent?limit=7';
+    var SLOT_COUNT = 7;
     var DEFAULT_SPAN_TIMEOUT_MS = 120000;
     var PSEUDO_IDS = { orchestrator: 1, noise: 1, 'cancel-interaction': 1, unknown: 1, none: 1, 'null': 1, undefined: 1 };
-    var DEMO_FALLBACK_IDS = ['light-agent', 'music-agent', 'climate-agent', 'timer-agent', 'general-agent'];
+    var DEMO_FALLBACK_IDS = ['light-agent', 'music-agent', 'climate-agent', 'timer-agent', 'general-agent', 'cover-agent',
+        'vacuum-agent', 'scene-agent', 'security-agent', 'media-agent', 'automation-agent', 'calendar-agent'];
     var TAU = Math.PI * 2;
     var BREATH_S = 4.0;
     // Point budgets per quality tier: c = orchestrator cloud, s = points per satellite.
-    var TIERS_DESKTOP = [{ c: 1200, s: 110 }, { c: 900, s: 90 }, { c: 600, s: 70 }, { c: 420, s: 56 }, { c: 300, s: 44 }];
-    var TIERS_SMALL = [{ c: 600, s: 60 }, { c: 450, s: 50 }, { c: 330, s: 42 }, { c: 240, s: 34 }];
+    var TIERS_DESKTOP = [{ c: 1200, s: 90 }, { c: 900, s: 72 }, { c: 600, s: 56 }, { c: 420, s: 44 }, { c: 300, s: 36 }];
+    var TIERS_SMALL = [{ c: 600, s: 52 }, { c: 450, s: 44 }, { c: 330, s: 36 }, { c: 240, s: 30 }];
 
     /* ------------------------------------------------------------------ */
     /* Small helpers                                                       */
@@ -112,13 +114,14 @@
         'lists-agent': 'lime', 'send-agent': 'sky'
     };
 
-    function agentColor(id) {
+    // Preferred palette index of an agent: fixed table for known ids, stable hash for the rest.
+    function preferredColorIndex(id) {
         var name = KNOWN_AGENT_COLORS[id];
         var i;
         if (name) {
-            for (i = 0; i < AGENT_PALETTE.length; i++) { if (AGENT_PALETTE[i].name === name) { return AGENT_PALETTE[i].rgb.slice(); } }
+            for (i = 0; i < AGENT_PALETTE.length; i++) { if (AGENT_PALETTE[i].name === name) { return i; } }
         }
-        return AGENT_PALETTE[hashId(String(id)) % AGENT_PALETTE.length].rgb.slice();
+        return hashId(String(id)) % AGENT_PALETTE.length;
     }
 
     function prettifyId(id) {
@@ -322,6 +325,11 @@
         '  background: color-mix(in srgb, var(--bg-basalt, #1a1816) 80%, transparent);',
         '  border: 1px solid color-mix(in srgb, var(--bg-stone, #2e2b28) 60%, transparent); border-radius: 0.75rem; }',
         '.card.is-compact { padding: 0.5rem; }',
+        ':host([bare]) { height: 100%; }',
+        '.card.is-bare { padding: 0; background: none; border: 0; border-radius: 0; overflow: visible; }',
+        '.card.is-bare .head { display: none; }',
+        '.card.is-bare .conn { top: 0.75rem; right: 0.75rem; }',
+        '.card.is-bare .stage { background: var(--orb-stage-bg, #12110f); border-radius: var(--orb-stage-radius, 12px); max-height: 100%; min-height: 120px; }',
         '.head { display: flex; align-items: center; min-height: 1.25rem; margin: 0 0 0.75rem 0; padding-right: 7.5rem; }',
         '.card.is-compact .head { display: none; }',
         '.title { margin: 0; font-family: var(--font-display, var(--font-body, sans-serif)); font-size: 0.875rem;',
@@ -366,7 +374,7 @@
     class AgentHubActivityOrb extends HTMLElement {
         static get palette() { return AGENT_PALETTE.map(function (c) { return { name: c.name, rgb: c.rgb.slice() }; }); }
 
-        static get observedAttributes() { return ['demo', 'heading', 'compact', 'span-timeout']; }
+        static get observedAttributes() { return ['demo', 'heading', 'compact', 'span-timeout', 'transport', 'bare']; }
 
         constructor() {
             super();
@@ -499,14 +507,35 @@
             if (!this._card) { return; }
             if (name === 'span-timeout') { return; }
             this._applyAttrs();
-            if (name === 'demo' && this._connected) { this._stopSource(); this._startSource(); }
+            if (name === 'demo' && this._connected) {
+                this._stopSource();
+                this._startSource();
+                if (this._demo && this._external && !this._seedDone) { this._seedDemo(); }
+            }
             this._wake();
         }
 
         /* ---------------- public API ---------------- */
 
-        /** Push an activity event (same payload as the SSE stream). Useful for custom feeds and tests. */
+        /** Push an activity event (same payload as the SSE stream). Used by external transports and tests. */
         pushEvent(evt) { this._onEvent(evt); }
+
+        /**
+         * Seed or refresh the slots like the /api/admin/activity/recent response:
+         * {agents: [{agent_id, name, last_used}]}, most recent first. Repeated calls never move agents that are already shown.
+         */
+        applySnapshot(snap) {
+            var list = snap && Array.isArray(snap.agents) ? snap.agents : [];
+            this._applyAgents(list.map(function (a) {
+                return a ? { id: a.agent_id ? String(a.agent_id) : null, name: a.name || null, lastUsed: a.last_used ? Date.parse(a.last_used) : null } : null;
+            }));
+            this._seedDone = true;
+        }
+
+        /** Drive the corner indicator for an external transport: 'live', 'reconnecting' or 'offline'. */
+        setConnectionState(state) {
+            if (state === 'live' || state === 'reconnecting' || state === 'offline') { this._setConn(state); }
+        }
 
         /** Read-only diagnostics for tests and debugging. */
         get diagnostics() {
@@ -520,7 +549,7 @@
                 slots: this._slots.map(function (s, i) {
                     var p = this._pos[i];
                     return {
-                        id: s.id, open: s.open, heat: +s.heat.toFixed(2), errHeat: +s.errHeat.toFixed(2),
+                        id: s.id, shown: s.shownId, cidx: s.cidx, lastActive: Math.round(s.lastActive), open: s.open, heat: +s.heat.toFixed(2), errHeat: +s.errHeat.toFixed(2),
                         requests: s.id && this._stats[s.id] ? this._stats[s.id].requests : 0, x: Math.round(p.x), y: Math.round(p.y)
                     };
                 }, this),
@@ -560,7 +589,7 @@
                     open: 0, heat: 0, errHeat: 0, flash: 0, lastActive: -i, chipText: '', chipErr: false, chipA: 0,
                     flashUntil: 0, errUntil: 0, chipUntil: 0, okT: 0, omega: 0.25,
                     col: AGENT_PALETTE[0].rgb.slice(), colT: AGENT_PALETTE[0].rgb.slice(), dc: AGENT_PALETTE[0].rgb.slice(),
-                    rot: rand(0, TAU), rotSpeed: 0.25, phase: rand(0, TAU), bRate: 1,
+                    cidx: -1, rot: rand(0, TAU), rotSpeed: 0.25, phase: rand(0, TAU), bRate: 1,
                     spin: rand(0, TAU)
                 });
             }
@@ -626,6 +655,8 @@
             this._title.textContent = heading !== null && heading !== '' ? heading : 'Agent Activity';
             this._compact = this.hasAttribute('compact');
             this._demo = this.hasAttribute('demo');
+            this._external = this.getAttribute('transport') === 'external';
+            this._card.classList.toggle('is-bare', this.hasAttribute('bare'));
             this._card.classList.toggle('is-compact', this._compact);
             this._canvas.setAttribute('aria-label', this._ariaSummary());
             this._renderConn();
@@ -727,13 +758,13 @@
         _layout() {
             var w = this._w, h = this._h, m = Math.min(w, h);
             var narrow = w < 400;
-            var nodeR = clamp(m * 0.06, 11, 27);
+            var nodeR = clamp(m * (narrow ? 0.047 : 0.058), 10, 26);
             var sphereR = m * (narrow ? 0.175 : 0.22);
             this._labelFont = narrow ? 9 : 11;
-            this._labelMax = narrow ? 9 : 14;
-            var sideMargin = Math.max(nodeR * 1.7, narrow ? 40 : 56);
+            this._labelMax = w < 300 ? 6 : (narrow ? 8 : 12);
+            var sideMargin = narrow ? Math.max(nodeR * 1.7, 34) : Math.max(nodeR * 3, 56); // room for the active halo
             var rx = Math.max(10, w / 2 - sideMargin);
-            var ryAvail = (h / 2 - nodeR * 1.75 - this._labelFont - 14) / 1.2;
+            var ryAvail = (h / 2 - nodeR * 1.8 - 14 - this._labelFont - 8) / 1.2;
             var sinT = clamp(ryAvail / rx, 0.2, 0.95);
             var target = { cx: w / 2, cy: h / 2, R: rx, sinT: sinT, f: rx * 4.5, sphereR: sphereR, nodeR: nodeR };
             this._layT = target;
@@ -779,14 +810,25 @@
 
         async _seed() {
             var token = this._seedToken = (this._seedToken || 0) + 1;
+            var self = this;
+            if (this._external) {
+                // External transport: no fetches. A demo still seeds itself; otherwise applySnapshot() does it.
+                if (this._demo) { this._seedDemo(); }
+                return;
+            }
             // Opened from file: or data: (previews) there is no backend to ask.
             var canFetch = /^https?:$/.test(window.location.protocol);
-            var results = canFetch
-                ? await Promise.all([this._fetchJson(AGENTS_PATH), this._fetchJson(EXTENDED_PATH)])
-                : [null, null];
+            var recent = null, agentsRes = null, ext = null;
+            if (canFetch) {
+                var both = await Promise.all([this._fetchJson(RECENT_PATH), this._fetchJson(AGENTS_PATH)]);
+                recent = both[0];
+                agentsRes = both[1];
+                if (!(recent && Array.isArray(recent.agents)) && token === this._seedToken) {
+                    ext = await this._fetchJson(EXTENDED_PATH);
+                }
+            }
             if (token !== this._seedToken || !this._connected) { return; }
-            var agents = results[0] && Array.isArray(results[0].agents) ? results[0].agents : [];
-            var ext = results[1];
+            var agents = agentsRes && Array.isArray(agentsRes.agents) ? agentsRes.agents : [];
             var names = {};
             var listed = [];
             agents.forEach(function (a) {
@@ -796,47 +838,39 @@
             });
             this._names = names;
             var haveNames = agents.length > 0;
-
-            var dist = ext && Array.isArray(ext.agent_distribution) ? ext.agent_distribution.slice() : [];
-            dist.sort(function (a, b) { return (b.request_count || 0) - (a.request_count || 0); });
-            var ids = [];
-            var add = function (id) {
-                if (!id || ids.indexOf(id) >= 0 || isPseudo(id, names)) { return; }
-                if (haveNames && !names[id]) { return; }
-                ids.push(id);
+            var entries = [];
+            var seen = {};
+            var add = function (id, name, lastUsed) {
+                if (!id || seen[id] || isPseudo(id, names)) { return; }
+                if (haveNames && !names[id] && !name) { return; }
+                seen[id] = true;
+                entries.push({ id: id, name: name || null, lastUsed: lastUsed === undefined ? null : lastUsed });
             };
-            dist.forEach(function (d) { add(d && d.agent_id); });
-            listed.forEach(add);
+            if (recent && Array.isArray(recent.agents)) {
+                // Most recent first, as the endpoint returns them.
+                recent.agents.forEach(function (a) {
+                    if (a) { add(a.agent_id, a.name, a.last_used ? Date.parse(a.last_used) : null); }
+                });
+            } else if (ext && Array.isArray(ext.agent_distribution)) {
+                var dist = ext.agent_distribution.slice();
+                dist.sort(function (a, b) { return (b.request_count || 0) - (a.request_count || 0); });
+                dist.forEach(function (d) { if (d) { add(d.agent_id); } });
+            }
+            listed.forEach(function (id) { add(id); });
             if (this._demo) {
                 // Previews without a backend (or with few agents) are padded with well-known ids.
-                DEMO_FALLBACK_IDS.forEach(function (id) { if (ids.length < SLOT_COUNT && ids.indexOf(id) < 0) { ids.push(id); } });
+                DEMO_FALLBACK_IDS.forEach(function (id) { if (entries.length < SLOT_COUNT) { add(id); } });
             }
-            this._applySeed(ids);
+            this._applyAgents(entries);
             this._seedDone = true;
             if (this._demo && this._connected) { this._demoKick(); }
         }
 
-        _applySeed(ids) {
-            var self = this;
-            var present = {};
-            this._slots.forEach(function (s) { if (s.id) { present[s.id] = true; } });
-            var queue = ids.filter(function (id) { return !present[id]; });
-            this._slots.forEach(function (s) {
-                if (s.id && self._names[s.id]) { s.name = self._names[s.id]; if (s.shownId === s.id) { s.shownName = s.name; } }
-            });
-            this._slots.forEach(function (s) {
-                if (s.id || !queue.length) { return; }
-                var id = queue.shift();
-                s.id = id;
-                s.name = self._displayName(id);
-                self._showInSlot(s, id);
-                s.col = s.colT.slice();
-                s.omega = s.rotSpeed;
-                s.omegaV = 0;
-                s.appear = 0;
-            });
-            this._canvas.setAttribute('aria-label', this._ariaSummary());
-            this._wake();
+        _seedDemo() {
+            var entries = DEMO_FALLBACK_IDS.slice(0, SLOT_COUNT).map(function (id) { return { id: id, name: null, lastUsed: null }; });
+            this._applyAgents(entries);
+            this._seedDone = true;
+            if (this._connected) { this._demoKick(); }
         }
 
         _displayName(id) {
@@ -851,6 +885,7 @@
                 if (this._seedDone) { this._demoKick(); }
                 return;
             }
+            if (this._external) { return; }
             var self = this;
             this._sub = {
                 onEvent: function (e) { self._onEvent(e); },
@@ -920,7 +955,7 @@
             var n = parseInt(this.getAttribute('demo-burst'), 10);
             n = n >= 1 ? Math.min(n, 6) : 2;
             var span = rand(5000, 8000);
-            var gap = n > 1 ? Math.max(0, span - 2400) / (n - 1) : 0;
+            var gap = n > 1 ? Math.max(0, span - 3600) / (n - 1) : 0;
             var pending = n;
             var startedAt = performance.now();
             this._demoSetPhase('activity');
@@ -935,7 +970,7 @@
                 }, wait);
             };
             for (var k = 0; k < n; k++) {
-                this._later(function () { self._demoRequest(finished); }, n > 1 ? k * gap : Math.max(0, span - 2400) / 2);
+                this._later(function () { self._demoRequest(finished); }, n > 1 ? k * gap : Math.max(0, span - 3600) / 2);
             }
         }
 
@@ -946,15 +981,27 @@
             });
         }
 
+        _demoPool() {
+            var names = this._names, out = [];
+            Object.keys(names).concat(DEMO_FALLBACK_IDS).forEach(function (id) {
+                if (!isPseudo(id, names) && out.indexOf(id) < 0) { out.push(id); }
+            });
+            return out;
+        }
+
         _demoRequest(done) {
             var self = this;
             var seq = ++this._demoSeq;
             var ids = this._slots.filter(function (s) { return s.id && s.open === 0; }).map(function (s) { return s.id; });
-            if (!ids.length) { done(); return; }
-            var targets = [ids[Math.floor(Math.random() * ids.length)]];
+            // Now and then call an agent that has no slot, so the least recently used one gets rotated out.
+            var pool = this._demoPool().filter(function (id) { return self._slotIndex(id) < 0; });
+            var targets = [];
+            if (pool.length && Math.random() < 0.4) { targets.push(pool[Math.floor(Math.random() * pool.length)]); }
+            else if (ids.length) { targets.push(ids[Math.floor(Math.random() * ids.length)]); }
+            if (!targets.length) { done(); return; }
             if (ids.length > 1 && Math.random() < 0.25) {
                 var other;
-                do { other = ids[Math.floor(Math.random() * ids.length)]; } while (other === targets[0]);
+                do { other = ids[Math.floor(Math.random() * ids.length)]; } while (targets.indexOf(other) >= 0);
                 targets.push(other);
             }
             var classifyMs = rand(180, 520);
@@ -1061,7 +1108,6 @@
             if (idx < 0 && !rec) { idx = this._ensureSlot(aid); }
             if (idx < 0) { return; }
             var slot = this._slots[idx];
-            slot.lastActive = now;
             slot.chipText = fmtDuration(dur);
             slot.chipErr = status === 'error';
             slot.chipUntil = now + 2600;
@@ -1076,27 +1122,91 @@
             return -1;
         }
 
+        // Slot of an agent, claiming one if it has none: the idle slot whose agent was dispatched longest ago
+        // (empty slots first). Busy slots are never evicted; with every slot busy the event is ignored.
         _ensureSlot(aid) {
             var found = this._slotIndex(aid);
             if (found >= 0) { return found; }
+            var victim = this._pickVictim(null);
+            if (victim < 0) { return -1; }
+            this._claimSlot(victim, aid, performance.now());
+            return victim;
+        }
+
+        // Empty slot, else the idle slot with the oldest last use (and older than `olderThan` when given).
+        _pickVictim(olderThan) {
             var victim = -1;
             for (var i = 0; i < this._slots.length; i++) {
                 var s = this._slots[i];
                 if (s.open > 0) { continue; }
-                if (!s.id) { victim = i; break; }
+                if (!s.id) { return i; }
                 if (victim < 0 || s.lastActive < this._slots[victim].lastActive) { victim = i; }
             }
-            if (victim < 0) { return -1; }
-            var slot = this._slots[victim];
+            if (victim >= 0 && olderThan !== null && !(this._slots[victim].lastActive < olderThan)) { return -1; }
+            return victim;
+        }
+
+        // Colour for an agent entering a slot: its preferred palette colour, or the nearest unused one
+        // (by palette order) when another slot already holds it. Kept while the agent stays in the slot.
+        _pickColorIndex(aid, selfIdx) {
+            var used = {};
+            this._slots.forEach(function (sl, k) { if (k !== selfIdx && sl.id && sl.cidx >= 0) { used[sl.cidx] = true; } });
+            var n = AGENT_PALETTE.length, p = preferredColorIndex(aid), d, a, b;
+            for (d = 0; d < n; d++) {
+                a = (p + d) % n;
+                b = (p - d + n) % n;
+                if (!used[a]) { return a; }
+                if (!used[b]) { return b; }
+            }
+            return p;
+        }
+
+        _claimSlot(idx, aid, lastActive) {
+            var slot = this._slots[idx];
             slot.id = aid;
             slot.name = this._displayName(aid);
+            slot.lastActive = lastActive;
+            slot.cidx = this._pickColorIndex(aid, idx);
             slot.chipUntil = 0;
             slot.errUntil = 0;
             slot.flashUntil = 0;
             slot.swapAt = performance.now();
-            if (!slot.shownId) { this._showInSlot(slot, aid); slot.col = slot.colT.slice(); slot.omega = slot.rotSpeed; slot.omegaV = 0; slot.appear = 0; }
+            if (!slot.shownId) {
+                this._showInSlot(slot, aid);
+                slot.col = slot.colT.slice();
+                slot.omega = slot.rotSpeed;
+                slot.omegaV = 0;
+                slot.appear = 0;
+            }
             this._canvas.setAttribute('aria-label', this._ariaSummary());
-            return victim;
+        }
+
+        // Seed or refresh the slots from a list of {id, name, lastUsed (epoch ms or null)}, most recent first.
+        // Agents already shown keep their slot (no jumps); missing ones fill empty slots or replace an idle
+        // slot whose agent was used longer ago than they were.
+        _applyAgents(entries) {
+            var self = this, nowP = performance.now(), nowE = Date.now();
+            entries = entries.filter(function (e) { return e && e.id && !isPseudo(e.id, self._names); }).slice(0, SLOT_COUNT);
+            entries.forEach(function (e, rank) {
+                e.last = typeof e.lastUsed === 'number' && isFinite(e.lastUsed) ? nowP - (nowE - e.lastUsed) : -1e9 - rank;
+                if (e.name) { self._names[e.id] = String(e.name); }
+            });
+            entries.forEach(function (e) {
+                var idx = self._slotIndex(e.id);
+                if (idx >= 0) {
+                    var sl = self._slots[idx];
+                    sl.name = self._displayName(e.id);
+                    if (e.last > sl.lastActive) { sl.lastActive = e.last; }
+                    return;
+                }
+                var victim = self._pickVictim(e.last);
+                if (victim >= 0) { self._claimSlot(victim, e.id, e.last); }
+            });
+            this._slots.forEach(function (sl) {
+                if (sl.id) { sl.name = self._displayName(sl.id); }
+            });
+            this._canvas.setAttribute('aria-label', this._ariaSummary());
+            this._wake();
         }
 
         _resetSpans() {
@@ -1129,7 +1239,7 @@
             var h = hashId(String(aid));
             slot.shownId = aid;
             slot.shownName = slot.name;
-            slot.colT = agentColor(aid);
+            slot.colT = AGENT_PALETTE[slot.cidx >= 0 ? slot.cidx : preferredColorIndex(aid)].rgb.slice();
             slot.phase = ((h >>> 3) % 1000) / 1000 * TAU;
             slot.rotSpeed = 0.18 + ((h >>> 11) % 100) / 100 * 0.22;
             slot.bRate = 0.88 + ((h >>> 17) % 100) / 100 * 0.24;
@@ -1166,16 +1276,24 @@
                 '. Use left and right arrow keys to inspect an agent.';
         }
 
+        // Screen reader live region: the first message after a quiet period is announced immediately;
+        // messages inside a 1.5 s window are queued and read together (a burst collapses, nothing is dropped).
         _announce(msg) {
-            this._announceMsg = msg;
+            if (!this._announceQueue) { this._announceQueue = []; }
+            var q = this._announceQueue;
+            if (q[q.length - 1] !== msg) { q.push(msg); }
+            if (q.length > 4) { q.shift(); }
             if (this._announceTimer) { return; }
             var self = this;
             var wait = Math.max(0, 1500 - (performance.now() - this._announceAt));
-            this._announceTimer = setTimeout(function () {
+            var flush = function () {
                 self._announceTimer = null;
                 self._announceAt = performance.now();
-                self._live.textContent = self._announceMsg;
-            }, wait);
+                self._live.textContent = self._announceQueue.join('. ');
+                self._announceQueue = [];
+            };
+            if (wait === 0) { flush(); return; }
+            this._announceTimer = setTimeout(flush, wait);
         }
 
         /* ---------------- pointer / keyboard ---------------- */
@@ -1371,6 +1489,7 @@
         }
 
         _update(dt) {
+            this._dtLast = dt;
             var motion = !this._reduced;
             var now = performance.now();
             if (motion) { this._time += dt; }
@@ -1399,7 +1518,7 @@
                     // The old node has faded out: bring in the new agent; its colour cross-fades from the old one.
                     s.shownName = s.name;
                     if (s.id) { this._showInSlot(s, s.id); } else { s.shownId = null; }
-                    s.chipA = 0;
+                    s.chipText = ''; // the chip belonged to the old agent; its alpha keeps easing out on its own
                 }
                 s.col[0] += (s.colT[0] - s.col[0]) * kc;
                 s.col[1] += (s.colT[1] - s.col[1]) * kc;
@@ -1478,7 +1597,7 @@
             for (var si = 0; si < SLOT_COUNT; si++) { this._slotColor(this._slots[si], C); }
             this._wavePos = this._reduced ? 2 : (((this._time / BREATH_S) % 1) * 1.35);
             this._nodePositions();
-            var order = [0, 1, 2, 3, 4].sort(function (a, b) { return this._pos[b].z - this._pos[a].z; }.bind(this));
+            var order = this._slots.map(function (x, k) { return k; }).sort(function (a, b) { return this._pos[b].z - this._pos[a].z; }.bind(this));
 
             this._drawLinks(ctx, C, breath);
             var n, idx;
@@ -1489,14 +1608,12 @@
             this._drawSphere(ctx, C, breath);
             for (n = 0; n < order.length; n++) {
                 idx = order[n];
-                if (this._pos[idx].z > 0) { this._drawNode(ctx, C, idx, breath, 'label'); }
-            }
-            for (n = 0; n < order.length; n++) {
-                idx = order[n];
-                if (this._pos[idx].z <= 0) { this._drawNode(ctx, C, idx, breath, 'all'); }
+                if (this._pos[idx].z <= 0) { this._drawNode(ctx, C, idx, breath, 'body'); }
             }
             this._drawWaves(ctx, C);
             this._drawPulses(ctx, C);
+            // Labels and duration chips go on top of everything, whatever the satellite's depth.
+            this._drawLabels(ctx, C);
             ctx.globalAlpha = 1;
             this._recordParams();
             this._placeTip();
@@ -1837,6 +1954,8 @@
             var wob = this._reduced ? 0.5 : 0.5 + 0.5 * Math.sin(t * 1.1 + i * 1.3);
             var sb = this._reduced ? 0 : Math.sin(TAU * (t / BREATH_S * s.bRate + s.phase));
             var r = p.r * (empty ? 1 : lerp(0.55, 1, a)) * (1 + 0.05 * sb);
+            p.rd = r;
+            p.ad = a;
             var focus = i === this._hover || i === this._focusIdx || i === this._pinned;
 
             if (empty) {
@@ -1919,38 +2038,105 @@
                     ctx.globalCompositeOperation = 'source-over';
                 }
             }
-            if (part === 'body') { return; }
+        }
 
-            // Label (kept readable: tinted toward white, high alpha).
+        // Candidate label rectangle for a satellite: below or above its node.
+        _labelRect(p, r, s, text, side) {
             var fs = this._labelFont;
+            var w = this._ctx.measureText(text).width;
+            var gap = r * 1.32 + (s.open > 0 ? 10 : 6);
+            var y = side > 0 ? p.y + gap : p.y - gap - fs;
+            var x = clamp(p.x - w / 2, 2, Math.max(2, this._w - w - 2));
+            return { x: x, y: y, w: w, h: fs };
+        }
+
+        // How badly a rectangle collides with the sphere disc (halo ring included), other nodes and the stage edge.
+        _labelPenalty(rect, idx) {
+            var R = this._ring, disc = this._rad * 1.25, pen = 0, k;
+            var nx = clamp(R.cx, rect.x, rect.x + rect.w), ny = clamp(R.cy, rect.y, rect.y + rect.h);
+            pen += Math.max(0, disc - Math.hypot(R.cx - nx, R.cy - ny));
+            for (k = 0; k < this._pos.length; k++) {
+                if (k === idx) { continue; }
+                var q = this._pos[k];
+                if (!q.vis) { continue; }
+                var qr = (q.rd || q.r) * 1.32 + 4;
+                var qx = clamp(q.x, rect.x, rect.x + rect.w), qy = clamp(q.y, rect.y, rect.y + rect.h);
+                pen += Math.max(0, qr - Math.hypot(q.x - qx, q.y - qy));
+            }
+            pen += Math.max(0, 2 - rect.y) + Math.max(0, rect.y + rect.h - (this._h - 2));
+            return pen;
+        }
+
+        _drawLabels(ctx, C) {
+            var fs = this._labelFont, i, k;
+            var instant = (this._dtLast || 0) > 1; // tests snap the placement
+            var kk = 1 - Math.exp(-(this._dtLast || 0.016) / 0.16);
             ctx.font = fs + 'px ' + this._fonts.mono;
             ctx.textAlign = 'center';
             ctx.textBaseline = 'top';
-            var lcol = mixRgb(dc, C.core, 0.45);
-            var lal = (0.86 + 0.14 * clamp(hot + (focus ? 1 : 0), 0, 1)) * a * lerp(0.92, 1, clamp((p.s - 0.8) / 0.4, 0, 1));
-            this._labelDbg[i] = { id: s.shownId, rgb: lcol.map(Math.round), alpha: +lal.toFixed(3) };
-            ctx.fillStyle = rgba(lcol, lal);
-            ctx.fillText(shortLabel(s.shownName || s.shownId, this._labelMax), p.x, p.y + r * 1.32 + (s.open > 0 ? 10 : 6));
+            ctx.lineJoin = 'round';
+            for (i = 0; i < this._slots.length; i++) {
+                var s = this._slots[i], p = this._pos[i];
+                if (!s.shownId) { this._labelDbg[i] = null; continue; }
+                var a = smooth01(p.ad || 0);
+                if (a < 0.02) { this._labelDbg[i] = null; continue; }
+                var r = p.rd || p.r;
+                var dc = s.dc;
+                var hot = Math.max(s.heat, s.flash, s.errHeat);
+                var focus = i === this._hover || i === this._focusIdx || i === this._pinned;
+                var text = shortLabel(s.shownName || s.shownId, this._labelMax);
 
-            // Duration chip (fades in and out).
-            if (s.chipA > 0.01 && s.chipText) {
-                var ca = smooth01(s.chipA) * a;
-                var cfs = Math.max(9, fs);
-                ctx.font = cfs + 'px ' + this._fonts.mono;
-                var tw = ctx.measureText(s.chipText).width + 10;
-                var cx = clamp(p.x - tw / 2, 2, this._w - tw - 2);
-                var cyy = p.y - r * 1.32 - (s.open > 0 ? 10 : 6) - cfs - 8;
-                var ccol = s.chipErr ? C.err : mixRgb(dc, C.core, 0.3);
-                ctx.beginPath();
-                if (ctx.roundRect) { ctx.roundRect(cx, cyy, tw, cfs + 7, 5); } else { ctx.rect(cx, cyy, tw, cfs + 7); }
-                ctx.fillStyle = rgba(C.bg, 0.9 * ca);
-                ctx.fill();
-                ctx.lineWidth = 1;
-                ctx.strokeStyle = rgba(ccol, 0.7 * ca);
-                ctx.stroke();
-                ctx.fillStyle = rgba(ccol, ca);
-                ctx.textBaseline = 'middle';
-                ctx.fillText(s.chipText, cx + tw / 2, cyy + (cfs + 7) / 2 + 0.5);
+                // Side: below by default; above (radially outward for nodes in the upper half) when below would
+                // sit on the sphere disc, another node or the stage edge. Hysteresis avoids flicker.
+                var below = this._labelRect(p, r, s, text, 1), above = this._labelRect(p, r, s, text, -1);
+                var pb = this._labelPenalty(below, i), pa = this._labelPenalty(above, i);
+                var want = s.lblWant === undefined ? (pb <= pa ? 1 : 0) : s.lblWant;
+                if (want === 1 && pa + 3 < pb) { want = 0; } else if (want === 0 && pb + 3 < pa) { want = 1; }
+                s.lblWant = want;
+                if (s.lblT === undefined || instant) { s.lblT = want; } else { s.lblT += (want - s.lblT) * kk; }
+                var t = smooth01(s.lblT);
+                var ry = lerp(above.y, below.y, t);
+                var rect = { x: below.x, y: ry, w: below.w, h: fs };
+                var lcol = mixRgb(dc, C.core, 0.45);
+                var lal = (0.9 + 0.1 * clamp(hot + (focus ? 1 : 0), 0, 1)) * a;
+                this._labelDbg[i] = { id: s.shownId, rgb: lcol.map(Math.round), alpha: +lal.toFixed(3), rect: rect, node: { x: p.x, y: p.y, r: r * 1.32 + 4 } };
+                if (this._noLabels) { continue; } // test hook: measure what is behind the labels
+                // Soft dark halo behind the glyphs keeps the text legible over the bright web.
+                var tx = p.x, ty = rect.y;
+                ctx.lineWidth = 5;
+                ctx.strokeStyle = rgba(C.bg, 0.30 * a);
+                ctx.strokeText(text, tx, ty);
+                ctx.lineWidth = 2.5;
+                ctx.strokeStyle = rgba(C.bg, 0.80 * a);
+                ctx.strokeText(text, tx, ty);
+                ctx.fillStyle = rgba(lcol, lal);
+                ctx.fillText(text, tx, ty);
+
+                // Duration chip on the opposite side of the label (fades in and out).
+                if (s.chipA > 0.01 && s.chipText) {
+                    var ca = smooth01(s.chipA) * a;
+                    var cfs = Math.max(9, fs);
+                    ctx.font = cfs + 'px ' + this._fonts.mono;
+                    var tw = ctx.measureText(s.chipText).width + 10;
+                    var cx = clamp(p.x - tw / 2, 2, this._w - tw - 2);
+                    var gap = r * 1.32 + (s.open > 0 ? 10 : 6);
+                    var chipAbove = p.y - gap - cfs - 8;
+                    var chipBelow = p.y + gap;
+                    var cyy = lerp(chipBelow, chipAbove, t);
+                    var ccol = s.chipErr ? C.err : mixRgb(dc, C.core, 0.3);
+                    ctx.beginPath();
+                    if (ctx.roundRect) { ctx.roundRect(cx, cyy, tw, cfs + 7, 5); } else { ctx.rect(cx, cyy, tw, cfs + 7); }
+                    ctx.fillStyle = rgba(C.bg, 0.92 * ca);
+                    ctx.fill();
+                    ctx.lineWidth = 1;
+                    ctx.strokeStyle = rgba(ccol, 0.7 * ca);
+                    ctx.stroke();
+                    ctx.fillStyle = rgba(ccol, ca);
+                    ctx.textBaseline = 'middle';
+                    ctx.fillText(s.chipText, cx + tw / 2, cyy + (cfs + 7) / 2 + 0.5);
+                    ctx.textBaseline = 'top';
+                    ctx.font = fs + 'px ' + this._fonts.mono;
+                }
             }
         }
 

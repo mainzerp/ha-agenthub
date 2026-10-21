@@ -330,6 +330,11 @@ Discipline table); project mission and naming context live in
 - `container/app/knowledge/*.md` are generated copies of user docs for the
   general agent's `agenthub_self_info` tool. Edit the source doc, then run
   `python scripts/sync_self_docs.py`; `ci.py` fails on stale copies.
+- `custom_components/ha_agenthub/frontend/agenthub-activity-orb-card.js` is the
+  generated Lovelace card (widget + card wrapper from
+  `container/app/dashboard/static/`). Edit the sources, then run
+  `python scripts/sync_orb_card.py`; `ci.py` fails on a stale copy. Re-run it
+  after any version or `_STATIC_BUILD` bump (the build marker changes).
 - The dashboard frontend is server-rendered Jinja2 + HTMX with vendored JS —
   there is no npm/node toolchain.
 - Keep the version in sync across `VERSION.md`, `container/app/__init__.py`, and
