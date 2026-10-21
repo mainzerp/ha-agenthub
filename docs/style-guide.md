@@ -456,6 +456,49 @@ All shared Alpine.js factories live in `components.js` and are registered on `wi
 | `window.dashFormatBytes(n)` | Human-readable bytes | `dashFormatBytes(1024)` |
 | `window.dashTruncate(s, n)` | Truncate with ellipsis | `dashTruncate('hello world', 8)` |
 
+## Activity Orb widget
+
+`<agenthub-activity-orb>` (`static/activity-orb.js`) visualizes the orchestrator (central additive point cloud with a faint nearest-neighbour web) and the five agents it currently talks to (satellites on a tilted ring, each a miniature of the central sphere in its own colour, joined to it by straight lines). It is a self-contained Custom Element: Shadow DOM, plain Canvas2D, no Alpine/HTMX/Chart.js dependency. It targets same-origin dashboard pages (cookie auth, `window.dashUrl` paths); cross-origin embedding (Home Assistant) is tracked on the roadmap. `dashboard_base.html` loads it with `defer`, so any dashboard page can use the tag.
+
+Embed on another dashboard page:
+
+```html
+<agenthub-activity-orb heading="Agent Activity"></agenthub-activity-orb>
+<!-- previews without a backend: add the `demo` attribute -->
+```
+
+| Attribute | Effect |
+|-----------|--------|
+| `demo` | Simulated events (classify phase, 1-2 parallel dispatches, ~12% errors); no EventSource is opened. Runs a repeating cycle: a calm idle phase with no events at all, then a burst of requests |
+| `demo-idle` | Demo only: seconds of calm idle between bursts, randomised by 20% (default `10`); the first idle phase after start-up is 20% longer |
+| `demo-burst` | Demo only: requests per burst (default `2`, 1 to 6); a burst lasts about 5 to 8 s |
+| `heading` | Card title, default `Agent Activity` |
+| `compact` | No heading, flatter aspect ratio (2:1, 4:3 when the widget is under 480px wide) |
+| `span-timeout` | Diagnostics: ms before an unclosed span is released (default 120000) |
+
+JS API: `el.pushEvent(evt)` feeds an event manually; `el.diagnostics` is a read-only state snapshot for tests. In demo mode the element dispatches a bubbling, composed `agenthub-orb-phase` event (`detail.phase` is `idle` or `activity`) on every phase change, so a host page can show where the demo is.
+
+Event contract: shared singleton `EventSource` to `GET /api/admin/activity/stream` (built with `window.dashUrl`), SSE event name `activity`, JSON `{type: "span_start"|"span_end", span_id, trace_id, span_name, agent_id|null, ts, status: "ok"|"error"|null, duration_ms|null, source|null}`. Producer side is documented in `docs/api-reference.md`.
+
+- `dispatch*` spans with an `agent_id` drive satellites: an expanding shockwave ring around the sphere and a glowing pulse with a short trail travelling the straight link outward, a brighter glowing link plus lit node and spinner while open, a return pulse and a duration chip on completion, danger color on `status: "error"`. Null or pseudo ids (`orchestrator`, `noise`, `cancel-interaction`) and unknown span names are ignored.
+- `classify`/`classify.*`, `cache_lookup`, `rewrite` and `return` spans energize the central sphere while any is open: larger surface displacement, faster rotation, brighter core and web, spinner ring.
+- Satellites are miniature spheres: shell-weighted points with a nearest-neighbour web, additive blending, a small bright core, a layered halo, their own slow rotation (per-agent speed and phase, faster while active) and an own breathing offset. Idle satellites are dimmer and desaturated but still coloured; activity makes them vivid. Status is never colour-only: label text, a status ring, a spinner while a span is open, a dashed ring plus red tint on failure, and the duration chip stay.
+- Agent colours come from a 12-colour palette defined in `activity-orb.js` (`AGENT_PALETTE`, dark-background friendly): cyan, violet, magenta, amber, lime, orange, sky, rose, teal, indigo, yellow, peach. Known built-in ids have fixed colours (light amber, climate sky, cover indigo, vacuum teal, scene magenta, security rose, media violet, music cyan, automation orange, calendar lime, general yellow, timer peach, lists lime, send sky); every other id maps through a stable FNV-1a hash into the palette. Reserved: the orchestrator stays theme blue (`--blue`), error red (`--danger`) is only used for failures, and the success green (`--success`) is only a brief ring flash on an ok return, never an agent identity. The colour tints points, web, core, halo, label, chip, link end, pulses (outbound and return) and the dispatch shockwave; the link is a straight gradient from the orchestrator colour to the agent colour; the tooltip shows a colour swatch. Label text is tinted toward white and keeps a contrast ratio of at least 6:1 against the stage background for every palette colour.
+- Exactly 5 slots, seeded from the most-used agents in `GET /api/admin/overview/extended` (`agent_distribution`), falling back to `GET /api/admin/agents`; names come from the agents list, else the prettified id. An event for an agent without a slot replaces the least-recently-active idle slot; when all slots are busy the event is not drawn.
+- Open spans are tracked by `span_id`; a lost `span_end` is released after the timeout, and all open spans are dropped after a reconnect. Several widgets on one page share one connection (refcounted, closed with the last widget).
+- Connection indicator: `live`, `reconnecting`, `offline` (`demo` in demo mode). When the browser gives up (HTTP 401/429 closes an EventSource permanently), the widget retries itself with backoff 2 s doubling to 60 s, reset on the first open or message.
+
+Behavior:
+
+- Colors are read at runtime from the dashboard tokens (`--blue` sphere, `--teal-glow` active, `--success`, `--danger`, `--color-*` text) with dark fallbacks; they are re-read on `class`/`data-theme`/`style` changes of `<html>` and on a `agenthub:theme-change` window event. The dashboard is dark-only today, so no toggle exists yet. The widget CSS inside the shadow root is the one place where `var(--token, fallback)` is allowed, so the tag also works on pages without the token stylesheet.
+- Round silhouette: the orchestrator is scaled uniformly (one radius for both axes, weak perspective), points sit on a quasi-uniform Fibonacci lattice, and the radial displacement is a tiny (at most about 2.4% of the radius), high-frequency perturbation. Ripple and shimmer are carried by brightness, not by the radius. Measured width/height of the point bounding box stays within 0.986-1.019 across idle, dispatch, phase and error states, resizes and every point-count tier. Low-frequency displacement (wavelength comparable to the sphere) must not be reintroduced, it turns the sphere into an oval.
+- Smooth transitions: every state-dependent value (activity, energy, rotation speed, core and halo brightness, web brightness, spinner ring, node heat, error tint, chip and flash, satellite fade, colour) is driven by frame-rate independent critically damped smoothing toward a target (attack about 0.2 s, release about 0.6 to 0.9 s) and never switched or reset. Rotation integrates the eased angular speed, the breathing phase is a free-running clock that never resets, shockwaves fade in and out, slot replacement fades the old satellite out and the new one in while its colour cross-fades, and the connection indicator fades its colour. Event impulses are short target holds, not instant value writes.
+- Start-up: on connect the widget fades in (about 0.7 s; the orb eases from slightly smaller and dimmer to its idle size) with every smoothed value starting at its idle target. The stage is measured with its final aspect class (narrow widgets switch to 1:1 before the first measurement), painting starts after the first measured size, a canvas resize repaints synchronously (never an empty frame) and later layout changes glide. Frame delta is capped at 50 ms. Satellites fade in only once the agent data is seeded, and demo mode waits for a calm idle phase before its first request. The adaptive quality logic has a 2.5 s grace period, and when it does step the point count down, the old and new point sets crossfade over 0.8 s (complementary weights, so brightness and silhouette do not pop); lower tiers are built ahead of time.
+- Idle: the whole sphere breathes about 5% in scale on a 4 s sine period while core and halo brightness swing roughly 40%, a ripple travels pole to pole through the surface once per breath, a faint brightening runs along each link from the sphere to its node, and nodes shimmer gently. A noise field of three drifting plane waves modulates point brightness (and, very slightly, radius).
+- Performance: DPR capped at 2; 30 fps cap when the viewport is under 600px or `hardwareConcurrency <= 4`; point count by tier (orchestrator 1200 desktop, 600 small or low-power, plus 110 or 60 points per satellite) with precomputed neighbour pairs; if frames run long (JS work above 8 ms, or the frame interval 40% over target, for about 45 frames) the widget steps both counts down (desktop 1200/900/600/420/300 with 110/90/70/56/44 per satellite, small 600/450/330/240 with 60/50/42/34) and never back up; rendering pauses while off-screen (IntersectionObserver) or `document.hidden`; layout follows a ResizeObserver.
+- `prefers-reduced-motion`: no rotation, breathing, noise motion, shockwaves, spinner or travelling particles (one static frame); activity is shown as brief node highlights and the render loop stops when nothing is changing.
+- Accessibility: the canvas is focusable with an `aria-label`; Left/Right arrows step through agents and show the tooltip, Escape clears; hover (mouse) or tap (touch) shows a tooltip with name, id, session request count, last duration and status; a visually hidden `role="status"` region announces the latest event, throttled to one message per 1.5 s.
+
 ## Anti-patterns
 
 1. **Do not introduce fixed inline styles for padding, margin, or colour.** Use utility classes or reusable CSS rules for static presentation.

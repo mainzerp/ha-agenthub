@@ -36,10 +36,38 @@ Live pipeline in board format — headings are columns, cards are
   store + local tool for the general agent, per-user cap with age eviction
   (session-memory lessons in Athenaeum `ha-agenthub` topic). Verify: memory
   persists across conversations and is controllable per user.
+- Activity Orb as Home Assistant Lovelace card · priority: P2 · area: integration
+  Outcome: the `<agenthub-activity-orb>` widget runs on a Home Assistant
+  dashboard. Chosen route: a custom Lovelace card shipped as a JS resource by
+  the HACS bridge, with the activity events relayed through HA so HA's own
+  login covers it (the dashboard session cookie does not reach a HA page, and
+  the `?token=` query fallback was removed on purpose, SEC-2).
+  Next step: design the relay (bridge subscribes to
+  `GET /api/admin/activity/stream` or a bearer-key equivalent, forwards over
+  the HA websocket) and the card packaging. Quick interim option: an iframe
+  page `/dashboard/orb` (needs `frame-ancestors` and a shared login).
+  Verify: card shows live dispatch pulses on a HA dashboard without an
+  AgentHub dashboard login.
 
 ## In Progress
 
 ## Testing
+
+- Overview: live Agent Activity Orb widget · priority: P1 · area: dashboard
+  Outcome: the System Overview shows in real time what the orchestrator is
+  doing: a central wireframe orb plus five agent satellites, pulses on
+  dispatch and return, gentle breathing when idle; embeddable as the
+  `<agenthub-activity-orb>` custom element on any dashboard page; the
+  Requests, Latency and Cache hit rate cards sit to its right (stacked
+  below it on mobile).
+  Implemented on branch `feat/overview-activity-orb`, not yet deployed.
+  Passed: 38 new backend tests, widget checks in headless Chrome against a
+  fake SSE server (layout 320-1280 px, reduced motion, reconnect). Not yet
+  run against the real backend stream or a real phone.
+  Needs user verification: open `/dashboard/`, send a chat or voice request
+  and watch the dispatch pulse reach the agent; idle orb breathes gently;
+  cards sit right of the widget on desktop, below it on phones; add the
+  `demo` attribute to preview without traffic.
 
 - Quiet enrollment turns (OK reply, no trace, no cache) · priority: P1 · area: voice
   Outcome: while an enrollment is armed, tee'd voice turns are marked at

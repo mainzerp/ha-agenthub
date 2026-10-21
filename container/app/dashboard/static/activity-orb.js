@@ -1,0 +1,1997 @@
+/*
+ * <agenthub-activity-orb> - real-time visualization of orchestrator <-> agent activity.
+ *
+ * Self-contained Custom Element (Shadow DOM, plain Canvas2D, no dependencies).
+ * Contract and embedding notes: docs/style-guide.md, section "Activity Orb widget".
+ *
+ * Attributes: demo, heading, compact (plus span-timeout in ms for diagnostics).
+ * Stream: GET /api/admin/activity/stream, SSE event name "activity".
+ */
+(function () {
+    'use strict';
+
+    var TAG = 'agenthub-activity-orb';
+    if (typeof window === 'undefined' || !window.customElements || window.customElements.get(TAG)) {
+        return;
+    }
+
+    var STREAM_PATH = '/api/admin/activity/stream';
+    var AGENTS_PATH = '/api/admin/agents';
+    var EXTENDED_PATH = '/api/admin/overview/extended';
+    var SLOT_COUNT = 5;
+    var DEFAULT_SPAN_TIMEOUT_MS = 120000;
+    var PSEUDO_IDS = { orchestrator: 1, noise: 1, 'cancel-interaction': 1, unknown: 1, none: 1, 'null': 1, undefined: 1 };
+    var DEMO_FALLBACK_IDS = ['light-agent', 'music-agent', 'climate-agent', 'timer-agent', 'general-agent'];
+    var TAU = Math.PI * 2;
+    var BREATH_S = 4.0;
+    // Point budgets per quality tier: c = orchestrator cloud, s = points per satellite.
+    var TIERS_DESKTOP = [{ c: 1200, s: 110 }, { c: 900, s: 90 }, { c: 600, s: 70 }, { c: 420, s: 56 }, { c: 300, s: 44 }];
+    var TIERS_SMALL = [{ c: 600, s: 60 }, { c: 450, s: 50 }, { c: 330, s: 42 }, { c: 240, s: 34 }];
+
+    /* ------------------------------------------------------------------ */
+    /* Small helpers                                                       */
+    /* ------------------------------------------------------------------ */
+
+    function clamp(v, a, b) { return v < a ? a : (v > b ? b : v); }
+    function lerp(a, b, t) { return a + (b - a) * t; }
+    function easeOut(t) { return 1 - Math.pow(1 - clamp(t, 0, 1), 3); }
+    function easeInOut(t) { t = clamp(t, 0, 1); return t * t * (3 - 2 * t); }
+    function rand(a, b) { return a + Math.random() * (b - a); }
+
+    function dashUrl(path) {
+        return typeof window.dashUrl === 'function' ? window.dashUrl(path) : path;
+    }
+
+    function mixRgb(a, b, t) {
+        return [lerp(a[0], b[0], t), lerp(a[1], b[1], t), lerp(a[2], b[2], t)];
+    }
+
+    function rgba(c, a) {
+        return 'rgba(' + (c[0] | 0) + ',' + (c[1] | 0) + ',' + (c[2] | 0) + ',' + clamp(a, 0, 1).toFixed(3) + ')';
+    }
+
+    var _colorCtx = null;
+    function parseColor(value, fallback) {
+        // Normalise any CSS color through a canvas fillStyle round trip.
+        try {
+            if (!value) { return fallback; }
+            if (!_colorCtx) { _colorCtx = document.createElement('canvas').getContext('2d'); }
+            _colorCtx.fillStyle = '#000001';
+            _colorCtx.fillStyle = value;
+            var s = _colorCtx.fillStyle;
+            if (s.charAt(0) === '#' && s.length === 7) {
+                return [parseInt(s.slice(1, 3), 16), parseInt(s.slice(3, 5), 16), parseInt(s.slice(5, 7), 16)];
+            }
+            var m = /rgba?\(\s*([\d.]+)[,\s]+([\d.]+)[,\s]+([\d.]+)/.exec(s);
+            if (m) { return [+m[1], +m[2], +m[3]]; }
+        } catch (_) { /* fall through */ }
+        return fallback;
+    }
+
+    function smooth01(t) { t = clamp(t, 0, 1); return t * t * (3 - 2 * t); }
+
+    // Critically damped smoothing toward a target (exact, frame-rate independent).
+    // tauUp applies while rising, tauDown while falling; velocity is kept in o[k + 'V'] so a
+    // change of target never produces a jump in value or in slope.
+    function damp2(o, k, target, tauUp, tauDown, dt, lo, hi) {
+        var x = o[k], v = o[k + 'V'] || 0;
+        var w = 1 / (target >= x ? tauUp : tauDown);
+        var d0 = x - target, c2 = v + w * d0, e = Math.exp(-w * dt);
+        x = target + (d0 + c2 * dt) * e;
+        if (lo !== undefined) { x = clamp(x, lo, hi); }
+        o[k] = x;
+        o[k + 'V'] = (c2 - w * (d0 + c2 * dt)) * e;
+    }
+
+    function hashId(id) {
+        var h = 2166136261;
+        for (var i = 0; i < id.length; i++) { h ^= id.charCodeAt(i); h = Math.imul(h, 16777619); }
+        return h >>> 0;
+    }
+
+    // Agent identity colours (fallback values; dark-background friendly). Red is reserved for
+    // errors and the theme success green for the ok-return flash, so neither is used here.
+    var AGENT_PALETTE = [
+        { name: 'cyan', rgb: [56, 208, 234] },
+        { name: 'violet', rgb: [177, 140, 255] },
+        { name: 'magenta', rgb: [236, 98, 212] },
+        { name: 'amber', rgb: [244, 185, 66] },
+        { name: 'lime', rgb: [181, 217, 70] },
+        { name: 'orange', rgb: [244, 138, 74] },
+        { name: 'sky', rgb: [109, 182, 255] },
+        { name: 'rose', rgb: [242, 122, 166] },
+        { name: 'teal', rgb: [53, 214, 176] },
+        { name: 'indigo', rgb: [116, 130, 246] },
+        { name: 'yellow', rgb: [232, 226, 106] },
+        { name: 'peach', rgb: [246, 181, 155] }
+    ];
+    var KNOWN_AGENT_COLORS = {
+        'light-agent': 'amber', 'climate-agent': 'sky', 'cover-agent': 'indigo', 'vacuum-agent': 'teal',
+        'scene-agent': 'magenta', 'security-agent': 'rose', 'media-agent': 'violet', 'music-agent': 'cyan',
+        'automation-agent': 'orange', 'calendar-agent': 'lime', 'general-agent': 'yellow', 'timer-agent': 'peach',
+        'lists-agent': 'lime', 'send-agent': 'sky'
+    };
+
+    function agentColor(id) {
+        var name = KNOWN_AGENT_COLORS[id];
+        var i;
+        if (name) {
+            for (i = 0; i < AGENT_PALETTE.length; i++) { if (AGENT_PALETTE[i].name === name) { return AGENT_PALETTE[i].rgb.slice(); } }
+        }
+        return AGENT_PALETTE[hashId(String(id)) % AGENT_PALETTE.length].rgb.slice();
+    }
+
+    function prettifyId(id) {
+        var s = String(id || '').replace(/-agent$/i, '').replace(/[-_]+/g, ' ').trim();
+        return s || String(id || '');
+    }
+
+    function shortLabel(name, max) {
+        var s = String(name || '').replace(/\s+agent$/i, '').trim().toLowerCase();
+        return s.length > max ? s.slice(0, Math.max(1, max - 1)) + '…' : s;
+    }
+
+    function fmtDuration(ms) {
+        if (typeof ms !== 'number' || !isFinite(ms)) { return '-'; }
+        return ms >= 1000 ? (ms / 1000).toFixed(1) + ' s' : Math.round(ms) + ' ms';
+    }
+
+    function isPseudo(id, names) {
+        return !id || (PSEUDO_IDS[id] === 1 && !(names && names[id]));
+    }
+
+    /* ------------------------------------------------------------------ */
+    /* Shared EventSource singleton (refcounted)                          */
+    /* ------------------------------------------------------------------ */
+
+    var Stream = {
+        es: null,
+        subs: [],
+        state: 'reconnecting',
+        errors: 0,
+        retries: 0,
+        everOpen: false,
+        retryTimer: null,
+
+        add: function (sub) {
+            this.subs.push(sub);
+            if (this.subs.length === 1) { this._connect(); } else { sub.onState(this.state); }
+        },
+
+        remove: function (sub) {
+            var i = this.subs.indexOf(sub);
+            if (i >= 0) { this.subs.splice(i, 1); }
+            if (!this.subs.length) { this._close(); }
+        },
+
+        _setState: function (state) {
+            this.state = state;
+            this.subs.slice().forEach(function (s) { s.onState(state); });
+        },
+
+        _close: function () {
+            if (this.es) { try { this.es.close(); } catch (_) { /* ignore */ } this.es = null; }
+            if (this.retryTimer) { clearTimeout(this.retryTimer); this.retryTimer = null; }
+            this.errors = 0;
+            this.retries = 0;
+            this.everOpen = false;
+            this.state = 'reconnecting';
+        },
+
+        _connect: function () {
+            var self = this;
+            if (typeof EventSource === 'undefined') { this._setState('offline'); return; }
+            this._setState('reconnecting');
+            var es;
+            try { es = new EventSource(dashUrl(STREAM_PATH)); } catch (_) { this._setState('offline'); return; }
+            this.es = es;
+            var onData = function (ev) {
+                var data;
+                self.retries = 0;
+                try { data = JSON.parse(ev.data); } catch (_) { return; }
+                self.subs.slice().forEach(function (s) { s.onEvent(data); });
+            };
+            es.addEventListener('activity', onData);
+            es.onmessage = onData;
+            es.onopen = function () {
+                var reopened = self.errors > 0;
+                self.errors = 0;
+                self.retries = 0;
+                self.everOpen = true;
+                self._setState('live');
+                if (reopened) { self.subs.slice().forEach(function (s) { s.onReset(); }); }
+            };
+            es.onerror = function () {
+                self.errors += 1;
+                if (es.readyState === 2) {
+                    // The browser gave up (e.g. HTTP error): retry ourselves with backoff.
+                    try { es.close(); } catch (_) { /* ignore */ }
+                    self.es = null;
+                    self._setState('offline');
+                    var delay = Math.min(60000, 2000 * Math.pow(2, self.retries));
+                    self.retries += 1;
+                    self.retryTimer = setTimeout(function () {
+                        self.retryTimer = null;
+                        if (self.subs.length) { self._connect(); }
+                    }, delay);
+                } else {
+                    self._setState(self.errors >= 3 ? 'offline' : 'reconnecting');
+                }
+            };
+        }
+    };
+
+    /* ------------------------------------------------------------------ */
+    /* Point-cloud geometry (shared, cached per point count)              */
+    /* ------------------------------------------------------------------ */
+
+    var _cloudCache = {};
+
+    function seededRandom(seed) {
+        var a = seed >>> 0;
+        return function () {
+            a = (a + 0x6d2b79f5) >>> 0;
+            var t = a;
+            t = Math.imul(t ^ (t >>> 15), t | 1);
+            t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+            return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+        };
+    }
+
+    // A shell-weighted volumetric cloud: most points sit near the surface, some inside.
+    // Neighbour pairs are precomputed once so a frame only projects and strokes them.
+    function cloudGeometry(n, k) {
+        var key = n + ':' + k;
+        if (_cloudCache[key]) { return _cloudCache[key]; }
+        var rnd = seededRandom(1234567 + n);
+        var dir = new Float32Array(n * 3);
+        var r0 = new Float32Array(n);
+        var ph = new Float32Array(n);
+        var tws = new Float32Array(n);
+        var pol = new Float32Array(n);
+        var i, j, m;
+        var golden = Math.PI * (3 - Math.sqrt(5));
+        var spacing = Math.sqrt(12.566 / n);
+        for (i = 0; i < n; i++) {
+            // Fibonacci lattice with a little jitter: even coverage keeps the silhouette round
+            // at every point count (a purely random set leaves bald patches on the limb).
+            var z = clamp(1 - (2 * (i + 0.5)) / n + (rnd() - 0.5) * spacing * 0.35, -1, 1);
+            var q = Math.sqrt(1 - z * z);
+            var a = i * golden + (rnd() - 0.5) * 0.45 * spacing / Math.max(q, 0.25);
+            dir[i * 3] = q * Math.cos(a);
+            dir[i * 3 + 1] = z;
+            dir[i * 3 + 2] = q * Math.sin(a);
+            r0[i] = rnd() < 0.72 ? 1 - 0.01 * rnd() : 0.5 + 0.45 * rnd();
+            ph[i] = rnd() * TAU;
+            tws[i] = 0.6 + rnd() * 1.6;
+            pol[i] = Math.acos(z) / Math.PI;
+        }
+        // Nearest neighbours in the displaced rest position (direction scaled by r0).
+        var px = new Float32Array(n * 3);
+        for (i = 0; i < n; i++) {
+            px[i * 3] = dir[i * 3] * r0[i];
+            px[i * 3 + 1] = dir[i * 3 + 1] * r0[i];
+            px[i * 3 + 2] = dir[i * 3 + 2] * r0[i];
+        }
+        var far = k + 5;
+        var seen = new Set();
+        var edges = [];
+        var bd = new Float32Array(far);
+        var bi = new Int32Array(far);
+        for (i = 0; i < n; i++) {
+            for (m = 0; m < far; m++) { bd[m] = 1e9; bi[m] = -1; }
+            var xi = px[i * 3], yi = px[i * 3 + 1], zi = px[i * 3 + 2];
+            for (j = 0; j < n; j++) {
+                if (j === i) { continue; }
+                var dx = px[j * 3] - xi, dy = px[j * 3 + 1] - yi, dz = px[j * 3 + 2] - zi;
+                var d = dx * dx + dy * dy + dz * dz;
+                if (d >= bd[far - 1]) { continue; }
+                m = far - 1;
+                while (m > 0 && bd[m - 1] > d) { bd[m] = bd[m - 1]; bi[m] = bi[m - 1]; m--; }
+                bd[m] = d;
+                bi[m] = j;
+            }
+            for (m = 0; m < k; m++) {
+                var lo = Math.min(i, bi[m]), hi = Math.max(i, bi[m]);
+                var kk = lo * 8192 + hi;
+                if (!seen.has(kk)) { seen.add(kk); edges.push(lo, hi); }
+            }
+            if (i % 5 === 0) {
+                // A few longer chords give the web its cross-links.
+                var lo2 = Math.min(i, bi[far - 1]), hi2 = Math.max(i, bi[far - 1]);
+                var kk2 = lo2 * 8192 + hi2;
+                if (!seen.has(kk2)) { seen.add(kk2); edges.push(lo2, hi2); }
+            }
+        }
+        var edgeGroup = new Uint8Array(edges.length / 2);
+        for (i = 0; i < edgeGroup.length; i++) { edgeGroup[i] = i % 3; }
+        _cloudCache[key] = { n: n, dir: dir, r0: r0, ph: ph, tws: tws, pol: pol, edges: new Uint16Array(edges), egrp: edgeGroup };
+        return _cloudCache[key];
+    }
+
+    /* ------------------------------------------------------------------ */
+    /* Styles                                                              */
+    /* ------------------------------------------------------------------ */
+
+    // The fallbacks below keep the widget usable on pages that do not define the dashboard tokens.
+    var STYLE = [
+        ':host { display: block; min-width: 0; color: var(--color-cloud, #d5d0ca); font-family: var(--font-body, sans-serif); }',
+        ':host([hidden]) { display: none; }',
+        '*, *::before, *::after { box-sizing: border-box; }',
+        '.card { position: relative; min-width: 0; height: 100%; padding: 1.25rem; overflow: hidden;',
+        '  background: color-mix(in srgb, var(--bg-basalt, #1a1816) 80%, transparent);',
+        '  border: 1px solid color-mix(in srgb, var(--bg-stone, #2e2b28) 60%, transparent); border-radius: 0.75rem; }',
+        '.card.is-compact { padding: 0.5rem; }',
+        '.head { display: flex; align-items: center; min-height: 1.25rem; margin: 0 0 0.75rem 0; padding-right: 7.5rem; }',
+        '.card.is-compact .head { display: none; }',
+        '.title { margin: 0; font-family: var(--font-display, var(--font-body, sans-serif)); font-size: 0.875rem;',
+        '  font-weight: 600; color: var(--color-light, #f5f2ee); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }',
+        '.conn { position: absolute; top: 1.25rem; right: 1.25rem; z-index: 2; display: inline-flex; align-items: center; gap: 0.375rem;',
+        '  font-family: var(--font-mono, monospace); font-size: 0.6875rem; letter-spacing: 0.04em; text-transform: uppercase;',
+        '  color: var(--color-fog, #8a8580); pointer-events: none; }',
+        '.card.is-compact .conn { top: 0.75rem; right: 0.75rem; }',
+        '.dot { width: 0.5rem; height: 0.5rem; border-radius: 999px; background: var(--color-dust, #6b6660); flex-shrink: 0; transition: background-color 0.5s ease, opacity 0.5s ease; }',
+        '.conn { transition: color 0.5s ease; }',
+        '.conn[data-state="live"] .dot { background: var(--success, #7dab8c); }',
+        '.conn[data-state="demo"] .dot { background: var(--info, #8fb4cc); }',
+        '.conn[data-state="reconnecting"] .dot { background: var(--warning, #e2a84b); animation: blink 1.2s ease-in-out infinite; }',
+        '.conn[data-state="offline"] .dot { background: var(--danger, #d4756b); }',
+        '@keyframes blink { 50% { opacity: 0.3; } }',
+        '.stage { position: relative; width: 100%; aspect-ratio: 16 / 10; min-height: 0; }',
+        '.card.is-compact .stage { aspect-ratio: 2 / 1; }',
+        '.card.is-narrow .stage { aspect-ratio: 1 / 1; }',
+        '.card.is-compact.is-narrow .stage { aspect-ratio: 4 / 3; }',
+        'canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; border-radius: 0.5rem; touch-action: manipulation; }',
+        'canvas:focus-visible { outline: 2px solid var(--teal, #e2a84b); outline-offset: 2px; }',
+        '.tip { position: absolute; z-index: 3; max-width: 14rem; padding: 0.5rem 0.625rem; pointer-events: none;',
+        '  background: var(--bg-obsidian, #151512); border: 1px solid var(--border-strong, #4a4642); border-radius: 0.375rem;',
+        '  font-size: 0.75rem; line-height: 1.4; color: var(--color-cloud, #d5d0ca); box-shadow: 0 4px 16px rgba(0, 0, 0, 0.45); }',
+        '.tip[hidden] { display: none; }',
+        '.tip-head { display: flex; align-items: center; gap: 0.4rem; }',
+        '.sw { width: 0.65rem; height: 0.65rem; border-radius: 0.15rem; flex-shrink: 0; }',
+        '.tip-name { font-weight: 600; color: var(--color-light, #f5f2ee); overflow-wrap: anywhere; }',
+        '.tip-id { font-family: var(--font-mono, monospace); font-size: 0.6875rem; color: var(--color-fog, #8a8580); overflow-wrap: anywhere; }',
+        '.tip-row { display: flex; justify-content: space-between; gap: 0.75rem; }',
+        '.tip-row span:first-child { color: var(--color-fog, #8a8580); }',
+        '.tip-row .is-error { color: var(--danger, #d4756b); }',
+        '.sr { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }',
+        '@media (max-width: 480px) { .card { padding: 0.875rem; } .conn { top: 0.875rem; right: 0.875rem; } .head { padding-right: 6.5rem; } }',
+        '@media (prefers-reduced-motion: reduce) { .conn .dot { animation: none !important; } }'
+    ].join('\n');
+
+    /* ------------------------------------------------------------------ */
+    /* Element                                                             */
+    /* ------------------------------------------------------------------ */
+
+    class AgentHubActivityOrb extends HTMLElement {
+        static get palette() { return AGENT_PALETTE.map(function (c) { return { name: c.name, rgb: c.rgb.slice() }; }); }
+
+        static get observedAttributes() { return ['demo', 'heading', 'compact', 'span-timeout']; }
+
+        constructor() {
+            super();
+            var root = this.attachShadow({ mode: 'open' });
+            var style = document.createElement('style');
+            style.textContent = STYLE;
+            root.appendChild(style);
+
+            var card = document.createElement('section');
+            card.className = 'card';
+            this._card = card;
+
+            var head = document.createElement('header');
+            head.className = 'head';
+            this._title = document.createElement('h3');
+            this._title.className = 'title';
+            head.appendChild(this._title);
+            card.appendChild(head);
+
+            this._conn = document.createElement('span');
+            this._conn.className = 'conn';
+            var dot = document.createElement('i');
+            dot.className = 'dot';
+            this._connLabel = document.createElement('span');
+            this._conn.appendChild(dot);
+            this._conn.appendChild(this._connLabel);
+            card.appendChild(this._conn);
+
+            var stage = document.createElement('div');
+            stage.className = 'stage';
+            this._stage = stage;
+            var canvas = document.createElement('canvas');
+            canvas.tabIndex = 0;
+            canvas.setAttribute('role', 'img');
+            this._canvas = canvas;
+            stage.appendChild(canvas);
+            this._tip = document.createElement('div');
+            this._tip.className = 'tip';
+            this._tip.setAttribute('role', 'tooltip');
+            this._tip.hidden = true;
+            stage.appendChild(this._tip);
+            card.appendChild(stage);
+
+            this._live = document.createElement('div');
+            this._live.className = 'sr';
+            this._live.setAttribute('role', 'status');
+            this._live.setAttribute('aria-live', 'polite');
+            card.appendChild(this._live);
+            root.appendChild(card);
+
+            this._ctx = canvas.getContext('2d');
+            this._initState();
+        }
+
+        /* ---------------- lifecycle ---------------- */
+
+        connectedCallback() {
+            if (this._connected) { return; }
+            this._connected = true;
+            this._connectedAt = performance.now();
+            var self = this;
+
+            this._applyAttrs();
+            this._readColors();
+            this._mqReduced = window.matchMedia ? window.matchMedia('(prefers-reduced-motion: reduce)') : null;
+            this._reduced = !!(this._mqReduced && this._mqReduced.matches);
+            this._onReducedChange = function (e) { self._reduced = !!e.matches; self._wake(); };
+            if (this._mqReduced) {
+                if (this._mqReduced.addEventListener) { this._mqReduced.addEventListener('change', this._onReducedChange); }
+                else if (this._mqReduced.addListener) { this._mqReduced.addListener(this._onReducedChange); }
+            }
+
+            this._onVisibility = function () { self._wake(); };
+            document.addEventListener('visibilitychange', this._onVisibility);
+
+            this._resizeObs = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(function () { self._roSeen = true; self._resize(); self._wake(); }) : null;
+            if (this._resizeObs) { this._resizeObs.observe(this._stage); } else { window.addEventListener('resize', this._onWinResize = function () { self._resize(); }); }
+
+            this._inView = true;
+            if (typeof IntersectionObserver !== 'undefined') {
+                this._io = new IntersectionObserver(function (entries) {
+                    var last = entries[entries.length - 1];
+                    self._inView = !!(last && last.isIntersecting);
+                    self._wake();
+                });
+                this._io.observe(this._stage);
+            }
+
+            this._themeObs = typeof MutationObserver !== 'undefined' ? new MutationObserver(function () { self._readColors(); self._wake(); }) : null;
+            if (this._themeObs) {
+                this._themeObs.observe(document.documentElement, { attributes: true, attributeFilter: ['class', 'data-theme', 'style'] });
+            }
+            this._onThemeEvent = function () { self._readColors(); self._wake(); };
+            window.addEventListener('agenthub:theme-change', this._onThemeEvent);
+
+            this._bindPointer();
+            this._sweeper = setInterval(function () { self._sweep(); }, 1000);
+
+            if (!this._resizeObs) { this._roSeen = true; }
+            this._resize();
+            this._prebuild();
+            this._seed();
+            this._startSource();
+            this._wake();
+        }
+
+        disconnectedCallback() {
+            if (!this._connected) { return; }
+            this._connected = false;
+            this._stopSource();
+            this._stopLoop();
+            if (this._prebuildTimer) { clearTimeout(this._prebuildTimer); this._prebuildTimer = 0; }
+            if (this._sweeper) { clearInterval(this._sweeper); this._sweeper = null; }
+            if (this._resizeObs) { this._resizeObs.disconnect(); this._resizeObs = null; }
+            if (this._onWinResize) { window.removeEventListener('resize', this._onWinResize); this._onWinResize = null; }
+            if (this._io) { this._io.disconnect(); this._io = null; }
+            if (this._themeObs) { this._themeObs.disconnect(); this._themeObs = null; }
+            window.removeEventListener('agenthub:theme-change', this._onThemeEvent);
+            document.removeEventListener('visibilitychange', this._onVisibility);
+            if (this._mqReduced) {
+                if (this._mqReduced.removeEventListener) { this._mqReduced.removeEventListener('change', this._onReducedChange); }
+                else if (this._mqReduced.removeListener) { this._mqReduced.removeListener(this._onReducedChange); }
+            }
+            this._unbindPointer();
+            if (this._announceTimer) { clearTimeout(this._announceTimer); this._announceTimer = null; }
+            this._seedToken = (this._seedToken || 0) + 1;
+        }
+
+        attributeChangedCallback(name) {
+            if (!this._card) { return; }
+            if (name === 'span-timeout') { return; }
+            this._applyAttrs();
+            if (name === 'demo' && this._connected) { this._stopSource(); this._startSource(); }
+            this._wake();
+        }
+
+        /* ---------------- public API ---------------- */
+
+        /** Push an activity event (same payload as the SSE stream). Useful for custom feeds and tests. */
+        pushEvent(evt) { this._onEvent(evt); }
+
+        /** Read-only diagnostics for tests and debugging. */
+        get diagnostics() {
+            return {
+                frames: this._frames,
+                running: !!this._raf,
+                reduced: this._reduced,
+                visible: this._visible(),
+                connection: this._connState,
+                openSpans: this._spans.size,
+                slots: this._slots.map(function (s, i) {
+                    var p = this._pos[i];
+                    return {
+                        id: s.id, open: s.open, heat: +s.heat.toFixed(2), errHeat: +s.errHeat.toFixed(2),
+                        requests: s.id && this._stats[s.id] ? this._stats[s.id].requests : 0, x: Math.round(p.x), y: Math.round(p.y)
+                    };
+                }, this),
+                pulses: this._pulses.length,
+                energy: +this._energy.toFixed(2),
+                points: this._cloud ? this._cloud.n : 0,
+                satPoints: this._sat ? this._sat.n : 0,
+                tier: this._tierIdx,
+                workMs: +this._workMs.toFixed(2),
+                intervalMs: +this._ivMs.toFixed(1),
+                act: +this._act.toFixed(2),
+                bs: +this._bs.toFixed(3),
+                bbox: this._bbox,
+                canvas: { w: this._canvas.width, h: this._canvas.height, dpr: this._dpr },
+                stage: { w: this._w, h: this._h },
+                frameTs: this._frameTs || 0,
+                sinceConnectMs: this._connectedAt ? Math.round(performance.now() - this._connectedAt) : -1,
+                labels: this._labelDbg.slice(),
+                params: this._params
+            };
+        }
+
+        /* ---------------- state ---------------- */
+
+        _initState() {
+            this._frames = 0;
+            this._connected = false;
+            this._connState = 'reconnecting';
+            this._names = {};
+            this._stats = {};
+            this._spans = new Map();
+            this._pulses = [];
+            this._slots = [];
+            for (var i = 0; i < SLOT_COUNT; i++) {
+                this._slots.push({
+                    id: null, name: '', shownId: null, shownName: '', appear: 0,
+                    open: 0, heat: 0, errHeat: 0, flash: 0, lastActive: -i, chipText: '', chipErr: false, chipA: 0,
+                    flashUntil: 0, errUntil: 0, chipUntil: 0, okT: 0, omega: 0.25,
+                    col: AGENT_PALETTE[0].rgb.slice(), colT: AGENT_PALETTE[0].rgb.slice(), dc: AGENT_PALETTE[0].rgb.slice(),
+                    rot: rand(0, TAU), rotSpeed: 0.25, phase: rand(0, TAU), bRate: 1,
+                    spin: rand(0, TAU)
+                });
+            }
+            this._openPhases = 0;
+            this._energy = 0;
+            this._kick = 0;
+            this._kickLevel = 0;
+            this._kickUntil = 0;
+            this._phaseFlash = 0;
+            this._pfUntil = 0;
+            this._omega = 0.1;
+            this._rotDelta = 0;
+            this._bbox = { w: 0, h: 0 };
+            this._labelDbg = [];
+            this._ringCol = [200, 220, 235];
+            this._ringVis = 0;
+            this._pulseMul = 1;
+            this._webMul = 1;
+            this._time = 0;
+            this._act = 0;
+            this._waves = [];
+            this._workMs = 0;
+            this._ivMs = 0;
+            this._slowFrames = 0;
+            this._warm = 0;
+            this._tierIdx = 0;
+            this._ladder = null;
+            this._layer = null;
+            this._prevLayer = null;
+            this._xf = 1;
+            this._intro = 0;
+            this._introV = 0;
+            this._roSeen = false;
+            this._layT = null;
+            this._ring = null;
+            this._prebuildTimer = 0;
+            this._bs = 0;
+            this._rad = 0;
+            this._wavePos = 2;
+            this._rotY = 0.6;
+            this._orbit = 0.3;
+            this._w = 0;
+            this._h = 0;
+            this._dpr = 1;
+            this._pos = [];
+            for (var j = 0; j < SLOT_COUNT; j++) { this._pos.push({ x: 0, y: 0, s: 1, z: 0, r: 0, vis: false }); }
+            this._hover = -1;
+            this._pinned = -1;
+            this._focusIdx = -1;
+            this._raf = 0;
+            this._lastFrame = 0;
+            this._demoTimers = [];
+            this._demoSeq = 0;
+            this._announceMsg = '';
+            this._announceAt = 0;
+            this._sub = null;
+            this._colors = null;
+            this._fonts = { mono: 'monospace' };
+        }
+
+        _applyAttrs() {
+            var heading = this.getAttribute('heading');
+            this._title.textContent = heading !== null && heading !== '' ? heading : 'Agent Activity';
+            this._compact = this.hasAttribute('compact');
+            this._demo = this.hasAttribute('demo');
+            this._card.classList.toggle('is-compact', this._compact);
+            this._canvas.setAttribute('aria-label', this._ariaSummary());
+            this._renderConn();
+        }
+
+        _spanTimeout() {
+            var v = parseInt(this.getAttribute('span-timeout'), 10);
+            return v > 0 ? v : DEFAULT_SPAN_TIMEOUT_MS;
+        }
+
+        _visible() {
+            return this._connected && this._inView && !document.hidden;
+        }
+
+        /* ---------------- colors ---------------- */
+
+        _readColors() {
+            var cs = getComputedStyle(this);
+            var get = function (name, fb) { return parseColor(cs.getPropertyValue(name).trim(), fb); };
+            this._colors = {
+                sphere: get('--blue', [143, 180, 204]),
+                core: get('--color-bright', [245, 242, 238]),
+                active: get('--teal-glow', [245, 194, 107]),
+                ok: get('--success', [125, 171, 140]),
+                err: get('--danger', [212, 117, 107]),
+                text: get('--color-mist', [168, 162, 156]),
+                dim: get('--color-dust', [107, 102, 96]),
+                bg: get('--bg-basalt', [26, 24, 22])
+            };
+            var mono = cs.getPropertyValue('--font-mono').trim();
+            this._fonts.mono = mono || 'ui-monospace, Menlo, Consolas, monospace';
+        }
+
+        /* ---------------- sizing ---------------- */
+
+        _resize() {
+            // Set the aspect-ratio class first: the stage must be measured with its final shape.
+            var hostW = this.getBoundingClientRect().width;
+            this._card.classList.toggle('is-narrow', hostW > 0 && hostW < 480);
+            var rect = this._stage.getBoundingClientRect();
+            var w = Math.max(1, Math.round(rect.width));
+            var h = Math.max(1, Math.round(rect.height));
+            var dpr = Math.min(2, window.devicePixelRatio || 1);
+            if (w === this._w && h === this._h && dpr === this._dpr) { return; }
+            this._w = w;
+            this._h = h;
+            this._dpr = dpr;
+            this._canvas.width = Math.round(w * dpr);
+            this._canvas.height = Math.round(h * dpr);
+            var small = (window.innerWidth || w) < 600 || (navigator.hardwareConcurrency || 8) <= 4;
+            this._minFrameMs = small ? 1000 / 30 : 0;
+            var ladder = small ? TIERS_SMALL : TIERS_DESKTOP;
+            if (ladder !== this._ladder) { this._ladder = ladder; this._tierIdx = 0; this._warm = 0; this._slowFrames = 0; this._prevLayer = null; }
+            this._setTier(this._tierIdx, false);
+            this._layout();
+            // Resizing a canvas clears it: repaint synchronously so no empty frame is ever shown.
+            if (this._roSeen && this._visible() && this._colors && this._layer) { this._draw(); }
+            this._wake();
+        }
+
+        _makeLayer(idx) {
+            var small = this._ladder === TIERS_SMALL;
+            var tier = this._ladder[idx];
+            var G = cloudGeometry(tier.c, small ? 4 : 6);
+            var SG = cloudGeometry(tier.s, 3);
+            return {
+                G: G, proj: new Float32Array(G.n * 3), pbri: new Float32Array(G.n), pbk: new Uint8Array(G.n),
+                ekey: new Uint8Array(G.edges.length / 2), sat: SG, sp: new Float32Array(SG.n * 3)
+            };
+        }
+
+        // Switch the quality tier. With fade the previous layer keeps drawing with a falling weight while the
+        // new one rises, so neither silhouette nor brightness pops (the weights always sum to one).
+        _setTier(idx, fade) {
+            this._tierIdx = idx;
+            this._satPoint = this._ladder === TIERS_SMALL ? 1.0 : 1.35;
+            var layer = this._makeLayer(idx);
+            if (fade && this._layer) { this._prevLayer = this._layer; this._xf = 0; } else { this._prevLayer = null; this._xf = 1; }
+            this._layer = layer;
+            this._cloud = layer.G;
+            this._sat = layer.sat;
+        }
+
+        // Build the lower tiers ahead of time (in small tasks) so a later step-down never hitches.
+        _prebuild() {
+            var self = this, k = this._tierIdx + 1;
+            var step = function () {
+                self._prebuildTimer = 0;
+                if (!self._connected || !self._ladder || k >= self._ladder.length) { return; }
+                var small = self._ladder === TIERS_SMALL;
+                cloudGeometry(self._ladder[k].c, small ? 4 : 6);
+                cloudGeometry(self._ladder[k].s, 3);
+                k += 1;
+                self._prebuildTimer = setTimeout(step, 250);
+            };
+            this._prebuildTimer = setTimeout(step, 2200);
+        }
+
+        _layout() {
+            var w = this._w, h = this._h, m = Math.min(w, h);
+            var narrow = w < 400;
+            var nodeR = clamp(m * 0.06, 11, 27);
+            var sphereR = m * (narrow ? 0.175 : 0.22);
+            this._labelFont = narrow ? 9 : 11;
+            this._labelMax = narrow ? 9 : 14;
+            var sideMargin = Math.max(nodeR * 1.7, narrow ? 40 : 56);
+            var rx = Math.max(10, w / 2 - sideMargin);
+            var ryAvail = (h / 2 - nodeR * 1.75 - this._labelFont - 14) / 1.2;
+            var sinT = clamp(ryAvail / rx, 0.2, 0.95);
+            var target = { cx: w / 2, cy: h / 2, R: rx, sinT: sinT, f: rx * 4.5, sphereR: sphereR, nodeR: nodeR };
+            this._layT = target;
+            if (!this._ring) {
+                this._setLayout(target);
+            }
+        }
+
+        _setLayout(L) {
+            this._nodeR = L.nodeR;
+            this._sphereR = L.sphereR;
+            this._ring = { cx: L.cx, cy: L.cy, R: L.R, sinT: L.sinT, cosT: Math.sqrt(1 - L.sinT * L.sinT), f: L.f };
+        }
+
+        // Later layout changes (window or container resize) glide to the new geometry instead of jumping.
+        _easeLayout(dt) {
+            var T = this._layT, c = this._ring;
+            if (!T || !c) { return; }
+            var k = 1 - Math.exp(-dt / 0.14);
+            var cur = { cx: c.cx, cy: c.cy, R: c.R, sinT: c.sinT, f: c.f, sphereR: this._sphereR, nodeR: this._nodeR };
+            var diff = 0, key;
+            for (key in T) { diff += Math.abs(T[key] - cur[key]); }
+            if (diff < 0.05) { if (diff > 0) { this._setLayout(T); } return; }
+            for (key in T) { cur[key] += (T[key] - cur[key]) * k; }
+            this._setLayout(cur);
+        }
+
+        /* ---------------- data seeding ---------------- */
+
+        async _fetchJson(path) {
+            var ctl = typeof AbortController !== 'undefined' ? new AbortController() : null;
+            var timer = ctl ? setTimeout(function () { ctl.abort(); }, 2500) : null;
+            try {
+                var res = await fetch(dashUrl(path), { credentials: 'same-origin', signal: ctl ? ctl.signal : undefined });
+                if (!res.ok) { return null; }
+                return await res.json();
+            } catch (_) {
+                return null;
+            } finally {
+                if (timer) { clearTimeout(timer); }
+            }
+        }
+
+        async _seed() {
+            var token = this._seedToken = (this._seedToken || 0) + 1;
+            // Opened from file: or data: (previews) there is no backend to ask.
+            var canFetch = /^https?:$/.test(window.location.protocol);
+            var results = canFetch
+                ? await Promise.all([this._fetchJson(AGENTS_PATH), this._fetchJson(EXTENDED_PATH)])
+                : [null, null];
+            if (token !== this._seedToken || !this._connected) { return; }
+            var agents = results[0] && Array.isArray(results[0].agents) ? results[0].agents : [];
+            var ext = results[1];
+            var names = {};
+            var listed = [];
+            agents.forEach(function (a) {
+                if (!a || !a.agent_id) { return; }
+                names[a.agent_id] = a.name ? String(a.name) : prettifyId(a.agent_id);
+                if (a.enabled !== false && a.enabled !== 0 && !PSEUDO_IDS[a.agent_id]) { listed.push(a.agent_id); }
+            });
+            this._names = names;
+            var haveNames = agents.length > 0;
+
+            var dist = ext && Array.isArray(ext.agent_distribution) ? ext.agent_distribution.slice() : [];
+            dist.sort(function (a, b) { return (b.request_count || 0) - (a.request_count || 0); });
+            var ids = [];
+            var add = function (id) {
+                if (!id || ids.indexOf(id) >= 0 || isPseudo(id, names)) { return; }
+                if (haveNames && !names[id]) { return; }
+                ids.push(id);
+            };
+            dist.forEach(function (d) { add(d && d.agent_id); });
+            listed.forEach(add);
+            if (this._demo) {
+                // Previews without a backend (or with few agents) are padded with well-known ids.
+                DEMO_FALLBACK_IDS.forEach(function (id) { if (ids.length < SLOT_COUNT && ids.indexOf(id) < 0) { ids.push(id); } });
+            }
+            this._applySeed(ids);
+            this._seedDone = true;
+            if (this._demo && this._connected) { this._demoKick(); }
+        }
+
+        _applySeed(ids) {
+            var self = this;
+            var present = {};
+            this._slots.forEach(function (s) { if (s.id) { present[s.id] = true; } });
+            var queue = ids.filter(function (id) { return !present[id]; });
+            this._slots.forEach(function (s) {
+                if (s.id && self._names[s.id]) { s.name = self._names[s.id]; if (s.shownId === s.id) { s.shownName = s.name; } }
+            });
+            this._slots.forEach(function (s) {
+                if (s.id || !queue.length) { return; }
+                var id = queue.shift();
+                s.id = id;
+                s.name = self._displayName(id);
+                self._showInSlot(s, id);
+                s.col = s.colT.slice();
+                s.omega = s.rotSpeed;
+                s.omegaV = 0;
+                s.appear = 0;
+            });
+            this._canvas.setAttribute('aria-label', this._ariaSummary());
+            this._wake();
+        }
+
+        _displayName(id) {
+            return this._names[id] || prettifyId(id);
+        }
+
+        /* ---------------- event source / demo ---------------- */
+
+        _startSource() {
+            if (this._demo) {
+                this._setConn('demo');
+                if (this._seedDone) { this._demoKick(); }
+                return;
+            }
+            var self = this;
+            this._sub = {
+                onEvent: function (e) { self._onEvent(e); },
+                onState: function (st) { self._setConn(st); },
+                onReset: function () { self._resetSpans(); }
+            };
+            Stream.add(this._sub);
+        }
+
+        _stopSource() {
+            if (this._sub) { Stream.remove(this._sub); this._sub = null; }
+            this._demoTimers.forEach(function (t) { clearTimeout(t); });
+            this._demoTimers = [];
+            this._demoRunning = false;
+            this._demoPhaseName = '';
+            this._resetSpans();
+        }
+
+        _setConn(state) {
+            this._connState = state;
+            this._renderConn();
+        }
+
+        _renderConn() {
+            var st = this._demo ? 'demo' : this._connState;
+            this._conn.setAttribute('data-state', st);
+            this._connLabel.textContent = st;
+            this._conn.setAttribute('title', st === 'live' ? 'Live activity stream connected'
+                : st === 'demo' ? 'Simulated events' : st === 'offline' ? 'Activity stream offline' : 'Activity stream reconnecting');
+        }
+
+        _later(fn, ms) {
+            var self = this;
+            var t = setTimeout(function () {
+                var i = self._demoTimers.indexOf(t);
+                if (i >= 0) { self._demoTimers.splice(i, 1); }
+                if (self._demoRunning) { fn(); }
+            }, ms);
+            this._demoTimers.push(t);
+        }
+
+        // Demo cycle: calm idle phase (no events, breathing and link waves clearly visible) followed by a burst
+        // of requests. Attributes demo-idle (seconds, default 10) and demo-burst (requests, default 2) tune it.
+        _demoKick() {
+            if (this._demoRunning) { return; }
+            this._demoRunning = true;
+            this._demoPhaseName = '';
+            this._demoSetPhase('idle');
+            // The first idle phase after start-up is a bit longer (and the widget is still fading in).
+            this._later(this._demoBurst.bind(this), this._demoIdleMs(true));
+        }
+
+        _demoIdleMs(first) {
+            var sec = parseFloat(this.getAttribute('demo-idle'));
+            if (!(sec >= 0)) { sec = 10; }
+            return Math.max(500, sec * 1000 * rand(0.8, 1.2) * (first ? 1.2 : 1));
+        }
+
+        _demoSetPhase(phase) {
+            if (this._demoPhaseName === phase) { return; }
+            this._demoPhaseName = phase;
+            this.dispatchEvent(new CustomEvent('agenthub-orb-phase', { bubbles: true, composed: true, detail: { phase: phase } }));
+        }
+
+        _demoBurst() {
+            var self = this;
+            var n = parseInt(this.getAttribute('demo-burst'), 10);
+            n = n >= 1 ? Math.min(n, 6) : 2;
+            var span = rand(5000, 8000);
+            var gap = n > 1 ? Math.max(0, span - 2400) / (n - 1) : 0;
+            var pending = n;
+            var startedAt = performance.now();
+            this._demoSetPhase('activity');
+            var finished = function () {
+                pending -= 1;
+                if (pending > 0) { return; }
+                // The burst lasts about `span` ms even when its requests finish earlier.
+                var wait = Math.max(1500, span - (performance.now() - startedAt));
+                self._later(function () {
+                    self._demoSetPhase('idle');
+                    self._later(self._demoBurst.bind(self), self._demoIdleMs(false));
+                }, wait);
+            };
+            for (var k = 0; k < n; k++) {
+                this._later(function () { self._demoRequest(finished); }, n > 1 ? k * gap : Math.max(0, span - 2400) / 2);
+            }
+        }
+
+        _demoEmit(type, id, name, agent, status, dur) {
+            this._onEvent({
+                type: type, span_id: id, trace_id: 'demo', span_name: name, agent_id: agent || null,
+                ts: new Date().toISOString(), status: status || null, duration_ms: dur === undefined ? null : dur, source: 'demo'
+            });
+        }
+
+        _demoRequest(done) {
+            var self = this;
+            var seq = ++this._demoSeq;
+            var ids = this._slots.filter(function (s) { return s.id && s.open === 0; }).map(function (s) { return s.id; });
+            if (!ids.length) { done(); return; }
+            var targets = [ids[Math.floor(Math.random() * ids.length)]];
+            if (ids.length > 1 && Math.random() < 0.25) {
+                var other;
+                do { other = ids[Math.floor(Math.random() * ids.length)]; } while (other === targets[0]);
+                targets.push(other);
+            }
+            var classifyMs = rand(180, 520);
+            this._demoEmit('span_start', 'dc' + seq, 'classify', null);
+            this._later(function () {
+                self._demoEmit('span_end', 'dc' + seq, 'classify', null, 'ok', classifyMs);
+                var longest = 0;
+                targets.forEach(function (aid, i) {
+                    var dur = rand(500, 2400);
+                    var failed = Math.random() < 0.12;
+                    var delay = i * rand(80, 260);
+                    longest = Math.max(longest, dur + delay);
+                    self._later(function () {
+                        self._demoEmit('span_start', 'd' + seq + '_' + i, 'dispatch', aid);
+                        self._later(function () {
+                            self._demoEmit('span_end', 'd' + seq + '_' + i, 'dispatch', aid, failed ? 'error' : 'ok', dur);
+                        }, dur);
+                    }, delay);
+                });
+                self._later(function () {
+                    self._demoEmit('span_start', 'dr' + seq, 'return', null);
+                    self._later(function () {
+                        self._demoEmit('span_end', 'dr' + seq, 'return', null, 'ok', 140);
+                        done();
+                    }, 140);
+                }, longest + 400);
+            }, classifyMs);
+        }
+
+        /* ---------------- event handling ---------------- */
+
+        _kindOf(name) {
+            if (name.indexOf('dispatch') === 0) { return 'agent'; }
+            if (name === 'classify' || name.indexOf('classify.') === 0 || name === 'cache_lookup' || name === 'rewrite' || name === 'return') {
+                return 'phase';
+            }
+            return null;
+        }
+
+        _onEvent(e) {
+            if (!e || typeof e !== 'object') { return; }
+            var kind = this._kindOf(String(e.span_name || ''));
+            if (!kind) { return; }
+            if (e.type === 'span_start') { this._start(kind, e); }
+            else if (e.type === 'span_end') { this._end(kind, e); }
+            this._wake();
+        }
+
+        _resolveAgent(raw) {
+            if (raw === null || raw === undefined || raw === '') { return null; }
+            var id = String(raw);
+            return isPseudo(id, this._names) ? null : id;
+        }
+
+        _start(kind, e) {
+            var id = e.span_id ? String(e.span_id) : null;
+            if (!id || this._spans.has(id)) { return; }
+            var now = performance.now();
+            var rec = { kind: kind, t: now, aid: null };
+            if (kind === 'phase') {
+                this._spans.set(id, rec);
+                this._openPhases += 1;
+                this._pfUntil = now + 300;
+                this._kickCore(0.4);
+                this._addWave(0.6, -1);
+                this._announce('orchestrator ' + String(e.span_name).replace(/[._]/g, ' '));
+                return;
+            }
+            var aid = this._resolveAgent(e.agent_id);
+            if (!aid) { return; }
+            rec.aid = aid;
+            var idx = this._ensureSlot(aid);
+            rec.idx = idx;
+            this._spans.set(id, rec);
+            if (idx < 0) { return; }
+            var slot = this._slots[idx];
+            slot.open += 1;
+            slot.lastActive = now;
+            slot.flashUntil = now + 200;
+            this._launchPulse(idx, 1, 'out');
+            this._addWave(1, idx);
+            this._announce(slot.name + ' started');
+        }
+
+        _end(kind, e) {
+            var id = e.span_id ? String(e.span_id) : null;
+            var rec = id ? this._spans.get(id) : null;
+            if (id) { this._spans.delete(id); }
+            var now = performance.now();
+            var status = e.status === 'error' ? 'error' : 'ok';
+            if (kind === 'phase') {
+                if (rec) { this._openPhases = Math.max(0, this._openPhases - 1); }
+                return;
+            }
+            var aid = (rec && rec.aid) || this._resolveAgent(e.agent_id);
+            if (!aid) { return; }
+            var dur = typeof e.duration_ms === 'number' ? e.duration_ms : (rec ? now - rec.t : null);
+            var st = this._stats[aid] || (this._stats[aid] = { requests: 0, lastDuration: null, lastStatus: null });
+            st.requests += 1;
+            st.lastDuration = dur;
+            st.lastStatus = status;
+            var idx = this._slotIndex(aid);
+            if (rec && rec.idx >= 0 && idx >= 0 && this._slots[idx].open > 0) { this._slots[idx].open -= 1; }
+            if (idx < 0 && !rec) { idx = this._ensureSlot(aid); }
+            if (idx < 0) { return; }
+            var slot = this._slots[idx];
+            slot.lastActive = now;
+            slot.chipText = fmtDuration(dur);
+            slot.chipErr = status === 'error';
+            slot.chipUntil = now + 2600;
+            slot.flashUntil = now + 200;
+            if (status === 'error') { slot.errUntil = now + 1300; } else if (!this._reduced) { slot.okT = 0.001; }
+            this._launchPulse(idx, -1, status === 'error' ? 'err' : 'ok');
+            this._announce(slot.name + (status === 'error' ? ' failed' : ' finished in ' + fmtDuration(dur)));
+        }
+
+        _slotIndex(aid) {
+            for (var i = 0; i < this._slots.length; i++) { if (this._slots[i].id === aid) { return i; } }
+            return -1;
+        }
+
+        _ensureSlot(aid) {
+            var found = this._slotIndex(aid);
+            if (found >= 0) { return found; }
+            var victim = -1;
+            for (var i = 0; i < this._slots.length; i++) {
+                var s = this._slots[i];
+                if (s.open > 0) { continue; }
+                if (!s.id) { victim = i; break; }
+                if (victim < 0 || s.lastActive < this._slots[victim].lastActive) { victim = i; }
+            }
+            if (victim < 0) { return -1; }
+            var slot = this._slots[victim];
+            slot.id = aid;
+            slot.name = this._displayName(aid);
+            slot.chipUntil = 0;
+            slot.errUntil = 0;
+            slot.flashUntil = 0;
+            slot.swapAt = performance.now();
+            if (!slot.shownId) { this._showInSlot(slot, aid); slot.col = slot.colT.slice(); slot.omega = slot.rotSpeed; slot.omegaV = 0; slot.appear = 0; }
+            this._canvas.setAttribute('aria-label', this._ariaSummary());
+            return victim;
+        }
+
+        _resetSpans() {
+            this._spans.clear();
+            this._openPhases = 0;
+            this._slots.forEach(function (s) { s.open = 0; });
+        }
+
+        _sweep() {
+            if (!this._spans.size) { return; }
+            var limit = this._spanTimeout();
+            var now = performance.now();
+            var self = this;
+            var expired = false;
+            this._spans.forEach(function (rec, id) {
+                if (now - rec.t < limit) { return; }
+                self._spans.delete(id);
+                expired = true;
+                if (rec.kind === 'phase') { self._openPhases = Math.max(0, self._openPhases - 1); }
+                else if (rec.idx >= 0) {
+                    var idx = self._slotIndex(rec.aid);
+                    if (idx >= 0 && self._slots[idx].open > 0) { self._slots[idx].open -= 1; }
+                }
+            });
+            if (expired) { this._wake(); }
+        }
+
+        // Make a slot display an agent: identity colour, own rotation speed, phase and breathing rate.
+        _showInSlot(slot, aid) {
+            var h = hashId(String(aid));
+            slot.shownId = aid;
+            slot.shownName = slot.name;
+            slot.colT = agentColor(aid);
+            slot.phase = ((h >>> 3) % 1000) / 1000 * TAU;
+            slot.rotSpeed = 0.18 + ((h >>> 11) % 100) / 100 * 0.22;
+            slot.bRate = 0.88 + ((h >>> 17) % 100) / 100 * 0.24;
+        }
+
+        _kickCore(level) {
+            var now = performance.now();
+            this._kickLevel = now < this._kickUntil ? Math.max(level, this._kickLevel) : level;
+            this._kickUntil = now + 220;
+        }
+
+        _addWave(strength, idx) {
+            if (this._reduced) { return; }
+            if (this._waves.length > 5) { this._waves.shift(); }
+            this._waves.push({ t: 0, a: strength, idx: idx });
+        }
+
+        _launchPulse(idx, dir, kind) {
+            if (this._pulses.length > 40) { this._pulses.shift(); }
+            var slot = this._slots[idx];
+            if (this._reduced) { return; }
+            this._pulses.push({
+                idx: idx, dir: dir, kind: kind, t: slot.appear < 0.85 ? -0.4 : 0,
+                dur: rand(0.7, 0.95)
+            });
+            if (dir > 0) { this._kickCore(0.5); }
+        }
+
+        /* ---------------- accessibility ---------------- */
+
+        _ariaSummary() {
+            var names = this._slots.filter(function (s) { return s.id; }).map(function (s) { return s.name; });
+            return 'Agent activity: orchestrator connected to ' + (names.length ? names.join(', ') : 'no agents yet') +
+                '. Use left and right arrow keys to inspect an agent.';
+        }
+
+        _announce(msg) {
+            this._announceMsg = msg;
+            if (this._announceTimer) { return; }
+            var self = this;
+            var wait = Math.max(0, 1500 - (performance.now() - this._announceAt));
+            this._announceTimer = setTimeout(function () {
+                self._announceTimer = null;
+                self._announceAt = performance.now();
+                self._live.textContent = self._announceMsg;
+            }, wait);
+        }
+
+        /* ---------------- pointer / keyboard ---------------- */
+
+        _bindPointer() {
+            var self = this;
+            var c = this._canvas;
+            this._h_move = function (ev) {
+                if (ev.pointerType && ev.pointerType !== 'mouse') { return; }
+                var i = self._hit(ev);
+                if (i !== self._hover) { self._hover = i; self._showTip(i); self._wake(); }
+                c.style.cursor = i >= 0 ? 'pointer' : 'default';
+            };
+            this._h_leave = function () {
+                if (self._hover >= 0) { self._hover = -1; self._showTip(self._pinned >= 0 ? self._pinned : self._focusIdx); self._wake(); }
+                c.style.cursor = 'default';
+            };
+            this._h_down = function (ev) {
+                var i = self._hit(ev);
+                if (ev.pointerType === 'mouse') { return; }
+                self._pinned = i === self._pinned ? -1 : i;
+                self._showTip(self._pinned);
+                self._wake();
+            };
+            this._h_key = function (ev) {
+                var filled = [];
+                self._slots.forEach(function (s, i) { if (s.id && s.shownId === s.id) { filled.push(i); } });
+                if (ev.key === 'Escape') { self._focusIdx = -1; self._pinned = -1; self._showTip(-1); self._wake(); return; }
+                if (!filled.length || (ev.key !== 'ArrowRight' && ev.key !== 'ArrowLeft')) { return; }
+                ev.preventDefault();
+                var at = filled.indexOf(self._focusIdx);
+                var next = ev.key === 'ArrowRight' ? (at + 1) % filled.length : (at <= 0 ? filled.length - 1 : at - 1);
+                self._focusIdx = filled[next];
+                self._showTip(self._focusIdx);
+                self._wake();
+            };
+            this._h_blur = function () { self._focusIdx = -1; if (self._hover < 0 && self._pinned < 0) { self._showTip(-1); } self._wake(); };
+            c.addEventListener('pointermove', this._h_move);
+            c.addEventListener('pointerleave', this._h_leave);
+            c.addEventListener('pointerdown', this._h_down);
+            c.addEventListener('keydown', this._h_key);
+            c.addEventListener('blur', this._h_blur);
+        }
+
+        _unbindPointer() {
+            var c = this._canvas;
+            c.removeEventListener('pointermove', this._h_move);
+            c.removeEventListener('pointerleave', this._h_leave);
+            c.removeEventListener('pointerdown', this._h_down);
+            c.removeEventListener('keydown', this._h_key);
+            c.removeEventListener('blur', this._h_blur);
+        }
+
+        _hit(ev) {
+            var rect = this._canvas.getBoundingClientRect();
+            var x = ev.clientX - rect.left, y = ev.clientY - rect.top;
+            var best = -1, bestD = 1e9;
+            for (var i = 0; i < this._pos.length; i++) {
+                var p = this._pos[i];
+                if (!p.vis) { continue; }
+                var d = Math.hypot(x - p.x, y - p.y);
+                var reach = Math.max(p.r + 10, 20);
+                if (d <= reach && d < bestD) { best = i; bestD = d; }
+            }
+            return best;
+        }
+
+        _showTip(idx) {
+            var tip = this._tip;
+            if (this._hover >= 0) { idx = this._hover; }
+            var slot = idx >= 0 ? this._slots[idx] : null;
+            if (!slot || !slot.id) { tip.hidden = true; return; }
+            var st = this._stats[slot.id] || { requests: 0, lastDuration: null, lastStatus: null };
+            while (tip.firstChild) { tip.removeChild(tip.firstChild); }
+            var add = function (cls, text) {
+                var d = document.createElement('div');
+                d.className = cls;
+                d.textContent = text;
+                tip.appendChild(d);
+                return d;
+            };
+            var head = document.createElement('div');
+            head.className = 'tip-head';
+            var sw = document.createElement('span');
+            sw.className = 'sw';
+            sw.style.background = rgba(slot.colT, 1);
+            head.appendChild(sw);
+            var nm = document.createElement('span');
+            nm.className = 'tip-name';
+            nm.textContent = slot.name;
+            head.appendChild(nm);
+            tip.appendChild(head);
+            add('tip-id', slot.id);
+            var row = function (label, value, err) {
+                var r = document.createElement('div');
+                r.className = 'tip-row';
+                var a = document.createElement('span');
+                a.textContent = label;
+                var b = document.createElement('span');
+                b.textContent = value;
+                if (err) { b.className = 'is-error'; }
+                r.appendChild(a);
+                r.appendChild(b);
+                tip.appendChild(r);
+            };
+            row('Requests (session)', String(st.requests));
+            row('Last duration', fmtDuration(st.lastDuration));
+            row('Last status', st.lastStatus || '-', st.lastStatus === 'error');
+            tip.hidden = false;
+            this._tipIdx = idx;
+            this._placeTip();
+        }
+
+        _placeTip() {
+            if (this._tip.hidden || this._tipIdx < 0) { return; }
+            var p = this._pos[this._tipIdx];
+            var tw = this._tip.offsetWidth, th = this._tip.offsetHeight;
+            var x = clamp(p.x - tw / 2, 4, Math.max(4, this._w - tw - 4));
+            var y = p.y - p.r - th - 24;
+            if (y < 4) { y = p.y + p.r + 22; }
+            this._tip.style.left = x + 'px';
+            this._tip.style.top = clamp(y, 4, Math.max(4, this._h - th - 4)) + 'px';
+        }
+
+        /* ---------------- render loop ---------------- */
+
+        _busy() {
+            if (!this._reduced) { return true; }
+            if (this._intro < 0.99 || this._prevLayer) { return true; }
+            if (this._energy > 0.03 || this._openPhases > 0 || this._kick > 0.03 || this._phaseFlash > 0.03) { return true; }
+            for (var i = 0; i < this._slots.length; i++) {
+                var s = this._slots[i];
+                if (s.open > 0 || s.heat > 0.03 || s.errHeat > 0.03 || s.flash > 0.03 || s.chipA > 0.02) { return true; }
+                if (s.shownId !== s.id) { return true; }
+                if (s.id && s.appear < 0.97) { return true; }
+                if (Math.abs(s.col[0] - s.colT[0]) + Math.abs(s.col[1] - s.colT[1]) + Math.abs(s.col[2] - s.colT[2]) > 3) { return true; }
+            }
+            return false;
+        }
+
+        _wake() {
+            if (!this._connected) { return; }
+            if (!this._visible()) { this._stopLoop(); return; }
+            if (this._raf) { return; }
+            var self = this;
+            this._lastFrame = 0;
+            this._raf = requestAnimationFrame(function (ts) { self._frame(ts); });
+        }
+
+        _stopLoop() {
+            if (this._raf) { cancelAnimationFrame(this._raf); this._raf = 0; }
+        }
+
+        _frame(ts) {
+            this._raf = 0;
+            if (!this._visible()) { return; }
+            var self = this;
+            var schedule = function () { self._raf = requestAnimationFrame(function (t) { self._frame(t); }); };
+            // Start painting only after the first measured size (or a short timeout): no first-paint jump.
+            if (!this._roSeen && performance.now() - this._connectedAt < 150) { schedule(); return; }
+            if (this._lastFrame && this._minFrameMs && ts - this._lastFrame < this._minFrameMs - 2) { schedule(); return; }
+            var gap = this._lastFrame ? ts - this._lastFrame : 0;
+            // A long gap (tab load, hitch, throttling) must not make the animation lurch: cap dt.
+            var dt = this._lastFrame ? Math.min(0.05, gap / 1000) : 0.016;
+            this._lastFrame = ts;
+            this._frameTs = ts;
+            var t0 = performance.now();
+            this._update(dt);
+            this._draw();
+            this._frames += 1;
+            this._adapt(performance.now() - t0, gap);
+            if (this._busy()) { schedule(); }
+            else { this._lastFrame = 0; }
+        }
+
+        // Steps the point count down when frames run long (never back up, to avoid flapping).
+        _adapt(work, gap) {
+            if (this._reduced || !gap || gap > 250) { return; }
+            // Grace period: JIT warm-up, first layout and first paint are not representative.
+            if (performance.now() - this._connectedAt < 2500) { this._workMs = work; this._ivMs = gap; this._slowFrames = 0; this._warm = 0; return; }
+            this._workMs += (work - this._workMs) * 0.06;
+            this._ivMs += (gap - this._ivMs) * 0.06;
+            if (this._warm < 40) { this._warm += 1; this._workMs = work; this._ivMs = gap; return; }
+            var small = this._ladder === TIERS_SMALL;
+            var budget = small ? 11 : 8;
+            var target = Math.max(16.7, this._minFrameMs || 0);
+            if (this._workMs > budget || this._ivMs > target * 1.4) { this._slowFrames += 1; } else { this._slowFrames = 0; }
+            if (this._slowFrames >= 45 && this._tierIdx < this._ladder.length - 1) {
+                this._setTier(this._tierIdx + 1, true);
+                this._slowFrames = 0;
+                this._warm = 0;
+            }
+        }
+
+        _update(dt) {
+            var motion = !this._reduced;
+            var now = performance.now();
+            if (motion) { this._time += dt; }
+            var i, s, heatMax = 0;
+            this._easeLayout(dt);
+            // Fade the whole widget in on connect, then let satellites follow once data is seeded.
+            damp2(this, '_intro', 1, 0.38, 0.38, dt, 0, 1);
+            if (this._prevLayer) { this._xf += dt / 0.8; if (this._xf >= 1) { this._xf = 1; this._prevLayer = null; } }
+            var gate = this._intro > 0.6 && (this._seedDone || now - this._connectedAt > 1500);
+
+            // Every state-dependent parameter eases toward a target (critically damped), so
+            // nothing is ever switched or reset instantly. Attack ~0.2 s, release ~0.8 s.
+            damp2(this, '_energy', this._openPhases > 0 ? 1 : 0, 0.17, 0.55, dt, 0, 1);
+            damp2(this, '_kick', now < this._kickUntil ? this._kickLevel : 0, 0.15, 0.5, dt, 0, 1);
+            damp2(this, '_phaseFlash', now < this._pfUntil ? 1 : 0, 0.16, 0.55, dt, 0, 1);
+            var kc = 1 - Math.exp(-dt / 0.3);
+            for (i = 0; i < this._slots.length; i++) {
+                s = this._slots[i];
+                damp2(s, 'heat', s.open > 0 ? 1 : 0, 0.17, 0.55, dt, 0, 1);
+                damp2(s, 'errHeat', now < s.errUntil ? 1 : 0, 0.17, 0.9, dt, 0, 1);
+                damp2(s, 'flash', now < s.flashUntil ? 1 : 0, 0.16, 0.5, dt, 0, 1);
+                damp2(s, 'chipA', now < s.chipUntil ? 1 : 0, 0.15, 0.4, dt, 0, 1);
+                var leaving = s.shownId !== s.id;
+                damp2(s, 'appear', leaving ? 0 : (s.id && gate ? 1 : 0), 0.2, 0.14, dt, 0, 1);
+                if (leaving && s.appear < 0.03) {
+                    // The old node has faded out: bring in the new agent; its colour cross-fades from the old one.
+                    s.shownName = s.name;
+                    if (s.id) { this._showInSlot(s, s.id); } else { s.shownId = null; }
+                    s.chipA = 0;
+                }
+                s.col[0] += (s.colT[0] - s.col[0]) * kc;
+                s.col[1] += (s.colT[1] - s.col[1]) * kc;
+                s.col[2] += (s.colT[2] - s.col[2]) * kc;
+                damp2(s, 'omega', s.rotSpeed * (1 + 1.6 * s.heat), 0.3, 0.6, dt);
+                if (motion) {
+                    s.rot += s.omega * dt;
+                    s.spin += dt * 3.2;
+                    if (s.okT > 0) { s.okT += dt / 0.9; if (s.okT >= 1) { s.okT = 0; } }
+                }
+                if (s.shownName !== s.name && s.shownId === s.id) { s.shownName = s.name; }
+                heatMax = Math.max(heatMax, s.heat);
+            }
+            damp2(this, '_act', Math.max(this._energy, heatMax * 0.85), 0.17, 0.55, dt, 0, 1);
+            // Rotation integrates an eased angular speed, so the angle never jumps.
+            damp2(this, '_omega', 0.10 + 0.85 * this._act, 0.3, 0.5, dt);
+            this._rotDelta = motion ? this._omega * dt : 0;
+            if (motion) {
+                this._rotY += this._rotDelta;
+                this._orbit += dt * 0.05;
+            }
+            for (i = this._waves.length - 1; i >= 0; i--) {
+                this._waves[i].t += dt / 1.25;
+                if (this._waves[i].t >= 1) { this._waves.splice(i, 1); }
+            }
+            var arrived;
+            for (i = this._pulses.length - 1; i >= 0; i--) {
+                var p = this._pulses[i];
+                p.t += dt / p.dur;
+                if (p.t >= 1) {
+                    arrived = this._slots[p.idx];
+                    if (p.dir > 0) { arrived.flashUntil = now + 160; }
+                    else { this._kickCore(0.45); }
+                    this._pulses.splice(i, 1);
+                }
+            }
+        }
+
+        _nodePositions() {
+            var R = this._ring, i;
+            var phase = this._orbit;
+            var sinT = R.sinT * (1 + (this._reduced ? 0 : 0.03 * Math.sin(this._time * 0.35)));
+            var cosT = Math.sqrt(1 - Math.min(0.99, sinT * sinT));
+            for (i = 0; i < SLOT_COUNT; i++) {
+                var th = phase + (i * TAU) / SLOT_COUNT;
+                var x = R.R * Math.cos(th);
+                var z = R.R * Math.sin(th);
+                var yy = -z * sinT;
+                var zz = z * cosT;
+                var sc = R.f / (R.f + zz);
+                var p = this._pos[i];
+                p.x = R.cx + x * sc;
+                p.y = R.cy + yy * sc;
+                p.s = sc;
+                p.z = zz;
+                p.r = this._nodeR * sc;
+                p.vis = !!(this._slots[i].shownId && this._slots[i].appear > 0.3);
+            }
+        }
+
+        _draw() {
+            var ctx = this._ctx, C = this._colors;
+            if (!C) { this._readColors(); C = this._colors; }
+            var dpr = this._dpr, w = this._w, h = this._h;
+            ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+            ctx.clearRect(0, 0, w, h);
+            ctx.globalCompositeOperation = 'source-over';
+            var bs = this._reduced ? 0 : Math.sin((this._time * TAU) / BREATH_S);
+            var breath = 0.5 + 0.5 * bs;
+            this._bs = bs;
+            var act = this._act;
+            var intro = this._intro; // already critically damped: zero slope at the start, no extra shaping
+            this._rad = this._sphereR * (1 + 0.05 * bs + 0.06 * act + 0.03 * this._kick) * (0.94 + 0.06 * intro);
+            ctx.globalAlpha = intro;
+            this._ringCol = mixRgb(C.sphere, C.core, 0.55);
+            for (var si = 0; si < SLOT_COUNT; si++) { this._slotColor(this._slots[si], C); }
+            this._wavePos = this._reduced ? 2 : (((this._time / BREATH_S) % 1) * 1.35);
+            this._nodePositions();
+            var order = [0, 1, 2, 3, 4].sort(function (a, b) { return this._pos[b].z - this._pos[a].z; }.bind(this));
+
+            this._drawLinks(ctx, C, breath);
+            var n, idx;
+            for (n = 0; n < order.length; n++) {
+                idx = order[n];
+                if (this._pos[idx].z > 0) { this._drawNode(ctx, C, idx, breath, 'body'); }
+            }
+            this._drawSphere(ctx, C, breath);
+            for (n = 0; n < order.length; n++) {
+                idx = order[n];
+                if (this._pos[idx].z > 0) { this._drawNode(ctx, C, idx, breath, 'label'); }
+            }
+            for (n = 0; n < order.length; n++) {
+                idx = order[n];
+                if (this._pos[idx].z <= 0) { this._drawNode(ctx, C, idx, breath, 'all'); }
+            }
+            this._drawWaves(ctx, C);
+            this._drawPulses(ctx, C);
+            ctx.globalAlpha = 1;
+            this._recordParams();
+            this._placeTip();
+        }
+
+        _recordParams() {
+            var sl = this._slots;
+            this._params = {
+                act: this._act, energy: this._energy, omega: this._omega, rotDelta: this._rotDelta, kick: this._kick,
+                phaseFlash: this._phaseFlash, ring: this._ringVis, rad: this._rad / (this._sphereR || 1),
+                pulse: this._pulseMul, web: this._webMul,
+                heat: sl.map(function (s) { return s.heat; }), err: sl.map(function (s) { return s.errHeat; }),
+                flash: sl.map(function (s) { return s.flash; }), chip: sl.map(function (s) { return s.chipA; }),
+                appear: sl.map(function (s) { return s.appear; }),
+                colR: sl.map(function (s) { return s.dc[0] / 255; }), colG: sl.map(function (s) { return s.dc[1] / 255; }),
+                colB: sl.map(function (s) { return s.dc[2] / 255; })
+            };
+        }
+
+        _linkGeom(i) {
+            var R = this._ring, p = this._pos[i];
+            var dx = p.x - R.cx, dy = p.y - R.cy;
+            var len = Math.hypot(dx, dy) || 1;
+            var ux = dx / len, uy = dy / len;
+            var sr = this._rad * 0.98;
+            return {
+                sx: R.cx + ux * sr, sy: R.cy + uy * sr,
+                ex: p.x - ux * p.r * 1.2, ey: p.y - uy * p.r * 1.2
+            };
+        }
+
+        // Display colour of a satellite: dim and desaturated when idle, vivid when active,
+        // eased toward the error colour by errHeat.
+        _slotColor(s, C) {
+            var luma = 0.3 * s.col[0] + 0.59 * s.col[1] + 0.11 * s.col[2];
+            var grey = [luma, luma, luma];
+            var vivid = mixRgb(s.col, C.core, 0.12 * s.heat);
+            var idle = mixRgb(grey, s.col, 0.62);
+            var c = mixRgb(idle, vivid, clamp(s.heat + 0.6 * s.flash, 0, 1));
+            s.dc = mixRgb(c, C.err, clamp(s.errHeat, 0, 1));
+            return s.dc;
+        }
+
+        _drawLinks(ctx, C, breath) {
+            var w = this._wavePos;
+            for (var i = 0; i < SLOT_COUNT; i++) {
+                var s = this._slots[i];
+                if (!s.shownId) { continue; }
+                var a = smooth01(s.appear);
+                if (a < 0.02) { continue; }
+                var g = this._linkGeom(i);
+                if (!(g.sx === g.sx && g.ex === g.ex)) { continue; }
+                var dc = s.dc;
+                var wob = this._reduced ? 0.5 : 0.5 + 0.5 * Math.sin(this._time * 1.1 + i * 1.3);
+                var hot = Math.max(s.heat, s.flash * 0.6, s.errHeat);
+                var a0 = (0.20 + 0.06 * wob) * a, a1 = (0.14 + 0.04 * wob) * a;
+                var cAt = function (p) { return mixRgb(C.sphere, dc, p); };
+                var grad = ctx.createLinearGradient(g.sx, g.sy, g.ex, g.ey);
+                grad.addColorStop(0, rgba(C.sphere, a0));
+                if (w > 0.12 && w < 0.87) {
+                    // Faint brightening that travels from the sphere to the node once per breath.
+                    grad.addColorStop(w - 0.12, rgba(cAt(w - 0.12), lerp(a0, a1, w - 0.12)));
+                    grad.addColorStop(w, rgba(cAt(w), lerp(a0, a1, w) + 0.30 * a));
+                    grad.addColorStop(w + 0.12, rgba(cAt(w + 0.12), lerp(a0, a1, w + 0.12)));
+                }
+                grad.addColorStop(1, rgba(dc, a1));
+                ctx.lineCap = 'round';
+                ctx.beginPath();
+                ctx.moveTo(g.sx, g.sy);
+                ctx.lineTo(g.ex, g.ey);
+                ctx.strokeStyle = grad;
+                ctx.lineWidth = 1.1;
+                ctx.stroke();
+                if (hot > 0.02) {
+                    var hg = ctx.createLinearGradient(g.sx, g.sy, g.ex, g.ey);
+                    hg.addColorStop(0, rgba(mixRgb(C.sphere, dc, 0.4), 0.9 * hot * a));
+                    hg.addColorStop(1, rgba(mixRgb(dc, C.core, 0.25), 0.9 * hot * a));
+                    var gg = ctx.createLinearGradient(g.sx, g.sy, g.ex, g.ey);
+                    gg.addColorStop(0, rgba(C.sphere, 0.10 * hot * a));
+                    gg.addColorStop(1, rgba(dc, 0.14 * hot * a));
+                    ctx.globalCompositeOperation = 'lighter';
+                    ctx.lineWidth = 7;
+                    ctx.strokeStyle = gg;
+                    ctx.stroke();
+                    ctx.lineWidth = 1.7;
+                    ctx.strokeStyle = hg;
+                    ctx.stroke();
+                    ctx.globalCompositeOperation = 'source-over';
+                }
+            }
+        }
+
+        _drawCloud(ctx, C, L, wt, primary) {
+            var R = this._ring, G = L.G, n = G.n, pr = L.proj, pb = L.pbri, pk = L.pbk;
+            var act = this._act, bs = this._bs, t = this._time, rad = this._rad;
+            var amp = 0.008 + 0.008 * act;
+            var rip = 0.004 + 0.004 * act;
+            var tt = t / BREATH_S;
+            var cyr = Math.cos(this._rotY), syr = Math.sin(this._rotY);
+            var tilt = 0.38 + (this._reduced ? 0 : 0.05 * Math.sin(t * 0.2));
+            var cxr = Math.cos(tilt), sxr = Math.sin(tilt);
+            var dir = G.dir, r0 = G.r0, ph = G.ph, tws = G.tws, pol = G.pol;
+            var FS = 8, i, ux, uy, uz, nz, rw, rr, x, y, z, x1, z1, y2, z2, sc, bri, v, d01;
+            var tw1 = t * 0.7, tw2 = -t * 0.55, tw3 = t * 0.4;
+            var rimBoost = 1 + 0.5 * act;
+            var minX = 1e9, maxX = -1e9, minY = 1e9, maxY = -1e9, px, py;
+
+            for (i = 0; i < n; i++) {
+                ux = dir[i * 3]; uy = dir[i * 3 + 1]; uz = dir[i * 3 + 2];
+                nz = (Math.sin(ux * 7.1 + uy * 3.3 - uz * 5.2 + tw1) +
+                      Math.sin(-ux * 4.4 + uy * 8.2 + uz * 3.9 + tw2) +
+                      Math.sin(ux * 2.7 - uy * 6.3 + uz * 8.0 + tw3)) * 0.3333;
+                rw = Math.sin(TAU * (pol[i] * 2.5 - tt));
+                rr = r0[i] * (1 + amp * nz + rip * rw);
+                x = ux * rr; y = uy * rr; z = uz * rr;
+                x1 = x * cyr + z * syr;
+                z1 = -x * syr + z * cyr;
+                y2 = y * cxr - z1 * sxr;
+                z2 = y * sxr + z1 * cxr;
+                sc = FS / (FS + z2);
+                px = R.cx + x1 * rad * sc;
+                py = R.cy + y2 * rad * sc;
+                pr[i * 3] = px;
+                pr[i * 3 + 1] = py;
+                pr[i * 3 + 2] = z2;
+                if (px < minX) { minX = px; } if (px > maxX) { maxX = px; }
+                if (py < minY) { minY = py; } if (py > maxY) { maxY = py; }
+                d01 = (1 - z2) * 0.5;
+                bri = 0.50 + 0.36 * nz + 0.22 * rw + 0.22 * Math.sin(t * tws[i] + ph[i]);
+                v = clamp(bri * (0.40 + 0.60 * d01) * rimBoost, 0, 1);
+                pb[i] = v;
+                pk[i] = v * 5 | 0;
+                if (pk[i] > 4) { pk[i] = 4; }
+            }
+            if (primary) { this._bbox = { w: maxX - minX, h: maxY - minY, cx: (maxX + minX) / 2, cy: (maxY + minY) / 2 }; }
+
+            ctx.globalCompositeOperation = 'lighter';
+
+            // Connection web: three depth bands x three shimmer groups, additive.
+            var edges = G.edges, eg = G.egrp, ek = L.ekey, ne = edges.length / 2, e, a, b, key;
+            for (e = 0; e < ne; e++) {
+                a = edges[e * 2]; b = edges[e * 2 + 1];
+                var ad = (pr[a * 3 + 2] + pr[b * 3 + 2]) * 0.5;
+                ek[e] = (ad < -0.28 ? 0 : (ad > 0.28 ? 2 : 1)) * 3 + eg[e];
+            }
+            var depthAlpha = [0.30, 0.18, 0.09];
+            var webMul = (1 + 0.75 * act) * (1 + 0.32 * bs);
+            if (primary) { this._webMul = webMul; }
+            for (key = 0; key < 9; key++) {
+                var band = (key / 3) | 0, grp = key % 3;
+                var shimmer = 0.78 + 0.22 * Math.sin(t * 0.9 + grp * 2.1);
+                ctx.beginPath();
+                for (e = 0; e < ne; e++) {
+                    if (ek[e] !== key) { continue; }
+                    a = edges[e * 2]; b = edges[e * 2 + 1];
+                    ctx.moveTo(pr[a * 3], pr[a * 3 + 1]);
+                    ctx.lineTo(pr[b * 3], pr[b * 3 + 1]);
+                }
+                ctx.strokeStyle = rgba(C.sphere, depthAlpha[band] * shimmer * webMul * wt);
+                ctx.lineWidth = band === 0 ? 0.9 : 0.7;
+                ctx.stroke();
+            }
+
+            // Points: five brightness buckets, size and alpha grow with brightness.
+            var bucket, sz, alphas = [0.14, 0.26, 0.40, 0.60, 0.85];
+            for (bucket = 0; bucket < 5; bucket++) {
+                sz = 0.7 + bucket * 0.3;
+                ctx.beginPath();
+                for (i = 0; i < n; i++) {
+                    if (pk[i] !== bucket) { continue; }
+                    if (bucket >= 3) {
+                        ctx.moveTo(pr[i * 3] + sz * 0.5, pr[i * 3 + 1]);
+                        ctx.arc(pr[i * 3], pr[i * 3 + 1], sz * 0.5, 0, TAU);
+                    } else {
+                        ctx.rect(pr[i * 3] - sz * 0.5, pr[i * 3 + 1] - sz * 0.5, sz, sz);
+                    }
+                }
+                ctx.fillStyle = rgba(mixRgb(C.sphere, C.core, 0.1 + bucket * 0.17), alphas[bucket] * (1 + 0.25 * act) * wt);
+                ctx.fill();
+            }
+
+        }
+
+        _drawSphere(ctx, C, breath) {
+            var R = this._ring;
+            var act = this._act, bs = this._bs, t = this._time, rad = this._rad;
+            // During a tier change both layers draw with complementary weights (sum = 1): no pop.
+            if (this._prevLayer && this._xf < 1) {
+                this._drawCloud(ctx, C, this._prevLayer, 1 - smooth01(this._xf), false);
+                this._drawCloud(ctx, C, this._layer, smooth01(this._xf), true);
+            } else {
+                this._drawCloud(ctx, C, this._layer, 1, true);
+            }
+            ctx.globalCompositeOperation = 'lighter';
+
+            // Layered halo, bright core and soft outer glow ring.
+            var pulse = 1 + 0.42 * bs + 0.32 * act + 0.3 * this._kick;
+            this._pulseMul = pulse;
+            var g1R = Math.min(rad * 2.7, this._h * 0.5);
+            var g1 = ctx.createRadialGradient(R.cx, R.cy, 0, R.cx, R.cy, g1R);
+            g1.addColorStop(0, rgba(C.sphere, 0.18 * pulse));
+            g1.addColorStop(0.5, rgba(C.sphere, 0.06 * pulse));
+            g1.addColorStop(1, rgba(C.sphere, 0));
+            ctx.fillStyle = g1;
+            ctx.beginPath();
+            ctx.arc(R.cx, R.cy, g1R, 0, TAU);
+            ctx.fill();
+
+            var g2 = ctx.createRadialGradient(R.cx, R.cy, 0, R.cx, R.cy, rad * 1.45);
+            g2.addColorStop(0, rgba(mixRgb(C.sphere, C.core, 0.4), 0.22 * pulse));
+            g2.addColorStop(1, rgba(C.sphere, 0));
+            ctx.fillStyle = g2;
+            ctx.beginPath();
+            ctx.arc(R.cx, R.cy, rad * 1.45, 0, TAU);
+            ctx.fill();
+
+            var coreR = rad * (0.52 + 0.06 * bs + 0.16 * act);
+            var g3 = ctx.createRadialGradient(R.cx, R.cy, 0, R.cx, R.cy, coreR);
+            g3.addColorStop(0, rgba(mixRgb(C.sphere, C.core, 0.75), clamp(0.55 * pulse, 0, 1)));
+            g3.addColorStop(0.4, rgba(mixRgb(C.sphere, C.core, 0.3), 0.20 * pulse));
+            g3.addColorStop(1, rgba(C.sphere, 0));
+            ctx.fillStyle = g3;
+            ctx.beginPath();
+            ctx.arc(R.cx, R.cy, coreR, 0, TAU);
+            ctx.fill();
+            ctx.beginPath();
+            ctx.arc(R.cx, R.cy, 2.2 + 1.2 * bs + 2 * act, 0, TAU);
+            ctx.fillStyle = rgba(C.core, clamp(0.75 * pulse, 0, 1));
+            ctx.fill();
+
+            var g4 = ctx.createRadialGradient(R.cx, R.cy, rad * 0.9, R.cx, R.cy, rad * 1.4);
+            var ringA = 0.17 * (1 + 0.38 * bs + 0.9 * act);
+            g4.addColorStop(0, rgba(C.sphere, 0));
+            g4.addColorStop(0.38, rgba(C.sphere, ringA));
+            g4.addColorStop(1, rgba(C.sphere, 0));
+            ctx.fillStyle = g4;
+            ctx.beginPath();
+            ctx.arc(R.cx, R.cy, rad * 1.4, 0, TAU);
+            ctx.fill();
+            ctx.globalCompositeOperation = 'source-over';
+
+            // Energized ring (orchestrator phase open): fades in and out with the smoothed energy.
+            var ring = Math.max(this._energy, this._phaseFlash * 0.7);
+            this._ringVis = ring;
+            if (ring > 0.02) {
+                var rr2 = rad * 1.22;
+                var rc = this._ringCol;
+                ctx.lineWidth = 1;
+                ctx.strokeStyle = rgba(rc, ring * 0.35);
+                ctx.beginPath();
+                ctx.arc(R.cx, R.cy, rr2, 0, TAU);
+                ctx.stroke();
+                if (!this._reduced) {
+                    ctx.lineWidth = 2;
+                    ctx.strokeStyle = rgba(rc, ring * 0.9);
+                    var a0 = t * 1.7;
+                    ctx.beginPath();
+                    ctx.arc(R.cx, R.cy, rr2, a0, a0 + 1.2);
+                    ctx.stroke();
+                    ctx.beginPath();
+                    ctx.arc(R.cx, R.cy, rr2, a0 + Math.PI, a0 + Math.PI + 1.2);
+                    ctx.stroke();
+                }
+            }
+        }
+
+        _drawWaves(ctx, C) {
+            if (!this._waves.length) { return; }
+            var R = this._ring;
+            ctx.globalCompositeOperation = 'lighter';
+            for (var n = 0; n < this._waves.length; n++) {
+                var wv = this._waves[n];
+                var e = easeOut(wv.t);
+                var r = this._rad * (1.08 + 0.85 * e);
+                var env = smooth01(wv.t / 0.12) * Math.pow(1 - wv.t, 1.6);
+                var al = env * 0.6 * wv.a;
+                var col = wv.idx >= 0 && this._slots[wv.idx].dc ? mixRgb(this._slots[wv.idx].dc, C.core, 0.2) : this._ringCol;
+                ctx.beginPath();
+                ctx.arc(R.cx, R.cy, r, 0, TAU);
+                ctx.lineWidth = 0.8 + 3 * (1 - wv.t);
+                ctx.strokeStyle = rgba(col, al);
+                ctx.stroke();
+                ctx.lineWidth = 8 * (1 - wv.t) + 2;
+                ctx.strokeStyle = rgba(col, al * 0.22);
+                ctx.stroke();
+            }
+            ctx.globalCompositeOperation = 'source-over';
+        }
+
+        // Satellite: a miniature of the orchestrator sphere in the agent's own colour.
+        _drawSatCloud(ctx, C, L, wt, s, p, r, dc, alpha, sb, hot, bump) {
+            var G = L.sat, n = G.n, sp = L.sp;
+            var cyr = Math.cos(s.rot), syr = Math.sin(s.rot);
+            var tilt = 0.45, cxr = Math.cos(tilt), sxr = Math.sin(tilt);
+            var dir = G.dir, r0 = G.r0, FS = 7, k, x, y, z, x1, z1, y2, z2, sc;
+            for (k = 0; k < n; k++) {
+                x = dir[k * 3] * r0[k]; y = dir[k * 3 + 1] * r0[k]; z = dir[k * 3 + 2] * r0[k];
+                x1 = x * cyr + z * syr;
+                z1 = -x * syr + z * cyr;
+                y2 = y * cxr - z1 * sxr;
+                z2 = y * sxr + z1 * cxr;
+                sc = FS / (FS + z2);
+                sp[k * 3] = p.x + x1 * r * sc;
+                sp[k * 3 + 1] = p.y + y2 * r * sc;
+                sp[k * 3 + 2] = z2;
+            }
+            var edges = G.edges, ne = edges.length / 2, e, ea, eb, pass;
+            var webA = (0.26 + 0.07 * sb + 0.10 * bump + 0.42 * hot) * alpha * wt;
+            for (pass = 0; pass < 2; pass++) {
+                ctx.beginPath();
+                for (e = 0; e < ne; e++) {
+                    ea = edges[e * 2]; eb = edges[e * 2 + 1];
+                    if (((sp[ea * 3 + 2] + sp[eb * 3 + 2]) > 0) !== (pass === 0)) { continue; }
+                    ctx.moveTo(sp[ea * 3], sp[ea * 3 + 1]);
+                    ctx.lineTo(sp[eb * 3], sp[eb * 3 + 1]);
+                }
+                ctx.strokeStyle = rgba(dc, webA * (pass === 0 ? 0.45 : 1));
+                ctx.lineWidth = pass === 0 ? 0.5 : 0.7;
+                ctx.stroke();
+            }
+            var psz = this._satPoint;
+            for (pass = 0; pass < 2; pass++) {
+                ctx.beginPath();
+                for (k = 0; k < n; k++) {
+                    if ((sp[k * 3 + 2] > 0) !== (pass === 0)) { continue; }
+                    ctx.rect(sp[k * 3] - psz * 0.5, sp[k * 3 + 1] - psz * 0.5, psz, psz);
+                }
+                ctx.fillStyle = rgba(mixRgb(dc, C.core, 0.35), (pass === 0 ? 0.35 : 0.8) * (0.8 + 0.2 * (1 + sb) * 0.5 + 0.35 * hot) * alpha * wt);
+                ctx.fill();
+            }
+        }
+
+        _drawNode(ctx, C, i, breath, part) {
+            var s = this._slots[i], p = this._pos[i], t = this._time;
+            var empty = !s.shownId;
+            var a = empty ? 0 : smooth01(s.appear);
+            var depthA = lerp(0.7, 1, clamp((p.s - 0.8) / 0.4, 0, 1));
+            var wob = this._reduced ? 0.5 : 0.5 + 0.5 * Math.sin(t * 1.1 + i * 1.3);
+            var sb = this._reduced ? 0 : Math.sin(TAU * (t / BREATH_S * s.bRate + s.phase));
+            var r = p.r * (empty ? 1 : lerp(0.55, 1, a)) * (1 + 0.05 * sb);
+            var focus = i === this._hover || i === this._focusIdx || i === this._pinned;
+
+            if (empty) {
+                if (part === 'label') { return; }
+                ctx.beginPath();
+                ctx.arc(p.x, p.y, r * 0.8, 0, TAU);
+                ctx.setLineDash([2, 4]);
+                ctx.strokeStyle = rgba(C.dim, 0.25 * depthA);
+                ctx.lineWidth = 1;
+                ctx.stroke();
+                ctx.setLineDash([]);
+                return;
+            }
+
+            var dc = s.dc;
+            var hot = Math.max(s.heat, s.flash, s.errHeat);
+            var alpha = a * depthA;
+            var bump = this._reduced ? 0 : 0.5 * Math.exp(-Math.pow(1 - this._wavePos, 2) / 0.02);
+
+            if (part !== 'label') {
+                ctx.globalCompositeOperation = 'lighter';
+                // Halo.
+                var hr = r * (2.3 + 0.7 * hot);
+                var hg = ctx.createRadialGradient(p.x, p.y, r * 0.3, p.x, p.y, hr);
+                hg.addColorStop(0, rgba(dc, (0.11 + 0.05 * sb + 0.05 * wob + 0.30 * hot + 0.10 * bump) * alpha));
+                hg.addColorStop(1, rgba(dc, 0));
+                ctx.fillStyle = hg;
+                ctx.beginPath();
+                ctx.arc(p.x, p.y, hr, 0, TAU);
+                ctx.fill();
+                // Web and points: one layer normally, two (complementary weights) while the tier changes.
+                if (this._prevLayer && this._xf < 1) {
+                    this._drawSatCloud(ctx, C, this._prevLayer, 1 - smooth01(this._xf), s, p, r, dc, alpha, sb, hot, bump);
+                    this._drawSatCloud(ctx, C, this._layer, smooth01(this._xf), s, p, r, dc, alpha, sb, hot, bump);
+                } else {
+                    this._drawSatCloud(ctx, C, this._layer, 1, s, p, r, dc, alpha, sb, hot, bump);
+                }
+                // Core.
+                var cr = r * (0.62 + 0.06 * sb + 0.12 * hot);
+                var cg = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, cr);
+                cg.addColorStop(0, rgba(mixRgb(dc, C.core, 0.6), clamp((0.50 + 0.12 * sb + 0.40 * hot) * alpha, 0, 1)));
+                cg.addColorStop(1, rgba(dc, 0));
+                ctx.fillStyle = cg;
+                ctx.beginPath();
+                ctx.arc(p.x, p.y, cr, 0, TAU);
+                ctx.fill();
+                ctx.globalCompositeOperation = 'source-over';
+
+                // Status ring, spinner while a span is open, dashed cue while failing, success flash.
+                var rr = r * 1.32;
+                ctx.lineWidth = focus ? 2 : 1;
+                ctx.strokeStyle = rgba(dc, (0.16 + 0.04 * wob + 0.45 * hot + (focus ? 0.3 : 0)) * alpha);
+                ctx.beginPath();
+                ctx.arc(p.x, p.y, rr, 0, TAU);
+                ctx.stroke();
+                if (s.open > 0 && !this._reduced) {
+                    ctx.lineWidth = 2;
+                    ctx.strokeStyle = rgba(dc, 0.95 * alpha * smooth01(s.heat * 1.5));
+                    ctx.beginPath();
+                    ctx.arc(p.x, p.y, rr + 3, s.spin, s.spin + 1.7);
+                    ctx.stroke();
+                }
+                if (s.errHeat > 0.05) {
+                    ctx.setLineDash([3, 3]);
+                    ctx.lineWidth = 1.2;
+                    ctx.strokeStyle = rgba(C.err, 0.8 * clamp(s.errHeat, 0, 1) * alpha);
+                    ctx.beginPath();
+                    ctx.arc(p.x, p.y, rr + 5, 0, TAU);
+                    ctx.stroke();
+                    ctx.setLineDash([]);
+                }
+                if (s.okT > 0 && !this._reduced) {
+                    var ot = s.okT;
+                    ctx.globalCompositeOperation = 'lighter';
+                    ctx.lineWidth = 1.5;
+                    ctx.strokeStyle = rgba(C.ok, Math.sin(Math.PI * clamp(ot, 0, 1)) * 0.6 * alpha);
+                    ctx.beginPath();
+                    ctx.arc(p.x, p.y, rr * (1 + 0.7 * easeOut(ot)), 0, TAU);
+                    ctx.stroke();
+                    ctx.globalCompositeOperation = 'source-over';
+                }
+            }
+            if (part === 'body') { return; }
+
+            // Label (kept readable: tinted toward white, high alpha).
+            var fs = this._labelFont;
+            ctx.font = fs + 'px ' + this._fonts.mono;
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'top';
+            var lcol = mixRgb(dc, C.core, 0.45);
+            var lal = (0.86 + 0.14 * clamp(hot + (focus ? 1 : 0), 0, 1)) * a * lerp(0.92, 1, clamp((p.s - 0.8) / 0.4, 0, 1));
+            this._labelDbg[i] = { id: s.shownId, rgb: lcol.map(Math.round), alpha: +lal.toFixed(3) };
+            ctx.fillStyle = rgba(lcol, lal);
+            ctx.fillText(shortLabel(s.shownName || s.shownId, this._labelMax), p.x, p.y + r * 1.32 + (s.open > 0 ? 10 : 6));
+
+            // Duration chip (fades in and out).
+            if (s.chipA > 0.01 && s.chipText) {
+                var ca = smooth01(s.chipA) * a;
+                var cfs = Math.max(9, fs);
+                ctx.font = cfs + 'px ' + this._fonts.mono;
+                var tw = ctx.measureText(s.chipText).width + 10;
+                var cx = clamp(p.x - tw / 2, 2, this._w - tw - 2);
+                var cyy = p.y - r * 1.32 - (s.open > 0 ? 10 : 6) - cfs - 8;
+                var ccol = s.chipErr ? C.err : mixRgb(dc, C.core, 0.3);
+                ctx.beginPath();
+                if (ctx.roundRect) { ctx.roundRect(cx, cyy, tw, cfs + 7, 5); } else { ctx.rect(cx, cyy, tw, cfs + 7); }
+                ctx.fillStyle = rgba(C.bg, 0.9 * ca);
+                ctx.fill();
+                ctx.lineWidth = 1;
+                ctx.strokeStyle = rgba(ccol, 0.7 * ca);
+                ctx.stroke();
+                ctx.fillStyle = rgba(ccol, ca);
+                ctx.textBaseline = 'middle';
+                ctx.fillText(s.chipText, cx + tw / 2, cyy + (cfs + 7) / 2 + 0.5);
+            }
+        }
+
+        _drawPulses(ctx, C) {
+            if (!this._pulses.length) { return; }
+            ctx.globalCompositeOperation = 'lighter';
+            ctx.lineCap = 'round';
+            for (var n = 0; n < this._pulses.length; n++) {
+                var p = this._pulses[n];
+                if (p.t < 0) { continue; }
+                var slot = this._slots[p.idx];
+                var g = this._linkGeom(p.idx);
+                var col = p.kind === 'err' ? C.err : (slot.dc || C.sphere);
+                var head = easeInOut(clamp(p.t, 0, 1));
+                head = p.dir > 0 ? head : 1 - head;
+                var tail = clamp(head - p.dir * 0.18, 0, 1);
+                var dx = g.ex - g.sx, dy = g.ey - g.sy;
+                var hx = g.sx + dx * head, hy = g.sy + dy * head;
+                var tx = g.sx + dx * tail, ty = g.sy + dy * tail;
+                var fade = Math.pow(Math.sin(Math.PI * clamp(p.t, 0, 1)), 0.6);
+                var tr = ctx.createLinearGradient(tx, ty, hx, hy);
+                tr.addColorStop(0, rgba(col, 0));
+                tr.addColorStop(1, rgba(mixRgb(col, C.core, 0.35), 0.9 * fade));
+                ctx.beginPath();
+                ctx.moveTo(tx, ty);
+                ctx.lineTo(hx, hy);
+                ctx.lineWidth = 2.6;
+                ctx.strokeStyle = tr;
+                ctx.stroke();
+                var gr = ctx.createRadialGradient(hx, hy, 0, hx, hy, 11);
+                gr.addColorStop(0, rgba(mixRgb(col, C.core, 0.55), fade));
+                gr.addColorStop(0.3, rgba(col, 0.55 * fade));
+                gr.addColorStop(1, rgba(col, 0));
+                ctx.fillStyle = gr;
+                ctx.beginPath();
+                ctx.arc(hx, hy, 11, 0, TAU);
+                ctx.fill();
+            }
+            ctx.globalCompositeOperation = 'source-over';
+        }
+    }
+
+    window.customElements.define(TAG, AgentHubActivityOrb);
+})();

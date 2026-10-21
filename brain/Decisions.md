@@ -559,3 +559,19 @@ prompts live in `container/app/prompts/`, `ctx.agent_registry` not
 - Rejects of 2026-10-18 (4 x `rejected_inconsistent`, 0.06-0.22) were not a
   capture bug (per-turn buffers, embedding before filler); cause unknown,
   satellite side suspected. Threshold left at 0.45 pending a re-test.
+
+## 2026-10-21 — Activity Orb: Canvas2D custom element on the SSE broker
+
+- **Canvas2D pseudo-3D, no library**: about 10 nodes need only projected
+  points, radial glow and curved links; adds no vendored weight, fits the
+  no-build dashboard and phones. three.js stays an option later because the
+  event contract and widget states do not depend on the renderer.
+- **Custom element with Shadow DOM** (`<agenthub-activity-orb>`) loaded globally
+  from `dashboard_base.html`: drop-in on any page, no Alpine/HTMX dependency.
+- **Transport is SSE, not WebSocket**: the dashboard session cookie already
+  authenticates `EventSource`; a dashboard WebSocket would need a new
+  cookie-auth dependency. Reuses the existing in-memory broker with a new
+  `activity` topic; payload is ids, names, timing and status only, never
+  span metadata or user text.
+- **Five satellite slots**, seeded with the most-used agents and replaced
+  LRU-by-idle when another agent is dispatched.
