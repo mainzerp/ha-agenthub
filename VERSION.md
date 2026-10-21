@@ -1,17 +1,22 @@
 # Version
 
-**Current Version:** 3.12.0
+**Current Version:** 3.13.0
 
 ## Recent Changes
 
-(tracking changes since 3.12.0)
+(tracking changes since 3.13.0)
+
+## Version History
+
+### 3.13.0 (MINOR) -- selectable Lovelace card, tilted orbit and Firefox load-order fix
+
+(commits ead77a0, a8c00de, 9ae462e; PR #200)
 
 - Fix (integration): the Lovelace card is defined only after the HA frontend has booted. HA replaces `window.customElements` with the scoped-custom-element-registry polyfill during boot, and a definition made earlier (the module is loaded through `add_extra_js_url`) was invisible to Lovelace ("Custom element doesn't exist" in Firefox on every load, in Chrome on a cold cache). `scripts/sync_orb_card.py` wraps the generated file in a gate that runs on `whenDefined('home-assistant')` with a 10 s fallback.
 - Feat (integration): the card is selectable in the "Add card" picker (live demo preview, no subscription) and configurable in the UI editor (`getConfigForm`); new options `show_title`, `height`, `width`, `transparent`, `background` next to `title`, `compact`, `demo` and `entry_id`; sections-view grid options follow the configured height; "Waiting for HA-AgentHub" hint after 5 s offline; render profiles for dark and light surfaces with eased switching.
 - Feat (dashboard): the agent orbit is tilted (fixed roll plus a solved inclination), so far satellites pass above the sphere silhouette and near ones in front of it; the layout derives from the real stage size and works at any aspect ratio.
 - Perf (dashboard): the orb builds its geometry in time slices on the first frame and shares it between cards, uses cached sprites and cheaper frames, debounces colour reads and steps the quality tier down on stalled frames.
-
-## Version History
+- Verification: full gate `scripts/ci.py` on 9ae462e, identical content to main 64300a1 (container suite 5202 passed, bridge suite 325 passed, Ruff, self-docs and card sync, lock check, bandit, pip-audit, docker build and smoke test, trivy); real Firefox 158 and Chrome against the real HA frontend bundle (12 cold and 12 warm runs each: the card is defined every time, the 3.12.0 file failed every Firefox run); card, editor, sizing and light/dark profile checks in a mock-HA harness. Not verified: the card inside a real Home Assistant instance.
 
 ### 3.12.0 (MINOR) -- live agent activity orb and Lovelace card
 
