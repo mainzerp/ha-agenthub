@@ -289,10 +289,17 @@ to the container directly.
 How it works:
 
 - The integration serves the card module at
-  `/ha_agenthub_static/agenthub-activity-orb-card.js` and loads it on every
-  dashboard (extra frontend module). No dashboard resource has to be added by
-  hand, only a Home Assistant restart after installing or updating the
-  integration.
+  `/ha_agenthub_static/agenthub-activity-orb-card.js?v=<content hash>` and loads
+  it on every dashboard (extra frontend module). No dashboard resource has to
+  be added by hand, only a Home Assistant restart after installing or updating
+  the integration.
+- The `v` value is the first 12 hex characters of the SHA-256 of the card file,
+  computed at Home Assistant start (the manifest version if the file cannot be
+  read), so a changed file always gets a new URL. The file is served with
+  `Cache-Control: no-cache` plus `ETag`/`Last-Modified`: browsers revalidate on
+  every load and answer `304 Not Modified` when nothing changed. Updates are
+  therefore picked up without clearing any cache. The module is public (no
+  login) like Home Assistant's other frontend files and contains no secrets.
 - While at least one card is open, the bridge keeps one SSE connection per
   config entry to the container's `GET /api/activity/stream` and relays the
   events over Home Assistant's WebSocket API. The command
@@ -321,6 +328,7 @@ opens the visual editor with these fields; every field is optional:
 | Compact | `compact` | Smaller card without the extra spacing |
 | Demo mode | `demo` | Play simulated activity without a container |
 | Config entry ID | `entry_id` | Only for several HA-AgentHub entries; default is the first loaded entry |
+| Debug panel | `debug` | Show a small diagnostics panel inside the card (build, load path, connection state, last errors); useful when reporting a problem |
 
 Size rules: an explicit `height` fixes the stage height (and, in the sections
 view, the card asks for the matching number of grid rows). Without it, a card in
@@ -387,6 +395,19 @@ resources:
     type: module
 ```
 
+Updating the card:
+
+- Restart Home Assistant after updating the integration so the new content hash
+  is part of the page index. Without a restart the server already serves the new
+  file (revalidated), but pages keep loading it under the old `?v=` value until
+  the index is rebuilt.
+- One stale load can still happen when Home Assistant's service worker or the
+  Companion app serves a cached page index once; a second reload fixes it.
+- To check which file is served, open
+  `/ha_agenthub_static/agenthub-activity-orb-card.js?x=1` (any query string works;
+  the response must be JavaScript with `Cache-Control: no-cache`) and read the
+  `Build` line at the top of the file.
+
 Troubleshooting (card stays "offline"):
 
 1. Check the container URL and API key in Settings > Devices & Services >
@@ -402,13 +423,19 @@ Troubleshooting (card stays "offline"):
    restart the Companion app). Verify the URL
    `/ha_agenthub_static/agenthub-activity-orb-card.js` returns JavaScript, and
    that `customElements.get('agenthub-activity-orb-card')` is defined in the
-   console. The card definition is deferred until the Home Assistant frontend
-   has booted (its custom-element registry is replaced during boot, and an
-   earlier definition would stay invisible to Lovelace); if that boot signal
-   never arrives the module defines the card after a 10 s fallback. A
-   `not_loaded` WebSocket error means the HA-AgentHub entry is not loaded (setup
-   failed or retrying). After 5 s offline the card shows "Waiting for
-   HA-AgentHub" inside the stage.
+   console. The card definition waits for the Home Assistant frontend to finish
+   booting (its custom-element registry is replaced during boot, and an earlier
+   definition would stay invisible to Lovelace). The module defines the card as
+   soon as it detects that boot, or after a 30 s fallback, and registers it
+   again on the replaced registry if that happens later. Errors inside the card
+   never reach the dashboard; they are recorded in
+   `window.__AGENTHUB_ORB_DIAG__`. To report a problem, set `debug: true` on the
+   card (a small diagnostics panel appears in it) and copy the diagnostics from
+   the browser console with
+   `JSON.stringify(window.__AGENTHUB_ORB_DIAG__, null, 1)`. A `not_loaded`
+   WebSocket error means the HA-AgentHub entry is not loaded (setup failed or
+   retrying). After 5 s offline the card shows "Waiting for HA-AgentHub" inside
+   the stage.
 4. After reloading the integration entry, reload the dashboard page so the card
    subscribes again.
 
