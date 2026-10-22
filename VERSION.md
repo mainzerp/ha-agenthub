@@ -1,18 +1,23 @@
 # Version
 
-**Current Version:** 3.13.0
+**Current Version:** 3.14.0
 
 ## Recent Changes
 
-(tracking changes since 3.13.0)
+(tracking changes since 3.14.0)
+
+## Version History
+
+### 3.14.0 (MINOR) -- card load hardening, content-hash delivery and orb layout fixes
+
+(commits a51df21, ecba8fc, 2468eee; PR #202)
 
 - Fix (integration): the card file is served under a content-hash URL (`?v=<first 12 hex of the sha256>`) and with `Cache-Control: no-cache` plus ETag revalidation instead of 31 days, so an updated card is picked up without clearing caches, even when HA is not restarted; a small view replaces the stock static path.
 - Fix (integration): the card load gate waits up to 30 s (was 10 s) for the HA frontend boot, detects a replaced `window.customElements` and registers the card again on the polyfilled registry, and never throws: errors in `run()`, lifecycle methods, the render loop and subscription callbacks are caught, logged once and recorded in `window.__AGENTHUB_ORB_DIAG__`.
 - Feat (integration): new card option `debug` (diagnostics panel inside the card: build, load path, connection state, last errors) and console diagnostics for field reports.
 - Fix (dashboard): the cached sphere layer was composited with a different operator than the direct path (about 14 percent dimmer core, a brightness pop after about 4.5 s in Chrome); both now render the same pixels.
 - Fix (dashboard): the orb is exactly centred in the widget (the ring is offset to balance perspective, top and bottom margins within 1 px) and the central sphere is 13 to 16 percent smaller with a glow that stays at least 4 px clear of every agent.
-
-## Version History
+- Verification: full gate `scripts/ci.py` (container suite 5202 passed, bridge suite 337 passed, Ruff, self-docs and card sync, lock check, bandit, pip-audit; docker build, smoke test and trivy in a second run after Docker Desktop was started); real Firefox 158 and Chrome against the real HA index and bundle (12 cold and warm runs, throttled and delayed-boot runs, fault injection); not verified: the card inside a real Home Assistant instance and the Companion app.
 
 ### 3.13.0 (MINOR) -- selectable Lovelace card, tilted orbit and Firefox load-order fix
 
