@@ -592,3 +592,21 @@ prompts live in `container/app/prompts/`, `ctx.agent_registry` not
 - **Recency source**: an in-memory tracker of dispatch span starts, topped up
   from persisted spans after a restart, behind `/recent` for both the
   dashboard and the bridge.
+
+## 2026-10-22 — Lovelace card load order and delivery
+
+- **Root cause of the 3.12.0 Firefox failure**: HA replaces `window.customElements`
+  with the scoped-custom-element-registry polyfill during boot; a card defined
+  earlier (module loaded through `add_extra_js_url`) is invisible to Lovelace.
+  Chrome only wins the race on a warm cache. The generated card file therefore
+  defers its definitions until the frontend has booted (gate in
+  `scripts/sync_orb_card.py`), with a 30 s fallback and re-registration if the
+  registry is replaced later.
+- **The boot recovery guard is not involved**: it ignores `extra_module_url`
+  scripts and only reacts to hashed frontend entry failures.
+- **Card errors never escape**: lifecycle and callback errors are contained and
+  recorded in `window.__AGENTHUB_ORB_DIAG__`; `setConfig` still throws for
+  invalid config (HA's contract). A `debug` card option shows them in the card.
+- **Delivery**: content-hash `?v=` and `Cache-Control: no-cache` with ETag
+  revalidation (HA's stock static path sends 31 days, and its service worker
+  caches `/ha_agenthub_static/*` stale-while-revalidate for 24 h).
