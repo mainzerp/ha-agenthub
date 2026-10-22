@@ -11,7 +11,110 @@
     'use strict';
 
     var TAG = 'agenthub-activity-orb';
-    if (typeof window === 'undefined' || !window.customElements || window.customElements.get(TAG)) {
+    if (typeof window === 'undefined' || !window.customElements) {
+        return;
+    }
+
+    /* ------------------------------------------------------------------ */
+    /* Diagnostics and error containment                                   */
+    /* ------------------------------------------------------------------ */
+
+    // window.__AGENTHUB_ORB_DIAG__ is a plain object (copy it with JSON.stringify(window.__AGENTHUB_ORB_DIAG__, null, 1)).
+    // Nothing in this module may throw into the host page: entry points are wrapped (guard, hardenProto), every
+    // failure is recorded here and logged once per distinct message.
+    var TOOLS_VERSION = 1;
+    var ERROR_KEEP = 20;
+    var ERROR_LOG_MAX = 25;
+    var DIAG = (function () {
+        var d = window.__AGENTHUB_ORB_DIAG__;
+        if (!d || typeof d !== 'object') { d = window.__AGENTHUB_ORB_DIAG__ = {}; }
+        if (!d.build) { d.build = window.__AGENTHUB_ORB_BUILD__ || 'dev'; }
+        if (!Array.isArray(d.errors)) { d.errors = []; }
+        if (!d.errorCounts || typeof d.errorCounts !== 'object') { d.errorCounts = {}; }
+        if (!Array.isArray(d.defined)) { d.defined = []; }
+        if (!Array.isArray(d.healing)) { d.healing = []; }
+        if (!d.t || typeof d.t !== 'object') { d.t = {}; }
+        if (!d.cards || typeof d.cards !== 'object') { d.cards = {}; }
+        if (!d.gatePath) { d.gatePath = 'none'; }
+        return d;
+    })();
+    var _errLogged = {}, _errLoggedN = 0;
+
+    function nowMs() { try { return Math.round(performance.now()); } catch (_) { return 0; } }
+
+    function reportError(where, err) {
+        try {
+            var msg = err && err.message !== undefined ? String(err.message) : String(err);
+            var key = where + ': ' + msg;
+            DIAG.errorCounts[key] = (DIAG.errorCounts[key] || 0) + 1;
+            var rec = {
+                t: nowMs(), where: where, message: msg.slice(0, 300),
+                stack: err && err.stack ? String(err.stack).split('\n').slice(0, 4).join(' | ').slice(0, 400) : ''
+            };
+            DIAG.errors.push(rec);
+            if (DIAG.errors.length > ERROR_KEEP) { DIAG.errors.shift(); }
+            if (!_errLogged[key] && _errLoggedN < ERROR_LOG_MAX) {
+                _errLogged[key] = 1;
+                _errLoggedN += 1;
+                if (typeof console !== 'undefined' && console.error) { console.error('[agenthub-orb] ' + where + ': ' + msg, err); }
+            }
+            return rec;
+        } catch (_) { return null; }
+    }
+
+    // Wrap a callback so that it can never throw into the browser or the host page.
+    function guard(where, fn) {
+        if (typeof fn !== 'function') { return fn; }
+        return function () {
+            try { return fn.apply(this, arguments); } catch (e) { reportError(where, e); return undefined; }
+        };
+    }
+
+    function safeTimeout(fn, ms) { return window.setTimeout(guard('timer', fn), ms); }
+    function safeInterval(fn, ms) { return window.setInterval(guard('interval', fn), ms); }
+
+    (function installTools() {
+        if (DIAG.tools && DIAG.tools.v === TOOLS_VERSION) { return; }
+        var tools = { v: TOOLS_VERSION, report: reportError, guard: guard };
+        try { Object.defineProperty(DIAG, 'tools', { value: tools, writable: true, configurable: true, enumerable: false }); } catch (_) { /* ignore */ }
+    })();
+
+    // Define an element. Inside the generated Lovelace card file the gate provides __orbDefine (it also re-registers
+    // the tag if the HA frontend later replaces window.customElements); elsewhere this defines directly.
+    function defineEl(tag, ctor) {
+        if (typeof __orbDefine === 'function') { __orbDefine(tag, ctor); return; }
+        try {
+            window.customElements.define(tag, ctor);
+            DIAG.defined.push(tag);
+            DIAG.t['defined:' + tag] = nowMs();
+            if (typeof console !== 'undefined' && console.info) { console.info('[agenthub-orb] defined ' + tag + ' (build ' + DIAG.build + ', t=' + nowMs() + ' ms)'); }
+        } catch (e) { reportError('define ' + tag, e); }
+    }
+
+    // Wrap the entry points of an element class (called by the browser, the host page or timers): a failure is
+    // recorded through the instance's _fault and never propagates. Async entry points are covered as well.
+    function hardenProto(proto, names) {
+        names.forEach(function (name) {
+            var orig = proto[name];
+            if (typeof orig !== 'function') { return; }
+            proto[name] = function () {
+                if (this._broken && name !== 'disconnectedCallback') { return undefined; }
+                try {
+                    var r = orig.apply(this, arguments);
+                    if (r && typeof r.then === 'function') {
+                        var self = this;
+                        r.then(null, function (e) { self._fault(name, e); });
+                    }
+                    return r;
+                } catch (e) {
+                    this._fault(name, e);
+                    return undefined;
+                }
+            };
+        });
+    }
+
+    if (window.customElements.get(TAG)) {
         return;
     }
 
@@ -30,6 +133,14 @@
     // ring reads as 3D. The tilt itself is solved per stage size (see _solveRing) and never wobbles.
     var RING_ROLL = 10 * Math.PI / 180;
     var RING_PERSPECTIVE = 7;
+    // The sphere breathes and reacts: its radius is at most RAD_MAX times the static sphere radius. Its glow (halo
+    // sprite, soft inner glow, outer glow ring, energized ring) never extends beyond GLOW_K times the current radius,
+    // so the visual extent of the orchestrator is HALO_K = RAD_MAX * GLOW_K times the static radius. The layout solver
+    // keeps every satellite disc at least HALO_GAP px outside that extent, over a full rotation.
+    var RAD_MAX = 1.14;
+    var GLOW_K = 1.25;
+    var HALO_K = RAD_MAX * GLOW_K;
+    var HALO_GAP = 4;
     // Point budgets per quality tier: c = orchestrator cloud, s = points per satellite.
     var TIERS_DESKTOP = [{ c: 1200, s: 90 }, { c: 900, s: 72 }, { c: 600, s: 56 }, { c: 420, s: 44 }, { c: 300, s: 36 }];
     var BOOT_TIER = { c: 120, s: 20 };   // first paint only: cheap enough for the mount task, replaced within ~100 ms
@@ -238,6 +349,7 @@
                 try { data = JSON.parse(ev.data); } catch (_) { return; }
                 self.subs.slice().forEach(function (s) { s.onEvent(data); });
             };
+            onData = guard('sse.data', onData);
             es.addEventListener('activity', onData);
             es.onmessage = onData;
             es.onopen = function () {
@@ -257,7 +369,7 @@
                     self._setState('offline');
                     var delay = Math.min(60000, 2000 * Math.pow(2, self.retries));
                     self.retries += 1;
-                    self.retryTimer = setTimeout(function () {
+                    self.retryTimer = safeTimeout(function () {
                         self.retryTimer = null;
                         if (self.subs.length) { self._connect(); }
                     }, delay);
@@ -265,6 +377,8 @@
                     self._setState(self.errors >= 3 ? 'offline' : 'reconnecting');
                 }
             };
+            es.onopen = guard('sse.open', es.onopen);
+            es.onerror = guard('sse.error', es.onerror);
         }
     };
 
@@ -306,15 +420,21 @@
         p = _cloudPending[key] = { gen: cloudGen(n, k), cbs: [cb] };
         var step = function () {
             var t0 = performance.now(), r = { done: !!_cloudCache[key] };
-            while (!r.done && performance.now() - t0 < 3) { r = p.gen.next(); }
+            try {
+                while (!r.done && performance.now() - t0 < 3) { r = p.gen.next(); }
+            } catch (e) {
+                delete _cloudPending[key];
+                reportError('geometry', e);
+                return;
+            }
             if (r.done) {
                 delete _cloudPending[key];
                 for (var i = 0; i < p.cbs.length; i++) { p.cbs[i](); }
             } else {
-                setTimeout(step, 0);
+                safeTimeout(step, 0);
             }
         };
-        setTimeout(step, 0);
+        safeTimeout(step, 0);
     }
 
     function* cloudGen(n, k) {
@@ -459,7 +579,8 @@
     var RING_N = 84;                       // samples per revolution; 7 satellites sit 12 samples apart
     var RING_COS = new Float64Array(RING_N), RING_SIN = new Float64Array(RING_N);
     (function () { for (var j = 0; j < RING_N; j++) { RING_COS[j] = Math.cos(TAU * j / RING_N); RING_SIN[j] = Math.sin(TAU * j / RING_N); } })();
-    var RING_BUF = { ux: new Float64Array(RING_N), uy: new Float64Array(RING_N), uz: new Float64Array(RING_N), r: new Float64Array(RING_N), g: new Float64Array(RING_N), x: new Float64Array(RING_N), y: new Float64Array(RING_N) };
+    var RING_BUF = { ux: new Float64Array(RING_N), uy: new Float64Array(RING_N), uz: new Float64Array(RING_N), r: new Float64Array(RING_N), g: new Float64Array(RING_N), x: new Float64Array(RING_N), y: new Float64Array(RING_N), ex: new Float64Array(RING_N), ey: new Float64Array(RING_N) };
+    var RING_EXT = [0, 0, 0, 0];
     var RING_SINS = (function () {
         var a = [], q;
         for (q = 0.72; q <= 0.961; q += 0.02) { a.push(q); }
@@ -495,40 +616,63 @@
     }
     var _running = new Set();   // widgets whose render loop is active (visible)
 
+    // Extents (left, right, top, bottom) of all node discs plus label allowance around the ring centre for ring radius R.
+    function ringExtents(R) {
+        var B = RING_BUF, L = -1e9, Rt = -1e9, U = -1e9, D = -1e9, j, x, y, v;
+        for (j = 0; j < RING_N; j++) {
+            x = R * B.ux[j]; y = R * B.uy[j];
+            v = B.ex[j] - x; if (v > L) { L = v; }
+            v = B.ex[j] + x; if (v > Rt) { Rt = v; }
+            v = B.ey[j] - y; if (v > U) { U = v; }
+            v = B.ey[j] + y; if (v > D) { D = v; }
+        }
+        RING_EXT[0] = L; RING_EXT[1] = Rt; RING_EXT[2] = U; RING_EXT[3] = D;
+    }
+
     function ringTry(w, h, nodeR, fs, labelMax) {
-        var B = RING_BUF, m = Math.min(w, h), n = SLOT_COUNT;
+        var B = RING_BUF, m = Math.min(w, h), n = SLOT_COUNT, E = RING_EXT;
         var labelHalf = labelMax * fs * 0.6 / 2, ls = labelMax ? 10 + fs + 4 : 2;
         var cr = Math.cos(RING_ROLL), sr = Math.sin(RING_ROLL);
         var best = null, bestKs = -1;
         for (var si = 0; si < RING_SINS.length; si++) {
             var sinT = RING_SINS[si], cosT = Math.sqrt(1 - sinT * sinT), j;
-            var rBound = 1e9, farMin = 1e9;
             for (j = 0; j < RING_N; j++) {
                 var x = RING_COS[j], z = RING_SIN[j], yy = -z * sinT, zz = z * cosT;
                 var sc = RING_PERSPECTIVE / (RING_PERSPECTIVE + zz);
                 var ux = (x * cr - yy * sr) * sc, uy = (x * sr + yy * cr) * sc;
                 var rr = nodeR * sc * 1.05;
                 B.ux[j] = ux; B.uy[j] = uy; B.uz[j] = zz; B.r[j] = rr * 1.32 + 4; B.g[j] = rr * 1.32 + 10;
-                var ax = Math.abs(ux), ay = Math.abs(uy);
-                if (ax > 1e-6) { rBound = Math.min(rBound, (w / 2 - 2 - Math.max(B.r[j] * 1.6, labelHalf)) / ax); }
-                if (ay > 1e-6) { rBound = Math.min(rBound, (h / 2 - 2 - B.r[j] - ls) / ay); }
+                B.ex[j] = Math.max(B.r[j] * 1.6, labelHalf);
+                B.ey[j] = B.r[j] + ls;
             }
-            if (!(rBound > 12)) { continue; }
-            var R = rBound;
-            // Largest sphere that still clears every far node (node ring included) by 3 px.
+            // Largest ring radius whose balanced bounding box (nodes plus labels, over the full rotation) fits the
+            // stage: the ring is then shifted by (ox, oy) so that the margins on opposite sides are equal (the
+            // perspective makes near nodes larger than far ones, so a ring centred on the sphere sits low).
+            var lo = 12, hi = Math.max(w, h), it;
+            ringExtents(lo);
+            if ((E[0] + E[1]) / 2 > w / 2 - 2 || (E[2] + E[3]) / 2 > h / 2 - 2) { continue; }
+            for (it = 0; it < 14; it++) {
+                var mid = (lo + hi) / 2;
+                ringExtents(mid);
+                if ((E[0] + E[1]) / 2 <= w / 2 - 2 && (E[2] + E[3]) / 2 <= h / 2 - 2) { lo = mid; } else { hi = mid; }
+            }
+            var R = lo;
+            ringExtents(R);
+            var ox = (E[0] - E[1]) / 2, oy = (E[2] - E[3]) / 2;
+            // Largest sphere whose glow extent clears every node disc (status ring and spinner included) by HALO_GAP.
             var radMax = 1e9;
             for (j = 0; j < RING_N; j++) {
-                if (B.uz[j] > 0) { radMax = Math.min(radMax, R * Math.hypot(B.ux[j], B.uy[j]) - B.r[j] - 3); }
+                radMax = Math.min(radMax, Math.hypot(R * B.ux[j] + ox, R * B.uy[j] + oy) - (B.r[j] - 1) - HALO_GAP);
             }
-            var ks = Math.min(0.22, radMax / 1.12 / m);
-            if (ks < 0.09) { continue; }
+            var ks = Math.min(0.19, radMax / HALO_K / m);
+            if (ks < 0.077) { continue; }
             ks = Math.floor(ks * 200) / 200;
             if (ks <= bestKs) { continue; }
             // Crowding: every label must find a free side and labels must not touch (12 phases cover all positions).
             for (j = 0; j < RING_N; j++) { B.x[j] = R * B.ux[j]; B.y[j] = R * B.uy[j]; }
             if (!ringCrowdOk(n, labelMax, labelHalf, fs)) { continue; }
             bestKs = ks;
-            best = { sphereR: ks * m, R: R, sinT: sinT, f: R * RING_PERSPECTIVE };
+            best = { sphereR: ks * m, R: R, sinT: sinT, f: R * RING_PERSPECTIVE, ox: ox, oy: oy };
         }
         return best;
     }
@@ -590,9 +734,9 @@
             if (!g) { continue; }
             g.nodeR = nodeR; g.fs = options[oi][1]; g.labelMax = options[oi][2];
             if (!best || g.sphereR > best.sphereR) { best = g; }
-            if (g.sphereR >= m * 0.15) { pick = g; }
+            if (g.sphereR >= m * 0.13) { pick = g; }
         }
-        pick = pick || best || { sphereR: m * 0.1, R: m * 0.3, sinT: 0.9, f: m * 0.3 * RING_PERSPECTIVE, nodeR: 8, fs: 0, labelMax: 0 };
+        pick = pick || best || { sphereR: m * 0.085, R: m * 0.3, sinT: 0.9, f: m * 0.3 * RING_PERSPECTIVE, ox: 0, oy: 0, nodeR: 8, fs: 0, labelMax: 0 };
         if (_ringCacheSize > 200) { _ringCache = {}; _ringCacheSize = 0; }
         _ringCache[key] = pick;
         _ringCacheSize += 1;
@@ -672,6 +816,10 @@
 
         constructor() {
             super();
+            try { this._construct(); } catch (e) { this._broken = true; reportError('orb.constructor', e); }
+        }
+
+        _construct() {
             var root = this.attachShadow({ mode: 'open' });
             var style = document.createElement('style');
             style.textContent = STYLE;
@@ -739,38 +887,38 @@
             this._detectSurface();
             this._mqReduced = window.matchMedia ? window.matchMedia('(prefers-reduced-motion: reduce)') : null;
             this._reduced = !!(this._mqReduced && this._mqReduced.matches);
-            this._onReducedChange = function (e) { self._reduced = !!e.matches; self._wake(); };
+            this._onReducedChange = guard('mq', function (e) { self._reduced = !!e.matches; self._wake(); });
             if (this._mqReduced) {
                 if (this._mqReduced.addEventListener) { this._mqReduced.addEventListener('change', this._onReducedChange); }
                 else if (this._mqReduced.addListener) { this._mqReduced.addListener(this._onReducedChange); }
             }
 
-            this._onVisibility = function () { if (!document.hidden) { self._scheduleSurface(); } self._wake(); };
+            this._onVisibility = guard('visibility', function () { if (!document.hidden) { self._scheduleSurface(); } self._wake(); });
             document.addEventListener('visibilitychange', this._onVisibility);
 
-            this._resizeObs = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(function () { self._roSeen = true; self._resize(); self._wake(); }) : null;
-            if (this._resizeObs) { this._resizeObs.observe(this._stage); } else { window.addEventListener('resize', this._onWinResize = function () { self._resize(); }); }
+            this._resizeObs = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(guard('ResizeObserver', function () { self._roSeen = true; self._resize(); self._wake(); })) : null;
+            if (this._resizeObs) { this._resizeObs.observe(this._stage); } else { window.addEventListener('resize', this._onWinResize = guard('resize', function () { self._resize(); })); }
 
             this._inView = typeof IntersectionObserver === 'undefined';
             if (typeof IntersectionObserver !== 'undefined') {
-                this._io = new IntersectionObserver(function (entries) {
+                this._io = new IntersectionObserver(guard('IntersectionObserver', function (entries) {
                     var last = entries[entries.length - 1];
                     self._inView = !!(last && last.isIntersecting);
                     self._wake();
-                });
+                }));
                 this._io.observe(this._stage);
             }
 
-            this._themeObs = typeof MutationObserver !== 'undefined' ? new MutationObserver(function () { self._scheduleRefresh(); }) : null;
+            this._themeObs = typeof MutationObserver !== 'undefined' ? new MutationObserver(guard('MutationObserver', function () { self._scheduleRefresh(); })) : null;
             if (this._themeObs) {
                 this._themeObs.observe(document.documentElement, { attributes: true, attributeFilter: ['class', 'data-theme', 'style'] });
             }
-            this._onThemeEvent = function () { self._readColors(); self._detectSurface(); self._wake(); };
+            this._onThemeEvent = guard('theme-event', function () { self._readColors(); self._detectSurface(); self._wake(); });
             window.addEventListener('agenthub:theme-change', this._onThemeEvent);
 
             this._bindPointer();
             this._sweepTicks = 0;
-            this._sweeper = setInterval(function () {
+            this._sweeper = safeInterval(function () {
                 self._sweep();
                 // Background changes the observers cannot see (page or card styling): re-check every 2 s, not per frame.
                 if ((self._sweepTicks += 1) % 2 === 0 && self._visible() && (self.hasAttribute('transparent') || self.hasAttribute('stage-background'))) { self._detectSurface(); }
@@ -811,8 +959,14 @@
             this._seedToken = (this._seedToken || 0) + 1;
         }
 
-        attributeChangedCallback(name) {
+        attributeChangedCallback(name, oldValue, newValue) {
             if (!this._card) { return; }
+            // Idempotent: a scoped-registry polyfill (or a second define) can deliver the same change twice.
+            var seen = this._attrSeen || (this._attrSeen = {});
+            var prev = Object.prototype.hasOwnProperty.call(seen, name) ? seen[name] : null;
+            var next = newValue === undefined ? null : newValue;
+            if (prev === next) { return; }
+            seen[name] = next;
             if (name === 'span-timeout') { return; }
             this._applyAttrs();
             this._updateHint();
@@ -823,6 +977,27 @@
                 if (this._demo && this._external && !this._seedDone) { this._seedDemo(); }
             }
             this._wake();
+        }
+
+        // Failure sink of the wrapped entry points: record it, and stop rendering after repeated frame failures
+        // (the last painted frame stays on screen, the rest of the page and other cards are unaffected).
+        _fault(where, err) {
+            try {
+                var rec = reportError('orb.' + where, err);
+                this._faults = (this._faults || 0) + 1;
+                this._lastErr = rec;
+                if (where === '_frame') {
+                    this._raf = 0;
+                    this._frameFaults = (this._frameFaults || 0) + 1;
+                    if (this._frameFaults >= 3) {
+                        this._failed = true;
+                        _running.delete(this);
+                    } else {
+                        var self = this;
+                        this._raf = requestAnimationFrame(function (t) { self._frame(t); });
+                    }
+                }
+            } catch (_) { /* never throw from the sink */ }
         }
 
         /* ---------------- public API ---------------- */
@@ -884,11 +1059,12 @@
                 labels: this._labelDbg.slice(),
                 params: this._params,
                 layerProbe: { phase: this._probe.phase, useLayer: this._useLayer, ms: this._probe.ms || null },
+                fault: { broken: !!this._broken, failed: !!this._failed, count: this._faults || 0, last: this._lastErr || null },
                 profile: { light: this._light, target: this._profT === 1, lum: +this._surface.lum.toFixed(3), rgb: this._surface.rgb.map(Math.round), photo: !!this._surface.photo, fade: +this._pfade.toFixed(3) },
                 drawOrder: this._orderLog ? this._orderLog.slice() : [],
                 nodes: this._pos.map(function (q) { return { x: q.x, y: q.y, z: q.z, rd: q.rd, da: q.da, ad: q.ad }; }),
-                sphere: { cx: this._ring ? this._ring.cx : 0, cy: this._ring ? this._ring.cy : 0, r: this._rad },
-                ring: this._ring ? { R: this._ring.R, sinT: this._ring.sinT, tiltDeg: Math.asin(this._ring.sinT) * 180 / Math.PI, rollDeg: RING_ROLL * 180 / Math.PI, b: this._ring.R * this._ring.sinT, sphereR: this._sphereR } : null
+                sphere: { cx: this._ring ? this._ring.cx : 0, cy: this._ring ? this._ring.cy : 0, r: this._rad, haloR: this._haloR || 0, staticR: this._sphereR || 0 },
+                ring: this._ring ? { R: this._ring.R, sinT: this._ring.sinT, tiltDeg: Math.asin(this._ring.sinT) * 180 / Math.PI, rollDeg: RING_ROLL * 180 / Math.PI, b: this._ring.R * this._ring.sinT, sphereR: this._sphereR, ox: this._ring.ox, oy: this._ring.oy } : null
             };
         }
 
@@ -1167,7 +1343,7 @@
         _scheduleLayout() {
             var self = this;
             if (this._layoutTimer) { clearTimeout(this._layoutTimer); }
-            this._layoutTimer = setTimeout(function () {
+            this._layoutTimer = safeTimeout(function () {
                 self._layoutTimer = 0;
                 if (self._connected) { self._layout(); self._wake(); }
             }, 60);
@@ -1176,14 +1352,14 @@
         _scheduleSurface() {
             var self = this;
             if (this._surfTimer) { clearTimeout(this._surfTimer); }
-            this._surfTimer = setTimeout(function () { self._surfTimer = 0; self._detectSurface(); }, 120);
+            this._surfTimer = safeTimeout(function () { self._surfTimer = 0; self._detectSurface(); }, 120);
         }
 
         // Root style/class mutations come in bursts (HA changes them often): colours are re-read once, 250 ms after the last.
         _scheduleRefresh() {
             var self = this;
             if (this._refreshTimer) { clearTimeout(this._refreshTimer); }
-            this._refreshTimer = setTimeout(function () { self._refreshTimer = 0; self._readColors(); self._detectSurface(); self._wake(); }, 250);
+            this._refreshTimer = safeTimeout(function () { self._refreshTimer = 0; self._readColors(); self._detectSurface(); self._wake(); }, 250);
         }
 
         _makeLayer(idx) {
@@ -1235,16 +1411,16 @@
             var step = function () {
                 self._prebuildTimer = 0;
                 if (!self._connected || !self._ladder || k >= self._ladder.length) { return; }
-                if (self._booting) { self._prebuildTimer = setTimeout(step, 250); return; }
+                if (self._booting) { self._prebuildTimer = safeTimeout(step, 250); return; }
                 var small = self._ladder === TIERS_SMALL;
                 cloudGeometryAsync(self._ladder[k].c, small ? 4 : 6, function () {
                     cloudGeometryAsync(self._ladder[k].s, 3, function () {
                         k += 1;
-                        if (self._connected) { self._prebuildTimer = setTimeout(step, 250); }
+                        if (self._connected) { self._prebuildTimer = safeTimeout(step, 250); }
                     });
                 });
             };
-            this._prebuildTimer = setTimeout(step, 2200);
+            this._prebuildTimer = safeTimeout(step, 2200);
         }
 
         // Sphere size, ring radius and tilt for a stage (shared, cached solver: see solveRingLayout).
@@ -1256,7 +1432,7 @@
             var g = this._solveRing(w, h, narrow);
             this._labelFont = g.fs;
             this._labelMax = g.labelMax;
-            var target = { cx: w / 2, cy: h / 2, R: g.R, sinT: g.sinT, f: g.f, sphereR: g.sphereR, nodeR: g.nodeR };
+            var target = { cx: w / 2, cy: h / 2, R: g.R, sinT: g.sinT, f: g.f, sphereR: g.sphereR, nodeR: g.nodeR, ox: g.ox, oy: g.oy };
             this._layT = target;
             if (!this._ring) {
                 this._setLayout(target);
@@ -1266,7 +1442,8 @@
         _setLayout(L) {
             this._nodeR = L.nodeR;
             this._sphereR = L.sphereR;
-            this._ring = { cx: L.cx, cy: L.cy, R: L.R, sinT: L.sinT, cosT: Math.sqrt(1 - L.sinT * L.sinT), f: L.f };
+            this._ring = { cx: L.cx, cy: L.cy, R: L.R, sinT: L.sinT, cosT: Math.sqrt(1 - L.sinT * L.sinT), f: L.f, ox: L.ox || 0, oy: L.oy || 0 };
+            this._haloR = L.sphereR * HALO_K;
         }
 
         // Later layout changes (window or container resize) glide to the new geometry instead of jumping.
@@ -1274,7 +1451,7 @@
             var T = this._layT, c = this._ring;
             if (!T || !c) { return; }
             var k = 1 - Math.exp(-dt / 0.14);
-            var cur = { cx: c.cx, cy: c.cy, R: c.R, sinT: c.sinT, f: c.f, sphereR: this._sphereR, nodeR: this._nodeR };
+            var cur = { cx: c.cx, cy: c.cy, R: c.R, sinT: c.sinT, f: c.f, sphereR: this._sphereR, nodeR: this._nodeR, ox: c.ox, oy: c.oy };
             var diff = 0, key;
             for (key in T) { diff += Math.abs(T[key] - cur[key]); }
             if (diff < 0.05) { if (diff > 0) { this._setLayout(T); } return; }
@@ -1286,7 +1463,7 @@
 
         async _fetchJson(path) {
             var ctl = typeof AbortController !== 'undefined' ? new AbortController() : null;
-            var timer = ctl ? setTimeout(function () { ctl.abort(); }, 2500) : null;
+            var timer = ctl ? safeTimeout(function () { ctl.abort(); }, 2500) : null;
             try {
                 var res = await fetch(dashUrl(path), { credentials: 'same-origin', signal: ctl ? ctl.signal : undefined });
                 if (!res.ok) { return null; }
@@ -1378,9 +1555,9 @@
             if (this._external) { return; }
             var self = this;
             this._sub = {
-                onEvent: function (e) { self._onEvent(e); },
-                onState: function (st) { self._setConn(st); },
-                onReset: function () { self._resetSpans(); }
+                onEvent: guard('stream.event', function (e) { self._onEvent(e); }),
+                onState: guard('stream.state', function (st) { self._setConn(st); }),
+                onReset: guard('stream.reset', function () { self._resetSpans(); })
             };
             Stream.add(this._sub);
         }
@@ -1407,7 +1584,7 @@
             if (this._hintTimer) { clearTimeout(this._hintTimer); this._hintTimer = 0; }
             if (!offline) { this._hint.classList.remove('show'); return; }
             this._hint.textContent = this._external ? 'Waiting for HA-AgentHub' : 'Activity stream offline';
-            this._hintTimer = setTimeout(function () {
+            this._hintTimer = safeTimeout(function () {
                 self._hintTimer = 0;
                 if (self._connected && !self._demo && self._connState === 'offline') { self._hint.classList.add('show'); }
             }, 5000);
@@ -1423,7 +1600,7 @@
 
         _later(fn, ms) {
             var self = this;
-            var t = setTimeout(function () {
+            var t = safeTimeout(function () {
                 var i = self._demoTimers.indexOf(t);
                 if (i >= 0) { self._demoTimers.splice(i, 1); }
                 if (self._demoRunning) { fn(); }
@@ -1808,7 +1985,7 @@
                 self._announceQueue = [];
             };
             if (wait === 0) { flush(); return; }
-            this._announceTimer = setTimeout(flush, wait);
+            this._announceTimer = safeTimeout(flush, wait);
         }
 
         /* ---------------- pointer / keyboard ---------------- */
@@ -1846,6 +2023,7 @@
                 self._wake();
             };
             this._h_blur = function () { self._focusIdx = -1; if (self._hover < 0 && self._pinned < 0) { self._showTip(-1); } self._wake(); };
+            ['_h_move', '_h_leave', '_h_down', '_h_key', '_h_blur'].forEach(function (k) { self[k] = guard('pointer', self[k]); });
             c.addEventListener('pointermove', this._h_move);
             c.addEventListener('pointerleave', this._h_leave);
             c.addEventListener('pointerdown', this._h_down);
@@ -1950,7 +2128,7 @@
         }
 
         _wake() {
-            if (!this._connected) { return; }
+            if (!this._connected || this._failed) { return; }
             if (!this._visible()) { this._stopLoop(); return; }
             _running.add(this);
             if (this._raf) { return; }
@@ -1990,6 +2168,7 @@
             this._update(dt);
             this._draw();
             this._frames += 1;
+            this._frameFaults = 0;
             var workMs = performance.now() - t0;
             this._adapt(workMs, gap);
             this._probeLayer(workMs);
@@ -2132,8 +2311,8 @@
                 var zz = z * cosT;
                 var sc = R.f / (R.f + zz);
                 var p = this._pos[i];
-                p.x = R.cx + (x * cr - yy * sr) * sc;
-                p.y = R.cy + (x * sr + yy * cr) * sc;
+                p.x = R.cx + R.ox + (x * cr - yy * sr) * sc;
+                p.y = R.cy + R.oy + (x * sr + yy * cr) * sc;
                 p.s = sc;
                 p.z = zz;
                 p.r = this._nodeR * sc;
@@ -2378,7 +2557,7 @@
         _drawHalo(ctx, C) {
             var R = this._ring, rad = this._rad;
             var pulse = 1 + 0.42 * this._bs + 0.32 * this._act + 0.3 * this._kick;
-            var g1R = Math.min(rad * 2.7, this._h * 0.5);
+            var g1R = rad * GLOW_K;
             ctx.globalCompositeOperation = this._add;
             var ga = ctx.globalAlpha;
             ctx.globalAlpha = ga * Math.min(1, 0.18 * pulse);
@@ -2415,8 +2594,11 @@
                 lc.clearRect(L.ox, L.oy, side, side);
                 this._drawSphere(lc, C, breath);
             }
-            ctx.globalCompositeOperation = 'source-over';
+            // The layer holds what _drawSphere adds to the frame, so it is composited with the same operator
+            // (additive on the dark profile, source-over on the light one): the result equals the direct path.
+            ctx.globalCompositeOperation = this._add;
             ctx.drawImage(L.cv, L.ox, L.oy, side, side);
+            ctx.globalCompositeOperation = 'source-over';
         }
 
         _drawSphere(ctx, C, breath) {
@@ -2435,12 +2617,12 @@
             var pulse = 1 + 0.42 * bs + 0.32 * act + 0.3 * this._kick;
             this._pulseMul = pulse;
 
-            var g2 = ctx.createRadialGradient(R.cx, R.cy, 0, R.cx, R.cy, rad * 1.45);
+            var g2 = ctx.createRadialGradient(R.cx, R.cy, 0, R.cx, R.cy, rad * GLOW_K);
             g2.addColorStop(0, rgba(mixRgb(C.sphere, C.core, 0.4), 0.22 * pulse));
             g2.addColorStop(1, rgba(C.sphere, 0));
             ctx.fillStyle = g2;
             ctx.beginPath();
-            ctx.arc(R.cx, R.cy, rad * 1.45, 0, TAU);
+            ctx.arc(R.cx, R.cy, rad * GLOW_K, 0, TAU);
             ctx.fill();
 
             var coreR = rad * (0.52 + 0.06 * bs + 0.16 * act);
@@ -2457,14 +2639,14 @@
             ctx.fillStyle = rgba(C.core, clamp(0.75 * pulse, 0, 1));
             ctx.fill();
 
-            var g4 = ctx.createRadialGradient(R.cx, R.cy, rad * 0.9, R.cx, R.cy, rad * 1.4);
+            var g4 = ctx.createRadialGradient(R.cx, R.cy, rad * 0.9, R.cx, R.cy, rad * GLOW_K);
             var ringA = 0.17 * (1 + 0.38 * bs + 0.9 * act);
             g4.addColorStop(0, rgba(C.sphere, 0));
-            g4.addColorStop(0.38, rgba(C.sphere, ringA));
+            g4.addColorStop(0.55, rgba(C.sphere, ringA));
             g4.addColorStop(1, rgba(C.sphere, 0));
             ctx.fillStyle = g4;
             ctx.beginPath();
-            ctx.arc(R.cx, R.cy, rad * 1.4, 0, TAU);
+            ctx.arc(R.cx, R.cy, rad * GLOW_K, 0, TAU);
             ctx.fill();
             ctx.globalCompositeOperation = 'source-over';
 
@@ -2472,7 +2654,7 @@
             var ring = Math.max(this._energy, this._phaseFlash * 0.7);
             this._ringVis = ring;
             if (ring > 0.02) {
-                var rr2 = rad * 1.22;
+                var rr2 = rad * 1.12;
                 var rc = this._ringCol;
                 ctx.lineWidth = 1;
                 ctx.strokeStyle = rgba(rc, ring * 0.35);
@@ -2657,7 +2839,7 @@
 
         // How badly a rectangle collides with the sphere disc (halo ring included), other nodes and the stage edge.
         _labelPenalty(rect, idx) {
-            var R = this._ring, disc = this._rad * 1.25, pen = 0, k;
+            var R = this._ring, disc = this._haloR, pen = 0, k;
             var nx = clamp(R.cx, rect.x, rect.x + rect.w), ny = clamp(R.cy, rect.y, rect.y + rect.h);
             pen += Math.max(0, disc - Math.hypot(R.cx - nx, R.cy - ny));
             for (k = 0; k < this._pos.length; k++) {
@@ -2685,6 +2867,7 @@
             ctx.textAlign = 'center';
             ctx.textBaseline = 'top';
             ctx.lineJoin = 'round';
+            var midY = this._ring.cy + this._ring.oy, band = this._nodeR * 1.2;
             for (i = 0; i < this._slots.length; i++) {
                 var s = this._slots[i], p = this._pos[i];
                 if (!s.shownId) { this._labelDbg[i] = null; continue; }
@@ -2700,7 +2883,13 @@
                 // sit on the sphere disc, another node or the stage edge. Hysteresis avoids flicker.
                 var below = this._labelRect(p, r, s, text, 1), above = this._labelRect(p, r, s, text, -1);
                 var pb = this._labelPenalty(below, i), pa = this._labelPenalty(above, i);
-                var want = s.lblWant === undefined ? (pb <= pa ? 1 : 0) : s.lblWant;
+                // Outward by default: above for nodes in the upper half of the ring, below for the lower half (so the
+                // margins above and below the ring stay equal); the side only changes when the node crosses the middle
+                // band, or when the other side is clearly freer.
+                var zone = p.y < midY - band ? 0 : (p.y > midY + band ? 1 : -1);
+                var want = s.lblWant === undefined ? (zone >= 0 ? zone : (pb <= pa ? 1 : 0)) : s.lblWant;
+                if (zone >= 0 && zone !== s.lblZone && s.lblWant !== undefined) { want = zone; }
+                s.lblZone = zone;
                 if (want === 1 && pa + 3 < pb) { want = 0; } else if (want === 0 && pb + 3 < pa) { want = 1; }
                 s.lblWant = want;
                 if (s.lblT === undefined || instant) { s.lblT = want; } else { s.lblT += (want - s.lblT) * kk; }
@@ -2791,5 +2980,11 @@
         }
     }
 
-    window.customElements.define(TAG, AgentHubActivityOrb);
+    hardenProto(AgentHubActivityOrb.prototype, [
+        'connectedCallback', 'disconnectedCallback', 'attributeChangedCallback',
+        'pushEvent', 'applySnapshot', 'setConnectionState', 'refreshSurface',
+        '_frame', '_resize', '_wake', '_seed', '_sweep'
+    ]);
+
+    defineEl(TAG, AgentHubActivityOrb);
 })();

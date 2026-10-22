@@ -13,7 +13,8 @@
  * Config (all optional): title (string, default "Agent Activity"; empty hides it), show_title (boolean, default true),
  * height (number = px or CSS length; default auto), width (number = px or CSS length, max-width, centred),
  * transparent (boolean: no stage fill and no card chrome), background (CSS colour for the stage fill; wins over the
- * default dark stage), compact (boolean), demo (boolean), entry_id (string, passed to the subscribe command to pick a config entry;
+ * default dark stage), compact (boolean), demo (boolean), debug (boolean: compact diagnostics panel inside the card),
+ * entry_id (string, passed to the subscribe command to pick a config entry;
  * without it the bridge uses its first loaded entry). Unknown keys are ignored.
  * Size precedence: an explicit height fixes the stage height; otherwise a card inside a fixed-height grid cell
  * (sections view) fills the cell; otherwise the stage derives its height from the width (16:10, 1:1 when narrow).
@@ -27,6 +28,10 @@
  *  - static getConfigForm() returns the schema for HA's own hui-form-editor (min HA 2025.8.0 supports it). A
  *    getConfigElement() is deliberately not defined: HA prefers it over getConfigForm when both exist.
  *
+ * Hardening: no failure inside the card may throw into Home Assistant (lifecycle methods, the hass setter, subscription
+ * callbacks and timers are wrapped; setConfig still throws for an invalid configuration, which is HA's contract for
+ * showing the config error card). Failures are recorded in window.__AGENTHUB_ORB_DIAG__ (see docs/style-guide.md).
+ *
  * Self-healing: when the bridge reloads its config entry it sends {status connected:false} and then nothing, while
  * the client-side subscription still looks alive. If the card stays offline for OFFLINE_RESUBSCRIBE_MS it
  * unsubscribes and subscribes again; an error response (for example not_loaded) is retried with backoff.
@@ -35,9 +40,42 @@
     'use strict';
 
     var CARD_TAG = 'agenthub-activity-orb-card';
+    var ORB_TAG = 'agenthub-activity-orb';
     if (typeof window === 'undefined' || !window.customElements || window.customElements.get(CARD_TAG)) {
         return;
     }
+
+    // Shared diagnostics (created by the widget part; minimal fallbacks when it is missing).
+    var DIAG = window.__AGENTHUB_ORB_DIAG__;
+    if (!DIAG || typeof DIAG !== 'object') { DIAG = window.__AGENTHUB_ORB_DIAG__ = {}; }
+    if (!Array.isArray(DIAG.errors)) { DIAG.errors = []; }
+    if (!Array.isArray(DIAG.defined)) { DIAG.defined = []; }
+    if (!DIAG.t || typeof DIAG.t !== 'object') { DIAG.t = {}; }
+    if (!DIAG.cards || typeof DIAG.cards !== 'object') { DIAG.cards = {}; }
+    var TOOLS = DIAG.tools || {
+        report: function (where, err) {
+            try {
+                var msg = err && err.message !== undefined ? String(err.message) : String(err);
+                var rec = { t: Math.round(performance.now()), where: where, message: msg.slice(0, 300), stack: '' };
+                DIAG.errors.push(rec);
+                if (DIAG.errors.length > 20) { DIAG.errors.shift(); }
+                console.error('[agenthub-orb] ' + where + ': ' + msg, err);
+                return rec;
+            } catch (_) { return null; }
+        },
+        guard: function (where, fn) {
+            return function () {
+                try { return fn.apply(this, arguments); } catch (e) { TOOLS.report(where, e); return undefined; }
+            };
+        }
+    };
+    var guard = TOOLS.guard;
+    var cardSeq = 0;
+
+    function safeTimeout(fn, ms) { return window.setTimeout(guard('card.timer', fn), ms); }
+    function safeInterval(fn, ms) { return window.setInterval(guard('card.interval', fn), ms); }
+
+    function yesNo(v) { return v ? 'yes' : 'no'; }
 
     var SUBSCRIBE_MESSAGE = { type: 'ha_agenthub/activity/subscribe' };
     var BACKOFF_START_MS = 5000;
@@ -53,9 +91,14 @@
         '  line-height: var(--ha-line-height-condensed, 32px); letter-spacing: -0.012em; color: var(--ha-card-header-color, var(--primary-text-color));',
         '  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }',
         '.header[hidden] { display: none; }',
-        '.body { padding: 12px 16px 16px; flex: 1; min-height: 0; min-width: 0; }',
+        '.body { padding: 12px 16px 16px; flex: 1; min-height: 0; min-width: 0; position: relative; }',
         '.body.no-title { padding-top: 16px; }',
-        'agenthub-activity-orb { display: block; width: 100%; min-width: 0; }'
+        'agenthub-activity-orb { display: block; width: 100%; min-width: 0; }',
+        '.dbg { position: absolute; left: 20px; right: 20px; bottom: 20px; z-index: 5; margin: 0; padding: 4px 6px;',
+        '  font: 10px/1.35 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: #d8f0d8;',
+        '  background: rgba(0, 0, 0, 0.74); border-radius: 4px; white-space: pre-wrap; overflow: hidden;',
+        '  max-height: 70%; pointer-events: none; }',
+        '.notice { margin: 0; padding: 8px 4px; font-size: 12px; color: var(--secondary-text-color, #888); }'
     ].join('\n');
 
     // Colour of an HA theme variable as [r, g, b], or null when unresolved.
@@ -128,6 +171,7 @@
         opt('demo', 'boolean');
         opt('entry_id', 'string');
         opt('transparent', 'boolean');
+        opt('debug', 'boolean');
         if (config.background !== undefined && config.background !== null) {
             if (typeof config.background !== 'string' ||
                 (typeof CSS !== 'undefined' && CSS.supports && config.background.trim() !== '' && !CSS.supports('color', config.background))) {
@@ -141,6 +185,15 @@
     class AgentHubActivityOrbCard extends HTMLElement {
         constructor() {
             super();
+            this._id = 'card' + (cardSeq += 1);
+            this._subState = 'idle';
+            this._connState = 'reconnecting';
+            this._offlineSince = 0;
+            this._lastErr = null;
+            try { this._construct(); } catch (e) { this._broken = true; this._fault('constructor', e); }
+        }
+
+        _construct() {
             this._config = null;
             this._hass = null;
             this._conn = null;
@@ -186,7 +239,7 @@
             var labels = {
                 title: 'Title', show_title: 'Show title', height: 'Height', width: 'Width',
                 transparent: 'Transparent background', background: 'Stage background',
-                compact: 'Compact', demo: 'Demo mode', entry_id: 'Config entry ID'
+                compact: 'Compact', demo: 'Demo mode', debug: 'Debug panel', entry_id: 'Config entry ID'
             };
             var helpers = {
                 title: 'Card heading. Ignored while Show title is off; leave empty to hide it as well.',
@@ -197,6 +250,7 @@
                 background: 'Optional CSS colour for the stage fill, for example rgba(0,0,0,0.4) or var(--card-background-color). Wins over the dark default; Transparent background is the same as an empty stage fill.',
                 compact: 'Smaller card without the extra spacing.',
                 demo: 'Play simulated activity instead of live data (no connection to HA-AgentHub is used).',
+                debug: 'Show a small diagnostics panel inside the card (build, load path, connection state, last errors). Useful when reporting a problem.',
                 entry_id: 'Optional. Only needed with several HA-AgentHub config entries; by default the first loaded entry is used.'
             };
             return {
@@ -209,6 +263,7 @@
                     { name: 'background', selector: { text: {} } },
                     { name: 'compact', selector: { boolean: {} } },
                     { name: 'demo', selector: { boolean: {} } },
+                    { name: 'debug', selector: { boolean: {} } },
                     { name: 'entry_id', selector: { text: {} } }
                 ],
                 computeLabel: function (schema) { return labels[schema.name]; },
@@ -220,6 +275,13 @@
         // Unknown keys are ignored (YAML-only options never break the editor); invalid types and sizes throw.
         setConfig(config) {
             validateConfig(config);
+            parseLength(config.height, 'height');
+            parseLength(config.width, 'width');
+            if (this._broken) { throw new Error('HA-AgentHub card failed to initialise (see the browser console)'); }
+            try { this._applyConfig(config); } catch (e) { this._fault('setConfig', e); }
+        }
+
+        _applyConfig(config) {
             var prev = this._config;
             var height = parseLength(config.height, 'height');
             var width = parseLength(config.width, 'width');
@@ -229,6 +291,7 @@
                 compact: config.compact === true,
                 demo: config.demo === true,
                 transparent: config.transparent === true,
+                debug: config.debug === true,
                 background: typeof config.background === 'string' ? config.background.trim() : '',
                 entry_id: config.entry_id || '',
                 height: height,
@@ -262,6 +325,8 @@
             this._card.style.marginLeft = width ? 'auto' : '';
             this._card.style.marginRight = width ? 'auto' : '';
             this._refreshMode(prev && prev.entry_id !== cfg.entry_id);
+            this._syncDebug();
+            this._publish();
         }
 
         getCardSize() {
@@ -334,7 +399,7 @@
                 this._themeSig = sig;
                 // HA applies the new theme variables right after assigning hass.
                 var self = this;
-                requestAnimationFrame(function () { self._applyTheme(); });
+                requestAnimationFrame(guard('card.theme', function () { self._applyTheme(); }));
             }
             if (this._attached) { this._setup(); }
         }
@@ -346,11 +411,126 @@
             this._applyTheme();
             this._refreshMode(false);
             this._setup();
+            this._syncDebug();
+            this._scheduleWidgetCheck();
+            this._publish();
         }
 
         disconnectedCallback() {
             this._attached = false;
             this._teardown();
+            this._stopDebug();
+            if (this._widgetTimer) { clearTimeout(this._widgetTimer); this._widgetTimer = 0; }
+            this._publish();
+        }
+
+        /* ------------------------------ containment and diagnostics ------------------------------ */
+
+        // Failure sink of every wrapped entry point: record, publish, show in the debug panel; never throw.
+        _fault(where, err) {
+            try {
+                this._lastErr = TOOLS.report('card.' + where, err);
+                this._publish();
+                if (this._dbg) { this._debugTick(); }
+            } catch (_) { /* never throw from the sink */ }
+        }
+
+        // An expected, non-fatal error (for example a rejected subscribe command): recorded, not logged as a failure.
+        _noteError(where, err) {
+            try {
+                var msg = err && err.message ? String(err.message) : (err && err.code ? String(err.code) : String(err));
+                this._lastErr = { t: Math.round(performance.now()), where: 'card.' + where, message: msg.slice(0, 200) };
+            } catch (_) { /* ignore */ }
+        }
+
+        // The widget part may have failed to define: say so inside the card instead of an empty box.
+        _scheduleWidgetCheck() {
+            if (this._widgetTimer || !this._body) { return; }
+            var self = this, n = 0;
+            var check = function () {
+                self._widgetTimer = 0;
+                var ok = typeof self._orb.pushEvent === 'function';
+                if (ok && self._notice) { self._notice.remove(); self._notice = null; }
+                if (!ok && !self._notice) {
+                    self._notice = document.createElement('p');
+                    self._notice.className = 'notice';
+                    self._notice.textContent = 'The Agent Activity Orb widget is not available (see the browser console).';
+                    self._body.appendChild(self._notice);
+                }
+                if (!ok && (n += 1) < 4 && self._attached) { self._widgetTimer = safeTimeout(check, 5000); }
+            };
+            this._widgetTimer = safeTimeout(check, 3000);
+        }
+
+        // Summary registered in window.__AGENTHUB_ORB_DIAG__.cards (plain data, copied with JSON.stringify).
+        _publish() {
+            try {
+                var oe = this._orb && this._orb._lastErr, ce = this._lastErr;
+                var last = oe && (!ce || oe.t >= ce.t) ? oe : ce;
+                DIAG.cards[this._id] = {
+                    attached: !!this._attached,
+                    demo: !!this._modeDemo,
+                    subscription: this._subState,
+                    connection: this._connState,
+                    offlineSince: this._offlineSince ? new Date(this._offlineSince).toISOString() : null,
+                    lastError: last ? { where: last.where, message: last.message, t: last.t } : null,
+                    renderStopped: !!(this._orb && this._orb._failed),
+                    orbReady: !!(this._orb && typeof this._orb.pushEvent === 'function'),
+                    broken: !!this._broken,
+                    debug: !!(this._config && this._config.debug)
+                };
+            } catch (_) { /* ignore */ }
+        }
+
+        // debug: true shows a compact panel refreshed once a second; nothing exists (no element, no timer) when off.
+        _syncDebug() {
+            var on = !!(this._config && this._config.debug) && this._attached && this._body;
+            if (on) { this._startDebug(); } else { this._stopDebug(); }
+        }
+
+        _startDebug() {
+            if (this._dbg) { return; }
+            this._dbg = document.createElement('pre');
+            this._dbg.className = 'dbg';
+            this._body.appendChild(this._dbg);
+            this._dbgFrames = 0;
+            this._dbgAt = performance.now();
+            this._dbgFps = 0;
+            var self = this;
+            this._dbgTimer = safeInterval(function () { self._debugTick(); }, 1000);
+            this._debugTick();
+        }
+
+        _stopDebug() {
+            if (this._dbgTimer) { clearInterval(this._dbgTimer); this._dbgTimer = 0; }
+            if (this._dbg) { this._dbg.remove(); this._dbg = null; }
+        }
+
+        _debugTick() {
+            if (!this._dbg) { return; }
+            var orb = this._orb, d = null, reg = window.customElements, t = DIAG.t || {};
+            try { d = typeof orb.pushEvent === 'function' ? orb.diagnostics : null; } catch (e) { d = null; }
+            var now = performance.now();
+            if (d) {
+                var dt = (now - this._dbgAt) / 1000;
+                if (dt > 0.2) { this._dbgFps = Math.round((d.frames - this._dbgFrames) / dt); this._dbgFrames = d.frames; this._dbgAt = now; }
+            }
+            var has = function (tag) { try { return yesNo(reg && reg.get(tag)); } catch (_) { return 'throws'; } };
+            var off = this._offlineSince ? Math.round((Date.now() - this._offlineSince) / 1000) + 's' : '-';
+            var lines = [
+                'build ' + (DIAG.build || '?') + '  gate ' + (DIAG.gatePath || '?') + '  healed ' + yesNo(DIAG.healed),
+                'module +' + (t.evaluated !== undefined ? t.evaluated : '?') + 'ms  card defined +' + (t['defined:' + CARD_TAG] !== undefined ? t['defined:' + CARD_TAG] : '?') + 'ms  polyfill ' + yesNo(window.CustomElementRegistryPolyfill),
+                'customElements.get: card ' + has(CARD_TAG) + '  orb ' + has(ORB_TAG),
+                'sub ' + this._subState + '  conn ' + this._connState + '  offline ' + off + (this._modeDemo ? '  (demo)' : ''),
+                d ? ('orb ' + this._dbgFps + ' fps  tier ' + d.tier + '  ' + d.points + ' pts' + (d.fault && d.fault.failed ? '  RENDER STOPPED' : '')) : 'orb: not available'
+            ];
+            var errs = DIAG.errors || [];
+            if (this._lastErr && (!errs.length || errs[errs.length - 1].message !== this._lastErr.message)) { errs = errs.concat([this._lastErr]); }
+            for (var i = Math.max(0, errs.length - 2); i < errs.length; i++) {
+                lines.push('err ' + errs[i].where + ': ' + String(errs[i].message).slice(0, 110));
+            }
+            this._dbg.textContent = lines.join('\n');
+            this._publish();
         }
 
         /* ------------------------------ theme mapping ------------------------------ */
@@ -387,9 +567,9 @@
         _setup() {
             var cfg = this._config;
             if (!cfg || !this._attached) { return; }
-            if (this._demoMode()) { return; }
+            if (this._demoMode()) { this._subState = 'demo'; this._publish(); return; }
             var hass = this._hass;
-            if (!hass || !hass.connection) { return; }
+            if (!hass || !hass.connection) { this._subState = 'waiting-for-hass'; this._publish(); return; }
             if (this._conn !== hass.connection) {
                 // A new connection object (full reload): drop the old subscription and listeners first.
                 this._teardown();
@@ -403,8 +583,8 @@
         _listenConnection(conn) {
             if (!conn || typeof conn.addEventListener !== 'function') { return; }
             var self = this;
-            var onDisconnected = function () { self._setState('reconnecting'); };
-            var onReconnectError = function () { self._setState('reconnecting'); };
+            var onDisconnected = guard('card.disconnected', function () { self._setState('reconnecting'); });
+            var onReconnectError = guard('card.reconnect-error', function () { self._setState('reconnecting'); });
             // On "ready" HA has replayed the subscription; the bridge then sends a fresh snapshot (state -> live).
             conn.addEventListener('disconnected', onDisconnected);
             conn.addEventListener('reconnect-error', onReconnectError);
@@ -415,11 +595,13 @@
             var self = this;
             var token = this._token;
             this._subscribing = true;
+            this._subState = 'subscribing';
+            this._publish();
             var promise;
             var command = { type: SUBSCRIBE_MESSAGE.type };
             if (this._config && this._config.entry_id) { command.entry_id = this._config.entry_id; }
             try {
-                promise = this._conn.subscribeMessage(function (msg) { self._onMessage(msg); }, command);
+                promise = this._conn.subscribeMessage(guard('card.message', function (msg) { self._onMessage(msg); }), command);
             } catch (err) {
                 promise = Promise.reject(err);
             }
@@ -431,23 +613,28 @@
                     return;
                 }
                 self._unsub = unsub;
-            }, function () {
+                self._subState = 'subscribed';
+                self._publish();
+            }, function (err) {
                 self._subscribing = false;
                 if (token !== self._token || !self._attached) { return; }
                 // Error response (unknown command on an older bridge, not_loaded, ...): stay offline and retry with backoff.
+                self._subState = 'error';
+                self._noteError('subscribe', err);
                 self._setState('offline', true);
                 var delay = self._backoff;
                 self._backoff = Math.min(BACKOFF_MAX_MS, self._backoff * 2);
-                self._retryTimer = setTimeout(function () {
+                self._retryTimer = safeTimeout(function () {
                     self._retryTimer = 0;
                     self._setup();
                 }, delay);
-            });
+            }).then(null, function (e) { self._fault('subscribe-callback', e); });
         }
 
         _onMessage(msg) {
             if (!msg || typeof msg !== 'object') { return; }
             this._backoff = BACKOFF_START_MS;
+            if (typeof this._orb.pushEvent !== 'function') { return; }
             if (msg.type === 'snapshot') {
                 this._orb.applySnapshot({ agents: Array.isArray(msg.agents) ? msg.agents : [] });
                 // connected:false in a snapshot is never permanent: a status message follows when upstream connects.
@@ -461,11 +648,14 @@
 
         // Drive the widget indicator; an offline state that lasts too long triggers a resubscribe (self-healing).
         _setState(state, fromRetryPath) {
-            this._orb.setConnectionState(state);
+            if (state === 'offline') { if (this._connState !== 'offline') { this._offlineSince = Date.now(); } } else { this._offlineSince = 0; }
+            this._connState = state;
+            if (typeof this._orb.setConnectionState === 'function') { this._orb.setConnectionState(state); }
+            this._publish();
             if (state === 'offline' && !fromRetryPath) {
                 if (!this._offlineTimer) {
                     var self = this;
-                    this._offlineTimer = setTimeout(function () {
+                    this._offlineTimer = safeTimeout(function () {
                         self._offlineTimer = 0;
                         self._resubscribe();
                     }, OFFLINE_RESUBSCRIBE_MS);
@@ -497,6 +687,7 @@
                 } catch (_) { /* ignore */ }
             }
             this._subscribing = false;
+            this._subState = this._demoMode() ? 'demo' : 'idle';
         }
 
         _teardown() {
@@ -512,7 +703,43 @@
         }
     }
 
-    window.customElements.define(CARD_TAG, AgentHubActivityOrbCard);
+    // Entry points called by HA and the browser: nothing may throw (setConfig is not wrapped: it throws for an invalid
+    // configuration, which is how HA shows the config error card; its internals are contained in _applyConfig).
+    (function hardenCard() {
+        var proto = AgentHubActivityOrbCard.prototype;
+        var wrap = function (name, fallback) {
+            var orig = proto[name];
+            proto[name] = function () {
+                if (this._broken && name !== 'disconnectedCallback') { return fallback ? fallback.call(this) : undefined; }
+                try { return orig.apply(this, arguments); } catch (e) { this._fault(name, e); return fallback ? fallback.call(this) : undefined; }
+            };
+        };
+        ['connectedCallback', 'disconnectedCallback', '_setup', '_teardown', '_refreshMode', '_applyTheme', '_onMessage', '_setState'].forEach(function (n) { wrap(n); });
+        wrap('getCardSize', function () { return 5; });
+        wrap('getGridOptions', function () { return { columns: 12, rows: 5, min_columns: 6, max_columns: 12, min_rows: 3, max_rows: 9 }; });
+        ['hass', 'preview'].forEach(function (name) {
+            var desc = Object.getOwnPropertyDescriptor(proto, name);
+            if (!desc || !desc.set) { return; }
+            var set = desc.set;
+            Object.defineProperty(proto, name, {
+                configurable: true, enumerable: desc.enumerable, get: desc.get,
+                set: function (v) {
+                    if (this._broken) { return; }
+                    try { set.call(this, v); } catch (e) { this._fault('set ' + name, e); }
+                }
+            });
+        });
+    })();
+
+    if (typeof __orbDefine === 'function') {
+        __orbDefine(CARD_TAG, AgentHubActivityOrbCard);
+    } else {
+        try {
+            window.customElements.define(CARD_TAG, AgentHubActivityOrbCard);
+            DIAG.defined.push(CARD_TAG);
+            DIAG.t['defined:' + CARD_TAG] = Math.round(performance.now());
+        } catch (e) { TOOLS.report('define ' + CARD_TAG, e); }
+    }
 
     window.customCards = window.customCards || [];
     if (!window.customCards.some(function (c) { return c && c.type === CARD_TAG; })) {

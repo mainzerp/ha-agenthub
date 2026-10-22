@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from enum import Enum, IntFlag
 from pathlib import Path
 from types import ModuleType
+from typing import ClassVar
 from unittest.mock import MagicMock
 
 import pytest
@@ -294,11 +295,14 @@ class _MockGenDataTaskResult:
     data: object
 
 
-@dataclass
-class _MockStaticPathConfig:
-    url_path: str
-    path: str
-    cache_headers: bool = True
+class _MockHomeAssistantView:
+    """Mirrors the HomeAssistantView class attributes the bridge sets."""
+
+    url = None
+    extra_urls: ClassVar[list] = []
+    requires_auth = True
+    cors_allowed = False
+    name = None
 
 
 def _mock_websocket_command(schema):
@@ -395,7 +399,7 @@ def _mock_homeassistant_deps():
             "event_message": _mock_event_message,
             "async_register_command": MagicMock(),
         },
-        "homeassistant.components.http": {"StaticPathConfig": _MockStaticPathConfig},
+        "homeassistant.components.http": {"HomeAssistantView": _MockHomeAssistantView},
         "homeassistant.components.frontend": {"add_extra_js_url": MagicMock()},
         "homeassistant.components.diagnostics": {
             "REDACTED": "**REDACTED**",
@@ -453,14 +457,20 @@ def _mock_homeassistant_deps():
             "Required": MagicMock,
             "Optional": MagicMock,
         },
-        "aiohttp": {
+    }
+    # Prefer the real aiohttp (a container requirement): the card view tests
+    # drive a real aiohttp server. The stand-in is only a fallback.
+    try:
+        import aiohttp  # noqa: F401
+    except ImportError:
+        mocks["aiohttp"] = {
             "ClientSession": MagicMock,
             "ClientTimeout": MagicMock,
             "ClientError": Exception,
             "ClientWebSocketResponse": MagicMock,
             "WSMsgType": type("WSMsgType", (), {"TEXT": 1}),
-        },
-    }
+        }
+        mocks["aiohttp.web"] = {"FileResponse": MagicMock, "Request": MagicMock}
     created = []
     for mod_name, attrs in mocks.items():
         if mod_name not in sys.modules:
