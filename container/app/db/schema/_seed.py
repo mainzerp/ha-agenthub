@@ -8,7 +8,9 @@ from app.defaults import (
     CACHE_DEFAULTS,
     DEFAULT_LOCAL_EMBEDDING_MODEL,
     MEMORY_DEFAULTS,
+    VOICE_AUDIO_RETENTION_DESCRIPTION,
     VOICE_DEFAULTS,
+    VOICE_KEEP_AUDIO_DESCRIPTION,
 )
 
 
@@ -459,6 +461,20 @@ async def _seed_defaults(db: aiosqlite.Connection) -> None:
             "int",
             "voice",
             "CPU threads for the speaker-embedding model (1-8)",
+        ),
+        (
+            "voice.speaker_id.keep_audio",
+            "true" if VOICE_DEFAULTS["voice.speaker_id.keep_audio"] else "false",
+            "bool",
+            "voice",
+            VOICE_KEEP_AUDIO_DESCRIPTION,
+        ),
+        (
+            "voice.speaker_id.audio_retention_days",
+            str(VOICE_DEFAULTS["voice.speaker_id.audio_retention_days"]),
+            "int",
+            "voice",
+            VOICE_AUDIO_RETENTION_DESCRIPTION,
         ),
         # Personality settings
         ("personality.prompt", "", "string", "personality", "Personality system prompt for response mediation"),

@@ -516,7 +516,7 @@ class TestVoiceAdminApi:
         bad = await client.put("/api/admin/settings", json={"items": {"voice.speaker_id.wait_ms": "5000"}})
         assert bad.status_code == 400
         grouped = (await client.get("/api/admin/settings")).json()["settings"]
-        assert len(grouped["voice"]) == 8
+        assert len(grouped["voice"]) == 10
 
     async def test_num_threads_write_schedules_background_reload(self, admin_client):
         client, service = admin_client

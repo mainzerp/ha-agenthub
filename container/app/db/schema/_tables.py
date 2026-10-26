@@ -2,6 +2,44 @@
 
 import aiosqlite
 
+# Recorded voice turns (opt-in ``voice.speaker_id.keep_audio``): the
+# identification result, the embedding and the VAD-trimmed audio file name
+# (``<data dir>/voice_turns/<audio_path>``). ``id`` is a uuid4 hex string so
+# the id is known before the row is written. The ``assigned_*`` columns are
+# set when the admin assigns the turn to a profile as an enrollment sample;
+# the repository clears them when that profile or sample is deleted (the FKs
+# are only a backstop on connections with ``PRAGMA foreign_keys=ON``). Shared
+# by the fresh-install DDL and migration 53.
+VOICE_TURNS_DDL = """
+    CREATE TABLE IF NOT EXISTS voice_turns (
+        id TEXT PRIMARY KEY,
+        created_at TEXT NOT NULL,
+        conversation_id TEXT,
+        trace_id TEXT,
+        duration_s REAL,
+        speech_s REAL,
+        embedding BLOB NOT NULL,
+        dim INTEGER NOT NULL,
+        model TEXT NOT NULL,
+        status TEXT NOT NULL,
+        speaker_profile_id INTEGER,
+        score REAL,
+        margin REAL,
+        audio_path TEXT NOT NULL,
+        assigned_profile_id INTEGER REFERENCES voice_profiles(id) ON DELETE SET NULL,
+        assigned_sample_id INTEGER REFERENCES voice_samples(id) ON DELETE SET NULL,
+        assigned_at TEXT
+    )
+"""
+
+VOICE_TURNS_INDEXES = (
+    "CREATE INDEX IF NOT EXISTS idx_voice_turns_created_at ON voice_turns(created_at)",
+    "CREATE INDEX IF NOT EXISTS idx_voice_turns_trace_id ON voice_turns(trace_id)",
+    "CREATE INDEX IF NOT EXISTS idx_voice_turns_assigned_sample ON voice_turns(assigned_sample_id)",
+    "CREATE INDEX IF NOT EXISTS idx_voice_turns_assigned_profile ON voice_turns(assigned_profile_id)",
+    "CREATE INDEX IF NOT EXISTS idx_voice_turns_speaker_profile ON voice_turns(speaker_profile_id)",
+)
+
 
 async def _create_tables(db: aiosqlite.Connection) -> None:
     """Create all tables if they do not exist."""
@@ -412,3 +450,4 @@ async def _create_tables(db: aiosqlite.Connection) -> None:
             created_at TEXT NOT NULL
         )
     """)
+    await db.execute(VOICE_TURNS_DDL)

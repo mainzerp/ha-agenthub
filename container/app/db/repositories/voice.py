@@ -17,6 +17,41 @@ _PROFILE_COLUMNS = "id, name, ha_user_id, created_at, updated_at"
 # Sentinel for "field not provided" in partial updates.
 _UNSET: Any = object()
 
+# Unlinks recorded voice turns from a deleted profile or sample (they become assignable again).
+_CLEAR_ASSIGNMENT = "UPDATE voice_turns SET assigned_profile_id = NULL, assigned_sample_id = NULL, assigned_at = NULL"
+
+# A recorded turn whose result was never consumed by a speaker lookup (the
+# lookup timed out, an action-cache replay) has no ``trace_id``. The listing
+# then falls back to the first trace of the same conversation created from
+# a few seconds before up to a minute after the recording that no other
+# recorded turn is linked to.
+TRACE_FALLBACK_BEFORE_S = 5.0
+TRACE_FALLBACK_AFTER_S = 60.0
+
+# Listing columns of ``voice_turns`` (no embedding) plus ``linked_trace_id``
+# (the stored link, else the time-window fallback); filters are appended.
+_TURN_LIST_INNER = (
+    "SELECT t.id, t.created_at, t.conversation_id, t.trace_id, t.duration_s, t.speech_s, t.model, t.status, "
+    "t.speaker_profile_id, t.score, t.margin, t.audio_path, t.assigned_profile_id, t.assigned_sample_id, "
+    "t.assigned_at, COALESCE(t.trace_id, ("
+    "SELECT f.trace_id FROM trace_summary f "
+    "WHERE t.trace_id IS NULL AND t.conversation_id IS NOT NULL AND f.conversation_id = t.conversation_id "
+    f"AND julianday(f.created_at) >= julianday(t.created_at) - {TRACE_FALLBACK_BEFORE_S / 86400.0!r} "
+    f"AND julianday(f.created_at) <= julianday(t.created_at) + {TRACE_FALLBACK_AFTER_S / 86400.0!r} "
+    "AND NOT EXISTS (SELECT 1 FROM voice_turns o WHERE o.trace_id = f.trace_id) "
+    "ORDER BY f.created_at, f.id LIMIT 1)) AS linked_trace_id "
+    "FROM voice_turns t"
+)
+
+# Joins the identified and assigned profile names and the user input of the linked trace.
+_TURN_LIST_OUTER = (
+    "SELECT x.*, sp.name AS speaker_name, ap.name AS assigned_name, ts.user_input AS transcript FROM ({inner}) x "
+    "LEFT JOIN voice_profiles sp ON sp.id = x.speaker_profile_id "
+    "LEFT JOIN voice_profiles ap ON ap.id = x.assigned_profile_id "
+    "LEFT JOIN trace_summary ts ON ts.trace_id = x.linked_trace_id "
+    "ORDER BY x.created_at DESC, x.id"
+)
+
 
 class VoiceProfileNameConflictError(ValueError):
     """A voice profile with the same name already exists."""
@@ -137,8 +172,12 @@ class VoiceProfileRepository:
     async def delete_profile(profile_id: int) -> bool:
         """Delete a profile and its samples. Returns True if the profile existed."""
         async with get_db_write() as db:
-            # Explicit delete: the cascade only fires on connections with
-            # ``PRAGMA foreign_keys=ON``.
+            # Explicit delete and unlink: the cascade and SET NULL only fire on
+            # connections with ``PRAGMA foreign_keys=ON``.
+            await db.execute(f"{_CLEAR_ASSIGNMENT} WHERE assigned_profile_id = ?", (profile_id,))
+            await db.execute(
+                "UPDATE voice_turns SET speaker_profile_id = NULL WHERE speaker_profile_id = ?", (profile_id,)
+            )
             await db.execute("DELETE FROM voice_samples WHERE profile_id = ?", (profile_id,))
             cursor = await db.execute("DELETE FROM voice_profiles WHERE id = ?", (profile_id,))
             return cursor.rowcount > 0
@@ -182,6 +221,8 @@ class VoiceProfileRepository:
     async def delete_samples(profile_id: int) -> int:
         """Delete every sample of a profile. Returns the number of deleted rows."""
         async with get_db_write() as db:
+            # Turns assigned to these samples become assignable again.
+            await db.execute(f"{_CLEAR_ASSIGNMENT} WHERE assigned_profile_id = ?", (profile_id,))
             cursor = await db.execute("DELETE FROM voice_samples WHERE profile_id = ?", (profile_id,))
             return cursor.rowcount
 
@@ -200,6 +241,11 @@ class VoiceProfileRepository:
     async def delete_sample(profile_id: int, sample_id: int) -> bool:
         """Delete one sample of a profile. Returns True when it existed."""
         async with get_db_write() as db:
+            # Before the delete: with foreign keys on, the FK would null ``assigned_sample_id`` first.
+            await db.execute(
+                f"{_CLEAR_ASSIGNMENT} WHERE assigned_sample_id = ? AND assigned_profile_id = ?",
+                (sample_id, profile_id),
+            )
             cursor = await db.execute(
                 "DELETE FROM voice_samples WHERE id = ? AND profile_id = ?",
                 (sample_id, profile_id),
@@ -217,3 +263,170 @@ class VoiceProfileRepository:
                 (model,),
             )
             return [dict(row) for row in await cursor.fetchall()]
+
+
+class VoiceTurnRepository:
+    """CRUD for ``voice_turns`` (recorded voice turns; the WAV files are handled by the caller)."""
+
+    @staticmethod
+    async def add_turn(
+        turn_id: str,
+        *,
+        embedding: bytes,
+        dim: int,
+        model: str,
+        status: str,
+        audio_path: str,
+        conversation_id: str | None = None,
+        duration_s: float | None = None,
+        speech_s: float | None = None,
+        speaker_profile_id: int | None = None,
+        score: float | None = None,
+        margin: float | None = None,
+        created_at: str | None = None,
+    ) -> None:
+        async with get_db_write() as db:
+            await db.execute(
+                "INSERT INTO voice_turns (id, created_at, conversation_id, duration_s, speech_s, embedding, dim, "
+                "model, status, speaker_profile_id, score, margin, audio_path) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    turn_id,
+                    created_at or _now(),
+                    conversation_id,
+                    duration_s,
+                    speech_s,
+                    embedding,
+                    dim,
+                    model,
+                    status,
+                    speaker_profile_id,
+                    score,
+                    margin,
+                    audio_path,
+                ),
+            )
+
+    @staticmethod
+    def _filters(status: str | None, assigned: bool | None) -> tuple[str, list[Any]]:
+        clauses: list[str] = []
+        params: list[Any] = []
+        if status:
+            clauses.append("t.status = ?")
+            params.append(status)
+        if assigned is True:
+            clauses.append("t.assigned_sample_id IS NOT NULL")
+        elif assigned is False:
+            clauses.append("t.assigned_sample_id IS NULL")
+        return (" WHERE " + " AND ".join(clauses)) if clauses else "", params
+
+    @staticmethod
+    async def list_turns(
+        *,
+        limit: int = 50,
+        offset: int = 0,
+        status: str | None = None,
+        assigned: bool | None = None,
+    ) -> tuple[list[dict[str, Any]], int]:
+        """Newest first, without embeddings, plus the filtered total. ``assigned`` filters on the sample link.
+
+        ``trace_id`` is the stored link; ``linked_trace_id`` adds the
+        time-window fallback (see :data:`TRACE_FALLBACK_AFTER_S`) and selects ``transcript``.
+        """
+        where, params = VoiceTurnRepository._filters(status, assigned)
+        async with get_db_read() as db:
+            cursor = await db.execute(f"SELECT COUNT(*) FROM voice_turns t{where}", tuple(params))
+            row = await cursor.fetchone()
+            total = int(row[0]) if row else 0
+            inner = f"{_TURN_LIST_INNER}{where} ORDER BY t.created_at DESC, t.id LIMIT ? OFFSET ?"
+            cursor = await db.execute(_TURN_LIST_OUTER.format(inner=inner), (*params, limit, offset))
+            return [dict(item) for item in await cursor.fetchall()], total
+
+    @staticmethod
+    async def get_turn(turn_id: str) -> dict[str, Any] | None:
+        """One turn with its embedding bytes, or None."""
+        async with get_db_read() as db:
+            cursor = await db.execute(
+                "SELECT id, created_at, conversation_id, trace_id, duration_s, speech_s, embedding, dim, model, "
+                "status, speaker_profile_id, score, margin, audio_path, assigned_profile_id, assigned_sample_id, "
+                "assigned_at FROM voice_turns WHERE id = ?",
+                (turn_id,),
+            )
+            row = await cursor.fetchone()
+            return dict(row) if row else None
+
+    @staticmethod
+    async def count() -> int:
+        async with get_db_read() as db:
+            cursor = await db.execute("SELECT COUNT(*) FROM voice_turns")
+            row = await cursor.fetchone()
+            return int(row[0]) if row else 0
+
+    @staticmethod
+    async def set_trace_id(turn_id: str, trace_id: str) -> bool:
+        async with get_db_write() as db:
+            cursor = await db.execute("UPDATE voice_turns SET trace_id = ? WHERE id = ?", (trace_id, turn_id))
+            return cursor.rowcount > 0
+
+    @staticmethod
+    async def mark_assigned(turn_id: str, profile_id: int, sample_id: int) -> bool:
+        """Link the turn to its new enrollment sample. False when missing or already assigned."""
+        async with get_db_write() as db:
+            cursor = await db.execute(
+                "UPDATE voice_turns SET assigned_profile_id = ?, assigned_sample_id = ?, assigned_at = ? "
+                "WHERE id = ? AND assigned_sample_id IS NULL",
+                (profile_id, sample_id, _now(), turn_id),
+            )
+            return cursor.rowcount > 0
+
+    @staticmethod
+    async def delete_turn(turn_id: str) -> str | None:
+        """Delete one turn. Returns its audio file name, or None when it did not exist."""
+        async with get_db_write() as db:
+            cursor = await db.execute("SELECT audio_path FROM voice_turns WHERE id = ?", (turn_id,))
+            row = await cursor.fetchone()
+            if row is None:
+                return None
+            await db.execute("DELETE FROM voice_turns WHERE id = ?", (turn_id,))
+            return str(row[0])
+
+    @staticmethod
+    async def delete_for_profile(profile_id: int) -> list[str]:
+        """Delete turns identified as or assigned to a profile. Returns the audio file names."""
+        async with get_db_write() as db:
+            cursor = await db.execute(
+                "SELECT audio_path FROM voice_turns WHERE speaker_profile_id = ? OR assigned_profile_id = ?",
+                (profile_id, profile_id),
+            )
+            paths = [str(row[0]) for row in await cursor.fetchall()]
+            if paths:
+                await db.execute(
+                    "DELETE FROM voice_turns WHERE speaker_profile_id = ? OR assigned_profile_id = ?",
+                    (profile_id, profile_id),
+                )
+            return paths
+
+    @staticmethod
+    async def delete_all() -> list[str]:
+        """Delete every turn. Returns the audio file names."""
+        async with get_db_write() as db:
+            cursor = await db.execute("SELECT audio_path FROM voice_turns")
+            paths = [str(row[0]) for row in await cursor.fetchall()]
+            await db.execute("DELETE FROM voice_turns")
+            return paths
+
+    @staticmethod
+    async def delete_older_than(cutoff: str) -> list[str]:
+        """Delete turns created before the ISO timestamp ``cutoff``. Returns the audio file names."""
+        async with get_db_write() as db:
+            cursor = await db.execute("SELECT audio_path FROM voice_turns WHERE created_at < ?", (cutoff,))
+            paths = [str(row[0]) for row in await cursor.fetchall()]
+            if paths:
+                await db.execute("DELETE FROM voice_turns WHERE created_at < ?", (cutoff,))
+            return paths
+
+    @staticmethod
+    async def list_audio_paths() -> set[str]:
+        async with get_db_read() as db:
+            cursor = await db.execute("SELECT audio_path FROM voice_turns")
+            return {str(row[0]) for row in await cursor.fetchall()}

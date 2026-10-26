@@ -1468,6 +1468,14 @@ class TestVoiceProfilesPage:
         # Pre-VAD samples are flagged; the banner warns when silence trimming is unavailable.
         assert "sample.pre_vad" in html and "Recorded before silence trimming" in html
         assert "status.vad_state === 'failed'" in html
+        # Recorded turns: playback, assignment with guard override, filters and the opt-in hint.
+        assert "'/api/admin/voice/turns?' + this.turnsQuery()" in html
+        assert 'controls preload="none" :src="turnAudioUrl(t)"' in html
+        assert '@click="assignTurn(t, true)"' in html and "Assign anyway" in html
+        assert '@click="deleteAllTurns()"' in html
+        assert "voice.speaker_id.keep_audio" in html and "voice.speaker_id.audio_retention_days" in html
+        assert "Recording is off" in html
+        assert "no audio is kept" not in html
         # Only an open sample list is reloaded, also after the enrollment ended.
         assert "var target = current || previous;" in html and "entry && entry.open" in html
         assert "r.status !== 'unknown'" in html

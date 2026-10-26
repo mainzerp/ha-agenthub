@@ -559,6 +559,24 @@ Optional; off by default (`voice.speaker_id.enabled`). Flow:
    (flagged pre-VAD). The dashboard ring buffer
    (`SpeakerTurnStore.record_recent`) keeps them, without audio or
    embeddings.
+   **Recorded turns** (opt-in `voice.speaker_id.keep_audio`,
+   `app/voice/recordings.py`): an identification turn that produced an
+   embedding (`identified` / `unknown`; while no profile exists the turn
+   is embedded for the recording alone and recorded as `no_profiles`,
+   result unchanged; never an enrollment turn: the session passes
+   `record=False` for turns marked at `start`) is recorded
+   in a background task (`spawn`) after the analysis, so it never delays
+   the result: the VAD-trimmed PCM that was embedded is written as a
+   16 kHz mono WAV to `<data dir>/voice_turns/<id>.wav` (worker thread,
+   atomic rename), then a `voice_turns` row stores the result, the
+   embedding and the model (migration 53). The uuid4 hex id is known up
+   front and travels in the turn-store result as `voice_turn_id` (never
+   sent on `/ws/voice`). The store task re-reads `enabled` and
+   `keep_audio` before writing. A failed write is logged and leaves no
+   file or row behind. Only turns confirmed by `end` stay: `abort`, a
+   disconnect, an idle timeout or a protocol error after the analysis
+   call `SpeakerIdService.discard_recording`, which waits for the store
+   task and deletes the row and the file.
 4. The conversation turn for the same `conversation_id` (the bridge sends
    the same chat-session id) starts a speaker lookup in the orchestrator
    prelude (`PendingSpeakerLookup`), concurrently with memory search and
@@ -579,7 +597,14 @@ Optional; off by default (`voice.speaker_id.enabled`). Flow:
    `second_name`, `second_score`, `waited_ms` = time blocked at dispatch,
    `lookup_ms` = lookup start to result, `compute_ms`, `latency_ms`,
    `speaker_name` and the profile's linked `speaker_ha_user_id` when
-   identified). An early prelude exit cancels the
+   identified). When the consumed result carries a `voice_turn_id`,
+   the lookup sets that row's `trace_id` in the background (after the
+   recording's insert finished); turns whose entry is never consumed
+   (lookup `timeout`, cache replay, early exit) keep `trace_id` NULL; the
+   admin list then falls back to the first `trace_summary` row of the same
+   `conversation_id` created from 5 s before to 60 s after the recording
+   that no other recorded turn is linked to (`trace_match`
+   `time_window`), and joins its `user_input` as the transcript. An early prelude exit cancels the
    lookup and removes the entry. An action-cache replay discards the
    entry. A turn with an attached speaker is treated as
    context-dependent and writes no action-cache or routing-cache row, so
@@ -709,8 +734,26 @@ Rules:
   `min_similarity`).
 - The voice path never waits for a model load: while the engine is not
   `ready`, turns report `unavailable` and a background warm-up starts.
-- `/ws/voice` writes no connection-level trace; no audio is stored, only
-  embeddings of enrollment samples.
+- `/ws/voice` writes no connection-level trace. Audio is stored only for
+  recorded turns (`voice.speaker_id.keep_audio`, off by default); the
+  retention task (`app/bootstrap/_voice.py::run_recording_retention`,
+  registered by `setup_voice`, one minute after startup and hourly, also while recording
+  is off) deletes rows and files older than
+  `voice.speaker_id.audio_retention_days` and WAV files without a row
+  older than one hour (the file is written before its row).
+- Assigning a recorded turn (`POST /api/admin/voice/turns/{id}/assign`)
+  bypasses the enrollment state entirely: it runs
+  `check_enrollment_sample` against the target profile, refuses a
+  rejection unless `force`, stores the stored embedding (re-embedded from
+  the WAV when it was computed by another model) via `add_sample`,
+  links the turn (`assigned_profile_id`, `assigned_sample_id`) and
+  invalidates the centroid cache. Deleting that sample, resetting the
+  profile's samples or deleting the profile unlinks the turn again
+  (explicit updates in `VoiceProfileRepository`; the FKs with
+  `ON DELETE SET NULL` are only a backstop). A profile deleted during the
+  assignment (foreign-key error) or a turn deleted or assigned meanwhile
+  removes the new sample again (404 or 409). Deleting a profile with
+  `delete_recordings=true` deletes its identified and assigned turns.
 
 ### Mediation Streaming
 

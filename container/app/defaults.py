@@ -49,6 +49,8 @@ VOICE_DEFAULTS: dict[str, object] = {
     "voice.speaker_id.enroll_min_similarity": 0.45,
     "voice.speaker_id.wait_ms": 500,
     "voice.speaker_id.num_threads": 2,
+    "voice.speaker_id.keep_audio": False,
+    "voice.speaker_id.audio_retention_days": 30,
 }
 
 # Inclusive (min, max) bounds enforced by the settings API for numeric voice settings.
@@ -60,7 +62,15 @@ VOICE_SETTING_RANGES: dict[str, tuple[float, float]] = {
     "voice.speaker_id.enroll_min_similarity": (0.0, 1.0),
     "voice.speaker_id.wait_ms": (0, 3000),
     "voice.speaker_id.num_threads": (1, 8),
+    "voice.speaker_id.audio_retention_days": (1, 365),
 }
+
+# Setting descriptions of the voice-turn recording settings, shared by the
+# fresh-install seed and migration 53.
+VOICE_KEEP_AUDIO_DESCRIPTION = (
+    "Keep the audio of identified and unknown voice turns locally so they can be assigned to a voice profile"
+)
+VOICE_AUDIO_RETENTION_DESCRIPTION = "Days a recorded voice turn is kept before it is deleted (1-365)"
 
 # AI-task helper agent configs (``agent_configs`` rows, never A2A agents):
 # (agent_id, enabled, model, timeout, max_iterations, temperature, max_tokens,

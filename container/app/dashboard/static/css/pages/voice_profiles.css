@@ -67,9 +67,76 @@
     width: 100%;
 }
 
+.voice-turns-header {
+    gap: var(--space-3);
+}
+
+.voice-turns-tools {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-2);
+}
+
+.voice-turns-filter {
+    width: auto;
+}
+
+.voice-turn-transcript {
+    min-width: 160px;
+    max-width: 320px;
+    overflow-wrap: anywhere;
+}
+
+.voice-turn-audio {
+    display: block;
+    width: 220px;
+    max-width: 100%;
+    height: 32px;
+}
+
+.voice-turn-assign {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-2);
+}
+
+.voice-turn-assign .form-input {
+    width: auto;
+    min-width: 120px;
+}
+
+.voice-turn-rejection {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+}
+
 @media (max-width: 640px) {
     .voice-enroll-banner {
         flex-direction: column;
         align-items: flex-start;
     }
+
+    .voice-turns-tools,
+    .voice-turns-filter {
+        width: 100%;
+    }
+
+    .voice-turn-audio {
+        width: 180px;
+    }
+}
+
+.voice-delete-option {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--space-2);
+    cursor: pointer;
+    color: var(--color-cloud);
+}
+
+.voice-delete-option input {
+    margin-top: var(--space-1);
 }

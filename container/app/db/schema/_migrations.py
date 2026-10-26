@@ -25,7 +25,14 @@ from pathlib import Path
 import aiosqlite
 
 from app.db.schema import _column_exists
-from app.defaults import AI_TASK_HELPER_AGENT_CONFIGS, CACHE_DEFAULTS
+from app.db.schema._tables import VOICE_TURNS_DDL, VOICE_TURNS_INDEXES
+from app.defaults import (
+    AI_TASK_HELPER_AGENT_CONFIGS,
+    CACHE_DEFAULTS,
+    VOICE_AUDIO_RETENTION_DESCRIPTION,
+    VOICE_DEFAULTS,
+    VOICE_KEEP_AUDIO_DESCRIPTION,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1129,6 +1136,36 @@ async def _migrate_to_52(db: aiosqlite.Connection) -> None:
     await db.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (52)")
 
 
+async def _migrate_to_53(db: aiosqlite.Connection) -> None:
+    # Migration 53: opt-in recording of voice turns for later assignment to a
+    # voice profile (``voice_turns`` plus the ``keep_audio`` and
+    # ``audio_retention_days`` settings, recording off by default).
+    # Idempotent: IF NOT EXISTS DDL, INSERT OR IGNORE keeps admin values.
+    await db.execute(VOICE_TURNS_DDL)
+    for statement in VOICE_TURNS_INDEXES:
+        await db.execute(statement)
+    await db.executemany(
+        "INSERT OR IGNORE INTO settings (key, value, value_type, category, description) VALUES (?, ?, ?, ?, ?)",
+        (
+            (
+                "voice.speaker_id.keep_audio",
+                "true" if VOICE_DEFAULTS["voice.speaker_id.keep_audio"] else "false",
+                "bool",
+                "voice",
+                VOICE_KEEP_AUDIO_DESCRIPTION,
+            ),
+            (
+                "voice.speaker_id.audio_retention_days",
+                str(VOICE_DEFAULTS["voice.speaker_id.audio_retention_days"]),
+                "int",
+                "voice",
+                VOICE_AUDIO_RETENTION_DESCRIPTION,
+            ),
+        ),
+    )
+    await db.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (53)")
+
+
 # Ordered registry of (version, migration_callable). Each migration records
 # its own version marker. Applied in ascending order for versions greater
 # than the current schema version.
@@ -1184,6 +1221,7 @@ MIGRATIONS: list[tuple[int, Callable[[aiosqlite.Connection], Awaitable[None]]]] 
     (50, _migrate_to_50),
     (51, _migrate_to_51),
     (52, _migrate_to_52),
+    (53, _migrate_to_53),
 ]
 
 

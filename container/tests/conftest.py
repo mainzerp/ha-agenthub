@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
@@ -234,8 +235,26 @@ def _clear_visibility_rules_cache():
 
 @pytest.fixture(autouse=True)
 async def _reset_write_conn():
-    """Close the shared global write connection and drop the write lock so neither leaks across loops."""
+    """Close the shared global write connection and drop the write lock so neither leaks across loops.
+
+    Background tasks spawned through ``app.util.tasks.spawn`` that are still
+    running are cancelled and awaited first: one that outlived its test
+    could otherwise open a fresh write connection after the reset (or be
+    cancelled by the loop shutdown inside a write) and leak it, with an
+    open transaction, into the next test.
+    """
     yield
+    try:
+        from app.util import tasks as _tasks
+
+        loop = asyncio.get_running_loop()
+        leftovers = [task for task in list(_tasks._pending) if not task.done() and task.get_loop() is loop]
+        for task in leftovers:
+            task.cancel()
+        if leftovers:
+            await asyncio.wait(leftovers, timeout=2.0)
+    except Exception:
+        pass
     try:
         import app.db.schema as _schema
         from tests.helpers import shutdown_aiosqlite

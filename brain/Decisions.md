@@ -621,3 +621,29 @@ prompts live in `container/app/prompts/`, `ctx.agent_registry` not
   The Trivy gate ignores the same set via `.trivyignore` (ci.py, local-ci.ps1,
   workflow gate steps). Drop the entries once litellm lifts the cap. Rejected: overriding the litellm
   cap (unsupported combination in the image) and a red gate until upstream moves.
+
+## 2026-10-26 — voice: recorded turns as an enrollment source
+
+- **Request audio may be kept, opt-in only** (`voice.speaker_id.keep_audio`,
+  default off; `voice.speaker_id.audio_retention_days`, default 30). This
+  replaces the former "no audio is kept" rule. Rationale: enrolling from real
+  satellite turns needs no extra onboarding session and uses the exact room,
+  device and speaking style that identification sees later.
+- **Stored per turn: the VAD-trimmed PCM as WAV under `container/data/`, the
+  embedding with its model name, and the identification result**; linked to
+  `conversation_id` and, once the lookup runs, the `trace_id`. Turns without an
+  embedding (too short, failed) and enrollment turns are not stored. Audio
+  never leaves the container; a periodic cleanup and a "delete all" action
+  bound the biometric data.
+- **All voice turns are kept, not only unknown ones** (user decision), so
+  misidentified turns can be corrected too.
+- **Assigning runs the enrollment guard but the admin may override** (user
+  decision): the admin has listened to the turn, so a guard reject is shown as
+  a warning with scores, not a hard block.
+- **Only turns confirmed by `end` are kept**; abort, discard and disconnect
+  delete the recording, so false wakes without a transcript leave no audio.
+- **Recording also runs with zero profiles** (status `no_profiles`), so the
+  first profile can be built purely from recordings.
+- **Transcript link falls back to the conversation's next trace within 60 s**
+  when the speaker lookup timed out or never ran (heuristic, marked
+  `trace_match=time_window`). Profile delete offers `delete_recordings`.
