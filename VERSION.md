@@ -6,6 +6,8 @@
 
 (tracking changes since 3.14.0)
 
+- Deps (container image): setuptools 84.0.0 -> 84.2.1, floor `>=84.1.0` (pip-audit: GHSA-xmj3-9gf7-h52w); `container/requirements.lock` regenerated. filelock 3.32.7 (CVE-2026-112940, CVE-2026-112913, CVE-2026-112907, fixed in 4.2.1) stays, because every litellm release requires `filelock<4.0`; the three advisories are ignored with reasons in `PIP_AUDIT_IGNORED` (`scripts/ci.py`, mirrored in pre-commit and `local-ci.ps1`; the Trivy gate reads the same set from `.trivyignore`): two affect only `ReadWriteLock`, which no installed dependency uses, one only Windows soft locks.
+
 ## Version History
 
 ### 3.14.0 (MINOR) -- card load hardening, content-hash delivery and orb layout fixes

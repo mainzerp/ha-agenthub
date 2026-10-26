@@ -61,6 +61,19 @@ BANDIT_SKIPS = "B101,B104,B105,B311,B608"
 REQUIREMENTS = "container/requirements.txt"
 TORCH_REQUIREMENTS = "container/requirements-torch.txt"
 LOCK_FILE = "container/requirements.lock"
+# Advisories pip-audit may ignore, each with its reason. Keep in sync with
+# .pre-commit-config.yaml, scripts/local-ci.ps1 and .trivyignore (the Trivy
+# gate); drop an entry once the fix is installable.
+TRIVY_IGNORE_FILE = Path(__file__).resolve().parent.parent / ".trivyignore"
+PIP_AUDIT_IGNORED = {
+    # filelock 3.32.7: fixed only in 4.2.1, but every litellm release requires
+    # filelock<4.0. Not exposed: the two below affect only ReadWriteLock /
+    # AsyncReadWriteLock, which no installed dependency uses.
+    "CVE-2026-112940": "filelock ReadWriteLock only; blocked by litellm filelock<4.0",
+    "CVE-2026-112913": "filelock ReadWriteLock only; blocked by litellm filelock<4.0",
+    # Affects soft locks on Windows only; the image runs on Linux.
+    "CVE-2026-112907": "filelock soft locks on Windows only; blocked by litellm filelock<4.0",
+}
 LOCK_PYTHON_VERSION = "3.12"  # keep in sync with the Dockerfile base image
 # Image platforms (Debian bookworm, glibc 2.36). The lock is resolved for the
 # first one; every platform must resolve to the identical lock. Hashes cover
@@ -429,6 +442,7 @@ def step_security() -> None:
         (LOCK_FILE, ["--require-hashes"], "pip-audit-report.json"),
         (TORCH_REQUIREMENTS, ["--no-deps"], "pip-audit-torch-report.json"),
     )
+    ignore_args = [arg for vuln in PIP_AUDIT_IGNORED for arg in ("--ignore-vuln", vuln)]
     for requirements, mode, report in audits:
         try:
             run(
@@ -437,6 +451,7 @@ def step_security() -> None:
                     "-r",
                     requirements,
                     *mode,
+                    *ignore_args,
                     "--disable-pip",
                     "--format=json",
                     f"--output={report}",
@@ -528,6 +543,8 @@ def step_docker(
                         "--ignore-unfixed",
                         "--severity",
                         "HIGH,CRITICAL",
+                        "--ignorefile",
+                        str(TRIVY_IGNORE_FILE),
                         full_name,
                     ]
                 )

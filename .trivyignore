@@ -2,3 +2,13 @@
 # zlib1g has no available patch in Bookworm; ignoring to prevent
 # permanent blocking of releases for an unfixable OS vulnerability.
 CVE-2023-45853
+
+# filelock 3.32.7: fixed only in 4.2.1, but every litellm release requires
+# filelock<4.0. Same set and reasons as PIP_AUDIT_IGNORED in scripts/ci.py;
+# drop these once litellm allows filelock 4.
+# Not exposed: affects only ReadWriteLock / AsyncReadWriteLock, which no
+# installed dependency uses.
+CVE-2026-112940
+CVE-2026-112913
+# Soft locks on Windows only; the image runs on Linux.
+CVE-2026-112907

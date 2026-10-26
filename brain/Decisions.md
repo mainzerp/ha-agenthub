@@ -610,3 +610,14 @@ prompts live in `container/app/prompts/`, `ctx.agent_registry` not
 - **Delivery**: content-hash `?v=` and `Cache-Control: no-cache` with ETag
   revalidation (HA's stock static path sends 31 days, and its service worker
   caches `/ha_agenthub_static/*` stale-while-revalidate for 24 h).
+
+## 2026-10-26 — pip-audit: filelock advisories ignored until litellm allows 4.x
+
+- **CVE-2026-112940, CVE-2026-112913, CVE-2026-112907 (filelock 3.32.7) are
+  ignored with reasons in `PIP_AUDIT_IGNORED` (`scripts/ci.py`)** (user
+  decision). The fix is only in filelock 4.2.1 and every litellm release
+  requires `filelock<4.0`. Not exposed: two affect only `ReadWriteLock`,
+  which no installed dependency uses; one affects only Windows soft locks.
+  The Trivy gate ignores the same set via `.trivyignore` (ci.py, local-ci.ps1,
+  workflow gate steps). Drop the entries once litellm lifts the cap. Rejected: overriding the litellm
+  cap (unsupported combination in the image) and a red gate until upstream moves.

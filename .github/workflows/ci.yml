@@ -258,6 +258,7 @@ jobs:
           severity: HIGH,CRITICAL
           scanners: vuln
           vuln-type: os,library
+          trivyignores: .trivyignore
 
       - name: Upload Trivy SARIF
         if: always() && hashFiles('trivy-results.sarif') != ''
@@ -343,6 +344,7 @@ jobs:
           severity: HIGH,CRITICAL
           scanners: vuln
           vuln-type: os,library
+          trivyignores: .trivyignore
 
       - name: Upload Trivy SARIF
         if: always() && hashFiles('trivy-results.sarif') != ''
