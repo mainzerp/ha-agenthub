@@ -4,6 +4,22 @@ Decision rationale, so decisions stay made. Newest first. Binding architecture
 rules live in `docs/project/prime-directives.md` — this file records choices,
 not copies of rules.
 
+## 2026-10-26 — AGENTS.md slimmed to the brain template
+
+- **`AGENTS.md` follows `F:\Github\AGENTS\AGENTS_with_brain.md`** (455 to about
+  200 lines). Rationale: the file is injected into every session; the old
+  version carried the finished setup procedure and repeated rules in prose.
+- **Release process moved to `docs/release.md`**; `AGENTS.md` keeps only the
+  no-commit rule and commit format. **Verification commands and tool paths
+  moved into `AGENTS.md` (Tool paths)**; `brain/How We Work.md` now points
+  there instead of duplicating them.
+- **Project layout list dropped**: every root maps to its owning doc in the
+  Docs Discipline table.
+- **Model choice by job**: exploration `haiku`, planning/design `opus`,
+  implementation `sonnet` (`opus` for design judgment), drift checks `sonnet`.
+- **Local-test rule moved from agent memory into `AGENTS.md`**: test traffic
+  uses `AA_LOCAL_*` only, never `AA_LIVE_*`.
+
 ## 2026-10-19 — CI scanning and Dependabot policy
 
 - **Trivy also scans `main`**: `docker-build` uploads a SARIF for the

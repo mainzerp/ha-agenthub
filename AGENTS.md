@@ -1,455 +1,191 @@
 # AGENTS.md
 
-Operating standard for AI agents working in this repository (`HA-AgentHub` —
-multi-agent Home Assistant assistant: a Docker container execution engine plus a
-thin HACS-installed Home Assistant bridge).
+Operating rules for AI agents in `HA-AgentHub`, a multi-agent Home Assistant assistant: a Docker container execution
+engine plus a thin HACS-installed Home Assistant bridge. Naming: product `HA-AgentHub`; repo, image and package slug
+`ha-agenthub`; HA integration domain `ha_agenthub`. Legacy `agent-assist`/`agent_assist` identifiers (DB path, compose
+volume, cookie names, cache export tags) are intentional backward compatibility; do not rename them ad hoc.
 
-Naming: product `HA-AgentHub`; repo/image/package slug `ha-agenthub`; HA
-integration domain `ha_agenthub`. Legacy `agent-assist`/`agent_assist`
-identifiers (DB path, compose volume, cookie names, cache export tags) are
-intentional backward compatibility — do not "fix" them ad hoc.
+## Project brain
 
-## Initial setup (first contact)
+`brain/BRAIN.md` is the front door to mission, goals, decisions and the live pipeline. Read it first for real work
+and follow links only as far as the task needs. If it is ever missing, recreate it from the owning-docs table and ask
+the user for mission and goals; never present drafted assumptions as confirmed.
 
-Setup ran on 2026-09-22; this section stays as the contract for any future
-repository adopting this file.
+Keep it current while you work:
 
-Run exactly once per repository: on the first session that finds `brain/BRAIN.md`
-missing. If `brain/BRAIN.md` exists and this file is fully adapted, setup already
-happened — read the brain first and work normally. Never re-run setup over an existing
-brain; if the brain exists but this file still contains placeholders, finish the
-interrupted adaptation instead of recreating the brain.
+- Roadmap work starts or ends: move the card in `brain/roadmap.md` and keep its board format (headings as columns,
+  `- title · priority: … · area: …` lines as cards; a Kanban view reads it). Cards stay in `Testing` until the user
+  has verified them; only the user moves them to `Done`.
+- Cards state the outcome, next step or blocker, and how to verify. Testing cards name a concrete review target
+  (link or command) and what still needs the user's check; never present planned checks as passed. Link a detail
+  note only when scope or evidence no longer fits on the card.
+- A decision is made or changed: record it with rationale in `brain/Decisions.md`, newest first. Decisions record
+  choices, not copies of rules.
+- `Decisions.md` grows hard to read: move entries before a cut-off date verbatim to `brain/Decisions-archive.md`
+  and leave one status line per archived entry in an "Archive" section (still valid, superseded by ..., done), each
+  pointing at the doc that owns the rule now.
+- Priorities shift: update `brain/Goals.md`.
+- Operating rules stay in this file; it is the only one injected into every session. A rule that applies to every
+  agent belongs here or in an owning doc, not in one machine's agent memory.
 
-Setup exists so that every later session starts with accurate context instead of
-guesses: it researches the repo, asks the user for mission and goals, creates the
-brain, and adapts this file.
+## Delegation
 
-### Procedure
+The main session plans, decides, talks to the user and reviews results. Delegate to subagents when a task needs more
+than a few file reads: search and exploration, research, bulk or mechanical edits, self-contained implementation,
+builds and verification.
 
-1. **Confirm first contact** as described above.
-2. **Research the repo — through a subagent.** Delegate one exploration prompt per the
-   core rule below. Require a structured report, not a file dump:
-   - languages, frameworks, key dependencies;
-   - build, run, test and verification commands that actually work;
-   - entry points and directory layout: what lives in which root;
-   - existing docs and what each one owns; obvious docs that are missing;
-   - git remote (needed for the jcodemunch repo id), branching and commit conventions
-     visible in recent history;
-   - the version carrier (`VERSION.md`, `package.json`, tag-only, …);
-   - intake channels for bug reports or feedback, if any;
-   - naming pitfalls worth protecting.
-3. **Ask the user for mission and goals.** These are human decisions. Present the
-   research summary and ask why the project exists, what winning looks like, and the
-   current top goals. Propose drafts from repo evidence where it is solid; mark
-   everything else as an open question. Do not invent a mission.
-4. **Create the brain** per the file contracts in the Docs Discipline table:
-   `BRAIN.md` (front door: mission summary, reading order, links), `Mission.md`,
-   `Goals.md`, `Decisions.md`, `How We Work.md`, and `roadmap.md` as an empty board
-   (columns: `Backlog`, `In Progress`, `Testing`, `Done`, `Idea Bank`; cards as
-   `- title · priority: … · area: …` lines). Seed `Decisions.md` with the setup
-   decisions themselves: tooling, doc map, conventions, verification commands.
-5. **Adapt this file.** Replace every placeholder and setup comment:
-   - Header: real project name, one-line purpose, naming pitfalls.
-   - Project layout: the real roots and their owning docs.
-   - Conventions: the repo's reading and authoring rules.
-   - Docs Discipline: the owning-docs table mapped to real files; delete rows for docs
-     that neither exist nor are planned.
-   - Release & Git: version carrier, verification checklist, commit types and scopes
-     taken from actual history.
-   - Intake: keep, rename, or delete the external-reports section to match reality.
-   - Code exploration: adjust the ignored-directories note to this repo.
-   - Knowledge library: fill in the project's library topic; delete the section if no
-     Athenaeum server is configured for this repo.
-   The generic operating rules — delegation, jcodemunch and Athenaeum usage, language,
-   vision, docs closeout, the no-commit rule — are never weakened or removed. Setup
-   adapts facts, not the operating model.
-6. **Verify and hand over.** Re-read this file end to end: no placeholder left, no
-   contradictions between sections, brain files render and their links resolve.
-   Report to the user what was created, what was assumed, and which open questions
-   remain.
-
-### Setup rules
-
-- Setup obeys the core rule like any other task: research and verification go to
-  subagents; the main session decides, writes the brain, and edits this file.
-- A half-configured brain is worse than none: if setup is interrupted, either finish
-  it in the same session or leave a note in `brain/BRAIN.md` stating exactly what is
-  missing.
-- Never present drafted assumptions as user-confirmed facts.
-
-## Project brain (session context)
-
-`brain/BRAIN.md` is the front door to the project's shared context: mission, current goals,
-decisions with rationale, and the live pipeline. Read it first for real work in this repo
-and follow links only as far as the task needs. If it does not exist, run the initial
-setup above before doing anything else. `brain/roadmap.md` is consumed by a Kanban
-view — keep its board format (headings as columns, `- title · priority: … · area: …` lines
-as cards).
-
-Keep the brain current as you work — it is only useful while it is accurate:
-
-- Starting or finishing roadmap work → move the card in `brain/roadmap.md`. Cards stay in
-  `Testing` until the user has verified the result; only the user moves them to `Done`.
-- Making or changing a decision → record it with its rationale in `brain/Decisions.md`.
-- Shifting priorities → update `brain/Goals.md`; shipping a release also updates the
-  version carrier (see Release & Git).
-- Learning something durable → file it in the right brain note and link it there;
-  lessons that outlive this repo belong in the knowledge library (see below).
-
-Keep task tracking light:
-
-- Backlog, In Progress and Testing cards state the intended outcome, next step or blocker,
-  and how to verify it. Short indented text under the card is enough.
-- Testing cards give the user a concrete review target (a link or command to run) and
-  say what still needs their verification. Do not present planned checks as passed.
-- Detail notes are optional; link one when scope, dependencies or evidence no longer fit
-  clearly on the card. Idea Bank cards need no additional template.
-- Goals explain the current outcome and the next few priorities; the roadmap owns task
-  status and next steps. Decisions record choices and rationale, not copies of rules.
-
-The brain indexes and summarizes; the operating rules themselves stay in this file — do not
-move them out, because only `AGENTS.md` is injected into every agent session.
-
-## Core rule: delegate to subagents
-
-**Do not do exploration, research, or bulk implementation work in the main session.**
-The main session's context is a scarce resource — spend it on planning, decisions,
-and reviewing results. Push everything else into subagents.
-
-### Delegate by default
-
-Spawn a subagent when a task is any of the following:
-
-- **Search / exploration** — "where is X defined", "how does the scene loader work",
-  "which models exist", reading several files to answer one question.
-- **Research** — looking up references, libraries, APIs, or external documentation.
-- **Bulk or repetitive edits** — the same change across many files, mechanical
-  refactors, renames, formatting passes.
-- **Self-contained implementation** — a module, component, or effect that can be
-  described in a standalone prompt.
-- **Verification** — running builds, checks, or reviewing a diff against a spec.
-
-### Keep it in the main session
-
-Handle these directly, because they need the accumulated conversation context:
-
-- Clarifying the user's intent and negotiating scope.
-- Architecture and design decisions, tradeoffs, API contracts.
-- Reviewing and integrating subagent output.
-- Final answers, summaries, and anything the user is waiting on.
-
-### How to delegate well
-
-1. **Write a complete, standalone prompt.** A subagent does not see this conversation.
-   Include: the goal, the relevant file paths, the constraints, the expected output
-   format, and how to verify success.
-2. **Give it one job.** Narrow scope beats a vague "improve the codebase".
-3. **Run independent subagents in parallel** in a single message, so they work while you
-   keep going.
-4. **Ask for compressed results.** Request a summary, a diff, or a short structured
-   report — never a dump of everything it read.
-5. **Demand evidence.** Require exact file paths and line references so you can spot-check
-   without re-reading the whole tree.
-6. **Do not duplicate a running subagent's work.** While it runs, do something
-   independent; do not redo its search yourself.
-
-### Anti-patterns
-
-- Reading dozens of files into the main session to answer one narrow question.
-- Doing a mechanical multi-file edit by hand in the main session.
-- Handing a subagent a prompt that depends on unstated context, then guessing at its result.
-- Letting a subagent report "done" without verification steps you can check.
+- Write a standalone prompt: goal, absolute paths, constraints, output format, how to verify. Children inherit
+  nothing: state the repo id, the jcodemunch rule, English-only code and no emojis, the prime directives
+  (`docs/project/prime-directives.md`) for code changes, and never touching the live instance.
+- One job per agent. Run independent agents in parallel (one message, several calls) whenever the work splits; do
+  not redo a running agent's work.
+- Pick the model by job: exploration and search `haiku`; planning and design `opus`; implementation `sonnet` for
+  plain code work, `opus` when it needs creative or design judgment.
+- Ask for compressed results with file paths and line references, and verification you can check.
+- For an independent review, hand the reviewer the artifact and the code, not your plan or conclusion; an agent
+  handed a hypothesis tends to confirm it.
+- Images: if the active model cannot read one, delegate to a vision-capable child with the image paths and the exact
+  question, and require it to state uncertainty instead of inventing detail. Never guess from file names.
 
 ## Code exploration (jcodemunch)
 
-Use the jcodemunch MCP server for code navigation instead of `grep`/`glob`/`read` sweeps.
+Navigate code with the jcodemunch MCP server instead of `grep`/`glob`/`read` sweeps; the server documents its own
+tools.
 
-- **Repo id:** derived from the git remote, e.g. `owner/repo-name`
-  (without a remote: `local/<folder-name>`). Confirm per machine with
-  `resolve_repo { path: "<absolute repo path>" }`; do not assume the folder name.
-- **Per-machine setup:** run `index_folder` once with this machine's absolute repo path;
-  the index lives server-side, so every environment indexes its own checkout.
-- **Always pass absolute paths.** Relative paths resolve against the jcodemunch server's
-  working directory, not this workspace, and silently resolve to the wrong repo.
-- **Entry points:** `menu(query)` to discover actions, `order(action, args)` to run one,
-  `route(task)` to pick the action for a goal, `jcodemunch_guide` for the full catalogue.
-- **Read-only navigation:** `search_symbols`, `get_file_outline`, `get_symbol_source`,
-  `get_context_bundle`, `find_references`, `search_text`, `get_repo_outline`.
-- **Use `Read` only immediately before editing a file** — the harness requires a read before
-  `Write`/`Edit`. Explore with jcodemunch, then read exactly the file being changed.
-- **Gitignored paths are not indexed** — `.venv*/`, `*_cache/`, `container/data/`,
-  `secrets/`, `docs/SubAgent/`, `node_modules/`; vendored dashboard assets under
-  `container/app/dashboard/static/vendor/` may be partial. Read them directly if
-  genuinely needed; never edit generated/runtime artifacts.
-- **After edits:** `register_edit` with the changed paths, batched for bulk changes. Re-run
-  `index_folder` (state change) after structural changes: new modules, renames, moves.
-- **Interpret results literally:** `no_implementation_found` is evidence of absence — report
-  the gap, do not re-search with different wording. `degraded` means absence is not proven.
-
-Subagent prompts must state the repo id, the absolute source root, and this tooling rule —
-children do not inherit it.
+- Repo id `mainzerp/ha-agenthub`; confirm with `resolve_repo` and run `index_folder` once per machine. Always pass
+  absolute paths (relative ones resolve against the server's directory).
+- `Read` only the file you are about to edit. After edits call `register_edit`; after new modules, renames or moves
+  re-run `index_folder`.
+- `no_implementation_found` is evidence of absence; `degraded` is not.
+- Not indexed and never hand-edited: `.venv*/`, `*_cache/`, `container/data/`, `secrets/`, `docs/SubAgent/`,
+  `node_modules/`; vendored assets under `container/app/dashboard/static/vendor/` may be partial.
 
 ## Knowledge library (Athenaeum MCP)
 
-This project runs an Athenaeum instance as MCP server — a shared, durable knowledge
-library across sessions, agents, and repos. A librarian agent curates it; agents ask
-for knowledge by intent instead of browsing files.
+- `request_knowledge(query)` at session start and before non-trivial decisions.
+- `store_knowledge` for new durable lessons (`topic_hint`: `ha-agenthub` for project lessons, the technology's topic
+  such as `home-assistant` or `python` for general ones); `update_knowledge` to correct existing ones. Weigh trust
+  tier and staleness; the repo wins on conflict.
+- Project context lives in `brain/`, lessons that outlive the repo in the library; file a lesson once and link it.
+- Only the main session writes to the library. If it is unreachable, file in the brain and sync later.
 
-- **Recall:** `request_knowledge(query)` at session start and before non-trivial
-  decisions. There is no browse tool — orientation questions ("what exists on X?")
-  go through the same call; `context` narrows the answer.
-- **Store:** `store_knowledge(content, topic_hint, kind_hint, relates_to)` persists NEW
-  durable knowledge — lessons, patterns, decisions worth keeping. The librarian decides
-  placement, frontmatter, and linking. `topic_hint` names the target topic area and is
-  required by default; use `ha-agenthub` for this project.
-- **Correct:** `update_knowledge(instruction)` changes or corrects EXISTING knowledge;
-  the librarian locates the target concepts. `relates_to` back-links related concepts.
-- **Health:** `library_status` is a deterministic health report (no LLM).
-  `library_maintain` repairs graph health and `library_curate` fixes taxonomy and
-  consolidates duplicates; both are no-ops when the library is healthy.
-- **Trust and staleness:** concepts carry trust tiers (unverified / machine-confirmed /
-  human-reviewed) and staleness flags. Weigh them before relying on a concept; when the
-  library and the repo disagree, the repo is the source of truth.
-- **Brain vs. library:** `brain/` owns this project's live context (mission, goals,
-  decisions, pipeline); the library owns durable knowledge that outlives one repo or
-  session. File a lesson once — in the library — and link it from the brain note when
-  it matters here.
-- **Delegation boundary:** subagents report lessons and findings back; the main session
-  decides what is durable enough to store or correct — children do not write to the
-  library.
-- **Unavailable:** if the server is unreachable, file learnings in the brain as usual
-  and continue; sync them into the library when it is back.
+## Language
 
-## Language and formatting
-
-### No emojis
-
-**Do not use emojis anywhere.** Not in code, comments, docstrings, log or error messages,
-commit messages, documentation, reports, or chat replies. No decorative pictographs, no
-status glyphs like checkmarks or warning signs, no emoji in place of words.
-
-- Write "done", "failed", "warning", "note" instead of a symbol.
-- Use plain ASCII markers where a marker is genuinely useful: `OK`, `FAIL`, `TODO`,
-  `FIXME`, `NOTE`.
-- If a human's message contains emojis, do not mirror them in your reply.
-
-### Code and comments in English
-
-**All code is written in English, always** — regardless of the language used in the
-conversation, the ticket, or the request.
-
-This covers:
-
-- identifiers: variable, function, class, file and directory names,
-- comments and docstrings,
-- log, warning and error messages,
-- commit messages, branch names, and PR descriptions,
-- test names and fixture data labels,
-- in-repo documentation and code-adjacent notes.
-
-Rules of thumb:
-
-- Conversational replies may follow the human's language, but **code and comments stay
-  English** even when the request was in another language.
-- Never mix languages inside a single file: no German identifiers or comment lines in a
-  file that is otherwise English.
-- Do not transliterate existing German identifiers ad hoc; if a rename is warranted,
-  propose it as one consistent, verified change.
-- When delegating, state this requirement explicitly in the subagent prompt — children do
-  not inherit it automatically.
-
-## Vision and multimodal tasks
-
-Image input is **not guaranteed** by the active model. When a task requires looking at an
-image — a screenshot, a reference photo, a rendered frame, a sprite sheet, a design mockup —
-and the active model does not accept image input, **do not skip the task and do not guess
-from filenames**.
-
-Instead:
-
-1. **Detect the limitation early.** If an image read is rejected because the model does not
-   support image input, treat that as a signal to delegate, not as a failure to report.
-2. **Hand over everything as text.** The child cannot see this conversation. Include:
-   - absolute or workspace-relative **paths** to every image it must inspect,
-   - the exact question to answer about each image,
-   - the desired output shape (short structured report, checklist, JSON, diff proposal).
-3. **Ask for text back.** The child returns a written description, findings, or a proposed
-   change — never the image itself. Consume that text in the main session.
-4. **Route bulk visual work the same way.** Comparing many rendered frames, auditing a set of
-   assets for style-guide compliance, or extracting palettes from reference art are all
-   fan-out jobs: delegate them, one image or one asset per child.
-
-Rules of thumb:
-
-- Vision-capable subagent for **seeing**; main session for **deciding**.
-- State in the child's prompt that it must report uncertainty explicitly — never let it
-  invent detail it cannot actually see in the image.
-- If no vision-capable model is available, say so plainly and ask the human how to proceed
-  rather than producing speculative output.
-
-## Project layout
-
-- `container/` — FastAPI execution engine (`app/`, `tests/`, `plugins/`,
-  Dockerfile, compose files); owning docs: `docs/architecture.md`,
-  `docs/project/project-definition.md`
-- `custom_components/ha_agenthub/` — HA bridge integration (mocked tests in
-  `custom_components/tests/`); owning docs: `docs/deployment.md`, `README.md`
-- `docs/` — user and developer documentation; owning doc: `docs/README.md`
-- `scripts/` — CI/build tooling (`ci.py`, `local-ci.ps1`, `build-and-push.ps1`)
-- `.agents/skills/` — workflow skills (new-agent, plugin-dev, mcp-server-dev,
-  agent-routing-debug, agenthub-logs, agenthub-csrf, ha-debug)
-- `secrets/` — local-only credentials (`secrets/.env.local` provides
-  `AA_LIVE_*` / `AA_LOCAL_*` / `AA_BASE_URL` for the admin-API skills);
-  gitignored, never commit
-- `brain/` — session-spanning project context
-- `.github/` — CI workflows, dependabot, CODEOWNERS
-
-Module layout and contracts live in the repo's owning docs (see the Docs
-Discipline table); project mission and naming context live in
-`brain/Mission.md`. `brain/` holds session-spanning context.
+- No emojis anywhere: code, docs, commits, reports, chat. Use `OK`, `FAIL`, `TODO`, `NOTE` where a marker helps. Do
+  not mirror emojis from a user message.
+- All code, comments, logs, commits, branch names, PR texts, test names and in-repo docs are English, whatever the
+  conversation language. Chat may follow the user's language. Never mix languages in one file; rename existing
+  non-English identifiers only as one consistent, verified change.
 
 ## Conventions
 
-- `docs/project/prime-directives.md` is binding — verify every change against it
-  before implementing (execution-engine split, entity visibility on every path,
-  action-cache visibility recheck, A2A boundary, async-only, English-default
-  few-shot prompt examples, no hardcoded keyword routing).
-- Read `docs/style-guide.md` before dashboard work; keep CSS variable names
-  stable, update hard-coded hex/RGBA literals in lockstep, and increment
-  `_STATIC_BUILD`.
-- Entity resolution routes through the shared deterministic-first resolver
-  (`container/app/entity/deterministic_resolver.py`) — no raw index shortcuts.
-- Agents return executed results, not tool-call plans. New domain agents follow
-  the `new-agent` skill and must be imported in
-  `container/app/agents/__init__.py` (the `@agent` decorator runs at import
-  time).
-- Prompt assets live in `container/app/prompts/`.
-- `container/data/` is runtime-only; `container/plugins/` is the user drop-in
-  dir (files starting with `_` are ignored). Never edit generated or runtime
-  artifacts.
-- `container/app/knowledge/*.md` are generated copies of user docs for the
-  general agent's `agenthub_self_info` tool. Edit the source doc, then run
-  `python scripts/sync_self_docs.py`; `ci.py` fails on stale copies.
-- `custom_components/ha_agenthub/frontend/agenthub-activity-orb-card.js` is the
-  generated Lovelace card (widget + card wrapper from
-  `container/app/dashboard/static/`). Edit the sources, then run
-  `python scripts/sync_orb_card.py`; `ci.py` fails on a stale copy. Re-run it
-  after any version or `_STATIC_BUILD` bump (the build marker changes).
-- The dashboard frontend is server-rendered Jinja2 + HTMX with vendored JS —
-  there is no npm/node toolchain.
-- Keep the version in sync across `VERSION.md`, `container/app/__init__.py`, and
-  `custom_components/ha_agenthub/manifest.json`.
-- Python 3.12, ruff line-length 120; async all the way down — no blocking I/O on
-  the event loop.
+- Read the owning doc (table below) before changing artifacts in its area. `docs/project/prime-directives.md` is
+  binding: check every change against it.
+- Entity resolution goes through `container/app/entity/deterministic_resolver.py`; no raw index shortcuts.
+- Agents return executed results, not tool-call plans. New domain agents follow the `new-agent` skill and are
+  imported in `container/app/agents/__init__.py` (the `@agent` decorator runs at import time). Prompt assets live
+  in `container/app/prompts/`.
+- Dashboard: server-rendered Jinja2 + HTMX with vendored JS, no npm toolchain. Read `docs/style-guide.md` first; keep
+  CSS variable names stable, update hard-coded hex/RGBA literals in lockstep and increment `_STATIC_BUILD`.
+- Generated copies are rebuilt, never hand-edited; `ci.py` fails on stale ones:
+  - `container/app/knowledge/*.md` from the user docs: `python scripts/sync_self_docs.py`.
+  - `custom_components/ha_agenthub/frontend/agenthub-activity-orb-card.js` from `container/app/dashboard/static/`:
+    `python scripts/sync_orb_card.py`, also after any version or `_STATIC_BUILD` bump.
+  - `container/requirements.lock` after changing `container/requirements.txt` or `requirements-torch.txt`:
+    `python scripts/ci.py --update-lock`.
+- `container/data/` is runtime-only; `container/plugins/` is the user drop-in dir (files starting with `_` are
+  ignored).
+- Python 3.12, ruff line-length 120, async all the way down: no blocking I/O on the event loop.
+- Run ruff check and format on changed Python, plus the relevant test suite; `python scripts/ci.py` before a release.
+
+## Tool paths (this machine)
+
+Run from the repo root `F:\Github\ha-agenthub`; quote paths. The venv `.venv\Scripts\` provides `python` (3.12),
+`ruff`, `pytest` and `mypy`.
+
+- Lint: `ruff check container custom_components` and `ruff format --check container custom_components`.
+- Container tests: `cd container && python -m pytest tests/ -q` (one test: `tests/<file>.py::<name>`). About 330 s;
+  on Windows run it in the background and take the verdict from the printed summary (the process can hang at
+  interpreter shutdown).
+- Bridge tests: `python -m pytest custom_components/tests/ -n auto` (HA is mocked).
+- `mypy container/app` is report-only; compare against pristine HEAD before claiming a regression.
+- Full gate: `python scripts/ci.py` (`--skip-docker` without Docker); `scripts/local-ci.ps1` wraps it.
+- Local instance: `docker compose -f container/docker-compose_local.yml up -d --build`. Building and testing against
+  it is allowed. Never delete Docker volumes (`down -v`, `volume rm`) unless asked.
+- `secrets/.env.local` (gitignored, never commit or print): `AA_LOCAL_*` for test traffic, `AA_LIVE_*` for the
+  production instance, which the admin-API skills (`agenthub-csrf`, `agenthub-logs`, `ha-debug`,
+  `agent-routing-debug`) may read but tests never target.
+
+## Worktrees
+
+- Harness-created agent worktrees (`.claude/worktrees/`) may branch from `main`, not from HEAD. When the base
+  matters, create the worktree by hand (`git worktree add -b <branch> <path> <base>`) and pass its path.
+- Never junction or symlink `secrets/` or `.venv/` into a worktree; read them by absolute path. Before removing a
+  worktree, check it for links and never force-remove one that has them.
+- The pre-commit and pre-push hooks (`.pre-commit-config.yaml`: ruff, bandit, pip-audit, pytest) run with
+  `language: system` and need the repo venv on PATH. A worktree has no `.venv`: run its checks with
+  `F:\Github\ha-agenthub\.venv\Scripts\python.exe` and leave pushing to the user or the main checkout.
 
 ## Docs Discipline
 
-**Closeout rule:** Every meaningful change requires a docs pass before the task is done.
-Update the closest owning doc when a change affects contracts, workflows, structure,
-ownership, or operating rules — and remove stale or contradictory text immediately. Small
-edits that change no behavior or contract may leave docs unchanged, but the pass still
-happens.
+Every meaningful change ends with a docs pass: update the owning doc when contracts, workflows, structure or rules
+change, and delete stale or contradictory text. A change that alters no behavior or contract may leave the docs as
+they are, but the pass still happens. Each rule lives in exactly one owning doc. Docs stay concise and operational:
+stable contracts as bullets, explicit names, no history, no repeated rules. Split a doc that grows past one area
+into per-area docs and update the table.
 
-**Owning docs** — each rule lives in exactly one of them:
+Drift check (doc against code):
+
+- When: before a card that changed an area's contracts moves to `Testing` (for each owning doc it touched), and
+  whenever the user asks for one (`drift check docs/<doc>.md`).
+- Who: one zero-context subagent (`sonnet`) per doc. Its prompt has only the doc path, the code paths that doc owns
+  (from its table or file index) and the standard child rules. It gets no task history, plan or rationale, so it
+  does not start out believing the doc.
+- Output, report only: each doc claim the code contradicts or no longer supports (doc line, code `file:line`,
+  evidence), each public contract in the owned code that the doc is missing, and each doc reference to a file,
+  symbol or flag that does not exist. No style notes.
+- The main session spot-checks every finding against the code, then fixes the doc. If the code looks wrong rather
+  than the doc, it asks the user instead of changing either.
 
 | Doc | Owns |
 |---|---|
-| `AGENTS.md` | Agent operating rules: setup, delegation, code exploration and knowledge library tooling, language, vision, docs, report triage, release process |
+| `AGENTS.md` | Agent operating rules, tooling, language, docs discipline, commit rules |
 | `README.md` | Product overview, agent inventory, quick start, repo structure |
-| `VERSION.md` | Version carrier and changelog |
-| `TODO.md` | Long-term idea backlog and unscheduled candidates |
-| `SECURITY.md` | Vulnerability reporting |
-| `docs/README.md` | Doc map, doc naming, reading order |
-| `docs/project/project-definition.md` | Authoritative description of the system as it exists today |
+| `docs/README.md` | Doc map, reading order |
+| `docs/project/project-definition.md` | Authoritative description of the system today; `container/` |
 | `docs/project/prime-directives.md` | Binding architecture constraints |
-| `docs/project/lessons.md` | Athenaeum pointer + offline fallback facts |
-| `docs/architecture.md` | Components, A2A protocol, request/data flow |
+| `docs/project/lessons.md` | Athenaeum pointer and offline fallback facts |
+| `docs/architecture.md` | Components, A2A protocol, request and data flow |
 | `docs/api-reference.md` | HTTP/WebSocket API surface |
 | `docs/configuration.md` | Settings and configuration reference |
-| `docs/deployment.md` | Install and deployment (compose, HACS) |
+| `docs/deployment.md` | Install and deployment (compose, HACS); `custom_components/ha_agenthub/` |
 | `docs/user-guide.md` | End-user operation |
-| `docs/plugin-development.md` | Plugin authoring contract |
-| `docs/backup-restore.md` | Backup/restore procedures |
+| `docs/plugin-development.md` | Plugin authoring contract; `container/plugins/` |
+| `docs/backup-restore.md` | Backup and restore procedures |
 | `docs/troubleshooting.md` | Operational troubleshooting |
 | `docs/style-guide.md` | Dashboard design tokens and visual conventions |
-| `docs/CHANGELOG_ARCHIVE.md` | Pre-1.14 changelog history |
-| `.agents/skills/*/SKILL.md` | Workflow-specific skills (new-agent, plugin-dev, debugging) |
-| `brain/Mission.md` | Why the project exists, what winning looks like |
-| `brain/Goals.md` | The few outcomes that matter this stretch |
-| `brain/How We Work.md` | Build rhythm; points at the doc map for standards |
-| `brain/Decisions.md` | Decision rationale, so decisions stay made |
-| `brain/roadmap.md` | The live pipeline, in board format |
-
-**Style rules for all project docs:**
-
-- Keep docs concise, current, and operational — document stable contracts, not diary entries.
-- Prefer direct bullets with explicit names over prose.
-- Do not duplicate rules across files; each rule lives in exactly one owning doc.
-- Delete stale notes instead of explaining history.
-- Trim obvious statements, repeated rules, misplaced detail, and warnings for risks that no
-  longer exist.
+| `docs/release.md` | Versioning, release checklist; `scripts/`, `.github/` workflows |
+| `.agents/skills/*/SKILL.md` | Workflow skills (new-agent, plugin-dev, mcp-server-dev, debugging, logs, CSRF) |
+| `VERSION.md` | Current version and release history; `docs/CHANGELOG_ARCHIVE.md` holds pre-1.14 history |
+| `TODO.md` | Long-term idea backlog and unscheduled candidates |
+| `SECURITY.md` | Vulnerability reporting |
+| `brain/Mission.md`, `Goals.md`, `How We Work.md`, `Decisions.md`, `Decisions-archive.md`, `roadmap.md` | Why, current outcomes, rhythm, decision rationale (archive once needed), live pipeline |
 
 ## External reports
 
-External reports arrive as GitHub issues on `mainzerp/ha-agenthub` (no issue
-templates exist yet). Security vulnerabilities arrive privately through GitHub
-Security Advisories per `SECURITY.md` — never file those as public issues.
-Operational evidence additionally comes from the live Admin API (remote-log
-ingest, traces) — see the `agenthub-logs`, `ha-debug`, and
-`agent-routing-debug` skills.
+- Reports arrive as GitHub issues on `mainzerp/ha-agenthub` (`bug` or `enhancement`); the issue owns the detail.
+  Security vulnerabilities arrive privately through GitHub Security Advisories per `SECURITY.md`; never file those as
+  public issues.
+- Operational evidence comes from the live Admin API (remote-log ingest, traces) via the `agenthub-logs`, `ha-debug`
+  and `agent-routing-debug` skills.
+- The roadmap stays a pipeline: a card appears only when an issue is scheduled; card and fixing commit reference the
+  issue number. Close the issue with a reference to the fixing commit.
 
-- The issue owns the findings detail; label `bug` or `enhancement`.
-- The roadmap stays a pipeline: a card appears only when an issue is scheduled,
-  and the card and the fixing commit reference the issue number.
-- Close the issue with a reference to the fixing commit once resolved.
+## Git
 
-## Release & Git
-
-Do not commit unless the user asks. A roadmap release card is tracking, not authorization
-to commit or publish.
-
-**Semantic Versioning:** `MAJOR.MINOR.PATCH`.
-
-- MAJOR = breaking changes requiring user action: changed conversation WS/REST
-  contracts, renamed or removed settings keys or API fields, A2A envelope or
-  plugin-API breakage, DB migrations needing manual intervention.
-- MINOR = backward-compatible additions: a new feature, agent, module, or option.
-- PATCH = bug fixes and small improvements: corrections, tweaks, performance, docs.
-
-`VERSION.md` is the single source of truth for the version. It is mirrored in
-`container/app/__init__.py` (`__version__`) and
-`custom_components/ha_agenthub/manifest.json` — bump all three together. Git
-tags `vX.Y.Z` trigger the release pipeline (docker build, Trivy scan, GitHub
-Release). No pre-release tag convention is in use.
-
-Release checklist (all required):
-
-- [ ] `VERSION.md` created or bumped, with a history entry listing key
-      features/fixes and commit references; `container/app/__init__.py` and
-      `custom_components/ha_agenthub/manifest.json` bumped to match. New
-      features are tracked there as they are implemented.
-- [ ] Git tag matches the version (`vX.Y.Z`) and points at the release commit.
-- [ ] Release has an explicit title and notes listing every new feature, changed
-      behavior, and removal. Auto-generated notes are a starting point, not a substitute.
-- [ ] Verification passes: `ruff check` + `ruff format --check` on `container/`
-      and `custom_components/`; `cd container && python -m pytest tests/ -q`
-      (background on Windows; verdict from the printed summary);
-      `python -m pytest custom_components/tests/ -n auto`;
-      `python scripts/ci.py` for the full gate. `mypy` is report-only.
-      After any change to `container/requirements.txt` or
-      `container/requirements-torch.txt`, regenerate the hashed image lock with
-      `python scripts/ci.py --update-lock` (`--check-lock` verifies; the full
-      gate fails on a stale lock).
-- [ ] Docs closeout done for the change (see Docs Discipline above).
-
-**Conventional Commits:** `<type>(<scope>): <short summary>`.
-
-- Types: `feat` (MINOR bump), `fix` (PATCH bump), `chore` (maintenance/deps), `docs`,
-  `refactor`, `test`, `release` (version bump).
-- Scopes seen in history (prefer these over inventing new ones): `core`,
-  `orchestrator`, `agents`, `entity`, `entity-resolution`, `cache`, `routing`,
-  `memory`, `embedding`, `llm`, `conversation`, `integration`, `config-flow`,
-  `dashboard`, `trace`, `logs`, `skills`, `deps`, `deps-dev`, `docs`.
-- Release commits use the canonical form `release: bump version to X.Y.Z`.
-- Summary under 72 characters, imperative mood ("add X"), reference issues where
-  applicable (`fix(core): correct edge case (#42)`).
+- Do not commit unless the user asks; a roadmap card is not authorization to commit or publish. Releases follow
+  `docs/release.md`.
+- Conventional Commits `<type>(<scope>): <summary>`, imperative, under 72 characters, issue refs where useful.
+- Types: `feat` (MINOR), `fix` (PATCH), `chore`, `docs`, `refactor`, `test`, `release`.
+- Scopes: `core`, `orchestrator`, `agents`, `entity`, `cache`, `routing`, `memory`, `llm`, `voice`, `conversation`,
+  `integration`, `dashboard`, `trace`, `logs`, `skills`, `deps`, `deps-dev`, `docs`.
