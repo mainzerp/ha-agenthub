@@ -47,10 +47,10 @@ Live pipeline in board format — headings are columns, cards are
   its trace; also with zero profiles); `/dashboard/voice-profiles` lists them
   with transcript, player and "assign to profile" (guard warns, admin may
   override); profile delete can remove its recordings. Also hardens
-  `get_db_write` against abandoned transactions. Not committed, version not bumped.
-  Passed: `scripts/ci.py` ruff, self-docs/card sync, lock, container 5255,
-  bridge 337, bandit; pip-audit FAIL from new advisories unrelated to this
-  change (filelock 3.32.7, setuptools 84.0.0). Docker/trivy not reached.
+  `get_db_write` against abandoned transactions. PR #212 (deps: #211);
+  shipped in v3.15.0.
+  Passed: `scripts/ci.py` full gate on release/3.15.0 (container 5255,
+  bridge 337, ruff, lock, bandit, pip-audit, docker build/smoke, trivy).
   Needs user verification on the local instance: enable "Keep audio", speak
   on a satellite, play the turn on the page, assign it (sample count grows,
   a guard warning offers "Assign anyway"); a false wake without transcript
