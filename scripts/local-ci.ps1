@@ -195,9 +195,11 @@ if (-not $SkipSecurity) {
         Step-Footer $true "bandit (low/medium issues only)"
     }
 
-    # pip-audit
-    Write-Host "`n>>> pip-audit -r container/requirements.lock --require-hashes --disable-pip --format=json --output=pip-audit-report.json" -ForegroundColor Yellow
-    pip-audit -r container/requirements.lock --require-hashes --disable-pip --format=json --output=pip-audit-report.json
+    # pip-audit (ignored advisories and their reasons: PIP_AUDIT_IGNORED in scripts/ci.py)
+    $ignoredVulns = @("CVE-2026-112940", "CVE-2026-112913", "CVE-2026-112907")
+    $ignoreArgs = $ignoredVulns | ForEach-Object { "--ignore-vuln", $_ }
+    Write-Host "`n>>> pip-audit -r container/requirements.lock --require-hashes $($ignoreArgs -join ' ') --disable-pip --format=json --output=pip-audit-report.json" -ForegroundColor Yellow
+    pip-audit -r container/requirements.lock --require-hashes @ignoreArgs --disable-pip --format=json --output=pip-audit-report.json
     if ($LASTEXITCODE -ne 0) {
         Step-Footer $false "pip-audit (vulnerabilities found - review pip-audit-report.json)"
         exit 2
@@ -264,9 +266,10 @@ if (-not $SkipDocker) {
             Write-Host "WARNING: trivy not found. Install from https://aquasecurity.github.io/trivy/" -ForegroundColor Yellow
             Write-Host "Skipping Trivy scan." -ForegroundColor DarkGray
         } else {
-            Write-Host "`n>>> trivy image --exit-code 1 --ignore-unfixed --severity HIGH,CRITICAL $FullImageName" -ForegroundColor Yellow
+            $trivyIgnore = Join-Path $PSScriptRoot "..\.trivyignore"
+            Write-Host "`n>>> trivy image --exit-code 1 --ignore-unfixed --severity HIGH,CRITICAL --ignorefile $trivyIgnore $FullImageName" -ForegroundColor Yellow
             try {
-                trivy image --exit-code 1 --ignore-unfixed --severity HIGH,CRITICAL $FullImageName
+                trivy image --exit-code 1 --ignore-unfixed --severity HIGH,CRITICAL --ignorefile $trivyIgnore $FullImageName
                 Step-Footer $true "trivy scan"
             } catch {
                 Step-Footer $false "trivy scan (HIGH/CRITICAL vulnerabilities found)"

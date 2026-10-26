@@ -45,7 +45,10 @@ repos:
         name: pip-audit
         language: system
         entry: python
-        args: ["-m", "pip_audit", "-r", "container/requirements.lock", "--require-hashes", "--disable-pip"]
+        # Ignored advisories and their reasons: PIP_AUDIT_IGNORED in scripts/ci.py.
+        args: ["-m", "pip_audit", "-r", "container/requirements.lock", "--require-hashes", "--disable-pip",
+               "--ignore-vuln", "CVE-2026-112940", "--ignore-vuln", "CVE-2026-112913",
+               "--ignore-vuln", "CVE-2026-112907"]
         files: ^container/requirements.*\.(txt|lock)$
         pass_filenames: false
 
