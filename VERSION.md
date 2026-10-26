@@ -1,16 +1,21 @@
 # Version
 
-**Current Version:** 3.14.0
+**Current Version:** 3.15.0
 
 ## Recent Changes
 
-(tracking changes since 3.14.0)
+(tracking changes since 3.15.0)
+
+## Version History
+
+### 3.15.0 (MINOR) -- recorded voice turns as an enrollment source, dependency advisories
+
+(commits c394555, 845eac0; PRs #212, #211)
 
 - Deps (container image): setuptools 84.0.0 -> 84.2.1, floor `>=84.1.0` (pip-audit: GHSA-xmj3-9gf7-h52w); `container/requirements.lock` regenerated. filelock 3.32.7 (CVE-2026-112940, CVE-2026-112913, CVE-2026-112907, fixed in 4.2.1) stays, because every litellm release requires `filelock<4.0`; the three advisories are ignored with reasons in `PIP_AUDIT_IGNORED` (`scripts/ci.py`, mirrored in pre-commit and `local-ci.ps1`; the Trivy gate reads the same set from `.trivyignore`): two affect only `ReadWriteLock`, which no installed dependency uses, one only Windows soft locks.
 - Feat (voice): opt-in recording of voice turns for enrollment from real requests. With `voice.speaker_id.keep_audio` (default off) every identified or unknown turn that produced an embedding and was confirmed by the bridge (aborted turns are deleted again; turns before the first profile exists are recorded as `no_profiles`) keeps its VAD-trimmed speech as a 16 kHz mono WAV in `<data dir>/voice_turns/` plus a `voice_turns` row (result, embedding, model, linked trace; migration 53), recorded in the background without delaying the turn; enrollment turns are never recorded. The Voice Profiles page gets a "Recorded Turns" section (playback, transcript linked to the trace, filters, delete one or all) where a turn is assigned to a profile as a sample without an armed enrollment; the enrollment guard runs and a rejection can be overridden ("Assign anyway"). New admin endpoints `GET/DELETE /api/admin/voice/turns`, `GET .../turns/{id}/audio`, `POST .../turns/{id}/assign`, `DELETE .../turns/{id}`; `GET /api/admin/voice/status` adds `keep_audio`, `audio_retention_days`, `recorded_turns`. Recordings expire after `voice.speaker_id.audio_retention_days` (default 30, 1-365; pass one minute after startup and hourly, also deletes orphaned files); deleting a sample or profile makes its turn assignable again, and `DELETE /api/admin/voice/profiles/{id}?delete_recordings=true` (default in the dashboard) also deletes the profile's recorded turns. Turns whose speaker lookup timed out show the nearest trace of their conversation as the transcript.
 - Fix (core): a write scope cancelled during its `BEGIN`, rollback or commit no longer leaves the shared SQLite write connection inside an open transaction; the next write rolls the abandoned transaction back (or reconnects) instead of failing with "cannot start a transaction within a transaction".
-
-## Version History
+- Verification: full gate `scripts/ci.py` on the release branch (container suite 5255 passed, bridge suite 337 passed, Ruff, self-docs and card sync, lock check, bandit, pip-audit, docker build and smoke test, trivy); feature PR #212 and dependency PR #211 passed all GitHub checks (quality, security, docker build, CodeQL, hassfest, HACS); independent review of the voice diff with nine findings fixed. Not verified: the Recorded Turns section in a real browser and with a real satellite.
 
 ### 3.14.0 (MINOR) -- card load hardening, content-hash delivery and orb layout fixes
 
