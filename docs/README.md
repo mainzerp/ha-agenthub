@@ -27,6 +27,7 @@ owner, do not duplicate content across files.
 | `docs/backup-restore.md` | Backup and restore procedures |
 | `docs/troubleshooting.md` | Operational troubleshooting |
 | `docs/style-guide.md` | Dashboard design tokens and visual conventions |
+| `docs/release.md` | Versioning and release checklist |
 | `docs/CHANGELOG_ARCHIVE.md` | Pre-1.14 changelog history |
 | `VERSION.md` | Current version + changelog (version carrier) |
 | `TODO.md` | Long-term idea backlog and unscheduled candidates |
