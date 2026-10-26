@@ -2,6 +2,8 @@
 
 import aiosqlite
 
+from app.db.schema._tables import VOICE_TURNS_INDEXES
+
 
 async def _create_indexes(db: aiosqlite.Connection) -> None:
     """Create indexes for query performance."""
@@ -40,3 +42,5 @@ async def _create_indexes(db: aiosqlite.Connection) -> None:
         "CREATE INDEX IF NOT EXISTS idx_external_user_mappings_ha_user ON external_user_mappings(ha_user_id)"
     )
     await db.execute("CREATE INDEX IF NOT EXISTS idx_voice_samples_profile_model ON voice_samples(profile_id, model)")
+    for statement in VOICE_TURNS_INDEXES:
+        await db.execute(statement)

@@ -129,6 +129,19 @@
                     <input id="voice-num-threads" type="number" class="form-input" min="1" max="8" step="1" x-model.number="s['voice.speaker_id.num_threads']">
                     <p class="form-hint">Threads used by the speaker-embedding model.</p>
                 </div>
+                <div class="form-group">
+                    <label class="form-label" for="voice-keep-audio">Record voice turns</label>
+                    <label class="toggle mt-sm">
+                        <input id="voice-keep-audio" type="checkbox" x-model="s['voice.speaker_id.keep_audio']">
+                        <span class="toggle-slider"></span>
+                    </label>
+                    <p class="form-hint">Keep the speech of identified and unknown turns so they can be assigned to a profile below. Off by default.</p>
+                </div>
+                <div class="form-group">
+                    <label class="form-label" for="voice-retention-days">Recording retention (days, 1-365)</label>
+                    <input id="voice-retention-days" type="number" class="form-input" min="1" max="365" step="1" x-model.number="s['voice.speaker_id.audio_retention_days']">
+                    <p class="form-hint">Recorded turns older than this are deleted automatically.</p>
+                </div>
             </div>
             <div class="form-actions mt-md">
                 <button type="submit" class="btn btn-primary" :disabled="savingSettings || !settingsLoaded">Save Settings</button>
@@ -138,7 +151,7 @@
         <ul class="voice-help text-sm text-muted mt-md">
             <li>Identification only runs when the HA-AgentHub integration options select an STT entity to wrap and the Assist pipeline uses "HA-AgentHub STT" as its speech-to-text engine.</li>
             <li>Voice identity is context only. It personalizes answers but never authorizes actions.</li>
-            <li>Voice embeddings are computed and stored locally in the container.</li>
+            <li>Voice embeddings are computed and stored locally in the container. Turn audio is kept only while "Record voice turns" is on, stays in the container and is deleted after the retention period.</li>
         </ul>
     </div>
 
@@ -259,9 +272,9 @@
     </div>
 
     <!-- Recent results -->
-    <div class="card">
+    <div class="card mb-lg">
         <h3 class="card-title mb-sm">Recent Results</h3>
-        <p class="text-muted text-sm mb-md">The last 20 identification results (no audio is kept). An unknown turn names no one; its nearest profile is only a candidate. Compare every profile's score per turn: when another person regularly scores close to the right one, delete that profile's bad samples or re-enroll it, then tune the threshold and margin.</p>
+        <p class="text-muted text-sm mb-md">The last 20 identification results (kept in memory only; recorded turns with audio are listed below). An unknown turn names no one; its nearest profile is only a candidate. Compare every profile's score per turn: when another person regularly scores close to the right one, delete that profile's bad samples or re-enroll it, then tune the threshold and margin.</p>
         <div class="table-container" x-show="(status.recent || []).length > 0">
             <table class="data-table">
                 <thead>
@@ -306,6 +319,110 @@
         </template>
     </div>
 
+    <!-- Recorded turns -->
+    <div class="card">
+        <div class="flex-between flex-wrap mb-sm voice-turns-header">
+            <h3 class="card-title m-0">Recorded Turns</h3>
+            <div class="voice-turns-tools">
+                <select id="voice-turns-filter" class="form-input voice-turns-filter" aria-label="Filter recorded turns" x-model="turnsFilter" @change="turnsOffset = 0; loadTurns()">
+                    <option value="all">All</option>
+                    <option value="unassigned">Unassigned</option>
+                    <option value="unknown">Unknown only</option>
+                    <option value="no_profiles">Recorded without profiles</option>
+                </select>
+                <button class="btn btn-sm btn-danger" @click="deleteAllTurns()" :disabled="!status.recorded_turns">Delete all recordings</button>
+            </div>
+        </div>
+        <p class="text-muted text-sm mb-md">Listen to past voice turns and assign the right ones to a profile as enrollment samples, without a live enrollment. The enrollment guard still checks each assignment; you can override it. Audio is biometric data: it stays in the container and is deleted after <span x-text="status.audio_retention_days || s['voice.speaker_id.audio_retention_days'] || 30"></span> days.</p>
+        <div x-show="statusLoaded && !status.keep_audio" class="alert alert-info mb-md">
+            Recording is off: no new turns are recorded. Turn on "Record voice turns" in the settings above to collect them.
+        </div>
+        <div class="table-container" x-show="turns.length > 0">
+            <table class="data-table voice-turns-table">
+                <thead>
+                    <tr>
+                        <th>Time</th>
+                        <th>Transcript</th>
+                        <th>Speaker</th>
+                        <th class="text-right" title="Detected speech / whole turn">Speech</th>
+                        <th>Audio</th>
+                        <th>Assign to profile</th>
+                        <th></th>
+                    </tr>
+                </thead>
+                <template x-for="t in turns" :key="t.id">
+                    <tbody>
+                        <tr>
+                            <td class="text-xs text-nowrap" :title="t.created_at" x-text="formatTime(t.created_at)"></td>
+                            <td class="voice-turn-transcript">
+                                <template x-if="t.trace_id">
+                                    <a class="text-sm" :href="window.dashUrl('/dashboard/traces/' + encodeURIComponent(t.trace_id))" :title="t.trace_match === 'time_window' ? 'Matched by time: the nearest request of this conversation' : null" x-text="t.transcript || 'Open trace'"></a>
+                                </template>
+                                <span x-show="!t.trace_id" class="text-muted text-xs">no trace</span>
+                            </td>
+                            <td>
+                                <span class="badge" :class="resultBadge(t.status)" x-text="t.status"></span>
+                                <span class="voice-result-reason text-xs" x-text="turnSpeaker(t)"></span>
+                            </td>
+                            <td class="text-right tabular-nums text-nowrap text-xs" x-text="fmtSeconds(t.speech_s) + ' / ' + fmtSeconds(t.duration_s)"></td>
+                            <td>
+                                <audio class="voice-turn-audio" controls preload="none" :src="turnAudioUrl(t)" :aria-label="'Recording from ' + formatTime(t.created_at)"></audio>
+                            </td>
+                            <td>
+                                <template x-if="t.assigned">
+                                    <span class="badge badge-blue" x-text="'Assigned to ' + (t.assigned_name || 'profile')"></span>
+                                </template>
+                                <template x-if="!t.assigned">
+                                    <div class="voice-turn-assign">
+                                        <select class="form-input" :aria-label="'Profile for the recording from ' + formatTime(t.created_at)" x-model="turnSelection[t.id]" :disabled="!t.assignable || !profiles.length">
+                                            <option value="">Profile...</option>
+                                            <template x-for="p in profiles" :key="p.id">
+                                                <option :value="String(p.id)" x-text="p.name"></option>
+                                            </template>
+                                        </select>
+                                        <span :title="t.assignable ? null : 'Too little speech for an enrollment sample'">
+                                            <button class="btn btn-sm btn-primary" @click="assignTurn(t, false)" :disabled="!t.assignable || !turnSelection[t.id] || assigningTurn === t.id">Assign</button>
+                                        </span>
+                                    </div>
+                                </template>
+                                <span x-show="!t.assigned && !t.assignable" class="voice-result-reason text-xs text-muted">too little speech</span>
+                            </td>
+                            <td class="text-right">
+                                <button class="btn btn-sm btn-danger" @click="deleteTurn(t)">Delete</button>
+                            </td>
+                        </tr>
+                        <tr x-show="turnRejections[t.id]" class="voice-samples-row">
+                            <td colspan="7">
+                                <template x-if="turnRejections[t.id]">
+                                    <div class="voice-turn-rejection">
+                                        <span class="text-sm text-danger" x-text="'Rejected by the enrollment guard: ' + reasonLabel(turnRejections[t.id].reason)"></span>
+                                        <span class="text-xs text-muted" x-text="guardScores(turnRejections[t.id].scores)"></span>
+                                        <div class="flex gap-sm">
+                                            <button class="btn btn-sm btn-secondary" @click="assignTurn(t, true)" :disabled="assigningTurn === t.id">Assign anyway</button>
+                                            <button class="btn btn-sm btn-secondary" @click="clearRejection(t)">Dismiss</button>
+                                        </div>
+                                    </div>
+                                </template>
+                            </td>
+                        </tr>
+                    </tbody>
+                </template>
+            </table>
+        </div>
+        <div class="flex-between flex-wrap mt-md" x-show="turnsTotal > turnsLimit">
+            <span class="text-xs text-muted tabular-nums" x-text="(turnsOffset + 1) + '-' + Math.min(turnsOffset + turnsLimit, turnsTotal) + ' of ' + turnsTotal"></span>
+            <div class="btn-group">
+                <button class="btn btn-sm btn-secondary" @click="pageTurns(-1)" :disabled="turnsOffset === 0">Newer</button>
+                <button class="btn btn-sm btn-secondary" @click="pageTurns(1)" :disabled="turnsOffset + turnsLimit >= turnsTotal">Older</button>
+            </div>
+        </div>
+        <template x-if="turnsLoaded && turns.length === 0">
+            <div class="empty-state">
+                <p>No recorded turns.</p>
+            </div>
+        </template>
+    </div>
+
     <!-- Enroll modal -->
     <div x-show="enrollTarget" x-cloak class="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="voice-enroll-modal-title" @click.self="enrollTarget = null" @keydown.escape.window="enrollTarget = null">
         <form class="card modal-card" @submit.prevent="submitEnroll()">
@@ -323,6 +440,22 @@
             <div class="flex gap-sm justify-end mt-md">
                 <button type="button" class="btn btn-sm btn-secondary" @click="enrollTarget = null">Cancel</button>
                 <button type="submit" class="btn btn-sm btn-primary" :disabled="submitting || !status.enabled">Start Enrollment</button>
+            </div>
+        </form>
+    </div>
+
+    <!-- Delete profile modal -->
+    <div x-show="deleteTarget" x-cloak class="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="voice-delete-modal-title" @click.self="deleteTarget = null" @keydown.escape.window="deleteTarget = null">
+        <form class="card modal-card" @submit.prevent="submitDeleteProfile()">
+            <h3 id="voice-delete-modal-title" class="mt-0" x-text="'Delete ' + (deleteTarget ? deleteTarget.name : '')"></h3>
+            <p class="text-sm text-muted">The profile and all of its voice samples are deleted.</p>
+            <label class="voice-delete-option text-sm">
+                <input id="voice-delete-recordings" type="checkbox" x-model="deleteRecordings">
+                <span>Also delete the recorded turns identified as or assigned to this person (audio and data). Unchecked, they stay in the list until they expire.</span>
+            </label>
+            <div class="flex gap-sm justify-end mt-md">
+                <button type="button" class="btn btn-sm btn-secondary" @click="deleteTarget = null">Cancel</button>
+                <button type="submit" class="btn btn-sm btn-danger" :disabled="submitting">Delete Profile</button>
             </div>
         </form>
     </div>
@@ -362,6 +495,7 @@ var VOICE_POLL_ACTIVE_MS = 2000;
 var VOICE_POLL_IDLE_MS = 10000;
 // Mirrors DEFAULT_ENROLL_SAMPLES / DEFAULT_ENROLL_TIMEOUT_S (app/voice/enrollment.py).
 var VOICE_ENROLL_DEFAULTS = { samples: 10, timeout_s: 600 };
+var VOICE_TURNS_PAGE = 25;
 
 function voiceProfilesPage() {
     return {
@@ -383,8 +517,19 @@ function voiceProfilesPage() {
         enrollTarget: null,
         enrollForm: Object.assign({}, VOICE_ENROLL_DEFAULTS),
         editTarget: null,
+        deleteTarget: null,
+        deleteRecordings: true,
         editForm: { name: '', ha_user_id: '' },
         samples: {},
+        turns: [],
+        turnsTotal: 0,
+        turnsLoaded: false,
+        turnsFilter: 'all',
+        turnsOffset: 0,
+        turnsLimit: VOICE_TURNS_PAGE,
+        turnSelection: {},
+        turnRejections: {},
+        assigningTurn: null,
         now: Date.now(),
         refreshInterval: null,
 
@@ -412,7 +557,7 @@ function voiceProfilesPage() {
 
         async refresh() {
             this.loading = true;
-            await Promise.all([this.loadStatus(), this.loadProfiles(), this.loadPersons(), this.loadSettings()]);
+            await Promise.all([this.loadStatus(), this.loadProfiles(), this.loadPersons(), this.loadSettings(), this.loadTurns()]);
             this.loading = false;
         },
 
@@ -420,8 +565,13 @@ function voiceProfilesPage() {
             this.statusLoading = true;
             try {
                 var previous = this.status.enrollment;
+                var previousRecorded = this.status.recorded_turns;
                 var data = await window.dashboardApi.json('/api/admin/voice/status');
                 this.status = data;
+                if (this.statusLoaded && this.turnsOffset === 0 && data.recorded_turns !== previousRecorded) {
+                    // New recordings (or expired ones): refresh the first page.
+                    this.loadTurns();
+                }
                 this.statusLoaded = true;
                 var current = data.enrollment;
                 var changed = (!!previous !== !!current)
@@ -523,6 +673,7 @@ function voiceProfilesPage() {
             try {
                 await this.putSettings(items);
                 window.toast('Voice settings saved', 'success');
+                await this.loadStatus();
             } catch (e) {
                 if (e.code === 'auth_expired') return;
                 window.toast(e.detail || 'Failed to save voice settings', 'error');
@@ -723,15 +874,27 @@ function voiceProfilesPage() {
             }
         },
 
-        async deleteProfile(p) {
-            if (!confirm('Delete the voice profile ' + p.name + ' and all of its samples?')) return;
+        deleteProfile(p) {
+            this.deleteRecordings = true;
+            this.deleteTarget = p;
+        },
+
+        async submitDeleteProfile() {
+            var p = this.deleteTarget;
+            if (!p) return;
+            this.submitting = true;
             try {
-                await window.dashboardApi.request('/api/admin/voice/profiles/' + p.id, { method: 'DELETE' });
-                window.toast('Voice profile deleted', 'success');
-                await Promise.all([this.loadProfiles(), this.loadStatus()]);
+                var query = this.deleteRecordings ? '?delete_recordings=true' : '';
+                var data = await window.dashboardApi.json('/api/admin/voice/profiles/' + p.id + query, { method: 'DELETE' });
+                var removed = (data && data.deleted_recordings) || 0;
+                window.toast('Voice profile deleted' + (removed ? ' with ' + removed + ' recording' + (removed === 1 ? '' : 's') : ''), 'success');
+                this.deleteTarget = null;
+                await Promise.all([this.loadProfiles(), this.loadStatus(), this.loadTurns()]);
             } catch (e) {
                 if (e.code === 'auth_expired') return;
                 window.toast(e.detail || 'Failed to delete voice profile', 'error');
+            } finally {
+                this.submitting = false;
             }
         },
 
@@ -801,6 +964,125 @@ function voiceProfilesPage() {
             if (engine === 'loading') return 'badge-yellow';
             if (engine === 'unavailable') return 'badge-red';
             return 'badge-muted';
+        },
+
+        turnsQuery() {
+            var params = new URLSearchParams({ limit: String(this.turnsLimit), offset: String(this.turnsOffset) });
+            if (this.turnsFilter === 'unassigned') params.set('assigned', 'false');
+            if (this.turnsFilter === 'unknown') params.set('status', 'unknown');
+            if (this.turnsFilter === 'no_profiles') params.set('status', 'no_profiles');
+            return params.toString();
+        },
+
+        async loadTurns() {
+            try {
+                var data = await window.dashboardApi.json('/api/admin/voice/turns?' + this.turnsQuery());
+                this.turns = (data && data.turns) || [];
+                this.turnsTotal = (data && data.total) || 0;
+                if (!this.turns.length && this.turnsOffset > 0 && this.turnsTotal > 0) {
+                    // The page emptied (deletions, retention): show the last page instead.
+                    this.turnsOffset = Math.max(0, Math.floor((this.turnsTotal - 1) / this.turnsLimit) * this.turnsLimit);
+                    return await this.loadTurns();
+                }
+                for (var t of this.turns) {
+                    if (this.turnSelection[t.id] === undefined) {
+                        // Preselect the identified speaker.
+                        this.turnSelection[t.id] = t.speaker_profile_id ? String(t.speaker_profile_id) : '';
+                    }
+                }
+                this.turnsLoaded = true;
+            } catch (e) {
+                if (e.code === 'auth_expired') return;
+                this.error = e.detail || 'Failed to load recorded turns';
+            }
+        },
+
+        async pageTurns(direction) {
+            this.turnsOffset = Math.max(0, this.turnsOffset + direction * this.turnsLimit);
+            await this.loadTurns();
+        },
+
+        turnAudioUrl(t) {
+            return window.dashUrl('/api/admin/voice/turns/' + encodeURIComponent(t.id) + '/audio');
+        },
+
+        turnSpeaker(t) {
+            if (t.status === 'identified') return (t.speaker_name || 'deleted profile') + ' ' + this.fmt2(t.score);
+            if (t.status === 'no_profiles') return 'no profiles yet';
+            return 'best score ' + this.fmt2(t.score);
+        },
+
+        guardScores(scores) {
+            if (!scores) return '';
+            var parts = ['own fit ' + this.fmt2(scores.own)];
+            if (scores.best_other_name) parts.push('closest other ' + scores.best_other_name + ' ' + this.fmt2(scores.best_other));
+            if (scores.lead !== null && scores.lead !== undefined) parts.push('lead ' + this.fmt2(scores.lead));
+            return parts.join(', ');
+        },
+
+        clearRejection(t) {
+            delete this.turnRejections[t.id];
+            this.turnRejections = Object.assign({}, this.turnRejections);
+        },
+
+        async assignTurn(t, force) {
+            var profileId = parseInt(this.turnSelection[t.id], 10);
+            if (!profileId) {
+                window.toast('Choose a profile first', 'error');
+                return;
+            }
+            this.assigningTurn = t.id;
+            try {
+                var result = await window.dashboardApi.json('/api/admin/voice/turns/' + encodeURIComponent(t.id) + '/assign', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ profile_id: profileId, force: !!force }),
+                });
+                this.clearRejection(t);
+                var profile = this.profiles.find(p => p.id === profileId);
+                window.toast('Sample added to ' + (profile ? profile.name : 'profile') + (result && result.forced ? ' (guard overridden)' : ''), 'success');
+                await Promise.all([this.loadTurns(), this.loadProfiles()]);
+                var entry = this.samples[profileId];
+                if (entry && entry.open) await this.loadSamples(profileId);
+            } catch (e) {
+                if (e.code === 'auth_expired') return;
+                var payload = e.payload || {};
+                if (e.status === 409 && payload.error === 'guard_rejected') {
+                    this.turnRejections = Object.assign({}, this.turnRejections, { [t.id]: { reason: payload.reason, scores: payload.scores } });
+                    return;
+                }
+                window.toast(e.detail || 'Failed to assign the recording', 'error');
+                if (payload.error === 'already_assigned') await this.loadTurns();
+            } finally {
+                this.assigningTurn = null;
+            }
+        },
+
+        async deleteTurn(t) {
+            if (!confirm('Delete this recording? A sample already made from it stays.')) return;
+            try {
+                await window.dashboardApi.request('/api/admin/voice/turns/' + encodeURIComponent(t.id), { method: 'DELETE' });
+                this.clearRejection(t);
+                window.toast('Recording deleted', 'success');
+                await Promise.all([this.loadTurns(), this.loadStatus()]);
+            } catch (e) {
+                if (e.code === 'auth_expired') return;
+                window.toast(e.detail || 'Failed to delete the recording', 'error');
+            }
+        },
+
+        async deleteAllTurns() {
+            if (!confirm('Delete all recorded voice turns? Samples already made from them stay.')) return;
+            try {
+                await window.dashboardApi.request('/api/admin/voice/turns', { method: 'DELETE' });
+                this.turnRejections = {};
+                this.turnsOffset = 0;
+                window.toast('All recordings deleted', 'success');
+                await Promise.all([this.loadTurns(), this.loadStatus()]);
+            } catch (e) {
+                if (e.code === 'auth_expired') return;
+                window.toast(e.detail || 'Failed to delete the recordings', 'error');
+            }
         },
 
         resultBadge(status) {

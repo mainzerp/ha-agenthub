@@ -41,6 +41,21 @@ Live pipeline in board format — headings are columns, cards are
 
 ## Testing
 
+- Voice Profiles: assign recorded voice turns to a profile · priority: P1 · area: voice
+  Outcome: with opt-in `voice.speaker_id.keep_audio`, every confirmed voice
+  turn with an embedding is kept 30 days (WAV + embedding + result, linked to
+  its trace; also with zero profiles); `/dashboard/voice-profiles` lists them
+  with transcript, player and "assign to profile" (guard warns, admin may
+  override); profile delete can remove its recordings. Also hardens
+  `get_db_write` against abandoned transactions. Not committed, version not bumped.
+  Passed: `scripts/ci.py` ruff, self-docs/card sync, lock, container 5255,
+  bridge 337, bandit; pip-audit FAIL from new advisories unrelated to this
+  change (filelock 3.32.7, setuptools 84.0.0). Docker/trivy not reached.
+  Needs user verification on the local instance: enable "Keep audio", speak
+  on a satellite, play the turn on the page, assign it (sample count grows,
+  a guard warning offers "Assign anyway"); a false wake without transcript
+  leaves no recording; delete a profile with "also delete recordings".
+
 - Activity Orb as Home Assistant Lovelace card · priority: P2 · area: integration
   Outcome: the `<agenthub-activity-orb>` widget runs on a Home Assistant
   dashboard. Chosen route: a custom Lovelace card shipped as a JS resource by

@@ -6,7 +6,10 @@ import asyncio
 import logging
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+import aiosqlite
+import numpy as np
+from fastapi import APIRouter, HTTPException, Query
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 
 from app.db.repositories.voice import (
@@ -14,6 +17,7 @@ from app.db.repositories.voice import (
     MAX_PROFILE_NAME_LENGTH,
     VoiceProfileNameConflictError,
     VoiceProfileRepository,
+    VoiceTurnRepository,
 )
 from app.voice.enrollment import (
     DEFAULT_ENROLL_SAMPLES,
@@ -23,8 +27,18 @@ from app.voice.enrollment import (
     MIN_ENROLL_SAMPLES,
     MIN_ENROLL_TIMEOUT_S,
 )
-from app.voice.profiles import sample_diagnostics
-from app.voice.service import get_speaker_service, is_speaker_id_enabled
+from app.voice.profiles import EnrollmentCheck, check_enrollment_sample, sample_diagnostics, scores_payload
+from app.voice.recordings import audio_file_path, delete_audio_files, is_valid_turn_id, read_wav_pcm
+from app.voice.service import (
+    STATUS_IDENTIFIED,
+    STATUS_NO_PROFILES,
+    STATUS_UNKNOWN,
+    VoiceConfig,
+    get_speaker_service,
+    is_speaker_id_enabled,
+    load_voice_config,
+)
+from app.voice.speaker_engine import SpeakerEngineUnavailableError
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +62,16 @@ class VoiceEnrollRequest(BaseModel):
     timeout_s: int = Field(default=DEFAULT_ENROLL_TIMEOUT_S, ge=MIN_ENROLL_TIMEOUT_S, le=MAX_ENROLL_TIMEOUT_S)
 
 
+class VoiceTurnAssign(BaseModel):
+    profile_id: int
+    # Store the sample even when the enrollment guard rejects it.
+    force: bool = False
+
+
+MAX_TURNS_PAGE = 200
+_TURN_STATUSES = frozenset({STATUS_IDENTIFIED, STATUS_UNKNOWN, STATUS_NO_PROFILES})
+
+
 async def _require_profile(profile_id: int) -> dict[str, Any]:
     profile = await VoiceProfileRepository.get_profile(profile_id)
     if profile is None:
@@ -63,12 +87,18 @@ async def _profile_with_count(profile: dict[str, Any]) -> dict[str, Any]:
 
 @router.get("/status")
 async def voice_status() -> dict[str, Any]:
-    """Feature state, engine state, armed enrollment and the recent results ring buffer."""
+    """Feature state, engine state, armed enrollment, recent results and the voice-recording state."""
     service = get_speaker_service()
     enabled = await is_speaker_id_enabled()
     if enabled:
         # Load the engine in the background so the page shows "loading" -> "ready".
         service.schedule_warm_up()
+    config = await load_voice_config()
+    try:
+        recorded_turns: int | None = await VoiceTurnRepository.count()
+    except Exception:
+        logger.debug("Counting recorded voice turns failed", exc_info=True)
+        recorded_turns = None
     return {
         "enabled": enabled,
         "engine": service.engine.status,
@@ -79,6 +109,9 @@ async def voice_status() -> dict[str, Any]:
         "vad_error": service.vad.last_error,
         "enrollment": service.enrollment.current(),
         "recent": service.store.recent(),
+        "keep_audio": config.keep_audio,
+        "audio_retention_days": config.audio_retention_days,
+        "recorded_turns": recorded_turns,
     }
 
 
@@ -129,14 +162,19 @@ async def update_voice_profile(profile_id: int, body: VoiceProfileUpdate) -> dic
 
 
 @router.delete("/profiles/{profile_id}")
-async def delete_voice_profile(profile_id: int) -> dict[str, Any]:
+async def delete_voice_profile(profile_id: int, delete_recordings: bool = Query(False)) -> dict[str, Any]:
+    """Delete a profile and its samples; ``delete_recordings`` also deletes the recorded turns
+    identified as or assigned to it (rows and audio). Otherwise those turns stay, unlinked."""
+    await _require_profile(profile_id)
+    audio_paths = await VoiceTurnRepository.delete_for_profile(profile_id) if delete_recordings else []
     deleted = await VoiceProfileRepository.delete_profile(profile_id)
+    await delete_audio_files(audio_paths)
     if not deleted:
         raise HTTPException(status_code=404, detail="Voice profile not found")
     service = get_speaker_service()
     service.enrollment.disarm_profile(profile_id)
     service.invalidate_profiles()
-    return {"ok": True}
+    return {"ok": True, "deleted_recordings": len(audio_paths)}
 
 
 @router.delete("/profiles/{profile_id}/samples")
@@ -218,3 +256,253 @@ async def arm_voice_enrollment(profile_id: int, body: VoiceEnrollRequest | None 
 async def cancel_voice_enrollment() -> dict[str, Any]:
     cancelled = get_speaker_service().enrollment.cancel()
     return {"ok": True, "cancelled": cancelled}
+
+
+# -- recorded voice turns ------------------------------------------------
+
+
+def _turn_error(status_code: int, error: str, detail: str, **extra: Any) -> JSONResponse:
+    """Error body with a readable ``detail`` and a machine-readable ``error`` code."""
+    return JSONResponse(status_code=status_code, content={"detail": detail, "error": error, **extra})
+
+
+def _speech_seconds(turn: dict[str, Any]) -> float:
+    value = turn.get("speech_s")
+    if value is None:
+        value = turn.get("duration_s")
+    return float(value or 0.0)
+
+
+def _turn_payload(row: dict[str, Any], config: VoiceConfig, model: str) -> dict[str, Any]:
+    assigned = row.get("assigned_sample_id") is not None
+    return {
+        "id": row["id"],
+        "created_at": row.get("created_at"),
+        "conversation_id": row.get("conversation_id"),
+        "trace_id": row.get("linked_trace_id"),
+        # ``lookup``: linked by the conversation turn's speaker lookup;
+        # ``time_window``: nearest trace of the same conversation (lookup timed out or never ran).
+        "trace_match": ("lookup" if row.get("trace_id") else "time_window") if row.get("linked_trace_id") else None,
+        "transcript": row.get("transcript"),
+        "duration_s": row.get("duration_s"),
+        "speech_s": row.get("speech_s"),
+        "status": row.get("status"),
+        "speaker_profile_id": row.get("speaker_profile_id"),
+        "speaker_name": row.get("speaker_name"),
+        "score": row.get("score"),
+        "margin": row.get("margin"),
+        "model": row.get("model"),
+        "current_model": row.get("model") == model,
+        "assigned": assigned,
+        "assigned_profile_id": row.get("assigned_profile_id") if assigned else None,
+        "assigned_name": row.get("assigned_name") if assigned else None,
+        "assigned_sample_id": row.get("assigned_sample_id"),
+        "assigned_at": row.get("assigned_at") if assigned else None,
+        "assignable": _speech_seconds(row) >= config.min_enroll_duration_s,
+    }
+
+
+async def _require_turn(turn_id: str) -> dict[str, Any]:
+    turn = await VoiceTurnRepository.get_turn(turn_id) if is_valid_turn_id(turn_id) else None
+    if turn is None:
+        raise HTTPException(status_code=404, detail="Voice turn not found")
+    return turn
+
+
+def _guard_payload(check: EnrollmentCheck, profile_id: int) -> dict[str, Any]:
+    """Enrollment-guard outcome: ``reason`` (None = accepted) and the scores it decided on."""
+    others = [item for item in check.ranked if item.profile.profile_id != profile_id]
+    best_other = others[0] if others else None
+    best_other_score = round(best_other.score, 4) if best_other is not None else None
+    lead = (
+        round(check.own_score - best_other_score, 4)
+        if check.own_score is not None and best_other_score is not None
+        else None
+    )
+    return {
+        "reason": check.reason,
+        "scores": {
+            "own": check.own_score,
+            "best_other": best_other_score,
+            "best_other_name": best_other.profile.name if best_other is not None else None,
+            "lead": lead,
+            "all": scores_payload(check.ranked),
+        },
+    }
+
+
+async def _drop_sample(profile_id: int, sample_id: int) -> None:
+    """Delete a sample stored by a failed assignment (it may already be gone) and refresh the centroids."""
+    try:
+        await VoiceProfileRepository.delete_sample(profile_id, sample_id)
+    except Exception:
+        logger.warning("Removing sample %s of a failed voice-turn assignment failed", sample_id, exc_info=True)
+    get_speaker_service().invalidate_profiles()
+
+
+@router.get("/turns")
+async def list_voice_turns(
+    limit: int = Query(50, ge=1, le=MAX_TURNS_PAGE),
+    offset: int = Query(0, ge=0),
+    status: str | None = Query(None),
+    assigned: bool | None = Query(None),
+) -> dict[str, Any]:
+    """Recorded voice turns, newest first (no embeddings or audio).
+
+    ``transcript`` is the user input of the linked trace (None without one;
+    ``trace_match`` says whether the speaker lookup linked it or the
+    conversation's nearest trace was used);
+    ``assignable`` means the turn has enough speech for an enrollment sample.
+    """
+    if status is not None and status not in _TURN_STATUSES:
+        raise HTTPException(status_code=422, detail="status must be identified, unknown or no_profiles")
+    config = await load_voice_config()
+    model = get_speaker_service().engine.model_id
+    rows, total = await VoiceTurnRepository.list_turns(limit=limit, offset=offset, status=status, assigned=assigned)
+    return {
+        "turns": [_turn_payload(row, config, model) for row in rows],
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        "keep_audio": config.keep_audio,
+        "audio_retention_days": config.audio_retention_days,
+        "min_enroll_duration_s": config.min_enroll_duration_s,
+    }
+
+
+@router.get("/turns/{turn_id}/audio")
+async def get_voice_turn_audio(turn_id: str) -> FileResponse:
+    """The recorded audio of a turn (16 kHz mono 16-bit WAV)."""
+    turn = await _require_turn(turn_id)
+    path = audio_file_path(turn.get("audio_path"))
+    if path is None or not await asyncio.to_thread(path.is_file):
+        raise HTTPException(status_code=404, detail="Voice recording not found")
+    return FileResponse(path, media_type="audio/wav", headers={"Cache-Control": "private, no-store"})
+
+
+@router.post("/turns/{turn_id}/assign", response_model=None)
+async def assign_voice_turn(turn_id: str, body: VoiceTurnAssign) -> dict[str, Any] | JSONResponse:
+    """Store a recorded turn as an enrollment sample of a profile.
+
+    Independent of an armed enrollment (whose state stays untouched). The
+    enrollment guard runs against the target profile; a rejection is
+    returned as 409 ``guard_rejected`` unless ``force`` overrides it. A turn
+    recorded with another speaker model is re-embedded from its audio.
+    """
+    turn = await _require_turn(turn_id)
+    profile = await _require_profile(body.profile_id)
+    if turn.get("assigned_sample_id") is not None:
+        return _turn_error(409, "already_assigned", "This voice turn is already assigned to a profile")
+    config = await load_voice_config()
+    if _speech_seconds(turn) < config.min_enroll_duration_s:
+        return _turn_error(
+            422,
+            "too_short",
+            f"Too little speech for an enrollment sample (minimum {config.min_enroll_duration_s:g} s)",
+        )
+    service = get_speaker_service()
+    model = service.engine.model_id
+    vector = np.frombuffer(turn["embedding"], dtype=np.float32).copy()
+    recomputed = turn.get("model") != model
+    if recomputed:
+        if service.engine.status != "ready":
+            service.schedule_warm_up()
+            return _turn_error(
+                503,
+                "engine_unavailable",
+                "The turn was recorded with another speaker model and the engine is not ready to re-embed it",
+            )
+        path = audio_file_path(turn.get("audio_path"))
+        if path is None or not await asyncio.to_thread(path.is_file):
+            return _turn_error(404, "audio_missing", "The recording of this voice turn is missing")
+        try:
+            pcm, sample_rate = await asyncio.to_thread(read_wav_pcm, path)
+            embedded = await service.engine.embed(pcm, sample_rate, num_threads=config.num_threads)
+        except FileNotFoundError:
+            # Deleted (retention, delete) after the existence check.
+            return _turn_error(404, "audio_missing", "The recording of this voice turn is missing")
+        except SpeakerEngineUnavailableError:
+            return _turn_error(503, "engine_unavailable", "The speaker engine is not available to re-embed the turn")
+        except Exception:
+            logger.warning("Re-embedding voice turn %s failed", turn_id, exc_info=True)
+            return _turn_error(500, "embedding_failed", "Re-embedding the voice turn failed")
+        vector = np.asarray(embedded, dtype=np.float32).reshape(-1)
+    centroids = await service.centroids.get(model)
+    check = check_enrollment_sample(
+        vector,
+        body.profile_id,
+        centroids,
+        threshold=config.threshold,
+        margin=config.margin,
+        min_similarity=config.enroll_min_similarity,
+    )
+    guard = _guard_payload(check, body.profile_id)
+    if check.reason is not None and not body.force:
+        return _turn_error(
+            409,
+            "guard_rejected",
+            f"The enrollment guard rejected this turn for {profile['name']}: {check.reason}",
+            reason=check.reason,
+            scores=guard["scores"],
+        )
+    try:
+        sample_id = await VoiceProfileRepository.add_sample(
+            body.profile_id,
+            vector.tobytes(),
+            int(vector.size),
+            model,
+            turn.get("duration_s"),
+            turn.get("speech_s"),
+        )
+    except aiosqlite.IntegrityError:
+        # The profile was deleted meanwhile (foreign key).
+        raise HTTPException(status_code=404, detail="Voice profile not found") from None
+    try:
+        linked = await VoiceTurnRepository.mark_assigned(turn_id, body.profile_id, sample_id)
+    except aiosqlite.IntegrityError:
+        # The profile was deleted after the sample was stored (which removed the sample too).
+        await _drop_sample(body.profile_id, sample_id)
+        raise HTTPException(status_code=404, detail="Voice profile not found") from None
+    if not linked:
+        # Assigned or deleted concurrently: never keep a duplicate or orphaned sample.
+        await _drop_sample(body.profile_id, sample_id)
+        if await VoiceTurnRepository.get_turn(turn_id) is None:
+            raise HTTPException(status_code=404, detail="Voice turn not found")
+        return _turn_error(409, "already_assigned", "This voice turn is already assigned to a profile")
+    service.invalidate_profiles()
+    forced = check.reason is not None
+    logger.info(
+        "Assigned voice turn %s to profile %s as sample %s%s",
+        turn_id,
+        body.profile_id,
+        sample_id,
+        f" (guard override: {check.reason})" if forced else "",
+    )
+    return {
+        "ok": True,
+        "turn_id": turn_id,
+        "profile_id": body.profile_id,
+        "sample_id": sample_id,
+        "forced": forced,
+        "recomputed": recomputed,
+        "guard": guard,
+    }
+
+
+@router.delete("/turns/{turn_id}")
+async def delete_voice_turn(turn_id: str) -> dict[str, Any]:
+    """Delete a recorded turn and its audio (an enrollment sample made from it stays)."""
+    audio_path = await VoiceTurnRepository.delete_turn(turn_id) if is_valid_turn_id(turn_id) else None
+    if audio_path is None:
+        raise HTTPException(status_code=404, detail="Voice turn not found")
+    await delete_audio_files([audio_path])
+    return {"ok": True}
+
+
+@router.delete("/turns")
+async def delete_all_voice_turns() -> dict[str, Any]:
+    """Delete every recorded turn and its audio."""
+    paths = await VoiceTurnRepository.delete_all()
+    await delete_audio_files(paths)
+    logger.info("Deleted all %d recorded voice turns", len(paths))
+    return {"ok": True, "deleted": len(paths)}

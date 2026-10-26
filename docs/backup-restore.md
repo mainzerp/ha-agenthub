@@ -25,6 +25,7 @@ Optional (included in a volume backup, safe to exclude or delete):
 | `/data/logs/app.log*` | Rotating container log file (`LOG_DIR`) | Pre-restart log history gone |
 | `/data/logs/warnings.jsonl*` | Persisted WARNING+ log-buffer entries (`.1`, `.2` rotations, about 15 MB max), restored into the Logs page at startup | Pre-restart warnings and errors no longer shown after a restart |
 | `/data/backups/pre-migration-*.db` | Automatic pre-migration snapshots of the SQLite database (newest 3 kept), see [Automatic Pre-Migration Snapshots](#automatic-pre-migration-snapshots) | No rollback point for the last schema upgrades |
+| `/data/voice_turns/*.wav` | Recorded voice turns (biometric audio; only with `voice.speaker_id.keep_audio`, deleted after `voice.speaker_id.audio_retention_days`) | Recorded turns stay listed but can no longer be played or re-embedded; samples already assigned are unaffected |
 
 ## Backup Procedure
 

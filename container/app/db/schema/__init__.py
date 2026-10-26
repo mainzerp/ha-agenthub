@@ -16,6 +16,7 @@ connection state remains addressable as ``app.db.schema._write_conn``.
 """
 
 import asyncio
+import contextlib
 import logging
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
@@ -79,9 +80,23 @@ async def _get_or_create_write_connection() -> aiosqlite.Connection:
     global _write_conn
     if _write_conn is not None:
         try:
+            # Queued behind any statement still running on the connection
+            # thread, so ``in_transaction`` below is settled.
             await _write_conn.execute("SELECT 1")
         except aiosqlite.OperationalError:
             logger.warning("DB write connection stale, recreating")
+            _write_conn = None
+    if _write_conn is not None and _write_conn.in_transaction:
+        # A write scope cancelled while its BEGIN, rollback or commit was in
+        # flight left the transaction open; the caller holds the write lock,
+        # so nothing else owns it.
+        logger.warning("DB write connection left inside a transaction, rolling back")
+        try:
+            await _write_conn.rollback()
+        except aiosqlite.Error:
+            logger.warning("Rolling back the abandoned write transaction failed, reconnecting", exc_info=True)
+            with contextlib.suppress(Exception):
+                await _write_conn.close()
             _write_conn = None
     if _write_conn is None:
         _write_conn = await _open_write_connection()
@@ -116,8 +131,8 @@ async def get_db_write() -> AsyncGenerator[aiosqlite.Connection, None]:
     """
     async with _get_write_lock():
         db = await _get_or_create_write_connection()
-        await db.execute("BEGIN")
         try:
+            await db.execute("BEGIN")
             yield db
         except BaseException:
             # BaseException ensures rollback on KeyboardInterrupt / SystemExit

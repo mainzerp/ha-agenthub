@@ -29,7 +29,8 @@ with the same ``conversation_id`` -- it never authenticates a user.
 While an enrollment is armed, the embedding may be computed at
 ``audio_end``, but the sample is stored -- or a rejected sample counted --
 only after ``end``; ``abort``, disconnect or idle timeout before ``end``
-discard it.
+discard it. Likewise, a recording of the turn (``voice.speaker_id.keep_audio``)
+starts at ``audio_end`` but is deleted again unless ``end`` confirms the turn.
 """
 
 from __future__ import annotations
@@ -199,6 +200,10 @@ class VoiceTurnSession:
         # A rejected enrollment sample, recorded only when ``end`` confirms the turn.
         self._pending_rejection: dict[str, Any] | None = None
         self._transcript_chars: int | None = None
+        # Fixed at ``start``: an enrollment turn is never recorded.
+        self._enrollment_turn = False
+        # Recording of this turn (opt-in), deleted again unless ``end`` confirms the turn.
+        self._voice_turn_id: str | None = None
 
     async def run(self) -> None:
         try:
@@ -290,6 +295,7 @@ class VoiceTurnSession:
         # running the agents, even if the final sample's commit disarms the
         # enrollment before the conversation turn arrives.
         enrollment_turn = self._service.enrollment.current() is not None
+        self._enrollment_turn = enrollment_turn
         self._token = self._service.store.begin(conversation_id, enrollment=enrollment_turn)
         if self._service.engine.status != "ready":
             self._service.schedule_warm_up()
@@ -347,7 +353,9 @@ class VoiceTurnSession:
             return
         self._audio_ended = True
         result = await self._await_result()
-        # An unconfirmed turn never counts as a rejected sample either.
+        # An unconfirmed turn is never kept as a recording ...
+        self._discard_recording()
+        # ... and never counts as a rejected sample either.
         self._pending_rejection = None
         pending = self._pending_enrollment
         if pending is not None:
@@ -386,13 +394,20 @@ class VoiceTurnSession:
         assert self._config is not None
         try:
             analysis = await self._service.analyze_turn(
-                pcm, SUPPORTED_SAMPLE_RATE, self._config, received_at=self._received_at
+                pcm,
+                SUPPORTED_SAMPLE_RATE,
+                self._config,
+                received_at=self._received_at,
+                conversation_id=self._conversation_id,
+                record=not self._enrollment_turn,
             )
         except Exception:
             logger.warning("Speaker identification failed", exc_info=True)
             result = make_result(STATUS_ERROR, reason="processing_failed")
         else:
             result = analysis.result
+            turn_id = result.get("voice_turn_id")
+            self._voice_turn_id = str(turn_id) if turn_id else None
             self._pending_enrollment = analysis.pending
             self._pending_rejection = analysis.rejection
         # No await between the end of the analysis and ``resolve``: ``latency_ms``
@@ -429,9 +444,17 @@ class VoiceTurnSession:
                 await self._processing
         self._pending_enrollment = None
         self._pending_rejection = None
+        self._discard_recording()
         if self._conversation_id is not None and self._token is not None:
             self._service.store.discard(self._conversation_id, self._token)
             self._resolved = True
+
+    def _discard_recording(self) -> None:
+        """Delete the recording of a turn that ``end`` did not confirm (abort, disconnect, timeout)."""
+        turn_id = self._voice_turn_id
+        self._voice_turn_id = None
+        if turn_id is not None:
+            self._service.discard_recording(turn_id)
 
     async def _cleanup(self) -> None:
         # Any exit without a resolved entry (exception, server shutdown)
@@ -449,8 +472,10 @@ class VoiceTurnSession:
         if self._result_sent:
             return
         self._result_sent = True
+        # The recording id is internal (trace linking), not part of the protocol.
+        payload = {key: value for key, value in result.items() if key != "voice_turn_id"}
         with contextlib.suppress(Exception):
-            await self._ws.send_json({"type": "result", **result})
+            await self._ws.send_json({"type": "result", **payload})
 
     async def _close(self, code: int = 1000) -> None:
         with contextlib.suppress(Exception):

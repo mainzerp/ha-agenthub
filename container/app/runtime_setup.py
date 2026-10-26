@@ -69,8 +69,8 @@ async def _initialize_setup_dependent_services(app: FastAPI, *, source: str) -> 
     # Phase 5b: Session memory service + startup backfill (no-op when disabled)
     await setup_memory(app)
 
-    # Phase 5c: Speaker-identification engine warm-up (no-op when disabled)
-    await setup_voice()
+    # Phase 5c: Voice-recording retention + speaker-engine warm-up (warm-up only when enabled)
+    await setup_voice(app)
 
     # Phase 6: MCP servers (depends on mcp_registry, mcp_tool_manager)
     await setup_mcp(app, source)

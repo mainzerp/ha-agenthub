@@ -16,7 +16,7 @@ from typing import Any
 import numpy as np
 
 from app.analytics.tracer import _optional_span
-from app.db.repository import SettingsRepository, VoiceProfileRepository
+from app.db.repository import SettingsRepository, VoiceProfileRepository, VoiceTurnRepository
 from app.defaults import VOICE_DEFAULTS, VOICE_SETTING_RANGES
 from app.models.agent import SpeakerContext
 from app.util.tasks import spawn
@@ -31,6 +31,13 @@ from app.voice.profiles import (
     find_session_outlier,
     match_embedding,
     scores_payload,
+)
+from app.voice.recordings import (
+    TurnRecording,
+    audio_file_name,
+    delete_audio_files,
+    new_turn_id,
+    store_recording,
 )
 from app.voice.speaker_engine import SpeakerEngine, SpeakerEngineUnavailableError
 from app.voice.turn_store import SpeakerLookup, SpeakerTurnStore
@@ -55,6 +62,7 @@ STATUS_ERROR = "error"
 LOOKUP_HARD_CAP_S = 5.0
 _DEFAULT_WAIT_MS = int(VOICE_DEFAULTS["voice.speaker_id.wait_ms"])  # type: ignore[call-overload]
 _DEFAULT_ENROLL_MIN_SIMILARITY = float(VOICE_DEFAULTS["voice.speaker_id.enroll_min_similarity"])  # type: ignore[arg-type]
+_DEFAULT_RETENTION_DAYS = int(VOICE_DEFAULTS["voice.speaker_id.audio_retention_days"])  # type: ignore[call-overload]
 
 
 @dataclass(frozen=True)
@@ -67,6 +75,18 @@ class VoiceConfig:
     wait_ms: int
     num_threads: int
     enroll_min_similarity: float = _DEFAULT_ENROLL_MIN_SIMILARITY
+    # Opt-in recording of identification turns (see app.voice.recordings).
+    keep_audio: bool = False
+    audio_retention_days: int = _DEFAULT_RETENTION_DAYS
+
+
+@dataclass(frozen=True)
+class _Embedded:
+    """The VAD-trimmed PCM of an identification turn and its embedding (for recording)."""
+
+    pcm: bytes
+    vector: np.ndarray
+    speech_s: float | None = None
 
 
 @dataclass(frozen=True)
@@ -133,16 +153,29 @@ async def _read_int(key: str) -> int:
     return int(_clamp(key, value))
 
 
-async def is_speaker_id_enabled() -> bool:
-    default = bool(VOICE_DEFAULTS["voice.speaker_id.enabled"])
+async def _read_bool(key: str) -> bool:
+    default = bool(VOICE_DEFAULTS[key])
     try:
-        raw = await SettingsRepository.get_value("voice.speaker_id.enabled", "true" if default else "false")
+        raw = await SettingsRepository.get_value(key, "true" if default else "false")
     except Exception:
-        logger.debug("voice.speaker_id.enabled read failed; using default", exc_info=True)
+        logger.debug("%s read failed; using default", key, exc_info=True)
         return default
     if raw is None:
         return default
     return str(raw).strip().lower() in ("true", "1", "yes", "on")
+
+
+async def is_speaker_id_enabled() -> bool:
+    return await _read_bool("voice.speaker_id.enabled")
+
+
+async def read_audio_retention_days() -> int:
+    """``voice.speaker_id.audio_retention_days`` (clamped to 1-365)."""
+    return await _read_int("voice.speaker_id.audio_retention_days")
+
+
+async def is_keep_audio_enabled() -> bool:
+    return await _read_bool("voice.speaker_id.keep_audio")
 
 
 async def load_voice_config() -> VoiceConfig:
@@ -156,6 +189,8 @@ async def load_voice_config() -> VoiceConfig:
         wait_ms=await _read_int("voice.speaker_id.wait_ms"),
         num_threads=await _read_int("voice.speaker_id.num_threads"),
         enroll_min_similarity=await _read_float("voice.speaker_id.enroll_min_similarity"),
+        keep_audio=await is_keep_audio_enabled(),
+        audio_retention_days=await read_audio_retention_days(),
     )
 
 
@@ -246,6 +281,9 @@ class SpeakerIdService:
         self.vad = vad if vad is not None else VoiceActivityTrimmer()
         # Serialises enrollment commits so the outlier review of a session never interleaves.
         self._enroll_lock = asyncio.Lock()
+        # In-flight voice-turn recordings by turn id, and trace-link tasks.
+        self._recordings: dict[str, asyncio.Task[Any]] = {}
+        self._links: set[asyncio.Task[Any]] = set()
 
     def invalidate_profiles(self) -> None:
         self.centroids.invalidate()
@@ -310,13 +348,21 @@ class SpeakerIdService:
         config: VoiceConfig,
         *,
         received_at: float | None = None,
+        conversation_id: str | None = None,
+        record: bool = True,
     ) -> TurnAnalysis:
         """Identify the speaker of one finished voice turn, or prepare an enrollment sample.
 
-        Never persists anything: an enrollment embedding is returned as
+        Never persists an enrollment sample: its embedding is returned as
         ``pending`` and stored only by :meth:`commit_enrollment`.
         ``received_at`` is the ``time.perf_counter()`` value of the analysis
         trigger (``audio_end``); it sets ``latency_ms`` of a computed result.
+        With ``config.keep_audio`` and ``record``, an identification turn that
+        produced an embedding is recorded in the background (never delays
+        the result); its id is set as ``voice_turn_id`` on the result. With
+        recording on, a turn is embedded for the recording even while no
+        profile exists (the result stays ``no_profiles``), so the first
+        profile can be built from recordings.
         """
         duration = pcm_duration_s(pcm, sample_rate)
         armed = self.enrollment.current()
@@ -332,10 +378,95 @@ class SpeakerIdService:
                 return TurnAnalysis(result=result, rejection=dict(result))
             self.store.record_recent(result)
             return TurnAnalysis(result=result)
-        result = await self._identify(pcm, sample_rate, duration, config)
+        recording = record and config.keep_audio
+        result, embedded = await self._identify(pcm, sample_rate, duration, config, embed_for_recording=recording)
         _set_latency(result, received_at)
+        if embedded is not None and recording:
+            turn_id = self._schedule_recording(result, embedded, sample_rate, conversation_id)
+            if turn_id is not None:
+                result["voice_turn_id"] = turn_id
+        # ``record_recent`` copies a fixed set of keys (never ``voice_turn_id``).
         self.store.record_recent(result)
         return TurnAnalysis(result=result)
+
+    def _schedule_recording(
+        self,
+        result: dict[str, Any],
+        embedded: _Embedded,
+        sample_rate: int,
+        conversation_id: str | None,
+    ) -> str | None:
+        """Record the turn in the background. Never raises; returns the turn id or None."""
+        try:
+            turn_id = new_turn_id()
+            recording = TurnRecording(
+                turn_id=turn_id,
+                pcm=embedded.pcm,
+                sample_rate=sample_rate,
+                vector=embedded.vector,
+                model_id=self.engine.model_id,
+                status=str(result.get("status")),
+                conversation_id=conversation_id,
+                duration_s=result.get("duration_s"),
+                speech_s=embedded.speech_s if embedded.speech_s is not None else result.get("speech_s"),
+                profile_id=result.get("profile_id"),
+                score=result.get("score"),
+                margin=result.get("margin"),
+            )
+            task = spawn(_store_if_enabled(recording), name="voice_turn_recording")
+        except Exception:
+            logger.warning("Scheduling the voice-turn recording failed", exc_info=True)
+            return None
+        self._recordings[turn_id] = task
+        task.add_done_callback(lambda _task, key=turn_id: self._recordings.pop(key, None))
+        return turn_id
+
+    def _spawn_follow_up(self, coro: Any, name: str) -> None:
+        try:
+            task = spawn(coro, name=name)
+        except Exception:
+            coro.close()
+            logger.debug("Scheduling %s failed", name, exc_info=True)
+            return
+        self._links.add(task)
+        task.add_done_callback(self._links.discard)
+
+    def link_recording_trace(self, turn_id: str, trace_id: str) -> None:
+        """Set ``trace_id`` on a recorded turn in the background (after its row is written)."""
+        self._spawn_follow_up(self._link_trace(turn_id, trace_id), "voice_turn_link_trace")
+
+    def discard_recording(self, turn_id: str) -> None:
+        """Delete the recording of an unconfirmed turn (abort, disconnect) in the background.
+
+        Waits for the in-flight store task, then removes the row and the file.
+        """
+        self._spawn_follow_up(self._discard_recording(turn_id), "voice_turn_discard")
+
+    async def _discard_recording(self, turn_id: str) -> None:
+        pending = self._recordings.get(turn_id)
+        if pending is not None:
+            await asyncio.wait({pending})
+        try:
+            audio_path = await VoiceTurnRepository.delete_turn(turn_id)
+            await delete_audio_files([audio_path or audio_file_name(turn_id)])
+        except Exception:
+            logger.warning("Discarding the recording of voice turn %s failed", turn_id, exc_info=True)
+        else:
+            logger.debug("Discarded the recording of unconfirmed voice turn %s", turn_id)
+
+    async def _link_trace(self, turn_id: str, trace_id: str) -> None:
+        pending = self._recordings.get(turn_id)
+        if pending is not None:
+            await asyncio.wait({pending})
+        try:
+            await VoiceTurnRepository.set_trace_id(turn_id, trace_id)
+        except Exception:
+            logger.debug("Linking voice turn %s to trace %s failed", turn_id, trace_id, exc_info=True)
+
+    async def wait_recordings(self) -> None:
+        """Wait for in-flight recordings, trace links and discards (tests, shutdown)."""
+        while self._recordings or self._links:
+            await asyncio.gather(*self._recordings.values(), *self._links, return_exceptions=True)
 
     def _engine_ready_or_warm_up(self) -> bool:
         """True when the engine can embed now; otherwise start a background warm-up.
@@ -348,41 +479,59 @@ class SpeakerIdService:
         self.schedule_warm_up()
         return False
 
-    async def _identify(self, pcm: bytes, sample_rate: int, duration: float, config: VoiceConfig) -> dict[str, Any]:
+    async def _identify(
+        self,
+        pcm: bytes,
+        sample_rate: int,
+        duration: float,
+        config: VoiceConfig,
+        *,
+        embed_for_recording: bool = False,
+    ) -> tuple[dict[str, Any], _Embedded | None]:
+        """Identify the speaker; the trimmed PCM and embedding come back only for an embedded turn.
+
+        ``embed_for_recording`` also embeds a turn while no profile exists
+        (result unchanged: ``no_profiles``).
+        """
         if duration < config.min_duration_s:
             # Speech can never exceed the raw length: skip VAD and embedding.
-            return make_result(STATUS_TOO_SHORT, duration_s=duration)
+            return make_result(STATUS_TOO_SHORT, duration_s=duration), None
         try:
             centroids = await self.centroids.get(self.engine.model_id)
         except Exception:
             logger.warning("Loading voice profiles failed", exc_info=True)
-            return make_result(STATUS_ERROR, duration_s=duration, reason="profiles_unavailable")
+            return make_result(STATUS_ERROR, duration_s=duration, reason="profiles_unavailable"), None
         if not centroids:
-            return make_result(STATUS_NO_PROFILES, duration_s=duration)
+            result = make_result(STATUS_NO_PROFILES, duration_s=duration)
+            if not embed_for_recording:
+                return result, None
+            return result, await self._embed_for_recording(pcm, sample_rate, config)
         if not self._engine_ready_or_warm_up():
-            return make_result(STATUS_UNAVAILABLE, duration_s=duration, reason="engine_not_ready")
+            return make_result(STATUS_UNAVAILABLE, duration_s=duration, reason="engine_not_ready"), None
         started_at = time.perf_counter()
         trim = await self.vad.trim(pcm, sample_rate)
         trimmed = _trim_fields(trim)
         if trim.speech_s <= 0 or not trim.pcm or trim.speech_s < config.min_duration_s:
             # Never embed an empty buffer, even with ``min_duration_s`` 0.
             reason = "no_speech" if trim.speech_s <= 0 or not trim.pcm else None
-            return make_result(
+            result = make_result(
                 STATUS_TOO_SHORT, duration_s=duration, reason=reason, compute_ms=elapsed_ms(started_at), **trimmed
             )
+            return result, None
         try:
             embedding = await self.engine.embed(trim.pcm, sample_rate, num_threads=config.num_threads)
         except SpeakerEngineUnavailableError:
-            return make_result(STATUS_UNAVAILABLE, duration_s=duration, **trimmed)
+            return make_result(STATUS_UNAVAILABLE, duration_s=duration, **trimmed), None
         except Exception:
             logger.warning("Speaker embedding failed", exc_info=True)
-            return make_result(STATUS_ERROR, duration_s=duration, reason="embedding_failed", **trimmed)
+            return make_result(STATUS_ERROR, duration_s=duration, reason="embedding_failed", **trimmed), None
         match = match_embedding(embedding, centroids, threshold=config.threshold, margin=config.margin)
         compute_ms = elapsed_ms(started_at)
         identified = match.identified and match.best is not None
         scored = _score_fields(match.ranked, identified=identified)
+        embedded = _Embedded(pcm=trim.pcm, vector=embedding, speech_s=trim.speech_s)
         if identified and match.best is not None:
-            return make_result(
+            result = make_result(
                 STATUS_IDENTIFIED,
                 duration_s=duration,
                 profile_id=match.best.profile_id,
@@ -394,8 +543,9 @@ class SpeakerIdService:
                 **trimmed,
                 **scored,
             )
+            return result, embedded
         # Unknown: no name. The nearest profile is only listed in ``scores``.
-        return make_result(
+        result = make_result(
             STATUS_UNKNOWN,
             duration_s=duration,
             score=match.score,
@@ -404,6 +554,21 @@ class SpeakerIdService:
             **trimmed,
             **scored,
         )
+        return result, embedded
+
+    async def _embed_for_recording(self, pcm: bytes, sample_rate: int, config: VoiceConfig) -> _Embedded | None:
+        """Trim and embed a turn only to record it (no profiles to match). Never raises."""
+        if not self._engine_ready_or_warm_up():
+            return None
+        try:
+            trim = await self.vad.trim(pcm, sample_rate)
+            if trim.speech_s <= 0 or not trim.pcm or trim.speech_s < config.min_duration_s:
+                return None
+            embedding = await self.engine.embed(trim.pcm, sample_rate, num_threads=config.num_threads)
+        except Exception:
+            logger.debug("Embedding a voice turn for its recording failed", exc_info=True)
+            return None
+        return _Embedded(pcm=trim.pcm, vector=embedding, speech_s=trim.speech_s)
 
     async def _prepare_enrollment(
         self,
@@ -652,6 +817,18 @@ def _log_enrollment_rejection(profile_id: int, check: EnrollmentCheck, speech_s:
         config.margin,
         config.enroll_min_similarity,
     )
+
+
+async def _store_if_enabled(recording: TurnRecording) -> bool:
+    """Store a recording unless speaker identification or recording was turned off meanwhile."""
+    try:
+        if not (await is_speaker_id_enabled() and await is_keep_audio_enabled()):
+            logger.debug("Voice recording %s skipped: recording was turned off", recording.turn_id)
+            return False
+    except Exception:
+        logger.debug("Recording settings check failed; skipping voice recording", exc_info=True)
+        return False
+    return await store_recording(recording)
 
 
 def _set_latency(result: dict[str, Any], received_at: float | None) -> None:
@@ -952,6 +1129,11 @@ class PendingSpeakerLookup:
             )
         async with _optional_span(self._span_collector, "speaker_id", agent_id="orchestrator") as span:
             span["metadata"].update(metadata)
+        turn_id = result.get("voice_turn_id")
+        trace_id = getattr(self._span_collector, "trace_id", None)
+        if turn_id and isinstance(trace_id, str) and trace_id:
+            # A recorded turn links to the trace of the conversation turn it belongs to.
+            self._service.link_recording_trace(str(turn_id), trace_id)
 
 
 def start_speaker_lookup(task: Any, conversation_id: str, span_collector: Any) -> PendingSpeakerLookup | None:
