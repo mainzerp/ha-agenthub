@@ -61,4 +61,4 @@ Pillow>=13.0.0
 certifi>=2026.10.19
 python-dotenv>=1.2.4
 # torch runtime dependency (PYSEC-2026-3447 fixed in 83.0.0, GHSA-xmj3-9gf7-h52w in 84.1.0)
-setuptools>=84.1.0
+setuptools>=84.2.1
