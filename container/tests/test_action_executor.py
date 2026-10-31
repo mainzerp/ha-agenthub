@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import sys
 from unittest.mock import AsyncMock, MagicMock
 
@@ -835,6 +836,61 @@ class TestMusicExecutor:
             "media_player.ma_kitchen",
             {"media_id": "jazz", "media_type": "radio", "radio_mode": True},
         )
+
+    @staticmethod
+    def _hanging_call_service(ha_client):
+        async def _hang(*args, **kwargs):
+            await asyncio.sleep(30)
+
+        ha_client.call_service = AsyncMock(side_effect=_hang)
+
+    @pytest.mark.asyncio
+    async def test_play_media_stalled_and_idle_reports_failure(
+        self, ha_client, entity_matcher, entity_index, monkeypatch
+    ):
+        monkeypatch.setattr("app.agents.music_executor._PLAY_MEDIA_TIMEOUT_SEC", 0.05)
+        self._hanging_call_service(ha_client)
+        ha_client.get_state = AsyncMock(return_value={"state": "idle", "attributes": {}})
+        action = {"action": "play_media", "entity": "kitchen speaker", "parameters": {"media_id": "x"}}
+
+        result = await execute_music_action(action, ha_client, entity_index, entity_matcher)
+
+        assert result["success"] is False
+        assert result["cacheable"] is False
+        assert "has not started playback" in result["speech"]
+
+    @pytest.mark.asyncio
+    async def test_play_media_stalled_but_new_item_playing_is_success(
+        self, ha_client, entity_matcher, entity_index, monkeypatch
+    ):
+        monkeypatch.setattr("app.agents.music_executor._PLAY_MEDIA_TIMEOUT_SEC", 0.05)
+        self._hanging_call_service(ha_client)
+        ha_client.get_state = AsyncMock(
+            side_effect=[
+                {"state": "idle", "attributes": {}},
+                {"state": "playing", "attributes": {"media_content_id": "library://radio/1"}},
+            ]
+        )
+        action = {"action": "play_media", "entity": "kitchen speaker", "parameters": {"media_id": "x"}}
+
+        result = await execute_music_action(action, ha_client, entity_index, entity_matcher)
+
+        assert result["success"] is True
+        assert result["new_state"] == "playing"
+
+    @pytest.mark.asyncio
+    async def test_play_media_stalled_with_old_item_still_playing_is_failure(
+        self, ha_client, entity_matcher, entity_index, monkeypatch
+    ):
+        monkeypatch.setattr("app.agents.music_executor._PLAY_MEDIA_TIMEOUT_SEC", 0.05)
+        self._hanging_call_service(ha_client)
+        playing = {"state": "playing", "attributes": {"media_content_id": "library://track/9"}}
+        ha_client.get_state = AsyncMock(return_value=playing)
+        action = {"action": "play_media", "entity": "kitchen speaker", "parameters": {"media_id": "x"}}
+
+        result = await execute_music_action(action, ha_client, entity_index, entity_matcher)
+
+        assert result["success"] is False
 
     @pytest.mark.asyncio
     async def test_execute_volume_set(self, ha_client, entity_matcher, entity_index):

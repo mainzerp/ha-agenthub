@@ -7,6 +7,7 @@ import logging
 from typing import Any
 
 from app.agents.action_executor import (
+    VERIFY_REACHED,
     build_verified_speech,
     call_service_with_verification,
     resolve_and_validate_entity,
@@ -59,6 +60,10 @@ _REQUIRED_FEATURES: dict[str, tuple[int, str]] = {
     "volume_up": (_FEATURE_VOLUME_SET | _FEATURE_VOLUME_STEP, "changing the volume"),
     "volume_down": (_FEATURE_VOLUME_SET | _FEATURE_VOLUME_STEP, "changing the volume"),
 }
+
+# Deadline for ``music_assistant.play_media``; it must stay below the agent
+# dispatch timeout so the player state can still be checked and spoken.
+_PLAY_MEDIA_TIMEOUT_SEC = 6.0
 
 _ALLOWED_DOMAINS: frozenset[str] = frozenset({"media_player"})
 
@@ -163,6 +168,50 @@ def _format_search_results(results: Any) -> str:
             lines.append(f"{i}. {item}")
 
     return "I found: " + "; ".join(lines) + "."
+
+
+async def _read_player_state(ha_client: Any, entity_id: str) -> dict | None:
+    """Current state object of a player, or None when it cannot be read."""
+    try:
+        state = await ha_client.get_state(entity_id)
+    except Exception:
+        logger.debug("Player state read failed for %s", entity_id, exc_info=True)
+        return None
+    return state if isinstance(state, dict) else None
+
+
+def _playing_media_id(state: dict | None) -> tuple[bool, Any]:
+    """``(is_playing, media_content_id)`` of a player state object."""
+    if state is None:
+        return False, None
+    attrs = state.get("attributes")
+    media_id = attrs.get("media_content_id") if isinstance(attrs, dict) else None
+    return state.get("state") == "playing", media_id
+
+
+async def _verify_stalled_play_media(ha_client: Any, entity_id: str, before: dict | None) -> dict | None:
+    """Verify result for a play_media call that outlived its deadline, else None.
+
+    Music Assistant blocks ``music_assistant.play_media`` until its source
+    resolves (a rate-limited provider can take over a minute). The call is
+    only a success when the player is playing a different item than before
+    it; a player still idle, or still on the old item, means nothing started.
+    """
+    now_playing, now_media = _playing_media_id(await _read_player_state(ha_client, entity_id))
+    was_playing, was_media = _playing_media_id(before)
+    if not now_playing or (was_playing and now_media == was_media):
+        return None
+    return {
+        "success": True,
+        "call_succeeded": True,
+        "outcome": VERIFY_REACHED,
+        "entity_id": entity_id,
+        "call_result": None,
+        "observed_state": "playing",
+        "verified": True,
+        "cacheable": False,
+        "error": None,
+    }
 
 
 def _relative_volume_level(state_resp: Any, delta: float) -> float | None:
@@ -321,7 +370,7 @@ async def execute_music_action(
         }
 
     expected_state = _EXPECTED_STATE_BY_ACTION.get(action_name)
-    verify = await call_service_with_verification(
+    verify_call = call_service_with_verification(
         ha_client,
         domain,
         service,
@@ -329,6 +378,29 @@ async def execute_music_action(
         service_data=service_data,
         expected_state=expected_state,
     )
+    if action_name == "play_media":
+        before = await _read_player_state(ha_client, entity_id)
+        try:
+            verify = await asyncio.wait_for(verify_call, timeout=_PLAY_MEDIA_TIMEOUT_SEC)
+        except TimeoutError:
+            logger.warning(
+                "music_assistant.play_media on %s did not return within %.1fs", entity_id, _PLAY_MEDIA_TIMEOUT_SEC
+            )
+            stalled = await _verify_stalled_play_media(ha_client, entity_id, before)
+            if stalled is None:
+                return {
+                    "success": False,
+                    "entity_id": entity_id,
+                    "new_state": None,
+                    "speech": (
+                        f"Music Assistant has not started playback on {friendly_name}. "
+                        "The music source may be slow, rate limited or unavailable."
+                    ),
+                    "cacheable": False,
+                }
+            verify = stalled
+    else:
+        verify = await verify_call
     if not verify["success"]:
         return {
             "success": False,
