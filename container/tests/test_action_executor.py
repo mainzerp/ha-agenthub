@@ -893,6 +893,28 @@ class TestMusicExecutor:
         assert result["success"] is False
 
     @pytest.mark.asyncio
+    async def test_execute_media_stop(self, ha_client, entity_matcher, entity_index):
+        action = {"action": "media_stop", "entity": "kitchen speaker", "parameters": {}}
+        result = await execute_music_action(action, ha_client, entity_index, entity_matcher)
+
+        assert result["success"] is True
+        ha_client.call_service.assert_awaited_once_with("media_player", "media_stop", "media_player.ma_kitchen", None)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("action_name", ["media_pause", "media_stop", "play_media", "volume_up"])
+    async def test_unavailable_player_is_not_commanded(self, action_name, ha_client, entity_matcher, entity_index):
+        ha_client.get_state = AsyncMock(return_value={"state": "unavailable", "attributes": {}})
+        action = {"action": action_name, "entity": "kitchen speaker", "parameters": {"media_id": "x"}}
+
+        result = await execute_music_action(action, ha_client, entity_index, entity_matcher)
+
+        assert result["success"] is False
+        assert result["new_state"] == "unavailable"
+        assert result["cacheable"] is False
+        assert "unavailable" in result["speech"]
+        ha_client.call_service.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_execute_volume_set(self, ha_client, entity_matcher, entity_index):
         action = {"action": "volume_set", "entity": "kitchen speaker", "parameters": {"volume_level": 0.5}}
         result = await execute_music_action(action, ha_client, entity_index, entity_matcher)

@@ -41,18 +41,22 @@ Live pipeline in board format — headings are columns, cards are
 
 ## Testing
 
-- Music: play_media deadline and honest failure speech · priority: P1 · area: agents
+- Music: play_media deadline, media_stop, unavailable players · priority: P1 · area: agents
   Outcome: `music_assistant.play_media` is cut off after 6 s (it blocks while
   Music Assistant resolves a source); the executor then reads the player and
   reports "Music Assistant has not started playback" unless a different item
   is playing, instead of the dispatch timeout and a vague "sent" answer.
+  Also: `media_stop` action (a "stop" request no longer ends in a pause
+  offer) and a command to an `unavailable` player is refused with "is
+  unavailable right now" instead of "sent" (trace e6e90987c0654e78).
   Trigger: trace 7ba480540f6944ae (Spotify rate limit / librespot audio key
   errors made every Spotify play fail after 60-80 s; RPR1 radio on the same
   Echo plays in 1.6 s).
-  Passed: ruff, music executor tests incl. 3 new stalled-call cases. Not run
-  against the live instance.
-  Needs user verification: after deploy, ask for Spotify music while Spotify
-  is failing and expect the spoken failure within ~8 s; RPR1 still plays.
+  Passed: ruff, music executor tests incl. new stalled-call, stop and
+  unavailable-player cases. Not run against the live instance.
+  Needs user verification: after deploy, say "stop" while music plays and
+  expect it to stop; with Spotify failing expect the spoken failure within
+  ~8 s; RPR1 still plays.
 
 - Voice Profiles: assign recorded voice turns to a profile · priority: P1 · area: voice
   Outcome: with opt-in `voice.speaker_id.keep_audio`, every confirmed voice

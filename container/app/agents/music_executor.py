@@ -28,6 +28,7 @@ _MUSIC_ACTION_MAP: dict[str, tuple[str, str]] = {
     "volume_down": ("media_player", "volume_down"),
     "media_play": ("media_player", "media_play"),
     "media_pause": ("media_player", "media_pause"),
+    "media_stop": ("media_player", "media_stop"),
     "media_next_track": ("media_player", "media_next_track"),
     "media_previous_track": ("media_player", "media_previous_track"),
     "shuffle_set": ("media_player", "shuffle_set"),
@@ -39,6 +40,7 @@ _MUSIC_ACTION_MAP: dict[str, tuple[str, str]] = {
 _EXPECTED_STATE_BY_ACTION: dict[str, str] = {
     "media_play": "playing",
     "media_pause": "paused",
+    "media_stop": "idle",
     "play_media": "playing",
 }
 
@@ -333,16 +335,19 @@ async def execute_music_action(
             "cacheable": False,
         }
 
-    state_resp: Any = None
     relative = False
     params = action.get("parameters") or {}
-    needs_state = action_name in _REQUIRED_FEATURES
-    if needs_state:
-        try:
-            state_resp = await ha_client.get_state(entity_id)
-        except Exception:
-            logger.debug("Pre-action state read failed for %s", entity_id, exc_info=True)
-            state_resp = None
+    state_resp = await _read_player_state(ha_client, entity_id)
+    if isinstance(state_resp, dict) and state_resp.get("state") == "unavailable":
+        # A command to an unavailable player can never be confirmed; say so
+        # instead of reporting it as sent.
+        return {
+            "success": False,
+            "entity_id": entity_id,
+            "new_state": "unavailable",
+            "speech": f"{friendly_name} is unavailable right now.",
+            "cacheable": False,
+        }
 
     if action_name == "volume_set" and "volume_level" not in service_data and isinstance(params, dict):
         delta = params.get("volume_delta")
@@ -379,7 +384,7 @@ async def execute_music_action(
         expected_state=expected_state,
     )
     if action_name == "play_media":
-        before = await _read_player_state(ha_client, entity_id)
+        before = state_resp
         try:
             verify = await asyncio.wait_for(verify_call, timeout=_PLAY_MEDIA_TIMEOUT_SEC)
         except TimeoutError:
