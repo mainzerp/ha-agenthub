@@ -657,6 +657,15 @@ Live pipeline in board format — headings are columns, cards are
 
 ## Done
 
+- Timer and alarm ring sounds · priority: P2 · area: agents
+  Outcome: timers play a three-chime sound (about 6 s) and alarms their own
+  four-beep sound (about 7.5 s) before the spoken announcement, as the
+  satellite's pre-announce sound (media-player fallback: chime). Files live in
+  `dashboard/static/sounds/` (`scripts/gen_ring_sounds.py`). Active only with
+  `sound_base_url` set in the notification profile; otherwise the satellite's
+  own announce sound stays.
+  Verified by user on the live instance (2026-11-01): timer and alarm sounds play on the Echo Show 8 and the message follows.
+
 - Music: play_media deadline, media_stop, unavailable players · priority: P1 · area: agents
   Outcome: `music_assistant.play_media` is cut off after 6 s (it blocks while
   Music Assistant resolves a source); the executor then polls the player for
