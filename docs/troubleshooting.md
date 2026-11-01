@@ -324,6 +324,16 @@ Symptom: while one person enrolls alone, most samples are rejected (the satellit
 
 **Fix:** Since 1.19.0, the orchestrator dispatches LLM clarification turns when entity resolution fails. This is expected behavior. If you prefer the old silent failure mode, there is no toggle; ensure entity aliases and visibility rules are correct to minimize not-found cases. The matcher tolerates underscore-joined queries (e.g. `jalousie_mitte`) and close singular/plural name variants; adding an HA alias remains the reliable fix for names that differ more.
 
+## Camera Not Shown on the TV
+
+**Symptoms:** "Show the doorbell camera on the TV" answers with a refusal or "could not start the stream".
+
+**Steps to resolve:**
+
+1. Read the answer (or the `ha_action` span's `result_speech` in the trace): it names the reason the media agent found, such as an unavailable or audio-only target, a player without `PLAY_MEDIA`, a camera without a stream, or a TV that did not report being on within about 4 seconds.
+2. "Could not start the stream": Home Assistant rejected `camera.play_stream`. Check that the `stream` integration is set up, that the camera plays in the HA frontend, and run `camera.play_stream` with the same camera and player in **Developer tools > Actions**; the HA log shows the player's error. Not every player that reports `PLAY_MEDIA` accepts an HLS stream URL.
+3. "Could not find a camera": the camera must be visible to `media-agent` (default rule `domain_include camera`, added by migration 55 only where the agent already had `domain_include` rules). Check the media agent's visibility rules on the **Agents** page.
+
 ## Action Needs a Confirmation / Blocked from Automations
 
 **Symptoms:** "unlock the front door", "disarm the alarm", "arm the alarm" or

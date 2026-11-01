@@ -25,7 +25,7 @@ they appear verbatim in the user's own language.
   NO  "Turn on the TV" → media-agent, NOT music-agent
   NO  "Stop the music" → music-agent, NOT cancel-interaction
 
-- media-agent (TVs, speakers, casting, media players):
+- media-agent (TVs, speakers, casting, media players, camera picture on a TV or screen):
   YES "Turn on the living room TV" → media-agent: turn on living room TV
   NO  "Play a playlist" → music-agent, NOT media-agent
 
@@ -52,6 +52,7 @@ they appear verbatim in the user's own language.
 - security-agent (locks, alarms, cameras, door/window/motion sensors):
   YES "Is the front door locked?" → security-agent: check front door lock
   NO  "Close the office blind" → cover-agent, NOT security-agent
+  NO  "Show the doorbell camera on the TV" → media-agent, NOT security-agent
 
 - automation-agent (Home Assistant automations):
   YES "Disable the night setback automation" → automation-agent: disable night setback automation

@@ -25,7 +25,7 @@ they appear verbatim in the user's own language.
   NO  "Accendi la TV" → media-agent, NOT music-agent
   NO  "Ferma la musica" → music-agent, NOT cancel-interaction
 
-- media-agent (TVs, speakers, casting, media players):
+- media-agent (TVs, speakers, casting, media players, camera picture on a TV or screen):
   YES "Accendi la TV del soggiorno" → media-agent: accendere la TV del soggiorno
   NO  "Riproduci una playlist" → music-agent, NOT media-agent
 
@@ -52,6 +52,7 @@ they appear verbatim in the user's own language.
 - security-agent (locks, alarms, cameras, door/window/motion sensors):
   YES "La porta d'ingresso è chiusa a chiave?" → security-agent: controllare la serratura della porta d'ingresso
   NO  "Chiudi la tapparella dell'ufficio" → cover-agent, NOT security-agent
+  NO  "Mostra la telecamera del campanello sulla TV" → media-agent, NOT security-agent
 
 - automation-agent (Home Assistant automations):
   YES "Disattiva l'automazione notte" → automation-agent: disattivare l'automazione notte

@@ -1166,6 +1166,27 @@ async def _migrate_to_53(db: aiosqlite.Connection) -> None:
     await db.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (53)")
 
 
+async def _migrate_to_55(db: aiosqlite.Connection) -> None:
+    # Migration 55: media-agent shows a camera's live picture on a TV
+    # (``play_camera`` -> ``camera.play_stream``), so the camera must be
+    # visible to it. Same guard as migration 46: an agent without any
+    # ``domain_include`` rule already sees every domain (adding one would
+    # restrict it), and a domain the admin excluded stays excluded.
+    cursor = await db.execute(
+        "SELECT rule_type, rule_value FROM entity_visibility_rules WHERE agent_id = ?",
+        ("media-agent",),
+    )
+    rows = await cursor.fetchall()
+    has_domain_include = any(row[0] == "domain_include" for row in rows)
+    excluded = {row[1] for row in rows if row[0] == "domain_exclude"}
+    if has_domain_include and "camera" not in excluded:
+        await db.execute(
+            "INSERT OR IGNORE INTO entity_visibility_rules (agent_id, rule_type, rule_value) VALUES (?, ?, ?)",
+            ("media-agent", "domain_include", "camera"),
+        )
+    await db.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (55)")
+
+
 # Ordered registry of (version, migration_callable). Each migration records
 # its own version marker. Applied in ascending order for versions greater
 # than the current schema version.
@@ -1222,6 +1243,7 @@ MIGRATIONS: list[tuple[int, Callable[[aiosqlite.Connection], Awaitable[None]]]] 
     (51, _migrate_to_51),
     (52, _migrate_to_52),
     (53, _migrate_to_53),
+    (55, _migrate_to_55),
 ]
 
 
