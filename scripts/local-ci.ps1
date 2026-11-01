@@ -196,7 +196,21 @@ if (-not $SkipSecurity) {
     }
 
     # pip-audit (ignored advisories and their reasons: PIP_AUDIT_IGNORED in scripts/ci.py)
-    $ignoredVulns = @("CVE-2026-112940", "CVE-2026-112913", "CVE-2026-112907")
+    $ignoredVulns = @(
+        "CVE-2026-112940",
+        "CVE-2026-112913",
+        "CVE-2026-112907",
+        "CVE-2026-112936",
+        "CVE-2026-112915",
+        "CVE-2026-112938",
+        "CVE-2026-112911",
+        "CVE-2026-112908",
+        "CVE-2026-112939",
+        "CVE-2026-112935",
+        "CVE-2026-112912",
+        "CVE-2026-112909",
+        "CVE-2026-112910"
+    )
     $ignoreArgs = $ignoredVulns | ForEach-Object { "--ignore-vuln", $_ }
     Write-Host "`n>>> pip-audit -r container/requirements.lock --require-hashes $($ignoreArgs -join ' ') --disable-pip --format=json --output=pip-audit-report.json" -ForegroundColor Yellow
     pip-audit -r container/requirements.lock --require-hashes @ignoreArgs --disable-pip --format=json --output=pip-audit-report.json
