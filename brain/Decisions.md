@@ -663,3 +663,17 @@ prompts live in `container/app/prompts/`, `ctx.agent_registry` not
 - **Transcript link falls back to the conversation's next trace within 60 s**
   when the speaker lookup timed out or never ran (heuristic, marked
   `trace_match=time_window`). Profile delete offers `delete_recordings`.
+
+## 2026-11-01 — pip-audit: ten more filelock advisories ignored
+
+- **Ten further filelock 3.32.7 advisories (published 2026-10-28, medium/low,
+  fixed in 4.2.1) are ignored with reasons in `PIP_AUDIT_IGNORED`
+  (`scripts/ci.py`)** (user decision). Same blocker as the entry above:
+  every litellm release (1.106.6 checked) requires `filelock<4.0`. Not
+  exposed: `ReadWriteLock`, `SoftReadWriteLock` and `StrictSoftFileLock` are
+  not used by any installed dependency (huggingface-hub uses `FileLock` with a
+  `SoftFileLock` fallback); the `SoftFileLock` and `UnixFileLock` cases need a
+  second local user with write access to the lock directory (single-user
+  container); one affects Windows only. The Trivy gate fails only HIGH and
+  CRITICAL, so `.trivyignore` is unchanged. Drop the entries once litellm
+  lifts the cap.
