@@ -7,6 +7,7 @@ import logging
 import re
 from abc import ABC, abstractmethod
 from collections.abc import AsyncGenerator, Iterable
+from datetime import datetime
 from pathlib import Path
 
 from app.agents.personalization import requester_identity
@@ -232,6 +233,21 @@ _DISPATCH_BUDGET_MARGIN_SEC = 0.5
 _MIN_DISPATCH_BUDGET_SEC = 1.0
 
 
+_WEEKDAY_NAMES = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
+
+
+def _weekday_suffix(local_time: str) -> str:
+    """Return `` (Friday)`` for a ``YYYY-MM-DD ...`` local time, else an empty string.
+
+    LLMs cannot reliably derive the weekday from a date, yet "this week",
+    "Friday" and "next Monday" need it to resolve to real dates.
+    """
+    try:
+        return f" ({_WEEKDAY_NAMES[datetime.strptime(local_time[:10], '%Y-%m-%d').weekday()]})"
+    except ValueError:
+        return ""
+
+
 class BaseAgent(ABC):
     """Abstract base class for all specialized agents.
 
@@ -384,7 +400,7 @@ class BaseAgent(ABC):
             return ""
         parts: list[str] = []
         if context.local_time:
-            parts.append(f"Current local time: {context.local_time}")
+            parts.append(f"Current local time: {context.local_time}{_weekday_suffix(context.local_time)}")
             if context.timezone and context.timezone != "UTC":
                 parts.append(f"Timezone: {context.timezone}")
             if context.location_name:
