@@ -337,6 +337,36 @@ _NO_CANDIDATES_SCOPED_BLOCK = (
     "{entity_free_actions}."
 )
 
+# A reply that ends in "?" is a clarifying question. One that continues after
+# the question ("Which calendar do you mean? Options: ...") still counts when
+# the question leads the reply and the whole reply stays short; an earlier
+# full sentence means an answer that merely contains a question mark.
+_CLARIFICATION_MAX_CHARS = 400
+_SENTENCE_END_RE = re.compile(r"[.!]\s")
+
+
+def _is_clarifying_question(speech: str) -> bool:
+    """Return True when ``speech`` asks the user something instead of answering."""
+    text = speech.strip()
+    if text.endswith("?"):
+        return True
+    head, mark, _tail = text.partition("?")
+    return bool(mark) and len(text) <= _CLARIFICATION_MAX_CHARS and not _SENTENCE_END_RE.search(head)
+
+
+# Non-empty recall for an agent whose actions need no candidate (timer, lists,
+# calendar: ``entity_actions`` declared empty). The recalled entities are
+# optional context: the closed-contract "none fits -> ask" instruction would
+# make the LLM ask which calendar/list the user means instead of emitting the
+# entity-free action its own prompt requires. English-only per Directive 13.
+_OPTIONAL_CANDIDATES_NOTE = (
+    "No action in your prompt requires choosing one of these entities. "
+    "Follow the output format documented above and always output the JSON action block when an action is "
+    "determinable. Fill the 'entity' field only when the user names one of these entities (copy its "
+    "entity_id or friendly name verbatim); otherwise omit it. "
+    "NEVER ask the user to pick from this list and NEVER answer with this list instead of the JSON action block."
+)
+
 # Agent-side keyword recall (ENTITY_RESOLUTION_REWORK): domains with at most
 # this many visible entities skip filtering -- the whole visible list is
 # injected. Larger domains are token-filtered down to the top N.
@@ -559,9 +589,21 @@ class ActionableAgent(BaseAgent):
             )
             state = sanitize_untrusted_text(getattr(entry, "state", None) or "-", UNTRUSTED_STATE_MAX_CHARS)
             candidate_lines.append(f"{idx}. {entity_id} — {friendly_name} ({state})")
-        lines = ["Candidate entities (choose from this list only):", wrap_untrusted_data("\n".join(candidate_lines))]
+        # An agent that declares no entity-requiring action treats the recall
+        # as optional context, not as a closed contract (see
+        # ``_OPTIONAL_CANDIDATES_NOTE``).
+        optional_candidates = self._entity_actions is not None and not self._entity_actions
+        header = (
+            "Available entities (optional context):"
+            if optional_candidates
+            else "Candidate entities (choose from this list only):"
+        )
+        lines = [header, wrap_untrusted_data("\n".join(candidate_lines))]
         lines.append(UNTRUSTED_DATA_NOTE)
         lines.append("")
+        if optional_candidates:
+            lines.append(_OPTIONAL_CANDIDATES_NOTE)
+            return "\n".join(lines), recalled
         lines.append(
             "You MUST emit the 'entity_id' field verbatim from this candidate list in the JSON action block. "
             "An entity_id that is not in this list is rejected and the action will not run. "
@@ -1053,9 +1095,8 @@ class ActionableAgent(BaseAgent):
         """Return the fallback result when the LLM response has no valid action.
 
         FOLLOW_UP_QUESTION: when the stripped fallback speech is a
-        clarifying question (right-trimmed text ends with ``?``), request a
-        voice follow-up so the user's answer is re-dispatched -- the same
-        spoken-question heuristic as cache safeguard R-A. Normal prose
+        clarifying question (see ``_is_clarifying_question``), request a
+        voice follow-up so the user's answer is re-dispatched. Normal prose
         answers keep ``voice_followup=False``.
         """
         clarification = self._parse_miss_clarification(task, response)
@@ -1073,8 +1114,8 @@ class ActionableAgent(BaseAgent):
         Two cases ask the user instead of failing: an action object that
         failed validation (nothing executed, so the surrounding prose -- which
         may claim success -- is replaced by a localized clarification), and a
-        natural-language clarifying question from the LLM (right-trimmed text
-        ends with ``?``), passed through with ``voice_followup``. Agents that
+        natural-language clarifying question from the LLM (the text
+        is a leading question, see ``_is_clarifying_question``), passed through with ``voice_followup``. Agents that
         otherwise answer a parse miss with ``PARSE_ERROR`` call this first so
         a question such as "for how long?" still reaches the user.
         """
@@ -1096,7 +1137,7 @@ class ActionableAgent(BaseAgent):
                 metadata={"parse_miss": "invalid_action", "speech_source": SPEECH_SOURCE_TEMPLATE},
             )
         speech = strip_json_blocks(response)
-        if speech.rstrip().endswith("?"):
+        if _is_clarifying_question(speech):
             return TaskResult(speech=speech, voice_followup=True, metadata={"speech_source": SPEECH_SOURCE_LLM})
         return None
 

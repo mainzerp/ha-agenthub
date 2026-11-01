@@ -8,6 +8,7 @@ from app.agents.decorator import agent
 from app.agents.personalization import personalization_user_id
 from app.agents.user_identity import UserIdentityResolver
 from app.models.agent import AgentCard, AgentErrorCode, DispatchTask, TaskResult
+from app.security.redaction import redact_sensitive_text
 
 logger = logging.getLogger(__name__)
 
@@ -86,10 +87,21 @@ class CalendarAgent(ActionableAgent):
         clarification = self._parse_miss_clarification(task, response)
         if clarification is not None:
             return clarification
-        return self._error_result(
-            AgentErrorCode.PARSE_ERROR,
-            "I could not understand the calendar command. Please try again.",
+        # Neither an action nor a question: keep the raw reply debuggable (the
+        # llm_call span carries a redacted copy too) and tell the user what to
+        # add instead of a bare "try again".
+        logger.warning(
+            "Calendar parse miss for task %r; raw LLM output: %s",
+            redact_sensitive_text((task.description or "")[:200]),
+            redact_sensitive_text((response or "")[:500]),
         )
+        result = self._error_result(
+            AgentErrorCode.PARSE_ERROR,
+            "I could not turn that into a calendar action. Please say which day or time range you mean, "
+            "or the event title and when it takes place.",
+        )
+        result.metadata = {**(result.metadata or {}), "parse_miss": "no_action"}
+        return result
 
     @property
     def agent_card(self) -> AgentCard:
