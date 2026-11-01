@@ -6,6 +6,8 @@
 
 (tracking changes since 3.15.0)
 
+- Deps (container image): ten more filelock 3.32.7 advisories published 2026-10-28 (fixed in 4.2.1, still blocked by `litellm` requiring `filelock<4.0`) are ignored with reasons in `PIP_AUDIT_IGNORED` (`scripts/ci.py`, mirrored in pre-commit and `local-ci.ps1`). They affect `ReadWriteLock` / `StrictSoftFileLock` (unused), `SoftFileLock` and `UnixFileLock` (need a second local user) and Windows locks (the image runs on Linux). The security gate failed for every PR since 2026-10-28 without them.
+
 ## Version History
 
 ### 3.15.0 (MINOR) -- recorded voice turns as an enrollment source, dependency advisories
