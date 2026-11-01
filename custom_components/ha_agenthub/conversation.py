@@ -414,7 +414,7 @@ class HaAgentHubConversationEntity(
             async_report_auth_ok(self._entry)
             logger.info("Connected to HA-AgentHub container at %s", self._url)
             return True
-        except (aiohttp.ClientError, asyncio.TimeoutError, OSError) as err:
+        except (TimeoutError, aiohttp.ClientError, OSError) as err:
             # A rejected key fails the WebSocket handshake with 401/403
             # (aiohttp ``WSServerHandshakeError`` carries the HTTP status).
             if getattr(err, "status", None) in {401, 403}:
@@ -559,7 +559,7 @@ class HaAgentHubConversationEntity(
         """Wait for a reconnect request, but time out after ``timeout`` seconds."""
         try:
             await asyncio.wait_for(self._reconnect_requested.wait(), timeout=timeout)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             pass
         else:
             self._reconnect_requested.clear()
@@ -593,7 +593,7 @@ class HaAgentHubConversationEntity(
                     await asyncio.wait_for(ws.ping(), timeout=2.0)
                     self._ws_last_active = time.monotonic()
                     return True
-                except (asyncio.TimeoutError, aiohttp.ClientError, OSError):
+                except (TimeoutError, aiohttp.ClientError, OSError):
                     logger.warning("WebSocket idle ping failed, reconnecting")
             await self._disconnect_ws_locked()
         connected = await self._connect_ws_locked()
@@ -781,7 +781,7 @@ class HaAgentHubConversationEntity(
                         turn_ws = await self._ws_send_locked(
                             user_input, conversation_id
                         )
-                    except (aiohttp.ClientError, asyncio.TimeoutError, OSError):
+                    except (TimeoutError, aiohttp.ClientError, OSError):
                         logger.warning("WebSocket send failed, falling back to REST")
                         await self._disconnect_ws_locked()
             if turn_ws is not None:
@@ -812,7 +812,7 @@ class HaAgentHubConversationEntity(
                         "WebSocket closed before the container answered; "
                         "retrying the turn over REST"
                     )
-        except (aiohttp.ClientError, asyncio.TimeoutError, OSError):
+        except (TimeoutError, aiohttp.ClientError, OSError):
             logger.warning(
                 "Unexpected WS dispatch failure, falling back to REST", exc_info=True
             )
@@ -1091,7 +1091,7 @@ class HaAgentHubConversationEntity(
             )
         except _WsNotDeliveredError:
             raise
-        except asyncio.TimeoutError as err:
+        except TimeoutError as err:
             raise _WsDroppedAfterSendError(timed_out=True) from err
         except aiohttp.ClientError as err:
             raise _WsDroppedAfterSendError() from err
@@ -1181,7 +1181,7 @@ class HaAgentHubConversationEntity(
                     sanitized=bool(data.get("sanitized", False)),
                     continue_conversation=bool(data.get("voice_followup", False)),
                 )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             logger.warning(
                 "ha-agenthub: REST conversation request timed out after %.1fs", timeout
             )

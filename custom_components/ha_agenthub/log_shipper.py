@@ -181,7 +181,7 @@ class LogShipper:
                     self._backoff = self._next_backoff()
             except asyncio.CancelledError:
                 raise
-            except (aiohttp.ClientError, asyncio.TimeoutError, OSError):
+            except (TimeoutError, aiohttp.ClientError, OSError):
                 # The drained batch was already dropped and counted inside
                 # _flush_once; only the backoff matters here.
                 self._backoff = self._next_backoff()
@@ -219,7 +219,7 @@ class LogShipper:
                     resp.status,
                     len(batch),
                 )
-        except (aiohttp.ClientError, asyncio.TimeoutError, OSError):
+        except (TimeoutError, aiohttp.ClientError, OSError):
             self._dropped_batches += 1
             self._dropped_records += len(batch)
             raise
