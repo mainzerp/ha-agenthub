@@ -41,20 +41,6 @@ Live pipeline in board format — headings are columns, cards are
 
 ## Testing
 
-- Timer and alarm ring sounds · priority: P2 · area: agents
-  Outcome: timers play a three-chime sound (about 6 s) and alarms their own
-  four-beep sound (about 7.5 s) before the spoken announcement, as the
-  satellite's pre-announce sound (media-player fallback: chime). Files live in
-  `dashboard/static/sounds/` (`scripts/gen_ring_sounds.py`). Active only with
-  `sound_base_url` set in the notification profile; otherwise the satellite's
-  own announce sound stays.
-  Passed: ruff, notification tests incl. new ring-sound cases. Not played on a
-  real satellite yet.
-  Needs user verification: set `sound_base_url` (for example
-  `http://192.168.120.200:6081`), let a timer and an alarm ring on the Echo
-  Show 8; check the sounds play and the message follows (also for an unnamed
-  timer, where only the announce sound was heard so far).
-
 - Voice Profiles: assign recorded voice turns to a profile · priority: P1 · area: voice
   Outcome: with opt-in `voice.speaker_id.keep_audio`, every confirmed voice
   turn with an embedding is kept 30 days (WAV + embedding + result, linked to
@@ -670,6 +656,15 @@ Live pipeline in board format — headings are columns, cards are
   Shipped in v2.5.1 (https://github.com/mainzerp/ha-agenthub/releases/tag/v2.5.1). Phase 3 (docs drift) done. Left as is by decision: MCP add-server returns 201 on failed connect.
 
 ## Done
+
+- Timer and alarm ring sounds · priority: P2 · area: agents
+  Outcome: timers play a three-chime sound (about 6 s) and alarms their own
+  four-beep sound (about 7.5 s) before the spoken announcement, as the
+  satellite's pre-announce sound (media-player fallback: chime). Files live in
+  `dashboard/static/sounds/` (`scripts/gen_ring_sounds.py`). Active only with
+  `sound_base_url` set in the notification profile; otherwise the satellite's
+  own announce sound stays.
+  Verified by user on the live instance (2026-11-01): timer and alarm sounds play on the Echo Show 8 and the message follows.
 
 ## Idea Bank
 
