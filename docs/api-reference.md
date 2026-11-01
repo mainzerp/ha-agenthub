@@ -994,6 +994,7 @@ Auth: admin session. See also `/api/admin/agents` (above) and
 | Method | Path | Purpose |
 |--------|------|---------|
 | GET | `/api/admin/timers` | List active and scheduled timers. |
+| GET | `/api/admin/timers/history` | Finished timers and alarms (`fired`, `expired`, `cancelled`) of the last 30 days, newest first. Query `limit` 1-500 (default 100). Returns `{"history": [...], "retention_days": 30}`; each entry has `id`, `logical_name`, `kind`, `state`, `duration_seconds`, `fires_at`, `ended_at`, `origin_label`. |
 | GET | `/api/admin/timers/recently-expired` | Compatibility endpoint (returns empty list). |
 | GET | `/api/admin/timers/satellites` | List timer satellite devices. |
 | PATCH | `/api/admin/timers/{timer_id}` | Update a timer. |

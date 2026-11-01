@@ -99,3 +99,65 @@ class TestGetRecentlyExpiredTimers:
         data = resp.json()
         assert "recently_expired" in data
         assert data["recently_expired"] == []
+
+
+@pytest.mark.asyncio
+class TestGetTimerHistory:
+    async def test_history_returns_finished_rows(self, db_repository):
+        app = _build_app()
+        scheduler = MagicMock()
+        scheduler.history = AsyncMock(
+            return_value=[
+                {
+                    "id": "t1",
+                    "logical_name": "pasta",
+                    "kind": "plain",
+                    "state": "fired",
+                    "duration_seconds": 600,
+                    "fires_at": 1000,
+                    "ended_at": 1001,
+                    "origin_device_id": None,
+                    "origin_area": "kitchen",
+                }
+            ]
+        )
+        app.state.timer_scheduler = scheduler
+        app.state.ha_client = None
+
+        async for client in _client_for(app):
+            resp = await client.get("/api/admin/timers/history?limit=10")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["retention_days"] == 30
+        assert data["history"] == [
+            {
+                "id": "t1",
+                "logical_name": "pasta",
+                "kind": "plain",
+                "state": "fired",
+                "duration_seconds": 600,
+                "fires_at": 1000,
+                "ended_at": 1001,
+                "origin_label": "kitchen",
+            }
+        ]
+        scheduler.history.assert_awaited_once_with(limit=10)
+
+    async def test_history_empty_without_scheduler(self, db_repository):
+        app = _build_app()
+        app.state.timer_scheduler = None
+
+        async for client in _client_for(app):
+            resp = await client.get("/api/admin/timers/history")
+
+        assert resp.status_code == 200
+        assert resp.json() == {"history": [], "retention_days": 30}
+
+    async def test_history_rejects_out_of_range_limit(self, db_repository):
+        app = _build_app()
+
+        async for client in _client_for(app):
+            resp = await client.get("/api/admin/timers/history?limit=0")
+
+        assert resp.status_code == 422

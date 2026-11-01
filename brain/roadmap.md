@@ -41,6 +41,13 @@ Live pipeline in board format — headings are columns, cards are
 
 ## Testing
 
+- Timers: history of finished timers in the dashboard · priority: P2 · area: timer
+  Outcome: `/dashboard/timers` has a History section listing timers and alarms that rang, were missed or were
+  cancelled within the last 30 days; older rows are purged at startup and at most every 6 h on scheduling.
+  Backed by `GET /api/admin/timers/history`. Branch feat/timer-history, uncommitted.
+  Verify: open `/dashboard/timers`, set a 1 min timer, let it ring and cancel a second one, both appear under History.
+  Not yet checked on a live instance.
+
 - Voice Profiles: assign recorded voice turns to a profile · priority: P1 · area: voice
   Outcome: with opt-in `voice.speaker_id.keep_audio`, every confirmed voice
   turn with an embedding is kept 30 days (WAV + embedding + result, linked to

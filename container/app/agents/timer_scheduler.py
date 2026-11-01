@@ -38,6 +38,9 @@ _STARTUP_RECOVERY_RETRY_DELAY_SECONDS = 2.0
 _OVERDUE_DEVICE_ACTION_MAX_SECONDS = 300
 _OVERDUE_RING_GRACE_SECONDS = 60
 _DEVICE_ACTION_KINDS = frozenset({"delayed_action", "sleep"})
+# Finished rows (fired, expired, cancelled) stay visible as history this long; older ones are purged.
+HISTORY_RETENTION_DAYS = 30
+_HISTORY_PURGE_INTERVAL_SECONDS = 6 * 3600
 _RECURRING_WEEKDAY_INDEX: dict[str, int] = {
     "MO": 0,
     "TU": 1,
@@ -210,6 +213,7 @@ class TimerScheduler:
         self._startup_recovery_task: asyncio.Task | None = None
         self._overdue_tasks: list[asyncio.Task] = []
         self._started = False
+        self._last_history_purge = 0.0
 
     async def _dispatch_background_event(
         self,
@@ -270,6 +274,24 @@ class TimerScheduler:
             rows = []
         rehydrated, overdue = self._rehydrate_rows(rows)
         logger.info("TimerScheduler started: rehydrated=%d overdue=%d", rehydrated, overdue)
+        await self._purge_history()
+
+    async def _purge_history(self) -> None:
+        """Delete finished rows older than the retention window; at most once per purge interval."""
+        now = time.monotonic()
+        if self._last_history_purge and now - self._last_history_purge < _HISTORY_PURGE_INTERVAL_SECONDS:
+            return
+        self._last_history_purge = now
+        cutoff = int(time.time()) - HISTORY_RETENTION_DAYS * 86400
+        try:
+            purged = await self._repo.purge_terminal_older_than(cutoff)
+        except Exception:
+            logger.warning("TimerScheduler: failed to purge timer history", exc_info=True)
+            return
+        if purged:
+            logger.info(
+                "TimerScheduler: purged %d timer history row(s) older than %d days", purged, HISTORY_RETENTION_DAYS
+            )
 
     async def stop(self) -> None:
         """Cancel all in-flight timer tasks. DB rows remain pending."""
@@ -355,6 +377,7 @@ class TimerScheduler:
             "state": "pending",
         }
         self._spawn_task(row)
+        await self._purge_history()
         return timer_id
 
     async def cancel(
@@ -401,6 +424,11 @@ class TimerScheduler:
     ) -> list[dict]:
         """Return timers (pending by default), optionally filtered by name, area, kind, and state."""
         return await self._repo.list_pending_for(logical_name=logical_name, area=area, kinds=kinds, states=states)
+
+    async def history(self, *, limit: int = 200) -> list[dict]:
+        """Return finished timers and alarms (fired, expired, cancelled) within the retention window, newest first."""
+        since = int(time.time()) - HISTORY_RETENTION_DAYS * 86400
+        return await self._repo.list_history(since_epoch=since, limit=limit)
 
     async def pause(self, id_: str) -> int | None:
         """Pause a pending timer; returns the remaining seconds, or None when it is not pending.

@@ -233,6 +233,7 @@ The **Send Devices** page at `/dashboard/send-devices` maps notification targets
 The **Timers** page at `/dashboard/timers` manages timers and alarms created through the timer agent. You can:
 
 - Create, edit, or delete timers and alarms.
+- Review the **History** section: timers and alarms of the last 30 days that rang, were missed (container was down) or were cancelled. Older entries are removed automatically.
 - Configure the **Wake Briefing** card to compose a spoken morning briefing for internal alarms. The briefing can include weather, news, calendar events, date/time, and selected sensor states.
 
 Wake briefings apply only to AgentHub-managed internal alarms, not to HA native plain timers.

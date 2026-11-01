@@ -10,9 +10,10 @@ from datetime import datetime
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, ValidationError, field_validator, model_validator
 
+from app.agents.timer_scheduler import HISTORY_RETENTION_DAYS
 from app.db.repository import ScheduledTimersRepository
 
 from ._shared import _bool_from_setting
@@ -532,6 +533,47 @@ async def create_timer(payload: TimerCreatePayload, request: Request):
         )
 
     return {"status": "ok", "id": timer_id}
+
+
+@router.get("/timers/history")
+async def get_timer_history(request: Request, limit: int = Query(default=100, ge=1, le=500)):
+    """Return finished timers and alarms (fired, expired, cancelled) from the last 30 days, newest first."""
+    scheduler = getattr(request.app.state, "timer_scheduler", None)
+    if scheduler is None:
+        return {"history": [], "retention_days": HISTORY_RETENTION_DAYS}
+    try:
+        rows = await scheduler.history(limit=limit)
+    except Exception:
+        logger.warning("Failed to load timer history", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to load timer history") from None
+
+    ha_client = getattr(request.app.state, "ha_client", None)
+    area_registry: dict[str, str] = {}
+    if ha_client:
+        try:
+            area_registry = await ha_client.get_area_registry()
+        except Exception:
+            logger.debug("Failed to load area registry for timer history", exc_info=True)
+
+    labels: dict[tuple[str | None, str | None], str | None] = {}
+    history = []
+    for row in rows:
+        origin = (row.get("origin_device_id"), row.get("origin_area"))
+        if origin not in labels:
+            labels[origin] = await _resolve_origin_label(ha_client, area_registry, *origin)
+        history.append(
+            {
+                "id": row["id"],
+                "logical_name": row.get("logical_name"),
+                "kind": row.get("kind"),
+                "state": row.get("state"),
+                "duration_seconds": row.get("duration_seconds"),
+                "fires_at": int(row.get("fires_at") or 0),
+                "ended_at": int(row.get("ended_at") or 0),
+                "origin_label": labels[origin],
+            }
+        )
+    return {"history": history, "retention_days": HISTORY_RETENTION_DAYS}
 
 
 @router.get("/timers/recently-expired")

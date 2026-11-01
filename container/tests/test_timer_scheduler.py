@@ -834,3 +834,86 @@ class TestSchedulerRegressions:
             assert int(json.loads(pending[0]["payload_json"])["scheduled_for_epoch"]) == next_fire
         finally:
             await sched.stop()
+
+
+async def _insert_row(row_id: str, *, kind: str = "plain", name: str = "t", created_at: int | None = None) -> None:
+    now = int(time.time())
+    await ScheduledTimersRepository.insert(
+        id=row_id,
+        logical_name=name,
+        kind=kind,
+        created_at=created_at or now - 100,
+        fires_at=now + 100,
+        duration_seconds=60,
+        origin_device_id=None,
+        origin_area="kitchen",
+        payload_json="{}",
+    )
+
+
+class TestHistory:
+    async def test_history_lists_terminal_rows_newest_first(self, db_repository):
+        now = int(time.time())
+        await _insert_row("h-fired", name="pasta")
+        await _insert_row("h-cancelled", name="laundry")
+        await _insert_row("h-expired", kind="alarm", name="wake")
+        await _insert_row("h-pending", name="still running")
+        await ScheduledTimersRepository.mark_fired("h-fired", now - 300)
+        await ScheduledTimersRepository.mark_cancelled("h-cancelled", now - 100)
+        await ScheduledTimersRepository.mark_expired("h-expired", now - 200)
+
+        sched, _ = _make_scheduler()
+        rows = await sched.history()
+
+        assert [r["id"] for r in rows] == ["h-cancelled", "h-expired", "h-fired"]
+        assert [r["state"] for r in rows] == ["cancelled", "expired", "fired"]
+        assert rows[0]["ended_at"] == now - 100
+
+    async def test_history_excludes_rows_past_retention(self, db_repository):
+        now = int(time.time())
+        await _insert_row("h-old")
+        await _insert_row("h-recent")
+        await ScheduledTimersRepository.mark_fired("h-old", now - 31 * 86400)
+        await ScheduledTimersRepository.mark_fired("h-recent", now - 29 * 86400)
+
+        sched, _ = _make_scheduler()
+        rows = await sched.history()
+
+        assert [r["id"] for r in rows] == ["h-recent"]
+
+    async def test_history_respects_limit(self, db_repository):
+        now = int(time.time())
+        for i in range(3):
+            await _insert_row(f"h-{i}")
+            await ScheduledTimersRepository.mark_fired(f"h-{i}", now - i)
+
+        sched, _ = _make_scheduler()
+        rows = await sched.history(limit=2)
+
+        assert [r["id"] for r in rows] == ["h-0", "h-1"]
+
+    async def test_start_purges_rows_past_retention(self, db_repository):
+        now = int(time.time())
+        await _insert_row("p-old")
+        await _insert_row("p-recent")
+        await ScheduledTimersRepository.mark_cancelled("p-old", now - 31 * 86400)
+        await ScheduledTimersRepository.mark_cancelled("p-recent", now - 86400)
+
+        sched, _ = _make_scheduler()
+        try:
+            await sched.start()
+        finally:
+            await sched.stop()
+
+        assert await ScheduledTimersRepository.get("p-old") is None
+        assert await ScheduledTimersRepository.get("p-recent") is not None
+
+    async def test_purge_is_throttled_and_fail_soft(self, db_repository):
+        repo = MagicMock()
+        repo.purge_terminal_older_than = AsyncMock(side_effect=RuntimeError("db down"))
+        sched = TimerScheduler(repo, dispatcher=MagicMock())
+
+        await sched._purge_history()
+        await sched._purge_history()
+
+        assert repo.purge_terminal_older_than.await_count == 1

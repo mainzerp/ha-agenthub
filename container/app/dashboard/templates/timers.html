@@ -233,6 +233,49 @@
         </table>
     </div>
 
+    <!-- Section 3: History -->
+    <div class="section-header mt-2xl">
+        <h2 class="section-title mt-0 mb-0">History</h2>
+        <span class="text-muted" x-text="'Last ' + historyRetentionDays + ' days'"></span>
+    </div>
+    <template x-if="!loading && history.length === 0">
+        <div class="empty-state"><p>No finished timers or alarms in the last 30 days.</p></div>
+    </template>
+    <div x-show="history.length > 0" class="table-container">
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Name</th>
+                    <th>Kind</th>
+                    <th>Result</th>
+                    <th>When</th>
+                    <th>Duration</th>
+                    <th>Origin</th>
+                </tr>
+            </thead>
+            <tbody>
+                <template x-for="h in history" :key="h.id">
+                    <tr>
+                        <td x-text="displayTimerName(h)"></td>
+                        <td><span class="badge badge-teal" x-text="h.kind || '-'"></span></td>
+                        <td>
+                            <span class="badge badge-dot"
+                                  :class="{
+                                      'badge-green': h.state === 'fired',
+                                      'badge-yellow': h.state === 'expired',
+                                      'badge-muted': h.state === 'cancelled' || !h.state
+                                  }"
+                                  x-text="historyResult(h)"></span>
+                        </td>
+                        <td class="text-mono" x-text="formatEpoch(h.ended_at)"></td>
+                        <td class="text-mono" x-text="formatDurationSeconds(h.duration_seconds)"></td>
+                        <td class="text-mono" x-text="displayOrigin(h)"></td>
+                    </tr>
+                </template>
+            </tbody>
+        </table>
+    </div>
+
     <template x-if="loading">
         <p class="text-muted py-md">Loading timer data...</p>
     </template>
@@ -302,6 +345,9 @@ function timersPage() {
     return {
         timers: [],
         alarms: [],
+        history: [],
+        historyRetentionDays: 30,
+        historyInterval: null,
         loading: true,
         error: null,
         wakeBriefingLoading: true,
@@ -348,14 +394,19 @@ function timersPage() {
         editRecurrenceByweekday: [],
 
         async init() {
-            await Promise.all([this.loadData(), this.loadWakeBriefingSettings()]);
+            await Promise.all([this.loadData(), this.loadHistory(), this.loadWakeBriefingSettings()]);
             this.refreshInterval = setInterval(() => this.loadData(), 5000);
+            this.historyInterval = setInterval(() => this.loadHistory(), 30000);
         },
 
         destroy() {
             if (this.refreshInterval) {
                 clearInterval(this.refreshInterval);
                 this.refreshInterval = null;
+            }
+            if (this.historyInterval) {
+                clearInterval(this.historyInterval);
+                this.historyInterval = null;
             }
         },
 
@@ -393,6 +444,25 @@ function timersPage() {
                 this.alarms = data.alarms || [];
             }
             this.loading = false;
+        },
+
+        async loadHistory() {
+            var data = await window.dashboardApi.safeJson('/api/admin/timers/history');
+            if (data) {
+                this.history = data.history || [];
+                this.historyRetentionDays = data.retention_days || 30;
+            }
+        },
+
+        historyResult(row) {
+            if (row.state === 'fired') return 'rang';
+            if (row.state === 'expired') return 'missed';
+            return row.state || '-';
+        },
+
+        formatEpoch(epoch) {
+            if (typeof epoch !== 'number' || !epoch) return '-';
+            return new Date(epoch * 1000).toLocaleString();
         },
 
         formatDurationSeconds(seconds) {
@@ -448,7 +518,7 @@ function timersPage() {
                 alert('Cancel failed: ' + (e.detail || e));
                 return;
             }
-            await this.loadData();
+            await Promise.all([this.loadData(), this.loadHistory()]);
         },
 
         openEditTimer(t) {
