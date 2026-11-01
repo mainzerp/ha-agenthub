@@ -41,6 +41,67 @@ Live pipeline in board format — headings are columns, cards are
 
 ## Testing
 
+- Presence queries (who is home) · priority: P2 · area: agents
+  Outcome: read-only `presence-agent` answers "Wer ist zu Hause?", "Wie viele
+  sind im Haus?", "Ist Laura zu Hause?", "Wo ist Patric?" from `person.*`
+  (and `device_tracker.*`); seeded disabled (migration 54), opt-in on the
+  Agents page. Trigger: live traces bde6053f8481421f, 64b3634a5ab5433e.
+  Branch `feat/presence-queries` (bfaee21), merged with the three other
+  trace-review branches on `integration/trace-review-2026-11`; not pushed.
+  Passed: `scripts/ci.py` full gate on the integration branch (container
+  5387, bridge 337, ruff, bandit, pip-audit, docker build/smoke, trivy).
+  Not run: real HA, real LLM.
+  Needs user verification: enable the agent and check its model; ask the two
+  trace questions plus "Wo ist Patric?" (a non-home zone); trace shows
+  `target_agent=presence-agent`; motion questions still go to the
+  security-agent; "Patric" alone resolves to "Patric Mainzer".
+
+- Media agent: camera and streams on a screen · priority: P2 · area: agents
+  Outcome: "Zeig die Klingelkamera auf dem Fernseher" calls
+  `camera.play_stream` (HLS) on a compatible player, powers the TV on first
+  (4 s cap), and `play_media` takes URLs and `media-source://` items; an
+  incompatible or unavailable target gets a specific reason instead of "play
+  media failed". Trigger: traces 4c09c7bb8a454c38, 4b51ce5b47c44d55. Branch
+  `feat/media-camera-streams` (0468da3), merged on
+  `integration/trace-review-2026-11`; migration 55 (presence owns 54); not
+  pushed.
+  Passed: `scripts/ci.py` full gate on the integration branch (see the
+  presence card). Not run: real HA or TV.
+  Needs user verification: `camera.play_stream` on the Box R 4K Plus and an
+  Echo Show in Developer tools (HLS accepted?); then the voice request;
+  the 4 s power-on wait is enough; routing stays on media-agent.
+
+- Calendar: week queries and kept clarifications · priority: P1 · area: agents
+  Outcome: "Termine diese Woche" yields a `list_events` instead of "could not
+  understand". Cause: the injected calendar candidate block told the LLM to
+  ask which calendar, and its question was dropped because it did not end in
+  `?`. Fix: optional candidate block for agents without entity actions,
+  weekday in every agent's time context, week rules and few-shots, narrowed
+  question rule. Trigger: traces 169b477c82814280, de3ebb58c0f146f5. Branch
+  `fix/calendar-list-parse` (d9123fc), merged on
+  `integration/trace-review-2026-11`; not pushed.
+  Passed: `scripts/ci.py` full gate on the integration branch (see the
+  presence card). Not run: real LLM.
+  Needs user verification: "Welche Termine habe ich diese Woche noch",
+  "Termine nächste Woche", "Termine am Freitag", an English variant; trace
+  shows `list_events` over all calendars; timer and list turns unchanged.
+
+- ai_task: one-shot prompts no longer refused · priority: P1 · area: agents
+  Outcome: the recurring TV quip prompt is answered, not refused (3 of 12
+  refused before). Cause (from traces, no LLM replay): the classifier turned
+  "immer nur einen Spruch" into a standing-behavior instruction. Fix:
+  ai_task addendum for the general-agent, no session-memory search for
+  stateless task turns (`memory_retrieval` span shows skipped). Branch
+  `fix/ai-task-refusals` (c972b85), merged on
+  `integration/trace-review-2026-11`; not pushed.
+  Passed: `scripts/ci.py` full gate on the integration branch (see the
+  presence card).
+  Known: `test_ai_task.py::test_formatter_falls_back_without_json_mode`
+  fails when `test_memory_pipeline.py` runs before it on a serial run, also
+  on pristine main; it passed in the parallel full run.
+  Needs user verification: fire the TV automation about 10 times and count
+  refusals; trace shows the skipped memory span.
+
 - Voice Profiles: assign recorded voice turns to a profile · priority: P1 · area: voice
   Outcome: with opt-in `voice.speaker_id.keep_audio`, every confirmed voice
   turn with an embedding is kept 30 days (WAV + embedding + result, linked to

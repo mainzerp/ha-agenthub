@@ -4,6 +4,26 @@ Decision rationale, so decisions stay made. Newest first. Binding architecture
 rules live in `docs/project/prime-directives.md` — this file records choices,
 not copies of rules.
 
+## 2026-11-01 — Trace review: presence, camera on screen, calendar, ai_task
+
+- **Presence is a new read-only `presence-agent`, seeded disabled.**
+  Rationale: no agent covers `person`/`device_tracker`; folding it into the
+  security-agent would mix presence with lock/alarm routing and tie it to an
+  agent that is off by default. It is location data, so the owner opts in on
+  the Agents page.
+- **Showing a camera on a screen needs no approval gate.** Only on explicit
+  request, only on players the media-agent sees, never cached. Keeping
+  cameras off screens is a `domain_exclude camera` rule for the media-agent.
+- **Cameras are not candidates of the media-agent**: they are resolved by
+  name within the camera domain only, so the media_player candidate list
+  (and its show-all limit) stays unchanged.
+- **Parse-miss clarification rule narrowed**: a reply counts as a question
+  when it ends in `?`, or when it is short (400 characters) and the question
+  leads it (no full sentence before the `?`). Rationale: a `?` anywhere would
+  reopen the microphone on ordinary answers in every action agent.
+- **Migration order**: presence keeps 54, camera streams takes 55; merge
+  presence first.
+
 ## 2026-10-26 — AGENTS.md slimmed to the brain template
 
 - **`AGENTS.md` follows `F:\Github\AGENTS\AGENTS_with_brain.md`** (455 to about
