@@ -347,6 +347,18 @@ domain (for example `light-agent` for `light.*`, `security-agent` for
 `lock.*`), and only argument-free services on a per-domain allow-list can be
 scheduled; unlocking and disarming are never schedulable.
 
+Ring sounds: timers play a three-chime sound (about 6 s) and alarms their own
+four-beep sound (about 7.5 s) before the spoken announcement. They are the
+files `timer.wav` and `alarm.wav` under `/dashboard/static/sounds/` (rebuilt
+by `scripts/gen_ring_sounds.py`; static files need no login). The notification
+profile (`PUT /api/admin/notification-profile`) controls them:
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `sound_base_url` | empty | URL under which the satellite can reach the container, for example `http://192.168.1.5:6081`. Empty keeps the satellite's own announce sound. Plain `http` on the LAN is the safe choice for small ESPHome satellites. |
+| `ring_sounds_enabled` | `true` | Switch for the ring sounds. |
+| `chime_url` | `media-source://media_source/local/notification.mp3` | Media-player fallback chime. Left at the default it is replaced by the ring sound; any other value is played as given. |
+
 Internal helper agents (`filler-agent`, `rewrite-agent`,
 `mediation`, `notification-dispatcher`, `cancel-speech`,
 `language-detect`, `sanitize`, `alarm-monitor`)

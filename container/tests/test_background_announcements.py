@@ -187,3 +187,76 @@ class TestMissedNotification:
         text = notify.await_args.kwargs["text"]
         assert "timer 'pasta'" in text and "alarm 'Wake'" in text
         assert notify.await_args.kwargs["metadata"].origin_area == "kitchen"
+
+
+_SOUND_PROFILE = {**_PROFILE, "sound_base_url": "http://192.168.1.5:6081/"}
+
+
+class TestRingSounds:
+    async def test_timer_announce_uses_timer_sound_as_preannounce(self, visible, spawned):
+        ha_client = AsyncMock()
+        with (
+            patch.object(ba, "_load_notification_profile", new=AsyncMock(return_value=dict(_SOUND_PROFILE))),
+            patch.object(ba, "_resolve_satellite_from_origin_device", new=AsyncMock(return_value="assist_satellite.k")),
+            patch.object(ba, "_generate_tts_message", new=AsyncMock(return_value="Pasta is done")),
+        ):
+            await ba.dispatch_timer_notification(ha_client, "Pasta", "agenthub_internal:1", metadata=_metadata())
+        ha_client.call_service.assert_awaited_once_with(
+            "assist_satellite",
+            "announce",
+            "assist_satellite.k",
+            {
+                "message": "Pasta is done",
+                "preannounce_media_id": "http://192.168.1.5:6081/dashboard/static/sounds/timer.wav",
+            },
+        )
+
+    async def test_alarm_announce_uses_its_own_sound(self, visible, spawned):
+        ha_client = AsyncMock()
+        with (
+            patch.object(ba, "_load_notification_profile", new=AsyncMock(return_value=dict(_SOUND_PROFILE))),
+            patch.object(ba, "_resolve_satellite_from_origin_device", new=AsyncMock(return_value="assist_satellite.k")),
+        ):
+            await ba.dispatch_alarm_notification(ha_client, "Wake", "agenthub_alarm:1", metadata=_metadata())
+        data = ha_client.call_service.await_args.args[3]
+        assert data["preannounce_media_id"].endswith("/dashboard/static/sounds/alarm.wav")
+
+    @pytest.mark.parametrize(
+        "overrides",
+        [{"sound_base_url": ""}, {"ring_sounds_enabled": False}],
+        ids=["no-base-url", "disabled"],
+    )
+    async def test_no_preannounce_override_without_base_url_or_when_disabled(self, visible, spawned, overrides):
+        ha_client = AsyncMock()
+        profile = {**_SOUND_PROFILE, **overrides}
+        with (
+            patch.object(ba, "_load_notification_profile", new=AsyncMock(return_value=profile)),
+            patch.object(ba, "_resolve_satellite_from_origin_device", new=AsyncMock(return_value="assist_satellite.k")),
+        ):
+            await ba.dispatch_alarm_notification(ha_client, "Wake", "agenthub_alarm:1", metadata=_metadata())
+        assert "preannounce_media_id" not in ha_client.call_service.await_args.args[3]
+
+    async def test_media_player_chime_plays_ring_sound_and_waits_for_it(self):
+        ha_client = AsyncMock()
+        profile = {**_SOUND_PROFILE, "chime_url": ba._DEFAULT_CHIME_URL}
+        with patch("asyncio.sleep", new_callable=AsyncMock) as sleep:
+            await ba._play_chime(ha_client, "media_player.k", profile, sound="timer")
+        assert ha_client.call_service.await_args.args[3]["media_content_id"].endswith("/sounds/timer.wav")
+        sleep.assert_awaited_once_with(6.5)
+
+    async def test_custom_chime_url_wins_over_ring_sound(self):
+        ha_client = AsyncMock()
+        profile = {**_SOUND_PROFILE, "chime_url": "media-source://media_source/local/mine.mp3"}
+        with patch("asyncio.sleep", new_callable=AsyncMock):
+            await ba._play_chime(ha_client, "media_player.k", profile, sound="timer")
+        assert ha_client.call_service.await_args.args[3]["media_content_id"].endswith("/mine.mp3")
+
+    @pytest.mark.parametrize("sound", sorted(ba._RING_SOUND_SECONDS))
+    async def test_shipped_ring_sound_files_match_declared_length(self, sound):
+        import wave
+        from pathlib import Path
+
+        path = Path(ba.__file__).resolve().parents[1] / "dashboard" / "static" / "sounds" / f"{sound}.wav"
+        with wave.open(str(path), "rb") as wav:
+            seconds = wav.getnframes() / wav.getframerate()
+        assert seconds == pytest.approx(ba._RING_SOUND_SECONDS[sound], abs=0.1)

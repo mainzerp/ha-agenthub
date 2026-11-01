@@ -7,6 +7,7 @@ import logging
 from typing import Any
 
 from app.agents.action_executor import (
+    VERIFY_REACHED,
     build_verified_speech,
     call_service_with_verification,
     resolve_and_validate_entity,
@@ -27,6 +28,7 @@ _MUSIC_ACTION_MAP: dict[str, tuple[str, str]] = {
     "volume_down": ("media_player", "volume_down"),
     "media_play": ("media_player", "media_play"),
     "media_pause": ("media_player", "media_pause"),
+    "media_stop": ("media_player", "media_stop"),
     "media_next_track": ("media_player", "media_next_track"),
     "media_previous_track": ("media_player", "media_previous_track"),
     "shuffle_set": ("media_player", "shuffle_set"),
@@ -38,6 +40,7 @@ _MUSIC_ACTION_MAP: dict[str, tuple[str, str]] = {
 _EXPECTED_STATE_BY_ACTION: dict[str, str] = {
     "media_play": "playing",
     "media_pause": "paused",
+    "media_stop": "idle",
     "play_media": "playing",
 }
 
@@ -59,6 +62,14 @@ _REQUIRED_FEATURES: dict[str, tuple[int, str]] = {
     "volume_up": (_FEATURE_VOLUME_SET | _FEATURE_VOLUME_STEP, "changing the volume"),
     "volume_down": (_FEATURE_VOLUME_SET | _FEATURE_VOLUME_STEP, "changing the volume"),
 }
+
+# Deadline for ``music_assistant.play_media``; it must stay below the agent
+# dispatch timeout so the player state can still be checked and spoken.
+_PLAY_MEDIA_TIMEOUT_SEC = 6.0
+# After the deadline the player is polled this long (the call still runs in Music Assistant), because a
+# slow source often starts a moment later. Deadline plus grace stays under the 10 s dispatch timeout.
+_PLAY_MEDIA_GRACE_SEC = 2.0
+_PLAY_MEDIA_POLL_SEC = 0.4
 
 _ALLOWED_DOMAINS: frozenset[str] = frozenset({"media_player"})
 
@@ -163,6 +174,57 @@ def _format_search_results(results: Any) -> str:
             lines.append(f"{i}. {item}")
 
     return "I found: " + "; ".join(lines) + "."
+
+
+async def _read_player_state(ha_client: Any, entity_id: str) -> dict | None:
+    """Current state object of a player, or None when it cannot be read."""
+    try:
+        state = await ha_client.get_state(entity_id)
+    except Exception:
+        logger.debug("Player state read failed for %s", entity_id, exc_info=True)
+        return None
+    return state if isinstance(state, dict) else None
+
+
+def _playing_media_id(state: dict | None) -> tuple[bool, Any]:
+    """``(is_playing, media_content_id)`` of a player state object."""
+    if state is None:
+        return False, None
+    attrs = state.get("attributes")
+    media_id = attrs.get("media_content_id") if isinstance(attrs, dict) else None
+    return state.get("state") == "playing", media_id
+
+
+async def _verify_stalled_play_media(ha_client: Any, entity_id: str, before: dict | None) -> dict | None:
+    """Verify result for a play_media call that outlived its deadline, else None.
+
+    Music Assistant blocks ``music_assistant.play_media`` until its source
+    resolves (a slow or rate-limited provider can take from seconds to over a
+    minute). The call is only a success when the player is playing a different
+    item than before it; the player is polled for a short grace period because
+    playback often starts just after the deadline. Still idle, or still on the
+    old item, after that means nothing started yet.
+    """
+    was_playing, was_media = _playing_media_id(before)
+    loop = asyncio.get_running_loop()
+    give_up_at = loop.time() + _PLAY_MEDIA_GRACE_SEC
+    while True:
+        now_playing, now_media = _playing_media_id(await _read_player_state(ha_client, entity_id))
+        if now_playing and not (was_playing and now_media == was_media):
+            return {
+                "success": True,
+                "call_succeeded": True,
+                "outcome": VERIFY_REACHED,
+                "entity_id": entity_id,
+                "call_result": None,
+                "observed_state": "playing",
+                "verified": True,
+                "cacheable": False,
+                "error": None,
+            }
+        if loop.time() >= give_up_at:
+            return None
+        await asyncio.sleep(_PLAY_MEDIA_POLL_SEC)
 
 
 def _relative_volume_level(state_resp: Any, delta: float) -> float | None:
@@ -284,16 +346,19 @@ async def execute_music_action(
             "cacheable": False,
         }
 
-    state_resp: Any = None
     relative = False
     params = action.get("parameters") or {}
-    needs_state = action_name in _REQUIRED_FEATURES
-    if needs_state:
-        try:
-            state_resp = await ha_client.get_state(entity_id)
-        except Exception:
-            logger.debug("Pre-action state read failed for %s", entity_id, exc_info=True)
-            state_resp = None
+    state_resp = await _read_player_state(ha_client, entity_id)
+    if isinstance(state_resp, dict) and state_resp.get("state") == "unavailable":
+        # A command to an unavailable player can never be confirmed; say so
+        # instead of reporting it as sent.
+        return {
+            "success": False,
+            "entity_id": entity_id,
+            "new_state": "unavailable",
+            "speech": f"{friendly_name} is unavailable right now.",
+            "cacheable": False,
+        }
 
     if action_name == "volume_set" and "volume_level" not in service_data and isinstance(params, dict):
         delta = params.get("volume_delta")
@@ -321,7 +386,7 @@ async def execute_music_action(
         }
 
     expected_state = _EXPECTED_STATE_BY_ACTION.get(action_name)
-    verify = await call_service_with_verification(
+    verify_call = call_service_with_verification(
         ha_client,
         domain,
         service,
@@ -329,6 +394,30 @@ async def execute_music_action(
         service_data=service_data,
         expected_state=expected_state,
     )
+    if action_name == "play_media":
+        before = state_resp
+        try:
+            verify = await asyncio.wait_for(verify_call, timeout=_PLAY_MEDIA_TIMEOUT_SEC)
+        except TimeoutError:
+            logger.warning(
+                "music_assistant.play_media on %s did not return within %.1fs", entity_id, _PLAY_MEDIA_TIMEOUT_SEC
+            )
+            stalled = await _verify_stalled_play_media(ha_client, entity_id, before)
+            if stalled is None:
+                return {
+                    "success": False,
+                    "entity_id": entity_id,
+                    "new_state": None,
+                    "speech": (
+                        f"Music Assistant is still loading the music on {friendly_name} and has not started "
+                        "playback yet. It may still start in a moment; if not, the music source may be slow, "
+                        "rate limited or unavailable."
+                    ),
+                    "cacheable": False,
+                }
+            verify = stalled
+    else:
+        verify = await verify_call
     if not verify["success"]:
         return {
             "success": False,

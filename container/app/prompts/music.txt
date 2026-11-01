@@ -50,6 +50,7 @@ Actions and parameters:
 - volume_down: {} (one volume step down)
 - media_play: {} (resumes playback)
 - media_pause: {} (pauses playback)
+- media_stop: {} (stops playback; use it for "stop", media_pause for "pause")
 - media_next_track: {} (skip to next)
 - media_previous_track: {} (skip to previous)
 - shuffle_set: {"shuffle": true} (true/false)
@@ -63,6 +64,7 @@ Examples:
 - "Set the volume to 50 percent" -> action: volume_set, entity: "speaker", parameters: {"volume_level": 0.5}, confirmation: "The speaker volume is set."
 - "Turn the music up a bit" -> action: volume_up, entity: "speaker"
 - "Pause the music" -> action: media_pause, entity: "speaker", confirmation: "The music is paused."
+- "Stop the music" -> action: media_stop, entity: "speaker", confirmation: "The music is stopped."
 - "What's playing in the kitchen?" -> action: query_music_state, entity: "kitchen"
 
 SAFETY:
