@@ -41,29 +41,6 @@ Live pipeline in board format — headings are columns, cards are
 
 ## Testing
 
-- Music: play_media deadline, media_stop, unavailable players · priority: P1 · area: agents
-  Outcome: `music_assistant.play_media` is cut off after 6 s (it blocks while
-  Music Assistant resolves a source); the executor then polls the player for
-  2 s more and reports "still loading, not started yet, may still start"
-  unless a different item is playing, instead of the dispatch timeout and a
-  vague "sent" answer. Live finding (trace 944c22ece2214b62, "Spiel Taylor
-  Swift"): the call took slightly over 6 s, the failure was spoken, the music
-  started right after; hence the grace period and the neutral wording.
-  music-agent is also declared `expected_latency="high"` so the interim
-  filler is spoken while Music Assistant loads (trace 1531fb428c6c4acb: no
-  filler was sent, the notice came after 9.7 s). Filler needs `filler.enabled`.
-  Also: `media_stop` action (a "stop" request no longer ends in a pause
-  offer) and a command to an `unavailable` player is refused with "is
-  unavailable right now" instead of "sent" (trace e6e90987c0654e78).
-  Trigger: trace 7ba480540f6944ae (Spotify rate limit / librespot audio key
-  errors made every Spotify play fail after 60-80 s; RPR1 radio on the same
-  Echo plays in 1.6 s).
-  Passed: ruff, music executor tests incl. new stalled-call, stop and
-  unavailable-player cases. Not run against the live instance.
-  Needs user verification: after deploy, say "stop" while music plays and
-  expect it to stop; with Spotify failing expect the spoken notice within
-  ~9 s; RPR1 still plays.
-
 - Voice Profiles: assign recorded voice turns to a profile · priority: P1 · area: voice
   Outcome: with opt-in `voice.speaker_id.keep_audio`, every confirmed voice
   turn with an embedding is kept 30 days (WAV + embedding + result, linked to
@@ -679,6 +656,25 @@ Live pipeline in board format — headings are columns, cards are
   Shipped in v2.5.1 (https://github.com/mainzerp/ha-agenthub/releases/tag/v2.5.1). Phase 3 (docs drift) done. Left as is by decision: MCP add-server returns 201 on failed connect.
 
 ## Done
+
+- Music: play_media deadline, media_stop, unavailable players · priority: P1 · area: agents
+  Outcome: `music_assistant.play_media` is cut off after 6 s (it blocks while
+  Music Assistant resolves a source); the executor then polls the player for
+  2 s more and reports "still loading, not started yet, may still start"
+  unless a different item is playing, instead of the dispatch timeout and a
+  vague "sent" answer. Live finding (trace 944c22ece2214b62, "Spiel Taylor
+  Swift"): the call took slightly over 6 s, the failure was spoken, the music
+  started right after; hence the grace period and the neutral wording.
+  music-agent is also declared `expected_latency="high"` so the interim
+  filler is spoken while Music Assistant loads (trace 1531fb428c6c4acb: no
+  filler was sent, the notice came after 9.7 s). Filler needs `filler.enabled`.
+  Also: `media_stop` action (a "stop" request no longer ends in a pause
+  offer) and a command to an `unavailable` player is refused with "is
+  unavailable right now" instead of "sent" (trace e6e90987c0654e78).
+  Trigger: trace 7ba480540f6944ae (Spotify rate limit / librespot audio key
+  errors made every Spotify play fail after 60-80 s; RPR1 radio on the same
+  Echo plays in 1.6 s).
+  Verified by user on the live instance (2026-11-01): music starts without a false failure, the slow-start notice and the filler work. `media_stop` ("stop" while playing) was not tested separately.
 
 ## Idea Bank
 
