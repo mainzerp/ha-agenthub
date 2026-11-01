@@ -6,13 +6,22 @@ action (target: the camera; data: ``media_player`` and ``format: hls``). HA
 resolves the camera's HLS stream URL itself and forwards it to the player's
 ``media_player.play_media`` (requires the ``stream`` integration and a player
 that plays HLS video).
+
+Stream target preference (setting ``media.stream_prefer_cast``): a camera
+picture or video requested on a player that is not a Google Cast entity is
+streamed to the device's Cast "twin" instead, when exactly one visible Cast
+entity reports the same device manufacturer, model and name (one TV box can
+appear as an Android TV Remote, a Cast and a Music Assistant entity, and only
+the Cast entity plays HLS video).
 """
 
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import time
+from dataclasses import dataclass
 from typing import Any
 
 from app.agents.action_executor import (
@@ -26,6 +35,7 @@ from app.agents.executor_state_check import (
     lacks_feature,
     verification_previous_state,
 )
+from app.db.repository import SettingsRepository
 from app.entity.tokens import normalize_tokenize, token_in_query
 from app.entity.visibility import entity_is_visible
 from app.models.agent import TaskContext
@@ -127,6 +137,22 @@ _STREAM_FORMAT = "hls"
 _VIDEO_CONTENT_TYPES: frozenset[str] = frozenset({"video", "movie", "tvshow", "episode", "channel", "image"})
 _VIDEO_MIME_PREFIXES: tuple[str, ...] = ("video/", "image/", "application/vnd.apple.mpegurl", "application/x-mpegurl")
 _MAX_LISTED_CAMERAS = 5
+
+# Stream target preference: Google Cast entities play HLS video; other
+# entities of the same device (Android TV Remote, Music Assistant) may not.
+_PREFER_CAST_SETTING = "media.stream_prefer_cast"
+_CAST_PLATFORM = "cast"
+_SUBSTITUTION_REASON = "prefer_cast"
+_SUBSTITUTION_SPAN = "stream_target_substituted"
+# HA's error when a player rejects the HLS stream URL (Android TV Remote:
+# "Invalid media type: application/vnd.apple.mpegurl").
+_INVALID_MEDIA_TYPE_MARKER = "invalid media type"
+_HLS_URL_SUFFIX = ".m3u8"
+# Content types of an HLS URL that is audio (internet radio): never a stream
+# for a screen, so no Cast preference.
+_AUDIO_CONTENT_TYPES: frozenset[str] = frozenset(
+    {"music", "audio", "podcast", "track", "album", "artist", "playlist", "radio"}
+)
 
 
 def _validate_domain(entity_id: str) -> bool:
@@ -280,6 +306,9 @@ async def execute_media_action(
             target_id=entity_id,
             target_name=friendly_name,
             target_state_resp=state_resp,
+            entity_index=entity_index,
+            agent_id=agent_id,
+            span_collector=span_collector,
         )
 
     if action_name == "play_media":
@@ -477,20 +506,23 @@ async def _ensure_player_on(
     target_id: str,
     target_name: str,
     state_resp: dict | None,
+    *,
+    deadline: float | None = None,
 ) -> tuple[bool, tuple[str, str] | None]:
     """Power the target on when it is off and wait (bounded) until it reports on.
 
     Returns ``(powered_on, refusal)``. ``turn_on`` lands in "on", "idle",
     "playing", ... depending on the integration, so any state other than
     off/standby counts as on. The whole step is bounded by
-    ``_POWER_ON_WAIT_SEC`` so the stream call still fits into the agent's
-    dispatch budget.
+    ``_POWER_ON_WAIT_SEC`` (or the caller's shared ``deadline``) so the
+    stream call still fits into the agent's dispatch budget.
     """
     if _state_of(state_resp) not in _OFF_STATES:
         return False, None
     if lacks_feature(state_resp, _FEATURE_TURN_ON):
         return False, ("target_off_no_turn_on", f"{target_name} is off and cannot be turned on by Home Assistant.")
-    deadline = time.monotonic() + _POWER_ON_WAIT_SEC
+    if deadline is None:
+        deadline = time.monotonic() + _POWER_ON_WAIT_SEC
     verify = await call_service_with_verification(
         ha_client,
         "media_player",
@@ -520,6 +552,329 @@ async def _ensure_player_on(
     return True, None
 
 
+# ---------------------------------------------------------------------------
+# Stream target preference (Google Cast twin of the requested player)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class _StreamTarget:
+    """The entity that receives a stream for the requested target.
+
+    ``substitute``: ``entity_id`` is the Cast twin of the requested target.
+    ``wake_original``: the twin is unavailable and the requested target is
+    off; the requested target is powered on first (a Cast entity cannot wake
+    the device), then the twin is awaited.
+    """
+
+    entity_id: str
+    state_resp: dict | None
+    substitute: bool = False
+    wake_original: bool = False
+
+
+async def _stream_prefer_cast() -> bool:
+    """``media.stream_prefer_cast``; on (the default) when it cannot be read."""
+    try:
+        raw = await SettingsRepository.get_value(_PREFER_CAST_SETTING, "true")
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        logger.debug("Could not read %s; using the default", _PREFER_CAST_SETTING, exc_info=True)
+        return True
+    if raw is None:
+        return True
+    return str(raw).strip().lower() in ("true", "1", "yes", "on")
+
+
+async def _media_player_identities(ha_client: Any) -> dict[str, Any]:
+    """Registry identities of the media players, or ``{}`` when unknown (never raises)."""
+    lookup = getattr(ha_client, "get_media_player_identities", None)
+    if not callable(lookup):
+        return {}
+    try:
+        identities = lookup()
+        if inspect.isawaitable(identities):
+            identities = await identities
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        logger.debug("Media player identity lookup failed", exc_info=True)
+        return {}
+    return identities if isinstance(identities, dict) else {}
+
+
+def _identity_key(identity: Any) -> tuple[str, str, str] | None:
+    """Case-insensitive ``(manufacturer, model, name)``; None unless all three are known."""
+    if not isinstance(identity, dict):
+        return None
+    parts = tuple(str(identity.get(key) or "").strip().casefold() for key in ("manufacturer", "model", "name"))
+    if not all(parts):
+        return None
+    return parts[0], parts[1], parts[2]
+
+
+def _is_cast(identities: dict[str, Any], entity_id: str) -> bool:
+    identity = identities.get(entity_id)
+    return isinstance(identity, dict) and identity.get("platform") == _CAST_PLATFORM
+
+
+async def _indexed(entity_index: Any, entity_id: str) -> bool:
+    """True when the entity index lists ``entity_id`` (hidden/disabled HA entities are not indexed)."""
+    try:
+        getter = getattr(entity_index, "get_by_id_async", None)
+        entry = getter(entity_id) if callable(getter) else entity_index.get_by_id(entity_id)
+        if inspect.isawaitable(entry):
+            entry = await entry
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        logger.debug("Entity index lookup failed for %s", entity_id, exc_info=True)
+        return False
+    return entry is not None
+
+
+async def _usable_cast_twins(
+    ha_client: Any,
+    identities: dict[str, Any],
+    target_id: str,
+    entity_index: Any,
+    agent_id: str | None,
+) -> list[tuple[str, dict]]:
+    """Visible Cast entities of the target's device that could show video, with their states.
+
+    A twin has the Cast platform and the same (manufacturer, model, name)
+    as the target; all three must be known, so unrelated devices never
+    match. It must be indexed and visible to ``agent_id`` (fail closed
+    without an agent id or index), its state must be readable, and HA must
+    not report it audio-only (device class ``speaker``) or without
+    ``PLAY_MEDIA``.
+    """
+    key = _identity_key(identities.get(target_id))
+    if key is None or entity_index is None or not agent_id:
+        return []
+    twins: list[tuple[str, dict]] = []
+    for entity_id in sorted(identities):
+        if entity_id == target_id or not entity_id.startswith("media_player."):
+            continue
+        if not _is_cast(identities, entity_id) or _identity_key(identities[entity_id]) != key:
+            continue
+        if not await _indexed(entity_index, entity_id):
+            continue
+        if not await entity_is_visible(agent_id, entity_id, entity_index, fail_closed_on_metadata_gap=True):
+            continue
+        state_resp = await _read_state(ha_client, entity_id)
+        if state_resp is None:
+            continue
+        device_class = _attribute(state_resp, "device_class")
+        if isinstance(device_class, str) and device_class.lower() == "speaker":
+            continue
+        if lacks_feature(state_resp, _FEATURE_PLAY_MEDIA):
+            continue
+        twins.append((entity_id, state_resp))
+    return twins
+
+
+async def _select_stream_target(
+    ha_client: Any,
+    entity_index: Any,
+    agent_id: str | None,
+    *,
+    target_id: str,
+    target_state_resp: dict | None,
+) -> _StreamTarget:
+    """Pick the entity that receives a stream requested on ``target_id``.
+
+    The target itself unless ``media.stream_prefer_cast`` is on, the target
+    is not a Cast entity, and exactly one usable Cast twin exists (see
+    :func:`_usable_cast_twins`); several twins keep the target (no
+    guessing). An unavailable twin is only chosen when the target is
+    off/standby and can be turned on (``wake_original``). A failed identity
+    lookup keeps the target.
+    """
+    unchanged = _StreamTarget(target_id, target_state_resp)
+    identities = await _media_player_identities(ha_client)
+    if not isinstance(identities.get(target_id), dict) or _is_cast(identities, target_id):
+        return unchanged
+    if not await _stream_prefer_cast():
+        return unchanged
+    twins = await _usable_cast_twins(ha_client, identities, target_id, entity_index, agent_id)
+    if len(twins) != 1:
+        if twins:
+            logger.info(
+                "Stream target %s kept: several Cast entities share its device (%s)",
+                target_id,
+                ", ".join(twin_id for twin_id, _ in twins),
+            )
+        return unchanged
+    twin_id, twin_state = twins[0]
+    if _state_of(twin_state) != "unavailable":
+        return _StreamTarget(twin_id, twin_state, substitute=True)
+    if _state_of(target_state_resp) in _OFF_STATES and not lacks_feature(target_state_resp, _FEATURE_TURN_ON):
+        return _StreamTarget(twin_id, twin_state, substitute=True, wake_original=True)
+    return unchanged
+
+
+def _known_on(state_resp: dict | None) -> bool:
+    state = _state_of(state_resp)
+    return state is not None and state not in _OFF_STATES and state not in ("unavailable", "unknown")
+
+
+async def _wake_for_cast_twin(
+    ha_client: Any,
+    target: _StreamTarget,
+    *,
+    target_id: str,
+    target_name: str,
+    target_state_resp: dict | None,
+    needs_video: bool,
+    what: str,
+) -> tuple[bool, tuple[str, str] | None]:
+    """Power on the requested target, then wait for its unavailable Cast twin (one shared deadline)."""
+    deadline = time.monotonic() + _POWER_ON_WAIT_SEC
+    powered_on, refusal = await _ensure_player_on(
+        ha_client, target_id, target_name, target_state_resp, deadline=deadline
+    )
+    if refusal is not None:
+        return powered_on, refusal
+    twin_state = target.state_resp
+    while _state_of(twin_state) == "unavailable" and time.monotonic() < deadline:
+        await asyncio.sleep(_POWER_ON_POLL_SEC)
+        latest = await _read_state(ha_client, target.entity_id)
+        if latest is not None:
+            twin_state = latest
+    if _state_of(twin_state) == "unavailable":
+        return powered_on, (
+            "cast_target_not_ready",
+            f"I turned on {target_name}, but its Google Cast player did not become available within "
+            f"{int(_POWER_ON_WAIT_SEC)} seconds, so I did not start {what}. Please try again in a moment.",
+        )
+    target.state_resp = twin_state
+    return powered_on, _player_refusal(target_name, twin_state, needs_video=needs_video, what=what)
+
+
+async def _prepare_stream_target(
+    ha_client: Any,
+    target: _StreamTarget,
+    *,
+    target_id: str,
+    target_name: str,
+    target_state_resp: dict | None,
+    needs_video: bool,
+    what: str,
+) -> tuple[bool, tuple[str, str] | None]:
+    """Compatibility checks and power-on for the entity that receives the stream.
+
+    Returns ``(powered_on, refusal)``. Without a substitute this is the
+    plain target check plus :func:`_ensure_player_on`. With a Cast twin the
+    checks apply to the twin; power comes from the requested target when it
+    is off/standby and can be turned on (it is the entity that wakes the
+    device), nothing is powered when the target reports on, and otherwise
+    the twin's own power-on applies.
+    """
+    if not target.substitute:
+        refusal = _player_refusal(target_name, target_state_resp, needs_video=needs_video, what=what)
+        if refusal is not None:
+            return False, refusal
+        return await _ensure_player_on(ha_client, target_id, target_name, target_state_resp)
+    if target.wake_original:
+        return await _wake_for_cast_twin(
+            ha_client,
+            target,
+            target_id=target_id,
+            target_name=target_name,
+            target_state_resp=target_state_resp,
+            needs_video=needs_video,
+            what=what,
+        )
+    refusal = _player_refusal(target_name, target.state_resp, needs_video=needs_video, what=what)
+    if refusal is not None:
+        return False, refusal
+    if _state_of(target_state_resp) in _OFF_STATES and not lacks_feature(target_state_resp, _FEATURE_TURN_ON):
+        return await _ensure_player_on(ha_client, target_id, target_name, target_state_resp)
+    if _known_on(target_state_resp):
+        return False, None
+    return await _ensure_player_on(ha_client, target.entity_id, target_name, target.state_resp)
+
+
+async def _trace_substitution(span_collector: Any, agent_id: str | None, target_id: str, substitute_id: str) -> dict:
+    """Log and trace a Cast substitution; returns the result metadata entry."""
+    from app.analytics.tracer import _optional_span
+
+    record = {"original_entity_id": target_id, "substitute_entity_id": substitute_id, "reason": _SUBSTITUTION_REASON}
+    logger.info("Stream target %s substituted by its Cast entity %s", target_id, substitute_id)
+    async with _optional_span(span_collector, _SUBSTITUTION_SPAN, agent_id=agent_id) as span:
+        span["metadata"].update(record)
+    return record
+
+
+def _error_text(error: Any) -> str:
+    """Error message plus an HTTP response body, along the exception chain (for marker checks only)."""
+    parts: list[str] = []
+    seen: set[int] = set()
+    current = error
+    while isinstance(current, BaseException) and id(current) not in seen and len(seen) < 4:
+        seen.add(id(current))
+        parts.append(str(current))
+        response = getattr(current, "response", None)
+        try:
+            body = getattr(response, "text", None) if response is not None else None
+        except Exception:
+            body = None
+        if isinstance(body, str):
+            parts.append(body)
+        current = current.__cause__ or current.__context__
+    return " ".join(parts)
+
+
+def _rejects_media_type(error: Any) -> bool:
+    return _INVALID_MEDIA_TYPE_MARKER in _error_text(error).lower()
+
+
+def _player_name(entity_id: str, state_resp: dict | None) -> str:
+    name = _attribute(state_resp, "friendly_name")
+    return str(name) if isinstance(name, str) and name.strip() else entity_id
+
+
+async def _stream_failure_hint(
+    ha_client: Any,
+    entity_index: Any,
+    agent_id: str | None,
+    *,
+    stream_id: str,
+    target_name: str,
+    error: Any,
+) -> tuple[bool, str | None]:
+    """``(media_type_rejected, hint)`` after a failed stream on ``stream_id``.
+
+    HA's "Invalid media type" error means the player rejects the HLS URL
+    (``media_type_rejected``); the hint is then a full answer that names
+    the device's visible Cast player, or says a Cast player would work when
+    none was found. Without that error a visible Cast player of the device
+    is offered as a short addition to the generic answer. No hint for a
+    Cast entity or when there is nothing to suggest.
+    """
+    identities = await _media_player_identities(ha_client)
+    if _is_cast(identities, stream_id):
+        return False, None
+    rejected = _rejects_media_type(error)
+    twins = await _usable_cast_twins(ha_client, identities, stream_id, entity_index, agent_id) if identities else []
+    names = sorted({_player_name(twin_id, state) for twin_id, state in twins})
+    if rejected and names:
+        return True, (
+            f"Sorry, {target_name} does not accept this stream format. Its Google Cast player "
+            f"{_join_names(names)} can show it; ask me to use that one."
+        )
+    if rejected:
+        return True, (
+            f"Sorry, {target_name} does not accept this stream format. A Google Cast player of the same "
+            "device would work, but I did not find one I can use."
+        )
+    if names:
+        return False, f"Its Google Cast player {_join_names(names)} may work instead."
+    return False, None
+
+
 async def _play_camera_on_player(
     ha_client: Any,
     *,
@@ -528,8 +883,16 @@ async def _play_camera_on_player(
     target_id: str,
     target_name: str,
     target_state_resp: dict | None,
+    entity_index: Any = None,
+    agent_id: str | None = None,
+    span_collector=None,
 ) -> dict:
-    """Show a camera's live stream on a media player via ``camera.play_stream``."""
+    """Show a camera's live stream on a media player via ``camera.play_stream``.
+
+    The stream goes to the target's Cast twin when the stream target
+    preference picks one (:func:`_select_stream_target`); the answer and
+    ``entity_id`` still name the requested target.
+    """
     what = f"the camera {camera_name}"
     camera_state = await _read_state(ha_client, camera_id)
     if _state_of(camera_state) == "unavailable":
@@ -543,15 +906,25 @@ async def _play_camera_on_player(
             f"The camera {camera_name} does not provide a video stream, so it cannot be shown on {target_name}.",
             "camera_no_stream",
         )
-    refusal = _player_refusal(target_name, target_state_resp, needs_video=True, what=what)
+    target = await _select_stream_target(
+        ha_client, entity_index, agent_id, target_id=target_id, target_state_resp=target_state_resp
+    )
+    powered_on, refusal = await _prepare_stream_target(
+        ha_client,
+        target,
+        target_id=target_id,
+        target_name=target_name,
+        target_state_resp=target_state_resp,
+        needs_video=True,
+        what=what,
+    )
     if refusal is not None:
         return _refusal(target_id, target_state_resp, refusal[1], refusal[0])
+    substitution = (
+        await _trace_substitution(span_collector, agent_id, target_id, target.entity_id) if target.substitute else None
+    )
 
-    powered_on, refusal = await _ensure_player_on(ha_client, target_id, target_name, target_state_resp)
-    if refusal is not None:
-        return _refusal(target_id, target_state_resp, refusal[1], refusal[0])
-
-    service_data = {"media_player": target_id, "format": _STREAM_FORMAT}
+    service_data = {"media_player": target.entity_id, "format": _STREAM_FORMAT}
     verify = await call_service_with_verification(
         ha_client,
         "camera",
@@ -564,6 +937,7 @@ async def _play_camera_on_player(
     )
     prefix = f"I turned on {target_name}. " if powered_on else ""
     if not verify["success"]:
+        reason = "stream_failed"
         if verify.get("approval"):
             speech = failure_speech("play_camera", camera_name, verify)
         else:
@@ -571,13 +945,31 @@ async def _play_camera_on_player(
                 f"Sorry, Home Assistant could not start the stream of {camera_name} on {target_name}. "
                 "The player may not play HLS video streams, or the Home Assistant stream integration is not set up."
             )
-        return _refusal(target_id, target_state_resp, prefix + speech, "stream_failed")
+            rejected, hint = await _stream_failure_hint(
+                ha_client,
+                entity_index,
+                agent_id,
+                stream_id=target.entity_id,
+                target_name=target_name,
+                error=verify.get("error"),
+            )
+            if rejected and hint:
+                reason, speech = "stream_media_type_rejected", hint
+            elif hint:
+                speech = f"{speech} {hint}"
+        result = _refusal(target_id, target_state_resp, prefix + speech, reason)
+        if substitution is not None:
+            result["metadata"]["stream_target_substituted"] = substitution
+        return result
 
     speech = (
         f"Done, I turned on {target_name} and {what} is now showing there."
         if powered_on
         else f"Done, {what} is now showing on {target_name}."
     )
+    metadata: dict[str, Any] = {"camera_entity_id": camera_id, "powered_on": powered_on}
+    if substitution is not None:
+        metadata["stream_target_substituted"] = substitution
     return {
         "success": True,
         "action": "play_camera",
@@ -586,7 +978,7 @@ async def _play_camera_on_player(
         "speech": speech,
         # A live stream is never replayed from the action cache.
         "cacheable": False,
-        "metadata": {"camera_entity_id": camera_id, "powered_on": powered_on},
+        "metadata": metadata,
         "executed_command": {
             "domain": "camera",
             "service": "play_stream",
@@ -734,6 +1126,17 @@ def _needs_video(content_type: str) -> bool:
     return lowered in _VIDEO_CONTENT_TYPES or lowered.startswith(_VIDEO_MIME_PREFIXES)
 
 
+def _is_screen_stream(content_id: str, content_type: str) -> bool:
+    """Content for a screen (video, image, an HLS URL that is not typed as audio): Cast preference applies."""
+    if _needs_video(content_type):
+        return True
+    lowered = content_type.strip().lower()
+    if lowered.startswith("audio/") or lowered in _AUDIO_CONTENT_TYPES:
+        return False
+    path = content_id.split("?", 1)[0].split("#", 1)[0].lower()
+    return path.endswith(_HLS_URL_SUFFIX)
+
+
 async def _play_media_on_player(
     action: dict,
     ha_client: Any,
@@ -745,7 +1148,12 @@ async def _play_media_on_player(
     target_state_resp: dict | None,
     span_collector=None,
 ) -> dict:
-    """``media_player.play_media`` with compatibility checks and power-on."""
+    """``media_player.play_media`` with compatibility checks and power-on.
+
+    Screen content (video, image, a camera, an HLS URL not typed as audio)
+    follows the stream target preference (:func:`_select_stream_target`);
+    audio and music always play on the requested target.
+    """
     service_data = _build_media_service_data(action)
     content_id = str(service_data.get("media_content_id") or "").strip()
     content_type = str(service_data.get("media_content_type") or "").strip()
@@ -762,6 +1170,9 @@ async def _play_media_on_player(
             target_id=target_id,
             target_name=target_name,
             target_state_resp=target_state_resp,
+            entity_index=entity_index,
+            agent_id=agent_id,
+            span_collector=span_collector,
         )
 
     if not content_type:
@@ -772,27 +1183,41 @@ async def _play_media_on_player(
             "content_type_missing",
         )
     needs_video = _needs_video(content_type)
-    refusal = _player_refusal(
-        target_name, target_state_resp, needs_video=needs_video, what="that video" if needs_video else "that media"
+    screen_stream = _is_screen_stream(content_id, content_type)
+    target = (
+        await _select_stream_target(
+            ha_client, entity_index, agent_id, target_id=target_id, target_state_resp=target_state_resp
+        )
+        if screen_stream
+        else _StreamTarget(target_id, target_state_resp)
+    )
+    powered_on, refusal = await _prepare_stream_target(
+        ha_client,
+        target,
+        target_id=target_id,
+        target_name=target_name,
+        target_state_resp=target_state_resp,
+        needs_video=needs_video,
+        what="that video" if needs_video else "that media",
     )
     if refusal is not None:
         return _refusal(target_id, target_state_resp, refusal[1], refusal[0])
-
-    powered_on, refusal = await _ensure_player_on(ha_client, target_id, target_name, target_state_resp)
-    if refusal is not None:
-        return _refusal(target_id, target_state_resp, refusal[1], refusal[0])
+    substitution = (
+        await _trace_substitution(span_collector, agent_id, target_id, target.entity_id) if target.substitute else None
+    )
 
     verify = await call_service_with_verification(
         ha_client,
         "media_player",
         "play_media",
-        target_id,
+        target.entity_id,
         service_data=service_data,
         expected_state=None,
-        previous_state=None if powered_on else verification_previous_state(target_state_resp),
+        previous_state=None if powered_on else verification_previous_state(target.state_resp),
     )
     prefix = f"I turned on {target_name}. " if powered_on else ""
     if not verify["success"]:
+        reason = "play_media_failed"
         if verify.get("approval") or verify.get("outcome") != "error":
             speech = failure_speech("play_media", target_name, verify)
         else:
@@ -800,7 +1225,23 @@ async def _play_media_on_player(
                 f"Sorry, {target_name} could not play that media. Home Assistant rejected the request; "
                 "the player may not support this content or format."
             )
-        return _refusal(target_id, target_state_resp, prefix + speech, "play_media_failed")
+            if screen_stream:
+                rejected, hint = await _stream_failure_hint(
+                    ha_client,
+                    entity_index,
+                    agent_id,
+                    stream_id=target.entity_id,
+                    target_name=target_name,
+                    error=verify.get("error"),
+                )
+                if rejected and hint:
+                    reason, speech = "stream_media_type_rejected", hint
+                elif hint:
+                    speech = f"{speech} {hint}"
+        result = _refusal(target_id, target_state_resp, prefix + speech, reason)
+        if substitution is not None:
+            result["metadata"]["stream_target_substituted"] = substitution
+        return result
 
     new_state = verify["observed_state"]
     speech = (
@@ -824,13 +1265,17 @@ async def _play_media_on_player(
         "executed_command": {
             "domain": "media_player",
             "service": "play_media",
-            "entity_id": target_id,
+            "entity_id": target.entity_id,
             "service_data": service_data,
         },
     }
     if powered_on:
         # A replay would skip the power-on step.
         result["cacheable"] = False
+    if substitution is not None:
+        # A replay would skip the twin's visibility and availability checks.
+        result["cacheable"] = False
+        result["metadata"] = {"stream_target_substituted": substitution}
     return result
 
 

@@ -250,6 +250,14 @@ async def _seed_defaults(db: aiosqlite.Connection) -> None:
             "HA label (id or name) that opts an input_datetime helper in as an alarm. Empty disables helper alarms.",
         ),
         (
+            "media.stream_prefer_cast",
+            "true",
+            "bool",
+            "agents",
+            "media-agent: stream camera pictures and video to the Google Cast entity of the same device "
+            "when the requested player is not a Cast entity.",
+        ),
+        (
             "wake_briefing.enabled",
             "true",
             "bool",

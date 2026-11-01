@@ -378,6 +378,12 @@ configuration.
 | `calendar.reminder_injection.offsets` | `[1440, 60, 15]` | json | Reminder offset markers in minutes; per event only the closest applicable offset fires, once |
 | `calendar.reminder_injection.lookahead_hours` | `24` | int | How many hours ahead to look for upcoming calendar events |
 
+### Media Agent Settings
+
+| Key | Default | Type | Description |
+|-----|---------|------|-------------|
+| `media.stream_prefer_cast` | `true` | bool | Send camera pictures, videos, images and HLS streams requested on a player that is not a Google Cast entity to the one visible Cast entity of the same device (same manufacturer, model and device name). Audio and music are never redirected. `false` always streams to the named player. Seeded on startup; not on the dashboard Settings page. See [User Guide](user-guide.md#camera-on-a-tv-or-screen). |
+
 ## Custom Agents
 
 Custom agents are stored in the `custom_agents` table and registered at
