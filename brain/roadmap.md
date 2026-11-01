@@ -43,9 +43,12 @@ Live pipeline in board format — headings are columns, cards are
 
 - Music: play_media deadline, media_stop, unavailable players · priority: P1 · area: agents
   Outcome: `music_assistant.play_media` is cut off after 6 s (it blocks while
-  Music Assistant resolves a source); the executor then reads the player and
-  reports "Music Assistant has not started playback" unless a different item
-  is playing, instead of the dispatch timeout and a vague "sent" answer.
+  Music Assistant resolves a source); the executor then polls the player for
+  2 s more and reports "still loading, not started yet, may still start"
+  unless a different item is playing, instead of the dispatch timeout and a
+  vague "sent" answer. Live finding (trace 944c22ece2214b62, "Spiel Taylor
+  Swift"): the call took slightly over 6 s, the failure was spoken, the music
+  started right after; hence the grace period and the neutral wording.
   Also: `media_stop` action (a "stop" request no longer ends in a pause
   offer) and a command to an `unavailable` player is refused with "is
   unavailable right now" instead of "sent" (trace e6e90987c0654e78).
@@ -55,8 +58,8 @@ Live pipeline in board format — headings are columns, cards are
   Passed: ruff, music executor tests incl. new stalled-call, stop and
   unavailable-player cases. Not run against the live instance.
   Needs user verification: after deploy, say "stop" while music plays and
-  expect it to stop; with Spotify failing expect the spoken failure within
-  ~8 s; RPR1 still plays.
+  expect it to stop; with Spotify failing expect the spoken notice within
+  ~9 s; RPR1 still plays.
 
 - Voice Profiles: assign recorded voice turns to a profile · priority: P1 · area: voice
   Outcome: with opt-in `voice.speaker_id.keep_audio`, every confirmed voice

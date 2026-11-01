@@ -66,6 +66,10 @@ _REQUIRED_FEATURES: dict[str, tuple[int, str]] = {
 # Deadline for ``music_assistant.play_media``; it must stay below the agent
 # dispatch timeout so the player state can still be checked and spoken.
 _PLAY_MEDIA_TIMEOUT_SEC = 6.0
+# After the deadline the player is polled this long (the call still runs in Music Assistant), because a
+# slow source often starts a moment later. Deadline plus grace stays under the 10 s dispatch timeout.
+_PLAY_MEDIA_GRACE_SEC = 2.0
+_PLAY_MEDIA_POLL_SEC = 0.4
 
 _ALLOWED_DOMAINS: frozenset[str] = frozenset({"media_player"})
 
@@ -195,25 +199,32 @@ async def _verify_stalled_play_media(ha_client: Any, entity_id: str, before: dic
     """Verify result for a play_media call that outlived its deadline, else None.
 
     Music Assistant blocks ``music_assistant.play_media`` until its source
-    resolves (a rate-limited provider can take over a minute). The call is
-    only a success when the player is playing a different item than before
-    it; a player still idle, or still on the old item, means nothing started.
+    resolves (a slow or rate-limited provider can take from seconds to over a
+    minute). The call is only a success when the player is playing a different
+    item than before it; the player is polled for a short grace period because
+    playback often starts just after the deadline. Still idle, or still on the
+    old item, after that means nothing started yet.
     """
-    now_playing, now_media = _playing_media_id(await _read_player_state(ha_client, entity_id))
     was_playing, was_media = _playing_media_id(before)
-    if not now_playing or (was_playing and now_media == was_media):
-        return None
-    return {
-        "success": True,
-        "call_succeeded": True,
-        "outcome": VERIFY_REACHED,
-        "entity_id": entity_id,
-        "call_result": None,
-        "observed_state": "playing",
-        "verified": True,
-        "cacheable": False,
-        "error": None,
-    }
+    loop = asyncio.get_running_loop()
+    give_up_at = loop.time() + _PLAY_MEDIA_GRACE_SEC
+    while True:
+        now_playing, now_media = _playing_media_id(await _read_player_state(ha_client, entity_id))
+        if now_playing and not (was_playing and now_media == was_media):
+            return {
+                "success": True,
+                "call_succeeded": True,
+                "outcome": VERIFY_REACHED,
+                "entity_id": entity_id,
+                "call_result": None,
+                "observed_state": "playing",
+                "verified": True,
+                "cacheable": False,
+                "error": None,
+            }
+        if loop.time() >= give_up_at:
+            return None
+        await asyncio.sleep(_PLAY_MEDIA_POLL_SEC)
 
 
 def _relative_volume_level(state_resp: Any, delta: float) -> float | None:
@@ -398,8 +409,9 @@ async def execute_music_action(
                     "entity_id": entity_id,
                     "new_state": None,
                     "speech": (
-                        f"Music Assistant has not started playback on {friendly_name}. "
-                        "The music source may be slow, rate limited or unavailable."
+                        f"Music Assistant is still loading the music on {friendly_name} and has not started "
+                        "playback yet. It may still start in a moment; if not, the music source may be slow, "
+                        "rate limited or unavailable."
                     ),
                     "cacheable": False,
                 }

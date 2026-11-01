@@ -849,6 +849,8 @@ class TestMusicExecutor:
         self, ha_client, entity_matcher, entity_index, monkeypatch
     ):
         monkeypatch.setattr("app.agents.music_executor._PLAY_MEDIA_TIMEOUT_SEC", 0.05)
+        monkeypatch.setattr("app.agents.music_executor._PLAY_MEDIA_GRACE_SEC", 0.1)
+        monkeypatch.setattr("app.agents.music_executor._PLAY_MEDIA_POLL_SEC", 0.02)
         self._hanging_call_service(ha_client)
         ha_client.get_state = AsyncMock(return_value={"state": "idle", "attributes": {}})
         action = {"action": "play_media", "entity": "kitchen speaker", "parameters": {"media_id": "x"}}
@@ -857,16 +859,20 @@ class TestMusicExecutor:
 
         assert result["success"] is False
         assert result["cacheable"] is False
-        assert "has not started playback" in result["speech"]
+        assert "still loading" in result["speech"]
+        assert "may still start" in result["speech"]
 
     @pytest.mark.asyncio
     async def test_play_media_stalled_but_new_item_playing_is_success(
         self, ha_client, entity_matcher, entity_index, monkeypatch
     ):
         monkeypatch.setattr("app.agents.music_executor._PLAY_MEDIA_TIMEOUT_SEC", 0.05)
+        monkeypatch.setattr("app.agents.music_executor._PLAY_MEDIA_GRACE_SEC", 0.1)
+        monkeypatch.setattr("app.agents.music_executor._PLAY_MEDIA_POLL_SEC", 0.02)
         self._hanging_call_service(ha_client)
         ha_client.get_state = AsyncMock(
             side_effect=[
+                {"state": "idle", "attributes": {}},
                 {"state": "idle", "attributes": {}},
                 {"state": "playing", "attributes": {"media_content_id": "library://radio/1"}},
             ]
@@ -883,6 +889,8 @@ class TestMusicExecutor:
         self, ha_client, entity_matcher, entity_index, monkeypatch
     ):
         monkeypatch.setattr("app.agents.music_executor._PLAY_MEDIA_TIMEOUT_SEC", 0.05)
+        monkeypatch.setattr("app.agents.music_executor._PLAY_MEDIA_GRACE_SEC", 0.1)
+        monkeypatch.setattr("app.agents.music_executor._PLAY_MEDIA_POLL_SEC", 0.02)
         self._hanging_call_service(ha_client)
         playing = {"state": "playing", "attributes": {"media_content_id": "library://track/9"}}
         ha_client.get_state = AsyncMock(return_value=playing)
