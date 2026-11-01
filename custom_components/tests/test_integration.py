@@ -2919,7 +2919,7 @@ class TestRestFallbackContract(_WsStreamTestBase):
             closed = False
 
             def post(self, *args, **kwargs):
-                raise asyncio.TimeoutError
+                raise TimeoutError
 
         entity._session = _TimeoutSession()
 

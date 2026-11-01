@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from collections.abc import Mapping
 from typing import Any
@@ -191,7 +190,7 @@ async def _validate_connection(
                 return "cannot_connect"
             if not isinstance(data, dict) or data.get("status") != "ok":
                 return "cannot_connect"
-    except (aiohttp.ClientError, asyncio.TimeoutError):
+    except (TimeoutError, aiohttp.ClientError):
         return "cannot_connect"
     return None
 
