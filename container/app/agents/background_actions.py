@@ -413,6 +413,18 @@ _ANNOUNCE_VISIBILITY_AGENT = "timer-agent"
 _TTS_TO_LISTEN_DELAY = 10.0
 _DEFAULT_CHIME_URL = "media-source://media_source/local/notification.mp3"
 _CHIME_TO_TTS_DELAY = 1.5
+# Ring sounds shipped in the dashboard static directory (built by scripts/gen_ring_sounds.py), name -> length in
+# seconds. They are public like the rest of /dashboard/static, so a satellite can fetch them without a session.
+_RING_SOUND_SECONDS = {"timer": 6.0, "alarm": 7.5}
+_RING_SOUND_PATH = "/dashboard/static/sounds/{name}.wav"
+
+
+def _ring_sound_url(profile: dict, sound: str | None) -> str | None:
+    """Absolute URL of the ring sound, or None when sounds are off or no ``sound_base_url`` is configured."""
+    base = str(profile.get("sound_base_url") or "").strip().rstrip("/")
+    if not sound or sound not in _RING_SOUND_SECONDS or not base or not profile.get("ring_sounds_enabled", True):
+        return None
+    return base + _RING_SOUND_PATH.format(name=sound)
 
 
 async def _resolve_notification_language(ha_client: Any, metadata: Any = None) -> str:
@@ -483,8 +495,12 @@ async def _deliver_announcement(
     entity_index: Any,
     profile: dict,
     kind_label: str,
+    sound: str | None = None,
 ) -> None:
     """Speak ``message`` on the best visible target and start follow-up only after success.
+
+    ``sound`` (``"timer"`` or ``"alarm"``) plays that ring sound first when the profile has a ``sound_base_url``:
+    as the satellite's pre-announce sound, or as the chime on the media-player fallback.
 
     A failed satellite announce falls back to TTS on a media player
     (origin device first, then the origin room).
@@ -502,9 +518,10 @@ async def _deliver_announcement(
         kind_label=kind_label,
     )
 
+    sound_url = _ring_sound_url(profile, sound)
     spoken_on: str | None = None
     if satellite_entity:
-        if await _notify_satellite_announce(ha_client, satellite_entity, message):
+        if await _notify_satellite_announce(ha_client, satellite_entity, message, preannounce_media_id=sound_url):
             spoken_on = satellite_entity
         elif not media_player:
             media_player = await _resolve_timer_playback_target(
@@ -516,7 +533,7 @@ async def _deliver_announcement(
                 )
     if spoken_on is None and media_player:
         if profile.get("chime_enabled", True):
-            await _play_chime(ha_client, media_player, profile)
+            await _play_chime(ha_client, media_player, profile, sound=sound)
         if await _notify_tts(ha_client, media_player, message, profile):
             spoken_on = media_player
     if spoken_on is None:
@@ -565,7 +582,13 @@ async def dispatch_timer_notification(
         message = await _localize_text(fallback, language)
 
     await _deliver_announcement(
-        ha_client, message=message, metadata=metadata, entity_index=entity_index, profile=profile, kind_label="Timer"
+        ha_client,
+        message=message,
+        metadata=metadata,
+        entity_index=entity_index,
+        profile=profile,
+        kind_label="Timer",
+        sound="timer",
     )
     await _deliver_text_channels(ha_client, profile, title=timer_name, message=message)
 
@@ -591,6 +614,7 @@ async def dispatch_alarm_notification(
         entity_index=entity_index,
         profile=profile,
         kind_label="Alarm",
+        sound="alarm",
     )
     await _deliver_text_channels(ha_client, profile, title=alarm_name, message=message)
 
@@ -723,8 +747,16 @@ async def _play_chime(
     ha_client: Any,
     media_player_entity: str,
     profile: dict,
+    *,
+    sound: str | None = None,
 ) -> None:
     chime_url = profile.get("chime_url", _DEFAULT_CHIME_URL)
+    delay = _CHIME_TO_TTS_DELAY
+    ring_url = _ring_sound_url(profile, sound)
+    # An explicitly configured chime_url wins over the shipped ring sound.
+    if ring_url and chime_url == _DEFAULT_CHIME_URL:
+        chime_url = ring_url
+        delay = _RING_SOUND_SECONDS[str(sound)] + 0.5
     try:
         await ha_client.call_service(
             "media_player",
@@ -736,7 +768,7 @@ async def _play_chime(
             },
         )
         logger.info("Chime played on %s", media_player_entity)
-        await asyncio.sleep(_CHIME_TO_TTS_DELAY)
+        await asyncio.sleep(delay)
     except asyncio.CancelledError:
         raise
     except Exception:
@@ -788,18 +820,19 @@ async def _notify_satellite_announce(
     ha_client: Any,
     satellite_entity: str,
     message: str,
+    *,
+    preannounce_media_id: str | None = None,
 ) -> bool:
-    """Announce ``message`` on an assist satellite; returns True on success."""
+    """Announce ``message`` on an assist satellite; returns True on success.
+
+    ``preannounce_media_id`` replaces the satellite's default pre-announce sound.
+    """
+    data: dict[str, Any] = {"message": message}
+    if preannounce_media_id:
+        data["preannounce_media_id"] = preannounce_media_id
     try:
-        await ha_client.call_service(
-            "assist_satellite",
-            "announce",
-            satellite_entity,
-            {
-                "message": message,
-            },
-        )
-        logger.info("Assist satellite announce sent to %s", satellite_entity)
+        await ha_client.call_service("assist_satellite", "announce", satellite_entity, data)
+        logger.info("Assist satellite announce sent to %s: %s", satellite_entity, message)
         return True
     except asyncio.CancelledError:
         raise
@@ -865,6 +898,8 @@ async def _load_notification_profile() -> dict:
         "tts_to_listen_delay": 10.0,
         "chime_enabled": True,
         "chime_url": _DEFAULT_CHIME_URL,
+        "ring_sounds_enabled": True,
+        "sound_base_url": "",
     }
     try:
         raw = await SettingsRepository.get_value("notification.profile")

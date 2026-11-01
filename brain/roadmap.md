@@ -41,6 +41,20 @@ Live pipeline in board format — headings are columns, cards are
 
 ## Testing
 
+- Timer and alarm ring sounds · priority: P2 · area: agents
+  Outcome: timers play a three-chime sound (about 6 s) and alarms their own
+  four-beep sound (about 7.5 s) before the spoken announcement, as the
+  satellite's pre-announce sound (media-player fallback: chime). Files live in
+  `dashboard/static/sounds/` (`scripts/gen_ring_sounds.py`). Active only with
+  `sound_base_url` set in the notification profile; otherwise the satellite's
+  own announce sound stays.
+  Passed: ruff, notification tests incl. new ring-sound cases. Not played on a
+  real satellite yet.
+  Needs user verification: set `sound_base_url` (for example
+  `http://192.168.120.200:6081`), let a timer and an alarm ring on the Echo
+  Show 8; check the sounds play and the message follows (also for an unnamed
+  timer, where only the announce sound was heard so far).
+
 - Voice Profiles: assign recorded voice turns to a profile · priority: P1 · area: voice
   Outcome: with opt-in `voice.speaker_id.keep_audio`, every confirmed voice
   turn with an embedding is kept 30 days (WAV + embedding + result, linked to
