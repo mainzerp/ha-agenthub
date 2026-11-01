@@ -318,6 +318,22 @@ async def _trace_memory_retrieval(
             )
 
 
+# ``memory_retrieval`` span ``skip_reason`` for a turn that never searched memory.
+MEMORY_SKIP_STATELESS_TASK = "stateless_task"
+
+
+async def _record_memory_retrieval_skipped(span_collector: Any, reason: str) -> None:
+    """Record a ``memory_retrieval`` span for a turn that skipped the memory search.
+
+    Keeps the trace explicit (``skipped`` plus ``skip_reason``) instead of
+    leaving the span out. Trace only.
+    """
+    async with _optional_span(span_collector, "memory_retrieval", agent_id="orchestrator") as span:
+        span["metadata"]["skipped"] = True
+        span["metadata"]["skip_reason"] = reason
+        span["metadata"]["match_count"] = 0
+
+
 async def _search_memory_after_speaker(
     memory_service: Any,
     user_text: str,
@@ -1478,6 +1494,13 @@ class OrchestratorAgent(BaseAgent):
         # no exit path leaves one running.
         try:
             memory_service = get_memory_service()
+            if stateless_task:
+                # Stateless AI-task turns carry automation prompts, not
+                # conversation: past sessions must never steer them. The
+                # skip is traced only where a search would have run.
+                if memory_service is not None and await memory_service.is_enabled():
+                    await _record_memory_retrieval_skipped(span_collector, MEMORY_SKIP_STATELESS_TASK)
+                memory_service = None
             if memory_service is not None and await memory_service.is_enabled():
                 # Personalization identity for the memory bucket: the request's HA
                 # user, else (when a speaker lookup is pending) the HA user linked

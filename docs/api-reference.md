@@ -1479,7 +1479,9 @@ Identity fields (top level, all nullable):
 - `user_name`, `user_name_source` -- resolved requesting person and the name's source, stored on the summary row (see the list endpoint).
 - `speaker` -- outcome of the first `speaker_id` span, or `null` when the turn had no speaker lookup: `status`, `speaker_name`, `profile_id`, `score`, `margin`, `duration_s`, `speaker_ha_user_id` (the matched profile's linked HA user; only for `identified`).
 
-Session memory: the `memory_retrieval` span metadata carries `scope` (effective
+Session memory: a skipped search (AI-task turns) records a `memory_retrieval` span with
+`skipped: true`, `skip_reason: "stateless_task"` and `match_count: 0`. Otherwise the
+`memory_retrieval` span metadata carries `scope` (effective
 `memory.scope`), `search_user_id` (personalization user id the search used, `null`
 for the anonymous bucket) and, when the search matched, `memories` -- one entry per
 match (at most 10): `conversation_id`, `session_id`, `turn_id`, `similarity`

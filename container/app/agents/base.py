@@ -42,6 +42,7 @@ _KNOWN_PROMPT_NAMES = (
     "entity_not_found",
     "filler",
     "general",
+    "general_ai_task",
     "light",
     "lists",
     "localize",

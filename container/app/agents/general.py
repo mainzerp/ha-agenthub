@@ -25,7 +25,7 @@ from app.agents.tool_calling import (
     call_llm_with_mcp_tools_stream,
 )
 from app.analytics.tracer import _optional_span
-from app.models.agent import AgentCard, AgentErrorCode, DispatchTask, TaskResult
+from app.models.agent import AgentCard, AgentErrorCode, DispatchTask, TaskResult, source_is_stateless_task
 
 logger = logging.getLogger(__name__)
 
@@ -127,6 +127,11 @@ class GeneralAgent(BaseAgent):
             ),
             sequential_send=bool(task.context and task.context.sequential_send),
         )
+        # Stateless AI task: the instruction is a one-shot generation task
+        # whose output is the deliverable, never a request to change this
+        # assistant's behavior. Static text, so it extends the stable head.
+        if task.context and source_is_stateless_task(task.context.source):
+            system_prompt += "\n\n" + await self._load_prompt_async("general_ai_task")
         # Session memory: appended AFTER the byte-stable static head
         # (prefix-cache constraint). Matches are score-annotated suggestions,
         # never verified facts.

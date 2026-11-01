@@ -98,6 +98,8 @@ def _build_response(span_name: str, metadata: dict) -> str:
         return target or service or ""
 
     if span_name == "memory_retrieval":
+        if metadata.get("skipped"):
+            return f"skipped ({metadata.get('skip_reason') or 'unknown'})"
         match_count = metadata.get("match_count")
         if match_count:
             text = f"{match_count} session match(es)"

@@ -147,6 +147,9 @@ class TestBuildResponse:
             == "2 session match(es), top sim 0.91"
         )
         assert _build_response("memory_retrieval", {"match_count": 0}) == "no session match"
+        assert _build_response(
+            "memory_retrieval", {"skipped": True, "skip_reason": "stateless_task", "match_count": 0}
+        ) == ("skipped (stateless_task)")
         assert _build_response("memory_retrieval", {"match_count": 1, "abandoned": True}) == (
             "1 session match(es) (abandoned)"
         )

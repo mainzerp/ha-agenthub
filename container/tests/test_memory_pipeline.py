@@ -376,6 +376,56 @@ class TestPreludeMemoryTask:
         service.search.assert_not_called()
         assert task.context.memory_context is None
 
+    async def test_stateless_ai_task_skips_memory_search_and_traces_reason(self):
+        orch = _make_orchestrator()
+        orch._cache_orchestrator.try_cache_replay = AsyncMock(return_value=(None, None))
+        orch._classification_engine.classify = AsyncMock(
+            return_value=([("general-agent", "Sarcastic one-liner about the TV", 0.9)], False)
+        )
+        service = _make_memory_service()
+        collector = _FakeSpanCollector()
+        task = IngressTask(
+            description="#Always answer with one quip.\nMock that the TV is on again.",
+            conversation_id="conv-ai-task-mem",
+            context=TaskContext(language="en", source="ai_task"),
+        )
+        task.span_collector = collector
+
+        with patch("app.agents.orchestrator.get_memory_service", return_value=service):
+            prelude = await orch._run_pipeline_prelude(task)
+
+        assert prelude.early_exit is None
+        service.search.assert_not_called()
+        assert task.context.memory_context is None
+        span = collector.spans.get("memory_retrieval")
+        assert span is not None
+        assert span["metadata"]["skipped"] is True
+        assert span["metadata"]["skip_reason"] == "stateless_task"
+        assert span["metadata"]["match_count"] == 0
+        assert ("close", "memory_retrieval") in collector.order
+
+    async def test_stateless_ai_task_with_memory_disabled_records_no_span(self):
+        orch = _make_orchestrator()
+        orch._cache_orchestrator.try_cache_replay = AsyncMock(return_value=(None, None))
+        orch._classification_engine.classify = AsyncMock(
+            return_value=([("general-agent", "Sarcastic one-liner", 0.9)], False)
+        )
+        service = _make_memory_service()
+        service.is_enabled = AsyncMock(return_value=False)
+        collector = _FakeSpanCollector()
+        task = IngressTask(
+            description="Say something",
+            conversation_id="conv-ai-task-mem-off",
+            context=TaskContext(language="en", source="ai_task"),
+        )
+        task.span_collector = collector
+
+        with patch("app.agents.orchestrator.get_memory_service", return_value=service):
+            await orch._run_pipeline_prelude(task)
+
+        service.search.assert_not_called()
+        assert "memory_retrieval" not in collector.spans
+
 
 # ---------------------------------------------------------------------------
 # GeneralAgent system-prompt injection
@@ -434,3 +484,55 @@ class TestGeneralAgentMemoryBlock:
     async def test_no_memory_block_with_empty_matches(self):
         system = await self._build_system_prompt([])
         assert "## Possibly related past conversations" not in system
+
+
+class TestGeneralAgentAiTaskAddendum:
+    """Stateless AI-task turns get the one-shot generation addendum."""
+
+    @staticmethod
+    async def _build_system_prompt(source: str, memory_context=None) -> str:
+        agent = GeneralAgent()
+
+        async def _load(name: str) -> str:
+            return {"general": "STATIC HEAD.", "general_ai_task": "AI TASK ADDENDUM."}[name]
+
+        task = DispatchTask(
+            description="Sarcastic quip that the TV is on again",
+            conversation_id="conv-task",
+            context=TaskContext(language="en", source=source, memory_context=memory_context),
+        )
+        with patch.object(agent, "_load_prompt_async", new=_load):
+            messages, _ = await agent._build_messages(task)
+        return messages[0]["content"]
+
+    async def test_ai_task_source_appends_addendum_right_after_static_head(self):
+        system = await self._build_system_prompt("ai_task")
+        assert system.startswith("STATIC HEAD.")
+        assert "AI TASK ADDENDUM." in system
+
+    async def test_other_sources_get_no_addendum(self):
+        for source in ("ha", "chat", "api", "openai"):
+            system = await self._build_system_prompt(source)
+            assert "AI TASK ADDENDUM." not in system
+
+    async def test_addendum_precedes_memory_block(self):
+        system = await self._build_system_prompt(
+            "ai_task",
+            memory_context=[
+                {
+                    "conversation_id": "c",
+                    "similarity": 0.9,
+                    "snippet_turns": [{"user_text": "x", "response_text": "y"}],
+                    "last_turn_at": 1754400000,
+                }
+            ],
+        )
+        assert system.index("AI TASK ADDENDUM.") < system.index("## Possibly related past conversations")
+
+    def test_shipped_addendum_tells_the_model_to_generate_not_refuse(self):
+        from app.agents.base import _prompt_path
+
+        text = _prompt_path("general_ai_task").read_text(encoding="utf-8")
+        assert "one-shot" in text
+        assert "deliverable" in text
+        assert "never refuse because you cannot remember" in text
