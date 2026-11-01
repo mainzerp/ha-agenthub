@@ -66,10 +66,19 @@ Live pipeline in board format — headings are columns, cards are
   `integration/trace-review-2026-11`; migration 55 (presence owns 54); not
   pushed.
   Passed: `scripts/ci.py` full gate on the integration branch (see the
-  presence card). Not run: real HA or TV.
-  Needs user verification: `camera.play_stream` on the Box R 4K Plus and an
-  Echo Show in Developer tools (HLS accepted?); then the voice request;
-  the 4 s power-on wait is enough; routing stays on media-agent.
+  presence card). Not run: real TV via the agent.
+  Live check 2026-11-01 (HA service call, not via the agent): on the TV box
+  only the Google Cast entity (`media_player.box_r_4k_plus`) plays the
+  stream as video (2.1 s); the Android TV Remote entity (`..._8`, class
+  `tv`) rejects it ("Invalid media type"), a Music Assistant player (`..._5`)
+  plays only audio and blocked 11.3 s (over the 10 s dispatch budget). The
+  two doorbell cameras had no stream feature; the Eingang camera
+  (`camera.eingang_entry_high_resolution_channel`) does.
+  Next step: alias the Cast entity as the TV and hide the other box entities
+  from the media agent for streams (user config), then run the voice request.
+  Needs user verification: "Zeig die Eingangskamera auf dem Fernseher"
+  shows the picture; the 4 s power-on wait is enough; routing stays on
+  media-agent; an Echo Show is untested.
 
 - Calendar: week queries and kept clarifications · priority: P1 · area: agents
   Outcome: "Termine diese Woche" yields a `list_events` instead of "could not
