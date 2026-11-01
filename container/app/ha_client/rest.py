@@ -40,6 +40,65 @@ _direct_ha_write_warning_count = 0
 # may send them, so the approval backstop always applies.
 _SERVICE_WS_COMMANDS: frozenset[str] = frozenset({"call_service", "execute_script"})
 
+# One render for every media_player: Cast membership (``integration_entities``
+# is the authoritative platform check), the device's identifier domains and
+# its manufacturer / model / integration-reported name. ``device_attr``
+# raises on a None id, so it only runs behind ``if did``.
+MEDIA_PLAYER_IDENTITY_TEMPLATE = (
+    "{% set ns = namespace(items=[]) %}"
+    "{% set cast = integration_entities('cast') %}"
+    "{% for s in states.media_player %}"
+    "{% set did = device_id(s.entity_id) %}"
+    "{% if did %}"
+    "{% set ns.items = ns.items + [{'id': s.entity_id, 'cast': s.entity_id in cast, "
+    "'integrations': (device_attr(did, 'identifiers') or []) | map('first') | unique | list, "
+    "'manufacturer': device_attr(did, 'manufacturer'), 'model': device_attr(did, 'model'), "
+    "'name': device_attr(did, 'name')}] %}"
+    "{% else %}"
+    "{% set ns.items = ns.items + [{'id': s.entity_id, 'cast': s.entity_id in cast}] %}"
+    "{% endif %}{% endfor %}"
+    "{{ ns.items | tojson }}"
+)
+
+
+def _optional_text(value: Any) -> str | None:
+    text = str(value).strip() if isinstance(value, (str, int, float)) and not isinstance(value, bool) else ""
+    return text or None
+
+
+def parse_media_player_identities(rows: list[Any]) -> dict[str, Any]:
+    """Parse the rows of :data:`MEDIA_PLAYER_IDENTITY_TEMPLATE`.
+
+    Rows that are not objects or lack a ``media_player.*`` id are skipped.
+    """
+    result: dict[str, Any] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        eid = row.get("id")
+        if not isinstance(eid, str) or not eid.startswith("media_player."):
+            continue
+        raw_integrations = row.get("integrations")
+        integrations = sorted(
+            {str(item) for item in raw_integrations if isinstance(item, str) and item}
+            if isinstance(raw_integrations, list)
+            else set()
+        )
+        if row.get("cast") is True:
+            platform: str | None = "cast"
+        elif len(integrations) == 1:
+            platform = integrations[0]
+        else:
+            platform = None
+        result[eid] = {
+            "platform": platform,
+            "integrations": integrations,
+            "manufacturer": _optional_text(row.get("manufacturer")),
+            "model": _optional_text(row.get("model")),
+            "name": _optional_text(row.get("name")),
+        }
+    return result
+
 
 @contextmanager
 def allow_internal_ha_service_calls(source: str) -> Iterator[None]:
@@ -648,6 +707,22 @@ class HARestClient:
             return result
 
         return await self._fetch_registry_lookup("device_registry", template, _parse)
+
+    async def get_media_player_identities(self) -> dict[str, dict[str, Any]]:
+        """Return ``{entity_id: identity}`` for every ``media_player`` entity.
+
+        ``identity`` holds ``platform`` (``"cast"`` for entities of the Google
+        Cast integration, else the device's identifier domain when it has
+        exactly one, else None), ``integrations`` (the device's identifier
+        domains) and the device's ``manufacturer``, ``model`` and ``name``
+        (the integration-reported name, not ``name_by_user``). Entities
+        without a device carry None identity fields. One template render,
+        cached and failing soft like the other registry lookups (see
+        :func:`parse_media_player_identities`).
+        """
+        return await self._fetch_registry_lookup(
+            "media_player_identities", MEDIA_PLAYER_IDENTITY_TEMPLATE, parse_media_player_identities
+        )
 
     @property
     def hidden_entity_ids_loaded(self) -> bool:
