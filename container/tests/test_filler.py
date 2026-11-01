@@ -527,3 +527,12 @@ class TestFillerSafePromptRendering:
 # ---------------------------------------------------------------------------
 # Language detection
 # ---------------------------------------------------------------------------
+
+
+class TestFillerEligibleAgents:
+    """Agents whose card declares high latency are eligible for the interim filler."""
+
+    def test_music_agent_is_declared_high_latency(self):
+        from app.agents.actionable import MusicAgent
+
+        assert MusicAgent._agent_meta["expected_latency"] == "high"

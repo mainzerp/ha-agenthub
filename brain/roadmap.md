@@ -49,6 +49,9 @@ Live pipeline in board format — headings are columns, cards are
   vague "sent" answer. Live finding (trace 944c22ece2214b62, "Spiel Taylor
   Swift"): the call took slightly over 6 s, the failure was spoken, the music
   started right after; hence the grace period and the neutral wording.
+  music-agent is also declared `expected_latency="high"` so the interim
+  filler is spoken while Music Assistant loads (trace 1531fb428c6c4acb: no
+  filler was sent, the notice came after 9.7 s). Filler needs `filler.enabled`.
   Also: `media_stop` action (a "stop" request no longer ends in a pause
   offer) and a command to an `unavailable` player is refused with "is
   unavailable right now" instead of "sent" (trace e6e90987c0654e78).

@@ -367,7 +367,8 @@ on the SSE/WS streams.
   action-cache check and language detection, in parallel with
   classification and without a target agent (generic filler). After
   routing the task is reused only for a high-latency target
-  (`expected_latency == "high"`, single-agent or sequential-send);
+  (`expected_latency == "high"`: general-agent and music-agent;
+  single-agent or sequential-send);
   otherwise it is discarded. With the setting off generation starts at
   dispatch. The threshold is measured from request start either way:
   the filler is pushed as soon as routing confirms an eligible target
