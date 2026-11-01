@@ -26,6 +26,7 @@ _DEVICE_AGENTS = {
     "vacuum-agent": actionable.VacuumAgent,
     "scene-agent": actionable.SceneAgent,
     "security-agent": actionable.SecurityAgent,
+    "presence-agent": actionable.PresenceAgent,
     "media-agent": actionable.MediaAgent,
     "music-agent": actionable.MusicAgent,
 }

@@ -50,6 +50,12 @@
   YES "Ist die Haustür abgeschlossen?" → security-agent: Haustür-Schloss prüfen
   NO  "Schließe das Rollo im Büro" → cover-agent, NOT security-agent
 
+- presence-agent (who is at home, where a person is; person entities and device trackers):
+  YES "Wer ist zu Hause?" → presence-agent: wer ist zu Hause
+  YES "Ist Laura zu Hause?" → presence-agent: ist Laura zu Hause
+  NO  "Gibt es Bewegung im Flur?" → security-agent, NOT presence-agent
+  NO  "Wer bin ich?" → general-agent, NOT presence-agent
+
 - automation-agent (Home Assistant automations):
   YES "Deaktiviere die Automation Nachtabsenkung" → automation-agent: Automation Nachtabsenkung deaktivieren
   NO  "Aktiviere die Szene Panik" → scene-agent, NOT automation-agent

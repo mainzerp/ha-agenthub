@@ -1,0 +1,25 @@
+id: presence.where_is_nora_zone
+agent: presence-agent
+description: A named person in a named zone
+snapshot: home_default
+language: en
+context: {source: ha, area_id: hallway, device_id: satellite_living_room}
+preconditions:
+  entity_overrides:
+    - {entity_id: person.laura, state: "home", attributes: {friendly_name: "Laura"}}
+    - {entity_id: person.nora, state: "Work", attributes: {friendly_name: "Nora", latitude: 50.0, longitude: 8.2}}
+llm:
+  classify: |
+    presence-agent (95%): where is Nora
+  agents:
+    presence-agent: |
+      ```json
+      {"action": "query_presence", "entity": "Nora", "parameters": {}}
+      ```
+request:
+  text: "where is Nora?"
+expected:
+  routed_agent: presence-agent
+  service_calls: []
+  speech_contains: ["Nora is not at home, but in the zone Work"]
+  speech_excludes: ["50.0", "8.2"]

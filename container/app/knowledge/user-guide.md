@@ -267,7 +267,7 @@ Calendar behavior in conversation:
 
 ![Persons page showing HA person-entity mapping](screenshots/17_persons.png)
 
-The **Persons** page at `/dashboard/persons` maps Home Assistant person entities. This mapping helps agents resolve references to people ("tell John", "when Sarah gets home") by linking the person name to the corresponding HA `person.*` entity.
+The **Persons** page at `/dashboard/persons` maps Home Assistant person entities. This mapping helps agents resolve references to people ("tell John", "when Sarah gets home") by linking the person name to the corresponding HA `person.*` entity. Questions about who is home are answered by the presence agent (see [Common Workflows](#common-workflows)).
 
 When a request carries a Home Assistant user (Companion App, the Assist dialog in Home Assistant, a mapped Open WebUI user), the person linked to that user (the person's **User** setting in Home Assistant) names the requesting user: the general agent and the timer agent know the name ("who am I?", a personal greeting, a reminder label), a personality reply may address the user by name, and a sent message is titled "Message from <name>". This name wins over a recognized voice. A user without a linked person stays unnamed. The name is wording only and never changes what the user may see or control; an answer that names the user is never replayed from the cache to someone else: cached answers keep only the agent's own reply (never the personality reply), and commands handled by the general or timer agent (or another agent that knows the name) are not stored as cached answers, only their routing. A renamed or relinked person is picked up on the next request; otherwise the name list is refreshed every 5 minutes in the background.
 
@@ -416,6 +416,12 @@ These short procedures link the dashboard pages described above.
 12. **Work with to-do lists**
     - Name the list ("add milk to the shopping list"); without a name the only visible list is used, and with several lists the agent asks which one.
     - Items match exactly first, then by a unique partial match; if several items match ("milk" with "oat milk" and "almond milk"), the agent asks which one.
+
+13. **Ask who is home**
+    - Enable **presence-agent** on the **Agents** page (it is disabled by default because it reads personal location data).
+    - Ask "who is home?", "how many people are home?", "is Laura home?" or "where is Patric?". The answer comes from the live state of the Home Assistant `person` entities: at home, not at home, or the name of the zone the person is in (for example Work). A named device tracker ("is my phone at home?") works too.
+    - Counts include only people with a `person` entity; guests without one are not counted. Answers reflect the current state only, not who was home earlier today.
+    - The agent never changes anything and never speaks coordinates. Its visibility rules decide which people it may report: a hidden person gets the same answer as an unknown name ("I could not find a person named ...").
 
 ## Use HA-AgentHub from Automations
 

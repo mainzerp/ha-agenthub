@@ -209,6 +209,7 @@ The integration does not resolve entities, classify intent, or execute Home Assi
 | `scene-agent` | Scene activation and related actions | Registered when enabled |
 | `automation-agent` | Automation enable, disable, and trigger flows | Registered when enabled |
 | `security-agent` | Locks, alarms, cameras, and related security queries | Registered when enabled |
+| `presence-agent` | Read-only presence: who is home, head count, a person's zone (`person`, `device_tracker`) | Registered when enabled; seeded disabled |
 | `send-agent` | Delivery to notify targets and satellites | Registered when enabled |
 | `lists-agent` | Todo and shopping list management | Registered when enabled |
 | custom agents | Database-backed runtime agents | Loaded through the custom-agent loader |

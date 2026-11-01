@@ -31,6 +31,7 @@ from app.agents.actionable import (  # noqa: E402
     LightAgent,
     MediaAgent,
     MusicAgent,
+    PresenceAgent,
     SceneAgent,
     SecurityAgent,
     VacuumAgent,
@@ -54,6 +55,7 @@ _AGENTS = {
         "security",
         "_handle_security_read_action",
     ),
+    PresenceAgent: ("app.agents.presence_executor", "execute_presence_action", "presence", None),
     MediaAgent: ("app.agents.media_executor", "execute_media_action", "media", "_handle_media_read_action"),
     MusicAgent: ("app.agents.music_executor", "execute_music_action", "music", "_handle_music_read_action"),
     AutomationAgent: (
@@ -74,6 +76,7 @@ _EXPECTED_ENTITY_FREE = {
     VacuumAgent: {"list_vacuums"},
     SceneAgent: {"list_scenes"},
     SecurityAgent: {"list_security"},
+    PresenceAgent: {"list_presence"},
     MediaAgent: {"list_media_players"},
     MusicAgent: {"list_music_players"},
     AutomationAgent: {"create_automation", "list_automations"},

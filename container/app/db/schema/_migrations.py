@@ -29,6 +29,8 @@ from app.db.schema._tables import VOICE_TURNS_DDL, VOICE_TURNS_INDEXES
 from app.defaults import (
     AI_TASK_HELPER_AGENT_CONFIGS,
     CACHE_DEFAULTS,
+    PRESENCE_AGENT_CONFIG,
+    PRESENCE_AGENT_VISIBILITY_RULES,
     VOICE_AUDIO_RETENTION_DESCRIPTION,
     VOICE_DEFAULTS,
     VOICE_KEEP_AUDIO_DESCRIPTION,
@@ -1166,6 +1168,23 @@ async def _migrate_to_53(db: aiosqlite.Connection) -> None:
     await db.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (53)")
 
 
+async def _migrate_to_54(db: aiosqlite.Connection) -> None:
+    # Migration 54: presence-agent config row (disabled by default, opt-in)
+    # and its visibility rules (person, device_tracker). Idempotent: INSERT
+    # OR IGNORE keeps an admin-edited row and existing rules.
+    await db.execute(
+        "INSERT OR IGNORE INTO agent_configs "
+        "(agent_id, enabled, model, timeout, max_iterations, temperature, max_tokens, description) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        PRESENCE_AGENT_CONFIG,
+    )
+    await db.executemany(
+        "INSERT OR IGNORE INTO entity_visibility_rules (agent_id, rule_type, rule_value) VALUES (?, ?, ?)",
+        PRESENCE_AGENT_VISIBILITY_RULES,
+    )
+    await db.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (54)")
+
+
 # Ordered registry of (version, migration_callable). Each migration records
 # its own version marker. Applied in ascending order for versions greater
 # than the current schema version.
@@ -1222,6 +1241,7 @@ MIGRATIONS: list[tuple[int, Callable[[aiosqlite.Connection], Awaitable[None]]]] 
     (51, _migrate_to_51),
     (52, _migrate_to_52),
     (53, _migrate_to_53),
+    (54, _migrate_to_54),
 ]
 
 

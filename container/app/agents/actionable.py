@@ -23,6 +23,7 @@ from app.agents import (
     light_executor,
     media_executor,
     music_executor,
+    presence_executor,
     scene_executor,
     security_executor,
     vacuum_executor,
@@ -1456,8 +1457,8 @@ class ActionableAgent(BaseAgent):
 class _ConfigurableDomainAgent(ActionableAgent):
     """Domain agent whose behaviour is driven by the @agent decorator metadata.
 
-    Standard agents (light, climate, cover, vacuum, scene, security, media,
-    music, automation) are instantiated through this class.  Agents that
+    Standard agents (light, climate, cover, vacuum, scene, security,
+    presence, media, music, automation) are instantiated through this class.  Agents that
     need unique logic (TimerAgent, ListsAgent, CalendarAgent) continue to
     use their own subclasses.
     """
@@ -1727,6 +1728,31 @@ class SceneAgent(_ConfigurableDomainAgent):
 )
 class SecurityAgent(_ConfigurableDomainAgent):
     pass
+
+
+@agent(
+    agent_id="presence-agent",
+    name="Presence Agent",
+    description=(
+        "Answers read-only questions about where the people of the household are, from Home "
+        "Assistant person entities and device trackers: who is at home or away, how many people "
+        "are at home, whether a named person is at home, and which zone a person is in (home, "
+        "away, or a named zone such as work). Never changes anything. Not for room occupancy or "
+        "motion sensors (security-agent) or for who the speaking user is (general-agent)."
+    ),
+    skills=["presence_query", "who_is_home", "people_count", "person_location"],
+    prompt_name="presence",
+    allowed_domains=frozenset({"person", "device_tracker"}),
+    executor_module="app.agents.presence_executor",
+    executor_name="execute_presence_action",
+    entity_actions=presence_executor.ENTITY_ACTIONS,
+    entity_free_actions=presence_executor.ENTITY_FREE_ACTIONS,
+    db_gated=True,
+)
+class PresenceAgent(_ConfigurableDomainAgent):
+    """Read-only presence answers; an unknown or hidden person gets one plain statement, no device question."""
+
+    _clarify_on_not_found = False
 
 
 @agent(

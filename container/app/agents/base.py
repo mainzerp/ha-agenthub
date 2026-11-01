@@ -55,6 +55,7 @@ _KNOWN_PROMPT_NAMES = (
     "orchestrator_examples_fr",
     "orchestrator_examples_it",
     "personality_base",
+    "presence",
     "query_expansion",
     "rewrite",
     "scene",

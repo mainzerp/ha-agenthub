@@ -99,3 +99,22 @@ AI_TASK_HELPER_AGENT_CONFIGS: tuple[tuple[str, int, str, int, int, float, int, s
         "Formats AI-task results as JSON for the requested structure",
     ),
 )
+
+# presence-agent config row (same shape as above) and its default visibility
+# rules (agent_id, rule_type, rule_value). Shared by the fresh-install seed
+# and migration 54. Disabled by default: presence is personal location data,
+# so the owner opts in on the Agents page.
+PRESENCE_AGENT_CONFIG: tuple[str, int, str, int, int, float, int, str] = (
+    "presence-agent",
+    0,
+    "openrouter/openai/gpt-4o-mini",
+    5,
+    3,
+    0.2,
+    2048,
+    "Who is home: read-only person and device tracker presence",
+)
+PRESENCE_AGENT_VISIBILITY_RULES: tuple[tuple[str, str, str], ...] = (
+    ("presence-agent", "domain_include", "person"),
+    ("presence-agent", "domain_include", "device_tracker"),
+)

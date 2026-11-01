@@ -30,6 +30,7 @@ BUILT_IN_AGENT_IDS: frozenset[str] = frozenset(
         "scene-agent",
         "automation-agent",
         "security-agent",
+        "presence-agent",
         "send-agent",
         "rewrite-agent",
         "filler-agent",

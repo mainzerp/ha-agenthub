@@ -268,6 +268,11 @@ Default routable agents: `orchestrator`, `light-agent`, `music-agent`,
 `automation-agent`, `security-agent`, `general-agent`, `send-agent`
 (delivers messages to phones, satellites, and notification targets).
 
+`presence-agent` (who is home, read-only) is seeded disabled because it reads
+personal location data; enable it on the Agents page. Its default visibility
+rules include the `person` and `device_tracker` domains; narrow them there to
+limit which people it may report.
+
 ### AI task helper models
 
 Two `agent_configs` rows configure the models of the AI-task endpoint

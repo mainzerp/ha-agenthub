@@ -19,6 +19,7 @@ data/
     music/
     scene/
     security/
+    presence/
     automation/
     timer/
     general/

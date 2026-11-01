@@ -1,0 +1,24 @@
+id: presence.is_laura_home
+agent: presence-agent
+description: A named person who is at home
+snapshot: home_default
+language: en
+context: {source: ha, area_id: hallway, device_id: satellite_living_room}
+preconditions:
+  entity_overrides:
+    - {entity_id: person.laura, state: "home", attributes: {friendly_name: "Laura"}}
+    - {entity_id: person.max, state: "not_home", attributes: {friendly_name: "Max"}}
+llm:
+  classify: |
+    presence-agent (95%): is Laura home
+  agents:
+    presence-agent: |
+      ```json
+      {"action": "query_presence", "entity": "Laura", "parameters": {}}
+      ```
+request:
+  text: "is Laura home?"
+expected:
+  routed_agent: presence-agent
+  service_calls: []
+  speech_contains: ["Laura is at home"]
