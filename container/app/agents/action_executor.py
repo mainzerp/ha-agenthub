@@ -425,6 +425,8 @@ _ACTIONS_WITHOUT_ENTITY: frozenset[str] = frozenset(
         "list_music_players",
         "query_weather",
         "query_weather_forecast",
+        # Presence agent: who is home (every visible person)
+        "list_presence",
         # Automation: list, and create (no pre-existing entity)
         "list_automations",
         "create_automation",

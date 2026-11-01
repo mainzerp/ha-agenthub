@@ -207,6 +207,7 @@ def _build_agent_classes():
         LightAgent,
         MediaAgent,
         MusicAgent,
+        PresenceAgent,
         SceneAgent,
         SecurityAgent,
     )
@@ -223,6 +224,7 @@ def _build_agent_classes():
         "music-agent": MusicAgent,
         "scene-agent": SceneAgent,
         "security-agent": SecurityAgent,
+        "presence-agent": PresenceAgent,
         "automation-agent": AutomationAgent,
         "timer-agent": TimerAgent,
         "general-agent": GeneralAgent,

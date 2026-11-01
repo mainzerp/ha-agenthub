@@ -8,6 +8,8 @@ from app.defaults import (
     CACHE_DEFAULTS,
     DEFAULT_LOCAL_EMBEDDING_MODEL,
     MEMORY_DEFAULTS,
+    PRESENCE_AGENT_CONFIG,
+    PRESENCE_AGENT_VISIBILITY_RULES,
     VOICE_AUDIO_RETENTION_DESCRIPTION,
     VOICE_DEFAULTS,
     VOICE_KEEP_AUDIO_DESCRIPTION,
@@ -663,6 +665,7 @@ async def _seed_defaults(db: aiosqlite.Connection) -> None:
         ("scene-agent", 0, "openrouter/openai/gpt-4o-mini", 5, 3, 0.2, 2048, "Scene activation"),
         ("automation-agent", 0, "openrouter/openai/gpt-4o-mini", 5, 3, 0.2, 2048, "Automation management"),
         ("security-agent", 0, "openrouter/openai/gpt-4o-mini", 5, 3, 0.2, 2048, "Security system control"),
+        PRESENCE_AGENT_CONFIG,
         ("lists-agent", 0, "openrouter/openai/gpt-4o-mini", 5, 3, 0.2, 2048, "Todo and shopping list management"),
         (
             "send-agent",
@@ -757,6 +760,7 @@ async def _seed_defaults(db: aiosqlite.Connection) -> None:
         ("security-agent", "domain_include", "alarm_control_panel"),
         ("security-agent", "domain_include", "lock"),
         ("security-agent", "domain_include", "camera"),
+        *PRESENCE_AGENT_VISIBILITY_RULES,
         # Sensor device_class rules for specialist agents
         ("climate-agent", "domain_include", "sensor"),
         ("climate-agent", "device_class_include", "temperature"),

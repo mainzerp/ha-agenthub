@@ -1,0 +1,24 @@
+id: presence.de_wie_viele_zu_hause
+agent: presence-agent
+description: German count question from trace bde6053f8481421f
+snapshot: home_default
+language: de
+context: {source: ha, area_id: hallway, area_name: "Flur", device_id: satellite_living_room}
+preconditions:
+  entity_overrides:
+    - {entity_id: person.laura, state: "home", attributes: {friendly_name: "Laura"}}
+    - {entity_id: person.max, state: "home", attributes: {friendly_name: "Max"}}
+llm:
+  classify: |
+    presence-agent (90%): Anzahl der anwesenden Personen im Haus
+  agents:
+    presence-agent: |
+      ```json
+      {"action": "list_presence", "entity": "", "parameters": {}}
+      ```
+request:
+  text: "Wie viele Leute sind heute hier im Haus anwesend?"
+expected:
+  routed_agent: presence-agent
+  service_calls: []
+  speech_contains: ["Laura", "Max"]

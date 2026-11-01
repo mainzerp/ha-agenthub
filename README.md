@@ -55,6 +55,7 @@ A multi-agent AI assistant for Home Assistant with container-based A2A orchestra
 | **Timer Agent** | `timer`, `input_datetime`, `input_boolean` | Timers, alarms, reminders |
 | **Automation Agent** | `automation`, `script` | Trigger, enable, disable, and query automations |
 | **Security Agent** | `lock`, `alarm_control_panel`, `camera`, `binary_sensor`, `sensor` | Arm/disarm, lock/unlock (unlock, arm and disarm ask for approval), camera on/off and status |
+| **Presence Agent** | `person`, `device_tracker` | Read-only: who is home, how many people are home, whether a named person is home, which zone a person is in (disabled by default) |
 | **Calendar Agent** | `calendar` | Query events, add reminders |
 | **Lists Agent** | `todo`, `shopping_list` | Shopping and todo list management |
 | **Send Agent** | — | Deliver content to phones, satellites, and notification targets |

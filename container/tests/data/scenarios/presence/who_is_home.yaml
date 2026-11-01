@@ -1,0 +1,26 @@
+id: presence.who_is_home
+agent: presence-agent
+description: Who is home lists every visible person with a count
+snapshot: home_default
+language: en
+context: {source: ha, area_id: hallway, device_id: satellite_living_room}
+preconditions:
+  entity_overrides:
+    - {entity_id: person.laura, state: "home", attributes: {friendly_name: "Laura"}}
+    - {entity_id: person.max, state: "not_home", attributes: {friendly_name: "Max"}}
+    - {entity_id: person.nora, state: "Work", attributes: {friendly_name: "Nora", latitude: 50.0, longitude: 8.2}}
+llm:
+  classify: |
+    presence-agent (95%): who is home
+  agents:
+    presence-agent: |
+      ```json
+      {"action": "list_presence", "entity": "", "parameters": {}}
+      ```
+request:
+  text: "who is home?"
+expected:
+  routed_agent: presence-agent
+  service_calls: []
+  speech_contains: ["1 of 3 people is at home: Laura", "Max", "Nora (zone Work)"]
+  speech_excludes: ["50.0", "8.2"]

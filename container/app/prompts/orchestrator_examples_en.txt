@@ -53,6 +53,12 @@ they appear verbatim in the user's own language.
   YES "Is the front door locked?" → security-agent: check front door lock
   NO  "Close the office blind" → cover-agent, NOT security-agent
 
+- presence-agent (who is at home, where a person is; person entities and device trackers):
+  YES "Who is home?" → presence-agent: who is home
+  YES "Is Laura home?" → presence-agent: is Laura home
+  NO  "Is there motion in the hallway?" → security-agent, NOT presence-agent
+  NO  "Who am I?" → general-agent, NOT presence-agent
+
 - automation-agent (Home Assistant automations):
   YES "Disable the night setback automation" → automation-agent: disable night setback automation
   NO  "Activate the scene Panik" → scene-agent, NOT automation-agent

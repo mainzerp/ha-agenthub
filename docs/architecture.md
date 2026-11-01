@@ -72,11 +72,11 @@ Each agent publishes an **Agent Card** containing its ID, capabilities, and supp
 
 ### Agent Inventory
 
-Thirteen specialized domain agents are reachable from intent classification:
+Fourteen specialized domain agents are reachable from intent classification:
 `light`, `climate`, `media`, `music`, `cover`, `vacuum`, `scene`, `timer`,
-`automation`, `security`, `calendar`, `lists`, and `send` (delivery to phones,
-satellites, and notify targets). A `general-agent` fallback handles general
-questions and unroutable requests.
+`automation`, `security`, `presence`, `calendar`, `lists`, and `send` (delivery
+to phones, satellites, and notify targets). A `general-agent` fallback handles
+general questions and unroutable requests.
 
 The general agent also answers questions about HA-AgentHub itself. It always
 runs the LLM tool loop (`call_llm_with_mcp_tools[_stream]`), even with no MCP
@@ -106,6 +106,12 @@ Domain-specific write contracts:
 - **Calendar** -- reads use `calendar.get_events` across the user's visible default calendars (or all visible calendars). Update and delete read event uids from `GET /api/calendars/<entity_id>` (`HARestClient.get_calendar_event_details`), send the `calendar/event/update` / `calendar/event/delete` WebSocket commands (`HARestClient.send_ws_command`), and verify by re-reading.
 - **Lists** -- visibility always applies; an unnamed list resolves only when exactly one list is visible, and ambiguous item matches ask instead of acting.
 - Calendar, lists, and automation config results are `cacheable=False`, so these writes never enter the action cache.
+
+Read-only presence contract (`presence-agent`, `app/agents/presence_executor.py`, DB-gated, seeded disabled):
+
+- `list_presence` (no entity) reads `get_states`, keeps the `person.*` states visible to `presence-agent` (trackers are never counted, a person aggregates them) and answers with the home count, the names at home, the names away (a named zone as `Name (zone Work)`) and the names with an unknown state.
+- `query_presence` resolves one `person.*` or `device_tracker.*` entity through `resolve_and_validate_entity` (person preferred on ties) and answers home, not home, or the zone name. An unknown and a hidden name get the same answer ("I could not find a person named ..."); the agent sets `_clarify_on_not_found = False`, so no device clarification question follows.
+- Only the state is spoken (English template, localized like other executor templates); coordinates and other tracker attributes are never read into the speech. No service is called and every result is `cacheable=False`.
 
 Internal A2A-registered helper agents: filler-agent and rewrite-agent. The mediation pass is baked into the orchestrator agent. The AI-task helpers `vision-agent` and `task-formatter` are LLM config rows only (`TASK_HELPER_AGENTS`, part of `INTERNAL_ONLY_AGENTS`): never registered as A2A agents and never routing targets (see [AI task flow](#ai-task-flow)). Runtime services and utility modules (not A2A agents) include language detection, input sanitization, cancel-speech detection, notification dispatch, timer scheduling, and alarm monitoring.
 

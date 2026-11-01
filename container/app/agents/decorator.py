@@ -137,6 +137,7 @@ async def install_all_agents(app) -> Any:
         "scene-agent",
         "automation-agent",
         "security-agent",
+        "presence-agent",
         "send-agent",
         "calendar-agent",
         "lists-agent",

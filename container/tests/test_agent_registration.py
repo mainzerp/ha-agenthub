@@ -25,6 +25,7 @@ EXPECTED_AGENT_IDS = {
     "scene-agent",
     "automation-agent",
     "security-agent",
+    "presence-agent",
     "send-agent",
     "calendar-agent",
     "lists-agent",

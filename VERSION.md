@@ -7,6 +7,7 @@
 (tracking changes since 3.15.0)
 
 - Deps (container image): ten more filelock 3.32.7 advisories published 2026-10-28 (fixed in 4.2.1, still blocked by `litellm` requiring `filelock<4.0`) are ignored with reasons in `PIP_AUDIT_IGNORED` (`scripts/ci.py`, mirrored in pre-commit and `local-ci.ps1`). They affect `ReadWriteLock` / `StrictSoftFileLock` (unused), `SoftFileLock` and `UnixFileLock` (need a second local user) and Windows locks (the image runs on Linux). The security gate failed for every PR since 2026-10-28 without them.
+- Feat (agents): new read-only `presence-agent` answers "who is home", "how many people are home", "is Laura home" and "where is Patric" from live `person.*` state (and a named `device_tracker.*`): home, not home, or the zone name; counts include visible persons only; coordinates are never spoken; an unknown and a hidden person get the same answer. DB-gated and seeded disabled (personal location data, opt-in on the Agents page); migration 54 adds the config row and the `person` / `device_tracker` visibility rules. Routing examples in all five orchestrator example files. Live traces bde6053f8481421f and 64b3634a5ab5433e had sent these questions to general-agent, which had no presence access.
 
 ## Version History
 

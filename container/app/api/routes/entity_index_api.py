@@ -14,6 +14,7 @@ from app.agents import (
     light_executor,
     media_executor,
     music_executor,
+    presence_executor,
     scene_executor,
     security_executor,
     vacuum_executor,
@@ -48,6 +49,7 @@ AGENT_ALLOWED_DOMAINS: dict[str, frozenset[str]] = {
     "music-agent": music_executor._ALLOWED_DOMAINS,
     "scene-agent": scene_executor._ALLOWED_DOMAINS,
     "security-agent": security_executor._ALLOWED_DOMAINS,
+    "presence-agent": presence_executor._ALLOWED_DOMAINS,
     "vacuum-agent": vacuum_executor._ALLOWED_DOMAINS,
     "timer-agent": frozenset(),
 }

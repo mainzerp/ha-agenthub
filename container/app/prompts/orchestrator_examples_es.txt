@@ -53,6 +53,12 @@ they appear verbatim in the user's own language.
   YES "¿Está la puerta de entrada cerrada con llave?" → security-agent: comprobar la cerradura de la puerta de entrada
   NO  "Cierra la persiana del despacho" → cover-agent, NOT security-agent
 
+- presence-agent (who is at home, where a person is; person entities and device trackers):
+  YES "¿Quién está en casa?" → presence-agent: quién está en casa
+  YES "¿Está Laura en casa?" → presence-agent: está Laura en casa
+  NO  "¿Hay movimiento en el pasillo?" → security-agent, NOT presence-agent
+  NO  "¿Quién soy yo?" → general-agent, NOT presence-agent
+
 - automation-agent (Home Assistant automations):
   YES "Desactiva la automatización modo nocturno" → automation-agent: desactivar la automatización modo nocturno
   NO  "Activa la escena Panik" → scene-agent, NOT automation-agent
