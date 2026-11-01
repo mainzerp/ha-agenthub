@@ -657,6 +657,12 @@ Live pipeline in board format — headings are columns, cards are
 
 ## Done
 
+- Timers: history of finished timers in the dashboard · priority: P2 · area: timer
+  Outcome: `/dashboard/timers` has a History section listing timers and alarms that rang, were missed or were
+  cancelled within the last 30 days; older rows are purged at startup and at most every 6 h on scheduling.
+  Backed by `GET /api/admin/timers/history`.
+  Verified by user on the live instance (2026-11-01): History section on `/dashboard/timers` works.
+
 - Timer and alarm ring sounds · priority: P2 · area: agents
   Outcome: timers play a three-chime sound (about 6 s) and alarms their own
   four-beep sound (about 7.5 s) before the spoken announcement, as the

@@ -92,6 +92,22 @@ class ScheduledTimersRepository:
             return [dict(row) for row in await cursor.fetchall()]
 
     @staticmethod
+    async def list_history(*, since_epoch: int, limit: int = 200) -> list[dict]:
+        """Terminal rows (fired, expired, cancelled) ended at or after ``since_epoch``, newest first.
+
+        Each row carries ``ended_at``: when it fired, expired or was cancelled.
+        """
+        sql = (
+            "SELECT *, COALESCE(fired_at, cancelled_at, created_at) AS ended_at FROM scheduled_timers "
+            "WHERE state IN ('fired', 'cancelled', 'expired') "
+            "AND COALESCE(fired_at, cancelled_at, created_at) >= ? "
+            "ORDER BY ended_at DESC, id ASC LIMIT ?"
+        )
+        async with get_db_read() as db:
+            cursor = await db.execute(sql, (int(since_epoch), max(1, int(limit))))
+            return [dict(row) for row in await cursor.fetchall()]
+
+    @staticmethod
     async def get(id_: str) -> dict | None:
         async with get_db_read() as db:
             cursor = await db.execute("SELECT * FROM scheduled_timers WHERE id = ?", (id_,))
