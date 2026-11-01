@@ -666,6 +666,25 @@ Live pipeline in board format — headings are columns, cards are
   own announce sound stays.
   Verified by user on the live instance (2026-11-01): timer and alarm sounds play on the Echo Show 8 and the message follows.
 
+- Music: play_media deadline, media_stop, unavailable players · priority: P1 · area: agents
+  Outcome: `music_assistant.play_media` is cut off after 6 s (it blocks while
+  Music Assistant resolves a source); the executor then polls the player for
+  2 s more and reports "still loading, not started yet, may still start"
+  unless a different item is playing, instead of the dispatch timeout and a
+  vague "sent" answer. Live finding (trace 944c22ece2214b62, "Spiel Taylor
+  Swift"): the call took slightly over 6 s, the failure was spoken, the music
+  started right after; hence the grace period and the neutral wording.
+  music-agent is also declared `expected_latency="high"` so the interim
+  filler is spoken while Music Assistant loads (trace 1531fb428c6c4acb: no
+  filler was sent, the notice came after 9.7 s). Filler needs `filler.enabled`.
+  Also: `media_stop` action (a "stop" request no longer ends in a pause
+  offer) and a command to an `unavailable` player is refused with "is
+  unavailable right now" instead of "sent" (trace e6e90987c0654e78).
+  Trigger: trace 7ba480540f6944ae (Spotify rate limit / librespot audio key
+  errors made every Spotify play fail after 60-80 s; RPR1 radio on the same
+  Echo plays in 1.6 s).
+  Verified by user on the live instance (2026-11-01): music starts without a false failure, the slow-start notice and the filler work. `media_stop` ("stop" while playing) was not tested separately.
+
 ## Idea Bank
 
 - Distributed HTTP-based A2A transport · priority: P3 · area: a2a

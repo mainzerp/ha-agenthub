@@ -1785,6 +1785,7 @@ class MediaAgent(_ConfigurableDomainAgent):
     executor_name="execute_music_action",
     entity_actions=music_executor.ENTITY_ACTIONS,
     entity_free_actions=music_executor.ENTITY_FREE_ACTIONS,
+    expected_latency="high",
 )
 class MusicAgent(_ConfigurableDomainAgent):
     pass
