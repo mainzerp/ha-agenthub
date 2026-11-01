@@ -73,6 +73,21 @@ PIP_AUDIT_IGNORED = {
     "CVE-2026-112913": "filelock ReadWriteLock only; blocked by litellm filelock<4.0",
     # Affects soft locks on Windows only; the image runs on Linux.
     "CVE-2026-112907": "filelock soft locks on Windows only; blocked by litellm filelock<4.0",
+    # Ten more filelock 3.32.7 advisories (2026-10-28, medium/low, same fix in 4.2.1). No installed
+    # dependency uses ReadWriteLock, SoftReadWriteLock or StrictSoftFileLock (huggingface-hub uses
+    # FileLock and a SoftFileLock fallback). The rest need a second local user with write access to
+    # the lock directory; the container runs a single user. The Trivy gate only fails HIGH/CRITICAL,
+    # so these are not in .trivyignore.
+    "CVE-2026-112936": "filelock ReadWriteLock only; blocked by litellm filelock<4.0",
+    "CVE-2026-112915": "filelock ReadWriteLock only; blocked by litellm filelock<4.0",
+    "CVE-2026-112938": "filelock StrictSoftFileLock only; blocked by litellm filelock<4.0",
+    "CVE-2026-112911": "filelock StrictSoftFileLock / SoftReadWriteLock only; blocked by litellm filelock<4.0",
+    "CVE-2026-112908": "filelock StrictSoftFileLock only; blocked by litellm filelock<4.0",
+    "CVE-2026-112939": "filelock SoftFileLock, needs a second local user; blocked by litellm filelock<4.0",
+    "CVE-2026-112935": "filelock SoftFileLock, needs a second local user; blocked by litellm filelock<4.0",
+    "CVE-2026-112912": "filelock SoftFileLock, needs a second local user; blocked by litellm filelock<4.0",
+    "CVE-2026-112909": "filelock UnixFileLock, needs a second local user; blocked by litellm filelock<4.0",
+    "CVE-2026-112910": "filelock WindowsFileLock only; blocked by litellm filelock<4.0",
 }
 LOCK_PYTHON_VERSION = "3.12"  # keep in sync with the Dockerfile base image
 # Image platforms (Debian bookworm, glibc 2.36). The lock is resolved for the

@@ -48,7 +48,12 @@ repos:
         # Ignored advisories and their reasons: PIP_AUDIT_IGNORED in scripts/ci.py.
         args: ["-m", "pip_audit", "-r", "container/requirements.lock", "--require-hashes", "--disable-pip",
                "--ignore-vuln", "CVE-2026-112940", "--ignore-vuln", "CVE-2026-112913",
-               "--ignore-vuln", "CVE-2026-112907"]
+               "--ignore-vuln", "CVE-2026-112907",
+               "--ignore-vuln", "CVE-2026-112936", "--ignore-vuln", "CVE-2026-112915",
+               "--ignore-vuln", "CVE-2026-112938", "--ignore-vuln", "CVE-2026-112911",
+               "--ignore-vuln", "CVE-2026-112908", "--ignore-vuln", "CVE-2026-112939",
+               "--ignore-vuln", "CVE-2026-112935", "--ignore-vuln", "CVE-2026-112912",
+               "--ignore-vuln", "CVE-2026-112909", "--ignore-vuln", "CVE-2026-112910"]
         files: ^container/requirements.*\.(txt|lock)$
         pass_filenames: false
 
