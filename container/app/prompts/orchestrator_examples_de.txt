@@ -22,7 +22,7 @@
   NO  "Schalte den Fernseher ein" → media-agent, NOT music-agent
   NO  "Stoppe die Musik" → music-agent, NOT cancel-interaction
 
-- media-agent (TVs, speakers, casting, media players):
+- media-agent (TVs, speakers, casting, media players, camera picture on a TV or screen):
   YES "Mach den Fernseher im Wohnzimmer an" → media-agent: Fernseher im Wohnzimmer einschalten
   NO  "Spiel eine Playlist ab" → music-agent, NOT media-agent
 
@@ -49,6 +49,7 @@
 - security-agent (locks, alarms, cameras, door/window/motion sensors):
   YES "Ist die Haustür abgeschlossen?" → security-agent: Haustür-Schloss prüfen
   NO  "Schließe das Rollo im Büro" → cover-agent, NOT security-agent
+  NO  "Zeig die Klingelkamera auf dem Fernseher" → media-agent, NOT security-agent
 
 - presence-agent (who is at home, where a person is; person entities and device trackers):
   YES "Wer ist zu Hause?" → presence-agent: wer ist zu Hause

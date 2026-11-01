@@ -1702,7 +1702,8 @@ class SceneAgent(_ConfigurableDomainAgent):
         "Controls and queries locks, alarm panels, cameras, and security sensors "
         "(motion, door, window, doorbell, smoke, gas). Lock/unlock, arm/disarm, "
         "camera on/off. Reports status and lists all security devices. Reads Home "
-        "Assistant Recorder history for those entities (e.g. door open events yesterday)."
+        "Assistant Recorder history for those entities (e.g. door open events yesterday). "
+        "Showing a camera picture on a TV or screen is media-agent."
     ),
     skills=[
         "lock_control",
@@ -1761,6 +1762,8 @@ class PresenceAgent(_ConfigurableDomainAgent):
     description=(
         "Controls generic media players (TV, Chromecast, streaming devices): "
         "on/off, play/pause/stop, volume, mute, input/source selection. "
+        "Shows a camera's live picture on a TV or screen and plays a media URL or media item "
+        "on a compatible player. "
         "Reports playback status. Not for music library/Music Assistant -- use music-agent."
     ),
     skills=[
@@ -1771,6 +1774,8 @@ class PresenceAgent(_ConfigurableDomainAgent):
         "volume_control",
         "mute",
         "source_selection",
+        "camera_stream_to_screen",
+        "play_media_url",
         "media_status",
         "playback_query",
     ],

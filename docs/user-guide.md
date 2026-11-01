@@ -480,6 +480,19 @@ response_variable: door_check
 - **Unsupported features** -- when Home Assistant reports that a device lacks a capability (tilt, position, volume, dimming, color), the agent says so instead of sending the command.
 - **Already in that state** -- a plain on/off/open/close request for a single device that is already in that state is answered without a service call; requests with values (brightness, color, position) and group entities always run.
 
+### Camera on a TV or Screen
+
+"Show the doorbell camera on the living room TV" (also "turn on the TV and show the doorbell camera") is handled by the media agent:
+
+- The camera and the TV are resolved like any other device; an unknown camera name gets a question that lists the available cameras, and a name that matches several cameras gets a question that names them.
+- The picture is sent with Home Assistant's `camera.play_stream` action (HLS). Home Assistant needs the `stream` integration, the camera must offer a stream, and the player integration must accept the HLS stream URL in `play_media`; not every media player that reports `PLAY_MEDIA` does.
+- When the TV is off or in standby it is turned on first; if it does not report being on within about 4 seconds, nothing is streamed and the answer says so.
+- The agent refuses instead of trying when Home Assistant reports that the target is unavailable, is an audio-only speaker (device class `speaker`), or cannot play media (no `PLAY_MEDIA` feature), or that the camera offers no stream. When `camera.play_stream` itself fails, the answer names the usual causes.
+- A camera stream is never replayed from the action cache.
+- Cameras are visible to the media agent by default (visibility rule `domain_include camera` for `media-agent`). To keep cameras off screens, add a `domain_exclude camera` rule (or narrower entity rules) for the media agent on the **Agents** page.
+
+"Play `http://example.com/clip.mp4` on the kitchen display" plays a URL or a `media-source://` item with `media_player.play_media` after the same target checks (the speaker check applies to video and image content only).
+
 ## Sensitive Actions Need Approval
 
 Some actions open the home to people, so HA-AgentHub never runs them on the

@@ -47,7 +47,7 @@ A multi-agent AI assistant for Home Assistant with container-based A2A orchestra
 |-------|-----------|-------------|
 | **Light Agent** | `light`, `switch`, `sensor` (illuminance) | On/off, toggle, absolute and relative brightness, color, color temperature, conditional actions |
 | **Climate Agent** | `climate`, `fan`, `humidifier`, `weather`, `sensor` | Temperature (absolute and relative), HVAC mode, fan speed/preset/oscillation/direction, humidity, weather queries |
-| **Media Agent** | `media_player` | Playback, volume (absolute, relative, step), mute/unmute, source selection |
+| **Media Agent** | `media_player`, `camera` (stream source only) | Playback, volume (absolute, relative, step), mute/unmute, source selection, camera live picture on a TV or screen, media URLs and items on compatible players |
 | **Music Agent** | `media_player` | Music-focused playback (radio, playlists), library search, volume |
 | **Cover Agent** | `cover` | Open, close, stop, set position, tilt control (opening a garage door, gate or door asks for approval) |
 | **Vacuum Agent** | `vacuum` | Start, pause, stop, return to base, clean spot, set fan speed |

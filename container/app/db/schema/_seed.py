@@ -745,6 +745,9 @@ async def _seed_defaults(db: aiosqlite.Connection) -> None:
         ("climate-agent", "domain_include", "fan"),
         ("climate-agent", "domain_include", "humidifier"),
         ("media-agent", "domain_include", "media_player"),
+        # Stream source of play_camera (camera live picture on a TV); kept
+        # equal to migration 55.
+        ("media-agent", "domain_include", "camera"),
         ("scene-agent", "domain_include", "scene"),
         ("automation-agent", "domain_include", "automation"),
         ("timer-agent", "domain_include", "persistent_notification"),
