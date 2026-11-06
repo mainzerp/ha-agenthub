@@ -4,6 +4,38 @@ Decision rationale, so decisions stay made. Newest first. Binding architecture
 rules live in `docs/project/prime-directives.md` — this file records choices,
 not copies of rules.
 
+## 2026-11-06 — Audit follow-up: reply language order, performance guardrail
+
+- **Reply language order: HA pipeline language, then the AgentHub `language`
+  setting, then auto-detection.** Rationale: the language the user speaks to
+  HA in is the most reliable signal; the AgentHub setting is the household
+  default; langdetect misreads short commands. Today `_resolve_language`
+  (`agents/orchestrator.py`) does the reverse: setting first, then detection,
+  and the request language only as the last fallback. Not implemented yet.
+- **Performance work must not change fundamental flows.** The turn keeps its
+  steps (classification, agent with state verification, personality
+  mediation, approval gate, cache rules); speed comes from configuration,
+  concurrency, connection reuse and removing waits off the critical path.
+  Rationale: the system must get faster without behavior regressions in daily
+  use. Changes such as skipping mediation for device replies or answering
+  before verification are out of scope unless the owner reopens them.
+- **Device commands target entities first; a room only when the user says
+  room.** A name in a command means the entity of that name ("Wohnzimmer aus"
+  switches the light named Wohnzimmer); the other devices of an HA area switch
+  only with an explicit room phrase ("Lichter im Wohnzimmer"). Rationale: the
+  owner names entities deliberately; "Küche ein/aus" already behaves this way
+  in 46 logged turns, while room-first readings gave three different device
+  sets for the same living-room command. Settles audit-plan question OD-02.
+- **Device names are not part of an entity's name for matching.** Selection
+  matches on the entity's own name; the device name counts only for entities
+  without a name of their own (a device's main entity, or integration names
+  such as Awtrix "Matrix" that are unique only with their device). Rationale:
+  since HA 2026.11 the `friendly_name` of an entity renamed after the upgrade
+  is device name plus entity name ("Dimmer (Unterverteilung Gäste)
+  (ABB700C7FF30) Wohnzimmer"), and AgentHub indexes `friendly_name` unchanged
+  (`entity/ingest.py`), so technical device names leak into recall, candidate
+  lists and spoken replies. Not implemented yet.
+
 ## 2026-11-01 — Trace review: presence, camera on screen, calendar, ai_task
 
 - **Presence is a new read-only `presence-agent`, seeded disabled.**
