@@ -8,6 +8,7 @@ import logging
 import random
 import time
 import uuid
+import weakref
 from collections.abc import AsyncGenerator
 from dataclasses import asdict, dataclass, field, is_dataclass
 from datetime import UTC, datetime, timedelta
@@ -45,6 +46,7 @@ from app.agents.mediation import (
     _strip_followup_tag,
     is_english_language,
     needs_template_localization,
+    normalize_reasoning_effort,
     speech_source_of,
 )
 from app.agents.personalization import mediation_speaker_kwargs, personalization_user_id, requester_identity
@@ -55,6 +57,7 @@ from app.analytics.collector import track_request, track_request_background
 from app.analytics.tracer import _optional_span, record_request_attribute, sanitize_trace_value
 from app.cache.cache_manager import ActionReplayOutcome, RoutingSkipOutcome
 from app.db.repository import SettingsRepository
+from app.defaults import MEDIATION_MERGE_REASONING_EFFORT_KEY, MEDIATION_REASONING_EFFORT_KEY
 from app.ha_client.action_marker import HaActionMarker, track_ha_actions
 from app.ha_client.devices import apply_device_origin
 from app.ha_client.home_context import populate_task_context_home_context
@@ -78,6 +81,17 @@ from app.voice import PendingSpeakerLookup, discard_pending_speaker, start_speak
 logger = logging.getLogger(__name__)
 
 _PERSONALITY_CACHE_TTL_SEC: float = 300.0
+# Settings read once by ``_load_mediation_config`` and refreshed on write
+# (the stream timeouts are read per call and need no reload).
+_MEDIATION_CONFIG_KEYS: frozenset[str] = frozenset(
+    {
+        "mediation.model",
+        "mediation.temperature",
+        "mediation.max_tokens",
+        MEDIATION_REASONING_EFFORT_KEY,
+        MEDIATION_MERGE_REASONING_EFFORT_KEY,
+    }
+)
 
 
 class _StreamDispatchTimeoutError(Exception):
@@ -567,6 +581,9 @@ class OrchestratorAgent(BaseAgent):
         self._mediation_model: str | None = None
         self._mediation_temperature: float = 0.3
         self._mediation_max_tokens: int = 2048
+        # "" = inherit the orchestrator agent config's reasoning effort.
+        self._mediation_reasoning_effort: str = ""
+        self._mediation_merge_reasoning_effort: str = ""
         self._max_dispatch_timeout: float = 60.0
         self._calendar_injector = None
         if ha_client is not None and entity_index is not None:
@@ -694,6 +711,7 @@ class OrchestratorAgent(BaseAgent):
         """Load reliability config from DB and warm langdetect. Call during startup."""
         await self._load_reliability_config()
         await self._load_mediation_config()
+        self._register_mediation_reload_listener()
         try:
             # Directive 9: langdetect loads its profiles synchronously on the
             # first call; pay that once at startup, off the event loop.
@@ -752,12 +770,46 @@ class OrchestratorAgent(BaseAgent):
             self._mediation_max_tokens = int(val) if val is not None else 2048
         except (ValueError, TypeError):
             self._mediation_max_tokens = 2048
+        try:
+            val = await SettingsRepository.get_value(MEDIATION_REASONING_EFFORT_KEY, "")
+            self._mediation_reasoning_effort = normalize_reasoning_effort(val, MEDIATION_REASONING_EFFORT_KEY)
+        except (ValueError, TypeError):
+            self._mediation_reasoning_effort = ""
+        try:
+            val = await SettingsRepository.get_value(MEDIATION_MERGE_REASONING_EFFORT_KEY, "")
+            self._mediation_merge_reasoning_effort = normalize_reasoning_effort(
+                val, MEDIATION_MERGE_REASONING_EFFORT_KEY
+            )
+        except (ValueError, TypeError):
+            self._mediation_merge_reasoning_effort = ""
         logger.info(
-            "Mediation config: model=%s temperature=%.1f max_tokens=%d",
+            "Mediation config: model=%s temperature=%.1f max_tokens=%d reasoning_effort=%s merge_reasoning_effort=%s",
             self._mediation_model or "(orchestrator default)",
             self._mediation_temperature,
             self._mediation_max_tokens,
+            self._mediation_reasoning_effort or "(inherit)",
+            self._mediation_merge_reasoning_effort or "(inherit)",
         )
+
+    def _register_mediation_reload_listener(self) -> None:
+        """Re-read the mediation config whenever one of its settings is written.
+
+        Applies model/temperature/max_tokens/reasoning-effort changes to the
+        next LLM call without a restart. The service reads the in-memory
+        values, so the hot path stays free of DB access. Registered once per
+        instance; the listener holds only a weak reference.
+        """
+        if self.__dict__.get("_mediation_reload_registered"):
+            return
+        self.__dict__["_mediation_reload_registered"] = True
+        ref = weakref.ref(self)
+
+        async def _on_settings_write(key: str) -> None:
+            orch = ref()
+            if orch is not None and key in _MEDIATION_CONFIG_KEYS:
+                await orch._load_mediation_config()
+
+        SettingsRepository.register_write_listener(_on_settings_write)
 
     async def _get_personality_cached(self) -> str:
         """Return cached personality prompt with 300-second TTL."""

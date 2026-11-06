@@ -13,7 +13,12 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, field_validator
 
 from app.db.repository import SettingsRepository
-from app.defaults import VOICE_SETTING_RANGES
+from app.defaults import (
+    MEDIATION_MERGE_REASONING_EFFORT_KEY,
+    MEDIATION_REASONING_EFFORT_KEY,
+    REASONING_EFFORT_VALUES,
+    VOICE_SETTING_RANGES,
+)
 
 from ._shared import _bool_from_setting
 
@@ -120,12 +125,15 @@ def _validate_setting_value(key: str, value: str, value_type: str) -> None:
     _allowed_values = {
         "memory.scope": ("user", "global"),
         "memory.wait_mode": ("best_effort", "blocking"),
+        # Empty = inherit the orchestrator agent config.
+        MEDIATION_REASONING_EFFORT_KEY: ("", *REASONING_EFFORT_VALUES),
+        MEDIATION_MERGE_REASONING_EFFORT_KEY: ("", *REASONING_EFFORT_VALUES),
     }
     allowed = _allowed_values.get(key)
     if allowed is not None and value not in allowed:
         raise HTTPException(
             status_code=400,
-            detail=f"Invalid value for '{key}': expected one of {', '.join(allowed)}",
+            detail=f"Invalid value for '{key}': expected one of {', '.join(v or '(empty)' for v in allowed)}",
         )
 
     bounds = VOICE_SETTING_RANGES.get(key)

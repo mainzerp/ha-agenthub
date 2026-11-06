@@ -176,12 +176,16 @@ relevant route before tuning.
 
 | Key | Default | Type | Description |
 |-----|---------|------|-------------|
-| `mediation.model` | (empty) | string | LLM model used by the mediation pass. Empty disables mediation. |
+| `mediation.model` | (empty) | string | LLM model used by the mediation pass, the multi-agent merge and system-line localization. Empty uses the orchestrator agent model. |
 | `mediation.temperature` | `0.3` | float | Sampling temperature for the mediation call. |
-| `mediation.max_tokens` | `8192` | int | Maximum tokens for the mediation reply. |
+| `mediation.max_tokens` | `2048` | int | Maximum tokens for the mediation reply. |
+| `mediation.reasoning_effort` | (empty) | string | Reasoning effort of the personality mediation calls (blocking and streamed) and of the localization of system lines (canned error, timeout and status lines and executor templates translated into the turn language). Empty inherits the `reasoning_effort` of the orchestrator agent config and sends no override (the shipped behavior); otherwise one of `none`, `low`, `medium`, `high`. An invalid stored value inherits and logs one warning. Some models reject `none`; the call then fails and mediation falls back to the unmediated text (localization to the English text). |
+| `mediation.merge_reasoning_effort` | (empty) | string | Reasoning effort of the call that merges the replies of several agents into one answer. Same values and fallback as `mediation.reasoning_effort`; independent of it. If the merge call fails, the bracket-prefixed per-agent replies are returned. |
 | `mediation.stream_first_token_timeout_sec` | `15` | float | Streamed mediation: seconds to wait for the first content token (includes connection setup and any reasoning phase). Must be > 0; invalid values use the default. |
 | `mediation.stream_idle_timeout_sec` | `10` | float | Streamed mediation: maximum silence between content tokens before the stream is aborted. Must be > 0; invalid values use the default. |
 | `orchestrator.mediation_streaming_enabled` | `true` | bool | With a personality configured, stream the mediated reply as token frames (asides, `[FOLLOWUP]` and Markdown markers removed) for earlier TTS start. If nothing was emitted yet, a stall (see `mediation.stream_first_token_timeout_sec` / `mediation.stream_idle_timeout_sec`) sends the agent speech plus any reminder without a second mediation call; a stream error or empty output falls back to blocking mediation. `false` always uses blocking mediation (reply in the terminal frame). |
+
+`mediation.model`, `mediation.temperature`, `mediation.max_tokens` and both reasoning keys are re-read on every settings write and apply to the next call without a restart. The Personality page edits the two reasoning keys as **Mediation reasoning** and **Merge reasoning** (default Inherit) and warns when the mediation model is not reported as a reasoning model.
 
 ### Personality Settings
 

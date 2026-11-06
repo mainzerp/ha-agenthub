@@ -480,6 +480,27 @@ async def _record_nonstream_call_metrics(
     pspan["metadata"]["latency_ms"] = round(latency_ms, 2)
 
 
+def _reasoning_effort_trace(override: Any, config_value: str | None) -> str | None:
+    """Trace label of the effective reasoning effort (``None`` when none is sent).
+
+    An explicit per-call override is recorded as is; a value taken from the
+    agent config is prefixed with ``inherit:``.
+    """
+    if override:
+        return str(override)
+    if config_value:
+        return f"inherit:{config_value}"
+    return None
+
+
+def _provider_call_metadata(model: str, effort_trace: str | None) -> dict[str, Any]:
+    """Extra ``llm_provider_call`` span metadata of a non-streaming call."""
+    metadata: dict[str, Any] = {"provider": model.split("/")[0] if "/" in model else "unknown"}
+    if effort_trace:
+        metadata["reasoning_effort"] = effort_trace
+    return metadata
+
+
 async def complete(
     agent_id: str,
     messages: list[dict],
@@ -515,6 +536,7 @@ async def complete(
     max_tokens = overrides.get("max_tokens", config.max_tokens)
     temperature = overrides.get("temperature", config.temperature)
     reasoning_effort = overrides.get("reasoning_effort") or config.reasoning_effort
+    effort_trace = _reasoning_effort_trace(overrides.get("reasoning_effort"), config.reasoning_effort)
 
     provider_params = await resolve_provider_params(model)
 
@@ -546,7 +568,7 @@ async def complete(
                 model=model,
                 t0=t0,
                 response=response,
-                extra_metadata={"provider": model.split("/")[0] if "/" in model else "unknown"},
+                extra_metadata=_provider_call_metadata(model, effort_trace),
             )
         if not response.choices:
             raise LLMError("Empty choices from provider")
@@ -735,6 +757,7 @@ async def complete_stream(
     max_tokens = overrides.get("max_tokens", config.max_tokens)
     temperature = overrides.get("temperature", config.temperature)
     reasoning_effort = overrides.get("reasoning_effort") or config.reasoning_effort
+    effort_trace = _reasoning_effort_trace(overrides.get("reasoning_effort"), config.reasoning_effort)
 
     provider_params = await resolve_provider_params(model)
 
@@ -768,6 +791,8 @@ async def complete_stream(
             pspan["metadata"]["model"] = model
             pspan["metadata"]["provider"] = model.split("/")[0] if "/" in model else "unknown"
             pspan["metadata"]["streamed"] = True
+            if effort_trace:
+                pspan["metadata"]["reasoning_effort"] = effort_trace
 
             retries = 0
             while True:

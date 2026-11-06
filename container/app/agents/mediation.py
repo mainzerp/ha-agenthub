@@ -34,6 +34,7 @@ from typing import Any
 from app.agents.base import UNTRUSTED_NAME_MAX_CHARS, language_code_to_name, sanitize_untrusted_text
 from app.agents.sanitize import _remove_asides, strip_markdown_markers, strip_parenthetical_asides
 from app.analytics.tracer import _optional_span
+from app.defaults import REASONING_EFFORT_VALUES
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +49,28 @@ _ALL_AGENTS_FAILED_SPEECH = "I'm sorry, I couldn't complete that request. All ag
 # already waited for a failed agent, so it must not add a long stall.
 _LOCALIZE_TIMEOUT_SEC = 6.0
 _LOCALIZE_MAX_TOKENS = 256
+
+
+def normalize_reasoning_effort(raw: object, key: str) -> str:
+    """Return a stored reasoning-effort setting as ``""`` (inherit) or an allowed value.
+
+    An invalid stored value falls back to inherit with one warning; callers
+    run this once per settings (re)load, never per LLM call.
+    """
+    if raw is None:
+        return ""
+    value = str(raw).strip().lower()
+    if not value:
+        return ""
+    if value in REASONING_EFFORT_VALUES:
+        return value
+    logger.warning(
+        "Invalid %s value %r (expected empty or one of %s); inheriting the orchestrator config",
+        key,
+        raw,
+        ", ".join(REASONING_EFFORT_VALUES),
+    )
+    return ""
 
 
 def _speaker_line(speaker_name: str | None, speaker_source: str | None = None) -> str:
@@ -183,6 +206,19 @@ class MediationService:
     def __init__(self, orch) -> None:
         self._orch = orch
 
+    def _reasoning_override(self, *, merge: bool = False) -> dict[str, str]:
+        """``reasoning_effort`` LLM override of a mediation call (empty = inherit).
+
+        The orchestrator keeps the validated settings in memory and refreshes
+        them on every ``mediation.*`` settings write, so a change applies to the
+        next call without a restart and without a DB read here.
+        """
+        attr = "_mediation_merge_reasoning_effort" if merge else "_mediation_reasoning_effort"
+        value = getattr(self._orch, attr, "")
+        if isinstance(value, str) and value in REASONING_EFFORT_VALUES:
+            return {"reasoning_effort": value}
+        return {}
+
     # ------------------------------------------------------------------
     # Multi-agent merge
     # ------------------------------------------------------------------
@@ -285,6 +321,7 @@ class MediationService:
             }
             if self._orch._mediation_model:
                 overrides["model"] = self._orch._mediation_model
+            overrides.update(self._reasoning_override(merge=True))
             result = await self._orch._call_llm(messages, span_collector=span_collector, **overrides)
             merged = result.strip() if result and result.strip() else self.format_fallback(agent_responses)
             merged, followup = _strip_followup_tag(merged)
@@ -342,6 +379,7 @@ class MediationService:
             }
             if self._orch._mediation_model:
                 overrides["model"] = self._orch._mediation_model
+            overrides.update(self._reasoning_override())
             async with _optional_span(span_collector, "localize", agent_id="orchestrator") as span:
                 span["metadata"]["language"] = language
                 result = await asyncio.wait_for(
@@ -431,6 +469,7 @@ class MediationService:
             }
             if self._orch._mediation_model:
                 overrides["model"] = self._orch._mediation_model
+            overrides.update(self._reasoning_override())
             async with _optional_span(span_collector, "mediation", agent_id="orchestrator") as span:
                 result = await self._orch._call_llm(messages, span_collector=span_collector, **overrides)
                 span["metadata"]["personality_active"] = True
@@ -510,6 +549,7 @@ class MediationService:
             }
             if self._orch._mediation_model:
                 overrides["model"] = self._orch._mediation_model
+            overrides.update(self._reasoning_override())
             async with _optional_span(span_collector, "mediation", agent_id="orchestrator") as span:
                 span["metadata"]["personality_active"] = True
                 span["metadata"]["language"] = language or "en"
